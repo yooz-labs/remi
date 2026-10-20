@@ -77,7 +77,7 @@ test('all fourteen independently checked shared encodings are refused before any
   // The independent arithmetic test proves this reviewed list is exactly the torsion encodings.
   // Enumerate the single shared source here instead of maintaining a competing blacklist.
   const source = fs.readFileSync(
-    path.resolve(import.meta.dir, '../../shared/src/ed25519-public-key.ts'),
+    path.resolve(import.meta.dir, '../../shared/src/relay/small-order.ts'),
     'utf8',
   );
   const encodings = [...source.matchAll(/'([0-9a-f]{64})'/g)].map((match) => match[1] as string);

@@ -3,6 +3,8 @@
   "compilerOptions": {
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
     "types": ["bun", "vite/client"],
+    // Imported daemon fixtures run in Bun, whose streams are async iterable.
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
     // Some tests import daemon source directly for two-sided conformance
     // (ADR 0014), and those files use constructor parameter properties.
     // `src` keeps this on for Vite/esbuild's transpile-only dev pipeline;

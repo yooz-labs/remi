@@ -1,10 +1,83 @@
 /**
- * Push notification trigger client.
- * Sends a lightweight HTTP POST to the signaling server,
- * which forwards it to Apple's APNS.
+ * Plaintext legacy sender (#1200). It refuses unless the caller passes
+ * `legacyEnabled: true`; the daemon passes `notifications.legacy_push_enabled`,
+ * which is ON by default until secure push ships end to end (the default flips
+ * at the R7 gate). An enabled caller needs a secret and an untouched
+ * secure-authority directory: once any device enrolls over the relay the
+ * activation latch refuses this sender for good.
+ * Signed sealed delivery uses SecurePushTransport; this sender never falls back.
  */
 
+import { remiHome } from '../config/remi-home.ts';
+import { withLegacyPushEligibility } from '../storage/secure-push-activation.ts';
+
 const DEFAULT_SIGNALING_URL = 'https://remi-signaling.yooz.workers.dev';
+
+/** The fixed codes `sendPushTrigger` throws; a message is never anything else (#1200). */
+export type LegacyPushCode =
+  | 'LEGACY_PUSH_INVALID_CONTENT'
+  | 'LEGACY_PUSH_DISABLED'
+  | 'LEGACY_PUSH_SECRET_REQUIRED'
+  | 'LEGACY_PUSH_INVALID_URL'
+  | 'LEGACY_PUSH_NOT_ELIGIBLE'
+  | 'LEGACY_PUSH_REJECTED'
+  | 'LEGACY_PUSH_UNCERTAIN';
+
+/**
+ * What `sendPushTrigger` throws. `message` is one fixed code, so a log line or a child's output
+ * never carries a token, content or a receiver's text. What a caller must decide on rides in
+ * fields instead: the HTTP `status` of a `LEGACY_PUSH_REJECTED` and the Worker's structured
+ * `tokenInvalid` flag (a permanent APNS token rejection), the only two facts read from the
+ * receiver's response (#1200, B6).
+ */
+export class LegacyPushError extends Error {
+  constructor(
+    readonly code: LegacyPushCode,
+    readonly status?: number,
+    readonly tokenInvalid = false,
+  ) {
+    super(code);
+    this.name = 'LegacyPushError';
+  }
+}
+
+/**
+ * The secure activation latch refused the plaintext sender: the expected state of a relay-paired
+ * machine, never a push failure to report (#1200). Every legacy sender checks this before it
+ * reports an error.
+ */
+export function isLegacyPushRetired(error: unknown): boolean {
+  return error instanceof LegacyPushError && error.code === 'LEGACY_PUSH_NOT_ELIGIBLE';
+}
+
+/** The Worker's error body is a few dozen bytes; anything past this is not read. */
+const MAX_ERROR_BODY_BYTES = 4096;
+
+/** Only the Worker's `tokenInvalid: true` is taken from a refusal; the text is discarded. */
+async function readTokenInvalid(response: Response): Promise<boolean> {
+  try {
+    const reader = response.body?.getReader();
+    if (!reader) return false;
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    while (size < MAX_ERROR_BODY_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      size += value.length;
+    }
+    void reader.cancel().catch(() => {});
+    if (size > MAX_ERROR_BODY_BYTES) return false;
+    const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    return (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      (parsed as { tokenInvalid?: unknown }).tokenInvalid === true
+    );
+  } catch {
+    return false;
+  }
+}
 
 /**
  * What class of push this is (#968).
@@ -32,6 +105,10 @@ export type PushKind =
 
 /** Options for sendPushTrigger */
 export interface PushTriggerOptions {
+  /** Must be true or the sender throws `LEGACY_PUSH_DISABLED` before any I/O (#1200). */
+  legacyEnabled?: boolean;
+  /** Authority state directory; tests must supply their owned disposable directory. */
+  authorityDirectory?: string;
   /**
    * Which class of push this is. Forwarded to the Worker, which passes it
    * through into the APNS payload's custom data as `kind`.
@@ -88,15 +165,6 @@ export async function sendPushTrigger(
   deviceToken: string,
   opts: PushTriggerOptions,
 ): Promise<void> {
-  // Normalize wss:// → https:// and ws:// → http:// so fetch works
-  const rawUrl = signalingUrl || DEFAULT_SIGNALING_URL;
-  const baseUrl = rawUrl.replace(/^wss:\/\//i, 'https://').replace(/^ws:\/\//i, 'http://');
-  // Strip any path (e.g. /connect) from the signaling URL since we need the root
-  const url = `${new URL(baseUrl).origin}/push`;
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (opts.pushSecret) {
-    headers['Authorization'] = `Bearer ${opts.pushSecret}`;
-  }
   const payload: Record<string, unknown> = {
     token: deviceToken,
     // Omitted for a dismiss push (#585, P7): silent, no user-visible text.
@@ -124,24 +192,66 @@ export async function sendPushTrigger(
   if (opts.kind) {
     payload['kind'] = opts.kind;
   }
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    const text = await response.text().catch(() => 'unknown');
-    throw new Error(`Push trigger failed: ${response.status} ${text}`);
-  }
-
-  // Read response body for diagnostics; body not consumed earlier on the success path
+  let body: string;
   try {
-    const resultText = await response.text();
-    console.log(`[Push] Sent for token ${deviceToken.slice(0, 20)}...: ${resultText}`);
-  } catch (err) {
-    console.log(
-      `[Push] Sent for token ${deviceToken.slice(0, 20)}... (could not read response: ${err})`,
-    );
+    body = JSON.stringify(payload);
+  } catch {
+    throw new LegacyPushError('LEGACY_PUSH_INVALID_CONTENT');
+  }
+  if (opts.legacyEnabled !== true) throw new LegacyPushError('LEGACY_PUSH_DISABLED');
+  if (typeof opts.pushSecret !== 'string' || opts.pushSecret.trim().length === 0)
+    throw new LegacyPushError('LEGACY_PUSH_SECRET_REQUIRED');
+  let url: string;
+  try {
+    const base = (signalingUrl || DEFAULT_SIGNALING_URL)
+      .replace(/^wss:\/\//i, 'https://')
+      .replace(/^ws:\/\//i, 'http://');
+    url = `${new URL(base).origin}/push`;
+  } catch {
+    throw new LegacyPushError('LEGACY_PUSH_INVALID_URL');
+  }
+  const directory = opts.authorityDirectory ?? remiHome();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const controller = new AbortController();
+  try {
+    const invoked = withLegacyPushEligibility(directory, () => {
+      // Fetch is invoked under the authorization lock; await only after releasing it.
+      timer = setTimeout(() => controller.abort(), 12000);
+      return fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${opts.pushSecret}` },
+        body,
+        signal: controller.signal,
+        redirect: 'error',
+      });
+    });
+    if (!invoked.allowed) throw new LegacyPushError('LEGACY_PUSH_NOT_ELIGIBLE');
+    let response: Response;
+    try {
+      response = await invoked.result;
+    } catch {
+      throw new LegacyPushError('LEGACY_PUSH_UNCERTAIN');
+    }
+    // Arbitrary response bodies and tokens never enter diagnostics: a refusal keeps its status
+    // and the Worker's structured token verdict, and nothing else.
+    if (!response.ok)
+      throw new LegacyPushError(
+        'LEGACY_PUSH_REJECTED',
+        response.status,
+        await readTokenInvalid(response),
+      );
+    void response.body?.cancel().catch(() => {});
+  } catch (error) {
+    if (
+      error instanceof LegacyPushError &&
+      ['LEGACY_PUSH_NOT_ELIGIBLE', 'LEGACY_PUSH_REJECTED', 'LEGACY_PUSH_UNCERTAIN'].includes(
+        error.code,
+      )
+    )
+      throw error;
+    throw new LegacyPushError('LEGACY_PUSH_UNCERTAIN');
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    controller.abort();
   }
 }

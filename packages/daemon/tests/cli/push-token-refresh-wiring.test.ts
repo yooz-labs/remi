@@ -26,10 +26,9 @@ describe('cli.ts reads the device tokens fresh on every push path (#1259 review)
   });
 
   test('the subagent alert refreshes before it reads', () => {
-    const alert = between(
-      'log(`[SubagentAlert] ${title} - ${body}`);',
-      'for (const dt of deviceTokens.values())',
-    );
+    // The relay epic keeps the alert's text out of the log (#1200), so the pin starts at the
+    // function and ends at the legacy fan-out's read of the tokens.
+    const alert = between('function deliverSubagentAlert(', 'for (const dt of ');
     expect(alert).toContain('deviceTokenStore.refreshFromDisk();');
   });
 

@@ -23,7 +23,7 @@ export class ConnectionApproval {
   private context: string | null = null;
   private generation = 0;
 
-  async begin(identity: UnlockedIdentity, url: string): Promise<ApprovalAttempt | null> {
+  async begin(identity: Pick<UnlockedIdentity, 'publicKeyRaw'>, url: string): Promise<ApprovalAttempt | null> {
     const generation = ++this.generation;
     const context = `${url}\n${identity.publicKeyRaw}`;
     if (this.context !== context) this.snapshot = null;

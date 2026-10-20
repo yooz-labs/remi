@@ -3,6 +3,7 @@
   "id": "5ab3a16f-cbc3-4047-b12e-49289b8f6a4f",
   "timestamp": "2026-07-29T11:27:08.613Z",
   "serverVersion": "1.0.0",
+  "protocolVersion": 1,
   "sessionId": "fixture-session-id",
   "isResume": false,
   "replayCount": 0,
@@ -13,5 +14,6 @@
   "transcriptPath": "/Users/fixture/transcript.jsonl",
   "attachState": "attached",
   "daemonVersion": "0.7.4-dev.1",
-  "harnesses": ["claude", "codex"]
+  "harnesses": ["claude", "codex"],
+  "capabilities": ["workspaces"]
 }

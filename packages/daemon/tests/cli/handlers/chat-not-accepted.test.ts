@@ -113,9 +113,11 @@ describe('a session that does not take typed chat (#1177)', () => {
     expect(logged.some((l) => l.includes(`${'sk-raw-do-not-log'.length} chars`))).toBe(true);
   });
 
-  test('a session that does take chat still has its text in the log, as before', async () => {
+  test('a session that accepts typed chat logs only length and still types the actual text', async () => {
     await handlers(() => true).onUserInput(CID, sessionId, 'plain chat text', false);
-    expect(logged.some((l) => l.includes('plain chat text'))).toBe(true);
+    expect(logged.join('\n')).not.toContain('plain chat text');
+    expect(logged.some((l) => l.includes(`${'plain chat text'.length} chars`))).toBe(true);
+    expect(pty.submits).toEqual(['plain chat text']);
   });
 
   test('the dep is asked about this session, and true, undefined or no dep type as before', async () => {

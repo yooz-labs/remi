@@ -55,6 +55,7 @@ export function createClaudeTurnStop(deps: ClaudeTurnStopDeps): (input: StopHook
 
     deps.sink.turnCompleted({
       sessionId: deps.primarySessionId() ?? UNBOUND,
+      ...(input.prompt_id ? { eventId: `claude:${input.prompt_id}` } : {}),
       elapsedMs,
       lastAssistantMessage: input.last_assistant_message,
       reentry: input.stop_hook_active,

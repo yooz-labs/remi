@@ -1,0 +1,21 @@
+{
+  "origin": "Owned Remi icon from the earlier private candidate; JPEG re-encoded from the same owned pixels with jpeg-js 0.4.4, quality 85",
+  "images": [
+    {
+      "filename": "fixture.png",
+      "inputSha256": "04b6b9bbbb1c3d4c4c2c43096c78427fd41a1fbf53af75c167a5f1d52983d71c",
+      "width": 1024,
+      "height": 1024,
+      "pixelBytes": 4194304,
+      "pixelSha256": "2f8652b0ca4128c591f0687d38b334a475508e558823d35a7b5e3ab94e12c09b"
+    },
+    {
+      "filename": "fixture.jpg",
+      "inputSha256": "bfc90c41fb8b9749da14f88e8761c404a9cc69f1521272ca4aecf760128b12ae",
+      "width": 1024,
+      "height": 1024,
+      "pixelBytes": 4194304,
+      "pixelSha256": "24f9c6b1e0ed1700b7655430ff45f53eef773fdecc07eeff99d4ec1ee30e7027"
+    }
+  ]
+}

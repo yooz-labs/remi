@@ -1,0 +1,309 @@
+"""Compare actual execution instructions separately from workflow routing (#1359)."""
+
+import copy
+import hashlib
+import json
+import os
+import subprocess
+from pathlib import Path
+
+import yaml
+
+CONTRACTS = json.loads(Path(__file__).with_name("workflow-contracts.json").read_text())
+FAIL_SCOPE = {"name": "Fail unvalidated scope", "if": "needs.scope.result != 'success'",
+              "run": 'echo "CI scope validation failed; runtime checks were not started." >&2\nexit 1\n'}
+
+SOAK_SKIP = {
+    "name": "Report scoped soak skip",
+    "if": "needs.scope.result == 'success' && needs.scope.outputs.relay != 'false' && needs.scope.outputs.relay_soak == 'false'",
+    "run": 'echo "61-minute soak scoped out for exact reviewed input transitions; short relay controls remain required." >> "$GITHUB_STEP_SUMMARY"',
+}
+
+# Only these two complete inert mappings are equivalent during the reporter migration.
+SOAK_SKIP_PREVIOUS = {**SOAK_SKIP, "run": SOAK_SKIP["run"].replace(
+    "exact reviewed input transitions", "reviewed fixture changes")}
+
+COVERAGE_TEST_RUN = (
+    "set -o pipefail\n"
+    "bun scripts/ci/run-bun-test-batches.ts 2>&1 | tee test-batches-output.txt\n"
+)
+WRAPPED_TEST_COMMAND = "bun scripts/ci/run-bun-test-batches.ts"
+WRAPPED_TEST_ARGV = "[process.execPath, 'test', ...process.argv.slice(2)]"
+COVERAGE_TEST_ENV = {"E2E_BUNDLER": "esbuild"}
+TEST_MEASUREMENT_PROVENANCE = {
+    "previous_command": "bun scripts/ci/run-bun-test-with-diagnostics.ts --coverage --coverage-reporter=text --coverage-reporter=lcov",
+    "wrapped_command": WRAPPED_TEST_COMMAND,
+    "coverage_pipeline": "2>&1 | tee test-batches-output.txt",
+    "environment": COVERAGE_TEST_ENV,
+    "bundler_reason": "#1206: the same Linux ARM64 139-file prefix timed out in Bun.build and passed with esbuild; full hosted acceptance remains required.",
+    "threshold_input": "test-output.txt contains one validated line-only union row",
+    "partition": "remote-new-client.test.ts alone; every other discovered file together; no retries",
+    "bounds_ms": {"target": 300000, "rest": 1200000, "controller": 1320000},
+    "reason": "#1206: two sequential fresh processes with explicit target ownership and a manual case/source contract; original stall root cause remains unknown.",
+}
+TEST_EVIDENCE = {
+    "name": "Upload test evidence",
+    "if": "always() && needs.scope.result == 'success' && needs.scope.outputs.test != 'false'",
+    "uses": "actions/upload-artifact@v4",
+    "with": {"name": "test-evidence-${{ github.run_id }}-${{ github.run_attempt }}",
+             "path": "coverage/test-lanes/\ntest-batches-output.txt\ntest-output.txt\n",
+             "if-no-files-found": "error", "retention-days": "14"},
+}
+
+
+def validate_action(action):
+    # The independent corpus invokes this too; deleting the validator step cannot evade it.
+    assert action == CONTRACTS["scope_action"], "scope action order/commands/IDs/env/pins/outputs changed"
+    steps = action["runs"]["steps"]
+    assert steps[2] == {"name": "Determine validator scope", "id": "validation", "shell": "bash",
+                        "run": "python3 .github/scripts/ci-scope.py --validation-needed"}
+    conditional = {"Verify classifier controls", "Validate workflow YAML and execution contracts"}
+    assert {step.get("name") for step in steps if "if" in step} == conditional
+    for step in steps:
+        if step.get("name") in conditional:
+            assert step["if"] == "steps.validation.outputs.validation_required != 'false'"
+        else:
+            assert "if" not in step  # Classification, output checking and tool setup always execute.
+        assert "continue-on-error" not in step
+
+
+def lint_result(proc):
+    findings = json.loads(proc.stdout or "[]")
+    assert isinstance(findings, list)
+    allowed = [{"kind": item["kind"], "message": item["message"], "filepath": item["filepath"]}
+               for item in findings]
+    assert all(item["kind"] == "if-cond" and 'constant expression "false"' in item["message"]
+               and item["filepath"].endswith("ci.yml") for item in allowed), findings
+    assert len(allowed) <= 1, findings
+    assert proc.returncode == 0 or (proc.returncode == 1 and len(allowed) == 1), proc.stderr
+    return allowed
+
+
+class UniqueLoader(yaml.BaseLoader):
+    pass
+
+
+def mapping(loader, node):
+    result = {}
+    for key, value in node.value:
+        key = loader.construct_object(key)
+        if key in result:
+            raise ValueError("duplicate YAML key")
+        result[key] = loader.construct_object(value)
+    return result
+
+
+UniqueLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
+
+
+def load(text):
+    value = yaml.load(text, Loader=UniqueLoader)
+    if not isinstance(value, dict) or not isinstance(value.get("jobs"), dict):
+        raise ValueError("missing workflow jobs")
+    return value
+
+
+def execution(value, path):
+    result = copy.deepcopy(value)
+    scoped = {"ci.yml": {"lint": "lint", "typecheck": "typecheck", "test": "test"},
+              "relay-r7.yml": {"local-relay": "relay"},
+              "macos-app.yml": {"build-test": "macos"}}.get(Path(path).name, {})
+    if scoped:
+        for key in ("name", "on", "concurrency"):
+            result.pop(key, None)
+        result["jobs"].pop("scope", None)
+    for name, job in result["jobs"].items():
+        if name not in scoped:
+            continue  # Publication/admin prerequisites and step conditions are execution inputs.
+        for key in ("if", "needs"):
+            job.pop(key, None)
+        steps = []
+        for original in job["steps"]:
+            if original == FAIL_SCOPE or original == SOAK_SKIP or original == SOAK_SKIP_PREVIOUS:
+                continue  # Dedicated cheap failure routing, with no runtime execution.
+            step = dict(original)
+            step.pop("if", None)
+            # Only the exact inert reporting step is routing, never an arbitrary named command.
+            if step.get("name") == "Report scoped skip" and set(step) == {"name", "run"} and original.get("if") == (
+                    f"needs.scope.result == 'success' && needs.scope.outputs.{scoped[name]} == 'false'"):
+                if step["run"] in {
+                    f'echo "{label} skipped; no relevant inputs changed." >> "$GITHUB_STEP_SUMMARY"'
+                    for label in ("lint", "typecheck", "test", "macOS build")
+                } or step["run"] == 'echo "Relay gate skipped; no relay inputs changed." >> "$GITHUB_STEP_SUMMARY"':
+                    continue
+            steps.append(step)
+        job["steps"] = steps
+    return result
+
+
+def changed_gates(path, before, after):
+    left, right = execution(load(before), path), execution(load(after), path)
+    if left == right:
+        return set()
+    if Path(path).name not in {"ci.yml", "relay-r7.yml", "macos-app.yml"}:
+        return {"lint", "root", "notices", "test"}
+    if {key: value for key, value in left.items() if key != "jobs"} != {
+            key: value for key, value in right.items() if key != "jobs"}:
+        raise ValueError("global execution configuration changed")
+    if left["jobs"].keys() != right["jobs"].keys():
+        raise ValueError("unknown execution job added or removed")
+    changed = {key for key in left["jobs"] if left["jobs"][key] != right["jobs"][key]}
+    if path.endswith("relay-r7.yml"):
+        if changed != {"local-relay"}:
+            raise ValueError("unknown R7 execution job")
+        return {"relay"}
+    if path.endswith("ci.yml"):
+        selected = set()
+        for job in changed:
+            if job == "test":
+                selected.add("test")
+            elif job == "lint":
+                selected.add("lint")
+            elif job == "typecheck":
+                selected.update(("root", "web", "signaling", "integration", "notices"))
+            elif job not in {"spelling", "e2e", "auto-release", "release-guard", "sync-develop"}:
+                raise ValueError("unknown CI execution job")
+            else:
+                selected.update(("lint", "root", "notices", "test"))
+        return selected
+    if path.endswith("macos-app.yml"):
+        return {"macos"}
+    return {"lint", "root", "notices", "test"}
+
+
+def validate():
+    root = Path.cwd()
+    directory = root / ".github/workflows"
+    files = sorted([*directory.glob("*.yml"), *directory.glob("*.yaml")])
+    workflows = {file.name: load(file.read_text()) for file in files}
+    ci, relay = workflows["ci.yml"], workflows["relay-r7.yml"]
+    assert relay["jobs"]["local-relay"].get("name", "local-relay") == "local-relay"
+    assert workflows["macos-app.yml"]["jobs"]["build-test"]["name"] == "Build and Test (macOS)"
+    assert ci["on"] == {"push": {"branches": ["main"]}, "pull_request": {"branches": ["main", "develop"]}}
+    assert relay["on"] == {"workflow_dispatch": "", "pull_request": {"branches": ["main", "develop"]}}
+    mac = workflows["macos-app.yml"]
+    assert mac["on"] == {"pull_request": {"paths": ["packages/macos/**",
+        "packages/web/src/lib/native-*.ts", "packages/web/tests/browser/*native-provider-harness.ts",
+        "scripts/stage-macos-web.sh", ".github/workflows/macos-app.yml"]}}
+    for workflow in (ci, relay, mac):
+        assert workflow["concurrency"] == {
+            "group": "${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}",
+            "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+        }
+    names = {"spelling": "Spelling", "lint": "Lint", "typecheck": "Type Check", "test": "Test"}
+    for key, name in names.items():
+        assert ci["jobs"][key]["name"] == name, key
+    assert ci["jobs"]["auto-release"]["needs"] == ["spelling", "lint", "typecheck", "test"]
+    assert ci["jobs"]["auto-release"]["if"] == "github.ref == 'refs/heads/main' && github.event_name == 'push'"
+    assert ci["jobs"]["release-guard"]["needs"] == ["spelling", "lint", "typecheck", "test", "auto-release"]
+    assert ci["jobs"]["release-guard"]["if"] == "always() && github.ref == 'refs/heads/main' && github.event_name == 'push'"
+    assert ci["jobs"]["sync-develop"]["needs"] == ["auto-release"]
+    assert ci["jobs"]["sync-develop"]["if"] == "needs.auto-release.outputs.released == 'true'"
+    for workflow, job_name, flag in ((ci, "lint", "lint"), (ci, "typecheck", "typecheck"),
+                                    (ci, "test", "test"), (relay, "local-relay", "relay"),
+                                    (workflows["macos-app.yml"], "build-test", "macos")):
+        job = workflow["jobs"][job_name]
+        assert job["needs"] == ["scope"] and job["if"] == "${{ !cancelled() }}"
+        assert job["steps"][0] == FAIL_SCOPE
+        if job_name == "local-relay":
+            assert job["steps"].count(SOAK_SKIP) == 1
+            assert job == CONTRACTS["relay_reuse_job"], "relay reuse order/commands/conditions/permissions changed"
+        for step in job["steps"]:
+            condition = step.get("if", "")
+            if step.get("name") == "Fail unvalidated scope":
+                assert step == FAIL_SCOPE
+            elif step.get("name") == "Report scoped soak skip":
+                assert job_name == "local-relay" and step == SOAK_SKIP
+            elif step.get("name") == "Report scoped skip":
+                assert condition == f"needs.scope.result == 'success' && needs.scope.outputs.{flag} == 'false'"
+            elif step.get("name") == "Upload test evidence":
+                assert workflow is ci and job_name == "test" and step == TEST_EVIDENCE
+            elif step.get("name") in {"Check completed soak evidence", "Record actual soak producer"}:
+                assert job_name == "local-relay" and step in CONTRACTS["relay_reuse_job"]["steps"]
+            else:
+                step_flag = flag
+                if job_name == "local-relay" and step.get("name") == "Same attached session for 61 actual minutes":
+                    step_flag = "relay_soak"
+                if job_name == "typecheck":
+                    step_flag = {"bun run typecheck": "root", "bun run typecheck:web": "web",
+                        "bun run typecheck:web-tests": "web", "bun run typecheck:signaling": "signaling",
+                        "node_modules/.bin/tsc -p tests/integration/tsconfig.relay-r3.json": "integration",
+                        "bun scripts/third-party-notices.ts --check": "notices"}.get(step.get("run"), flag)
+                expected = f"needs.scope.result == 'success' && needs.scope.outputs.{step_flag} != 'false'"
+                if step.get("uses") == "actions/upload-artifact@v4":
+                    expected = f"always() && ({expected})"
+                if job_name == "local-relay" and step.get("id") == "soak":
+                    expected += " && steps.reuse.outputs.verified != 'true'"
+                assert condition == expected, (job_name, step)
+        scope = workflow["jobs"]["scope"]
+        assert set(scope) == {"name", "runs-on", "permissions", "outputs", "steps"}
+        assert scope["permissions"] == {"contents": "read"}
+        assert scope["runs-on"] == "ubuntu-latest"
+        output_keys = {"lint", "typecheck", "root", "web", "signaling", "integration", "notices", "test"} if workflow is ci else ({"relay", "relay_soak"} if workflow is relay else {flag})
+        assert scope["outputs"] == {key: f"${{{{ steps.scope.outputs.{key} }}}}" for key in output_keys}
+        assert scope["steps"] == [
+            {"uses": "actions/checkout@v5", "with": {"fetch-depth": "0"}},
+            {"uses": "./.github/actions/ci-scope", "id": "scope"},
+        ]
+    test_runs = [step.get("run", "") for step in ci["jobs"]["test"]["steps"]]
+    for key, expected in CONTRACTS["measurement_sha256"].items():
+        file, job, name = key.split("/", 2)
+        run = next(step["run"] for step in workflows[file]["jobs"][job]["steps"]
+                   if step.get("name") == name)
+        assert hashlib.sha256(run.encode()).hexdigest() == expected, key
+    coverage_step = next(step for step in ci["jobs"]["test"]["steps"]
+                         if step.get("name") == "Test with coverage")
+    assert ci["jobs"]["test"]["steps"].count(TEST_EVIDENCE) == 1
+    assert coverage_step["run"] == COVERAGE_TEST_RUN
+    assert coverage_step.get("env") == COVERAGE_TEST_ENV, "coverage Worker bundler environment changed"
+    assert "E2E_BUNDLER" not in ci.get("env", {}), "Worker bundler must stay on the coverage step"
+    for job in ci["jobs"].values():
+        assert "E2E_BUNDLER" not in job.get("env", {}), "Worker bundler must stay on the coverage step"
+        for step in job.get("steps", []):
+            if step is not coverage_step:
+                assert "E2E_BUNDLER" not in step.get("env", {}), "Worker bundler leaked to another step"
+    assert CONTRACTS["measurement_provenance"]["ci.yml/test/Test with coverage"] == TEST_MEASUREMENT_PROVENANCE
+    runner = (root / "scripts/ci/run-bun-test-with-diagnostics.ts").read_text()
+    assert runner.count(f"runChild({WRAPPED_TEST_ARGV})") == 1
+    assert "if (import.meta.main)" in runner
+    assert any('"$COVERAGE < 60"' in run and 'exit 1' in run for run in test_runs)
+    for command in ("bun run typecheck", "bun run typecheck:web", "bun run typecheck:web-tests",
+                    "bun run typecheck:signaling", "node_modules/.bin/tsc -p tests/integration/tsconfig.relay-r3.json",
+                    "bun scripts/third-party-notices.ts --check"):
+        assert command in [step.get("run") for step in ci["jobs"]["typecheck"]["steps"]]
+    assert "bunx biome check ." in [step.get("run") for step in ci["jobs"]["lint"]["steps"]]
+    soak = [step for step in relay["jobs"]["local-relay"]["steps"] if "61 actual minutes" in step.get("name", "")]
+    assert len(soak) == 1 and soak[0]["env"]["REMI_RELAY_R7_SOAK"] == "1"
+    assert "bun test --timeout 4500000 packages/web/tests/relay-r7-soak.test.ts" in soak[0]["run"]
+    assert int(relay["jobs"]["local-relay"]["timeout-minutes"]) >= 62
+    wire = next(step["run"] for step in relay["jobs"]["local-relay"]["steps"]
+                if step.get("name") == "Existing actual wire and authority controls")
+    assert all(part in wire for part in ("bun test packages/signaling/tests/e2e",
+        "packages/web/tests/relay-machine-channel.test.ts", "packages/web/tests/relay-client-outcomes.test.ts",
+        "tests/integration/relay-r3*.test.ts", "tests/integration/relay-r6-ingress.test.ts",
+        "tests/integration/relay-r7*.test.ts"))
+    action = yaml.load((root / ".github/actions/ci-scope/action.yml").read_text(), Loader=UniqueLoader)
+    validate_action(action)
+    assert action["runs"]["using"] == "composite"
+    assert set(action["outputs"]) == {"lint", "typecheck", "root", "web", "signaling", "integration", "notices", "test", "relay", "relay_soak", "macos"}
+    for key, value in action["outputs"].items():
+        assert value["value"] == f"${{{{ steps.scope.outputs.{key} }}}}"
+    assert action["runs"]["steps"][0] == {
+        "uses": "astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e",
+        "with": {"version": "0.12.23", "enable-cache": "false"},
+    }
+    setup = next(step["run"] for step in action["runs"]["steps"]
+                 if step.get("name") == "Install pinned workflow validation tools")
+    assert all(pin in setup for pin in ("PyYAML==6.0.3", "actionlint_1.7.12_linux_amd64.tar.gz",
+        "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"))
+    for step in action["runs"]["steps"][1:]:
+        subprocess.run(["bash", "-n"], input=step["run"], text=True, check=True)
+    proc = subprocess.run([os.environ.get("ACTIONLINT", "actionlint"), "-format", "{{json .}}",
+                           *map(str, files)], capture_output=True, text=True)
+    allowed = lint_result(proc)
+    print(json.dumps({"workflow_yaml_and_contracts": "pass", "actionlint_new_diagnostics": 0,
+                      "existing_disabled_e2e_warning": len(allowed)}))
+
+
+if __name__ == "__main__":
+    validate()

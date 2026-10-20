@@ -1,0 +1,9 @@
+{
+  "type": "file_fetch_cancel_result",
+  "id": "8899aabb-ccdd-4eef-9011-223344556677",
+  "timestamp": "2026-10-14T03:00:00.000Z",
+  "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+  "requestId": "778899aa-bbcc-4dde-8ff0-112233445566",
+  "beginId": "00112233-4455-4677-8899-aabbccddeeff",
+  "outcome": "cancelled"
+}

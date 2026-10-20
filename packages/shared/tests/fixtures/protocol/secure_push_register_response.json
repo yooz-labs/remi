@@ -1,0 +1,8 @@
+{
+  "type": "secure_push_register_response",
+  "id": "fixture-message-id",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "requestId": "fixture-request-id",
+  "success": true,
+  "keyVersion": 3
+}

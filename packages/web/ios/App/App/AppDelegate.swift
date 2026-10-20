@@ -7,10 +7,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     var window: UIWindow?
     var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var secureNotificationConsumer: NativePushNotificationConsumer?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         let window = UIWindow(frame: UIScreen.main.bounds)
-        let vc = CAPBridgeViewController()
+        let vc = RemiBridgeViewController()
         window.rootViewController = vc
         window.makeKeyAndVisible()
         self.window = window
@@ -23,6 +24,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     /// Register UNNotificationCategory objects for lock-screen / Apple Watch action buttons.
+    /// These serve the legacy direct-mode pushes only: a v2 (remiPush) card carries no
+    /// category and opens the app until R6 (#1200).
     /// Capacitor owns UNUserNotificationCenter.delegate; do NOT override it here.
     ///
     /// #665: `.authenticationRequired` blocks watchOS mirrored-notification
@@ -112,6 +115,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        NativePushTokenOwner.shared.recordFromOS(deviceToken)
+        NotificationCenter.default.post(name: .nativePushTokenChanged, object: nil)
         NotificationCenter.default.post(
             name: .capacitorDidRegisterForRemoteNotifications,
             object: deviceToken
@@ -119,6 +124,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        NativePushTokenOwner.shared.clearFromOS()
+        NotificationCenter.default.post(name: .nativePushTokenChanged, object: nil)
         NotificationCenter.default.post(
             name: .capacitorDidFailToRegisterForRemoteNotifications,
             object: error
@@ -153,6 +160,22 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
+        // Quiet v2 dismissal has no alert/NSE. Verify and commit its terminal
+        // before any OS deletion; it never trusts outer question IDs or flags.
+        if userInfo["remiPush"] != nil {
+            do {
+                if secureNotificationConsumer == nil { secureNotificationConsumer = try NativePushNotificationConsumer.configured() }
+                guard let consumer = secureNotificationConsumer else { completionHandler(.failed); return }
+                consumer.receiveDismiss(userInfo: userInfo) { outcome in
+                    switch outcome {
+                    case .removed: completionHandler(.newData)
+                    case .ignored: completionHandler(.noData)
+                    case .unavailable: completionHandler(.failed)
+                    }
+                }
+            } catch { completionHandler(.failed) }
+            return
+        }
         let js = """
         (function() {
           try {
@@ -160,7 +183,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             document.dispatchEvent(new CustomEvent('app-force-reconnect'));
             console.debug('[remi] background pre-wake: dispatched app-force-reconnect');
           } catch (e) {
-            console.warn('[remi] background pre-wake failed', e);
+            console.warn('[remi] background pre-wake unavailable');
           }
         })();
         """
@@ -205,5 +228,18 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         if let bridgeVC = window?.rootViewController as? CAPBridgeViewController {
             RemiAnswerRelay.shared.install(bridge: bridgeVC.bridge)
         }
+    }
+}
+
+/// Dedicated ingress avoids Capacitor's loss of WK frame provenance (#1199).
+final class RemiBridgeViewController: CAPBridgeViewController {
+    override func capacitorDidLoad() {
+        super.capacitorDidLoad()
+        guard let webView = bridge?.webView,
+              let accessGroup = try? NativePushConfiguration.identityAccessGroup() else { return }
+        let signer = NativeIdentityBridge(authority: NativePushConfiguration.identityAuthority, accessGroup: accessGroup, scheme: "capacitor", service: ClientIdentityStore.defaultService,
+                                          account: ClientIdentityStore.defaultAccount)
+        webView.configuration.userContentController.addScriptMessageHandler(
+            signer, contentWorld: .page, name: NativeIdentityBridge.handlerName)
     }
 }

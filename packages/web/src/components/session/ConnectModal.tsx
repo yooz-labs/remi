@@ -1,16 +1,10 @@
 import { ApprovalNeeded } from './ApprovalNeeded';
 import type { ConnectionState } from '@/types';
-/**
- * ConnectModal component.
- *
- * Simplified connection flow: enter a host to discover sessions.
- * A connection-code tab exists behind `onConnectCode`, but `App.tsx` does not
- * pass it and no client code opens a relay room, so it is never rendered; it
- * returns with the relay rebuild.
- */
-
+/** Direct-host discovery and memory-only relay v2 pairing. */
+import { RelayPairingForm } from './RelayPairingForm';
 import { useKeyboard } from '@/hooks/useKeyboard';
 import { probeAuthInfo } from '@/lib/auth-probe';
+import { usesNativeIdentity } from '@/lib/native-identity';
 import { isIdentityEncrypted } from '@/lib/identity-client';
 import { keyboardBackdropStyle } from '@/lib/keyboard-style';
 import {
@@ -23,7 +17,7 @@ import {
 import type { ConnectionStatus } from '@/types';
 import { clsx } from 'clsx';
 import { AlertCircle, CheckCircle2, Globe, Key, Loader2, Monitor, Shield, X } from 'lucide-react';
-import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'react';
+import { type FormEvent, useEffect, useRef, useState } from 'react';
 
 interface ConnectModalProps {
   readonly approvalConnection?: ConnectionState;
@@ -31,7 +25,9 @@ interface ConnectModalProps {
   readonly isOpen: boolean;
   readonly onClose: () => void;
   readonly onConnectDirect: (url: string, directory?: string) => void;
-  readonly onConnectCode?: (code: string) => void;
+  readonly onConnectRelay?: (token: string, signal: AbortSignal) => Promise<void>;
+  readonly onUnlockNative?: () => Promise<void>;
+  readonly relayConnection?: ConnectionState;
   readonly connectionStatus: ConnectionStatus;
   readonly error?: string | null;
   readonly needsPassphrase?: boolean;
@@ -49,52 +45,6 @@ interface ConnectModalProps {
 type ConnectionMode = 'local' | 'remote';
 
 const LOCALSTORAGE_HOST_KEY = 'remi-last-host';
-
-/** Code input with auto-formatting */
-function CodeInput({
-  value,
-  onChange,
-  disabled,
-}: {
-  readonly value: string;
-  readonly onChange: (value: string) => void;
-  readonly disabled?: boolean;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const raw = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
-    const formatted = raw.length > 4 ? `${raw.slice(0, 4)}-${raw.slice(4, 8)}` : raw;
-    onChange(formatted);
-  };
-
-  return (
-    <input
-      ref={inputRef}
-      type="text"
-      value={value}
-      onChange={handleChange}
-      disabled={disabled}
-      placeholder="ABCD-1234"
-      maxLength={9}
-      // Connection codes are uppercase alphanumerics — strip iOS dictation
-      // and predictive entry the same way the host field does (#266).
-      autoCorrect="off"
-      autoCapitalize="characters"
-      spellCheck={false}
-      autoComplete="off"
-      inputMode="text"
-      className={clsx(
-        'w-full rounded-xl bg-[var(--color-surface-light)] px-4 py-3',
-        'text-center text-2xl font-mono tracking-widest',
-        'text-[var(--color-text)] placeholder:text-[var(--color-text-muted)]',
-        'outline-none transition-colors',
-        'focus:ring-2 focus:ring-[var(--color-primary)]/50',
-        disabled && 'cursor-not-allowed opacity-50',
-      )}
-    />
-  );
-}
 
 /** Passphrase input view */
 function PassphraseView({
@@ -209,7 +159,9 @@ export function ConnectModal({
   onRetryApproval,
   onClose,
   onConnectDirect,
-  onConnectCode,
+  onConnectRelay,
+  relayConnection,
+  onUnlockNative,
   connectionStatus,
   error,
   needsPassphrase,
@@ -222,7 +174,6 @@ export function ConnectModal({
   const [host, setHost] = useState(
     () => localStorage.getItem(LOCALSTORAGE_HOST_KEY) || 'localhost',
   );
-  const [code, setCode] = useState('');
   const hostInputRef = useRef<HTMLInputElement>(null);
   // Track the iOS keyboard so we can lift the modal above it (#226 part 1).
   // Capacitor's keyboardWillShow fires synchronously enough that the modal
@@ -255,7 +206,7 @@ export function ConnectModal({
   // Reset on close
   useEffect(() => {
     if (!isOpen) {
-      setCode('');
+      setMode('local');
       setHost(localStorage.getItem(LOCALSTORAGE_HOST_KEY) || 'localhost');
       setPreflightPending(null);
       setIsProbing(false);
@@ -423,8 +374,6 @@ export function ConnectModal({
       }
 
       onConnectDirect(wsUrl);
-    } else if (onConnectCode) {
-      onConnectCode(code);
     }
   };
 
@@ -435,7 +384,7 @@ export function ConnectModal({
     }
   };
 
-  const canConnect = mode === 'local' ? host.trim().length > 0 : code.length === 9;
+  const canConnect = mode === 'local' && host.trim().length > 0;
 
   return (
     <div
@@ -473,7 +422,7 @@ export function ConnectModal({
               <Monitor className="size-4" />
               Host
             </button>
-            {onConnectCode && (
+            {onConnectRelay && (
               <button
                 onClick={() => setMode('remote')}
                 className={clsx(
@@ -484,7 +433,7 @@ export function ConnectModal({
                 )}
               >
                 <Globe className="size-4" />
-                Code
+                Pair machine
               </button>
             )}
           </div>
@@ -535,23 +484,14 @@ export function ConnectModal({
             </div>
           )}
 
-          {/* Code connection */}
-          {mode === 'remote' && (
-            <div className="space-y-3">
-              <label className="block">
-                <span className="mb-1 block text-sm text-[var(--color-text-secondary)]">
-                  Connection Code
-                </span>
-                <CodeInput value={code} onChange={setCode} disabled={isConnecting} />
-              </label>
-              <p className="text-xs text-[var(--color-text-muted)]">
-                Four letters and four digits, for example ABCD-2345.
-              </p>
-            </div>
-          )}
+          {mode === 'remote' && onConnectRelay && <RelayPairingForm
+            connection={relayConnection} onPair={onConnectRelay}
+            needsUnlock={!hasUnlockedIdentity && (usesNativeIdentity() || isIdentityEncrypted())}
+            onUnlockNative={usesNativeIdentity() ? onUnlockNative : undefined}
+            onUnlock={usesNativeIdentity() ? undefined : onPassphraseSubmit} />}
 
           {/* Status/Error */}
-          {(isScanning ||
+          {mode === 'local' && (isScanning ||
             isConnecting ||
             isAuthenticating ||
             isConnected ||
@@ -596,8 +536,9 @@ export function ConnectModal({
           )}
         </div>
 
+        {mode === 'remote' && <div className="border-t border-[var(--color-border)] p-4"><button type="button" onClick={onClose} className="w-full rounded-lg bg-[var(--color-surface-light)] py-2">Cancel pairing</button></div>}
         {/* Footer */}
-        <div className="flex gap-3 border-t border-[var(--color-border)] p-4">
+        {mode === 'local' && <div className="flex gap-3 border-t border-[var(--color-border)] p-4">
           <button
             onClick={onClose}
             className="flex-1 rounded-xl bg-[var(--color-surface-light)] py-2.5 text-sm font-medium text-[var(--color-text)] transition-colors hover:bg-[var(--color-surface-elevated)]"
@@ -641,7 +582,7 @@ export function ConnectModal({
                   ? 'Discovering...'
                   : 'Connect'}
           </button>
-        </div>
+        </div>}
       </div>
     </div>
   );

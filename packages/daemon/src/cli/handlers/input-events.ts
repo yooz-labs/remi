@@ -20,15 +20,41 @@ import {
   createPromptWaitingError,
   errorToString,
 } from '@remi/shared';
-import type { AnswerExtras, AnswerSelection, Question, QuestionOption, UUID } from '@remi/shared';
+import type {
+  AnswerExtras,
+  AnswerSelection,
+  Question,
+  QuestionOption,
+  ResolvedBy,
+  UUID,
+} from '@remi/shared';
 
-import type { HeldAnswer, HeldAnswerOutcome } from '../../harness/decision.ts';
+import {
+  type AnswerCommit,
+  type HeldAnswer,
+  type HeldAnswerOutcome,
+  applyAnswerCommit,
+} from '../../harness/decision.ts';
 import type { ManagedSession, SessionBindingStore, SessionRegistry } from '../../session/index.ts';
 import { traceQuestionEvent } from '../../session/question-trace.ts';
 import { log, logError } from '../logger.ts';
 import type { PromptUp } from './prompt-up.ts';
 import { ResolvedAnswerCache, answerCacheKey } from './resolved-answer-cache.ts';
 import type { SendToConnection } from './trivial-events.ts';
+
+/** What `onQuestionResolved` is told about a card an answer resolved (#1235). */
+export interface QuestionResolution {
+  readonly reason: 'answered' | 'cancelled';
+  readonly resolvedBy?: ResolvedBy;
+}
+
+/** An answer that reached the agent: through the notification endpoint, or a client's connection. */
+function answeredFrom(viaRelay: boolean): QuestionResolution {
+  return { reason: 'answered', resolvedBy: viaRelay ? 'lockscreen' : 'phone' };
+}
+
+/** A card cleared without its answer reaching the agent: no cause is named. */
+const CLEARED_ONLY: QuestionResolution = { reason: 'cancelled' };
 
 export interface InputHandlerDeps {
   sessionRegistry: SessionRegistry;
@@ -50,7 +76,12 @@ export interface InputHandlerDeps {
    * has ended (`closed`) is never typed into, its answer belongs to the
    * terminal. Absent (no hook server: no held prompts) reads as `unknown`.
    */
-  answerHeld?: (sessionId: UUID, questionId: UUID, answer: HeldAnswer) => HeldAnswerOutcome;
+  answerHeld?: (
+    sessionId: UUID,
+    questionId: UUID,
+    answer: HeldAnswer,
+    commit?: AnswerCommit,
+  ) => HeldAnswerOutcome;
   /**
    * A raw input that is a bare Escape was written to this session's
    * terminal (#1155): the web client's Esc button, Telegram's `/interrupt`,
@@ -86,8 +117,11 @@ export interface InputHandlerDeps {
    * the delivered path only (not for stale/session-not-found/stale-binding, where
    * nothing was consumed). Must be throw-safe: a broadcast failure must never
    * break answer handling. Absent => no dismissal broadcast (tests/old callers).
+   * `resolution` says whether the answer was applied and from where (#1235): `answered`
+   * with `phone` or `lockscreen` when it reached the agent, `cancelled` with no cause when the
+   * card was only cleared (a refused or late answer).
    */
-  onQuestionResolved?: (sessionId: UUID, questionId: UUID) => void;
+  onQuestionResolved?: (sessionId: UUID, questionId: UUID, resolution: QuestionResolution) => void;
   /**
    * Prompt-currency check for a resolved card-answer PTY submit (#920).
    * Backed by the session's `QuestionPresenceTracker.isPromptCurrent`, so
@@ -300,7 +334,7 @@ export function trackerScreenDeps(
 /** The gate reads the answer path uses (`SessionGateHandle`). */
 export interface GateAnswerHandle {
   retireQuestion(questionId: UUID): void;
-  answerHeld(questionId: UUID, answer: HeldAnswer): HeldAnswerOutcome;
+  answerHeld(questionId: UUID, answer: HeldAnswer, commit?: AnswerCommit): HeldAnswerOutcome;
   noteTerminalEscape(): void;
 }
 
@@ -317,8 +351,8 @@ export function gateAnswerDeps(
 ): Pick<InputHandlerDeps, 'retireQuestion' | 'answerHeld' | 'onTerminalEscape'> {
   return {
     retireQuestion: (sessionId, questionId) => gateFor(sessionId)?.retireQuestion(questionId),
-    answerHeld: (sessionId, questionId, answer) =>
-      gateFor(sessionId)?.answerHeld(questionId, answer) ?? 'unknown',
+    answerHeld: (sessionId, questionId, answer, commit) =>
+      gateFor(sessionId)?.answerHeld(questionId, answer, commit) ?? 'unknown',
     onTerminalEscape: (sessionId) => gateFor(sessionId)?.noteTerminalEscape(),
   };
 }
@@ -339,11 +373,11 @@ function resolveOption(
 }
 
 /** What a plain answer string names among a card's options (#1127 review
- *  S1): one option, none, or two different ones. */
+ *  S1): one option, none, or more than one. */
 type NamedOption =
   | { readonly kind: 'one'; readonly option: QuestionOption }
   | { readonly kind: 'none' }
-  | { readonly kind: 'ambiguous' };
+  | { readonly kind: 'ambiguous'; readonly cause: 'value-label' | 'display-labels' };
 
 /**
  * The option a plain answer string names on a held card. The lock screen
@@ -352,14 +386,18 @@ type NamedOption =
  * lock-screen tap on "1" would then answer the option whose value is "1",
  * labeled "4" (reproduced in review). A string that is one option's value
  * and a DIFFERENT option's label is therefore ambiguous: the held path
- * refuses it and keeps the card and the hold. Typed (non-held) cards keep
- * `resolveOption`.
+ * refuses it and keeps the card and the hold. Display labels can also collide
+ * after escaping or whitespace cleanup; `QuestionOption.label` is already
+ * the displayed form, so all exact label matches must name one option.
+ * Typed (non-held) cards keep `resolveOption`.
  */
 function namedOption(options: readonly QuestionOption[], answer: string): NamedOption {
   const byValue = options.find((o) => o.value === answer);
-  const byLabel = options.find((o) => o.label === answer);
+  const byLabelMatches = options.filter((o) => o.label === answer);
+  if (byLabelMatches.length > 1) return { kind: 'ambiguous', cause: 'display-labels' };
+  const byLabel = byLabelMatches[0];
   if (byValue !== undefined && byLabel !== undefined && byValue !== byLabel) {
-    return { kind: 'ambiguous' };
+    return { kind: 'ambiguous', cause: 'value-label' };
   }
   const option = byValue ?? byLabel;
   return option === undefined ? { kind: 'none' } : { kind: 'one', option };
@@ -369,10 +407,12 @@ function namedOption(options: readonly QuestionOption[], answer: string): NamedO
  *  (`Question.terminalOnly`, #1127 review S7). Cancel still works. */
 const TERMINAL_ONLY_MESSAGE = 'This question can only be answered in the terminal (or Cancel).';
 
-/** The refusal of an answer that names two different options (see
+/** The refusal of an answer that names more than one option (see
  *  `namedOption`). */
-const AMBIGUOUS_ANSWER_MESSAGE =
+const AMBIGUOUS_VALUE_LABEL_MESSAGE =
   'This answer matches one option by its number and another by its label; answer again from the card in the app';
+const AMBIGUOUS_DISPLAY_LABEL_MESSAGE =
+  'This answer matches more than one option; answer again from the card in the app';
 
 /** A PTY submit the #1134 screen-numbering guard refuses, and how. */
 interface ScreenRefusal {
@@ -524,23 +564,6 @@ function structuredSelections(
   return Array.isArray(selections) && selections.length > 0 ? selections : undefined;
 }
 
-/** A phone answer to a held card as one log fragment, without the user's
- *  text (only its length). */
-function describeHeldAnswer(held: HeldAnswer): string {
-  switch (held.kind) {
-    case 'option':
-      return `"${held.option.label}"`;
-    case 'text':
-      return `free text (${held.text.length} chars)`;
-    case 'selections':
-      return `an answer to ${held.selections.length} question(s)`;
-    case 'cancel':
-      return 'Cancel';
-    case 'ambiguous':
-      return 'an answer naming one option by value and another by label';
-  }
-}
-
 /** The Escape key, written exactly (no Enter) by a Cancel on a card no held
  *  hook stands behind. */
 const ESC = '\x1b';
@@ -603,16 +626,17 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     claudeSessionId: UUID | undefined,
     viaRelay = false,
     extra?: AnswerExtras,
+    commit?: AnswerCommit,
   ): Promise<AnswerOutcome> {
     log(
-      `Answer ${viaRelay ? '(relay) ' : ''}from ${connectionId} for session ${sessionId}: ${extra?.cancel ? '[cancel]' : extra?.selections ? `[selections×${extra.selections.length}]` : answer}`,
+      `Answer from ${connectionId} for session ${sessionId}: ${answer.length} characters, ${extra?.selections?.length ?? 0} selections`,
     );
 
     // Prefer lookup by sessionId (from push-action answers) so reconnected clients
     // can answer even before the connection is fully mapped in the registry.
     const session =
       sessionRegistry.getSession(sessionId) ??
-      sessionRegistry.getSessionForConnection(connectionId);
+      (commit ? undefined : sessionRegistry.getSessionForConnection(connectionId));
     if (!session) {
       log(`No session found for connection ${connectionId} or session ${sessionId}`);
       if (!viaRelay) {
@@ -651,6 +675,9 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       const held = answerHeld?.(session.sessionId, questionId, { kind: 'cancel' }) ?? 'unknown';
       const stillActive =
         held === 'unknown' && sessionRegistry.getQuestion(session.sessionId, questionId) !== null;
+      // #1235: the cancel reached the agent (the hook took it, or the Esc was written), or it only
+      // cleared the card.
+      let reached = held === 'resolved';
       if (held === 'resolved') {
         log(`[Answer] cancel: denied held prompt ${questionId.slice(0, 8)} through its hook`);
       } else if (held === 'closed') {
@@ -660,6 +687,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       } else if (stillActive) {
         try {
           await session.pty.write(ESC);
+          reached = true;
           log(`[Answer] cancel: sent Esc to session ${session.sessionId.slice(0, 8)}`);
         } catch (err) {
           logError(`[Answer] cancel: Esc write failed: ${errorToString(err)}`);
@@ -678,7 +706,11 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       }
       sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:cancel');
       try {
-        onQuestionResolved?.(session.sessionId, questionId);
+        onQuestionResolved?.(
+          session.sessionId,
+          questionId,
+          reached ? answeredFrom(viaRelay) : CLEARED_ONLY,
+        );
       } catch (err) {
         logError(`[Answer] cancel: question_resolved broadcast failed: ${errorToString(err)}`);
       }
@@ -702,7 +734,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       // delivered" notification. A different value (a genuine conflicting
       // late answer) or an unknown/expired question still falls through to
       // 'stale' below.
-      if (resolvedAnswers.matches(questionId, answerCacheKey(answer, extra?.selections))) {
+      if (
+        !commit &&
+        resolvedAnswers.matches(questionId, answerCacheKey(answer, extra?.selections))
+      ) {
         log(
           `[Answer] duplicate delivery for resolved question ${questionId.slice(0, 8)}; reporting delivered`,
         );
@@ -762,6 +797,9 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     const claimKeys = answerKeys(active, answer, extra?.selections);
     const inFlight = answersInFlight.get(questionId);
     if (inFlight !== undefined) {
+      // Signed native proofs are deduplicated by the child ledger's exact
+      // tuple, never by the ordinary answer's label/value aliases (#1201).
+      if (commit) return 'stale';
       if (claimKeys.some((k) => inFlight.keys.has(k))) {
         log(
           `[Answer] duplicate delivery for ${questionId.slice(0, 8)} while its answer is being applied; typing nothing, reporting the first delivery's outcome`,
@@ -797,6 +835,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       extra,
       session,
       active,
+      commit,
     );
     answersInFlight.set(questionId, { keys: new Set(claimKeys), outcome });
     try {
@@ -829,6 +868,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     extra: AnswerExtras | undefined,
     session: ManagedSession,
     active: Question,
+    commit?: AnswerCommit,
   ): AnswerOutcome | null {
     if (!answerHeld) return null;
     const selections = structuredSelections(extra);
@@ -845,7 +885,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           : option === undefined
             ? { kind: 'text', text: answer }
             : { kind: 'option', option, ...(message !== undefined ? { message } : {}) };
-    const outcome = answerHeld(session.sessionId, questionId, held);
+    const outcome = answerHeld(session.sessionId, questionId, held, commit);
     if (outcome === 'unknown') return null;
     if (outcome === 'resolved') {
       resolvedAnswers.record(questionId, [
@@ -854,7 +894,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       ]);
       sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:hook');
       try {
-        onQuestionResolved?.(session.sessionId, questionId);
+        onQuestionResolved?.(session.sessionId, questionId, answeredFrom(viaRelay));
       } catch (err) {
         logError(`[Answer] question_resolved broadcast failed: ${errorToString(err)}`);
       }
@@ -862,10 +902,13 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       return 'delivered';
     }
     const closed = outcome === 'closed';
+    const authorityRefused = outcome === 'authority-refused';
     log(
       closed
         ? `[Answer] refusing ${questionId.slice(0, 8)}: its hold has ended, answer at the terminal; nothing typed`
-        : `[Answer] refusing ${questionId.slice(0, 8)}: ${describeHeldAnswer(held)} is not an answer this held card offers; card and hold kept`,
+        : authorityRefused
+          ? '[Answer] final authority refused; card and hold kept'
+          : `[Answer] refusing ${questionId.slice(0, 8)}: unsupported held answer kind ${held.kind}; card and hold kept`,
     );
     traceQuestionEvent({
       action: 'stale_answer',
@@ -877,18 +920,21 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       detail: {
         reason: closed
           ? 'hold-closed'
-          : active.terminalOnly === true
-            ? 'terminal-only'
-            : held.kind === 'ambiguous'
-              ? 'ambiguous-option'
-              : 'not-a-held-option',
+          : authorityRefused
+            ? 'authority-refused'
+            : active.terminalOnly === true
+              ? 'terminal-only'
+              : held.kind === 'ambiguous'
+                ? 'ambiguous-option'
+                : 'not-a-held-option',
         source: active.source,
       },
     });
     if (closed) {
       sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:hold_closed');
       try {
-        onQuestionResolved?.(session.sessionId, questionId);
+        // The answer was refused: the card is only cleared (#1235).
+        onQuestionResolved?.(session.sessionId, questionId, CLEARED_ONLY);
       } catch (err) {
         logError(`[Answer] question_resolved broadcast failed: ${errorToString(err)}`);
       }
@@ -903,7 +949,9 @@ export function createInputHandlers(deps: InputHandlerDeps) {
             : active.terminalOnly === true
               ? TERMINAL_ONLY_MESSAGE
               : held.kind === 'ambiguous'
-                ? AMBIGUOUS_ANSWER_MESSAGE
+                ? named?.kind === 'ambiguous' && named.cause === 'value-label'
+                  ? AMBIGUOUS_VALUE_LABEL_MESSAGE
+                  : AMBIGUOUS_DISPLAY_LABEL_MESSAGE
                 : selections !== undefined
                   ? 'Answer every question: one choice, or your own text of up to 2000 characters, for each single-choice question, and at least one choice for each multiple-choice question'
                   : 'This prompt takes one of its own options',
@@ -937,6 +985,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     extra: AnswerExtras | undefined,
     session: ManagedSession,
     active: Question,
+    commit?: AnswerCommit,
   ): Promise<AnswerOutcome> {
     // #1126: a held prompt is answered through its hook response, and a
     // prompt whose hold has ended is answered only at the terminal. Both are
@@ -951,6 +1000,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       extra,
       session,
       active,
+      commit,
     );
     if (heldOutcome !== null) return heldOutcome;
 
@@ -962,15 +1012,19 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     // refused below). AskUserQuestion and ExitPlanMode are held and answered
     // above (#1127).
     //
-    // The submit + question removal are wrapped so the question is ALWAYS
+    // The submit + question removal are wrapped so an attempted answer is
     // consumed exactly once: if `submitInput` throws, the `finally` still
     // removes it (no zombie question that a retry could double-submit), and
     // the throw still propagates (relay -> HTTP 500, WS -> caller-logged).
+    // A final authority refusal before enqueue preserves the card (#1201).
     //
     // Overridden below only on the #920 prompt-currency refusal, so the
     // `finally` block's removal carries an honest signal instead of the
     // default 'user_answer' (this card was never actually answered).
     let removalReason = 'user_answer';
+    let preserveQuestion = false;
+    /** Whether the typed answer reached the PTY (#1235); a refusal or a throwing submit did not. */
+    let applied = false;
     /** Refuse a PTY submit for the #1134 guard: log, trace, consume the card
      *  (in `finally`, under the refusal's own signal), tell the client, type
      *  nothing. */
@@ -979,14 +1033,8 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       input: string,
       screenOptions: readonly QuestionOption[] | null,
     ): 'stale' => {
-      const screenValues = (screenOptions ?? []).map((o) => o.value);
-      const typedText =
-        refusal === SCREEN_REFUSALS.freeTextIntoMenu ||
-        refusal === SCREEN_REFUSALS.freeTextOnHeldCard ||
-        refusal === SCREEN_REFUSALS.terminalOnly ||
-        refusal === SCREEN_REFUSALS.selectionsNotHeld;
       log(
-        `[Answer] refusing PTY submit for ${questionId.slice(0, 8)}: ${refusal.logLine(input)} [${screenValues.join(', ') || 'none'}]`,
+        `[Answer] refusing PTY submit for ${questionId.slice(0, 8)}: ${refusal.reason}; ${input.length} characters`,
       );
       traceQuestionEvent({
         action: 'stale_answer',
@@ -998,10 +1046,8 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         detail: {
           reason: refusal.reason,
           source: active.source,
-          // An option value is a digit; free text may be anything the user
-          // typed, so only its length is recorded.
-          ...(typedText ? { textLength: input.length } : { value: input }),
-          screenValues,
+          textLength: input.length,
+          screenOptionCount: screenOptions?.length ?? 0,
         },
       });
       removalReason = refusal.removalReason;
@@ -1018,10 +1064,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       return 'stale';
     };
     try {
-      // The gate stops tracking this escalation: this path removes and
-      // dismisses the card itself (the `finally` below).
+      // Ordinary answers retire now. Guarded native answers retire only
+      // after their enqueue commits, so final refusal keeps the card (#1201).
       try {
-        retireQuestion?.(session.sessionId, questionId);
+        if (!commit) retireQuestion?.(session.sessionId, questionId);
       } catch (err) {
         logError(`[Answer] gate retirement failed: ${errorToString(err)}`);
       }
@@ -1060,10 +1106,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       const answeredOption = resolveOption(active.options, answer);
       const ptyInput = answeredOption?.value ?? answer;
       if (ptyInput !== answer) {
-        log(`[Answer] resolved "${answer}" -> "${ptyInput}" for q ${questionId.slice(0, 8)}`);
+        log(`[Answer] resolved option for q ${questionId.slice(0, 8)}`);
       } else if (active.options.length > 0 && answeredOption === undefined) {
         log(
-          `[Answer] "${answer}" matched no option (${active.options.length}); treating it as free text`,
+          `[Answer] ${answer.length} characters matched no option (${active.options.length}); treating it as free text`,
         );
       }
 
@@ -1166,7 +1212,21 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       const refusal = screenRefusal(active, answer, ptyInput, screenOptions);
       if (refusal !== null) return refuseSubmit(refusal, ptyInput, screenOptions);
 
-      await session.pty.submitInput(ptyInput);
+      // Only enqueue is synchronous under the final authorization check;
+      // waiting for the queued text/Enter runs after its lock has released.
+      const submitted = applyAnswerCommit(() => session.pty.submitInput(ptyInput), commit);
+      if (submitted.kind === 'refused') {
+        preserveQuestion = true;
+        return 'stale';
+      }
+      if (commit) {
+        try {
+          retireQuestion?.(session.sessionId, questionId);
+        } catch (err) {
+          logError(`[Answer] gate retirement failed: ${errorToString(err)}`);
+        }
+      }
+      await submitted.value;
 
       // #752: the answer applied (PTY submit succeeded) — recorded directly
       // after application, so a throwing submit is never recorded (its
@@ -1180,28 +1240,43 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         answerCacheKey(answer),
         ...(answeredOption ? [answeredOption.value, answeredOption.label] : []),
       ]);
+      applied = true;
     } finally {
       // Remove only the answered question; sibling prompts remain answerable.
       // In `finally` so a throwing submit cannot leave a zombie question, AND
       // so the #920 prompt-currency refusal above (which `return`s from
       // inside this `try`) still clears the stale card — `removalReason`
       // carries the honest signal for that path.
-      sessionRegistry.removeQuestion(session.sessionId, questionId, removalReason);
-      // Cross-client dismissal (#585, P7): tell every client this question is
-      // resolved so its card clears and the lock-screen push is dismissed.
-      // Throw-safe: a broadcast/push failure must never break answer handling,
-      // and it lives in `finally` so even a throwing submit still clears the card
-      // (the question was consumed). Idempotent on the client side.
-      try {
-        onQuestionResolved?.(session.sessionId, questionId);
-      } catch (err) {
-        logError(`[Answer] question_resolved broadcast failed: ${errorToString(err)}`);
+      if (!preserveQuestion) {
+        sessionRegistry.removeQuestion(session.sessionId, questionId, removalReason);
+        // Cross-client dismissal (#585, P7): tell every client this question is
+        // resolved so its card clears and the lock-screen push is dismissed.
+        // Throw-safe: a broadcast/push failure must never break answer handling,
+        // and it lives in `finally` so even a throwing submit still clears the card
+        // (the question was consumed). Idempotent on the client side.
+        try {
+          onQuestionResolved?.(
+            session.sessionId,
+            questionId,
+            applied ? answeredFrom(viaRelay) : CLEARED_ONLY,
+          );
+        } catch (err) {
+          logError(`[Answer] question_resolved broadcast failed: ${errorToString(err)}`);
+        }
       }
     }
     return 'delivered';
   }
 
   return {
+    /** Exact-session answer after native proof verification; the ledger owns replay (#1201). */
+    guardedAnswer: (
+      sessionId: UUID,
+      questionId: UUID,
+      answer: string,
+      commit: AnswerCommit,
+    ): Promise<AnswerOutcome> =>
+      handleAnswer(sessionId, sessionId, questionId, answer, undefined, true, undefined, commit),
     onUserInput: async (
       connectionId: UUID,
       sessionId: UUID,
@@ -1211,13 +1286,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       messageId?: UUID,
     ): Promise<void> => {
       const session = sessionRegistry.getSessionForConnection(connectionId);
-      // #1177: a session that takes no typed chat (Codex) keeps what was sent out of the log
-      // altogether, this line included: only the length is logged. Asked once, and used again
-      // below for the refusal.
+      // Relay callers also reach this existing direct-input handler. Only metadata
+      // may enter local logs, including refused/unattached and raw input.
       const chatOff = session !== undefined && acceptsTypedChat?.(session.sessionId) === false;
-      log(
-        `User input from ${connectionId}${raw ? ' (raw)' : ''}: ${chatOff ? `${content.length} chars` : content}`,
-      );
+      log(`User input from ${connectionId}${raw ? ' (raw)' : ''}: ${content.length} chars`);
       if (!session) {
         // #795: there is no more exclusive write lock, so every attached
         // (non-query) connection already finds its session above. Landing
@@ -1329,7 +1401,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       if (up !== null) {
         const screenValues = (observedPromptOptions?.(session.sessionId) ?? []).map((o) => o.value);
         log(
-          `[Input] refusing ${content.length} chars of chat text for session ${session.sessionId.slice(0, 8)}: ${PROMPT_UP_LOG[up]}${screenValues.length > 0 ? ` [${screenValues.join(', ')}]` : ''}`,
+          `[Input] refusing ${content.length} chars of chat text for session ${session.sessionId.slice(0, 8)}: ${PROMPT_UP_LOG[up]} (screen options: ${screenValues.length})`,
         );
         traceQuestionEvent({
           action: 'input_refused',
@@ -1340,7 +1412,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           detail: {
             reason: PROMPT_UP_TRACE_REASON[up],
             textLength: content.length,
-            screenValues,
+            screenOptionCount: screenValues.length,
           },
         });
         send(
@@ -1350,8 +1422,79 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         return;
       }
 
-      // Structured input from web/mobile client: append Enter
-      await session.pty.submitInput(content);
+      // Capture the host's binding even for a legacy sender with none (#1488).
+      // A failed read cannot establish a context safe to type into.
+      let capturedBinding: string | undefined;
+      try {
+        capturedBinding = bindingStore.get(session.sessionId)?.claudeSessionId ?? undefined;
+      } catch {
+        send(connectionId, createInputNotDeliveredError(session.sessionId, messageId));
+        return;
+      }
+      const pty = session.pty;
+      let inputMayBePartial = false;
+      const refuse = (code: string, reason: string, bound?: string): false => {
+        send(
+          connectionId,
+          createError(
+            code,
+            inputMayBePartial
+              ? 'Message was not submitted. Some text may remain in the terminal; check it before sending again.'
+              : reason,
+            {
+              sessionId: session.sessionId,
+              ...(messageId !== undefined && { messageId }),
+              ...(inputMayBePartial && { inputMayBePartial: true }),
+              ...(bound !== undefined && { boundClaudeSessionId: bound }),
+            },
+          ),
+        );
+        return false;
+      };
+      try {
+        await pty.submitInput(content, () => {
+          if (
+            session.sessionId !== sessionId ||
+            sessionRegistry.getSessionForConnection(connectionId) !== session ||
+            sessionRegistry.getSession(session.sessionId) !== session ||
+            session.pty !== pty
+          ) {
+            return refuse(
+              'SESSION_NOT_FOUND',
+              'This connection is no longer attached; input was not submitted.',
+            );
+          }
+          let currentBinding: string | undefined;
+          try {
+            currentBinding = bindingStore.get(session.sessionId)?.claudeSessionId ?? undefined;
+          } catch {
+            return refuse(
+              'INPUT_NOT_DELIVERED',
+              'The session binding could not be checked; input was not submitted.',
+            );
+          }
+          if (currentBinding !== capturedBinding) {
+            return refuse(
+              'STALE_BINDING',
+              'The session changed; input was not submitted.',
+              currentBinding,
+            );
+          }
+          if (acceptsTypedChat?.(session.sessionId) === false) {
+            return refuse(PROMPT_WAITING_ERROR_CODE, CHAT_NOT_ACCEPTED_MESSAGE);
+          }
+          const currentPrompt = promptUp?.(session.sessionId) ?? null;
+          if (currentPrompt !== null) {
+            return refuse(PROMPT_WAITING_ERROR_CODE, PROMPT_UP_MESSAGE[currentPrompt]);
+          }
+          // From this synchronous boundary onward, a failed write may have typed text.
+          inputMayBePartial = true;
+          return true;
+        });
+      } catch (err) {
+        log(`[PTY] structured write failed: ${errorToString(err)}`);
+        refuse('INPUT_NOT_DELIVERED', 'Input was not submitted because the terminal write failed.');
+      }
     },
 
     // The WebSocket path: route the answer and reply over the connection on
@@ -1365,8 +1508,8 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       answer: string,
       claudeSessionId?: UUID,
       extra?: AnswerExtras,
-    ): Promise<void> => {
-      await handleAnswer(
+    ): Promise<AnswerOutcome> => {
+      return handleAnswer(
         connectionId,
         sessionId,
         questionId,

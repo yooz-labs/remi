@@ -10,15 +10,10 @@
  * switches did the same job. This module is the single place that does it,
  * built on the `MessageHandlers`/`dispatchMessage` mechanism from #895/#896.
  *
- * `ClientMessageHandlers` is total over {@link ClientToDaemonType} — omitting
- * a key is a compile error, not a silent drop. Both call sites build their
- * own handler map (closures over their own event bag), because
- * `ConnectionEvents` (no `connectionId` — one `Connection` instance per
- * peer) and `AdapterEvents` (`connectionId` as the first arg — one
- * `RelayAdapter` instance can in principle serve several) are genuinely
- * different shapes. Collapsing THAT is C7 (#900), deliberately out of scope
- * here — this module only kills the duplicate routing/validation, not the
- * event-interface duplication.
+ * `ClientMessageHandlers` is total over {@link ClientToDaemonType}. Direct
+ * WebSocket connections and HubRelay's virtual Connection share this dispatch
+ * boundary (#1198); bindConnectionId adapts adapter events to connection events.
+
  */
 import {
   type ClientToDaemonType,
@@ -36,9 +31,8 @@ export type ClientMessageHandlers = MessageHandlers<ClientToDaemonType, void>;
  * Returns `false` when `msg.type` is not a key of `handlers` at all — either
  * a `d2c`-only type arriving inbound (a confused/malicious client) or a type
  * this build's registry doesn't recognize. Callers decide how to report that
- * (`connection.ts` sends `UNKNOWN_MESSAGE`; `relay-adapter.ts` sends
- * `UNSUPPORTED` naming the type) rather than this function picking one wire
- * shape for both transports.
+ * (Connection sends `UNKNOWN_MESSAGE`) rather than this function picking a
+ * wire error shape.
  */
 export function routeClientMessage(msg: ProtocolMessage, handlers: ClientMessageHandlers): boolean {
   if (!Object.prototype.hasOwnProperty.call(handlers, msg.type)) {

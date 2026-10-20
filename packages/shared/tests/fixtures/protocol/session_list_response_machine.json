@@ -1,0 +1,38 @@
+{
+  "type": "session_list_response",
+  "id": "a74cad4f-bf3e-4b4e-a463-ec0911dc9285",
+  "timestamp": "2026-10-10T03:24:31.856Z",
+  "sessions": [
+    {
+      "sessionId": "fixture-session-id",
+      "name": "fixture-host/fixture-project/main",
+      "projectPath": "/Users/fixture/project",
+      "status": "active",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "lastActivity": "2026-01-01T00:00:00.000Z",
+      "messageCount": 3,
+      "model": "yooz-quality",
+      "lastMessage": "Last message preview",
+      "source": "daemon",
+      "canAttach": true,
+      "canResume": false,
+      "claudeSessionId": "fixture-claude-session-id",
+      "harness": "claude",
+      "harnessSessionId": "fixture-claude-session-id",
+      "transcriptPath": "/Users/fixture/transcript.jsonl",
+      "wsPort": 19924,
+      "daemonHost": "fixture-host",
+      "machineId": "00112233445566778899aabbccddeeff"
+    }
+  ],
+  "requestId": "fixture-request-id",
+  "daemonPorts": [18766],
+  "machine": {
+    "id": "00112233445566778899aabbccddeeff",
+    "name": "Remi Workstation",
+    "platform": "darwin",
+    "remiVersion": "0.7.4-dev.1",
+    "harnesses": ["claude", "codex"],
+    "capabilities": ["workspaces"]
+  }
+}

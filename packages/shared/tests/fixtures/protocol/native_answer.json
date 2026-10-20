@@ -1,0 +1,20 @@
+{
+  "type": "native_answer",
+  "v": 2,
+  "id": "synthetic-native-request",
+  "timestamp": "2023-11-14T22:13:20.000Z",
+  "rid": "da506541b7065b971eb8dc5b1d8d361c",
+  "machinePublicKey": "5Xf5kzjyZ-ipGUcbLNvqXsDaJQrZR9iuHUevTXYE5nw",
+  "devicePublicKey": "QIbdIQsIOvTnQdzt_0Z9ryS_l0ZUeE7oynD4CiscC-k",
+  "sessionId": "synthetic-session",
+  "runtimeInstance": "rBnxHmvV7m2YHOTgYRDa_HuU4j3-6H42HBqaDH7irDA",
+  "questionId": "synthetic-question",
+  "collapseId": "muuaEjpoBdsY-5sLV6fWdg",
+  "revision": 7,
+  "contentDigest": "2nG1NAK0K4_Cw8loOlXgIo6S_kDGE33wBBTEBxHTR18",
+  "nonce": "2H4R-hiUGfMJUfNLch5cXzGMQ68-E0Rra3q_6Bi0d1w",
+  "issuedAt": 1700000000,
+  "expiresAt": 1700000030,
+  "answer": "1",
+  "signature": "rZQZ3nmtmVdWX9T5hUzlnO-Ci8qEWc_3SzeNXYQAy4Qt5Qg34sWmzU8EMfRndlXOB3Y67Ak5a1RuHR-nFMwLBA"
+}

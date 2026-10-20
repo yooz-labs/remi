@@ -189,6 +189,7 @@ export class AdapterRegistry {
     }
 
     const adapter = this.adapters.get(adapterType);
+    if (message.type === 'raw_pty_output' && adapterType === 'relay') return false;
     return adapter?.sendRaw(connectionId, message) ?? false;
   }
 
@@ -197,6 +198,7 @@ export class AdapterRegistry {
    */
   broadcast(message: ProtocolMessage): void {
     for (const adapter of this.adapters.values()) {
+      if (message.type === 'raw_pty_output' && adapter.type === 'relay') continue;
       adapter.broadcast(message);
     }
   }

@@ -1,0 +1,420 @@
+import Foundation
+import RemiUI
+import Testing
+@testable import RemiKit
+
+struct MachineStoreTests {
+    @Test func modelLaunchArgumentUsesTheCrossHarnessLongForm() {
+        #expect(HarnessLaunchArguments.model("sonnet") == ["--model", "sonnet"])
+        #expect(HarnessLaunchArguments.model("  gpt-5  ") == ["--model", "gpt-5"])
+        #expect(HarnessLaunchArguments.model(" \n ") == [])
+    }
+
+    @Test func workspaceSessionRequestMatchesTheWireContract() throws {
+        let request = CreateSessionRequestMessage(
+            id: "request-1",
+            timestamp: "2026-10-07T12:00:00Z",
+            directory: "~/Documents/git/remi",
+            harness: "codex",
+            workspace: WorkspaceRequest(
+                repository: "~/Documents/git/remi",
+                worktree: WorktreeRequest(branch: "feature/native", base: "develop")
+            )
+        )
+
+        let object = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any]
+        )
+        let workspace = try #require(object["workspace"] as? [String: Any])
+        let worktree = try #require(workspace["worktree"] as? [String: Any])
+
+        #expect(object["type"] as? String == "create_session_request")
+        #expect(object["directory"] as? String == "~/Documents/git/remi")
+        #expect(object["harness"] as? String == "codex")
+        #expect(workspace["repository"] as? String == "~/Documents/git/remi")
+        #expect(worktree["branch"] as? String == "feature/native")
+        #expect(worktree["base"] as? String == "develop")
+    }
+
+    @Test func legacySessionRequestOmitsWorkspace() throws {
+        let request = CreateSessionRequestMessage(
+            id: "request-2",
+            timestamp: "2026-10-07T12:00:00Z",
+            directory: "/tmp/project",
+            harness: "claude"
+        )
+        let object = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any]
+        )
+
+        #expect(object["workspace"] == nil)
+    }
+
+    @Test func resumeSessionRequestMatchesTheWireContract() throws {
+        let request = ResumeSessionRequestMessage(
+            id: "resume-1",
+            timestamp: "2026-10-08T12:00:00Z",
+            sessionId: "stored-session"
+        )
+        let object = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any]
+        )
+
+        #expect(object["type"] as? String == "resume_session_request")
+        #expect(object["sessionId"] as? String == "stored-session")
+    }
+
+    @Test func resumeStateKeepsIdenticalSessionIDsSeparateByMachine() {
+        let first = ResumeSessionKey(machineID: "one.example:18765", sessionID: "shared-id")
+        let second = ResumeSessionKey(machineID: "two.example:18765", sessionID: "shared-id")
+
+        #expect(first != second)
+        #expect(Set([first, second]).count == 2)
+    }
+
+    @Test func recentRepositoriesResponseDecodes() throws {
+        let data = Data(#"""
+        {
+            "type":"recent_repositories_response",
+            "id":"response-1",
+            "timestamp":"2026-10-07T12:00:00Z",
+            "requestId":"request-1",
+            "repositories":[{
+                "repository":"/Users/me/remi",
+                "name":"remi",
+                "lastUsedAt":"2026-10-07T11:00:00Z"
+            }]
+        }
+        """#.utf8)
+
+        let response = try JSONDecoder().decode(RecentRepositoriesResponseMessage.self, from: data)
+        #expect(response.repositories.first?.repository == "/Users/me/remi")
+        #expect(response.repositories.first?.name == "remi")
+    }
+
+    @Test func endpointIdentityAndURLAreStable() throws {
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        #expect(endpoint.id == "127.0.0.1:18765")
+        #expect(endpoint.webSocketURL?.absoluteString == "ws://127.0.0.1:18765/ws")
+    }
+
+    @Test func machineStateUsesVerifiedDescriptorAndLegacyEndpointFallback() {
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        var state = MachineState(endpoint: endpoint, displayName: endpoint.displayAddress)
+        #expect(state.id == endpoint.id)
+        #expect(state.machineID == endpoint.id)
+        state.apply(MachineDescriptor(
+            id: "00112233445566778899aabbccddeeff",
+            name: "Remi Workstation",
+            platform: "darwin",
+            remiVersion: "0.7.4",
+            harnesses: ["claude"],
+            capabilities: []))
+        #expect(state.id == endpoint.id)
+        #expect(state.machineID == "00112233445566778899aabbccddeeff")
+        #expect(state.displayName == "Remi Workstation")
+    }
+
+    @Test @MainActor func storeStartsWithEveryConfiguredMachine() {
+        let endpoints = [
+            MachineEndpoint(host: "127.0.0.1", port: 18765),
+            MachineEndpoint(host: "100.64.0.2", port: 18765),
+        ]
+        let store = MachineStore(
+            endpoints: endpoints,
+            identity: ClientIdentity(),
+            clientVersion: "test",
+            clientId: "test-client"
+        )
+        #expect(store.machines.map(\.endpoint) == endpoints)
+        #expect(store.machines.allSatisfy { !$0.hasLoadedSessions })
+    }
+
+    @Test @MainActor func removingMachineRemovesItsConfiguration() {
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        let store = MachineStore(
+            endpoints: [endpoint],
+            identity: ClientIdentity(),
+            clientVersion: "test",
+            clientId: "test-client"
+        )
+
+        store.removeMachine(endpoint)
+
+        #expect(store.machines.isEmpty)
+    }
+
+    @Test @MainActor func configuredDisplayNamesLoadAndCanBeRenamed() {
+        let endpoint = MachineEndpoint(host: "100.64.0.2", port: 18765)
+        let store = MachineStore(
+            endpoints: [endpoint],
+            identity: ClientIdentity(),
+            clientVersion: "test",
+            clientId: "test-client",
+            displayNames: [endpoint.id: "Build Mac"]
+        )
+
+        #expect(store.machines.first?.displayName == "Build Mac")
+
+        store.renameMachine(endpoint, to: "  Studio  ")
+        #expect(store.machines.first?.displayName == "Studio")
+
+        store.renameMachine(endpoint, to: "   ")
+        #expect(store.machines.first?.displayName == "Studio")
+    }
+
+    @Test @MainActor func sendingToUnavailableSessionFailsWithoutDiscardingCallerState() async {
+        let store = MachineStore(
+            endpoints: [],
+            identity: ClientIdentity(),
+            clientVersion: "test",
+            clientId: "test-client"
+        )
+
+        let sent = await store.sendChat(sessionId: "missing", content: "keep this draft")
+
+        #expect(!sent)
+        #expect(store.latestOperationError == "Cannot send message: this session is unavailable.")
+    }
+
+    @Test @MainActor func rescanningPairingCodeReplacesStableEndpointIdentity() {
+        let original = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        let replacement = MachineEndpoint(
+            host: "127.0.0.1",
+            port: 18765,
+            expectedFingerprint: "ae216c2ef5247a37",
+            expectedPublicKey: "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+            pairingNonce: "oKGio6SlpqeoqaqrrK2urw",
+            pairingLabel: "Fixture phone"
+        )
+        let store = MachineStore(
+            endpoints: [original],
+            identity: ClientIdentity(),
+            clientVersion: "test",
+            clientId: "test"
+        )
+
+        store.addMachine(replacement)
+
+        #expect(store.machines.count == 1)
+        #expect(store.machines[0].id == original.id)
+        #expect(store.machines[0].endpoint.pairingNonce == replacement.pairingNonce)
+        store.stop()
+    }
+
+    @Test func activeSessionsMatchCapacitorDaemonSourceRule() throws {
+        var machine = MachineState(
+            endpoint: MachineEndpoint(host: "host.example", port: 18765),
+            displayName: "Host"
+        )
+        machine.sessions = [
+            try session(id: "live", source: "daemon"),
+            try session(id: "recent", source: "transcript"),
+        ]
+
+        #expect(machine.activeSessions.map(\.sessionId) == ["live"])
+    }
+
+    @Test func notificationDestinationRoundTripsAllRoutingIdentity() throws {
+        let destination = RemiNavigationDestination(
+            machineID: "host.example:18765",
+            sessionID: "session-1",
+            questionID: "question-1",
+            agentID: "agent-1"
+        )
+
+        let decoded = try JSONDecoder().decode(
+            RemiNavigationDestination.self,
+            from: JSONEncoder().encode(destination)
+        )
+        #expect(decoded == destination)
+    }
+
+    @Test @MainActor func resolutionAndSnapshotsPruneDuplicateMachineCollections() throws {
+        let resolved = try question(id: "question-1", sessionId: "session-1")
+        let stillLive = try question(id: "question-2", sessionId: "session-1")
+        var first = MachineState(
+            endpoint: MachineEndpoint(host: "one.example", port: 18765),
+            displayName: "One"
+        )
+        var second = MachineState(
+            endpoint: MachineEndpoint(host: "two.example", port: 18765),
+            displayName: "Two"
+        )
+        first.questions = [resolved, stillLive]
+        second.questions = [resolved]
+
+        let afterResolution = MachineStore.resolvingQuestion(
+            in: [first, second],
+            sessionId: "session-1",
+            questionId: "question-1"
+        )
+        #expect(afterResolution.flatMap(\.questions).map(\.question.id) == ["question-2"])
+
+        var otherMachine = afterResolution[1]
+        otherMachine.questions = [resolved]
+        let firstAfterSnapshot = MachineStore.reconcilingQuestionSnapshot(
+            in: afterResolution[0],
+            sessionId: "session-1",
+            liveQuestionIDs: []
+        )
+        #expect(firstAfterSnapshot.questions.isEmpty)
+        #expect(otherMachine.questions.map(\.question.id) == ["question-1"])
+    }
+
+    @Test func machineEndpointsPersistWithoutLeakingUIState() {
+        let key = "remi.machine-store-tests.\(UUID().uuidString)"
+        let persistence = MachineConfigurationStore(key: key)
+        let endpoints = [MachineEndpoint(host: "100.64.0.8", port: 18765)]
+        persistence.save(endpoints)
+        #expect(persistence.load() == endpoints)
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    @Test func legacyEndpointConfigurationMigratesToUnboundProfiles() {
+        let key = "remi.machine-store-tests.\(UUID().uuidString)"
+        let persistence = MachineConfigurationStore(key: key)
+        let endpoints = [
+            MachineEndpoint(host: "100.64.0.8", port: 18765),
+            MachineEndpoint(host: "127.0.0.1", port: 28765),
+        ]
+        persistence.save(endpoints)
+
+        let profiles = persistence.loadProfiles()
+
+        #expect(profiles.map(\.machineID) == [nil, nil])
+        #expect(profiles.map(\.routes) == endpoints.map { [$0] })
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    @Test @MainActor func authenticatedProfilePrefersDirectAndPreservesRelayPinAndAlias() throws {
+        let key = Data(repeating: 7, count: 32)
+        let pin = try RelayMachinePin(
+            relayURL: "wss://relay.example.test",
+            machinePublicKey: RelayCrypto.b64(key)
+        )
+        let direct = MachineEndpoint(host: "100.64.0.8", port: 18765)
+        let relay = MachineEndpoint(host: "relay.example.test", port: 443, relayPin: pin)
+        let machineID = try MachineIdentityVerifier.machineID(forPublicKey: key)
+        let store = MachineStore(
+            profiles: [MachineRouteProfile(machineID: machineID, routes: [relay, direct], displayName: "Build Mac")],
+            identity: ClientIdentity(), clientVersion: "test", clientId: "test"
+        )
+
+        let machine = try #require(store.machines.first)
+        #expect(machine.endpoint == direct)
+        #expect(machine.routes == [direct, relay])
+        #expect(machine.displayName == "Build Mac")
+        #expect(store.persistableProfiles.first?.machineID == machineID)
+        #expect(store.persistableProfiles.first?.routes == [direct, relay])
+    }
+
+    @Test @MainActor func tamperedProfileCannotGroupRoutesByUnverifiedStoredID() throws {
+        let key = Data(repeating: 9, count: 32)
+        let pin = try RelayMachinePin(
+            relayURL: "wss://relay.example.test",
+            machinePublicKey: RelayCrypto.b64(key)
+        )
+        let direct = MachineEndpoint(host: "100.64.0.9", port: 18765)
+        let relay = MachineEndpoint(host: "relay.example.test", port: 443, relayPin: pin)
+        let store = MachineStore(
+            profiles: [MachineRouteProfile(machineID: "00112233445566778899aabbccddeeff", routes: [direct, relay])],
+            identity: ClientIdentity(), clientVersion: "test", clientId: "test"
+        )
+
+        #expect(store.machines.count == 2)
+        #expect(store.machines.allSatisfy { $0.routes.count == 1 })
+    }
+
+    @Test func machineDisplayNamesPersistSeparatelyFromEndpoints() {
+        let key = "remi.machine-store-tests.\(UUID().uuidString)"
+        let persistence = MachineConfigurationStore(key: key)
+        let names = ["100.64.0.8:18765": "Studio"]
+
+        persistence.saveDisplayNames(names)
+
+        #expect(persistence.loadDisplayNames() == names)
+        #expect(persistence.load().isEmpty)
+        UserDefaults.standard.removeObject(forKey: "\(key).display-names")
+    }
+
+    @Test @MainActor func startupKeepsMissingConfigurationEmptyForFirstRun() {
+        let configured = [MachineEndpoint(host: "100.64.0.8", port: 18765)]
+
+        #expect(NativeRelayNotifications.startupEndpoints(from: []).isEmpty)
+        #expect(NativeRelayNotifications.startupEndpoints(from: configured) == configured)
+    }
+
+    @Test func sessionPresentationKeepsStableMachineIdentity() {
+        let session = RemiSessionSummary(
+            id: "session-1",
+            machineID: "host.example:18765",
+            machineName: "Studio",
+            name: "Native app",
+            harness: "Claude",
+            project: "remi",
+            status: .working
+        )
+
+        #expect(session.machineID == "host.example:18765")
+        #expect(session.machineName == "Studio")
+    }
+
+    @Test func structuredQuestionAcceptsExactlyOneSingleSelectAnswer() {
+        let step = RemiQuestionStep(
+            id: "0",
+            text: "Which direction?",
+            options: [RemiQuestionOption(id: "0", label: "Native")]
+        )
+
+        #expect(RemiQuestionForm.isComplete(
+            steps: [step],
+            selections: [RemiQuestionStepSelection(stepID: "0", optionIDs: ["0"])]
+        ))
+        #expect(RemiQuestionForm.isComplete(
+            steps: [step],
+            selections: [RemiQuestionStepSelection(stepID: "0", optionIDs: [], text: "Another path")]
+        ))
+        #expect(!RemiQuestionForm.isComplete(
+            steps: [step],
+            selections: [RemiQuestionStepSelection(stepID: "0", optionIDs: ["0"], text: "Both")]
+        ))
+        #expect(!RemiQuestionForm.isComplete(
+            steps: [step],
+            selections: [RemiQuestionStepSelection(
+                stepID: "0",
+                optionIDs: [],
+                text: String(repeating: "a", count: RemiQuestionForm.freeTextLimit + 1)
+            )]
+        ))
+    }
+
+    @Test func unknownQuestionKindUsesGenericPresentation() {
+        #expect(RemiQuestionKind(wireValue: "future_kind") == .generic)
+        #expect(RemiQuestionKind(wireValue: nil) == .generic)
+        #expect(RemiQuestionKind(wireValue: "permission") == .permission)
+        #expect(RemiQuestionKind.generic.optionRole(isYes: true, isNo: false) == .neutral)
+        #expect(RemiQuestionKind.permission.optionRole(isYes: true, isNo: false) == .allow)
+    }
+}
+
+private func session(id: String, source: String) throws -> DiscoverableSession {
+    try JSONDecoder().decode(DiscoverableSession.self, from: Data(#"""
+    {
+        "sessionId":"\#(id)","name":"Session","projectPath":"/tmp/project",
+        "status":"idle","source":"\#(source)"
+    }
+    """#.utf8))
+}
+
+private func question(id: String, sessionId: String) throws -> QuestionMessage {
+    try JSONDecoder().decode(QuestionMessage.self, from: Data(#"""
+    {
+        "type":"question","id":"message-\#(id)","timestamp":"2026-10-07T12:00:00Z",
+        "sessionId":"\#(sessionId)","question":{
+            "id":"\#(id)","text":"Continue?","options":[],
+            "allowsFreeText":false,"isAnswered":false
+        }
+    }
+    """#.utf8))
+}

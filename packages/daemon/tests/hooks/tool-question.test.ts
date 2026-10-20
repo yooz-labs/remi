@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
+import { escapeUnsafeText } from '@remi/shared';
 import { optionsFromSuggestions } from '../../src/hooks/hook-event-bridge.ts';
-import { PLAN_DETAIL_MAX, extractToolQuestion } from '../../src/hooks/tool-question.ts';
+import { PLAN_DETAIL_MAX, extractToolQuestion, planDetail } from '../../src/hooks/tool-question.ts';
 
 describe('extractToolQuestion', () => {
   it('extracts the real AskUserQuestion question + option labels as picks', () => {
@@ -33,6 +34,25 @@ describe('extractToolQuestion', () => {
     });
     expect(q?.options.map((o) => o.label)).toEqual(['Red', 'Green']);
     expect(q?.text).toBe('Pick a color');
+  });
+
+  it('escapes AskUserQuestion display fields while retaining numbered machine values (#1189)', () => {
+    const hostile = 'start\x1b]52;c;QUJD\x07RTL\u202eoverride\u2066isolate\u200bzero\u200f';
+    const question = `Question ${hostile}`;
+    const header = `Header ${hostile}`;
+    const label = `Option ${hostile}`;
+    const description = `Description ${hostile}`;
+    const q = extractToolQuestion('AskUserQuestion', {
+      questions: [{ question, header, options: [{ label, description }] }],
+    });
+    expect(q?.text).toBe(`${escapeUnsafeText(header)}: ${escapeUnsafeText(question)}`);
+    expect(q?.questions?.[0]?.text).toBe(escapeUnsafeText(question));
+    expect(q?.questions?.[0]?.header).toBe(escapeUnsafeText(header));
+    expect(q?.options[0]).toMatchObject({
+      label: escapeUnsafeText(label),
+      value: '1',
+      description: escapeUnsafeText(description),
+    });
   });
 
   it('does NOT eat the spaces in the question text', () => {
@@ -78,6 +98,17 @@ describe('extractToolQuestion', () => {
         (o) => o.label,
       ),
     ).toEqual(['Approve', 'Keep planning']);
+  });
+
+  it('escapes a plan before the visible bound without cutting an escape', () => {
+    const plan = `${'p'.repeat(PLAN_DETAIL_MAX - 1)}\u202eTAIL`;
+    const detail = planDetail(plan);
+    expect(detail.startsWith('p'.repeat(PLAN_DETAIL_MAX - 1))).toBe(true);
+    expect(detail).not.toContain('\\u202E');
+    expect(detail).not.toContain('\\u20');
+    expect(detail).toEndWith(
+      '[Plan truncated: 10 more characters. Read the full plan in the terminal.]',
+    );
   });
 
   it('numbers an exactly parsed AskUserQuestion from its input; a malformed one keeps the lenient card (#1127)', () => {

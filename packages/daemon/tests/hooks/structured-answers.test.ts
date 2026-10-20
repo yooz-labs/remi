@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import type { QuestionOption } from '@remi/shared';
+import { type QuestionOption, escapeUnsafeText } from '@remi/shared';
 import {
   ASK_DISMISSED_MESSAGE,
   type AskRefusal,
@@ -402,6 +402,25 @@ describe('askQuestionSteps and askOptionIndex', () => {
     // A value and label that disagree with the input answer nothing.
     expect(askOptionIndex(one, { ...(green as QuestionOption), label: 'Red' })).toBeNull();
     expect(askOptionIndex(one, { ...(green as QuestionOption), value: '9' })).toBeNull();
+  });
+
+  test('display-safe labels still compare while structured answers keep raw keys and labels (#1189)', () => {
+    const question = 'Pick \x1b\u202eone';
+    const label = 'Option \x07\u2066one';
+    const input = { questions: [{ question, options: [label] }] };
+    const parsed = parseAskUserQuestion(input);
+    if (parsed === null) throw new Error('parse failed');
+    const displayOption = askQuestionSteps(parsed)[0]?.options[0] as QuestionOption;
+    expect(displayOption.label).toBe(escapeUnsafeText(label));
+    expect(askOptionIndex(parsed, displayOption)).toBe(0);
+
+    expect(askUserQuestionDecision(input, [{ questionIndex: 0, optionIndices: [0] }])).toEqual({
+      ok: true,
+      decision: {
+        behavior: 'allow',
+        updatedInput: { ...input, answers: { [question]: label } },
+      },
+    });
   });
 
   test('a single pick never answers more than one question or a multi-select', () => {

@@ -25,6 +25,35 @@ import type { CreateSessionExtra } from '../../src/server/client-message-events.
 import { CLI_TS } from '../integration/hub-test-utils.ts';
 import { reserveRange } from '../session/port-test-helpers.ts';
 
+// #1206: actual lane-process ownership, independent of Bun's entry-file JUnit attribution.
+// Missing correlation is emitted too; it must never silently disable the ownership check.
+fs.writeSync(
+  2,
+  `\n[ci-target-module-owner] ${JSON.stringify({
+    pid: process.pid,
+    url: import.meta.url,
+    token: process.env['CI_TEST_OWNER_TOKEN'] ?? null,
+  })}\n`,
+);
+
+type RemoteNewClientStage =
+  | 'module-body'
+  | 'before-all:entered'
+  | 'reserve-range:begin'
+  | 'reserve-range:end'
+  | 'adapter-construct:begin'
+  | 'adapter-construct:end'
+  | 'adapter-start:begin'
+  | 'adapter-start:end';
+
+function checkpoint(stage: RemoteNewClientStage): void {
+  if (process.env['GITHUB_ACTIONS'] === 'true') {
+    process.stderr.write(`[remote-new-client-stage] ${stage}\n`);
+  }
+}
+
+checkpoint('module-body');
+
 const SESSION = '55555555-5555-4555-8555-555555555555' as UUID;
 
 describe('createRemoteSession sends a harness only to a daemon that offers it (#1179)', () => {
@@ -51,7 +80,11 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
   let requests: Array<{ directory: string | undefined; extra: CreateSessionExtra | undefined }>;
 
   beforeAll(async () => {
+    checkpoint('before-all:entered');
+    checkpoint('reserve-range:begin');
     port = await reserveRange(1);
+    checkpoint('reserve-range:end');
+    checkpoint('adapter-construct:begin');
     adapter = new WebSocketAdapter(
       { port },
       {
@@ -94,7 +127,10 @@ describe('createRemoteSession sends a harness only to a daemon that offers it (#
         },
       },
     );
+    checkpoint('adapter-construct:end');
+    checkpoint('adapter-start:begin');
     await adapter.start();
+    checkpoint('adapter-start:end');
   });
 
   afterAll(async () => {

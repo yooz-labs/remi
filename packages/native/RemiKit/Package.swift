@@ -1,0 +1,30 @@
+// swift-tools-version: 6.2
+// RemiKit: everything the native apps share that is not a screen (protocol models,
+// identity, the connection, the multi-machine store) and RemiUI, the shared design
+// system. See ../AGENTS.md.
+import PackageDescription
+
+let package = Package(
+    name: "RemiKit",
+    platforms: [.macOS(.v26), .iOS(.v26)],
+    products: [
+        .library(name: "RemiKit", targets: ["RemiKit"]),
+        .library(name: "RemiPush", targets: ["RemiPush"]),
+        .library(name: "RemiUI", targets: ["RemiUI"]),
+    ],
+    targets: [
+        .target(name: "NativeAPNsRuntime", publicHeadersPath: "include"),
+        .target(
+            name: "RemiPush",
+            dependencies: ["NativeAPNsRuntime"],
+            resources: [.process("PrivacyInfo.xcprivacy")]
+        ),
+        .target(name: "RemiKit", dependencies: ["RemiPush"]),
+        .target(
+            name: "RemiUI",
+            dependencies: ["RemiKit"],
+            resources: [.process("Resources")]
+        ),
+        .testTarget(name: "RemiKitTests", dependencies: ["RemiKit", "RemiUI", "RemiPush"]),
+    ]
+)

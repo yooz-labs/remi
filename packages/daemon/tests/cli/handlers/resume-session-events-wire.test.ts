@@ -18,10 +18,12 @@ import type {
   ResumeSessionResponseMessage,
   UUID,
 } from '@remi/shared';
-import { generateId } from '@remi/shared';
+import { PROTOCOL_VERSION, generateId } from '@remi/shared';
+import { FIXED_MACHINE } from '../../../../shared/tests/fixtures/protocol/builders.ts';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
+import { DAEMON_CAPABILITIES } from '../../../src/cli/capabilities.ts';
 import {
-  HUB_RESUME_UNSUPPORTED_CODE,
+  RESUME_UNSUPPORTED_CODE,
   createResumeSessionHandlers,
   harnessResumeUnsupportedMessage,
 } from '../../../src/cli/handlers/resume-session-events.ts';
@@ -72,11 +74,24 @@ describe('resume acks name the harnesses, and a non-Claude daemon refuses resume
 
   /** `created` records every launch the handler asks `cli.ts`'s `createNewSession` for. */
   const created: UUID[] = [];
-  function handlers(harnesses: () => readonly HarnessId[], harnessId: HarnessId = 'claude') {
+  function handlers(
+    harnesses: () => readonly HarnessId[],
+    harnessId: HarnessId = 'claude',
+    capabilities?: readonly string[],
+    withMachine = false,
+  ) {
     return createResumeSessionHandlers({
-      hubMode: false,
+      childSessions: null,
       harnessId,
       harnesses,
+      ...(withMachine && {
+        machine: () => ({
+          ...FIXED_MACHINE,
+          harnesses: harnesses(),
+          capabilities: capabilities ?? DAEMON_CAPABILITIES,
+        }),
+      }),
+      ...(capabilities !== undefined && { capabilities }),
       sessionRegistry,
       sessionStore,
       bindingStore: new SessionBindingStore(sessionStore),
@@ -97,8 +112,17 @@ describe('resume acks name the harnesses, and a non-Claude daemon refuses resume
   test('the ack for a session that is still live', async () => {
     const sessionId = sessionRegistry.createSessionId();
     sessionRegistry.registerSession(sessionId, '/test/dir', pty(), messageApi());
-    await handlers(() => ['claude', 'codex']).onResumeSessionRequest(CID, sessionId, REQ);
+    await handlers(() => ['claude', 'codex'], 'claude', undefined, true).onResumeSessionRequest(
+      CID,
+      sessionId,
+      REQ,
+    );
+    expect(acks().map((a) => a.machine?.id)).toEqual([FIXED_MACHINE.id]);
+    expect(acks().map((a) => a.daemonVersion)).toEqual([FIXED_MACHINE.remiVersion]);
     expect(acks().map((a) => a.harnesses)).toEqual([['claude', 'codex']]);
+    expect(acks().map((a) => [a.protocolVersion, a.capabilities])).toEqual([
+      [PROTOCOL_VERSION, DAEMON_CAPABILITIES],
+    ]);
   });
 
   test('the ack for a session resumed from the store', async () => {
@@ -114,13 +138,46 @@ describe('resume acks name the harnesses, and a non-Claude daemon refuses resume
       exitedAt: null,
       exitCode: null,
     });
-    await handlers(() => ['codex']).onResumeSessionRequest(CID, REMI_ID, REQ);
+    await handlers(() => ['codex'], 'claude', undefined, true).onResumeSessionRequest(
+      CID,
+      REMI_ID,
+      REQ,
+    );
+    expect(acks().map((a) => a.machine?.id)).toEqual([FIXED_MACHINE.id]);
     expect(acks().map((a) => a.harnesses)).toEqual([['codex']]);
+    expect(acks().map((a) => [a.protocolVersion, a.capabilities])).toEqual([
+      [PROTOCOL_VERSION, DAEMON_CAPABILITIES],
+    ]);
     // Never a binding, so never an identity: the field would be a guess.
     for (const key of ['harness', 'harnessSessionId', 'claudeSessionId']) {
       expect(key in (acks()[0] as object)).toBe(false);
     }
   });
+  test('a capability list given to the handlers reaches the ack for a live session (#1237)', async () => {
+    const live = sessionRegistry.createSessionId();
+    sessionRegistry.registerSession(live, '/test/dir', pty(), messageApi());
+    await handlers(() => ['claude'], 'claude', ['x.one']).onResumeSessionRequest(CID, live, REQ);
+    expect(acks().map((a) => a.capabilities)).toEqual([['x.one']]);
+  });
+
+  test('a capability list given to the handlers reaches the ack for a stored session (#1237)', async () => {
+    const projectDir = path.join(tmpDir, 'project');
+    fs.mkdirSync(projectDir);
+    sessionStore.save({
+      remiSessionId: REMI_ID,
+      claudeSessionId: '44444444-4444-4444-8444-444444444444',
+      projectPath: projectDir,
+      port: 0,
+      pid: null,
+      startedAt: new Date().toISOString(),
+      exitedAt: null,
+      exitCode: null,
+    });
+    await handlers(() => ['claude'], 'claude', ['x.one']).onResumeSessionRequest(CID, REMI_ID, REQ);
+    expect(created).toHaveLength(1);
+    expect(acks().map((a) => a.capabilities)).toEqual([['x.one']]);
+  });
+
   describe('a daemon that hosts Codex', () => {
     const responses = () =>
       sent.filter((m): m is ResumeSessionResponseMessage => m.type === 'resume_session_response');
@@ -147,7 +204,7 @@ describe('resume acks name the harnesses, and a non-Claude daemon refuses resume
 
       expect(responses()).toHaveLength(1);
       expect(responses()[0]?.success).toBe(false);
-      expect(responses()[0]?.errorCode).toBe(HUB_RESUME_UNSUPPORTED_CODE);
+      expect(responses()[0]?.errorCode).toBe(RESUME_UNSUPPORTED_CODE);
       expect(responses()[0]?.requestId).toBe(REQ);
       expect(sent).toHaveLength(1);
       expect(sessionRegistry.getSession(sessionId)?.attachedConnections.has(CID)).toBe(false);

@@ -16,7 +16,12 @@
  *   checked-in JSON fixtures from these same builders)
  */
 
+import { readFileSync } from 'node:fs';
+import { decodeBrowserLinkFrame } from '../../../src/browser-links.ts';
+import { decodeFileDownloadFrame } from '../../../src/file-download.ts';
 import { identityFromClaudeId } from '../../../src/harness.ts';
+import { decodeImageInsertionFrame } from '../../../src/image-insertion.ts';
+import { decodeImageStagingFrame } from '../../../src/image-staging.ts';
 import {
   createAck,
   createAgentOutput,
@@ -44,6 +49,8 @@ import {
   createQuestionResolved,
   createQuestionSnapshot,
   createRawPtyOutput,
+  createRecentRepositoriesRequest,
+  createRecentRepositoriesResponse,
   createRegisterDeviceToken,
   createRemiStatus,
   createReplayBatch,
@@ -63,6 +70,8 @@ import {
   createTranscriptLoadRequest,
   createUnregisterDeviceToken,
   createUserInput,
+  generateId,
+  now,
 } from '../../../src/protocol.ts';
 import type {
   HubPendingQuestion,
@@ -71,16 +80,34 @@ import type {
   SessionViewMeta,
   TranscriptContentBlock,
 } from '../../../src/protocol.ts';
+import { decodeNativeAnswer } from '../../../src/relay/native-answer.ts';
+import {
+  createSecurePushRegisterRequest,
+  createSecurePushRegisterResponse,
+  createSecurePushUnregisterRequest,
+  createSecurePushUnregisterResponse,
+} from '../../../src/secure-push-messages.ts';
+import { decodeStructuredChatFrame } from '../../../src/structured-chat.ts';
 import type {
   Acknowledgment,
   Bullet,
   DiscoverableSession,
+  MachineDescriptor,
   Message,
   Question,
   QuestionOption,
   RemiStatus,
   StructuredMessage,
 } from '../../../src/types.ts';
+
+export const FIXED_MACHINE: MachineDescriptor = {
+  id: '00112233445566778899aabbccddeeff',
+  name: 'Remi Workstation',
+  platform: 'darwin',
+  remiVersion: '0.7.4-dev.1',
+  harnesses: ['claude', 'codex'],
+  capabilities: ['workspaces'],
+};
 
 // Fixed IDs shared across builders so fixtures read coherently (all
 // referencing "the same" fixture session/question where that matters).
@@ -127,6 +154,35 @@ const FIXED_QUESTION_OPTION: QuestionOption = {
   isYes: true,
   isNo: false,
 };
+
+const FIXED_NO_OPTION: QuestionOption = {
+  label: 'No',
+  value: 'no',
+  isRecommended: false,
+  isYes: false,
+  isNo: true,
+};
+
+/** Picks with descriptions, for an AskUserQuestion step or a plan approval (#1235). */
+const FIXED_PICK_A: QuestionOption = {
+  label: 'Option A',
+  value: '1',
+  description: 'The first approach',
+  isRecommended: false,
+  isYes: false,
+  isNo: false,
+};
+const FIXED_PICK_B: QuestionOption = {
+  label: 'Option B',
+  value: '2',
+  description: 'The second approach',
+  isRecommended: false,
+  isYes: false,
+  isNo: false,
+};
+
+/** A Codex thread id (a UUIDv7) for the Codex cards. */
+const CODEX_THREAD_ID = '0199b0a0-0000-7000-8000-000000000000';
 
 const FIXED_QUESTION: Question = {
   id: QUESTION_ID,
@@ -211,7 +267,146 @@ const FIXED_TRANSCRIPT_BLOCK: TranscriptContentBlock = {
  * key without adding a builder here is a compile error (mirrors the
  * `MessageHandlers` totality property from #896).
  */
+/** Copy the independently frozen ADR 0041 vectors, then exercise the strict shipping decoder. */
+function imageVector<K extends Extract<keyof ProtocolMessageMap, `image_upload_${string}`>>(
+  type: K,
+): ProtocolMessageMap[K] {
+  const vectors = JSON.parse(
+    readFileSync(new URL('../image-staging/vectors.json', import.meta.url), 'utf8'),
+  ) as { positive: { raw: string; expected: { type: string } }[] };
+  const vector = vectors.positive.find((entry) => entry.expected.type === type);
+  const message = vector && decodeImageStagingFrame(vector.raw);
+  if (!message || message.type !== type) throw new Error('Missing strict image fixture');
+  return message as ProtocolMessageMap[K];
+}
+
+function insertionVector<K extends 'image_insert_request' | 'image_insert_result'>(
+  type: K,
+): ProtocolMessageMap[K] {
+  const vectors = JSON.parse(
+    readFileSync(new URL('../image-insertion/vectors.json', import.meta.url), 'utf8'),
+  ) as { positive: { raw: string; expected: { type: string } }[] };
+  const vector = vectors.positive.find((entry) => entry.expected.type === type);
+  const message = vector && decodeImageInsertionFrame(vector.raw);
+  if (!message || message.type !== type) throw new Error('Missing strict insertion fixture');
+  return message as ProtocolMessageMap[K];
+}
+
+function browserVector<
+  K extends
+    | 'browser_link_receiver_request'
+    | 'browser_link_receiver_result'
+    | 'browser_link_receiver_ended'
+    | 'browser_link_candidate',
+>(type: K): ProtocolMessageMap[K] {
+  const vectors = JSON.parse(
+    readFileSync(new URL('../browser-links/vectors.json', import.meta.url), 'utf8'),
+  ) as { positive: { raw: string; expected: { type: string } }[] };
+  const vector = vectors.positive.find((entry) => entry.expected.type === type);
+  const message = vector && decodeBrowserLinkFrame(vector.raw);
+  if (!message || message.type !== type) throw new Error('Missing strict browser fixture');
+  return message as ProtocolMessageMap[K];
+}
+
+function downloadVector<K extends Extract<keyof ProtocolMessageMap, `file_fetch_${string}`>>(
+  type: K,
+): ProtocolMessageMap[K] {
+  const vectors = JSON.parse(
+    readFileSync(new URL('../file-download/vectors.json', import.meta.url), 'utf8'),
+  ) as { positive: { raw: string; expected: { type: string } }[] };
+  const vector = vectors.positive.find((entry) => entry.expected.type === type);
+  const message = vector && decodeFileDownloadFrame(vector.raw);
+  if (!message || message.type !== type) throw new Error('Missing strict file download fixture');
+  return message as ProtocolMessageMap[K];
+}
+
 export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => ProtocolMessageMap[K] } = {
+  file_fetch_begin: () => downloadVector('file_fetch_begin'),
+  file_fetch_accepted: () => downloadVector('file_fetch_accepted'),
+  file_fetch_read: () => downloadVector('file_fetch_read'),
+  file_fetch_chunk: () => downloadVector('file_fetch_chunk'),
+  file_fetch_complete: () => downloadVector('file_fetch_complete'),
+  file_fetch_result: () => downloadVector('file_fetch_result'),
+  file_fetch_cancel: () => downloadVector('file_fetch_cancel'),
+  file_fetch_cancel_result: () => downloadVector('file_fetch_cancel_result'),
+  file_fetch_refused: () => downloadVector('file_fetch_refused'),
+  browser_link_receiver_request: () => browserVector('browser_link_receiver_request'),
+  browser_link_receiver_result: () => browserVector('browser_link_receiver_result'),
+  browser_link_receiver_ended: () => browserVector('browser_link_receiver_ended'),
+  browser_link_candidate: () => browserVector('browser_link_candidate'),
+  chat_submit_request: () => chatVector('chat_submit_request'),
+  chat_submit_result: () => chatVector('chat_submit_result'),
+  image_insert_request: () => insertionVector('image_insert_request'),
+  image_insert_result: () => insertionVector('image_insert_result'),
+  image_upload_begin: () => imageVector('image_upload_begin'),
+  image_upload_accepted: () => imageVector('image_upload_accepted'),
+  image_upload_chunk: () => imageVector('image_upload_chunk'),
+  image_upload_chunk_ack: () => imageVector('image_upload_chunk_ack'),
+  image_upload_complete: () => imageVector('image_upload_complete'),
+  image_upload_result: () => imageVector('image_upload_result'),
+  image_upload_cancel: () => imageVector('image_upload_cancel'),
+  image_upload_cancel_result: () => imageVector('image_upload_cancel_result'),
+  image_upload_refused: () => imageVector('image_upload_refused'),
+
+  // Signed native answers have no unsigned create* factory. Parse the
+  // independently signed codec vector through the shipping strict decoder.
+  native_answer: () => {
+    const vectors = JSON.parse(
+      readFileSync(new URL('../relay-v2/native-answer-vectors.json', import.meta.url), 'utf8'),
+    ) as { cases: { message: unknown }[] };
+    return decodeNativeAnswer(JSON.stringify(vectors.cases[0]?.message));
+  },
+  secure_push_register_request: () =>
+    createSecurePushRegisterRequest({
+      token: 'ab'.repeat(32),
+      environment: 'sandbox',
+      pushPublicKey:
+        'BI5TO2-gv3tGJbswZnwB-2B--fi4qsDCdnpguoDXWXsjc-sdgUMxZGXmpOplO6BcUwjUEIEVV3tDyhqEwxthALQ',
+      keyVersion: 3,
+      pushPrefs: { questions: true },
+    }),
+  secure_push_register_response: () =>
+    createSecurePushRegisterResponse(REQUEST_ID, { success: true, keyVersion: 3 }),
+  secure_push_unregister_request: () => createSecurePushUnregisterRequest(),
+  secure_push_unregister_response: () =>
+    createSecurePushUnregisterResponse(REQUEST_ID, { success: true }),
+  answer_result: () => ({
+    type: 'answer_result',
+    id: MESSAGE_ID,
+    timestamp: FIXED_MESSAGE.createdAt,
+    requestId: MESSAGE_ID,
+    sessionId: SESSION_ID,
+    questionId: QUESTION_ID,
+    outcome: 'stale',
+  }),
+  relay_devices_request: () => ({
+    type: 'relay_devices_request',
+    id: MESSAGE_ID,
+    timestamp: FIXED_MESSAGE.createdAt,
+  }),
+  relay_devices_response: () => ({
+    type: 'relay_devices_response',
+    id: MESSAGE_ID,
+    timestamp: FIXED_MESSAGE.createdAt,
+    requestId: MESSAGE_ID,
+    devices: [],
+  }),
+  relay_device_revoke_request: () => ({
+    type: 'relay_device_revoke_request',
+    id: MESSAGE_ID,
+    timestamp: FIXED_MESSAGE.createdAt,
+    fingerprint: '0123456789abcdef',
+  }),
+  relay_device_revoke_response: () => ({
+    type: 'relay_device_revoke_response',
+    id: MESSAGE_ID,
+    timestamp: FIXED_MESSAGE.createdAt,
+    requestId: MESSAGE_ID,
+    fingerprint: '0123456789abcdef',
+    success: true,
+    edgeAcknowledged: false,
+    error: 'EDGE_UNVERIFIED',
+  }),
   hello: () =>
     createHello(CLIENT_ID, '1.0.0', {
       directory: '/Users/fixture/project',
@@ -226,6 +421,7 @@ export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => Protocol
       attachState: 'attached',
       daemonVersion: '0.7.4-dev.1',
       harnesses: ['claude', 'codex'],
+      capabilities: ['workspaces'],
     }),
   agent_output: () => createAgentOutput(FIXED_MESSAGE),
   structured_agent_output: () => createStructuredAgentOutput(FIXED_STRUCTURED_MESSAGE, false, [1]),
@@ -244,6 +440,18 @@ export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => Protocol
   bullet_expand_response: () =>
     createBulletExpandResponse(1, 'Full bullet content here', REQUEST_ID),
   session_list_request: () => createSessionListRequest(true),
+  recent_repositories_request: () => createRecentRepositoriesRequest(10),
+  recent_repositories_response: () =>
+    createRecentRepositoriesResponse(
+      [
+        {
+          repository: '/Users/fixture/project',
+          name: 'project',
+          lastUsedAt: '2026-10-07T10:00:00.000Z',
+        },
+      ],
+      REQUEST_ID,
+    ),
   session_list_response: () =>
     createSessionListResponse([FIXED_DISCOVERABLE_SESSION], REQUEST_ID, [19924, 19925]),
   transcript_content: () =>
@@ -334,6 +542,18 @@ export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => Protocol
   question_snapshot: () => createQuestionSnapshot(SESSION_ID, [QUESTION_ID]),
 };
 
+function chatVector<K extends 'chat_submit_request' | 'chat_submit_result'>(
+  type: K,
+): ProtocolMessageMap[K] {
+  const vectors = JSON.parse(
+    readFileSync(new URL('../structured-chat/vectors.json', import.meta.url), 'utf8'),
+  ) as { positive: { raw: string; expected: { type: string } }[] };
+  const vector = vectors.positive.find((entry) => entry.expected.type === type);
+  const message = vector && decodeStructuredChatFrame(vector.raw);
+  if (!message || message.type !== type) throw new Error('Missing strict chat fixture');
+  return message as ProtocolMessageMap[K];
+}
+
 /**
  * A second golden for a message type whose wire shape grew: the shape an older peer still sends
  * (#1179 review, G16). `FIXTURE_BUILDERS` holds one current shape per registry type; a variant is
@@ -343,11 +563,233 @@ export const FIXTURE_VARIANTS: Record<
   string,
   { type: keyof ProtocolMessageMap; build: () => ProtocolMessageMap[keyof ProtocolMessageMap] }
 > = {
+  hello_ack_machine: {
+    type: 'hello_ack',
+    build: () => createHelloAck('1.0.0', null, { machine: FIXED_MACHINE }),
+  },
+  session_list_response_machine: {
+    type: 'session_list_response',
+    build: () =>
+      createSessionListResponse([FIXED_DISCOVERABLE_SESSION], REQUEST_ID, [18766], FIXED_MACHINE),
+  },
   // Before Phase 5 the request named a directory and nothing else; the registry golden now names
   // a harness and arguments too, and an older client still sends this.
   create_session_request_plain: {
     type: 'create_session_request',
     build: () => createCreateSessionRequest('/Users/fixture/project'),
+  },
+  // A session's list entry with its workspace (#1236 phase B): a session in a worktree the hub made.
+  session_list_response_workspace: {
+    type: 'session_list_response',
+    build: () =>
+      createSessionListResponse(
+        [
+          {
+            ...FIXED_DISCOVERABLE_SESSION,
+            projectPath: '/Users/fixture/remi-worktrees/project-feature-fixture',
+            workspace: {
+              repository: '/Users/fixture/project',
+              directory: '/Users/fixture/remi-worktrees/project-feature-fixture',
+              branch: 'feature/fixture',
+            },
+          },
+        ],
+        REQUEST_ID,
+      ),
+  },
+  // A session in a new worktree (#1236, ADR 0036): the request a client sends to a hub that lists
+  // the `workspaces` capability, and the response that says where the session runs.
+  create_session_request_workspace: {
+    type: 'create_session_request',
+    build: () =>
+      createCreateSessionRequest('/Users/fixture/project', {
+        workspace: {
+          repository: '/Users/fixture/project',
+          worktree: { branch: 'feature/fixture', base: 'main' },
+        },
+      }),
+  },
+  create_session_response_workspace: {
+    type: 'create_session_response',
+    build: () =>
+      createCreateSessionResponse(true, REQUEST_ID, SESSION_ID, undefined, 19924, undefined, {
+        repository: '/Users/fixture/project',
+        directory: '/Users/fixture/remi-worktrees/project-feature-fixture',
+        worktree: { branch: 'feature/fixture', base: '0123456789abcdef0123456789abcdef01234567' },
+      }),
+  },
+  // A resume through a hub (#1129): the hub started a child session daemon for it, so the response
+  // says which port the session runs on. A session daemon resumes in its own process and sends none.
+  resume_session_response_child: {
+    type: 'resume_session_response',
+    build: () =>
+      createResumeSessionResponse(true, REQUEST_ID, SESSION_ID, undefined, undefined, 19924),
+  },
+  // A phone's first answer after scanning a pairing link (#1275, ADR 0037): the ordinary signed
+  // answer, plus the link's nonce and the name the person gave the phone.
+  auth_response_pairing: {
+    type: 'auth_response',
+    build: () =>
+      createAuthResponse('base64-client-pubkey', 'base64-signature', 'EE:FF:00:11', undefined, {
+        nonce: 'oKGio6SlpqeoqaqrrK2urw',
+        label: 'Fixture phone',
+      }),
+  },
+  // The ack of a daemon before #1237 (ADR 0035), written out field by field rather than derived
+  // from the registry golden: a field added to `hello_ack` later must not appear in the ack of a
+  // daemon that predates it. A client must accept it.
+  hello_ack_legacy: {
+    type: 'hello_ack',
+    build: () => ({
+      type: 'hello_ack',
+      id: generateId(),
+      timestamp: now(),
+      serverVersion: '1.0.0',
+      sessionId: SESSION_ID,
+      isResume: false,
+      replayCount: 0,
+      nextBulletId: 1,
+      claudeSessionId: CLAUDE_SESSION_ID,
+      harness: 'claude',
+      harnessSessionId: CLAUDE_SESSION_ID,
+      transcriptPath: '/Users/fixture/transcript.jsonl',
+      attachState: 'attached',
+      daemonVersion: '0.7.4-dev.1',
+      harnesses: ['claude', 'codex'],
+    }),
+  },
+  // The "agent needs you" object, frozen (#1235, ADR 0038): one card per kind and answer path,
+  // for Claude and Codex. `kind` is an open set: a client renders one it does not know as a
+  // generic card.
+  question_claude_permission: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          options: [FIXED_QUESTION_OPTION, FIXED_NO_OPTION],
+          source: 'permission_request',
+          kind: 'permission',
+          held: true,
+          answerPath: 'structured',
+        },
+        SESSION_ID,
+        identityFromClaudeId(CLAUDE_SESSION_ID),
+      ),
+  },
+  question_claude_ask_user_question: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          text: 'Which approach?',
+          options: [FIXED_PICK_A, FIXED_PICK_B],
+          source: 'permission_request',
+          kind: 'multi_question',
+          questions: [
+            {
+              header: 'Approach',
+              text: 'Which approach?',
+              multiSelect: false,
+              options: [FIXED_PICK_A, FIXED_PICK_B],
+            },
+          ],
+          held: true,
+          answerPath: 'structured',
+        },
+        SESSION_ID,
+        identityFromClaudeId(CLAUDE_SESSION_ID),
+      ),
+  },
+  question_claude_plan_approval: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          text: 'Approve this plan?',
+          detail: '# Plan\n1. Read the code\n2. Change it',
+          options: [FIXED_PICK_A, FIXED_PICK_B],
+          source: 'permission_request',
+          kind: 'plan_approval',
+          held: true,
+          answerPath: 'structured',
+        },
+        SESSION_ID,
+        identityFromClaudeId(CLAUDE_SESSION_ID),
+      ),
+  },
+  // A prompt Claude draws in the terminal with no hook (sandbox network, trust): no kind, typed.
+  question_claude_terminal_prompt: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          text: 'Allow network access to example.com?',
+          options: [FIXED_QUESTION_OPTION, FIXED_NO_OPTION],
+          source: 'pty',
+          answerPath: 'keystroke',
+        },
+        SESSION_ID,
+        identityFromClaudeId(CLAUDE_SESSION_ID),
+      ),
+  },
+  question_claude_terminal_only: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          text: 'mcp__custom__ask wants to ask you something',
+          options: [],
+          source: 'permission_request',
+          kind: 'permission',
+          held: true,
+          terminalOnly: true,
+          answerPath: 'none',
+        },
+        SESSION_ID,
+        identityFromClaudeId(CLAUDE_SESSION_ID),
+      ),
+  },
+  question_codex_command: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          text: 'Allow Codex to run: ls',
+          options: [FIXED_QUESTION_OPTION, FIXED_NO_OPTION],
+          kind: 'permission',
+          held: true,
+          answerPath: 'structured',
+        },
+        SESSION_ID,
+        { harness: 'codex', harnessSessionId: CODEX_THREAD_ID },
+      ),
+  },
+  question_codex_terminal_only: {
+    type: 'question',
+    build: () =>
+      createQuestion(
+        {
+          ...FIXED_QUESTION,
+          text: 'Codex wants to change files',
+          options: [],
+          kind: 'permission',
+          held: true,
+          terminalOnly: true,
+          answerPath: 'none',
+        },
+        SESSION_ID,
+        { harness: 'codex', harnessSessionId: CODEX_THREAD_ID },
+      ),
+  },
+  question_resolved_terminal: {
+    type: 'question_resolved',
+    build: () => createQuestionResolved(SESSION_ID, QUESTION_ID, 'cancelled', 'terminal'),
   },
 };
 

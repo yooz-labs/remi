@@ -13,10 +13,14 @@ import type { UIMessage, UIQuestion, UISession } from '@/types';
 import { clsx } from 'clsx';
 import { Lock } from 'lucide-react';
 import { useCallback, useState } from 'react';
+import { BrowserLinks, type BrowserLinksProps } from './BrowserLinks';
+import { FileDownload, type FileDownloadProps } from './FileDownload';
 import { ChatHeader } from './ChatHeader';
+import { ImageUpload } from './ImageUpload';
 import { InputArea } from './InputArea';
 import { MessageList } from './MessageList';
 import { type AuqSelection, QuestionCard } from './QuestionCard';
+import type { ImageUploadState } from './ImageUpload';
 
 /** View mode for the chat interface */
 export type ViewMode = 'compact' | 'chat';
@@ -31,6 +35,8 @@ interface ChatViewProps {
   /** Send a regular user input message. Reply context (when set) is wrapped
    *  into a markdown blockquote inside this callback's caller (#401). */
   readonly onSend: (message: string) => void;
+  readonly chatUnavailable?: string | null;
+  readonly onReconnectChat?: (() => void) | undefined;
   /** Answer a specific pending question. Routes through sendAnswer keyed by the
    *  question itself; decoupled from onSend so the bottom InputArea no longer
    *  hijacks input when a question is pending (#401). Non-optional so the
@@ -65,6 +71,17 @@ interface ChatViewProps {
   /** Stop (kill) the active session (#637). */
   readonly onEndSession?: () => void;
   readonly showTimestamps?: boolean;
+  readonly browserLinks?: BrowserLinksProps;
+  readonly fileDownload?: FileDownloadProps;
+  readonly imageUpload?: {
+    readonly enabled: boolean;
+    readonly state: ImageUploadState;
+    readonly onSelect: (file: File) => void;
+    readonly onCancel: () => void;
+    readonly onDismiss: () => void;
+    readonly onAddToDraft?: () => void;
+    readonly onAbandonDraft?: () => void;
+  };
   readonly className?: string;
 }
 
@@ -74,6 +91,8 @@ export function ChatView({
   questions,
   error,
   onSend,
+  chatUnavailable,
+  onReconnectChat,
   onAnswer,
   onAuqAnswer,
   onCancelQuestion,
@@ -94,6 +113,9 @@ export function ChatView({
   onDetach,
   onEndSession,
   showTimestamps = true,
+  imageUpload,
+  browserLinks,
+  fileDownload,
   className,
 }: ChatViewProps) {
   // The redesigned chat always uses the rich "chat" rendering (markdown, tool
@@ -124,7 +146,7 @@ export function ChatView({
   // connection so the user sees confirmation; a still-pending card needs a live
   // connection to be actionable.
   const chatCards = questionList.filter(
-    (q) => q.answeredWith != null || q.resolvedReason != null || isConnected,
+    (q) => q.awaitingRelayOutcome || q.answeredWith != null || q.resolvedReason != null || isConnected,
   );
 
   // iOS edge-swipe back (#411): rightward swipe from the left edge pops
@@ -201,23 +223,41 @@ export function ChatView({
       {/* Subagent views are read-only monitoring (their id is an agentId, not a
           real daemon session), so there is no input to route (#499 phase 3). */}
       {!session.isSubagent && (
-        <InputArea
-          onSend={onSend}
-          onAnswer={(answer) => {
-            if (primaryQuestion) onAnswer(primaryQuestion, answer);
-          }}
-          onCancel={onCancel}
-          question={null}
-          isAgentBusy={isAgentBusy}
-          disabled={!isConnected || isQueued}
-          replyContext={replyContext ?? null}
-          onClearReply={onClearReply}
-          // Session-scoped draft persistence so a half-typed message survives
-          // app suspension on iOS (#226) and switching to a different session
-          // doesn't leak the draft across.
-          draftKey={`remi-draft-${session.id}`}
-          placeholder={!isConnected ? 'Not connected' : isQueued ? 'Read-only' : 'Type a message...'}
-        />
+        <>
+          {chatUnavailable && <div role="status" className="flex items-center gap-3 px-4 py-2 text-xs text-[var(--color-text-muted)]">
+            <p className="flex-1">{chatUnavailable}</p>
+            {onReconnectChat && <button type="button" onClick={onReconnectChat}
+              className="rounded-lg border border-[var(--color-border)] px-3 py-2 font-medium text-[var(--color-text)]">Reconnect</button>}
+          </div>}
+          {browserLinks && <BrowserLinks {...browserLinks} />}
+          {fileDownload && <FileDownload key={`file-download:${session.connectionId}:${session.id}`} {...fileDownload} />}
+          {imageUpload && session.harness !== 'codex' && <ImageUpload key={`${session.connectionId}:${session.id}`} {...imageUpload} />}
+          <InputArea
+            onSend={onSend}
+            hasImageDraft={
+              imageUpload?.state.phase === 'staged' && imageUpload.state.draft?.phase === 'inserted'
+            }
+            onAnswer={(answer) => {
+              if (primaryQuestion) onAnswer(primaryQuestion, answer);
+            }}
+            onCancel={onCancel}
+            question={null}
+            isAgentBusy={isAgentBusy}
+            disabled={
+              !isConnected ||
+              !!chatUnavailable ||
+              isQueued ||
+              (imageUpload?.state.phase === 'staged' && imageUpload.state.draft?.phase === 'inserting')
+            }
+            replyContext={replyContext ?? null}
+            onClearReply={onClearReply}
+            // Session-scoped draft persistence so a half-typed message survives
+            // app suspension on iOS (#226) and switching to a different session
+            // doesn't leak the draft across.
+            draftKey={`remi-draft-${session.id}`}
+            placeholder={!isConnected ? 'Not connected' : isQueued ? 'Read-only' : 'Type a message...'}
+          />
+        </>
       )}
     </div>
   );

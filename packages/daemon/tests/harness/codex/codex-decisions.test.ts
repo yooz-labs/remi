@@ -208,7 +208,8 @@ describe('CodexDecisions', () => {
       },
       sessionRegistry: registry,
       present: (q) => present(q),
-      onQuestionResolved: (sid, qid, reason) => sent.push(createQuestionResolved(sid, qid, reason)),
+      onQuestionResolved: (sid, qid, reason, resolvedBy) =>
+        sent.push(createQuestionResolved(sid, qid, reason, resolvedBy)),
       threadRole: (id) => roles.get(id) ?? null,
       log: (m) => logs.push(m),
       scheduler: sched.scheduler,
@@ -246,6 +247,66 @@ describe('CodexDecisions', () => {
     expect(pending()).toHaveLength(1);
     return pending()[0] as Question;
   };
+
+  describe('push validity', () => {
+    test('a real live main-thread request requires its actual registry card', () => {
+      request(5);
+      const q = only();
+      expect(decisions.answerValidity(q.id)).toEqual({ kind: 'current-prompt' });
+      registry.removeQuestion(sessionId, q.id, 'push-validity-test');
+      expect(decisions.isHeld(q.id)).toBe(true);
+      expect(decisions.answerValidity(q.id)).toEqual({ kind: 'closed' });
+      expect(responses).toEqual([]);
+    });
+
+    test('losing the current main-thread role closes a live registered request', () => {
+      request(5);
+      const q = only();
+      expect(decisions.answerValidity(q.id)).toEqual({ kind: 'current-prompt' });
+      roles.delete(MAIN);
+      expect(registry.getQuestion(sessionId, q.id)).not.toBeNull();
+      expect(decisions.answerValidity(q.id)).toEqual({ kind: 'closed' });
+      expect(responses).toEqual([]);
+    });
+
+    test('retired and replayed-old requests stay closed while the fresh request is current', () => {
+      request(5);
+      const old = only();
+      decisions.handleDisconnected();
+      expect(registry.getQuestion(sessionId, old.id)).not.toBeNull();
+      expect(decisions.answerValidity(old.id)).toEqual({ kind: 'closed' });
+      decisions.handleReattached();
+      request(5);
+      const fresh = only();
+      expect(fresh.id).not.toBe(old.id);
+      expect(decisions.answerValidity(old.id)).toEqual({ kind: 'closed' });
+      expect(decisions.answerValidity(fresh.id)).toEqual({ kind: 'current-prompt' });
+      expect(decisions.answerHeld(fresh.id, optionNamed(fresh, 'Yes'))).toBe('resolved');
+      expect(decisions.answerValidity(fresh.id)).toEqual({ kind: 'closed' });
+      expect(responses).toEqual([{ id: 5, result: { decision: 'accept' } }]);
+    });
+
+    test('terminal-only, answered, disposed and unknown requests cannot become actions', () => {
+      request(5);
+      const q = only();
+      q.isAnswered = true;
+      expect(decisions.answerValidity(q.id)).toEqual({ kind: 'closed' });
+      q.isAnswered = false;
+      expect(decisions.answerValidity(q.id)).toEqual({ kind: 'current-prompt' });
+      const { method, params } = fileChangeRequest(MAIN, 'edit a file');
+      decisions.handleServerRequest({ id: 6, method, params });
+      const terminal = pending().find((card) => card.id !== q.id);
+      if (!terminal) throw new Error('no actual file-change card');
+      expect(terminal.terminalOnly).toBe(true);
+      expect(decisions.answerValidity(terminal.id)).toEqual({ kind: 'closed' });
+      decisions.dispose();
+      expect(decisions.answerValidity(q.id)).toEqual({ kind: 'closed' });
+      expect(decisions.answerValidity('00000000-0000-4000-8000-000000000099')).toEqual({
+        kind: 'closed',
+      });
+      expect(responses).toEqual([]);
+    });
+  });
 
   describe('what becomes a card', () => {
     test('a plain command approval of the main thread is presented held, with its options, and registered', () => {
@@ -437,6 +498,21 @@ describe('CodexDecisions', () => {
       expect(responses).toHaveLength(1);
     });
 
+    test('a rotation names the harness; serverRequest/resolved and unstick name no cause (#1235)', () => {
+      request(1);
+      decisions.handleResolved({ threadId: MAIN, requestId: 1 });
+      request(2);
+      decisions.forceRelease('remi unstick');
+      request(3);
+      decisions.forceRelease('the session moved to a new thread', 'harness');
+      const resolved = sent.filter((m) => m.type === 'question_resolved');
+      expect(resolved.map((m) => (m.type === 'question_resolved' ? m.resolvedBy : 'x'))).toEqual([
+        undefined,
+        undefined,
+        'harness',
+      ]);
+    });
+
     test('a request with id 0, the first one the real app-server sends, is a card, and its answer carries id 0 (Q4)', () => {
       request(0);
       const q = only();
@@ -604,6 +680,7 @@ describe('CodexDecisions', () => {
     test('a failure to remove the card or to tell the clients is logged by error name and does not break the channel', () => {
       const failing = build({
         sessionRegistry: {
+          getQuestion: (sid, qid) => registry.getQuestion(sid, qid),
           removeQuestion: () => {
             throw new Error('registry down');
           },
@@ -997,16 +1074,22 @@ describe('CodexDecisions', () => {
 
   describe('what the session reads from it', () => {
     test('isHeld is a live actionable card, and only that', () => {
+      expect(decisions.blocksStructuredChat()).toBe(false);
       expect(decisions.isHeld(crypto.randomUUID() as UUID)).toBe(false);
       request(5, 'touch sub', SUB);
       const sub = only();
       expect(decisions.isHeld(sub.id)).toBe(false);
+      expect(decisions.blocksStructuredChat()).toBe(false);
       request(6);
       const main = pending().find((q) => q.id !== sub.id) as Question;
       expect(decisions.isHeld(main.id)).toBe(true);
+      expect(decisions.blocksStructuredChat()).toBe(true);
       // Answered: nothing is waiting on the phone any more.
       decisions.answerHeld(main.id, optionNamed(main, 'Yes'));
       expect(decisions.isHeld(main.id)).toBe(false);
+      expect(decisions.blocksStructuredChat()).toBe(true);
+      decisions.handleResolved({ threadId: MAIN, requestId: 6 });
+      expect(decisions.blocksStructuredChat()).toBe(false);
     });
 
     test('the chat guard and Stop read nothing held, whatever is shown: phone chat is refused earlier and a Stop force-closes', () => {

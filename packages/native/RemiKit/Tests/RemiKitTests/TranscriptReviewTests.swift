@@ -1,0 +1,126 @@
+import RemiUI
+import Testing
+
+struct TranscriptReviewTests {
+    private let entries: [RemiTranscriptEntry] = [
+        .user(id: "user", text: "Please inspect the cache"),
+        .agent(id: "agent", text: "I found the CACHE issue"),
+        .tool(id: "tool", name: "Read", summary: "Opened CacheStore.swift"),
+        .error(id: "error", text: "Cache lookup failed"),
+    ]
+
+    @Test func searchesEveryTranscriptEntryKindCaseInsensitively() {
+        var state = RemiTranscriptReviewState()
+
+        state.update(query: "cache", entries: entries)
+
+        #expect(state.matchingEntryIDs == ["user", "agent", "tool", "error"])
+        #expect(state.selectedEntryID == "user")
+        #expect(state.resultPosition == 1)
+    }
+
+    @Test func toolNameAndSummaryAreSearchableAndCopyable() {
+        var state = RemiTranscriptReviewState()
+
+        state.update(query: "read", entries: entries)
+        #expect(state.matchingEntryIDs == ["tool"])
+
+        state.update(query: "CacheStore", entries: entries)
+        #expect(state.matchingEntryIDs == ["tool"])
+        #expect(entries[2].copyText == "Read\nOpened CacheStore.swift")
+    }
+
+    @Test func navigationWrapsInBothDirections() {
+        var state = RemiTranscriptReviewState()
+        state.update(query: "cache", entries: entries)
+
+        state.selectPrevious()
+        #expect(state.selectedEntryID == "error")
+        #expect(state.resultPosition == 4)
+
+        state.selectNext()
+        #expect(state.selectedEntryID == "user")
+    }
+
+    @Test func refreshPreservesSelectionWhenEntryStillMatches() {
+        var state = RemiTranscriptReviewState()
+        state.update(query: "cache", entries: entries)
+        state.selectNext()
+
+        state.refresh(entries: Array(entries.dropFirst()))
+
+        #expect(state.selectedEntryID == "agent")
+        #expect(state.resultPosition == 1)
+    }
+
+    @Test func whitespaceQueryAndResetClearReviewState() {
+        var state = RemiTranscriptReviewState()
+        state.update(query: "   \n", entries: entries)
+
+        #expect(state.matchingEntryIDs.isEmpty)
+        #expect(state.selectedEntryID == nil)
+
+        state.update(query: "not present", entries: entries)
+        #expect(state.matchingEntryIDs.isEmpty)
+        #expect(state.resultPosition == nil)
+
+        state.update(query: "cache", entries: entries)
+        state.reset()
+        #expect(state == RemiTranscriptReviewState())
+    }
+
+    @Test func latestActivityPrefersPendingQuestionsThenNewestTranscriptEntry() {
+        #expect(RemiTranscriptNavigation.latestActivityID(
+            entryIDs: ["first", "latest-entry"],
+            questionIDs: ["pending-question"]
+        ) == "pending-question")
+        #expect(RemiTranscriptNavigation.latestActivityID(
+            entryIDs: ["first", "latest-entry"],
+            questionIDs: []
+        ) == "latest-entry")
+        #expect(RemiTranscriptNavigation.latestActivityID(entryIDs: [], questionIDs: []) == nil)
+    }
+
+    @Test func firstActivityUsesOldestTranscriptThenPendingQuestionFallback() {
+        #expect(RemiTranscriptNavigation.firstActivityID(
+            entryIDs: ["entry-one", "entry-two"],
+            questionIDs: ["question-one", "question-two"]
+        ) == "entry-one")
+        #expect(RemiTranscriptNavigation.firstActivityID(
+            entryIDs: [],
+            questionIDs: ["question-one", "question-two"]
+        ) == "question-one")
+        #expect(RemiTranscriptNavigation.firstActivityID(entryIDs: [], questionIDs: []) == nil)
+    }
+}
+
+@Suite struct ConversationReviewMemoryTests {
+    @Test func keepsSearchAndPositionIndependentPerConversation() {
+        var mainReview = RemiTranscriptReviewState()
+        mainReview.update(query: "build", entries: [entry(id: "main-build", text: "Build complete")])
+        var memory = RemiConversationReviewMemory()
+        memory.save(
+            RemiConversationReviewSnapshot(
+                reviewState: mainReview,
+                visibleEntryID: "main-build",
+                isSearchPresented: true
+            ),
+            for: "main"
+        )
+
+        let subagent = memory.snapshot(for: "agent-1")
+        #expect(subagent.reviewState.query.isEmpty)
+        #expect(subagent.visibleEntryID == nil)
+        #expect(!subagent.isSearchPresented)
+
+        let restored = memory.snapshot(for: "main")
+        #expect(restored.reviewState.query == "build")
+        #expect(restored.reviewState.selectedEntryID == "main-build")
+        #expect(restored.visibleEntryID == "main-build")
+        #expect(restored.isSearchPresented)
+    }
+
+    private func entry(id: String, text: String) -> RemiTranscriptEntry {
+        .agent(id: id, text: text)
+    }
+}

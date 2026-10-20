@@ -1,0 +1,19 @@
+{
+  "type": "hello_ack",
+  "id": "d389d351-b436-49b7-9b1f-c907e301d7ab",
+  "timestamp": "2026-10-10T03:24:31.856Z",
+  "serverVersion": "1.0.0",
+  "protocolVersion": 1,
+  "sessionId": null,
+  "daemonVersion": "0.7.4-dev.1",
+  "harnesses": ["claude", "codex"],
+  "capabilities": ["workspaces"],
+  "machine": {
+    "id": "00112233445566778899aabbccddeeff",
+    "name": "Remi Workstation",
+    "platform": "darwin",
+    "remiVersion": "0.7.4-dev.1",
+    "harnesses": ["claude", "codex"],
+    "capabilities": ["workspaces"]
+  }
+}

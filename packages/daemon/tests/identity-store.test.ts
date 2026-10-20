@@ -112,6 +112,39 @@ describe('IdentityStore', () => {
   });
 
   describe('authorized keys', () => {
+    test('nonblocking legacy epoch migration is opt-in and cannot grant an absent key', async () => {
+      const identity = await createIdentity();
+      await store.addAuthorizedKey(identity.publicKey, 'Legacy device');
+      const file = path.join(tmpDir, 'authorized_keys.json');
+      const legacy = JSON.parse(fs.readFileSync(file, 'utf8'));
+      legacy.keys[0].authorizationEpoch = undefined;
+      fs.writeFileSync(file, JSON.stringify(legacy), { mode: 0o600 });
+      const original = fs.readFileSync(file, 'utf8');
+      expect(
+        store.withAuthorizationEpochNonblocking(identity.publicKey, (epoch) => epoch),
+      ).toBeNull();
+      expect(fs.readFileSync(file, 'utf8')).toBe(original);
+      const epoch = store.withAuthorizationEpochNonblocking(
+        identity.publicKey,
+        (value) => value,
+        true,
+      );
+      expect(typeof epoch).toBe('string');
+      expect(store.withAuthorizationEpochNonblocking(identity.publicKey, (value) => value)).toBe(
+        epoch,
+      );
+      const absent = await createIdentity();
+      expect(
+        store.withAuthorizationEpochNonblocking(absent.publicKey, (value) => value, true),
+      ).toBeNull();
+      expect(store.listAuthorizedKeys()).toHaveLength(1);
+      store.removeAuthorizedKey(identity.fingerprint);
+      await store.addAuthorizedKey(identity.publicKey, 'New grant');
+      expect(
+        store.withAuthorizationEpochNonblocking(identity.publicKey, (value) => value),
+      ).not.toBe(epoch);
+    });
+
     test('loadAuthorizedKeys returns empty file when none exists', () => {
       const file = store.loadAuthorizedKeys();
       expect(file.version).toBe(1);

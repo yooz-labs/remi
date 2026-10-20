@@ -39,5 +39,9 @@
         <key>NSAllowsLocalNetworking</key>
         <true/>
     </dict>
+    <key>RemiIdentityAccessGroup</key>
+    <string>$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>RemiPushAccessGroup</key>
+    <string>$(AppIdentifierPrefix)live.yooz.remi.secure-push</string>
 </dict>
 </plist>

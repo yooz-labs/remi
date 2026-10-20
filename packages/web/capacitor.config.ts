@@ -5,8 +5,8 @@ const config: CapacitorConfig = {
   appName: 'Remi',
   webDir: 'dist',
   server: {
-    // Allow loading external resources for development
-    allowNavigation: ['*'],
+    // Native signing is restricted to bundled main-frame resources (#1199).
+    allowNavigation: [],
   },
   ios: {
     contentInset: 'automatic',

@@ -18,8 +18,9 @@ import type {
   QuestionMessage,
   UUID,
 } from '@remi/shared';
-import { generateId, identityFromClaudeId } from '@remi/shared';
+import { PROTOCOL_VERSION, generateId, identityFromClaudeId } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
+import { DAEMON_CAPABILITIES } from '../../../src/cli/capabilities.ts';
 import type { CurrentOwnedSession } from '../../../src/cli/current-session.ts';
 import { createConnectionHandlers } from '../../../src/cli/handlers/connection-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
@@ -66,6 +67,7 @@ describe('hello_ack and re-sent questions carry the harness identity (#1179)', (
     current?: () => CurrentOwnedSession | null;
     /** A hub hosts no session, so its session-less ack names no harness. */
     hubMode?: boolean;
+    capabilities?: readonly string[];
   }) {
     return createConnectionHandlers({
       sessionRegistry,
@@ -73,6 +75,7 @@ describe('hello_ack and re-sent questions carry the harness identity (#1179)', (
       hubMode: opts.hubMode ?? false,
       harnessId: opts.harnessId,
       harnesses: opts.harnesses ?? (() => ['codex']),
+      ...(opts.capabilities !== undefined && { capabilities: opts.capabilities }),
       trackConnection: () => {},
       untrackConnection: () => {},
       onConnectionAdded: () => {},
@@ -112,6 +115,32 @@ describe('hello_ack and re-sent questions carry the harness identity (#1179)', (
     await connect(h, 'query'); // acks without attaching
 
     expect(acks().map((a) => a.harnesses)).toEqual([['claude'], ['claude', 'codex'], ['codex']]);
+  });
+
+  test('every ack names the protocol version and DAEMON_CAPABILITIES; the next test proves each path passes the list (#1237)', async () => {
+    const h = handlers({ harnessId: 'claude' });
+    await connect(h); // session-less
+    withPrimarySession();
+    await connect(h); // attaches
+    await connect(h, 'query'); // acks without attaching
+    expect(acks().map((a) => [a.protocolVersion, a.capabilities])).toEqual([
+      [PROTOCOL_VERSION, DAEMON_CAPABILITIES],
+      [PROTOCOL_VERSION, DAEMON_CAPABILITIES],
+      [PROTOCOL_VERSION, DAEMON_CAPABILITIES],
+    ]);
+  });
+
+  test('a capability list given to the handlers reaches every ack (#1237)', async () => {
+    const h = handlers({ harnessId: 'claude', capabilities: ['x.one', 'x.two'] });
+    await connect(h); // session-less
+    withPrimarySession();
+    await connect(h); // attaches
+    await connect(h, 'query'); // acks without attaching
+    expect(acks().map((a) => a.capabilities)).toEqual([
+      ['x.one', 'x.two'],
+      ['x.one', 'x.two'],
+      ['x.one', 'x.two'],
+    ]);
   });
 
   test("a hub's session-less ack names no session identity and no harness, only the harnesses", async () => {

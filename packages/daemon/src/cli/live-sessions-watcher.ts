@@ -14,9 +14,10 @@
 
 import * as fs from 'node:fs';
 import { createSessionListResponse, errorToString, generateId } from '@remi/shared';
-import type { DiscoverableSession, ProtocolMessage, UUID } from '@remi/shared';
+import type { DiscoverableSession, MachineDescriptor, ProtocolMessage, UUID } from '@remi/shared';
 
 export interface LiveSessionsCollectResult {
+  readonly machine?: MachineDescriptor | undefined;
   readonly sessions: readonly DiscoverableSession[];
   readonly newPorts: readonly number[];
 }
@@ -26,7 +27,7 @@ export interface LiveSessionsWatcherDeps {
   readonly dirPath: string;
   /**
    * Gather the current session list + newly-seen sibling ports. Return null
-   * (or an empty `newPorts`) to skip broadcasting for this fs event.
+   * (or an empty `newPorts`) to skip broadcasting for this census.
    */
   readonly collect: () => LiveSessionsCollectResult | null;
   /** Broadcast the resulting `session_list_response` to connected clients. */
@@ -61,6 +62,7 @@ export function startLiveSessionsWatcher(deps: LiveSessionsWatcherDeps): () => v
         result.sessions,
         generateId() as UUID,
         result.newPorts,
+        result.machine,
       );
       deps.broadcast(message);
     } catch (err) {
@@ -87,16 +89,19 @@ export function startLiveSessionsWatcher(deps: LiveSessionsWatcherDeps): () => v
   let rearmsLeft = MAX_REARMS;
   let rearmTimer: ReturnType<typeof setTimeout> | null = null;
 
+  const scheduleFlush = (): void => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(flush, debounceMs);
+  };
+
   const arm = (): void => {
+    rearmTimer = null;
     try {
       // On a fresh install (no session has ever registered), the directory may
       // not exist yet. A long-running hub that hits ENOENT here would never
       // re-arm the watcher for its entire lifetime, so ensure it up front.
       fs.mkdirSync(deps.dirPath, { recursive: true });
-      watcher = fs.watch(deps.dirPath, { persistent: false }, () => {
-        if (debounceTimer) clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(flush, debounceMs);
-      });
+      watcher = fs.watch(deps.dirPath, { persistent: false }, scheduleFlush);
       // An FSWatcher emitting 'error' with no listener throws out of the event
       // loop as an uncaughtException, which the process guards treat as fatal —
       // killing the whole (possibly launchd-managed, unattended) hub over a
@@ -122,6 +127,12 @@ export function startLiveSessionsWatcher(deps: LiveSessionsWatcherDeps): () => v
           `[LiveSessions] Watcher error and re-arm budget exhausted; sibling-daemon broadcasts disabled: ${errorToString(err)}`,
         );
       });
+      // Census after every successful arm: existing siblings generate no new
+      // event, and a startup registration callback was observed missing on Bun
+      // macOS despite a successful watch and valid live state. Errors also cancel
+      // queued flushes and lose events during the closed rearm window. Share the
+      // debounce with new events so startup/recovery cannot double-deliver a flush.
+      scheduleFlush();
     } catch (err) {
       deps.logError(`[LiveSessions] Could not watch live-sessions dir: ${errorToString(err)}`);
     }

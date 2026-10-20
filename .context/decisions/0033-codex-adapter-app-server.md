@@ -503,7 +503,7 @@ Item 13 lists what was asked.
 A question or a list entry has no null: with the id unknown it names the harness and no id.
 The Codex id is null on a `hello_ack` sent before `thread/started` and nothing depends on it, because answers are addressed by `questionId` and a client still echoes only `claudeSessionId` (the signaling Worker rebuilds an answer from a fixed list, so no client-to-daemon field was added; a Codex client sends none and `guardBinding` accepts that).
 `CurrentOwnedSession` gained `identity` (from `identityOfRecord`, which `SessionBindingStore.getIdentity` now also calls; a record that names a harness this build does not know, or no record, falls back to the daemon's own harness with a null id, never to a guess at Claude).
-`getIdentity` has two production callers, the session list (`session-events.ts`) and every question emission (`cli.ts`'s `getIdentity` for the message API); the issue named the first.
+`getIdentity` has two production callers, the session list (`cli/handlers/session-list-entries.ts` since #1274, for both the requested list and the live-sessions broadcast) and every question emission (`cli.ts`'s `getIdentity` for the message API); the issue named the first.
 The Claude transcripts a daemon finds on disk (`source: 'transcript'`) are not decorated: the #1162 discovery test pins that they carry no identity, and absence reads as Claude (see item 11).
 2. **`hello_ack.harnesses` on every ack, and the registry.**
 `HarnessRegistry` (`harness/registry.ts`, neutral) maps an id to `{command, validateRemoteArgs, launchRefusal?, headlessNotice?}`; `cli.ts` builds it because the validators sit behind the import boundary.
@@ -531,7 +531,7 @@ The hub validated the arguments with the remote allowlist and the child validate
 `remote-new-client.ts` sends `harness` and `args` (`remi codex --host`, `remi new --host --harness codex`; the Phase 3 refusal of `--host` for a harness is gone) and only to a daemon whose `hello_ack` lists the harness (arguments with no harness are Claude's and need `claude` listed): an older daemon omits `harnesses` and would ignore both fields and start a plain Claude session, so the client refuses with "does not offer X; nothing was started".
 The conformance is two-sided over both transports as far as each allows (ADR 0014): over the direct WebSocket the shipping sender (`createRemoteSession`) runs against a real `WebSocketAdapter`, and the real web `WebSocketClient` sends the factory's request to a real `WebSocketAdapter` in the conformance test; over the relay the shipping factory's request goes through `RelayAdapter`'s `createTransport` seam, labeled as the transport-seam test it is (#881: no real relay client exists).
 6. **Resume.**
-A `resume_session_request` to a daemon that hosts anything but Claude is answered `UNSUPPORTED` (`resume_session_response{success:false, errorCode:'UNSUPPORTED'}`, text naming `remi codex resume <thread id>`, the request never echoed) before any path runs; `harnessId` is a required dependency of the handler, like `hubMode`.
+A `resume_session_request` to a daemon that hosts anything but Claude is answered `UNSUPPORTED` (`resume_session_response{success:false, errorCode:'UNSUPPORTED'}`, text naming `remi codex resume <thread id>`, the request never echoed) before any path runs; `harnessId` is a required dependency of the handler, like `childSessions`.
 7. **The live-sessions entry.**
 `LiveSessionEntry.harness?` (a string; absent means Claude): a Claude daemon writes none, so its entry is byte-identical to before (a test reads the file), and a Codex daemon or wrapper writes `codex`.
 `couldBeClaudeEntry` excludes only an entry that names a KNOWN other harness; absent, `claude` and a harness this build does not know count, the fail-safe `claudeChildLooksAlive` already uses for a legacy entry.
@@ -635,7 +635,7 @@ Status per item of item 13 (the letters are that list's):
   Refused as designed: `--permission-mode`, `--continue`, and `--resume` of an id a live session holds.
   A session started directly with `--permission-mode acceptEdits` and then resumed through the hub with `--resume` came back in `accept edits` mode, although the hub child's arguments named no mode and the account default differs: Claude restores the session's earlier mode on resume.
   That was seen with `acceptEdits` only; `bypassPermissions` was not tried.
-  A `resume_session_request` sent to the hub is UNSUPPORTED, as documented (#1124, #1129).
+  A `resume_session_request` sent to the hub is UNSUPPORTED, as documented (#1124, #1129; until #1129, which made the hub start a child daemon for it).
 - **(h) The headless Update and Trust prompts, and `remi attach` as the way out: NOT RUN.**
   No modal appeared, so `create_session_response.notice`'s sentence that `remi attach` lets the user answer an Update or Trust prompt is still UNVERIFIED and keeps its hedge.
 
@@ -857,3 +857,31 @@ The Claude black-box Stop test reaches the real CLI with an isolated executable 
 The `remi codex` help names the completion duration, final-answer and device gates; README and AGENTS describe the first 200 characters of an answer.
 The four exported structural types in public signatures and the session-lifetime growth of `MessageAPI.messages` are intentionally retained; the latter also exists in Claude's bridge and is outside this phase's duplicate-id bounds.
 Claude's device-list refresh (#1210) and push-body escaping (#1211) remain separate changes.
+
+## Structured remote chat decision (#1207, 2026-10-13)
+
+The owner chose structured app-server chat and retained the current full-access default.
+Remote session creation continues to inherit the host's settings when it supplies no tighter setting.
+An explicit read-only launch stays read-only; chat must not override sandbox, approval policy, working directory or model settings on a turn.
+The existing remote argument allowlist and the refusal of typed Codex PTY chat remain in force.
+
+The implementation proceeds in two steps:
+
+1. An internal writer reuses `AppServerClient`, checks the bound main thread and its current runtime epoch, then selects `turn/start` for an observed idle thread or `turn/steer` with `expectedTurnId` for an active turn.
+   It rechecks authority and blocking questions before the possible effect, makes one turn request, and reports accepted, refused or uncertain.
+   It has no PTY fallback or automatic retry.
+2. A later harness-neutral submission seam and correlated daemon/client result will carry expected binding, request identity, replay/conflict handling and uncertainty retention to an actual caller.
+   An ordinary `user_input` ACK precedes its handler and cannot prove submission.
+   Capability advertisement and native integration wait for that connected path.
+
+The installed Codex 0.162.1 generated schemas and an isolated native app-server established the local request shapes.
+An empty file-only profile returned `account: null` before any turn request.
+Its default thread returned `dangerFullAccess`; an explicit read-only thread returned `readOnly`.
+A first idle thread has readable metadata but no materialized turn history, so starting it must not require successful pagination.
+Start admission can precede publication of active status, and `turn/start` may append to a turn that became active meanwhile.
+The internal result names the RPC method and returned turn ID; it does not promise a newly created turn or model completion.
+The optional installed-server control waits for actual active status before requiring the steer path and withholds an actual turn response to check uncertainty without a retry.
+
+These accountless controls establish local RPC admission and omission of policy overrides, not successful model execution or sandbox enforcement.
+Account-backed model checks need separate bounded owner approval.
+At this phase there is no production caller or advertised remote-chat capability, and #1207 remains open.

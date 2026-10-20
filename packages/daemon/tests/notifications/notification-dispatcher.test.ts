@@ -15,6 +15,7 @@ import {
   selectPushCategory,
   terminalNoticeId,
 } from '../../src/notifications/notification-dispatcher.ts';
+import { LegacyPushError } from '../../src/notifications/push-client.ts';
 import type { PTYSession } from '../../src/pty/pty-session.ts';
 import { SessionRegistry } from '../../src/session/session-registry.ts';
 
@@ -616,7 +617,11 @@ describe('NotificationDispatcher.maybePush', () => {
       {
         sessionRegistry: registry,
         deviceTokens,
-        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        pushConfig: () => ({
+          signalingUrl: 'ws://x',
+          legacyEnabled: true,
+          pushSecret: 'owned-test-secret',
+        }),
         getPrimarySessionId: () => null,
         pushFn,
       },
@@ -828,7 +833,11 @@ describe('NotificationDispatcher.dismiss (#585 P7)', () => {
       {
         sessionRegistry: registry,
         deviceTokens,
-        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        pushConfig: () => ({
+          signalingUrl: 'ws://x',
+          legacyEnabled: true,
+          pushSecret: 'owned-test-secret',
+        }),
         getPrimarySessionId: () => null,
         pushFn,
       },
@@ -892,7 +901,11 @@ describe('NotificationDispatcher.dismiss (#585 P7)', () => {
       {
         sessionRegistry: registry,
         deviceTokens,
-        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        pushConfig: () => ({
+          signalingUrl: 'ws://x',
+          legacyEnabled: true,
+          pushSecret: 'owned-test-secret',
+        }),
         getPrimarySessionId: () => null,
         pushFn: fn,
         ...(pruneToken ? { pruneToken } : {}),
@@ -912,7 +925,7 @@ describe('NotificationDispatcher.dismiss (#585 P7)', () => {
     const flaky: PushFn = async () => {
       calls++;
       if (calls === 1) {
-        throw new Error('Push trigger failed: 429 {"error":"RATE_LIMITED"}');
+        throw new LegacyPushError('LEGACY_PUSH_REJECTED', 429);
       }
     };
     makeWith(flaky).dismiss(SID, QID);
@@ -931,9 +944,7 @@ describe('NotificationDispatcher.dismiss (#585 P7)', () => {
     let calls = 0;
     const dead: PushFn = async () => {
       calls++;
-      throw new Error(
-        'Push trigger failed: 502 {"success":false,"tokenInvalid":true,"error":"APNS 400: BadDeviceToken"}',
-      );
+      throw new LegacyPushError('LEGACY_PUSH_REJECTED', 502, true);
     };
     makeWith(dead, (t) => prunedTokens.push(t)).dismiss(SID, QID);
     await waitUntil(() => prunedTokens.length === 1);
@@ -961,7 +972,11 @@ describe('NotificationDispatcher delivery outcome (#603 Phase 1)', () => {
       {
         sessionRegistry: registry,
         deviceTokens,
-        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        pushConfig: () => ({
+          signalingUrl: 'ws://x',
+          legacyEnabled: true,
+          pushSecret: 'owned-test-secret',
+        }),
         getPrimarySessionId: () => null,
         pushFn,
       },
@@ -1016,7 +1031,7 @@ describe('NotificationDispatcher delivery outcome (#603 Phase 1)', () => {
     register(false);
     addToken('a');
     const failPush: PushFn = async () => {
-      throw new Error('Push trigger failed: 502 {"error":"APNS 400: BadDeviceToken"}');
+      throw new LegacyPushError('LEGACY_PUSH_REJECTED', 502, true);
     };
     expect(await make(failPush).maybePush(SID, question('q1', [yesOpt, noOpt]))).toBe('failed');
   });
@@ -1027,7 +1042,7 @@ describe('NotificationDispatcher delivery outcome (#603 Phase 1)', () => {
     let calls = 0;
     const failPush: PushFn = async () => {
       calls++;
-      throw new Error('Push trigger failed: 502 {"error":"APNS 400: BadDeviceToken"}');
+      throw new LegacyPushError('LEGACY_PUSH_REJECTED', 502, true);
     };
     expect(await make(failPush).maybePush(SID, question('q1', [yesOpt, noOpt]))).toBe('failed');
     expect(calls).toBe(1);
@@ -1039,7 +1054,7 @@ describe('NotificationDispatcher delivery outcome (#603 Phase 1)', () => {
     let calls = 0;
     const flakyPush: PushFn = async () => {
       calls++;
-      if (calls === 1) throw new Error('Push trigger failed: 429 rate limited');
+      if (calls === 1) throw new LegacyPushError('LEGACY_PUSH_REJECTED', 429);
     };
     expect(await make(flakyPush).maybePush(SID, question('q1', [yesOpt, noOpt]))).toBe('pushed');
     expect(calls).toBe(2);
@@ -1051,7 +1066,7 @@ describe('NotificationDispatcher delivery outcome (#603 Phase 1)', () => {
     let calls = 0;
     const always429: PushFn = async () => {
       calls++;
-      throw new Error('Push trigger failed: 429 rate limited');
+      throw new LegacyPushError('LEGACY_PUSH_REJECTED', 429);
     };
     expect(await make(always429).maybePush(SID, question('q1', [yesOpt, noOpt]))).toBe('failed');
     expect(calls).toBe(3); // 1 initial + MAX_PUSH_RETRIES (2)
@@ -1063,7 +1078,7 @@ describe('NotificationDispatcher delivery outcome (#603 Phase 1)', () => {
     addToken('live');
     const mixedPush: PushFn = async (_url, token) => {
       if (token === 'dead') {
-        throw new Error('Push trigger failed: 502 {"error":"APNS 400: BadDeviceToken"}');
+        throw new LegacyPushError('LEGACY_PUSH_REJECTED', 502, true);
       }
     };
     expect(await make(mixedPush).maybePush(SID, question('q1', [yesOpt, noOpt]))).toBe('pushed');
@@ -1074,7 +1089,7 @@ describe('NotificationDispatcher delivery outcome (#603 Phase 1)', () => {
     addToken('a');
     addToken('b');
     const allFail: PushFn = async () => {
-      throw new Error('Push trigger failed: 502 {"error":"APNS 400: BadDeviceToken"}');
+      throw new LegacyPushError('LEGACY_PUSH_REJECTED', 502, true);
     };
     expect(await make(allFail).maybePush(SID, question('q1', [yesOpt, noOpt]))).toBe('failed');
   });
@@ -1103,7 +1118,11 @@ describe('NotificationDispatcher held escalation (#603 Phase 3)', () => {
       {
         sessionRegistry: registry,
         deviceTokens,
-        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        pushConfig: () => ({
+          signalingUrl: 'ws://x',
+          legacyEnabled: true,
+          pushSecret: 'owned-test-secret',
+        }),
         getPrimarySessionId: () => null,
         pushFn: capturePush,
       },
@@ -1140,13 +1159,17 @@ describe('NotificationDispatcher held escalation (#603 Phase 3)', () => {
     register(true); // client attached, but...
     addToken('a');
     const failPush: PushFn = async () => {
-      throw new Error('Push trigger failed: 502 {"error":"APNS 400: BadDeviceToken"}');
+      throw new LegacyPushError('LEGACY_PUSH_REJECTED', 502, true);
     };
     const d = new NotificationDispatcher(
       {
         sessionRegistry: registry,
         deviceTokens,
-        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        pushConfig: () => ({
+          signalingUrl: 'ws://x',
+          legacyEnabled: true,
+          pushSecret: 'owned-test-secret',
+        }),
         getPrimarySessionId: () => null,
         pushFn: failPush,
       },
@@ -1183,42 +1206,45 @@ describe('NotificationDispatcher held escalation (#603 Phase 3)', () => {
   });
 });
 
-describe('isRetriablePushError (#603 Phase 1)', () => {
-  test('permanent APNS token rejections are NOT retriable (even wrapped as 502)', () => {
-    expect(
-      isRetriablePushError(
-        new Error('Push trigger failed: 502 {"error":"APNS 400: BadDeviceToken"}'),
-      ),
-    ).toBe(false);
-    expect(
-      isRetriablePushError(new Error('Push trigger failed: 410 {"reason":"Unregistered"}')),
-    ).toBe(false);
-    expect(isRetriablePushError(new Error('Push trigger failed: 400 DeviceTokenNotForTopic'))).toBe(
-      false,
-    );
+describe('isRetriablePushError (#603 Phase 1, #1200)', () => {
+  const rejected = (status: number, tokenInvalid = false) =>
+    new LegacyPushError('LEGACY_PUSH_REJECTED', status, tokenInvalid);
+
+  test('a permanent token rejection is NOT retriable, even wrapped as a 502', () => {
+    expect(isRetriablePushError(rejected(502, true))).toBe(false);
+    expect(isRetriablePushError(rejected(410, true))).toBe(false);
   });
 
-  test('a transient 429 / 5xx is retriable', () => {
-    expect(isRetriablePushError(new Error('Push trigger failed: 429 rate limited'))).toBe(true);
-    expect(isRetriablePushError(new Error('Push trigger failed: 503 unavailable'))).toBe(true);
-    expect(isRetriablePushError(new Error('Push trigger failed: 500 internal'))).toBe(true);
+  test('a 429 or any 5xx the Worker did not mark as a dead token is retriable', () => {
+    expect(isRetriablePushError(rejected(429))).toBe(true);
+    expect(isRetriablePushError(rejected(502))).toBe(true);
+    expect(isRetriablePushError(rejected(503))).toBe(true);
+    expect(isRetriablePushError(rejected(500))).toBe(true);
   });
 
-  test('network-level errors (no HTTP response) are retriable', () => {
-    expect(isRetriablePushError(new TypeError('Failed to fetch'))).toBe(true);
-    expect(isRetriablePushError(new Error('connect ECONNREFUSED 127.0.0.1:8787'))).toBe(true);
-    expect(isRetriablePushError(new Error('getaddrinfo ENOTFOUND remi-signaling'))).toBe(true);
+  test('an uncertain send (the response was lost) is not retried: a repeat could deliver twice', () => {
+    expect(isRetriablePushError(new LegacyPushError('LEGACY_PUSH_UNCERTAIN'))).toBe(false);
   });
 
-  test('a permanent reason wins even if the message also carries a 5xx status', () => {
-    // The Worker wraps a BadDeviceToken as 502; the permanent reason must take
-    // precedence over the retriable 5xx status.
-    expect(isRetriablePushError(new Error('Push trigger failed: 502 BadDeviceToken'))).toBe(false);
+  test('policy refusals are not transient', () => {
+    for (const code of [
+      'LEGACY_PUSH_DISABLED',
+      'LEGACY_PUSH_SECRET_REQUIRED',
+      'LEGACY_PUSH_NOT_ELIGIBLE',
+      'LEGACY_PUSH_INVALID_URL',
+      'LEGACY_PUSH_INVALID_CONTENT',
+    ] as const)
+      expect(isRetriablePushError(new LegacyPushError(code))).toBe(false);
   });
 
-  test('a 4xx (non-token) is not retriable', () => {
-    expect(isRetriablePushError(new Error('Push trigger failed: 401 unauthorized'))).toBe(false);
-    expect(isRetriablePushError(new Error('Push trigger failed: 400 bad request'))).toBe(false);
+  test('a 4xx is not retriable', () => {
+    expect(isRetriablePushError(rejected(401))).toBe(false);
+    expect(isRetriablePushError(rejected(400))).toBe(false);
+  });
+
+  test('only what the sender throws counts: a message that merely looks like one does not', () => {
+    expect(isRetriablePushError(new Error('Push trigger failed: 429 rate limited'))).toBe(false);
+    expect(isRetriablePushError(new TypeError('Failed to fetch'))).toBe(false);
   });
 });
 
@@ -1240,7 +1266,11 @@ describe('NotificationDispatcher token pruning (#603 Phase 6)', () => {
       {
         sessionRegistry: registry,
         deviceTokens,
-        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        pushConfig: () => ({
+          signalingUrl: 'ws://x',
+          legacyEnabled: true,
+          pushSecret: 'owned-test-secret',
+        }),
         getPrimarySessionId: () => null,
         pushFn,
         pruneToken: (t) => pruned.push(t),
@@ -1267,9 +1297,7 @@ describe('NotificationDispatcher token pruning (#603 Phase 6)', () => {
     register();
     addToken('dead');
     const fail: PushFn = async () => {
-      throw new Error(
-        'Push trigger failed: 502 {"error":"APNS 400: BadDeviceToken","tokenInvalid":true}',
-      );
+      throw new LegacyPushError('LEGACY_PUSH_REJECTED', 502, true);
     };
     await make(fail).maybePush(SID, question('q1', [yesOpt, noOpt]));
     expect(pruned).toEqual(['dead']);
@@ -1282,7 +1310,7 @@ describe('NotificationDispatcher token pruning (#603 Phase 6)', () => {
     register();
     addToken('t');
     const fail: PushFn = async () => {
-      throw new Error('Push trigger failed: 401 unauthorized');
+      throw new LegacyPushError('LEGACY_PUSH_REJECTED', 401);
     };
     await make(fail).maybePush(SID, question('q1', [yesOpt, noOpt]));
     expect(pruned).toEqual([]);
@@ -1320,7 +1348,11 @@ describe('NotificationDispatcher.refreshDeviceTokens (#690)', () => {
       {
         sessionRegistry: registry,
         deviceTokens,
-        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        pushConfig: () => ({
+          signalingUrl: 'ws://x',
+          legacyEnabled: true,
+          pushSecret: 'owned-test-secret',
+        }),
         getPrimarySessionId: () => null,
         pushFn: async () => {},
         refreshDeviceTokens: () => {
@@ -1341,7 +1373,11 @@ describe('NotificationDispatcher.refreshDeviceTokens (#690)', () => {
       {
         sessionRegistry: registry,
         deviceTokens,
-        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        pushConfig: () => ({
+          signalingUrl: 'ws://x',
+          legacyEnabled: true,
+          pushSecret: 'owned-test-secret',
+        }),
         getPrimarySessionId: () => null,
         pushFn: async () => {
           pushed = true;
@@ -1368,7 +1404,11 @@ describe('NotificationDispatcher.refreshDeviceTokens (#690)', () => {
       {
         sessionRegistry: registry,
         deviceTokens,
-        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        pushConfig: () => ({
+          signalingUrl: 'ws://x',
+          legacyEnabled: true,
+          pushSecret: 'owned-test-secret',
+        }),
         getPrimarySessionId: () => null,
         pushFn: async () => {
           pushed = true;
@@ -1382,19 +1422,18 @@ describe('NotificationDispatcher.refreshDeviceTokens (#690)', () => {
   });
 });
 
-describe('isTokenInvalidError (#603 Phase 6)', () => {
-  test('matches the structured tokenInvalid flag and the APNS token reasons', () => {
-    expect(isTokenInvalidError(new Error('502 {"error":"x","tokenInvalid":true}'))).toBe(true);
-    expect(isTokenInvalidError(new Error('APNS 400: BadDeviceToken'))).toBe(true);
-    expect(isTokenInvalidError(new Error('410 {"reason":"Unregistered"}'))).toBe(true);
-    expect(isTokenInvalidError(new Error('DeviceTokenNotForTopic'))).toBe(true);
+describe('isTokenInvalidError (#603 Phase 6, #1200)', () => {
+  test('matches the Worker structured tokenInvalid verdict the sender keeps', () => {
+    expect(isTokenInvalidError(new LegacyPushError('LEGACY_PUSH_REJECTED', 502, true))).toBe(true);
   });
 
-  test('does NOT match transient / auth / network errors', () => {
-    expect(isTokenInvalidError(new Error('Push trigger failed: 429 rate limited'))).toBe(false);
-    expect(isTokenInvalidError(new Error('Push trigger failed: 401 unauthorized'))).toBe(false);
-    expect(isTokenInvalidError(new Error('Push trigger failed: 503 unavailable'))).toBe(false);
-    expect(isTokenInvalidError(new TypeError('Failed to fetch'))).toBe(false);
+  test('does NOT match transient, auth, uncertain or look-alike errors', () => {
+    expect(isTokenInvalidError(new LegacyPushError('LEGACY_PUSH_REJECTED', 429))).toBe(false);
+    expect(isTokenInvalidError(new LegacyPushError('LEGACY_PUSH_REJECTED', 401))).toBe(false);
+    expect(isTokenInvalidError(new LegacyPushError('LEGACY_PUSH_REJECTED', 503))).toBe(false);
+    expect(isTokenInvalidError(new LegacyPushError('LEGACY_PUSH_UNCERTAIN'))).toBe(false);
+    expect(isTokenInvalidError(new Error('502 {"error":"x","tokenInvalid":true}'))).toBe(false);
+    expect(isTokenInvalidError(new Error('APNS 400: BadDeviceToken'))).toBe(false);
   });
 });
 
@@ -1415,7 +1454,11 @@ describe('NotificationDispatcher per-device push preferences (#968)', () => {
       {
         sessionRegistry: registry,
         deviceTokens,
-        pushConfig: () => ({ signalingUrl: 'ws://x' }),
+        pushConfig: () => ({
+          signalingUrl: 'ws://x',
+          legacyEnabled: true,
+          pushSecret: 'owned-test-secret',
+        }),
         getPrimarySessionId: () => null,
         pushFn,
       },

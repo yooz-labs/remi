@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.json",
+  "include": ["cli-native-answer-route.ts", "../../packages/daemon/src/cli/qrcode.d.ts"],
+  "exclude": []
+}

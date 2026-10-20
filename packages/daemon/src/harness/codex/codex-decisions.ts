@@ -52,10 +52,16 @@
  */
 
 import { escapeUnsafeText, generateId } from '@remi/shared';
-import type { Question, UUID } from '@remi/shared';
+import type { Question, ResolvedBy, UUID } from '@remi/shared';
 
 import type { SessionRegistry } from '../../session/session-registry.ts';
-import type { HeldAnswer, HeldAnswerOutcome } from '../decision.ts';
+import {
+  type AnswerCommit,
+  type AnswerValidity,
+  type HeldAnswer,
+  type HeldAnswerOutcome,
+  applyAnswerCommit,
+} from '../decision.ts';
 import type { DecisionChannel } from '../types.ts';
 import type { AppServerClient } from './app-server-client.ts';
 import type { RequestId } from './app-server-protocol.ts';
@@ -97,10 +103,15 @@ export interface CodexDecisionsDeps {
   /** The session's working directory, as `realpath` resolves it: a command that runs elsewhere says where on its card. */
   sessionDirectory: string;
   client: Pick<AppServerClient, 'respond'>;
-  sessionRegistry: Pick<SessionRegistry, 'removeQuestion'>;
+  sessionRegistry: Pick<SessionRegistry, 'removeQuestion' | 'getQuestion'>;
   /** Show a card: `messageApi.handleQuestion(q, { held: true })`, which stamps `held`. */
   present: (q: Question) => void;
-  onQuestionResolved: (sid: UUID, qid: UUID, reason: 'answered' | 'cancelled') => void;
+  onQuestionResolved: (
+    sid: UUID,
+    qid: UUID,
+    reason: 'answered' | 'cancelled',
+    resolvedBy?: ResolvedBy,
+  ) => void;
   /** The tracker's `role`: is this thread the session's, or a subagent's, or neither? */
   threadRole: (threadId: string) => ThreadRole | null;
   log: (message: string) => void;
@@ -159,6 +170,24 @@ export class CodexDecisions implements DecisionChannel {
   private disposed = false;
 
   constructor(private readonly deps: CodexDecisionsDeps) {}
+
+  /** Codex owns the pending request, with no remi hold timer to invent (#1200). */
+  answerValidity(questionId: UUID): AnswerValidity {
+    const entry = this.byId.get(questionId);
+    const question = this.deps.sessionRegistry.getQuestion(this.deps.sessionId, questionId);
+    if (
+      this.disposed ||
+      !entry ||
+      entry.state !== 'live' ||
+      !entry.spec.actionable ||
+      this.deps.threadRole(entry.spec.threadId) !== 'main' ||
+      !question ||
+      question.isAnswered ||
+      question.terminalOnly
+    )
+      return { kind: 'closed' };
+    return { kind: 'current-prompt' };
+  }
 
   /** A server request arrived: a card if it is a request this session may show, else nothing, and never an answer. */
   handleServerRequest(req: { id: RequestId; method: string; params: unknown }): void {
@@ -246,7 +275,7 @@ export class CodexDecisions implements DecisionChannel {
     this.disposed = true;
   }
 
-  answerHeld(questionId: UUID, answer: HeldAnswer): HeldAnswerOutcome {
+  answerHeld(questionId: UUID, answer: HeldAnswer, commit?: AnswerCommit): HeldAnswerOutcome {
     const entry = this.byId.get(questionId);
     // Never `unknown`, whatever the id: the handlers type into the PTY for `unknown`, and nothing
     // is typed for a Codex answer. A card this session never showed has no hold; it is closed.
@@ -278,7 +307,14 @@ export class CodexDecisions implements DecisionChannel {
     let sent = false;
     let encoded = true;
     try {
-      sent = this.deps.client.respond(spec.requestId, mapped.result);
+      // Only the actual socket result is inside the final authorization lock.
+      // Link notices and card cleanup below may themselves read authority.
+      const committed = applyAnswerCommit(
+        () => this.deps.client.respond(spec.requestId, mapped.result),
+        commit,
+      );
+      if (committed.kind === 'refused') return 'authority-refused';
+      sent = committed.value;
     } catch (error) {
       encoded = false;
       this.deps.log(
@@ -313,7 +349,15 @@ export class CodexDecisions implements DecisionChannel {
     return entry?.state === 'live' && entry.spec.actionable;
   }
 
-  // The chat guard and Stop read these two, and neither can reach a Codex session: phone chat is
+  /** A sent answer is still pending until Codex resolves it; retired main requests also block. */
+  blocksStructuredChat(): boolean {
+    return (
+      !this.disposed &&
+      [...this.byKey.values()].some((entry) => this.deps.threadRole(entry.spec.threadId) === 'main')
+    );
+  }
+
+  // The legacy typed-chat guard and Stop read these two, and neither can reach a Codex session: phone chat is
   // refused earlier (`acceptsTypedChat`) and a Stop force-closes (`gracefulExitInput` is null). A
   // typed chat path (phase 6) adds what it needs; nothing here pretends to know more.
   hasMainHold(): boolean {
@@ -327,13 +371,17 @@ export class CodexDecisions implements DecisionChannel {
   /** The app-server's `serverRequest/resolved` is authoritative; an Escape sent through remi needs nothing here. */
   noteTerminalEscape(): void {}
 
-  forceRelease(reason: string): { resolved: number } {
+  /**
+   * Retire every card. `resolvedBy` names the cause when the caller knows it (#1235): a rotation
+   * is the harness moving to a new thread; unstick and the session ending name none.
+   */
+  forceRelease(reason: string, resolvedBy?: ResolvedBy): { resolved: number } {
     this.clock.clear(this.sweepTimer);
     this.sweepTimer = undefined;
     let resolved = 0;
     for (const entry of [...this.byId.values()]) {
       const shown = entry.state !== 'answered';
-      this.forget(entry, shown, 'codex:released');
+      this.forget(entry, shown, 'codex:released', resolvedBy);
       if (shown) resolved += 1;
     }
     if (resolved > 0) this.deps.log(`released ${resolved} card(s): ${reason}`);
@@ -351,7 +399,7 @@ export class CodexDecisions implements DecisionChannel {
   }
 
   /** Stop tracking `entry`, and dismiss its card from every client when `dismiss` (else the caller already did, or there is none). */
-  private forget(entry: Entry, dismiss: boolean, signal: string): void {
+  private forget(entry: Entry, dismiss: boolean, signal: string, resolvedBy?: ResolvedBy): void {
     if (entry.confirmTimer !== undefined) {
       this.clock.clear(entry.confirmTimer);
       entry.confirmTimer = undefined;
@@ -369,7 +417,8 @@ export class CodexDecisions implements DecisionChannel {
       );
     }
     try {
-      this.deps.onQuestionResolved(sessionId, qid, 'cancelled');
+      // serverRequest/resolved does not say who answered, so only a known cause is named.
+      this.deps.onQuestionResolved(sessionId, qid, 'cancelled', resolvedBy);
     } catch (error) {
       this.deps.log(
         `could not tell the clients (${error instanceof Error ? error.name : typeof error})`,

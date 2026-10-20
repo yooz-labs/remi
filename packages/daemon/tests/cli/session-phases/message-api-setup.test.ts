@@ -168,7 +168,7 @@ describe('createMessageApiForSession', () => {
     expect(emitted).not.toContain('harnessSessionId');
   });
 
-  test('the log line for a detected question names its text, and only its length when told to redact it (#1178)', () => {
+  test('actual question and status callbacks never log personal text, even with an old opt-out (#1200)', () => {
     const lines: string[] = [];
     configureLogger({ writeLog: (line) => lines.push(line) });
     const sessionId = sessionRegistry.createSessionId();
@@ -178,7 +178,7 @@ describe('createMessageApiForSession', () => {
       handleStatusChange: () => {},
     } as never);
     const q = { ...questionWith([yesOpt, noOpt]), text: 'Allow Codex to run: sk-command-secret' };
-    for (const redactQuestionLogs of [false, true]) {
+    for (const redactQuestionLogs of [undefined, false, true]) {
       const { messageApi } = createMessageApiForSession(
         {
           sessionRegistry,
@@ -188,17 +188,18 @@ describe('createMessageApiForSession', () => {
           updateRemiStatus: () => {},
           maxBulletLength: 4000,
           sendMessage: () => {},
-          redactQuestionLogs,
+          ...(redactQuestionLogs === undefined ? {} : { redactQuestionLogs }),
         },
         sessionId,
       );
       messageApi.handleQuestion(q, { held: true });
+      messageApi.handleStatusChange('executing', 'sk-private-status-context');
     }
     const detected = lines.filter((l) => l.includes('Question detected'));
-    expect(detected).toHaveLength(2);
-    expect(detected[0]).toContain('Allow Codex to run: sk-command-secret');
-    expect(detected[1]).toContain(`(${q.text.length} chars)`);
-    expect(detected[1]).not.toContain('sk-command-secret');
+    expect(detected).toHaveLength(3);
+    expect(detected.every((line) => line.includes(`(${q.text.length} chars)`))).toBe(true);
+    expect(lines.join('\n')).not.toContain('sk-command-secret');
+    expect(lines.join('\n')).not.toContain('sk-private-status-context');
   });
 
   test('a held push is stamped held on the wire and in the registry', () => {
@@ -221,6 +222,43 @@ describe('createMessageApiForSession', () => {
     const pending = [...(sessionRegistry.getSession(sessionId)?.currentQuestions.values() ?? [])];
     expect(pending).toHaveLength(1);
     expect(pending[0]?.held).toBe(true);
+  });
+
+  test('the answer path is stamped on the wire; a terminal-only card is none, and no path is unknown (#1235)', () => {
+    const sessionId = sessionRegistry.createSessionId();
+    sessionRegistry.registerSession(sessionId, '/test/dir', fakePTY(), {
+      handleMessage: () => {},
+      handleQuestion: () => {},
+      handleStatusChange: () => {},
+    } as never);
+    const { messageApi } = build(sessionId);
+    const structured = {
+      ...questionWith([yesOpt, noOpt]),
+      id: 'aaaaaaaa-1111-4111-8111-111111111111' as UUID,
+    };
+    const terminalOnly = {
+      ...questionWith([yesOpt, noOpt]),
+      id: 'bbbbbbbb-1111-4111-8111-111111111111' as UUID,
+      terminalOnly: true,
+    };
+    const unknown = {
+      ...questionWith([yesOpt, noOpt]),
+      id: 'cccccccc-1111-4111-8111-111111111111' as UUID,
+    };
+    messageApi.handleQuestion(structured, { held: true, answerPath: 'structured' });
+    messageApi.handleQuestion(terminalOnly, { held: true, answerPath: 'structured' });
+    messageApi.handleQuestion(unknown, { held: true });
+    const paths = sendCalls
+      .map((c) => c.message)
+      .filter((m) => m.type === 'question')
+      .map((m) => (m.type === 'question' ? [m.question.id, m.question.answerPath] : []));
+    expect(paths).toEqual([
+      [structured.id, 'structured'],
+      [terminalOnly.id, 'none'],
+      [unknown.id, undefined],
+    ]);
+    const stored = [...(sessionRegistry.getSession(sessionId)?.currentQuestions.values() ?? [])];
+    expect(stored.find((q) => q.id === terminalOnly.id)?.answerPath).toBe('none');
   });
 
   test('onQuestion does NOT push when a client is attached', () => {

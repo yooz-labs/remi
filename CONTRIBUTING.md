@@ -2,7 +2,7 @@
 
 Thanks for considering a contribution.
 Remi is the Yooz ecosystem's remote monitor for Claude Code (and other coding agent) sessions; PRs to the Apache-2.0 packages that improve correctness, latency or multi-machine discovery are welcome.
-The web client, the signaling relay and the native Mac app take outside changes only by prior written agreement; see [Outside contributions to the PolyForm Shield packages](#outside-contributions-to-the-polyform-shield-packages).
+The web client, the signaling relay, the WebView Mac app and the native Mac and iPhone apps take outside changes only by prior written agreement; see [Outside contributions to the PolyForm Shield packages](#outside-contributions-to-the-polyform-shield-packages).
 
 ## Before you start
 
@@ -10,7 +10,7 @@ The web client, the signaling relay and the native Mac app take outside changes 
   - `packages/daemon` and `packages/shared`: [Apache License 2.0](packages/daemon/LICENSE).
     Outside contributions are welcome and are licensed under that license.
   - Anything outside the package directories (scripts, docs, CI configuration): Apache License 2.0, on the same terms.
-  - `packages/web`, `packages/signaling` and `packages/macos`: [PolyForm Shield 1.0.0](packages/web/LICENSE.md).
+  - `packages/web`, `packages/signaling`, `packages/macos` and `packages/native`: [PolyForm Shield 1.0.0](packages/web/LICENSE.md).
     **We do not accept outside contributions to these packages without a prior written agreement**; see [Outside contributions to the PolyForm Shield packages](#outside-contributions-to-the-polyform-shield-packages).
     The strategic rationale lives in [yooz-engine/LICENSING.md](https://github.com/yooz-labs/yooz-engine/blob/main/LICENSING.md).
 
@@ -37,7 +37,7 @@ PolyForm Shield 1.0.0 does not allow a licensee to sublicense (see "No Other Rig
 The first outside change merged into one of these packages could therefore limit what Yooz Labs can later do with the package without that contributor's consent.
 So the rule is simple:
 
-- A pull request that changes a file under `packages/web`, `packages/signaling` or `packages/macos` is closed without review,
+- A pull request that changes a file under `packages/web`, `packages/signaling`, `packages/macos` or `packages/native` is closed without review,
   unless we agreed on the contribution terms with you first, in writing.
 - If you want to contribute to one of them, open an issue or write to **dev@yooz.info** before you write code.
   We decide case by case whether to proceed.

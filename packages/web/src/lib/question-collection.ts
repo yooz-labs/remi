@@ -7,8 +7,8 @@
  * collapses via the richer-wins guard. Pure functions, unit-tested directly.
  */
 
-import { MAIN_AGENT_ID } from '@remi/shared';
 import type { AgentStatus, UIQuestion, UIQuestionResolvedReason } from '@/types';
+import { MAIN_AGENT_ID } from '@remi/shared';
 import { shouldKeepExisting } from './question-merge';
 
 /**
@@ -66,8 +66,12 @@ export function applyIncomingQuestion(
   if (inReplay) return questions;
   const key = questionKey(uiQuestion.sessionId, uiQuestion.agentId);
   const existing = questions.get(key);
-  if (existing && shouldKeepExisting(existing, uiQuestion)) return questions;
+  if (existing?.awaitingRelayOutcome && existing.id === uiQuestion.id) return questions;
+  if (existing && !existing.awaitingRelayOutcome && shouldKeepExisting(existing, uiQuestion))
+    return questions;
   const next = new Map(questions);
+  // A later prompt cannot overwrite the receipt for an earlier submitted answer.
+  if (existing?.awaitingRelayOutcome) next.set(`${key}#relay-outcome:${existing.id}`, existing);
   next.set(key, uiQuestion);
   return next;
 }
@@ -96,7 +100,8 @@ export function hasSessionQuestion(
 }
 
 /**
- * Return a map with all of a session's questions removed. Returns the SAME
+ * Return a map with the session's actionable questions removed; relay outcome
+ * receipts survive a binding reset until correlation/deadline or explicit dismissal. Returns the SAME
  * reference when nothing matched, so callers keep React's no-op-update
  * optimization (`setQuestions(prev => clearSessionQuestions(prev, id))`).
  */
@@ -106,7 +111,7 @@ export function clearSessionQuestions(
 ): Map<string, UIQuestion> {
   const keys: string[] = [];
   for (const [key, q] of questions) {
-    if (q.sessionId === sessionId) keys.push(key);
+    if (q.sessionId === sessionId && !q.awaitingRelayOutcome) keys.push(key);
   }
   if (keys.length === 0) return questions;
   const next = new Map(questions);
@@ -208,7 +213,7 @@ export function restoreRefusedAnswer(
   }
   for (const [key, q] of questions) {
     if (q.sessionId !== sessionId || q.id !== lastAnsweredId) continue;
-    if (q.answeredWith == null && q.submitting !== true) continue;
+    if (q.awaitingRelayOutcome || (q.answeredWith == null && q.submitting !== true)) continue;
     const next = new Map(questions);
     const restored = { ...q };
     delete (restored as { answeredWith?: string }).answeredWith;
@@ -238,7 +243,7 @@ export function clearMainQuestionOnStatus(
   if (!statusClearsMainQuestion(status)) return questions;
   const key = questionKey(sessionId);
   const existing = questions.get(key);
-  if (!existing) return questions;
+  if (!existing || existing.awaitingRelayOutcome) return questions;
   const freshnessMs = options.freshnessMs ?? STATUS_CLEAR_FRESHNESS_MS;
   const clock = options.now ?? Date.now;
   const ageMs = clock() - Date.parse(existing.timestamp);
@@ -263,7 +268,8 @@ export interface QuestionResolution {
 /**
  * Apply a `question_resolved` broadcast to the card matching (sessionId,
  * questionId), located by `id` because the message carries no agentId (#652).
- * The card always ends up resolved; HOW depends on who acted:
+ * A relay outcome receipt stays until its correlated result/deadline (#1199).
+ * Otherwise the card ends up resolved; HOW depends on who acted:
  *
  * - Answered LOCALLY (`answeredWith`) or already traced (duplicate broadcast):
  *   left untouched — those own their own removal timer. `fade: false`.
@@ -283,7 +289,7 @@ export function resolveQuestionCard(
 ): QuestionResolution {
   for (const [key, q] of questions) {
     if (q.sessionId !== sessionId || q.id !== questionId) continue;
-    if (q.answeredWith != null || q.resolvedReason != null) {
+    if (q.awaitingRelayOutcome || q.answeredWith != null || q.resolvedReason != null) {
       return { questions, fade: false };
     }
     if (q.submitting) {
@@ -300,7 +306,7 @@ export function resolveQuestionCard(
 
 /** Whether a card is still awaiting the user (drives the session's pending badge). */
 export function isQuestionPending(q: UIQuestion): boolean {
-  return q.answeredWith == null && q.resolvedReason == null;
+  return !q.awaitingRelayOutcome && q.answeredWith == null && q.resolvedReason == null;
 }
 
 /**
@@ -313,7 +319,12 @@ export function isQuestionPending(q: UIQuestion): boolean {
  * resolve broadcast must not rip it out early.
  */
 function isProtectedFromPruning(q: UIQuestion): boolean {
-  return q.submitting === true || q.answeredWith != null || q.resolvedReason != null;
+  return (
+    q.awaitingRelayOutcome === true ||
+    q.submitting === true ||
+    q.answeredWith != null ||
+    q.resolvedReason != null
+  );
 }
 
 /**

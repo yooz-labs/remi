@@ -7,6 +7,41 @@
  */
 
 import type { ConnectionId } from '@/types';
+import { DAEMON_BASE_PORT } from '@remi/shared';
+
+/** Use the actual WebSocket port, including its standard implicit port. */
+export function parseConnectionId(url: string): ConnectionId {
+  try {
+    const parsed = new URL(url);
+    const host = normalizeConnectionHost(parsed.hostname || 'localhost');
+    const port =
+      parsed.port ||
+      (parsed.protocol === 'wss:'
+        ? '443'
+        : parsed.protocol === 'ws:'
+          ? '80'
+          : String(DAEMON_BASE_PORT));
+    return `${host}:${port}` as ConnectionId;
+  } catch (error) {
+    console.warn(`[ConnectionManager] Failed to parse URL "${url}":`, error);
+    return normalizeConnectionHost(url) as ConnectionId;
+  }
+}
+
+/** Preserve the transport and certificate hostname; carry no parent query or credentials. */
+export function childDaemonUrl(parentUrl: string, port: number): string | null {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  try {
+    const parent = new URL(parentUrl);
+    if (parent.protocol !== 'ws:' && parent.protocol !== 'wss:') return null;
+    const child = new URL(parent.origin);
+    child.port = String(port);
+    child.pathname = '/ws';
+    return child.href;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Split a `host:port` connectionId into parts. IPv6-safe: the host capture is

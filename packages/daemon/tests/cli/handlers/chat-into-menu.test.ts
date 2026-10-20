@@ -422,11 +422,8 @@ describe('chat-into-menu trace event (#1140)', () => {
         detail: { reason: 'chat-into-menu', textLength: 'a secret message'.length },
       });
       expect(refused[0]?.['questionId']).toBeUndefined();
-      expect((refused[0]?.['detail'] as { screenValues: string[] }).screenValues).toEqual([
-        '1',
-        '2',
-        '3',
-      ]);
+      expect((refused[0]?.['detail'] as { screenOptionCount: number }).screenOptionCount).toBe(3);
+      expect(refused[0]?.['detail']).not.toHaveProperty('screenValues');
       // The text itself is never written.
       expect(JSON.stringify(traceLines(home))).not.toContain('a secret message');
     } finally {

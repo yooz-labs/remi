@@ -17,10 +17,11 @@
  */
 
 import type { ProtocolMessage, QuestionOption, TranscriptContentMessage, UUID } from '@remi/shared';
+import type { ChatSubmitOutcome, ChatSubmitRequest } from '@remi/shared';
 
 import type { MessageAPI } from '../api/message-api.ts';
 import type { PTYSession } from '../pty/index.ts';
-import type { HeldAnswer, HeldAnswerOutcome } from './decision.ts';
+import type { AnswerCommit, AnswerValidity, HeldAnswer, HeldAnswerOutcome } from './decision.ts';
 
 /**
  * Everything one session launch needs from the neutral shell in `cli.ts`
@@ -65,8 +66,10 @@ export interface DecisionScreen {
  * as: nothing held, nothing to retire, `unknown` for any answer.
  */
 export interface DecisionChannel {
+  /** The current card's answer window; delivery cannot extend it (#1200). */
+  answerValidity(questionId: UUID): AnswerValidity;
   /** Apply a phone answer to a held prompt; `unknown` when none is held for it. */
-  answerHeld(questionId: UUID, answer: HeldAnswer): HeldAnswerOutcome;
+  answerHeld(questionId: UUID, answer: HeldAnswer, commit?: AnswerCommit): HeldAnswerOutcome;
   /** Another path already removed and dismissed `questionId`; stop tracking it. */
   retireQuestion(questionId: UUID): void;
   /** Is `questionId`'s prompt held for the phone? */
@@ -101,6 +104,18 @@ export interface HarnessChat {
   readHistory(emit: (message: TranscriptContentMessage) => void): Promise<number>;
 }
 
+/** Structured input never types an Enter into an unreadable harness modal (#1207). */
+export interface HarnessStructuredChat {
+  /** Replaced on runtime/link/main-thread change; null while the writer is unavailable. */
+  context(): object | null;
+  /** The host owns the final synchronous authorization check and actual send together. */
+  submit(
+    request: ChatSubmitRequest,
+    guard: () => boolean,
+    commit: (send: () => void) => boolean,
+  ): Promise<ChatSubmitOutcome>;
+}
+
 /**
  * One launched session: the PTY (built, not yet started), how its pending
  * decisions are answered, and how to start and end it. `cli.ts` registers the
@@ -127,6 +142,7 @@ export interface HarnessSession {
    * it through `chatFor` when a client sends `transcript_load_request`.
    */
   readonly chat?: HarnessChat | undefined;
+  readonly structuredChat?: HarnessStructuredChat | undefined;
   /** Spawn the PTY. Rejects when the spawn fails; the caller marks the stored session exited. */
   start(): Promise<void>;
   /**
@@ -167,5 +183,6 @@ export interface Harness {
    * needs them, and return it unstarted. May throw (the caller lets it
    * propagate, as the inline code did).
    */
-  createSession(ctx: HarnessLaunchContext): HarnessSession;
+  /** Rejected asynchronous construction owns and joins its not-yet-returned resources. */
+  createSession(ctx: HarnessLaunchContext): HarnessSession | Promise<HarnessSession>;
 }

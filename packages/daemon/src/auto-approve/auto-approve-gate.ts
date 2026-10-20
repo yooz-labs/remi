@@ -101,10 +101,16 @@
  * removes and dismisses the card itself.
  */
 
-import type { UUID } from '@remi/shared';
+import type { ResolvedBy, UUID } from '@remi/shared';
 
 import { log, logError } from '../cli/logger.ts';
-import type { HeldAnswer, HeldAnswerOutcome } from '../harness/decision.ts';
+import {
+  type AnswerCommit,
+  type AnswerValidity,
+  type HeldAnswer,
+  type HeldAnswerOutcome,
+  applyAnswerCommit,
+} from '../harness/decision.ts';
 import { standingGrantFor } from '../hooks/hook-event-bridge.ts';
 import type { PermissionDecision, PermissionRequestHookInput } from '../hooks/index.ts';
 import {
@@ -151,6 +157,8 @@ interface Hold {
   readonly toolInput: Readonly<Record<string, unknown>>;
   readonly detachAbort: () => void;
   readonly startedAt: number;
+  /** Captured with startedAt, before the timer is installed; never extended (#1200). */
+  readonly deadlineAtMs: number;
 }
 
 /** Why a live hold was released to the terminal with no answer (#1126):
@@ -279,8 +287,10 @@ export interface AutoApproveGateDeps {
    *  passthrough multi-choice escalation (#625), none of which waits for a
    *  render. PTY question-emission is suppressed
    *  for hooked sessions (#625), so this is the SOLE push trigger for both.
-   *  Idempotent per id. */
-  onHeldEscalate?: (questionId: UUID) => void;
+   *  Idempotent per id. `answerPath` says how the card's answer reaches
+   *  Claude (#1235): `structured` for a held prompt (the hook response),
+   *  `keystroke` for a passthrough one (typed behind the screen guards). */
+  onHeldEscalate?: (questionId: UUID, answerPath: 'structured' | 'keystroke') => void;
   /**
    * How long a binary prompt's hook is held for a phone answer, in ms
    * (`[prompts] hold_seconds`, #1126). Required: a hold with no deadline
@@ -319,10 +329,12 @@ export interface AutoApproveGateDeps {
    * through remi's answer path (an external-resolution signal, a Stop /
    * SubagentStop / SessionEnd sweep, `remi unstick`), so the daemon broadcasts
    * `question_resolved` + the APNS dismissal and the card clears on every
-   * remi client (Telegram does not dismiss, #1148). NOT called for a user answer: that path (input-events
-   * `handleAnswer`) broadcasts its own 'answered' resolution. Throw-safe.
+   * remi client (Telegram does not dismiss, #1148). NOT called for a phone answer:
+   * that path (input-events `handleAnswer`) reports its own resolution, `answered`
+   * when it applied and `cancelled` when it was refused. `resolvedBy` names the
+   * cause when the gate knows it (#1235, ADR 0038). Throw-safe.
    */
-  onResolved?: (questionId: UUID, reason: 'cancelled') => void;
+  onResolved?: (questionId: UUID, reason: 'cancelled', resolvedBy?: ResolvedBy) => void;
   /** Tools whose prompt is always a design question, never binary (#572):
    *  used to classify an escalation as binary (held, #1126) vs design
    *  (passthrough, pushed immediately). AskUserQuestion and ExitPlanMode are
@@ -400,11 +412,14 @@ export class AutoApproveGate {
    * native prompt), so it is resolved through the same funnel a tool-signature
    * match uses. `SessionEnd` is real teardown and resolves everything.
    */
-  cancelStale(reason: string, opts?: { mainOnly?: boolean }): void {
+  cancelStale(reason: string, opts?: { mainOnly?: boolean; resolvedBy?: ResolvedBy }): void {
+    // #1235: the caller names the cause when it knows it (SessionEnd, a rotation: the harness);
+    // a Stop or a new prompt does not (the dialog may have been closed by a No at the terminal).
+    const resolvedBy = opts?.resolvedBy;
     if (opts?.mainOnly ?? false) {
       for (const [qid, sig] of [...this.openQuestionSignatures]) {
         if (sig.isSubagent) continue;
-        this.resolveSupersededQuestion(qid, reason, sig.toolName);
+        this.resolveSupersededQuestion(qid, reason, sig.toolName, resolvedBy);
       }
       return;
     }
@@ -412,7 +427,7 @@ export class AutoApproveGate {
     // through `resolveSupersededQuestion`, never a silent bookkeeping-only
     // delete.
     for (const [qid, sig] of [...this.openQuestionSignatures]) {
-      this.resolveSupersededQuestion(qid, reason, sig.toolName);
+      this.resolveSupersededQuestion(qid, reason, sig.toolName, resolvedBy);
     }
   }
 
@@ -429,7 +444,10 @@ export class AutoApproveGate {
   cancelStaleForAgent(agentId: string, reason: string): void {
     for (const [qid, sig] of [...this.openQuestionSignatures]) {
       if (sig.agentId !== agentId) continue;
-      this.resolveSupersededQuestion(qid, reason, sig.toolName);
+      // #1235: an agent that ended with its hold open moved on without an answer (the harness);
+      // a passthrough card may have been rejected at the terminal, so it names no cause.
+      const resolvedBy = this.holds.has(qid) ? 'harness' : undefined;
+      this.resolveSupersededQuestion(qid, reason, sig.toolName, resolvedBy);
     }
   }
 
@@ -577,6 +595,22 @@ export class AutoApproveGate {
   }
 
   /**
+   * A live hook's finite answer window (#1200). Reading it decides nothing:
+   * even if the event loop delayed the timer, an elapsed deadline is closed.
+   * `null` means this gate never held the card; the Claude adapter must still
+   * require its actual registry entry and current screen before a fallback.
+   */
+  answerValidity(questionId: UUID): AnswerValidity | null {
+    const hold = this.holds.get(questionId);
+    if (hold) {
+      return Number.isFinite(hold.deadlineAtMs) && Date.now() < hold.deadlineAtMs
+        ? { kind: 'deadline', expiresAtMs: hold.deadlineAtMs }
+        : { kind: 'closed' };
+    }
+    return this.closedHoldIds.has(questionId) ? { kind: 'closed' } : null;
+  }
+
+  /**
    * True while a MAIN-agent prompt's hook is held (#1126): its dialog is on
    * screen (it renders during the hold), so text typed into the PTY would
    * land in it and the Enter after it would confirm the highlighted option.
@@ -606,7 +640,7 @@ export class AutoApproveGate {
    * For an AskUserQuestion or ExitPlanMode (#1127), see `askDecision` and
    * `planDecision`. Anything else is refused and the hold stays.
    */
-  answerHeld(questionId: UUID, answer: HeldAnswer): HeldAnswerOutcome {
+  answerHeld(questionId: UUID, answer: HeldAnswer, commit?: AnswerCommit): HeldAnswerOutcome {
     const hold = this.holds.get(questionId);
     if (!hold) return this.closedHoldIds.has(questionId) ? 'closed' : 'unknown';
     const decision = this.decisionFor(hold, answer);
@@ -616,8 +650,11 @@ export class AutoApproveGate {
       );
       return 'refused';
     }
-    this.openQuestionSignatures.delete(questionId);
-    this.endHold(questionId, decision);
+    const committed = applyAnswerCommit(() => {
+      this.openQuestionSignatures.delete(questionId);
+      this.endHold(questionId, decision);
+    }, commit);
+    if (committed.kind === 'refused') return 'authority-refused';
     log(
       `[AutoApprove ${this.sessionTag}] Held ${questionId.slice(0, 8)} answered from the phone: ${describeDecision(decision)}`,
     );
@@ -688,8 +725,11 @@ export class AutoApproveGate {
       );
       return Promise.resolve('passthrough');
     }
+    const startedAt = Date.now();
+    const holdMs = this.deps.holdMs;
+    const deadlineAtMs = startedAt + holdMs;
     const decision = new Promise<PermissionDecision>((resolve) => {
-      const timer = setTimeout(() => this.releaseAtDeadline(qid), this.deps.holdMs);
+      const timer = setTimeout(() => this.releaseAtDeadline(qid), holdMs);
       // A hold is human-paced; it must never keep the daemon alive.
       timer.unref?.();
       const onAbort = (): void => this.onHoldAborted(qid);
@@ -702,10 +742,11 @@ export class AutoApproveGate {
         suggestions: input.permission_suggestions as readonly unknown[] | undefined,
         toolInput: input.tool_input,
         detachAbort: () => signal?.removeEventListener('abort', onAbort),
-        startedAt: Date.now(),
+        startedAt,
+        deadlineAtMs,
       });
     });
-    this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
+    this.cueHeldEscalate(qid, 'structured');
     log(
       `[AutoApprove ${this.sessionTag}] Holding ${qid.slice(0, 8)} for a phone answer (${input.tool_name}, up to ${Math.round(this.deps.holdMs / 1000)}s)`,
     );
@@ -725,7 +766,10 @@ export class AutoApproveGate {
     log(
       `[AutoApprove ${this.sessionTag}] Held ${questionId.slice(0, 8)} reached its deadline (${reason}); released to the terminal`,
     );
-    this.releaseWithNotice(questionId, 'deadline', reason);
+    // #1235: remi's own deadline is a timeout. Claude's hook timeout, inferred from the elapsed
+    // time of an abort, names no cause: a terminal No in those last seconds looks the same.
+    const resolvedBy = reason === 'hold_deadline' ? 'timeout' : undefined;
+    this.releaseWithNotice(questionId, 'deadline', reason, resolvedBy);
   }
 
   /**
@@ -734,7 +778,12 @@ export class AutoApproveGate {
    * ask, then `releaseToTerminal`. Every release of a live hold that is not
    * an answer goes through here, so none is silent.
    */
-  private releaseWithNotice(questionId: UUID, cause: TerminalReleaseCause, reason: string): void {
+  private releaseWithNotice(
+    questionId: UUID,
+    cause: TerminalReleaseCause,
+    reason: string,
+    resolvedBy?: ResolvedBy,
+  ): void {
     const notify = this.deps.onReleasedToTerminal;
     if (notify) {
       try {
@@ -744,7 +793,7 @@ export class AutoApproveGate {
       }
       this.terminalNotices.add(questionId);
     }
-    this.releaseToTerminal(questionId, reason);
+    this.releaseToTerminal(questionId, reason, resolvedBy);
   }
 
   /**
@@ -756,10 +805,10 @@ export class AutoApproveGate {
    * costs the phone its card, never a decision, and keeping the prompt open
    * keeps its redraws from becoming a typed orphan card.
    */
-  private releaseToTerminal(questionId: UUID, reason: string): void {
+  private releaseToTerminal(questionId: UUID, reason: string, resolvedBy?: ResolvedBy): void {
     this.markTerminalPrompt(questionId);
     this.endHold(questionId, 'passthrough');
-    this.removeAndDismiss(questionId, reason);
+    this.removeAndDismiss(questionId, reason, undefined, resolvedBy);
   }
 
   /**
@@ -891,7 +940,12 @@ export class AutoApproveGate {
   /** Remove a card from the registry and broadcast its dismissal, each step
    *  guarded so one failure cannot skip the other. Broadcasts only for a card
    *  that was registered: a dismissal for a card no client holds is noise. */
-  private removeAndDismiss(questionId: UUID, reason: string, toolName?: string): void {
+  private removeAndDismiss(
+    questionId: UUID,
+    reason: string,
+    toolName?: string,
+    resolvedBy?: ResolvedBy,
+  ): void {
     // Fails toward broadcasting: a dismissal for an unknown id is a no-op on
     // every client, a missed one strands a card.
     let wasRegistered = true;
@@ -911,7 +965,7 @@ export class AutoApproveGate {
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] removeQuestion during card cleanup threw:`, err);
     }
-    if (wasRegistered) this.notifyResolved(questionId);
+    if (wasRegistered) this.notifyResolved(questionId, resolvedBy);
   }
 
   /**
@@ -927,7 +981,7 @@ export class AutoApproveGate {
   private escalatePassthrough(input: PermissionRequestHookInput): PermissionDecision {
     const qid = this.escalateToUser(input);
     if (qid) {
-      this.safeCueWithArg('onHeldEscalate', this.deps.onHeldEscalate, qid);
+      this.cueHeldEscalate(qid, 'keystroke');
     } else {
       logError(
         `[AutoApprove ${this.sessionTag}] passthrough escalation produced no question id; no push sent (terminal prompt still answerable locally)`,
@@ -1076,6 +1130,17 @@ export class AutoApproveGate {
    * loop. The push IS load-bearing for reaching the phone, but Claude's
    * native prompt is still on screen and answerable locally either way.
    */
+  /** Push a card now, saying how its answer is applied (#1235). Throw-safe. */
+  private cueHeldEscalate(qid: UUID, answerPath: 'structured' | 'keystroke'): void {
+    const push = this.deps.onHeldEscalate;
+    if (!push) return;
+    try {
+      push(qid, answerPath);
+    } catch (err) {
+      logError(`[AutoApprove ${this.sessionTag}] onHeldEscalate cue threw (ignored):`, err);
+    }
+  }
+
   private safeCueWithArg<T>(label: string, fn: ((arg: T) => void) | undefined, arg: T): void {
     if (!fn) return;
     try {
@@ -1090,11 +1155,11 @@ export class AutoApproveGate {
    * P7), so it broadcasts `question_resolved` to every remi client and
    * dismisses the APNS card (Telegram does not dismiss, #1148). Throw-safe.
    */
-  private notifyResolved(questionId: UUID): void {
+  private notifyResolved(questionId: UUID, resolvedBy?: ResolvedBy): void {
     const fn = this.deps.onResolved;
     if (!fn) return;
     try {
-      fn(questionId, 'cancelled');
+      fn(questionId, 'cancelled', resolvedBy);
     } catch (err) {
       logError(`[AutoApprove ${this.sessionTag}] onResolved threw (ignored):`, err);
     }
@@ -1168,7 +1233,7 @@ export class AutoApproveGate {
   cancelExternallyResolved(
     observed: ObservedToolCall,
     reason: string,
-    opts: { readonly toolFinished?: boolean } = {},
+    opts: { readonly toolFinished?: boolean; readonly resolvedBy?: ResolvedBy } = {},
   ): void {
     const match = this.findOpenQuestionMatching(observed);
     if (!match) {
@@ -1185,7 +1250,12 @@ export class AutoApproveGate {
       this.releaseWithNotice(match.qid, 'released', reason);
       return;
     }
-    this.resolveSupersededQuestion(match.qid, reason, observed.toolName);
+    // #1235: only a match paired by tool_use_id names a cause. A run is then the terminal's answer
+    // (a phone answer retires the card's signature first, so it cannot match), unless the caller
+    // names another (PermissionDenied: the harness). A name and input match alone may be another
+    // identical call, so it names nothing, PermissionDenied included (#1292 review).
+    const resolvedBy = match.byId ? (opts.resolvedBy ?? 'terminal') : undefined;
+    this.resolveSupersededQuestion(match.qid, reason, observed.toolName, resolvedBy);
   }
 
   /**
@@ -1273,14 +1343,19 @@ export class AutoApproveGate {
    * `toolName` (#808), when the caller knows it, is carried onto the
    * question-lifecycle trace record for this removal.
    */
-  private resolveSupersededQuestion(qid: UUID, reason: string, toolName?: string): void {
+  private resolveSupersededQuestion(
+    qid: UUID,
+    reason: string,
+    toolName?: string,
+    resolvedBy?: ResolvedBy,
+  ): void {
     log(
       `[AutoApprove ${this.sessionTag}] Externally resolved ${qid.slice(0, 8)} (${reason}); clearing stale escalation`,
     );
     this.openQuestionSignatures.delete(qid);
     this.terminalPrompts.delete(qid);
     this.endHold(qid, 'passthrough');
-    this.removeAndDismiss(qid, reason, toolName);
+    this.removeAndDismiss(qid, reason, toolName, resolvedBy);
     if (this.terminalNotices.delete(qid)) {
       this.safeCueWithArg('onTerminalNoticeResolved', this.deps.onTerminalNoticeResolved, qid);
     }

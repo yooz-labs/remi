@@ -1,0 +1,316 @@
+{
+  "runtime": "af24e281ebacd6ac77c0f14b4206599cf4ae1c9f",
+  "target": "packages/daemon/tests/cli/remote-new-client.test.ts",
+  "sourcePins": {
+    "packages/daemon/tests/cli/remote-new-client.test.ts": {
+      "sha256": "a9f414ce5178b485eb5ecb9c277c53e525bc8d48ebdd208a0766f6dd55a17b92",
+      "mode": 420
+    },
+    "packages/daemon/tests/integration/hub-test-utils.ts": {
+      "sha256": "ece9c2e52613803ef99d80b22e011606dbf806d2bc9eda343e91a80b02ab8aba",
+      "mode": 420
+    },
+    "packages/daemon/tests/session/port-test-helpers.ts": {
+      "sha256": "ebf5c35b0cc0b81a16d03dbb139a1d397808c8a60d6b2f3aac8091e453986e09",
+      "mode": 420
+    }
+  },
+  "cases": [
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "a Codex request with arguments reaches a daemon that lists codex, as the extra the handler reads",
+      "status": "pass",
+      "assertions": 2
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "a daemon that lists no harnesses (an older one) is never sent a harness: it would start Claude",
+      "status": "pass",
+      "assertions": 3
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "a daemon that lists other harnesses is not sent one it did not list",
+      "status": "pass",
+      "assertions": 2
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "arguments with no harness are Claude's, and are not sent to a daemon that would drop them",
+      "status": "pass",
+      "assertions": 3
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "the daemon's notice on a success comes back to the caller, and its absence stays absent",
+      "status": "pass",
+      "assertions": 2
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "a plain request is the one an older daemon already understands: no extra at all",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "text the daemon supplies is shown escaped: a failure, a protocol error and a notice cannot act on the terminal (G10)",
+      "status": "pass",
+      "assertions": 3
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "an answer with a session id with a terminal sequence is refused, so nothing the daemon chose reaches the screen or the attach (G10)",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "an answer with a session id that is not a UUID is refused, so nothing the daemon chose reaches the screen or the attach (G10)",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "an answer with a session id with text before a UUID is refused, so nothing the daemon chose reaches the screen or the attach (G10)",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "an answer with a session id with text after a UUID is refused, so nothing the daemon chose reaches the screen or the attach (G10)",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "an answer with a session id that is not a string is refused, so nothing the daemon chose reaches the screen or the attach (G10)",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "an answer with a port that is a string is refused, so nothing the daemon chose reaches the screen or the attach (G10)",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "an answer with a port with a terminal sequence is refused, so nothing the daemon chose reaches the screen or the attach (G10)",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "an answer with a port of zero is refused, so nothing the daemon chose reaches the screen or the attach (G10)",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "an answer with a port above 65535 is refused, so nothing the daemon chose reaches the screen or the attach (G10)",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "an answer with a fractional port is refused, so nothing the daemon chose reaches the screen or the attach (G10)",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "a plain UUID and port pass, and a success that names no port is the one the client asked",
+      "status": "pass",
+      "assertions": 2
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "an error frame with no message is a clean error, not a TypeError",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "an error frame with a null message is a clean error, not a TypeError",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "an error frame with an array for a message is a clean error, not a TypeError",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "an error frame with an object with a length for a message is a clean error, not a TypeError",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "an error frame with a number for a message is a clean error, not a TypeError",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "a failure with no error is a clean error",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "a failure with a null error is a clean error",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "a failure with an array for an error is a clean error",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "a failure with an object with a length for an error is a clean error",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "a success whose notice is null succeeds with no notice",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "a success whose notice is a number succeeds with no notice",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "a success whose notice is an array succeeds with no notice",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "a success whose notice is an object with a length succeeds with no notice",
+      "status": "pass",
+      "assertions": 1
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "a hello_ack whose harnesses is an object with no includes is a daemon that does not offer the harness",
+      "status": "pass",
+      "assertions": 2
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "a hello_ack whose harnesses is null is a daemon that does not offer the harness",
+      "status": "pass",
+      "assertions": 2
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "a hello_ack whose harnesses is a string that contains the name is a daemon that does not offer the harness",
+      "status": "pass",
+      "assertions": 2
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "a hello_ack whose harnesses is an array with no usable entries is a daemon that does not offer the harness",
+      "status": "pass",
+      "assertions": 2
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "the CLI, given an error frame with no message, exits 1 with the clean message and no stack trace",
+      "status": "pass",
+      "assertions": 3
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "the CLI, given a failure whose error is an array, exits 1 with the clean message and no stack trace",
+      "status": "pass",
+      "assertions": 3
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "a daemon may send any JSON: the sender reads it without throwing (#1204 round 2, P2) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "the CLI, given a hello_ack whose harnesses is an object, says the daemon does not offer codex",
+      "status": "pass",
+      "assertions": 3
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "runRemoteNew prints what the hub said, then attaches (G11) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "the CLI is the attach, so it prints the condition only, not the remedy it is already doing",
+      "status": "pass",
+      "assertions": 4
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "runRemoteNew prints what the hub said, then attaches (G11) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "the printed condition is escaped too",
+      "status": "pass",
+      "assertions": 2
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "runRemoteNew prints what the hub said, then attaches (G11) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "it attaches to the port the daemon started the session on, and says so",
+      "status": "pass",
+      "assertions": 2
+    },
+    {
+      "file": "packages/daemon/tests/cli/remote-new-client.test.ts",
+      "suite": "runRemoteNew prints what the hub said, then attaches (G11) &gt; createRemoteSession sends a harness only to a daemon that offers it (#1179)",
+      "name": "no notice, nothing extra is printed",
+      "status": "pass",
+      "assertions": 1
+    }
+  ],
+  "assertions": 67,
+  "provenance": "Manually captured actual isolated target42pass/0fail/67assertions; review changes explicitly, never regenerate in CI. Lane-process ownership does not attest hidden child imports."
+}

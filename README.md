@@ -2,7 +2,7 @@
 
 > Your agents need you. Yes or No.
 
-Remi is a cross-platform monitor for Claude Code sessions. Run your AI agents on any machine, walk away, and stay connected from your phone, tablet, or browser. Get notified when Claude needs input. Respond with a tap. Never lose a session.
+Remi is a cross-platform monitor for Claude Code sessions. Run your AI agents on an Apple Silicon Mac or Linux host, walk away, and stay connected from your phone, tablet, or browser. Get notified when Claude needs input. Respond with a tap. Never lose a session.
 
 ## The Problem
 
@@ -20,6 +20,9 @@ You start a Claude Code session on your workstation. It's working on a complex t
 
 ## Quick Start
 
+Supported hosts: **Apple Silicon Macs (M1 or later)**, **Linux ARM64**, and
+**Linux x86_64**. macOS builds run natively as ARM64.
+
 ```bash
 # Install (the package name is scoped, but the command it provides is just `remi`)
 bun install -g @yooz-labs/remi
@@ -28,10 +31,11 @@ bun install -g @yooz-labs/remi
 # If an older install step left that one on your machine, remove it:
 bun remove -g remi
 
-# Start Claude Code with Remi (session persists if terminal closes)
-remi -- claude
+# Start your configured harness (Claude Code by default; session persists if terminal closes)
+remi
 
-# Start Codex with Remi (status, command approvals, turn notifications and chat, see below)
+# Choose explicitly
+remi claude
 remi codex
 
 # Detach: Ctrl+B d
@@ -48,15 +52,36 @@ remi ls --network
 remi attach --host 192.168.1.5 macbook/remi/main
 ```
 
+Upgrading for native iPhone TestFlight? See [the CLI 0.8.0 upgrade guide](docs/UPGRADING-0.8.0.md).
+
+### Choose the CLI default
+
+Set the default in `~/.remi/config.toml`:
+
+```toml
+[harness]
+default = "codex"
+```
+
+The next `remi` or `remi new` launch uses Codex.
+Use `default = "claude"` for Claude Code, the built-in default.
+`remi claude`, `remi codex` and `--harness` choose explicitly;
+conflicting explicit choices are refused.
+This setting also applies to CLI remote starts with `--host`.
+App-created sessions use the harness selected by that client.
+
+Use `remi claude --resume <session-id>` for a Claude resume when Codex is your
+default, or `remi codex resume <thread-id>` for Codex.
+
 ### From Your Phone
 
 1. Open the web app or install the mobile app (iOS/Android)
-2. Connect by direct address: through an SSH tunnel, or over your LAN or Tailscale once you widen `daemon.bind` (a connection code does not connect anything today, see [Connection Methods](#connection-methods))
+2. Connect by direct address: through an SSH tunnel, or over your LAN or Tailscale once you widen `daemon.bind` (permanent relay codes are retired; see [Connection Methods](#connection-methods))
 3. Monitor and respond to all your agent sessions
 
 ### Codex (status, command approvals, turn notifications and chat; approvals checked live against Codex 0.160.0 on 2026-10-04, except subagents; bounded turn and chat checks on 2026-10-05)
 
-`remi codex` runs `codex --no-alt-screen` the way `remi` runs Claude Code, and shows the session, what it is doing (working, waiting on an approval, idle) and the commands it asks to run on your phone.
+`remi codex` runs `codex --no-alt-screen` the way `remi claude` runs Claude Code, and shows the session, what it is doing (working, waiting on an approval, idle) and the commands it asks to run on your phone.
 A command approval is a card with the command, the directory it runs in when that is not the session's, and Yes and No (Codex's own No), and "Yes, and don't ask again for this command this session" if Codex ever offers it.
 Codex shows the command as `/bin/zsh -lc '<command>'`, so the shell wrapper counts toward the cut below.
 A command longer than 120 characters is shown with its middle cut, the way Claude's cards show it, and the whole command is in the card's detail; a card with a detail (a cut command, or one that runs in another directory) has no lock-screen buttons, so Yes needs the app.
@@ -73,10 +98,11 @@ A turn stopped with the phone's No, TUI Esc, or `turn/interrupt` reported `inter
 Turns that Codex's subagents run are not announced.
 The app can load a Codex session's history (what you and Codex said, and the shell commands Codex ran, as a "shell" entry) and shows new messages as they finish; when remi attaches to the session's thread, and again after a reconnect, it also reads what the thread already holds, so the prompt that started a turn is in the chat (a thread with more than 100 returned items, or another page, is left to the history load); a session that has not started its thread has no history yet, and an exited session's history is not loaded.
 Control and bidirectional characters in what Codex says about a failure, and in a command and its output, are shown as visible escapes, and are removed from the answer in the push (an emoji sequence keeps its joiner); chat text is shown as Codex wrote it.
-The final answer in the push goes through the signaling Worker and Apple's push service in plaintext, like the cards.
+On the legacy push path, the final answer goes through the signaling Worker and Apple's push service in plaintext, like the cards.
+The secure push path seals the body to a registered device push key; activating secure push disables legacy pushes for the whole machine.
 A message typed in the app to a Codex session is refused (the app shows it as failed, "type in the terminal") instead of being typed into Codex, because remi cannot see what Codex has on screen.
-The command is in the card and in the push notification (the ask, up to 120 characters in the title and 200 in the body), which goes through the signaling Worker and Apple's push service in plaintext, as every card does; a command can contain a secret.
-The relay is off by default, and no shipped client can join a relay room. Since #1193, the daemon creates no relay adapter or Worker connection without an authenticated permanent-code setup; an adapter refuses outbound messages until session keys exist and encrypts them before sending. The push is separate: its cut ask above still travels in plaintext to the Worker and APNS.
+The command is in the card and in the legacy push notification (the ask, up to 120 characters in the title and 200 in the body), which travels through the signaling Worker and Apple's push service in plaintext; a command can contain a secret.
+The v2 relay daemon and web client are implemented in source as an opt-in hub service. See [daemon relay behavior](docs/relay-daemon-v2.md). Secure push and signed native-answer contracts are also implemented in source; deployed-Worker and signed-device acceptance remain unverified.
 The card's command and directory are kept in memory only: the live-sessions file, the hub's session list and the menu-bar app show a fixed label ("Permission: Codex command"), and the remi log carries lengths, never the command, the directory, or a thread id beyond its last eight characters (a thread id is a UUIDv7, whose first eight characters are a timestamp that two threads created within about a minute share).
 The one exception is a headless Codex (a hub's child) that dies within ten seconds of starting, before it names a thread: its first and last kilobyte of output is logged once, with every UUID cut to its last eight characters and the working directory and your home directory shown as `<cwd>` and `~`, so a flag error is not opaque; anything else Codex printed, such as a config excerpt or a URL, can still appear in it.
 Whenever remi starts following a new Codex thread (a `/new` in the terminal, or another `codex` window in the same directory), the session says so, and approvals then come from the new thread.
@@ -139,26 +165,27 @@ A plain window and a remi-spawned one are indistinguishable in `thread/started`,
 - **Human-readable session names** - `hostname/project/branch` instead of UUIDs
 - **Inline Claude rendering** - remi sets `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` for the Claude it runs, because its status bar and prompt detection need the inline renderer. This overrides Claude's `tui` setting and `CLAUDE_CODE_NO_FLICKER`. To opt out, start remi with `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=0` set (the status bar is then unverified against fullscreen). An in-session `/tui` switch can still move Claude to the alternate screen (#1135)
 - **LAN discovery** - mDNS/Bonjour finds Remi daemons on your network, once you widen `daemon.bind`. Not on by default (#880): a stock daemon is loopback-only and does not advertise
-- **Direct connection methods** - Direct WebSocket over an SSH tunnel, or over your LAN or Tailscale once `daemon.bind` is widened. A Cloudflare relay exists in the code but is off by default and nothing remote ships through it today
+- **Direct connection methods** - Direct WebSocket over an SSH tunnel, or over your LAN or Tailscale once `daemon.bind` is widened. The v2 relay daemon is opt-in; deployed and signed-device acceptance remain pending
 - **Chat view** - Clean conversation interface without terminal noise
 - **Live updates** - Agent messages stream in real-time as work progresses
 - **Cross-platform** - iOS, Android, Web, macOS, Windows, Linux
 - **macOS menu-bar app** - a status "r" tracking live connections plus the full web UI in a native window; see [docs/MACOS_APP.md](docs/MACOS_APP.md)
-- **Notifications** - Push alerts when Claude needs your input, and when a turn ends on an error such as a usage or rate limit. The text of a push (a prompt, the first 200 characters of a turn's last message, a failure's reason with a short excerpt of Claude's last message) goes through the signaling Worker and Apple's push service in plaintext; the relay encryption below does not cover it
-- **Relay (off by default, no shipped client)** - the relay is being rebuilt, and no client in this repo can join a room or complete its key exchange. With `network.relay = true` the daemon prints a notice and starts no relay unless it also has an authenticator: `--auth --permanent-code` (or `[auth] enabled = true` plus `--permanent-code`), which turns the relay on by itself, even over `relay = false`. Without an authenticator no adapter exists, so the daemon holds no connection to the Worker, and an adapter built anyway refuses every peer and drops every inbound message (#1193). With an authenticator the daemon side runs an authenticated key exchange (P-256 ECDH signed by each side's Ed25519 identity) and seals the messages after it with AES-256-GCM, so the Worker cannot read them; the handshake messages and a few error replies that name a message type are not sealed, and the Worker still sees the room code and who talks to whom and when. **First connect requires local approval (#873):** a valid unknown identity remains rejected until the daemon machine authorizes its exact pending fingerprint. Knowing a room code never adds a key. `--no-tofu` is accepted only as a retired flag. No client implements the other half of the key exchange yet (#881)
-- **Authentication on by default (#873)** - `auth.enabled = "auto"` requires an authorized Ed25519 identity on every bind, including loopback. CLI clients may instead present the local capability token over a real loopback TCP connection. Compare the fingerprint shown on your client with `remi keys` on the daemon machine, then run `remi authorize <exact-fingerprint> --label phone` there and retry the connection. Candidates expire after ten minutes, with at most 32 waiting; retries do not extend expiry. Explicit public-key imports still work; share only `remi export-key --public-only` output. `--no-auth` or `[auth] enabled = false` disables this protection and prints a visible warning. Old `daemon.require_local_auth` settings are ignored with a retirement notice. Signed HTTP answers require an already authorized identity and cannot request approval. Small-order Ed25519 public keys are refused before trust or authentication. Malformed `auth.enabled` values fail before a listener opens. Storage failures return the generic `AUTH_STORE_ERROR` code; private diagnostics stay on the daemon machine. Physical signed iPhone and sandboxed macOS acceptance remains unverified by the automated tests.
-- **No cloud dependency** - direct connections never touch a server at all. On a stock install only the SSH tunnel works out of the box: LAN and Tailscale direct need `daemon.bind` widened first (#880). Do **not** use `tailscale serve` for this: it is a same-host reverse proxy, so the actual remote peer address is lost. Authentication remains required; use the documented SSH or direct-bind setup. The relay is off by default and nothing remote ships through it today
+- **Notifications** - Push alerts when Claude needs your input, and when a turn ends on an error such as a usage or rate limit. The legacy `/push` path sends prompt and excerpt text to the Worker and APNS in plaintext and is on by default until the R7 gate. This relay branch also implements sealed per-device content through `/v2/push/<rid>` and web subscription wiring. Relay enrollment permanently retires legacy push for the whole machine; secure delivery requires a registered device key and token, an enabled secure sender, and a deployment push secret. Deployed and signed-device acceptance remain unverified.
+- **Relay daemon (opt-in, R3)** - `remi serve --relay` runs the machine-owned v2 channel when authentication is enabled. `remi pair --relay` displays a short-lived pairing token and asks the machine owner to confirm the client's exact fingerprint in a local terminal. Enrolled clients receive encrypted semantic messages; raw PTY frames are refused. `remi devices` lists or revokes devices. The Worker sees routing and delivery metadata and ciphertext. `remi code` and `--permanent-code` are retired. This relay branch includes the web relay client, sealed secure-push sender and signed native-answer daemon contracts. Swift background and Watch answers (#1242/#1201), deployment, signed hardware acceptance and the R7 gate remain unfinished; see [the current daemon contract](docs/relay-daemon-v2.md).
+- **Authentication on by default (#873)** - `auth.enabled = "auto"` requires an authorized Ed25519 identity on every bind, including loopback. CLI clients may instead present the local capability token over a real loopback TCP connection. Compare the fingerprint shown on your client with `remi keys` on the daemon machine, then run `remi authorize <exact-fingerprint> --label phone` there and retry the connection. Or run `remi pair` on that machine: it shows a QR code for the app to scan, then asks you there to approve the phone by typing the first four characters of its fingerprint, which you compare with the app (#1275); the code works once and approves nothing by itself. Native iPhone TestFlight app 0.2.0 (11) reads this QR format (#1283). Candidates expire after ten minutes, with at most 32 waiting, four of those slots kept for pairing claims; retries do not extend expiry. Explicit public-key imports still work; share only `remi export-key --public-only` output. To authorize a device before it connects, or on machines that are rebuilt, see [docs/PROVISIONING.md](docs/PROVISIONING.md). `--no-auth` or `[auth] enabled = false` disables this protection and prints a visible warning. Old `daemon.require_local_auth` settings are ignored with a retirement notice. Signed HTTP answers require an already authorized identity and cannot request approval. Small-order Ed25519 public keys are refused before trust or authentication. Malformed `auth.enabled` values fail before a listener opens. Storage failures return the generic `AUTH_STORE_ERROR` code; private diagnostics stay on the daemon machine. Physical signed iPhone and sandboxed macOS acceptance remains unverified by the automated tests.
+- **No cloud dependency** - direct connections never touch a server at all. On a stock install only the SSH tunnel works out of the box: LAN and Tailscale direct need `daemon.bind` widened first (#880). Do **not** use `tailscale serve` for this: it is a same-host reverse proxy, so the actual remote peer address is lost. Authentication remains required; use the documented SSH or direct-bind setup. The relay daemon is off by default; deployed and signed-device acceptance remain pending
 
 ## Connection Methods
 
 ```
 Phone/Browser ──► Direct WebSocket (same network, Tailscale, VPN — needs daemon.bind widened)
                 ──► SSH Tunnel (ssh -L 28765:localhost:28765 server)
-                ──► Relay (planned: off by default, nothing remote ships through it today)
+                ──► Relay (v2 daemon opt-in; client acceptance pending)
 ```
 
-The relay is being rebuilt; until that ships, remote access is an SSH tunnel, or a direct connection over LAN or Tailscale with `daemon.bind` widened and `--auth`.
-The connection code that `remi code` prints belongs to the relay, so it connects nothing today.
+Use an SSH tunnel, or a direct connection over LAN or Tailscale with `daemon.bind` widened and authentication enabled. The opt-in v2 daemon path is described in [relay-daemon-v2.md](docs/relay-daemon-v2.md); deployed and signed-device acceptance are pending. Permanent connection codes are retired.
+
+Optional [direct HTTPS/WSS setup](docs/DIRECT-TLS.md) is available for WSS-capable clients. Local CLI commands use the host's private control connection automatically. Legacy mDNS/direct QR, native endpoint adoption and remote CLI WSS remain separate work; read those limits before enabling TLS.
 
 ## Architecture
 
@@ -167,7 +194,7 @@ The connection code that `remi code` prints belongs to the relay, so it connects
 │   Your Phone        │                      │   Your Dev Machine  │
 │   (Remi App)        │◄════════════════════►│   (Remi Daemon)     │
 │                     │   WebSocket (direct)  │   mDNS: _remi._tcp │
-│   Chat View         │   (no relay today)   ├─────────────────────┤
+│   Chat View         │   (client relay pending)   ├─────────────────────┤
 │   Session List      │                      │   PTY Manager       │
 │   Notifications     │                      │   Session Registry  │
 └─────────────────────┘                      │   Transcript Parser │
@@ -182,7 +209,7 @@ The connection code that `remi code` prints belongs to the relay, so it connects
 
 - **Backend:** Bun + TypeScript, native PTY support
 - **Frontend:** React + Vite + Capacitor (iOS/Android/Web)
-- **Transport:** WebSocket (direct). A Cloudflare Workers relay exists but is off by default and nothing remote ships through it today
+- **Transport:** WebSocket (direct). The v2 hub relay uses encrypted semantic WebSocket frames and is off by default; deployed and signed-device acceptance are pending
 - **Discovery:** mDNS/Bonjour (`_remi._tcp`), off unless `daemon.bind` is non-loopback
 - **Protocol:** Structured messages with delivery states and deduplication
 
@@ -214,7 +241,7 @@ Remi is open core, and the license is set per directory.
 
 - **Daemon, CLI and shared protocol** (`packages/daemon`, `packages/shared`): [**Apache License 2.0**](packages/daemon/LICENSE).
   Use, modify and redistribute them, commercially or not, under the terms of that license.
-- **Mobile and web client, hosted relay and native Mac app** (`packages/web`, `packages/signaling`, `packages/macos`): [**PolyForm Shield 1.0.0**](packages/web/LICENSE.md).
+- **Mobile and web client, hosted relay, and the Mac and iPhone apps** (`packages/web`, `packages/signaling`, `packages/macos`, `packages/native`): [**PolyForm Shield 1.0.0**](packages/web/LICENSE.md).
   You can read, fork, modify and use them for any purpose **except** building a competing product, so you cannot offer a re-skinned commercial fork of the app or the relay.
   For the strategic rationale, see [`yooz-engine/LICENSING.md`](https://github.com/yooz-labs/yooz-engine/blob/main/LICENSING.md).
 - **Everything else** (scripts, docs, CI configuration): Apache-2.0 unless a file says otherwise.
@@ -228,7 +255,7 @@ For commercial-use or dual-license inquiries about the PolyForm Shield parts: **
 
 PRs welcome for the Apache-2.0 parts (`packages/daemon`, `packages/shared`, and everything outside the package directories).
 Sign your commits with `Signed-off-by: Your Name <you@example.com>` (DCO style); see [`CONTRIBUTING.md`](CONTRIBUTING.md).
-The PolyForm Shield packages (`packages/web`, `packages/signaling`, `packages/macos`) are published to be inspected, so we do not accept outside changes to them without a prior written agreement; talk to us first.
+The PolyForm Shield packages (`packages/web`, `packages/signaling`, `packages/macos`, `packages/native`) are published to be inspected, so we do not accept outside changes to them without a prior written agreement; talk to us first.
 Security issues: see [`SECURITY.md`](SECURITY.md).
 
 ---

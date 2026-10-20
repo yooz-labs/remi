@@ -5,16 +5,25 @@ import { join } from 'node:path';
 
 const repoRoot = join(import.meta.dir, '../../..');
 const workflowPath = join(repoRoot, '.github/workflows/ci.yml');
-const stepHeader = '      - name: Check coverage threshold\n        run: |\n';
 const tempRoot = mkdtempSync(join(tmpdir(), 'remi-ci-coverage-threshold-'));
 
-function coverageScript(): string {
+function workflowStep(name: string): string {
   const workflow = readFileSync(workflowPath, 'utf8');
-  const start = workflow.indexOf(stepHeader);
-  expect(start).not.toBe(-1);
+  const header = `      - name: ${name}\n`;
+  const start = workflow.indexOf(header);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(workflow.indexOf(header, start + header.length)).toBe(-1);
+  const end = workflow.indexOf('\n      - ', start + header.length);
+  expect(end).toBeGreaterThan(start);
+  return workflow.slice(start, end);
+}
 
-  const blockStart = start + stepHeader.length;
-  const lines = workflow.slice(blockStart).split('\n');
+function coverageScript(): string {
+  const step = workflowStep('Check coverage threshold');
+  const runHeader = '        run: |\n';
+  const runStart = step.indexOf(runHeader);
+  expect(runStart).toBeGreaterThanOrEqual(0);
+  const lines = step.slice(runStart + runHeader.length).split('\n');
   const scriptLines: string[] = [];
   for (const line of lines) {
     if (line.length > 0 && !line.startsWith('          ')) break;
@@ -62,13 +71,19 @@ afterAll(() => {
 describe('CI test step keeps its output for the threshold check', () => {
   test('the suite runs once: its output goes to the file the check reads, and a failure still fails the step', () => {
     const workflow = readFileSync(workflowPath, 'utf8');
-    const step = workflow.slice(
-      workflow.indexOf('      - name: Test with coverage\n'),
-      workflow.indexOf(stepHeader),
-    );
+    const step = workflowStep('Test with coverage');
+    const command = 'bun scripts/ci/run-bun-test-batches.ts';
     expect(step).toContain('set -o pipefail');
-    expect(step).toContain('2>&1 | tee test-output.txt');
-    expect(workflow.split('bun test --coverage')).toHaveLength(2);
+    expect(step).toContain('2>&1 | tee test-batches-output.txt');
+    expect(step).not.toContain('tee test-output.txt');
+    expect(step).toContain(command);
+    expect(step).toContain('        env:\n          E2E_BUNDLER: esbuild\n');
+    expect(workflow.split('E2E_BUNDLER: esbuild')).toHaveLength(2);
+    expect(workflow.split(command)).toHaveLength(2);
+    const runner = readFileSync(join(repoRoot, 'scripts/ci/run-bun-test-batches.ts'), 'utf8');
+    expect(runner.split('await runChild(argv,')).toHaveLength(2);
+    expect(runner).toContain('partitionTests(files)');
+    expect(runner).toContain('linkSync(temporary, summary)');
   });
 });
 

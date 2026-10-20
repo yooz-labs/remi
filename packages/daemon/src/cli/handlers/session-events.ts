@@ -22,7 +22,7 @@ import {
   createSessionListResponse,
   errorToString,
 } from '@remi/shared';
-import type { UUID } from '@remi/shared';
+import type { MachineDescriptor, UUID } from '@remi/shared';
 
 import type { Harness } from '../../harness/types.ts';
 import type {
@@ -30,15 +30,17 @@ import type {
   SessionRegistry,
   SessionRegistryFile,
 } from '../../session/index.ts';
-import type { TranscriptDiscovery } from '../../transcript/index.ts';
 import { log, logError } from '../logger.ts';
 import type { PromptUp } from './prompt-up.ts';
+import { type SessionListDeps, buildSessionList } from './session-list-entries.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface SessionHandlerDeps {
+  machine?: () => MachineDescriptor | undefined;
   sessionRegistry: SessionRegistry;
   bindingStore: SessionBindingStore;
-  transcriptDiscovery: TranscriptDiscovery;
+  /** Typed by shape (`buildSessionList`'s), so this module imports nothing from `transcript/`. */
+  transcriptDiscovery: SessionListDeps['transcriptDiscovery'];
   /**
    * What a Stop types (`gracefulExitInput`; null force-closes at once) and
    * how each listed session's transcript path is derived (`transcriptPath`).
@@ -133,62 +135,12 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
 
   return {
     onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean): void => {
-      // Decorate daemon-sourced sessions with their harness identity (#1179) and,
-      // for a Claude session, its pre-assigned binding (#429): `harness` always,
-      // `harnessSessionId` once known (for Claude it equals `claudeSessionId`).
-      // transcriptPath comes from the harness, the same derivation every other
-      // transcript-path site uses, so the client can show "you are talking to
-      // port X / claude <short-uuid>" without round-tripping.
-      // A failed lookup on any one entry must not nuke the entire list
-      // response — the connection would hang waiting for a reply. Fall
-      // back to the undecorated entry on per-entry failure.
-      const daemonSessionsRaw = sessionRegistry.listSessions();
-      const daemonSessions = daemonSessionsRaw.map((s) => {
-        try {
-          // Null: no record, or a harness this build does not know. Neither is guessed at.
-          const identity = bindingStore.getIdentity(s.sessionId as UUID);
-          if (!identity) return s;
-          const { harness: harnessName, harnessSessionId } = identity;
-          const named = {
-            ...s,
-            harness: harnessName,
-            ...(harnessSessionId !== null && { harnessSessionId }),
-          };
-          if (harnessName !== 'claude' || harnessSessionId === null) return named;
-          const transcriptPath = harness.transcriptPath(s.projectPath, harnessSessionId);
-          // No file to name (a harness without a transcript): decorate the id only.
-          if (transcriptPath === null) return { ...named, claudeSessionId: harnessSessionId };
-          return { ...named, claudeSessionId: harnessSessionId, transcriptPath };
-        } catch (err) {
-          logError(
-            `[SessionList] Failed to decorate session ${s.sessionId.slice(0, 8)}; serving raw entry: ${errorToString(err)}`,
-          );
-          return s;
-        }
-      });
-      let allSessions = [...daemonSessions];
-
-      if (includeExternal) {
-        const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
-        // Also exclude by Claude session ID (JSONL filename UUID is a different namespace from remi IDs).
-        // Per-entry try/catch (mirrors the decoration loop above): a disk hiccup on
-        // one lookup must not throw out of this void handler and hang the whole
-        // session-list response — degrade to a possibly-incomplete exclude set.
-        for (const remiId of [...managedIds]) {
-          try {
-            const binding = bindingStore.get(remiId as UUID);
-            if (binding?.claudeSessionId) {
-              managedIds.add(binding.claudeSessionId);
-            }
-          } catch (err) {
-            logError(
-              `[SessionList] binding lookup failed for ${remiId.slice(0, 8)}; external exclusion may be incomplete: ${errorToString(err)}`,
-            );
-          }
-        }
-        const externalSessions = transcriptDiscovery.discoverSessions(managedIds);
-        allSessions = [...daemonSessions, ...externalSessions];
-      }
+      // One builder for the requested list and the live-sessions broadcast (#1274).
+      const { own: daemonSessions, external } = buildSessionList(
+        { sessionRegistry, bindingStore, transcriptDiscovery, harness },
+        includeExternal,
+      );
+      const allSessions = [...daemonSessions, ...external];
 
       log(
         `Session list request from ${connectionId}: ${allSessions.length} sessions ` +
@@ -197,7 +149,10 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
       // Include other daemon ports on this machine so the app can auto-connect.
       const port = currentPort();
       const livePorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== port);
-      send(connectionId, createSessionListResponse(allSessions, requestId, livePorts));
+      send(
+        connectionId,
+        createSessionListResponse(allSessions, requestId, livePorts, deps.machine?.()),
+      );
     },
 
     onKillSessionRequest: (connectionId: UUID, sessionId: UUID, requestId: UUID): void => {
@@ -242,23 +197,55 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
       // same path a failed /exit write takes.
       const up = promptUp?.(sessionId) ?? null;
       const exitInput = harness.gracefulExitInput;
-      const forceClose = up !== null || exitInput === null;
+      let capturedBinding: string | null = null;
+      let bindingReadable = true;
+      try {
+        capturedBinding = bindingStore.getIdentity(sessionId)?.harnessSessionId ?? null;
+      } catch {
+        bindingReadable = false;
+      }
+      const forceClose = up !== null || exitInput === null || !bindingReadable;
       if (up !== null) {
         log(
           `[Stop] a prompt is up for ${sessionName} (${up}); not typing ${exitInput ?? 'an exit command'} into it, forcing close`,
         );
       } else if (exitInput === null) {
         log(`[Stop] ${sessionName} has no graceful exit input; forcing close`);
+      } else if (!bindingReadable) {
+        log(`[Stop] ${sessionName}'s binding cannot be checked; forcing close`);
       } else {
-        session.pty.submitInput(exitInput).catch((err) => {
-          logError(
-            `[Stop] ${exitInput} write failed for ${sessionName}; forcing close: ${errorToString(err)}`,
-          );
-          sessionRegistry.closeSession(sessionId, 'forced');
-        });
+        const pty = session.pty;
+        session.pty
+          .submitInput(exitInput, () => {
+            let valid = sessionRegistry.getSession(sessionId) === session && session.pty === pty;
+            try {
+              valid =
+                valid &&
+                (bindingStore.getIdentity(sessionId)?.harnessSessionId ?? null) ===
+                  capturedBinding &&
+                (promptUp?.(sessionId) ?? null) === null;
+            } catch {
+              valid = false;
+            }
+            if (!valid) {
+              // Reuse Stop's existing safe close: never type cleanup keys (#1488).
+              if (sessionRegistry.getSession(sessionId) === session) {
+                sessionRegistry.closeSession(sessionId, 'forced');
+              }
+            }
+            return valid;
+          })
+          .catch((err) => {
+            logError(
+              `[Stop] ${exitInput} write failed for ${sessionName}; forcing close: ${errorToString(err)}`,
+            );
+            if (sessionRegistry.getSession(sessionId) === session) {
+              sessionRegistry.closeSession(sessionId, 'forced');
+            }
+          });
       }
       const fallbackTimer = setTimeout(() => {
-        if (sessionRegistry.getSession(sessionId)) {
+        if (sessionRegistry.getSession(sessionId) === session) {
           log(
             `Session ${sessionName} did not exit on ${exitInput ?? 'a forced close'} within ${exitFallbackMs}ms; forcing`,
           );

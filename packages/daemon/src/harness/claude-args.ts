@@ -25,8 +25,9 @@
  * LV-4 (live, Claude Code 2.1.289) ran it: the spawn and `--resume <id>` work, and a session
  * started with `--permission-mode acceptEdits` came back in that mode when resumed through the
  * hub, whose child's arguments named no mode: Claude restores the session's earlier mode on
- * resume (`bypassPermissions` was not tried). That a resumed session then behaves (binding,
- * hooks) is #1129's.
+ * resume (`bypassPermissions` was not tried). A `resume_session_request` to a hub starts the same
+ * child with these arguments (#1129). That a real Claude's binding and hooks behave in a resumed
+ * child has not been seen live.
  *
  * Lives beside Claude's side of the seam, not in `harness/codex/`, whose
  * boundary keeps Claude out; `cli.ts` is the one importer (`HarnessRegistry`).

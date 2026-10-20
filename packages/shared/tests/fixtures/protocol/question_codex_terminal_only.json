@@ -1,0 +1,19 @@
+{
+  "type": "question",
+  "id": "ac6fda47-016b-4a32-981b-2846ef0e6e1e",
+  "timestamp": "2026-10-07T21:19:37.305Z",
+  "question": {
+    "id": "fixture-question-id",
+    "text": "Codex wants to change files",
+    "options": [],
+    "allowsFreeText": false,
+    "isAnswered": false,
+    "kind": "permission",
+    "held": true,
+    "terminalOnly": true,
+    "answerPath": "none"
+  },
+  "sessionId": "fixture-session-id",
+  "harness": "codex",
+  "harnessSessionId": "0199b0a0-0000-7000-8000-000000000000"
+}

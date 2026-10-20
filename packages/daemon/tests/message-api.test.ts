@@ -248,7 +248,8 @@ describe('MessageAPI', () => {
 
       const outcome = api.handleQuestion(question);
 
-      expect(events.onQuestion).toHaveBeenCalledWith(question);
+      // No push options were given (#1235: a render passes its answer path here).
+      expect(events.onQuestion).toHaveBeenCalledWith(question, undefined);
       // #888 criterion iii: the registration outcome is returned, not void.
       expect(outcome).toEqual({ status: 'registered' });
     });

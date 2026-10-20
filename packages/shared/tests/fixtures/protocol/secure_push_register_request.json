@@ -1,0 +1,12 @@
+{
+  "type": "secure_push_register_request",
+  "id": "fixture-message-id",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "token": "abababababababababababababababababababababababababababababababab",
+  "environment": "sandbox",
+  "pushPublicKey": "BI5TO2-gv3tGJbswZnwB-2B--fi4qsDCdnpguoDXWXsjc-sdgUMxZGXmpOplO6BcUwjUEIEVV3tDyhqEwxthALQ",
+  "keyVersion": 3,
+  "pushPrefs": {
+    "questions": true
+  }
+}

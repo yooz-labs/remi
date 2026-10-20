@@ -8,7 +8,8 @@
  * over mDNS and replies with sibling ports on `SessionListResponse`, but only
  * AFTER the first WebSocket handshake succeeds.
  *
- * This module races HTTP `/auth-info` probes (rather than full WebSocket
+ * This module races HTTP or HTTPS `/auth-info` probes, retaining the selected
+ * WebSocket transport (rather than opening full WebSocket
  * upgrades) across the daemon port range and resolves to the first responder.
  * Probes are cheap, parallel, and avoid dragging auth state through 20
  * concurrent WS handshakes that all but one would tear back down.
@@ -55,10 +56,11 @@ async function probePort(
   port: number,
   timeoutMs: number,
   outerSignal: AbortSignal,
+  protocol: 'ws' | 'wss',
 ): Promise<number | null> {
   if (outerSignal.aborted) return null;
 
-  const wsUrl = `ws://${bracketHost(hostname)}:${port}/ws`;
+  const wsUrl = `${protocol}://${bracketHost(hostname)}:${port}/ws`;
   let httpUrl: string;
   try {
     httpUrl = authInfoUrl(wsUrl);
@@ -72,7 +74,11 @@ async function probePort(
   outerSignal.addEventListener('abort', onOuterAbort, { once: true });
 
   try {
-    const res = await fetch(httpUrl, { signal: controller.signal });
+    const res = await fetch(httpUrl, {
+      signal: controller.signal,
+      // A redirect must not make an HTTPS-only probe contact a plaintext endpoint.
+      redirect: protocol === 'wss' ? 'error' : 'follow',
+    });
     return res.ok ? port : null;
   } catch {
     // Failure modes collapse to null: connection refused, timeout, outer
@@ -104,13 +110,16 @@ export async function discoverDaemonPort(
     portRange?: number;
     timeoutMs?: number;
     signal?: AbortSignal;
+    /** Preserve a secure connection during discovery; never fall back to HTTP. */
+    protocol?: 'ws' | 'wss';
   } = {},
 ): Promise<number | null> {
   const basePort = options.basePort ?? DEFAULT_BASE_PORT;
   const portRange = options.portRange ?? DEFAULT_PORT_RANGE;
   const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
+  const protocol = options.protocol ?? 'ws';
 
-  if (portRange <= 0) return null;
+  if (portRange <= 0 || (protocol !== 'ws' && protocol !== 'wss')) return null;
 
   const winner = new AbortController();
   // Track the listener so the success path can detach it; without this, a
@@ -146,7 +155,7 @@ export async function discoverDaemonPort(
       // probePort is reject-proof: every error path returns `null`. So we
       // only handle the fulfilled branch and rely on the counter to bottom
       // out on `null` if no probe wins.
-      probePort(hostname, port, timeoutMs, winner.signal).then((result) => {
+      probePort(hostname, port, timeoutMs, winner.signal, protocol).then((result) => {
         if (result !== null) {
           finish(result);
           return;
@@ -176,17 +185,26 @@ export async function resolveDaemonPort(
     portRange?: number;
     timeoutMs?: number;
     signal?: AbortSignal;
+    /** The source connection's transport; WSS probes HTTPS exclusively. */
+    protocol?: 'ws' | 'wss';
   } = {},
 ): Promise<number | null> {
   const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
+  const protocol = options.protocol ?? 'ws';
+  if (protocol !== 'ws' && protocol !== 'wss') return null;
   if (options.signal?.aborted) return null;
 
-  if (typeof hintPort === 'number' && Number.isInteger(hintPort) && hintPort >= 1 && hintPort <= 65535) {
+  if (
+    typeof hintPort === 'number' &&
+    Number.isInteger(hintPort) &&
+    hintPort >= 1 &&
+    hintPort <= 65535
+  ) {
     const controller = new AbortController();
     const onAbort = () => controller.abort();
     options.signal?.addEventListener('abort', onAbort, { once: true });
     try {
-      const hit = await probePort(hostname, hintPort, timeoutMs, controller.signal);
+      const hit = await probePort(hostname, hintPort, timeoutMs, controller.signal, protocol);
       if (hit !== null) return hit;
     } finally {
       options.signal?.removeEventListener('abort', onAbort);
@@ -198,6 +216,7 @@ export async function resolveDaemonPort(
     portRange: options.portRange,
     timeoutMs,
     signal: options.signal,
+    protocol,
   });
 }
 

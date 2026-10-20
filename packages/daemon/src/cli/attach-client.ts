@@ -20,7 +20,7 @@ import type {
   UUID,
 } from '@remi/shared';
 import { performAuthHandshake } from './auth-helper.ts';
-import { capabilityWsOptions } from './capability-client.ts';
+import { resolveDaemonWsTarget } from './daemon-target.ts';
 import { DetachScanner } from './detach-scanner.ts';
 import { PtyQuiescenceGate } from './pty-quiescence-gate.ts';
 import { StatusBar, childRows } from './status-bar.ts';
@@ -74,7 +74,6 @@ export function formatQuestionBanner(question: Question): string {
 
 export async function runAttachClient(opts: AttachClientOptions): Promise<AttachClientResult> {
   const { host, port, sessionId, timeout = 5000, outputFd = 1 } = opts;
-  const url = `ws://${host}:${port}/ws`;
 
   let ws: WebSocket;
   let attachedSessionId: UUID | null = null;
@@ -335,6 +334,34 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
    */
   function renderMessage(msg: ProtocolMessage, inReplay = false): void {
     const handlers: MessageHandlers<keyof ProtocolMessageMap, void> = {
+      file_fetch_begin: 'ignore',
+      file_fetch_accepted: 'ignore',
+      file_fetch_read: 'ignore',
+      file_fetch_chunk: 'ignore',
+      file_fetch_complete: 'ignore',
+      file_fetch_result: 'ignore',
+      file_fetch_cancel: 'ignore',
+      file_fetch_cancel_result: 'ignore',
+      file_fetch_refused: 'ignore',
+      browser_link_receiver_request: 'ignore',
+      browser_link_receiver_result: 'ignore',
+      browser_link_receiver_ended: 'ignore',
+      browser_link_candidate: 'ignore',
+      // The terminal attach client has no image staging/insertion UI (#1170).
+      image_insert_request: 'ignore',
+      chat_submit_request: 'ignore',
+      chat_submit_result: 'ignore',
+      image_insert_result: 'ignore',
+      image_upload_begin: 'ignore',
+      image_upload_accepted: 'ignore',
+      image_upload_chunk: 'ignore',
+      image_upload_chunk_ack: 'ignore',
+      image_upload_complete: 'ignore',
+      image_upload_result: 'ignore',
+      image_upload_cancel: 'ignore',
+      image_upload_cancel_result: 'ignore',
+      image_upload_refused: 'ignore',
+
       raw_pty_output: (m) => {
         receivedRawPty = true;
         writeRawBytes(m.data);
@@ -395,17 +422,30 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       // no-op); the entries are now explicit and greppable (#898). Full
       // per-type rationale is in the PR description.
       hello: 'ignore',
+      answer_result: 'ignore',
+      relay_devices_request: 'ignore',
+      relay_devices_response: 'ignore',
+      relay_device_revoke_request: 'ignore',
+      relay_device_revoke_response: 'ignore',
+      // Secure push belongs to an enrolled native relay client, not terminal attach (#1200).
+      secure_push_register_request: 'ignore',
+      secure_push_register_response: 'ignore',
+      secure_push_unregister_request: 'ignore',
+      secure_push_unregister_response: 'ignore',
       hello_ack: 'ignore',
       user_input: 'ignore',
       ack: 'ignore',
       edit: 'ignore',
       answer: 'ignore',
+      native_answer: 'ignore',
       ping: 'ignore',
       pong: 'ignore',
       bullet_expand_request: 'ignore',
       bullet_expand_response: 'ignore',
       session_list_request: 'ignore',
       session_list_response: 'ignore',
+      recent_repositories_request: 'ignore',
+      recent_repositories_response: 'ignore',
       transcript_load_request: 'ignore',
       transcript_load_complete: 'ignore',
       create_session_request: 'ignore',
@@ -450,7 +490,8 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       resolve(result);
     }
 
-    ws = new WebSocket(url, capabilityWsOptions() as never);
+    const target = resolveDaemonWsTarget(host, port);
+    ws = new WebSocket(target.url, target.options as never);
 
     const connectionTimer = setTimeout(() => {
       writeOutput(`\n[timed out connecting to daemon at ${host}:${port}]\n`);

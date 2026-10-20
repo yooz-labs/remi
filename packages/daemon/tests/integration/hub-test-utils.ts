@@ -11,6 +11,7 @@ import * as path from 'node:path';
 import { createHello, deserialize, serialize } from '@remi/shared/protocol.ts';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import { DEFAULT_CONFIG } from '../../src/config/config.ts';
+import { DeviceTokenStore } from '../../src/notifications/device-token-store.ts';
 import { findAvailableTcpPort } from '../../src/session/port-utils.ts';
 import { reserveRange } from '../session/port-test-helpers.ts';
 
@@ -33,6 +34,24 @@ export async function pollUntil(
     if (Date.now() - start > timeoutMs) throw new Error(`Timed out waiting for ${what}`);
     await new Promise((r) => setTimeout(r, 50));
   }
+}
+
+/** Observe the shipping store's durable registration, independent of diagnostic wording. */
+export async function waitForRegisteredDeviceToken(
+  home: string,
+  token: string,
+  timeoutMs: number,
+): Promise<void> {
+  const store = new DeviceTokenStore(path.join(home, '.remi', 'device-tokens.json'));
+  await pollUntil(
+    () => {
+      store.refreshFromDisk();
+      const entry = store.map.get(token);
+      return entry?.platform === 'ios' && entry.connectionId.length > 0;
+    },
+    timeoutMs,
+    'the device token to persist',
+  );
 }
 
 export function makeIsolatedDirs(): { home: string; work: string } {
@@ -150,6 +169,22 @@ export async function spawnDaemon(
   return { proc, port };
 }
 
+async function readDiagnosticTail(stream: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let tail = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      tail = (tail + decoder.decode(value, { stream: true })).slice(-1500);
+    }
+    return (tail + decoder.decode()).slice(-1500).trim();
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 /**
  * Spawn a hub in a fresh isolated $HOME and wait for its status file.
  * `envOverrides` is forwarded to the subprocess (e.g. a PATH that puts a fake
@@ -196,11 +231,15 @@ export async function spawnHub(
       proc.kill('SIGKILL');
       await proc.exited;
     }
-    if (exitedByItself) {
-      const said = `${await new Response(proc.stderr).text()}${await new Response(proc.stdout).text()}`;
-      throw new Error(`${(error as Error).message}\n${said.trim().slice(-1500)}`);
-    }
-    throw error;
+    // Drain only after the child exits: starting readers before readiness would
+    // change the startup pipe-pressure behavior these integration tests observe.
+    // Keep each stream's tail separately, including a killed stalled launcher's
+    // output, without buffering an unbounded transcript or losing one stream.
+    const [stderr, stdout] = await Promise.all([
+      readDiagnosticTail(proc.stderr),
+      readDiagnosticTail(proc.stdout),
+    ]);
+    throw new Error(`${(error as Error).message}\n[stderr]\n${stderr}\n[stdout]\n${stdout}`);
   }
   return hub;
 }

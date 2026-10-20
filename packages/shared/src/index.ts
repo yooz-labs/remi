@@ -33,6 +33,8 @@ export type {
   SessionSource,
   DiscoverableSessionStatus,
   DiscoverableSession,
+  MachineDescriptor,
+  SessionGitWorkspace,
 } from './types.ts';
 
 export { ok, err, isOk, isErr, MAIN_AGENT_ID } from './types.ts';
@@ -77,6 +79,7 @@ export type {
   EditMessage,
   QuestionMessage,
   AnswerMessage,
+  NativeAnswerMessage,
   AnswerSelection,
   AnswerExtras,
   SessionUpdateMessage,
@@ -90,6 +93,9 @@ export type {
   BulletExpandRequestMessage,
   BulletExpandResponseMessage,
   SessionListRequestMessage,
+  RecentRepositoriesRequestMessage,
+  RecentRepositoriesResponseMessage,
+  RecentRepository,
   SessionListResponseMessage,
   TranscriptContentMessage,
   TranscriptContentBlock,
@@ -97,6 +103,8 @@ export type {
   TranscriptLoadCompleteMessage,
   TranscriptUsage,
   CreateSessionRequestMessage,
+  WorkspaceRequest,
+  SessionWorkspace,
   CreateSessionResponseMessage,
   TerminalResizeMessage,
   AuthChallengeMessage,
@@ -163,6 +171,8 @@ export {
   createBulletExpandResponse,
   createSessionListRequest,
   createSessionListResponse,
+  createRecentRepositoriesRequest,
+  createRecentRepositoriesResponse,
   createTranscriptContent,
   createTranscriptLoadRequest,
   createTranscriptLoadComplete,
@@ -200,8 +210,8 @@ export { dispatchMessage, assertNever } from './dispatch.ts';
 
 // Crypto
 export type { Base64, Fingerprint, RawKeyPair, ExportedKeyPair, EncryptedData } from './crypto.ts';
-export * from './relay-crypto.ts';
-export * from './sealed-answer.ts';
+// Relay protocol v2 (ADR 0034); namespaced so no name collides with the v1 modules above.
+export * as relayV2 from './relay/index.ts';
 export {
   PBKDF2_ITERATIONS,
   SALT_SIZE,
@@ -252,8 +262,47 @@ export { errorToString } from './error-utils.ts';
 // Async helpers
 export { sleep } from './async-utils.ts';
 
-// Text a peer controls, made safe to show (#1178)
-export { escapeUnsafeText } from './display-text.ts';
+// Text a peer controls, made safe to show (#1178, #1211)
+export { boundedEscape, escapeUnsafeText, pushProse } from './display-text.ts';
+// The pairing link a machine shows as a QR (#1275, ADR 0037)
+export type { DecodedPairingLink, PairingCode, PairingCodeError } from './pairing.ts';
+export {
+  PAIRING_CODE_VERSION,
+  PAIRING_NAME_MAX_CODE_POINTS,
+  PAIRING_LINK_PREFIX,
+  PAIRING_NONCE_BYTES,
+  PAIRING_TTL_SECONDS,
+  decodePairingLink,
+  encodePairingLink,
+  generatePairingNonce,
+  isPairingHost,
+  isPairingNonce,
+  isPlainPairingText,
+} from './pairing.ts';
+// The protocol version and capabilities on hello_ack (#1237, ADR 0035)
+export type { HubSupport, HubSupportAck } from './protocol-version.ts';
+export { hubSupport, PROTOCOL_CAPABILITIES, PROTOCOL_VERSION } from './protocol-version.ts';
 
 // Ed25519 admission defense shared by direct auth and relay (#873).
 export { isSmallOrderPublicKey } from './ed25519-public-key.ts';
+export * from './relay-messages.ts';
+
+export * from './secure-push-messages.ts';
+
+// Authenticated direct image staging (#1170, ADR 0041).
+export * from './image-staging.ts';
+// Accepted structural vocabulary; availability still requires the insertion caller gates.
+export * from './image-insertion.ts';
+export {
+  isFileDownloadCandidate,
+  isBrowserLinkCandidate,
+  isImageStagingCandidate,
+  isImageInsertionCandidate,
+  isStructuredChatCandidate,
+} from './image-staging-ingress.ts';
+export * from './structured-chat.ts';
+// Browser-link vocabulary; service availability is scoped to the current connection.
+export * from './browser-links.ts';
+// Structural file-download vocabulary; host admission and HTTPS/WSS release gates remain required.
+export * from './file-download.ts';
+export * from './file-download-ingress.ts';

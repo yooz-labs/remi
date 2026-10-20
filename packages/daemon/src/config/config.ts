@@ -14,8 +14,15 @@ import { remiHome } from './remi-home.ts';
 const REMI_DIR = remiHome();
 export const CONFIG_PATH = path.join(REMI_DIR, 'config.toml');
 
+/** Operator-provided TLS file paths. Certificate rotation requires a restart. */
+export interface DaemonTlsConfig {
+  readonly certificate_file: string;
+  readonly private_key_file: string;
+}
+
 /** Daemon settings (restart required to apply changes) */
 export interface DaemonConfig {
+  readonly tls: DaemonTlsConfig | null;
   readonly base_port: number;
   readonly port_range: number;
   readonly bind: string;
@@ -66,6 +73,11 @@ export interface DisplayConfig {
  * DURATION so it only fires when the user plausibly walked away.
  */
 export interface NotificationsConfig {
+  /** Plaintext legacy push through the signaling Worker; it also needs a push secret.
+   * ON by default until secure push ships end to end; the default flips at the R7 gate
+   * (#1200). `false` disables it. Independent of this flag, the machine-wide activation
+   * latch refuses it for good once any device enrolls over the relay. */
+  readonly legacy_push_enabled: boolean;
   /** Master on/off for the turn-complete push. */
   readonly on_turn_complete: boolean;
   /**
@@ -80,7 +92,7 @@ export interface NotificationsConfig {
    * How long a phone keeps getting pushes after it was last seen (#1254, owner
    * decision 2026-10-06). The phone renews it by connecting and by staying
    * connected, and the lease counts from when its connection closed;
-   * disconnecting the machine in the app (`unregister_device_token`, sent only
+   * disconnecting the machine in the app (legacy or secure unregister, sent only
    * while the machine is reachable) ends it at once. 0 means it never
    * expires. Hours; fractions are allowed.
    */
@@ -175,8 +187,14 @@ export interface FeaturesConfig {
   readonly transcript_binder_enabled: boolean;
 }
 
+/** #1473: the CLI's session launch default; wire/store omission still means Claude. */
+export interface HarnessConfig {
+  readonly default: 'claude' | 'codex';
+}
+
 /** Complete Remi configuration */
 export interface RemiConfig {
+  readonly harness: HarnessConfig;
   readonly daemon: DaemonConfig;
   readonly network: NetworkConfig;
   readonly auth: AuthConfig;
@@ -190,7 +208,9 @@ export interface RemiConfig {
 
 /** Built-in defaults used when no config file or CLI flags are provided */
 export const DEFAULT_CONFIG: RemiConfig = {
+  harness: { default: 'claude' },
   daemon: {
+    tls: null,
     base_port: DAEMON_BASE_PORT,
     port_range: DAEMON_PORT_RANGE,
     // #880/#873: remote binding remains opt-in; auth defaults on for every bind.
@@ -201,16 +221,12 @@ export const DEFAULT_CONFIG: RemiConfig = {
   },
   network: {
     mdns: true,
-    // Off by default (#1193). Every install used to register a room with the
-    // signaling Worker, and no shipped client can join one, so the relay gave a
-    // default install no remote capability and an inbound path gated only by
-    // the room code. `relay = true` (or `--permanent-code`) still turns it on,
-    // and without `--auth --permanent-code` the daemon prints a notice and
-    // starts no relay at all (and the adapter would refuse every peer anyway).
-    // A config.toml that already holds `relay = true` (from `remi config init`
-    // before this change) keeps the setting and gets that notice at boot.
+    // Off by default (#1193/#1198). Only the authenticated hub opts into v2
+    // with --relay or this setting; --no-relay wins. Session daemons never
+    // register a relay. Permanent-code mode is retired. R4 client and R7
+    // deployed/hardware acceptance remain pending.
     relay: false,
-    signaling_url: 'wss://remi-signaling.yooz.workers.dev/connect',
+    signaling_url: 'wss://remi-signaling.yooz.workers.dev',
   },
   auth: {
     enabled: 'auto',
@@ -241,6 +257,7 @@ export const DEFAULT_CONFIG: RemiConfig = {
     transcript_binder_enabled: true,
   },
   notifications: {
+    legacy_push_enabled: true,
     on_turn_complete: true,
     // 60s: long enough that a normal interactive turn (seconds) never fires
     // it, short enough to still be useful for "went to get coffee" absences.
@@ -296,6 +313,7 @@ function deepMerge(base: RemiConfig, partial: Record<string, unknown>): RemiConf
   }
 
   return {
+    harness: mergeSection(base.harness, partial['harness'] as Record<string, unknown> | undefined),
     daemon: mergeSection(base.daemon, partial['daemon'] as Record<string, unknown> | undefined),
     network: mergeSection(base.network, partial['network'] as Record<string, unknown> | undefined),
     auth: mergeSection(base.auth, partial['auth'] as Record<string, unknown> | undefined),
@@ -338,19 +356,6 @@ export interface LoadedConfig {
 }
 
 /**
- * Whether this process registers with the signaling relay (#1193): off unless
- * `network.relay = true` or `--permanent-code` asks for it, and `--no-relay`
- * beats both. `--permanent-code` counts because a fixed relay code means
- * nothing without a relay, and it is what the authenticated mode is started by.
- */
-export function relayRequested(
-  configRelay: boolean,
-  cli: { readonly noRelay: boolean; readonly permanentCode: boolean },
-): boolean {
-  return !cli.noRelay && (configRelay || cli.permanentCode);
-}
-
-/**
  * Load config from ~/.remi/config.toml, merged with defaults.
  * Returns DEFAULT_CONFIG if no config file exists.
  * Throws if the file exists but cannot be read or has invalid TOML.
@@ -380,7 +385,21 @@ export function loadConfigWithNotices(configPath: string = CONFIG_PATH): LoadedC
   }
 
   try {
-    const parsed = parseToml(raw) as Record<string, unknown>;
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = parseToml(raw) as Record<string, unknown>;
+    } catch {
+      // A syntax error can quote pasted private material, including a malformed TLS path.
+      throw new Error('TOML_PARSE_FAILED: unable to parse configuration');
+    }
+    validateHarnessTable(parsed['harness'], configPath);
+    const daemon = parsed['daemon'];
+    if (daemon !== undefined) {
+      if (typeof daemon !== 'object' || daemon === null || Array.isArray(daemon)) {
+        throw new Error('TLS_CONFIG_INVALID: daemon must be a table');
+      }
+      if ('tls' in daemon) assertDaemonTlsConfig((daemon as Record<string, unknown>)['tls']);
+    }
     const merged = deepMerge(DEFAULT_CONFIG, parsed);
     const legacy = legacyAutoApprove(parsed);
     const config = legacy.subagentAlert
@@ -407,6 +426,25 @@ export function loadConfigWithNotices(configPath: string = CONFIG_PATH): LoadedC
     throw new Error(
       `Invalid TOML in ${configPath}: ${errorToString(err)}. Fix the syntax or delete the file to use defaults.`,
     );
+  }
+}
+
+/** Validate before merging: scalar/array tables and unknown keys must not disappear. */
+function validateHarnessTable(table: unknown, configPath: string): void {
+  if (table === undefined) return;
+  if (typeof table !== 'object' || table === null || Array.isArray(table)) {
+    throw new Error(`Invalid harness in ${configPath}: expected a table with default`);
+  }
+  const prototype = Object.getPrototypeOf(table);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error(`Invalid harness in ${configPath}: expected a table with default`);
+  }
+  if (Object.keys(table).some((key) => key !== 'default')) {
+    throw new Error(`Invalid harness in ${configPath}: only default is supported`);
+  }
+  const value = (table as Record<string, unknown>)['default'];
+  if (value !== undefined && value !== 'claude' && value !== 'codex') {
+    throw new Error(`Invalid harness.default in ${configPath}: expected "claude" or "codex"`);
   }
 }
 
@@ -460,6 +498,7 @@ function legacyAutoApprove(parsed: Record<string, unknown>): {
  * would then substring-match origins against it, which is not what anyone meant.
  */
 function validateDaemon(cfg: DaemonConfig, configPath: string): void {
+  assertDaemonTlsConfig(cfg.tls);
   const v: unknown = cfg.allowed_origins;
   if (!Array.isArray(v) || !v.every((s) => typeof s === 'string')) {
     throw new Error(
@@ -488,6 +527,11 @@ function validateDaemon(cfg: DaemonConfig, configPath: string): void {
 
 /** Validate `[notifications]` has correct runtime types (#914). */
 function validateNotifications(cfg: NotificationsConfig, configPath: string): void {
+  if (typeof cfg.legacy_push_enabled !== 'boolean') {
+    throw new Error(
+      `Invalid notifications.legacy_push_enabled in ${configPath}: must be a boolean (true/false).`,
+    );
+  }
   if (
     !Array.isArray(cfg.subagent_alert) ||
     !cfg.subagent_alert.every((p: unknown) => typeof p === 'string')
@@ -559,11 +603,45 @@ function validateTerminal(cfg: TerminalConfig, configPath: string): void {
   }
 }
 
+/** Validate the complete TLS table before merging can discard unknown fields. */
+export function assertDaemonTlsConfig(value: unknown): asserts value is DaemonTlsConfig | null {
+  if (value === null) return;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(
+      'TLS_CONFIG_INVALID: daemon.tls requires certificate_file and private_key_file',
+    );
+  }
+  const table = value as Record<string, unknown>;
+  const prototype = Object.getPrototypeOf(table);
+  if (
+    (prototype !== Object.prototype && prototype !== null) ||
+    Object.keys(table).length !== 2 ||
+    Object.keys(table).some((key) => key !== 'certificate_file' && key !== 'private_key_file')
+  ) {
+    throw new Error(
+      'TLS_CONFIG_INVALID: daemon.tls requires exactly certificate_file and private_key_file',
+    );
+  }
+  for (const key of ['certificate_file', 'private_key_file']) {
+    const path = table[key];
+    if (
+      typeof path !== 'string' ||
+      path.trim().length === 0 ||
+      /[\u0000-\u001f\u007f-\u009f]/.test(path)
+    ) {
+      throw new Error(
+        'TLS_CONFIG_INVALID: certificate_file and private_key_file must be nonempty paths without controls',
+      );
+    }
+  }
+}
+
 /**
  * Apply environment variable overrides to a config.
  * Env vars take precedence over config file values.
  */
 export function applyEnvOverrides(config: RemiConfig): RemiConfig {
+  assertDaemonTlsConfig(config.daemon.tls);
   validateAuth(config.auth, CONFIG_PATH);
   const env = process.env;
 
@@ -660,6 +738,10 @@ export function generateDefaultConfig(): string {
 # Priority: CLI flags > environment variables > this file > built-in defaults
 # Run 'remi reload' to validate changes. Restart the daemon to apply.
 
+[harness]
+# CLI session launches only; remi claude/remi codex and --harness override this.
+default = "${DEFAULT_CONFIG.harness.default}"
+
 [daemon]
 base_port = ${DEFAULT_CONFIG.daemon.base_port}
 port_range = ${DEFAULT_CONFIG.daemon.port_range}
@@ -673,10 +755,17 @@ persist_sessions = ${DEFAULT_CONFIG.daemon.persist_sessions}  # keep sessions al
 #   allowed_origins = ["https://remi.example.com"]
 allowed_origins = []
 
+# Optional public HTTPS/WSS. Remove this whole table to disable TLS.
+# Paths are absolute or relative to this config file; no tilde expansion.
+# Certificate/key changes require restarting remi. Secure app/QR discovery is pending.
+# [daemon.tls]
+# certificate_file = "certificates/server.pem"
+# private_key_file = "certificates/server.key"
+
 [network]
 mdns = ${DEFAULT_CONFIG.network.mdns}
-# Off by default: no shipped client connects through the relay yet (#1193).
-# With it on, no relay starts unless the daemon runs with --auth --permanent-code.
+# Opt-in authenticated hub relay (#1198); client/deployed acceptance pending.
+# remi serve --relay opts in; --no-relay wins. Pair locally with remi pair --relay.
 relay = ${DEFAULT_CONFIG.network.relay}
 signaling_url = "${DEFAULT_CONFIG.network.signaling_url}"
 
@@ -698,6 +787,11 @@ authorized_chat_ids = []
 authorized_user_ids = []
 
 [notifications]
+# Plaintext legacy push is on by default until secure push ships end to end
+# (the default flips at the R7 gate, #1200); it also needs a push secret.
+# Set false to disable it. Once any device enrolls over the relay, this
+# machine never sends plaintext push again, whatever this setting says.
+legacy_push_enabled = ${DEFAULT_CONFIG.notifications.legacy_push_enabled}
 # Push "<session>: turn complete" with Claude's actual last message when a
 # turn runs long (#914). Stop fires on EVERY turn, including two-second
 # interactive ones, so this is gated on duration: below the threshold you are
@@ -761,6 +855,9 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
 
   lines.push(`Config file: ${configPath} (${fileExists ? 'loaded' : 'not found, using defaults'})`);
   lines.push('');
+  lines.push('[harness]');
+  lines.push(`  default = "${config.harness.default}"`);
+  lines.push('');
   lines.push('[daemon]');
   lines.push(`  base_port = ${config.daemon.base_port}`);
   lines.push(`  port_range = ${config.daemon.port_range}`);
@@ -768,11 +865,14 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  orphan_timeout = ${config.daemon.orphan_timeout}`);
   lines.push(`  persist_sessions = ${config.daemon.persist_sessions}`);
   lines.push(`  allowed_origins = ${JSON.stringify(config.daemon.allowed_origins)}`);
+  lines.push(
+    `  tls = ${config.daemon.tls === null ? 'disabled' : 'configured (restart required)'}`,
+  );
   lines.push('');
   lines.push('[network]');
   lines.push(`  mdns = ${config.network.mdns}`);
   lines.push(`  relay = ${config.network.relay}`);
-  lines.push('  # --permanent-code turns the relay on, whatever relay says');
+  lines.push('  # hub-only: --relay opts in; --no-relay wins; permanent codes are retired');
   lines.push(`  signaling_url = "${config.network.signaling_url}"`);
   lines.push('');
   lines.push('[auth]');
@@ -797,6 +897,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  transcript_binder_enabled = ${config.features.transcript_binder_enabled}`);
   lines.push('');
   lines.push('[notifications]');
+  lines.push(`  legacy_push_enabled = ${config.notifications.legacy_push_enabled}`);
   lines.push(`  on_turn_complete = ${config.notifications.on_turn_complete}`);
   lines.push(`  turn_complete_min_seconds = ${config.notifications.turn_complete_min_seconds}`);
   lines.push(`  push_lease_hours = ${config.notifications.push_lease_hours}`);

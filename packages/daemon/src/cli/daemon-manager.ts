@@ -13,6 +13,7 @@ import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
 import { remiHome } from '../config/remi-home.ts';
 import { SessionRegistryFile } from '../session/session-registry-file.ts';
+import { readLocalDaemonEndpoint } from '../storage/local-daemon-endpoints.ts';
 import { rotateIfNeeded } from './log-rotation.ts';
 import { resolveExistingDirectory } from './path-resolver.ts';
 import { formatVersionDrift } from './version-drift.ts';
@@ -105,16 +106,50 @@ function readStatus(): Record<string, unknown> | null {
 }
 
 /**
+ * The running hub's port, bind and whether it authenticates, for `remi pair` (#1275): null when no
+ * hub is running. `bind` and `auth` are absent from a hub older than `remi pair`.
+ */
+export function readHubStatus(): {
+  port: number;
+  bind?: string;
+  auth?: boolean;
+  directTls?: true;
+} | null {
+  const pid = readPidFileLive() ?? readStatusFilePidIfAlive();
+  if (pid === null) return null;
+  const status = readStatus();
+  if (status === null || status['pid'] !== pid || status['mode'] !== 'hub') return null;
+  const port = status['wsPort'];
+  if (typeof port !== 'number' || !Number.isInteger(port) || port <= 0) return null;
+  const bind = status['bind'];
+  const auth = status['auth'];
+  const local = readLocalDaemonEndpoint(port, { home: REMI_DIR, expectedPid: pid });
+  if (local.kind === 'invalid') throw new Error('Local daemon endpoint unavailable');
+  return {
+    port,
+    ...(typeof bind === 'string' && { bind }),
+    ...(typeof auth === 'boolean' && { auth }),
+    // A same-PID local routing hint is enough to refuse an incompatible v1 QR.
+    // Its absence says nothing about the listener's transport or PID age.
+    ...(local.kind === 'found' && { directTls: true as const }),
+  };
+}
+
+/**
  * Resolve the command and args to invoke remi.
  * Handles both compiled binary and bun/node script execution.
  */
 export function resolveRemiCommand(): { command: string; baseArgs: string[] } {
   // In compiled Bun binaries, process.execPath points to the actual binary,
   // while process.argv[0] may report as "bun" (the embedded runtime).
-  // Bun.argv[0] also gives the real path in compiled binaries.
+  // #1170: bundled module paths also identify arbitrary-named release/test artifacts.
   const execPath = process.execPath ?? '';
   const argv0 = process.argv[0] ?? '';
   const argv1 = process.argv[1] ?? '';
+
+  if (import.meta.path.startsWith('/$bunfs/')) {
+    return { command: execPath, baseArgs: [] };
+  }
 
   // Compiled binary: execPath ends with /remi (the installed binary)
   if (execPath.endsWith('/remi') || execPath.endsWith('\\remi')) {

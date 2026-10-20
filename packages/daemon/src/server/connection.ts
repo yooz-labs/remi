@@ -16,13 +16,24 @@
 import {
   MessageIdTracker,
   createAck,
+  createAnswerResult,
   createAuthResult,
   createError,
   createHelloAck,
   createPing,
   createPong,
+  createSecurePushRegisterResponse,
+  createSecurePushUnregisterResponse,
+  decodeFileDownloadIngress,
+  decodeImageInsertionIngress,
+  decodeImageStagingIngress,
+  decodeStructuredChatFrame,
   deserialize,
   generateId,
+  isFileDownloadCandidate,
+  isImageInsertionCandidate,
+  isImageStagingCandidate,
+  isStructuredChatCandidate,
   now,
   serialize,
 } from '@remi/shared';
@@ -36,8 +47,10 @@ import type {
   DetachSessionMessage,
   HelloMessage,
   KillSessionRequestMessage,
+  NativeAnswerMessage,
   PingMessage,
   ProtocolMessage,
+  RecentRepositoriesRequestMessage,
   RegisterDeviceTokenMessage,
   ResumeSessionRequestMessage,
   SessionHistoryRequestMessage,
@@ -48,12 +61,38 @@ import type {
   UnregisterDeviceTokenMessage,
   UserInputMessage,
 } from '@remi/shared';
+import {
+  type BrowserLinkMessage,
+  type BrowserLinkReceiverRequest,
+  decodeBrowserLinkFrame,
+  encodeBrowserLinkFrame,
+} from '@remi/shared';
+import { isBrowserLinkCandidate } from '@remi/shared';
+import {
+  type FileDownloadMessage,
+  type FileFetchBegin,
+  type FileFetchCancel,
+  type FileFetchComplete,
+  type FileFetchRead,
+  encodeFileDownloadFrame,
+} from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
+import type { SecurePushAuthority } from '../notifications/secure-push-store';
+import { AnswerResults } from './answer-results.ts';
 import { type ClientMessageEvents, createSessionExtra } from './client-message-events.ts';
 import { type ClientMessageHandlers, routeClientMessage } from './route-client-message.ts';
 
+/** Internal actual listener provenance, never a client assertion or wire field. */
+export type ConnectionListenerTransport = 'public-tls' | 'public-plain' | 'private-control';
+
 /** Connection state */
 export type ConnectionState = 'connecting' | 'authenticating' | 'connected' | 'disconnected';
+export interface ConnectionTransport {
+  readonly readyState: number;
+  send(data: string): unknown;
+  close(): void;
+  getBufferedAmount?(): number;
+}
 
 /**
  * Events emitted by a connection. The per-message portion (`onUserInput`,
@@ -129,13 +168,15 @@ export class Connection {
   private _mode: 'query' | undefined = undefined;
   private deviceId: string | null = null;
   private readonly _peerAddress: string | null;
+  private readonly relayChatAuthority: SecurePushAuthority | null;
   /** Authenticated client fingerprint from the Ed25519 challenge-response
    *  (#671), null until `handleAuthResponse` succeeds. Stays null for the
    *  lifetime of the connection when no authenticator is configured (auth
    *  disabled, or this peer was loopback-exempted). */
   private authenticatedFingerprint: string | null = null;
+  private authenticatedPublicKey: string | null = null;
 
-  private readonly ws: WebSocket;
+  private readonly ws: ConnectionTransport;
   // `Omit` before re-adding `authenticator` so the property isn't inherited
   // from `Required<ConnectionConfig>` and then intersected with the explicit
   // override below: under `exactOptionalPropertyTypes: false`, `Required<>`
@@ -152,6 +193,7 @@ export class Connection {
   };
   private readonly events: Partial<ConnectionEvents>;
   private readonly messageTracker: MessageIdTracker;
+  private readonly answerResults = new AnswerResults();
 
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private connectionTimer: ReturnType<typeof setTimeout> | null = null;
@@ -159,15 +201,18 @@ export class Connection {
   private missedPongs = 0;
 
   constructor(
-    ws: WebSocket,
+    ws: ConnectionTransport,
     events: Partial<ConnectionEvents> = {},
     config: Partial<ConnectionConfig> = {},
     id?: UUID,
     peerAddress?: string | null,
+    relayChatAuthority?: SecurePushAuthority,
+    private readonly listenerTransport: ConnectionListenerTransport = 'public-plain',
   ) {
     this.id = id ?? generateId();
     this.ws = ws;
     this._peerAddress = peerAddress ?? null;
+    this.relayChatAuthority = relayChatAuthority ? Object.freeze({ ...relayChatAuthority }) : null;
     this.events = events;
     this.messageTracker = new MessageIdTracker();
 
@@ -232,11 +277,25 @@ export class Connection {
     return this.authenticatedFingerprint;
   }
 
+  /** Internal direct upload identity; absent for capability-only and virtual relay connections. */
+  get connectionClientPublicKey(): string | null {
+    return this.authenticatedPublicKey;
+  }
+
+  /** Machine-asserted relay context, proved locally at upgrade; never a direct signature. */
+  get structuredChatProxyAuthority(): SecurePushAuthority | null {
+    return this.relayChatAuthority;
+  }
+
   /** TCP peer address captured at upgrade time (server.requestIP), for
    *  local-vs-remote client classification (#650). Null when the transport
    *  did not provide one. */
   get connectionPeerAddress(): string | null {
     return this._peerAddress;
+  }
+
+  get connectionListenerTransport(): ConnectionListenerTransport {
+    return this.listenerTransport;
   }
 
   /** Check if connection is active */
@@ -249,6 +308,29 @@ export class Connection {
    * Should be called by the WebSocket server's message handler.
    */
   handleMessage(data: string): void {
+    if (isFileDownloadCandidate(data)) {
+      this.handleFileDownloadFrame(data);
+      return;
+    }
+    if (isBrowserLinkCandidate(data)) {
+      if (this.events.onBrowserLinkReceiver) this.handleBrowserLinkFrame(data);
+      else if (this.checkAuthorization())
+        this.sendError('INVALID_MESSAGE', 'Failed to parse message');
+      return;
+    }
+    if (isStructuredChatCandidate(data)) {
+      this.handleStructuredChatFrame(data);
+      return;
+    }
+    if (isImageInsertionCandidate(data)) {
+      this.handleImageInsertionFrame(data);
+      return;
+    }
+    if (isImageStagingCandidate(data)) {
+      this.handleImageStagingFrame(data);
+      return;
+    }
+    if (!this.checkAuthorization()) return;
     const message = deserialize(data);
     if (!message) {
       this.sendError('INVALID_MESSAGE', 'Failed to parse message');
@@ -266,7 +348,11 @@ export class Connection {
     this.missedPongs = 0;
 
     // Check for duplicate
-    if (this.messageTracker.checkAndMark(message.id)) {
+    if (message.type !== 'native_answer' && this.messageTracker.checkAndMark(message.id)) {
+      if (message.type === 'answer') {
+        void this.handleAnswer(message, true);
+        return;
+      }
       // Duplicate - still acknowledge but don't process
       this.sendAck(message.id, 'delivered');
       return;
@@ -299,11 +385,39 @@ export class Connection {
       // type, so a new registry key breaks this object's compile until it is
       // decided, rather than silently falling through a switch's default.
       const handlers: ClientMessageHandlers = {
+        file_fetch_begin: () => this.close('Invalid file download route'),
+        file_fetch_read: () => this.close('Invalid file download route'),
+        file_fetch_complete: () => this.close('Invalid file download route'),
+        file_fetch_cancel: () => this.close('Invalid file download route'),
+        browser_link_receiver_request: () => this.close('Invalid browser link route'),
+        chat_submit_request: () => this.close('Invalid structured chat route'),
+        image_insert_request: () => this.close('Invalid image insertion route'),
+        // Dedicated raw ingress above owns these, before ordinary deduplication.
+        image_upload_begin: () => this.close('Invalid image staging route'),
+        image_upload_chunk: () => this.close('Invalid image staging route'),
+        image_upload_complete: () => this.close('Invalid image staging route'),
+        image_upload_cancel: () => this.close('Invalid image staging route'),
         hello: (m) => this.handleHello(m),
+        relay_devices_request: () =>
+          this.sendError('UNSUPPORTED', 'Device management requires an enrolled relay channel'),
+        relay_device_revoke_request: () =>
+          this.sendError('UNSUPPORTED', 'Device management requires an enrolled relay channel'),
+        // #1200: only the hub's authenticated, enrolled READY relay peer owns
+        // secure registration. Direct transport never infers it from a token.
+        secure_push_register_request: (m) =>
+          this.send(
+            createSecurePushRegisterResponse(m.id, { success: false, error: 'UNSUPPORTED' }),
+          ),
+        secure_push_unregister_request: (m) =>
+          this.send(
+            createSecurePushUnregisterResponse(m.id, { success: false, error: 'UNSUPPORTED' }),
+          ),
         user_input: (m) => this.handleUserInput(m),
         answer: (m) => this.handleAnswer(m),
+        native_answer: (m) => this.handleNativeAnswer(m),
         bullet_expand_request: (m) => this.handleBulletExpandRequest(m),
         session_list_request: (m) => this.handleSessionListRequest(m),
+        recent_repositories_request: (m) => this.handleRecentRepositoriesRequest(m),
         transcript_load_request: (m) => this.handleTranscriptLoadRequest(m),
         create_session_request: (m) => this.handleCreateSessionRequest(m),
         terminal_resize: (m) => this.handleTerminalResize(m),
@@ -357,6 +471,210 @@ export class Connection {
         this.sendError('INTERNAL_ERROR', `Handler for '${message.type}' failed: ${error.message}`);
       } catch {
         // Socket likely closing; the peer gets no reply instead of a crash.
+      }
+    }
+  }
+
+  /** Original units bypass legacy ACK/dedupe; only the installed service owns effects. */
+  handleFileDownloadFrame(data: string | Uint8Array): void {
+    if (!this.checkAuthorization()) return;
+    if (!this.events.onFileDownload) {
+      this.sendError('INVALID_MESSAGE', 'Failed to parse message');
+      return;
+    }
+    const ingress = decodeFileDownloadIngress(data);
+    if (ingress.kind === 'uncorrelatable' || !this.isConnected) {
+      this.close('Invalid file download frame');
+      return;
+    }
+    this.missedPongs = 0;
+    try {
+      const pending = this.events.onFileDownload(ingress);
+      if (pending) void pending.catch(() => this.close('File download unavailable'));
+    } catch {
+      this.close('File download unavailable');
+    }
+  }
+
+  /** Installed service only: original units bypass ordinary ACK/deduplication. */
+  handleBrowserLinkFrame(data: string | Uint8Array): void {
+    if (!this.events.onBrowserLinkReceiver || !this.checkAuthorization()) return;
+    const request = decodeBrowserLinkFrame(data);
+    if (request?.type !== 'browser_link_receiver_request' || !this.isConnected) {
+      this.close('Invalid browser link frame');
+      return;
+    }
+    this.missedPongs = 0;
+    try {
+      const pending = this.events.onBrowserLinkReceiver(request);
+      if (pending) void pending.catch(() => this.close('Browser links unavailable'));
+    } catch {
+      this.close('Browser links unavailable');
+    }
+  }
+
+  /** Best effort only: a positive send is not an application delivery or Open acknowledgement. */
+  sendBrowserLinkFrame(message: Exclude<BrowserLinkMessage, BrowserLinkReceiverRequest>): boolean {
+    try {
+      if (
+        !this.isConnected ||
+        this.ws.readyState !== WebSocket.OPEN ||
+        !this.ws.getBufferedAmount ||
+        this.ws.getBufferedAmount() !== 0
+      )
+        return false;
+      const status = this.ws.send(encodeBrowserLinkFrame(message));
+      return typeof status === 'number' && status > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /** One bounded send attempt only; positive status is not client receipt or an OS Save. */
+  sendFileDownloadFrame(
+    message: Exclude<
+      FileDownloadMessage,
+      FileFetchBegin | FileFetchRead | FileFetchComplete | FileFetchCancel
+    >,
+  ): boolean {
+    try {
+      if (
+        !this.isConnected ||
+        this.ws.readyState !== WebSocket.OPEN ||
+        !this.ws.getBufferedAmount ||
+        this.ws.getBufferedAmount() !== 0
+      )
+        return false;
+      const status = this.ws.send(encodeFileDownloadFrame(message));
+      return typeof status === 'number' && status > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Strict original input bypasses legacy ACK/deduplication; the host owns sequencing. */
+  handleStructuredChatFrame(data: string | Uint8Array): void {
+    if (!this.checkAuthorization()) return;
+    const request = decodeStructuredChatFrame(data);
+    if (request?.type !== 'chat_submit_request' || !this.isConnected) {
+      this.close('Invalid structured chat frame');
+      return;
+    }
+    this.missedPongs = 0;
+    const reply = (outcome: import('@remi/shared').ChatSubmitOutcome) =>
+      this.send({
+        ...outcome,
+        type: 'chat_submit_result',
+        id: generateId(),
+        timestamp: now(),
+        requestId: request.id,
+        sessionId: request.sessionId,
+        seq: request.seq,
+      });
+    const failed = () => {
+      try {
+        reply({ outcome: 'uncertain', code: 'delivery_unknown' });
+      } catch {
+        this.close('Structured chat unavailable');
+      }
+    };
+    try {
+      if (!this.events.onStructuredChat) reply({ outcome: 'refused', code: 'unavailable' });
+      else void Promise.resolve(this.events.onStructuredChat(request)).catch(failed);
+    } catch {
+      failed();
+    }
+  }
+
+  /** Exact original insertion frames bypass ordinary deduplication; retries belong to the coordinator. */
+  handleImageInsertionFrame(data: string | Uint8Array): void {
+    if (!this.checkAuthorization()) return;
+    const ingress = decodeImageInsertionIngress(data);
+    if (ingress.kind === 'uncorrelatable' || !this.isConnected) {
+      this.close('Invalid image insertion frame');
+      return;
+    }
+    this.missedPongs = 0;
+    const correlation =
+      ingress.kind === 'request'
+        ? { requestId: ingress.request.id, sessionId: ingress.request.sessionId }
+        : ingress.correlation;
+    const unavailable = () =>
+      this.send({
+        type: 'image_insert_result',
+        id: generateId(),
+        timestamp: now(),
+        requestId: correlation.requestId,
+        sessionId: correlation.sessionId,
+        outcome: 'refused',
+        code: 'unavailable',
+      });
+    const failed = () => {
+      try {
+        unavailable();
+      } catch {
+        this.close('Image insertion unavailable');
+      }
+    };
+    try {
+      if (!this.events.onImageInsert) {
+        failed();
+        return;
+      }
+      const pending = this.events.onImageInsert(ingress);
+      if (pending) void pending.catch(failed);
+    } catch {
+      failed();
+    }
+  }
+
+  /** Staging bounds and duplicate-member checks run before JSON conversion or ID tracking. */
+  handleImageStagingFrame(data: string | Uint8Array): void {
+    if (!this.checkAuthorization()) return;
+    const ingress = decodeImageStagingIngress(data);
+    if (ingress.kind === 'uncorrelatable' || !this.isConnected) {
+      this.close('Invalid image staging frame');
+      return;
+    }
+    this.missedPongs = 0;
+    const correlation =
+      ingress.kind === 'request'
+        ? {
+            requestId: ingress.request.id,
+            sessionId: ingress.request.sessionId,
+            operation: ingress.request.type,
+          }
+        : ingress.correlation;
+    const unavailable = () =>
+      this.send({
+        type: 'image_upload_refused',
+        id: generateId(),
+        timestamp: now(),
+        requestId: correlation.requestId,
+        sessionId: correlation.sessionId,
+        operation: correlation.operation,
+        code: 'unavailable',
+      });
+    try {
+      if (!this.events.onImageUpload) {
+        unavailable();
+        return;
+      }
+      const pending = this.events.onImageUpload(ingress);
+      if (pending)
+        void pending.catch(() => {
+          // Fixed text: neither diagnostics nor client bytes enter a protocol reply.
+          try {
+            unavailable();
+          } catch {
+            this.close('Image staging unavailable');
+          }
+        });
+    } catch {
+      try {
+        unavailable();
+      } catch {
+        this.close('Image staging unavailable');
       }
     }
   }
@@ -420,10 +738,13 @@ export class Connection {
       return;
     }
 
-    const { result, verifiedFingerprint } = await this.config.authenticator.verifyResponse(
-      this.id,
-      message,
-    );
+    const { result, verifiedFingerprint, verifiedPublicKey } =
+      await this.config.authenticator.verifyResponse(
+        this.id,
+        message,
+        // A pairing claim held for the person's decision stops waiting once this socket is gone.
+        { isOpen: () => this.state !== 'disconnected' && this.ws.readyState === WebSocket.OPEN },
+      );
     this.send(result);
 
     if (result.success) {
@@ -433,6 +754,7 @@ export class Connection {
       // guarantees `verifiedFingerprint` is set whenever `result.success`.
       this.state = 'connecting';
       this.authenticatedFingerprint = verifiedFingerprint ?? null;
+      this.authenticatedPublicKey = verifiedPublicKey ?? null;
       this.events.onAuthSuccess?.(this.authenticatedFingerprint ?? '');
     } else {
       this.events.onAuthFailed?.(result.error ?? 'unknown', message.clientFingerprint);
@@ -463,10 +785,11 @@ export class Connection {
 
     // Send hello ack (unless skipHelloAck is set, which lets daemon handle it)
     if (!this.config.skipHelloAck) {
-      // No daemonVersion here (#539) and no `harnesses` or harness identity (#1179): the
-      // production daemon always sets skipHelloAck and acks via connection-events.ts, which
-      // stamps all three, so this ack never reaches a client in production. This branch only
-      // serves library consumers of WebSocketServer.
+      // No daemonVersion here (#539), no `harnesses` or harness identity (#1179), and an empty
+      // `capabilities` (#1237; `createHelloAck` still stamps the protocol version): the production
+      // daemon always sets skipHelloAck and acks via connection-events.ts, which stamps them all,
+      // so this ack never reaches a client in production. This branch only serves library
+      // consumers of WebSocketServer, which must not rely on its capabilities for `hubSupport`.
       this.send(createHelloAck(this.config.serverVersion, this.sessionId));
     }
 
@@ -499,14 +822,28 @@ export class Connection {
     );
   }
 
-  private handleAnswer(message: AnswerMessage): void {
+  private async handleNativeAnswer(message: NativeAnswerMessage): Promise<void> {
     if (this.state !== 'connected') {
       this.sendError('NOT_CONNECTED', 'Connection not established');
       return;
     }
+    let outcome: import('@remi/shared').AnswerResultOutcome = 'stale';
+    try {
+      // The proof is itself verified against current child authority. A local
+      // capability/connection does not grant an unsigned choice or cache alias.
+      outcome = (await this.events.onNativeAnswer?.(message)) ?? 'stale';
+    } catch {
+      outcome = 'uncertain';
+    }
+    if (this.state === 'connected')
+      this.send(createAnswerResult(message.id, message.sessionId, message.questionId, outcome));
+  }
 
-    // Acknowledge receipt
-    this.sendAck(message.id, 'delivered');
+  private async handleAnswer(message: AnswerMessage, recognizedDuplicate = false): Promise<void> {
+    if (this.state !== 'connected') {
+      this.sendError('NOT_CONNECTED', 'Connection not established');
+      return;
+    }
 
     // Notify. Forward the structured AskUserQuestion parts (#627) when present so
     // the daemon can answer the held hook (selections, #1127) or cancel it, and a
@@ -517,13 +854,17 @@ export class Connection {
       message.message !== undefined
         ? { selections: message.selections, cancel: message.cancel, message: message.message }
         : undefined;
-    this.events.onAnswer?.(
-      message.sessionId,
-      message.questionId,
-      message.answer,
-      message.claudeSessionId,
-      extra,
-    );
+    const result = await this.answerResults.run(message, recognizedDuplicate, async () => {
+      const outcome = await this.events.onAnswer?.(
+        message.sessionId,
+        message.questionId,
+        message.answer,
+        message.claudeSessionId,
+        extra,
+      );
+      return outcome ?? 'uncertain';
+    });
+    if (this.state === 'connected') this.send(result);
   }
 
   private handleBulletExpandRequest(message: BulletExpandRequestMessage): void {
@@ -542,6 +883,11 @@ export class Connection {
 
     // Notify - the CLI will handle sending the response
     this.events.onBulletExpandRequest(message.sessionId, message.bulletId, message.id);
+  }
+
+  private handleRecentRepositoriesRequest(message: RecentRepositoriesRequestMessage): void {
+    this.sendAck(message.id, 'delivered');
+    this.events.onRecentRepositoriesRequest?.(message.id, message.limit);
   }
 
   private handleSessionListRequest(message: SessionListRequestMessage): void {
@@ -630,12 +976,40 @@ export class Connection {
     this.send(createError(code, message));
   }
 
+  /** Direct identities keep their grant only while it remains in the shared store (#1305). */
+  private checkAuthorization(): boolean {
+    if (this.state === 'disconnected') return false;
+    if (
+      !this.config.authenticator ||
+      !this.authenticatedPublicKey ||
+      !this.authenticatedFingerprint
+    )
+      return true;
+    let reason = 'Device authorization removed; local approval required';
+    try {
+      if (
+        this.config.authenticator.isConnectionAuthorized(
+          this.authenticatedPublicKey,
+          this.authenticatedFingerprint,
+        )
+      )
+        return true;
+    } catch {
+      reason = 'Device authorization unavailable; reconnect required';
+    }
+    // Reuse the ordinary visible close and idempotent detach/cleanup. Capability
+    // peers have no authenticator; relay peers retain HubRelay's authority gate.
+    this.close(reason);
+    return false;
+  }
+
   private startPingTimer(): void {
     this.missedPongs = 0;
     this.pingTimer = setInterval(() => {
       if (this.ws.readyState !== WebSocket.OPEN) {
         return;
       }
+      if (!this.checkAuthorization()) return;
       if (this.missedPongs >= MAX_MISSED_PONGS) {
         // Peer stopped answering pings: force-close so the normal disconnect
         // path runs (registry detach + FIFO promotion of any queued

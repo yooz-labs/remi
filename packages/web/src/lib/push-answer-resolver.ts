@@ -8,20 +8,19 @@
  *   1. Locate the session in the in-memory session list to find its
  *      `connectionId` (so the answer goes to the right daemon when the
  *      iOS client is attached to multiple).
- *   2. If a live connection exists, send immediately.
- *   3. Otherwise pick a daemon URL to (re)connect to — preferably the URL
+ *   2. If a live direct connection exists, send immediately.
+ *   3. Otherwise pick a direct daemon URL to (re)connect to — preferably the URL
  *      the dead connection had, falling back to the first URL persisted
  *      to localStorage (cold-start path: app was suspended, lock-screen
  *      tap brought it back, no connection map exists yet).
  *   4. Wait briefly for the connection, send.
  *
- * Steps 1-3 are pure data manipulation that this module owns; step 4 is
- * the React/refs layer in App.tsx. Keeping the URL-resolution pure here
- * is the only way to unit-test it — the web package does not currently
- * ship a DOM/component test runner. Issue #278.
+ * Relay-v2 notifications belong to the native capsule owner (#1200/#1201),
+ * and are unreachable through this legacy path. Steps 1-3 are pure data
+ * manipulation; the delivery and reconnect layer lives in App.tsx (#278).
  */
 
-import type { ConnectionStatus } from '@/types';
+import type { ConnectionState, ConnectionStatus } from '@/types';
 
 interface SessionRef {
   readonly id: string;
@@ -31,6 +30,7 @@ interface SessionRef {
 interface ConnectionRef {
   readonly connectionId: string;
   readonly url: string;
+  readonly mode: ConnectionState['mode'];
   // Canonical union (type-only import is erased at runtime, so this keeps the
   // module's pure/testable shape while preventing drift from ConnectionStatus).
   readonly status: ConnectionStatus;
@@ -75,9 +75,15 @@ export function resolvePushAnswerTarget(input: {
   const session = sessions.find((s) => s.id === sessionId);
   const connectionId = session?.connectionId ?? undefined;
 
-  // 1. Live connection for this session — send immediately.
+  // This is the legacy direct-answer route, not the relay-v2 capsule owner
+  // (#1200/#1201). A relay URL names the Worker, never a daemon /answer
+  // endpoint. Keep the mode even after disconnect so an absent/stripped
+  // capsule cannot turn a relay notification into a plaintext Worker POST.
   if (connectionId) {
     const conn = connections.find((c) => c.connectionId === connectionId);
+    if (conn && conn.mode !== 'direct') return { kind: 'unreachable' };
+
+    // 1. Live direct connection for this session — send immediately.
     if (conn?.status === 'connected') {
       return { kind: 'live', connectionId, url: conn.url };
     }
@@ -85,6 +91,7 @@ export function resolvePushAnswerTarget(input: {
     if (conn?.url) {
       const inflight = connections.find(
         (c) =>
+          c.mode === 'direct' &&
           c.url === conn.url &&
           (c.status === 'connecting' ||
             c.status === 'authenticating' ||
@@ -101,20 +108,23 @@ export function resolvePushAnswerTarget(input: {
   // per-session URL, only fall back to a stored URL when it is UNAMBIGUOUS
   // (exactly one daemon paired). For a multi-daemon user, guessing storedUrls[0]
   // silently delivers the answer to the WRONG daemon (#603 Phase 4, R8) — report
-  // unreachable instead so the caller surfaces "open the app" / uses the
-  // connection-independent reverse-relay (which carries the daemon's room code).
+  // unreachable instead so the caller surfaces "open the app".
   let cold = sessionUrlMap?.[sessionId];
   if (cold === undefined && storedUrls.length === 1) {
     cold = storedUrls[0];
   }
   if (!cold) return { kind: 'unreachable' };
+  // App persists only direct routes. Also refuse a stored URL that currently
+  // names a relay connection; never borrow its reconnect attempt below.
+  if (connections.some((c) => c.url === cold && c.mode !== 'direct')) {
+    return { kind: 'unreachable' };
+  }
 
   const inflight = connections.find(
     (c) =>
+      c.mode === 'direct' &&
       c.url === cold &&
-      (c.status === 'connecting' ||
-        c.status === 'authenticating' ||
-        c.status === 'reconnecting'),
+      (c.status === 'connecting' || c.status === 'authenticating' || c.status === 'reconnecting'),
   );
   if (inflight) {
     return { kind: 'pending', connectionId: inflight.connectionId, url: cold };

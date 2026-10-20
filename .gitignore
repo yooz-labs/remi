@@ -108,4 +108,9 @@ packages/daemon/tests/auto-approve/fixtures/.local-command-corpus.jsonl
 packages/macos/Remi/Resources/web/*
 !packages/macos/Remi/Resources/web/.gitkeep
 packages/macos/DerivedData/
+# native apps (packages/native): Xcode per-user state and build output
+packages/native/**/xcuserdata/
+packages/native/DerivedData/
+packages/native/RemiKit/.build/
+packages/native/RemiKit/.swiftpm/
 .claude/*.local.md.archived

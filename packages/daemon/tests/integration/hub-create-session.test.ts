@@ -16,15 +16,25 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import type { HarnessId } from '@remi/shared';
 import type {
   CreateSessionResponseMessage,
   HelloAckMessage,
   ProtocolMessage,
+  RecentRepositoriesResponseMessage,
+  SessionListResponseMessage,
+  WorkspaceRequest,
 } from '@remi/shared/protocol.ts';
-import { createCreateSessionRequest, serialize } from '@remi/shared/protocol.ts';
+import {
+  createCreateSessionRequest,
+  createRecentRepositoriesRequest,
+  createSessionListRequest,
+  serialize,
+} from '@remi/shared/protocol.ts';
 import { DEFAULT_CONFIG } from '../../src/config/config.ts';
 import { SessionStore } from '../../src/session/session-store.ts';
 import {
@@ -35,7 +45,7 @@ import {
 } from '../helpers/fake-agent-clis.ts';
 import { FakeAppServer } from '../helpers/fake-app-server.ts';
 import { type StampedBuild, copyBuild } from '../helpers/stamped-build.ts';
-import { reserveRange } from '../session/port-test-helpers.ts';
+import { occupyPort, reserveRange } from '../session/port-test-helpers.ts';
 import {
   CLI_TS,
   type HubHandle,
@@ -49,16 +59,48 @@ import {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+const INERT_CONCURRENT_CLAUDE = `#!/bin/sh
+process_dir="$FAKE_CLAUDE_DIR/$$"
+mkdir -p "$process_dir"
+printf '%s\\n' "$$" > "$process_dir/pid"
+wait_ticks="$FAKE_CONCURRENT_CLAUDE_WAIT_TICKS"; case "$wait_ticks" in ''|*[!0-9]*) wait_ticks=600 ;; esac # 600 x 100ms is 60s by default.
+i=0
+while [ ! -e "$process_dir/release" ] && [ "$i" -lt "$wait_ticks" ]; do sleep 0.1; i=$((i + 1)); done
+`;
+
 interface Running {
   hub: HubHandle;
   agents: FakeAgents;
   server: FakeAppServer;
   /** What the hub wrote to stdout and stderr since it was ready: its log, in daemon mode. */
   log: { text: string };
+  /** This test's concurrent fake writes one owned pid directory per child. */
+  perProcessFake?: boolean;
 }
 const running: Running[] = [];
 const sleepers: Array<Bun.Subprocess> = [];
 const builds: StampedBuild[] = [];
+
+function fakeCliProcesses(agents: FakeAgents): Array<{ dir: string; pid: number }> {
+  if (!fs.existsSync(agents.claudeDir)) return [];
+  return fs.readdirSync(agents.claudeDir).flatMap((name) => {
+    const dir = path.join(agents.claudeDir, name);
+    const pidFile = path.join(dir, 'pid');
+    if (!/^\d+$/.test(name) || !fs.existsSync(pidFile)) return [];
+    const pid = Number(fs.readFileSync(pidFile, 'utf-8').trim());
+    return Number.isInteger(pid) && pid > 1 ? [{ dir, pid }] : [];
+  });
+}
+
+function fakeCliIsAlive(pid: number, agents: FakeAgents): boolean {
+  const command = Bun.spawnSync(['/bin/ps', '-p', String(pid), '-o', 'command='], {
+    stdout: 'pipe',
+    stderr: 'ignore',
+  });
+  return new TextDecoder()
+    .decode(command.stdout)
+    .includes(path.join(path.dirname(agents.claudeDir), 'fake-bin', 'claude'));
+}
 
 afterEach(async () => {
   for (const r of running.splice(0)) {
@@ -79,12 +121,51 @@ afterEach(async () => {
     for (const dir of [r.agents.codexDir, r.agents.claudeDir]) {
       fs.writeFileSync(path.join(dir, 'release'), '');
     }
+    if (r.perProcessFake === true) {
+      const fakes = fakeCliProcesses(r.agents);
+      for (const fake of fakes) fs.writeFileSync(path.join(fake.dir, 'release'), '');
+      for (const fake of fakes) {
+        try {
+          await pollUntil(() => !fakeCliIsAlive(fake.pid, r.agents), 3000, 'fake CLI exit');
+        } catch {
+          if (fakeCliIsAlive(fake.pid, r.agents)) {
+            try {
+              process.kill(fake.pid, 'SIGKILL');
+            } catch {
+              // The per-process fake may exit between the identity check and signal.
+            }
+          }
+        }
+      }
+    }
     await cleanupHub(r.hub);
     await r.server.stop();
   }
   for (const s of sleepers.splice(0)) s.kill('SIGKILL');
   for (const b of builds.splice(0)) b.remove();
 });
+
+test('the per-process fake exits without a release marker', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-fake-bounded-'));
+  const claudeDir = path.join(root, 'claude');
+  const child = Bun.spawn(['/bin/sh', '-c', INERT_CONCURRENT_CLAUDE], {
+    env: { ...process.env, FAKE_CLAUDE_DIR: claudeDir, FAKE_CONCURRENT_CLAUDE_WAIT_TICKS: '3' },
+    stdout: 'ignore',
+    stderr: 'ignore',
+  });
+  try {
+    expect(await Promise.race([child.exited, Bun.sleep(2000).then(() => null)])).toBe(0);
+    const dirs = fs.readdirSync(claudeDir);
+    expect(dirs).toHaveLength(1);
+    expect(fs.existsSync(path.join(claudeDir, dirs[0] ?? '', 'release'))).toBe(false);
+  } finally {
+    if (child.exitCode === null) {
+      child.kill('SIGKILL');
+      await child.exited;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}, 5000);
 
 async function startHub(
   which: { codex?: boolean; claude?: boolean },
@@ -128,7 +209,7 @@ interface Asked {
 /** Connect, send one create request built by the shipping factory, and wait for its response. */
 async function ask(
   r: Running,
-  options: { harness?: unknown; args?: unknown; directory?: unknown } = {},
+  options: { harness?: unknown; args?: unknown; directory?: unknown; workspace?: unknown } = {},
 ): Promise<Asked> {
   const { ws, received } = await connectAndHello(r.hub.port);
   try {
@@ -136,6 +217,7 @@ async function ask(
     const request = createCreateSessionRequest(directory as string | undefined, {
       harness: options.harness as HarnessId | undefined,
       args: options.args as readonly string[] | undefined,
+      workspace: options.workspace as WorkspaceRequest | undefined,
     });
     ws.send(serialize(request));
     const isResponse = (m: ProtocolMessage): m is CreateSessionResponseMessage =>
@@ -155,13 +237,18 @@ function noticeOf(response: object): unknown {
   return (response as { notice?: unknown }).notice;
 }
 
-function childEntries(r: Running): Array<{ pid: number; sessionId: string }> {
+function childEntries(r: Running): Array<{ pid: number; sessionId: string; wsPort: number }> {
   const liveDir = path.join(r.hub.home, '.remi', 'live-sessions');
   if (!fs.existsSync(liveDir)) return [];
   return fs
     .readdirSync(liveDir)
     .map((f) => JSON.parse(fs.readFileSync(path.join(liveDir, f), 'utf-8')))
-    .filter((e) => typeof e.pid === 'number');
+    .filter(
+      (e) =>
+        typeof e.pid === 'number' &&
+        typeof e.sessionId === 'string' &&
+        typeof e.wsPort === 'number',
+    );
 }
 
 /** The fake records whole or not at all, so the file existing is the whole list (P11). */
@@ -264,6 +351,271 @@ describe('a hub creating a session for a harness (#1179)', () => {
     expect(
       second.received.find((m): m is HelloAckMessage => m.type === 'hello_ack')?.harnesses,
     ).toEqual(['claude']);
+  }, 60000);
+
+  test("the hub's session-less ack names the protocol version and the capabilities (#1237, #1236)", async () => {
+    const r = await startHub({ claude: true });
+    const { ws, received } = await connectAndHello(r.hub.port);
+    ws.close();
+    const ack = received.find((m): m is HelloAckMessage => m.type === 'hello_ack');
+    expect(ack?.sessionId).toBeNull();
+    expect(ack?.protocolVersion).toBe(1);
+    expect(ack?.capabilities).toEqual(['workspaces']);
+  }, 60000);
+
+  test('concurrent create requests reserve distinct child ports (#1213)', async () => {
+    const r = await startHub({ claude: true, codex: false });
+    r.perProcessFake = true;
+    const fakeClaudePath = path.join(path.dirname(r.agents.claudeDir), 'fake-bin', 'claude');
+    fs.writeFileSync(fakeClaudePath, INERT_CONCURRENT_CLAUDE);
+    fs.chmodSync(fakeClaudePath, 0o755);
+    fs.mkdirSync(path.join(r.hub.work, 'project-a'));
+    fs.mkdirSync(path.join(r.hub.work, 'project-b'));
+
+    const holders: Array<Awaited<ReturnType<typeof occupyPort>>> = [];
+    const sockets: WebSocket[] = [];
+    try {
+      const range = DEFAULT_CONFIG.daemon.port_range;
+      if (range < 4) throw new Error(`Port range too small for this test: ${range}`);
+      for (let offset = 1; offset < range - 2; offset++) {
+        holders.push(await occupyPort(r.hub.port + offset, DEFAULT_CONFIG.daemon.bind));
+      }
+
+      const firstClient = await connectAndHello(r.hub.port);
+      sockets.push(firstClient.ws);
+      const secondClient = await connectAndHello(r.hub.port);
+      sockets.push(secondClient.ws);
+      const clients = [firstClient, secondClient];
+      const requests = clients.map((client, index) => {
+        const request = createCreateSessionRequest(
+          path.join(r.hub.work, index === 0 ? 'project-a' : 'project-b'),
+        );
+        client.ws.send(serialize(request));
+        return request;
+      });
+      const responseFor = (index: number): CreateSessionResponseMessage | undefined =>
+        clients[index]?.received.find(
+          (message): message is CreateSessionResponseMessage =>
+            message.type === 'create_session_response' && message.requestId === requests[index]?.id,
+        );
+      await pollUntil(
+        () => responseFor(0) !== undefined && responseFor(1) !== undefined,
+        20000,
+        'both create-session responses',
+      );
+      const responses = [responseFor(0), responseFor(1)] as CreateSessionResponseMessage[];
+      expect(
+        responses.map((response) => response.success),
+        JSON.stringify(responses),
+      ).toEqual([true, true]);
+      const ports = responses.map((response) => response.port as number);
+      const sessionIds = responses.map((response) => response.sessionId as string);
+      expect(new Set(ports).size).toBe(2);
+      expect(new Set(sessionIds).size).toBe(2);
+
+      await pollUntil(
+        () => sessionIds.every((id) => childEntries(r).some((entry) => entry.sessionId === id)),
+        10000,
+        'both owned child registry entries',
+      );
+      const children = childEntries(r).filter((entry) => sessionIds.includes(entry.sessionId));
+      expect(children).toHaveLength(2);
+      expect(Object.fromEntries(children.map((entry) => [entry.sessionId, entry.wsPort]))).toEqual(
+        Object.fromEntries(
+          responses.map((response) => [response.sessionId as string, response.port as number]),
+        ),
+      );
+      expect(new Set(children.map((entry) => entry.pid)).size).toBe(2);
+      expect(children.every((entry) => entry.pid !== r.hub.proc.pid)).toBe(true);
+
+      const acknowledgements: Array<string | null | undefined> = [];
+      for (const port of ports) {
+        const direct = await connectAndHello(port);
+        sockets.push(direct.ws);
+        acknowledgements.push(
+          direct.received.find(
+            (message): message is HelloAckMessage => message.type === 'hello_ack',
+          )?.sessionId,
+        );
+      }
+      expect(acknowledgements).toEqual(sessionIds);
+      await pollUntil(() => fakeCliProcesses(r.agents).length === 2, 10000, 'both fake CLIs');
+      expect(new Set(fakeCliProcesses(r.agents).map((fake) => fake.pid)).size).toBe(2);
+    } finally {
+      for (const socket of sockets) socket.close();
+      await Promise.all(
+        holders.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
+      );
+    }
+  }, 60000);
+
+  test('a workspace request: the hub makes the worktree and the agent starts in it (#1236)', async () => {
+    const r = await startHub({ claude: true });
+    const git = (cwd: string, ...args: string[]): string => {
+      const result = spawnSync(
+        'git',
+        ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', ...args],
+        { cwd, encoding: 'utf-8' },
+      );
+      if (result.status !== 0) throw new Error(`git ${args.join(' ')}: ${result.stderr}`);
+      return result.stdout.trim();
+    };
+    const repo = path.join(fs.realpathSync(r.hub.work), 'project');
+    fs.mkdirSync(repo);
+    git(repo, 'init', '-q', '-b', 'main');
+    fs.writeFileSync(path.join(repo, 'README.md'), 'hello\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-q', '-m', 'first');
+    const head = git(repo, 'rev-parse', 'HEAD');
+
+    const { ack, response } = await ask(r, {
+      directory: repo,
+      workspace: { repository: repo, worktree: { branch: 'feature/one' } },
+    });
+    expect(ack.capabilities).toEqual(['workspaces']);
+    expect(response.success, why(r, response)).toBe(true);
+    const dir = path.join(path.dirname(repo), 'remi-worktrees', 'project-feature-one');
+    expect(response.workspace).toEqual({
+      repository: repo,
+      directory: dir,
+      worktree: { branch: 'feature/one', base: head },
+    });
+    // The child's agent runs in the worktree, on the new branch.
+    await waitForArgv(r.agents.claudeDir);
+    expect(fs.readFileSync(path.join(r.agents.claudeDir, 'cwd'), 'utf-8').trim()).toBe(dir);
+    expect(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('feature/one');
+
+    // Phase B: the child's own session list names that workspace, read from git.
+    const child = await connectAndHello(response.port as number);
+    try {
+      let entry: { workspace?: unknown } | undefined;
+      await pollUntil(
+        () => {
+          child.ws.send(serialize(createSessionListRequest(false)));
+          const lists = child.received.filter(
+            (m): m is SessionListResponseMessage => m.type === 'session_list_response',
+          );
+          entry = lists.at(-1)?.sessions[0];
+          return entry?.workspace !== undefined;
+        },
+        15000,
+        'a session list entry with a workspace',
+      );
+      expect(entry?.workspace).toEqual({ repository: repo, directory: dir, branch: 'feature/one' });
+    } finally {
+      child.ws.close();
+    }
+    // #1284: the main repository remains a useful choice after its session's worktree is gone.
+    git(repo, 'worktree', 'remove', '--force', dir);
+    const recent = await connectAndHello(r.hub.port);
+    try {
+      const request = createRecentRepositoriesRequest(20);
+      recent.ws.send(serialize(request));
+      const isResponse = (m: ProtocolMessage): m is RecentRepositoriesResponseMessage =>
+        m.type === 'recent_repositories_response' && m.requestId === request.id;
+      await pollUntil(() => recent.received.some(isResponse), 15000, 'retained repository');
+      expect(recent.received.find(isResponse)?.repositories.map((e) => e.repository)).toEqual([
+        repo,
+      ]);
+      const file = path.join(r.hub.home, '.remi', 'recent-repositories.json');
+      const records = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      expect(records).toHaveLength(1);
+      expect(Object.keys(records[0]).sort()).toEqual(['lastUsedAt', 'repository']);
+      expect(records[0].repository).toBe(repo);
+      expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    } finally {
+      recent.ws.close();
+    }
+  }, 60000);
+
+  test('repository history survives the session store pruning an eight-day-old session (#1284)', async () => {
+    const r = await startHub({ claude: true });
+    const repo = fs.realpathSync(r.hub.work);
+    expect(spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: repo }).status).toBe(0);
+    const lastUsedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+    const home = path.join(r.hub.home, '.remi');
+    new SessionStore(path.join(home, 'sessions.json')).save({
+      remiSessionId: '44444444-4444-4444-8444-444444444444',
+      claudeSessionId: null,
+      projectPath: repo,
+      port: 0,
+      pid: null,
+      startedAt: lastUsedAt,
+      exitedAt: lastUsedAt,
+      exitCode: 0,
+    });
+    fs.writeFileSync(
+      path.join(home, 'recent-repositories.json'),
+      JSON.stringify([{ repository: repo, lastUsedAt }]),
+      { mode: 0o600 },
+    );
+    const { ws, received } = await connectAndHello(r.hub.port);
+    try {
+      const request = createRecentRepositoriesRequest();
+      ws.send(serialize(request));
+      const isResponse = (m: ProtocolMessage): m is RecentRepositoriesResponseMessage =>
+        m.type === 'recent_repositories_response' && m.requestId === request.id;
+      await pollUntil(() => received.some(isResponse), 15000, 'eight-day repository');
+      expect(received.find(isResponse)?.repositories).toEqual([
+        { repository: repo, name: path.basename(repo), lastUsedAt },
+      ]);
+      expect(new SessionStore(path.join(home, 'sessions.json')).list()).toEqual([]);
+    } finally {
+      ws.close();
+    }
+  }, 60000);
+
+  test("a hub start without workspace remembers the directory's main repository (#1284)", async () => {
+    const r = await startHub({ claude: true });
+    const repo = fs.realpathSync(r.hub.work);
+    expect(spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: repo }).status).toBe(0);
+    const nested = path.join(repo, 'src');
+    fs.mkdirSync(nested);
+    const { response } = await ask(r, { directory: nested });
+    expect(response.success, why(r, response)).toBe(true);
+    expect(response.workspace).toBeUndefined();
+    const records = JSON.parse(
+      fs.readFileSync(path.join(r.hub.home, '.remi', 'recent-repositories.json'), 'utf-8'),
+    );
+    expect(records).toHaveLength(1);
+    expect(records[0].repository).toBe(repo);
+  }, 60000);
+
+  test("a recent-repositories request lists the repositories of the hub's recent sessions (#1236 phase C)", async () => {
+    const r = await startHub({ claude: true });
+    const repo = path.join(fs.realpathSync(r.hub.work), 'recent-project');
+    fs.mkdirSync(repo);
+    for (const args of [
+      ['init', '-q', '-b', 'main'],
+      ['commit', '-q', '--allow-empty', '-m', 'first'],
+    ]) {
+      spawnSync('git', ['-c', 'user.email=t@e.com', '-c', 'user.name=T', ...args], { cwd: repo });
+    }
+    // Relative to now: the store drops a session seven days after it exited.
+    const exitedAt = new Date(Date.now() - 60_000).toISOString();
+    new SessionStore(path.join(r.hub.home, '.remi', 'sessions.json')).save({
+      remiSessionId: '33333333-3333-4333-8333-333333333333',
+      claudeSessionId: null,
+      projectPath: repo,
+      port: 0,
+      pid: null,
+      startedAt: new Date(Date.now() - 120_000).toISOString(),
+      exitedAt,
+      exitCode: 0,
+    });
+    const { ws, received } = await connectAndHello(r.hub.port);
+    try {
+      const request = createRecentRepositoriesRequest(5);
+      ws.send(serialize(request));
+      const isResponse = (m: ProtocolMessage): m is RecentRepositoriesResponseMessage =>
+        m.type === 'recent_repositories_response' && m.requestId === request.id;
+      await pollUntil(() => received.some(isResponse), 15000, 'the recent repositories');
+      expect(received.find(isResponse)?.repositories).toEqual([
+        { repository: repo, name: 'recent-project', lastUsedAt: exitedAt },
+      ]);
+    } finally {
+      ws.close();
+    }
   }, 60000);
 
   test('a Codex request starts a Codex session with the validated arguments, headless', async () => {

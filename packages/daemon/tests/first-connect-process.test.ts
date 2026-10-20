@@ -125,6 +125,11 @@ test('stock hub challenges bare loopback; CLI approves exact pending key; fresh 
   const bare = await connection(port);
   await wait(() => bare.messages.length > 0, 'bare challenge');
   expect(bare.messages[0]?.type).toBe('auth_challenge');
+  const challenge = bare.messages[0];
+  if (!challenge || challenge.type !== 'auth_challenge') throw new Error('MISSING_OWNED_CHALLENGE');
+  expect('answerEncryptionKey' in challenge).toBe(false);
+  expect(fs.existsSync(path.join(dir, '.remi', 'answer-key.json'))).toBe(false);
+
   const body = { sessionId: 'no-session', questionId: 'no-question', answer: 'yes' };
   const answer = (payload: object, token?: string) =>
     fetch(`http://127.0.0.1:${port}/answer`, {
@@ -463,3 +468,39 @@ for (const corrupt of ['authorized_keys.json', 'pending_keys.json']) {
     expect(fs.readFileSync(file, 'utf8')).toBe('{PRIVATE_LABEL_SENTINEL');
   }, 20000);
 }
+
+test('retired answer-key startup leaves an owned historical file and its mode untouched', async () => {
+  const dir = directory();
+  const home = path.join(dir, '.remi');
+  fs.mkdirSync(home, { mode: 0o700 });
+  const keyPath = path.join(home, 'answer-key.json');
+  const historical = JSON.stringify({
+    publicKeyBase64: 'owned-retired-public',
+    privateKeyPkcs8Base64: 'owned-retired-private',
+  });
+  fs.writeFileSync(keyPath, historical, { mode: 0o644 });
+  const port = await reserveRange(1);
+  const hub = spawn(dir, [
+    'serve',
+    '--port',
+    String(port),
+    '--no-mdns',
+    '--no-relay',
+    '--no-telegram',
+  ]);
+  await wait(
+    () => fs.existsSync(path.join(home, 'daemon-status.json')) || hub.exitCode !== null,
+    'owned historical-key hub',
+  );
+  expect(hub.exitCode).toBeNull();
+  const bare = await connection(port);
+  await wait(
+    () => bare.messages.some((message) => message.type === 'auth_challenge'),
+    'historical-key challenge',
+  );
+  const challenge = bare.messages.find((message) => message.type === 'auth_challenge');
+  if (!challenge || challenge.type !== 'auth_challenge') throw new Error('MISSING_OWNED_CHALLENGE');
+  expect(fs.readFileSync(keyPath, 'utf8')).toBe(historical);
+  expect(fs.statSync(keyPath).mode & 0o777).toBe(0o644);
+  expect('answerEncryptionKey' in challenge).toBe(false);
+}, 15000);

@@ -21,10 +21,11 @@
 import { createQuestion, createStructuredAgentOutput, generateId, now } from '@remi/shared';
 import type { AgentStatus, ProtocolMessage, Question, SessionIdentity, UUID } from '@remi/shared';
 
-import type { MessageAPIEvents } from '../../api/message-api.ts';
+import type { MessageAPIEvents, QuestionPushOptions } from '../../api/message-api.ts';
 import { MessageAPI } from '../../api/message-api.ts';
 import { NotificationDispatcher } from '../../notifications/notification-dispatcher.ts';
 import type { PushConfig } from '../../notifications/notification-dispatcher.ts';
+import type { SecureSessionPush } from '../../notifications/secure-push-service.ts';
 import type { SessionRegistry } from '../../session/index.ts';
 import type { TranscriptWatcher } from '../../transcript/index.ts';
 import type { DeviceTokenEntry } from '../handlers/trivial-events.ts';
@@ -34,6 +35,7 @@ import { getPrimarySessionId } from '../session-state.ts';
 export type { PushConfig };
 
 export interface MessageApiSetupDeps {
+  securePush?: SecureSessionPush;
   sessionRegistry: SessionRegistry;
   transcriptWatchers: Map<UUID, TranscriptWatcher>;
   deviceTokens: Map<string, DeviceTokenEntry>;
@@ -63,8 +65,7 @@ export interface MessageApiSetupDeps {
    */
   getIdentity?: () => SessionIdentity | null;
   /**
-   * Log a detected question's length, not its first 50 characters (#1178): a Codex approval
-   * card's text is the command Codex asks to run, which a log must not carry. Default: the text.
+   * Deprecated compatibility input. Personal question text is always omitted (#1200).
    */
   redactQuestionLogs?: boolean;
 }
@@ -95,7 +96,6 @@ export function createMessageApiForSession(
     maxBulletLength,
     sendMessage,
     getIdentity,
-    redactQuestionLogs,
   } = deps;
 
   const sendAndRecord = (message: ProtocolMessage): void => {
@@ -116,6 +116,7 @@ export function createMessageApiForSession(
       deviceTokens,
       pushConfig,
       getPrimarySessionId,
+      ...(deps.securePush ? { securePush: deps.securePush } : {}),
       ...(pruneToken ? { pruneToken } : {}),
       ...(refreshDeviceTokens ? { refreshDeviceTokens } : {}),
     },
@@ -140,12 +141,8 @@ export function createMessageApiForSession(
     onMessageFinalized: (msgId) => {
       log(`Message ${msgId} finalized`);
     },
-    onQuestion: (question: Question, opts?: { held?: boolean }) => {
-      log(
-        redactQuestionLogs
-          ? `Question detected (${question.text.length} chars)`
-          : `Question detected: ${question.text.substring(0, 50)}...`,
-      );
+    onQuestion: (question: Question, opts?: QuestionPushOptions) => {
+      log(`Question detected (${question.text.length} chars)`);
       const questionSessionId = getPrimarySessionId() ?? sessionId;
       const identity = getIdentity?.() ?? null;
       // #753: stamp held-ness onto the question itself so every downstream
@@ -155,7 +152,14 @@ export function createMessageApiForSession(
       // multi-choice card. The stamp keys `handleAnswer`'s refusal of free
       // text on a card that takes options (#1134, `free-text-on-held-card`)
       // and the terminal attach client's banner.
-      const stamped: Question = opts?.held === true ? { ...question, held: true } : question;
+      // #1235: and how its answer is applied. A terminal-only card takes no phone answer whatever
+      // its source said; with no path given the field stays absent (unknown), never guessed.
+      const answerPath = question.terminalOnly === true ? 'none' : opts?.answerPath;
+      const stamped: Question = {
+        ...question,
+        ...(opts?.held === true && { held: true }),
+        ...(answerPath !== undefined && { answerPath }),
+      };
       const msg: ProtocolMessage = createQuestion(stamped, questionSessionId, identity);
       sendAndRecord(msg);
       // #808: `source` (QuestionSource: 'permission_request' | 'notification' |
@@ -174,12 +178,12 @@ export function createMessageApiForSession(
       // unhandled rejection (matches the escalator's #672 push guard).
       void notifications
         .maybePush(questionSessionId, stamped, { held: opts?.held === true })
-        .catch((err) => {
-          logError(`[Session ${sessionId}] Question push threw:`, err);
+        .catch(() => {
+          logError('[QuestionPush] failed');
         });
     },
-    onStatusChange: (status: AgentStatus, context?: string) => {
-      log(`Status: ${status}${context ? ` (${context})` : ''}`);
+    onStatusChange: (status: AgentStatus) => {
+      log(`Status: ${status}`);
       // Reset the push-dedup baseline whenever Claude moves past the
       // 'waiting' state — same lifecycle as QuestionDedup so a new
       // prompt cycle starts fresh and is not silently absorbed by a

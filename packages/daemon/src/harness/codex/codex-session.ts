@@ -17,6 +17,8 @@
  * what is typed at the terminal and raw input (an attach client's keystrokes, the
  * Escape button, `/interrupt`), which the client marks `raw` and the daemon cannot
  * tell from a script.
+ * Structured remote input instead uses CodexTextWriter through HarnessSession.structuredChat;
+ * its RPC never types into this PTY and the direct host supplies the final grant commit (#1207).
  *
  * When a headless Codex dies at startup (a flag error, exit 2) the first and last 1 KB of what it
  * printed go to the log once, redacted and escaped (`startup-output.ts`, the log's one exception
@@ -51,7 +53,7 @@
  */
 
 import { generateId, now } from '@remi/shared';
-import type { AgentStatus, Message, UUID } from '@remi/shared';
+import type { AgentStatus, Message, ResolvedBy, UUID } from '@remi/shared';
 
 import {
   type PtyOutputSink,
@@ -77,6 +79,7 @@ import { resolveCodexWorkingDirectory, validateCodexArgs } from './codex-args.ts
 import { createCodexChat } from './codex-chat.ts';
 import { CodexDecisions, type CodexDecisionsDeps } from './codex-decisions.ts';
 import { UntrustedSocketError, resolveCodexSocketPath } from './codex-socket.ts';
+import { CodexTextWriter } from './codex-text-writer.ts';
 import { createCodexTurns } from './codex-turns.ts';
 import { STARTUP_PIECE_CHARS, StartupOutput } from './startup-output.ts';
 import { TERMINAL, type TerminalWords, attachWords } from './terminal-words.ts';
@@ -101,7 +104,12 @@ export interface CodexLaunchDeps {
    * A card stopped being pending without a phone answer (the TUI answered, the replay did not
    * bring it back): broadcast `question_resolved` and clear its lock-screen push.
    */
-  onQuestionResolved: (sid: UUID, qid: UUID, reason: 'answered' | 'cancelled') => void;
+  onQuestionResolved: (
+    sid: UUID,
+    qid: UUID,
+    reason: 'answered' | 'cancelled',
+    resolvedBy?: ResolvedBy,
+  ) => void;
   log: (message: string) => void;
   /**
    * Where a finished turn is reported (#1180): the daemon's turn-event sink, the one Claude's `Stop`
@@ -113,7 +121,7 @@ export interface CodexLaunchDeps {
    * watchdog, the tracker's attach retry period and ambiguity window, and the approval cards'
    * replay window and link grace.
    */
-  appServer?: Pick<AppServerClientOptions, 'backoff' | 'keepalive'>;
+  appServer?: Pick<AppServerClientOptions, 'backoff' | 'keepalive' | 'connect'>;
   linkWatchdogMs?: number;
   linkStableMs?: number;
   /** How soon after the spawn an exit still logs what Codex printed (default 10 s). */
@@ -338,6 +346,7 @@ export function createCodexSession(
 
   // The tracked thread's id, as far as this session knows it (a resume names it up front).
   let trackedId: string | null = checked.resumeThreadId;
+  let chatEpoch: object = {};
   // What a headless Codex printed before this session bound a thread, for the one log line a
   // startup failure gets (`startup-output.ts`: bounded, redacted, escaped, the log's only exception
   // to "no cwd, no full thread id"). A wrapper session's PTY is the person's own terminal, where
@@ -441,6 +450,7 @@ export function createCodexSession(
     (event) => {
       if (disposed) return;
       if (event.type === 'ready') {
+        chatEpoch = {};
         dropDescendantStatuses();
         // A link that accepts and drops within a few seconds is not up: only one that stays up
         // for linkStableMs cancels the watchdog, so a flapping link still gets its notice.
@@ -450,6 +460,7 @@ export function createCodexSession(
         if (version !== undefined) log(`app-server ${version}`);
         link.tracker?.handleReady();
       } else if (event.type === 'disconnected') {
+        chatEpoch = {};
         clearTimeout(stableTimer);
         dropDescendantStatuses();
         decisions.handleDisconnected();
@@ -475,7 +486,8 @@ export function createCodexSession(
     client,
     sessionRegistry: deps.sessionRegistry,
     present: (question) => {
-      messageApi.handleQuestion(question, { held: true });
+      // Codex takes the answer as a JSON-RPC response; a terminal-only card is stamped none.
+      messageApi.handleQuestion(question, { held: true, answerPath: 'structured' });
     },
     onQuestionResolved: deps.onQuestionResolved,
     threadRole: (threadId) => link.tracker?.role(threadId) ?? null,
@@ -563,12 +575,14 @@ export function createCodexSession(
       // nothing; a first identity has nothing stale to clear, and "unknown" is not "idle".
       const rotating = trackedId !== null;
       trackedId = threadId;
+      chatEpoch = {};
       identified = true;
       startupOutput.clear();
       statuses.clear();
       if (rotating) {
         // The old thread's cards are not this session's any more, and must not be answered.
-        decisions.forceRelease('the session moved to a new thread');
+        // The harness moved to a new thread (#1235).
+        decisions.forceRelease('the session moved to a new thread', 'harness');
         sendSystemMessage(ROTATION_MESSAGE);
         publish();
       }
@@ -599,6 +613,16 @@ export function createCodexSession(
   });
   link.tracker = tracker;
 
+  const chatContext = () =>
+    !disposed && client.state === 'ready' && trackedId && tracker.role(trackedId) === 'main'
+      ? { threadId: trackedId, epoch: chatEpoch }
+      : null;
+  const textWriter = new CodexTextWriter({
+    client,
+    current: chatContext,
+    blocked: () => decisions.blocksStructuredChat(),
+  });
+
   const pty = createPtySessionForSession(
     {
       sessionRegistry: deps.sessionRegistry,
@@ -624,6 +648,15 @@ export function createCodexSession(
     pty,
     decisions,
     chat,
+    structuredChat: {
+      context: () => chatContext()?.epoch ?? null,
+      submit: (request, guard, commit) =>
+        textWriter.send(
+          { id: request.id, threadId: request.binding.harnessSessionId, text: request.content },
+          guard,
+          commit,
+        ),
+    },
     acceptsTypedChat: false,
     start: async () => {
       spawnedAt = performance.now();
@@ -634,6 +667,8 @@ export function createCodexSession(
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      chatEpoch = {};
+      textWriter.close();
       clearTimeout(stableTimer);
       cancelWatchdog();
       tracker.dispose();

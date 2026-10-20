@@ -229,10 +229,12 @@ function MessageContent({
     ? message.contentBlocks!.filter((b) => b.type === 'tool_use' || b.type === 'tool_result')
     : [];
 
+  const content = message.content || (isUser && message.source === 'optimistic' ? 'Image draft' : '');
+
   if (enhanced) {
     return (
       <>
-        {message.content && <ChatMessage content={message.content} isUser={isUser} />}
+        {content && <ChatMessage content={content} isUser={isUser} />}
         {toolBlocks.length > 0 && (
           <div className="mt-1">
             {toolBlocks.map((block, i) => (
@@ -246,7 +248,7 @@ function MessageContent({
 
   return (
     <>
-      {message.content && <InlineMarkdown content={message.content} isUser={isUser} />}
+      {content && <InlineMarkdown content={content} isUser={isUser} />}
       {toolBlocks.length > 0 && (
         <div className="mt-1">
           {toolBlocks.map((block, i) => (
@@ -393,7 +395,18 @@ export function MessageBubble({
           {/* Delivery status (only for user messages). A failed send with a
               retry handler renders as a tappable "Retry" affordance instead
               of a bare icon (#663). */}
-          {isUser && message.state === 'failed' && onRetryMessage ? (
+          {isUser && message.chatSubmission ? (
+            <span role="status" className="text-[10px] font-medium">
+              {message.chatSubmission.outcome === 'pending' ? 'Sending…' :
+                message.chatSubmission.outcome === 'accepted' ? message.chatSubmission.label :
+                  message.chatSubmission.outcome === 'refused' ? 'Not sent' : 'Delivery unknown'}
+            </span>
+          ) : isUser && message.inputMayBePartial ? (
+            <span role="status" className="flex items-center gap-1 text-[10px] font-medium text-[var(--color-error)]">
+              <AlertCircle className="size-3" />
+              Not submitted
+            </span>
+          ) : isUser && message.state === 'failed' && onRetryMessage ? (
             <button
               type="button"
               onClick={() => onRetryMessage(message)}
@@ -407,6 +420,14 @@ export function MessageBubble({
             isUser && <StatusIcon state={message.state} />
           )}
         </div>
+        {isUser && message.chatSubmission && ['refused', 'uncertain'].includes(message.chatSubmission.outcome) && (
+          <p role="alert" className="mt-2 max-w-full text-xs leading-4">{message.chatSubmission.label}</p>
+        )}
+        {isUser && message.inputMayBePartial && (
+          <p role="alert" className="mt-2 max-w-full text-xs leading-4 text-[var(--color-error)]">
+            Some text may remain in the terminal. Check it before sending again.
+          </p>
+        )}
       </div>
     </div>
   );

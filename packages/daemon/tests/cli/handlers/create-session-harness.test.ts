@@ -16,10 +16,12 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ProtocolMessage, UUID } from '@remi/shared';
+import { parseArgs } from '../../../src/cli/arg-parser.ts';
 import {
   checkHarnessRequest,
   createCreateSessionHandlers,
 } from '../../../src/cli/handlers/create-session-events.ts';
+import { resolveLaunchHarness } from '../../../src/cli/launch-harness.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { validateClaudeRemoteArgs } from '../../../src/harness/claude-args.ts';
 import { validateCodexRemoteArgs } from '../../../src/harness/codex/codex-args.ts';
@@ -113,9 +115,11 @@ describe('create requests naming a harness (#1179)', () => {
   };
 
   describe('checkHarnessRequest', () => {
-    test('a plain request appends nothing', () => {
-      expect(spawnArgs(undefined)).toEqual([]);
-      expect(spawnArgs({})).toEqual([]);
+    test('a plain request explicitly selects legacy Claude', () => {
+      expect(spawnArgs(undefined)).toEqual(['--harness', 'claude']);
+      expect(spawnArgs({})).toEqual(['--harness', 'claude']);
+      const child = parseArgs(['--daemon', ...spawnArgs(undefined)]);
+      expect(resolveLaunchHarness(child, 'codex').harnessId).toBe('claude');
       expect(gateCalls).toBe(0);
     });
 
@@ -137,9 +141,15 @@ describe('create requests naming a harness (#1179)', () => {
       expect(spawnArgs({ harness: 'claude', args: [] })).toEqual(['--harness', 'claude']);
     });
 
-    test("arguments with no harness are Claude's, behind a --, with no --harness", () => {
-      expect(spawnArgs({ args: ['--model', 'opus'] })).toEqual(['--', '--model', 'opus']);
-      expect(spawnArgs({ args: [] })).toEqual([]);
+    test('arguments with no wire harness explicitly launch Claude, behind a --', () => {
+      expect(spawnArgs({ args: ['--model', 'opus'] })).toEqual([
+        '--harness',
+        'claude',
+        '--',
+        '--model',
+        'opus',
+      ]);
+      expect(spawnArgs({ args: [] })).toEqual(['--harness', 'claude']);
     });
 
     test('a harness that is not one of the named ids is refused', () => {
@@ -161,7 +171,13 @@ describe('create requests naming a harness (#1179)', () => {
       expect(spawnArgs({ harness: 'claude' })).toEqual(['--harness', 'claude']);
       fs.rmSync(path.join(dir, 'claude'));
       expect(refusal({ harness: 'claude' })).toContain('claude is not available');
-      expect(spawnArgs({ args: ['--model', 'opus'] })).toEqual(['--', '--model', 'opus']);
+      expect(spawnArgs({ args: ['--model', 'opus'] })).toEqual([
+        '--harness',
+        'claude',
+        '--',
+        '--model',
+        'opus',
+      ]);
     });
 
     test('each harness is held to its own allowlist, and a remi flag is on neither', () => {
@@ -199,7 +215,7 @@ describe('create requests naming a harness (#1179)', () => {
       expect(gateCalls).toBe(1);
       // Claude has no such gate, and neither does a request that names no harness.
       expect(spawnArgs({ harness: 'claude' })).toEqual(['--harness', 'claude']);
-      expect(spawnArgs(undefined)).toEqual([]);
+      expect(spawnArgs(undefined)).toEqual(['--harness', 'claude']);
       expect(gateCalls).toBe(1);
     });
 
@@ -506,10 +522,17 @@ describe('create requests naming a harness (#1179)', () => {
       expect(response().notice).toBe(noticeFor({ sessionId: SPAWNED.sessionId, port: 20009 }));
     });
 
-    test('a plain request spawns exactly as it did before, with only the inherited flags', async () => {
+    test('a plain request pins Claude after inherited flags regardless of host CLI default', async () => {
       await handlers().onCreateSessionRequest(CID, '/tmp/project', REQ);
       expect(response().success).toBe(true);
-      expect(spawns[0]?.extraArgs).toEqual(['--no-auth', '--no-relay', '--bind', '127.0.0.1']);
+      expect(spawns[0]?.extraArgs).toEqual([
+        '--no-auth',
+        '--no-relay',
+        '--bind',
+        '127.0.0.1',
+        '--harness',
+        'claude',
+      ]);
     });
   });
 });

@@ -7,6 +7,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import { escapeUnsafeText } from '@remi/shared';
 import {
   TurnTimer,
   buildTurnCompleteText,
@@ -184,6 +185,25 @@ describe('buildTurnCompleteText', () => {
     // as hook-bridge-setup.ts's summarizeForLog.
     expect(title.length).toBeLessThanOrEqual(121);
     expect(title.endsWith('…')).toBe(true);
+  });
+
+  test('push prose strips controls and bidi bytes while the session title is visibly escaped (#1211)', () => {
+    const hostile =
+      'start\x1b]52;c;QUJD\x07middle\x1b[2K\rRTL\u202eoverride\u2066isolate\u200bzero\u200fend';
+    const family = '\u{1f468}\u200d\u{1f469}\u200d\u{1f467}';
+    const { title, body } = buildTurnCompleteText(
+      `session ${hostile}`,
+      `Final ${hostile} ${family}`,
+    );
+
+    expect(title).toBe(`session ${escapeUnsafeText(hostile)}: turn complete`);
+    expect(body).toBe(`Final start]52;c;QUJDmiddle[2KRTLoverrideisolatezeroend ${family}`);
+    expect(body).not.toContain('\x1b');
+    expect(body).not.toContain('\x07');
+    expect(body).not.toContain('\u202e');
+    expect(body).not.toContain('\u2066');
+    expect(body).not.toContain('\u200b');
+    expect(body).not.toContain('\u200f');
   });
 });
 

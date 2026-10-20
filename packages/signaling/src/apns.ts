@@ -1,7 +1,5 @@
-/**
- * APNS (Apple Push Notification Service) HTTP/2 client.
- * Uses JWT-based authentication with a p8 key.
- */
+import { MAX_APNS_PAYLOAD_BYTES } from '@remi/shared/relay/index.ts';
+/** APNs fetch requests with JWT/p8 authentication. Actual HTTP negotiation belongs to runtime. */
 
 interface ApnsPayload {
   token: string;
@@ -43,7 +41,7 @@ interface ApnsPayload {
   dismiss?: boolean;
 }
 
-interface ApnsConfig {
+export interface ApnsConfig {
   keyId: string;
   teamId: string;
   privateKey: string;
@@ -213,12 +211,13 @@ const JWT_MAX_AGE_S = 3000;
  * Create a JWT for APNS authentication.
  * Uses ES256 algorithm with the p8 private key.
  * The JWT is cached per keyId and reused until it is 50 minutes old to avoid
- * APNS TooManyProviderTokenUpdates (429) errors.
+ * APNS TooManyProviderTokenUpdates (429) errors. `refresh` signs a new one and replaces the
+ * cached token: the v2 gateway asks for it after Apple answered ExpiredProviderToken (#1200).
  */
-async function createApnsJwt(config: ApnsConfig): Promise<string> {
+export async function createApnsJwt(config: ApnsConfig, refresh = false): Promise<string> {
   const nowS = Math.floor(Date.now() / 1000);
   const cached = jwtCache.get(config.keyId);
-  if (cached && nowS - cached.iat < JWT_MAX_AGE_S) {
+  if (!refresh && cached && nowS - cached.iat < JWT_MAX_AGE_S) {
     return cached.jwt;
   }
 
@@ -285,4 +284,50 @@ function pemToArrayBuffer(pem: string): ArrayBuffer {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes.buffer;
+}
+
+/**
+ * R5 only: generic fallback, no unsigned options, one explicitly signed environment (#1200).
+ * The Worker shows APNs the room, the collapse id and the sealed bytes; the signed push class
+ * alone picks the push type and priority, so the event kind never reaches the Worker or APNs.
+ */
+export function buildSecureApnsRequest(
+  s: import('@remi/shared/relay/index.ts').PushSubmit,
+  jwt: string,
+  bundleId: string,
+): ApnsRequest {
+  const carrier = {
+    v: 2,
+    rid: s.rid,
+    collapseId: s.collapseId,
+    sealed: s.sealed,
+  };
+  const background = s.pushClass === 'background';
+  const aps = background
+    ? { 'content-available': 1 }
+    : {
+        alert: {
+          title: 'Remi needs your attention',
+          body: 'Open Remi to view this notification.',
+        },
+        'mutable-content': 1,
+        'content-available': 1,
+        category: '',
+      };
+  const body = JSON.stringify({ aps, remiPush: carrier });
+  if (new TextEncoder().encode(body).length > MAX_APNS_PAYLOAD_BYTES) throw new Error('OVERSIZE');
+  return {
+    url: `https://${s.environment === 'sandbox' ? 'api.sandbox.push.apple.com' : 'api.push.apple.com'}/3/device/${s.token}`,
+    headers: {
+      authorization: `bearer ${jwt}`,
+      'apns-topic': bundleId,
+      'apns-push-type': background ? 'background' : 'alert',
+      'apns-priority': background ? '5' : '10',
+      'apns-collapse-id': s.collapseId,
+      // #1200: Apple stores the notification for an offline phone until the signed storage
+      // deadline (the content expiry), which is not the 60 second window the submit was valid in.
+      'apns-expiration': String(s.storeUntil),
+    },
+    body,
+  };
 }

@@ -18,7 +18,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-const DEFAULT_ENTRY = 'packages/daemon/src/cli.ts';
+const DEFAULT_ENTRY = 'packages/daemon/src/entry.ts';
 /** `LICENSE`, `LICENCE.md`, `LICENSE-MIT`, `COPYING`, ...: every one a package ships is reproduced. */
 const LICENSE_FILE = /^(licen[cs]e|copying)([.\-_]|$)/i;
 /** An Apache-2.0 package's `NOTICE` must travel with it too. */

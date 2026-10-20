@@ -179,7 +179,8 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
       env: () => ({ CODEX_HOME: server.codexHome }),
       legacyWriters: () => [],
       remiVersion: 'test',
-      onQuestionResolved: (sid, qid, reason) => sent.push(createQuestionResolved(sid, qid, reason)),
+      onQuestionResolved: (sid, qid, reason, resolvedBy) =>
+        sent.push(createQuestionResolved(sid, qid, reason, resolvedBy)),
       log: (m) => logs.push(m),
       appServer: { backoff: { initialMs: 10, maxMs: 40 } },
       tracker: { retryMs: 40, ambiguityMs: 100 },
@@ -213,7 +214,9 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
         () => session.decisions.screen,
       ),
       acceptsTypedChat: () => session.acceptsTypedChat,
-      onQuestionResolved: (sid, qid) => sent.push(createQuestionResolved(sid, qid, 'answered')),
+      // As cli.ts wires it (#1235): the handler says whether the answer applied, and from where.
+      onQuestionResolved: (sid, qid, resolution) =>
+        sent.push(createQuestionResolved(sid, qid, resolution.reason, resolution.resolvedBy)),
       ...trackerScreenDeps(() => session.decisions.screen),
     });
     await session.start();
@@ -579,6 +582,8 @@ describe('a Codex approval, from the app-server to the phone and back', () => {
     });
     await until(() => pending(r).length === 0, "the old thread's card to be dismissed");
     expect(resolved(r).map((m) => [m.questionId, m.reason])).toEqual([[old.id, 'cancelled']]);
+    // The harness moved to a new thread (#1235).
+    expect(resolved(r)[0]?.resolvedBy).toBe('harness');
 
     // The old thread's request, delivered again, is not this session's any more.
     r.server.emitTo(r.server.clientIds()[0] as number, {

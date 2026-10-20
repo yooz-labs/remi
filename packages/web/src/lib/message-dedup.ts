@@ -47,9 +47,12 @@ export function deduplicateMessage(
   if (incoming.source === 'transcript') {
     // Transcript is the authoritative source. Look for any non-transcript
     // duplicate (optimistic or PTY) with matching sessionId+sender+content
-    // and no entryUuid yet.
+    // and no entryUuid yet. Partial input remains independent: identical
+    // transcript text cannot prove that its stopped line was submitted (#1488).
     const dupIdx = existingMessages.findIndex(
       (m) =>
+        !m.inputMayBePartial &&
+        m.chatSubmission?.outcome !== 'refused' &&
         !m.entryUuid &&
         m.source !== 'transcript' &&
         m.sessionId === incoming.sessionId &&
@@ -99,4 +102,11 @@ export function deduplicateMessage(
 
   // Optimistic or unknown source: just add
   return { action: 'add' };
+}
+
+/** A transcript item cannot erase the separately correlated submission verdict. */
+export function replaceTranscriptMessage(previous: UIMessage, incoming: UIMessage): UIMessage {
+  return { ...incoming, id: previous.id, ...(previous.chatSubmission ? {
+    chatSubmission: previous.chatSubmission, state: previous.state,
+  } : {}) };
 }

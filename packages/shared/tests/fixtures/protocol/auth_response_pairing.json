@@ -1,0 +1,10 @@
+{
+  "type": "auth_response",
+  "id": "413cd1af-3a95-403c-8812-8906f2f06884",
+  "timestamp": "2026-10-07T18:30:59.634Z",
+  "clientPublicKey": "base64-client-pubkey",
+  "signature": "base64-signature",
+  "clientFingerprint": "EE:FF:00:11",
+  "pairingNonce": "oKGio6SlpqeoqaqrrK2urw",
+  "pairingLabel": "Fixture phone"
+}

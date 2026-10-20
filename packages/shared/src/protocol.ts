@@ -10,11 +10,85 @@
  * - Messages are ordered within a session
  */
 
-import type { HarnessId, SessionIdentity } from './harness.ts';
+import {
+  type BrowserLinkCandidate,
+  type BrowserLinkReceiverEnded,
+  type BrowserLinkReceiverRequest,
+  type BrowserLinkReceiverResult,
+  decodeBrowserLinkFrame,
+  encodeBrowserLinkFrame,
+} from './browser-links.ts';
+import {
+  type FileFetchAccepted,
+  type FileFetchBegin,
+  type FileFetchCancel,
+  type FileFetchCancelResult,
+  type FileFetchChunk,
+  type FileFetchComplete,
+  type FileFetchRead,
+  type FileFetchRefused,
+  type FileFetchResult,
+  decodeFileDownloadFrame,
+  encodeFileDownloadFrame,
+} from './file-download.ts';
+import type { HarnessId, ResolvedBy, SessionIdentity } from './harness.ts';
+import {
+  type ImageInsertRequest,
+  type ImageInsertResult,
+  decodeImageInsertionFrame,
+  encodeImageInsertionFrame,
+} from './image-insertion.ts';
+import {
+  isBrowserLinkCandidate,
+  isFileDownloadCandidate,
+  isImageInsertionCandidate,
+  isImageStagingCandidate,
+  isStructuredChatCandidate,
+} from './image-staging-ingress.ts';
+import {
+  type ImageUploadAccepted,
+  type ImageUploadBegin,
+  type ImageUploadCancel,
+  type ImageUploadCancelResult,
+  type ImageUploadChunk,
+  type ImageUploadChunkAck,
+  type ImageUploadComplete,
+  type ImageUploadRefused,
+  type ImageUploadResult,
+  decodeImageStagingFrame,
+  encodeImageStagingFrame,
+} from './image-staging.ts';
+import { PROTOCOL_VERSION } from './protocol-version.ts';
+import type {
+  AnswerResultMessage,
+  RelayDeviceRevokeRequestMessage,
+  RelayDeviceRevokeResponseMessage,
+  RelayDevicesRequestMessage,
+  RelayDevicesResponseMessage,
+} from './relay-messages.ts';
+import {
+  type NativeAnswer,
+  decodeNativeAnswer,
+  encodeNativeAnswer,
+} from './relay/native-answer.ts';
+import {
+  type SecurePushRegisterRequestMessage,
+  type SecurePushRegisterResponseMessage,
+  type SecurePushUnregisterRequestMessage,
+  type SecurePushUnregisterResponseMessage,
+  isValidSecurePushResponse,
+} from './secure-push-messages.ts';
+import {
+  type ChatSubmitRequest,
+  type ChatSubmitResult,
+  decodeStructuredChatFrame,
+  encodeStructuredChatFrame,
+} from './structured-chat.ts';
 import type {
   Acknowledgment,
   AgentStatus,
   DiscoverableSession,
+  MachineDescriptor,
   Message,
   Question,
   RemiStatus,
@@ -72,6 +146,38 @@ export function now(): Timestamp {
  * test that guards this derivation.
  */
 export interface ProtocolMessageMap {
+  file_fetch_begin: FileFetchBegin;
+  file_fetch_accepted: FileFetchAccepted;
+  file_fetch_read: FileFetchRead;
+  file_fetch_chunk: FileFetchChunk;
+  file_fetch_complete: FileFetchComplete;
+  file_fetch_result: FileFetchResult;
+  file_fetch_cancel: FileFetchCancel;
+  file_fetch_cancel_result: FileFetchCancelResult;
+  file_fetch_refused: FileFetchRefused;
+  browser_link_receiver_request: BrowserLinkReceiverRequest;
+  browser_link_receiver_result: BrowserLinkReceiverResult;
+  browser_link_receiver_ended: BrowserLinkReceiverEnded;
+  browser_link_candidate: BrowserLinkCandidate;
+  image_insert_request: ImageInsertRequest;
+  chat_submit_request: ChatSubmitRequest;
+  chat_submit_result: ChatSubmitResult;
+  image_insert_result: ImageInsertResult;
+  image_upload_begin: ImageUploadBegin;
+  image_upload_accepted: ImageUploadAccepted;
+  image_upload_chunk: ImageUploadChunk;
+  image_upload_chunk_ack: ImageUploadChunkAck;
+  image_upload_complete: ImageUploadComplete;
+  image_upload_result: ImageUploadResult;
+  image_upload_cancel: ImageUploadCancel;
+  image_upload_cancel_result: ImageUploadCancelResult;
+  image_upload_refused: ImageUploadRefused;
+
+  native_answer: NativeAnswerMessage;
+  secure_push_register_request: SecurePushRegisterRequestMessage;
+  secure_push_register_response: SecurePushRegisterResponseMessage;
+  secure_push_unregister_request: SecurePushUnregisterRequestMessage;
+  secure_push_unregister_response: SecurePushUnregisterResponseMessage;
   hello: HelloMessage;
   hello_ack: HelloAckMessage;
   agent_output: AgentOutputMessage;
@@ -81,6 +187,11 @@ export interface ProtocolMessageMap {
   edit: EditMessage;
   question: QuestionMessage;
   answer: AnswerMessage;
+  answer_result: AnswerResultMessage;
+  relay_devices_request: RelayDevicesRequestMessage;
+  relay_devices_response: RelayDevicesResponseMessage;
+  relay_device_revoke_request: RelayDeviceRevokeRequestMessage;
+  relay_device_revoke_response: RelayDeviceRevokeResponseMessage;
   session_update: SessionUpdateMessage;
   ping: PingMessage;
   pong: PongMessage;
@@ -90,6 +201,8 @@ export interface ProtocolMessageMap {
   bullet_expand_response: BulletExpandResponseMessage;
   session_list_request: SessionListRequestMessage;
   session_list_response: SessionListResponseMessage;
+  recent_repositories_request: RecentRepositoriesRequestMessage;
+  recent_repositories_response: RecentRepositoriesResponseMessage;
   transcript_content: TranscriptContentMessage;
   transcript_load_request: TranscriptLoadRequestMessage;
   transcript_load_complete: TranscriptLoadCompleteMessage;
@@ -153,6 +266,9 @@ void _discriminantsMatch;
  */
 export type ProtocolMessage = ProtocolMessageMap[keyof ProtocolMessageMap];
 
+/** The signed tuple is the complete wire message; there is no outer choice (#1201). */
+export type NativeAnswerMessage = NativeAnswer;
+
 /** The message interface registered for wire discriminant `K`. */
 export type MessageOf<K extends keyof ProtocolMessageMap> = ProtocolMessageMap[K];
 
@@ -178,6 +294,38 @@ export type MessageOf<K extends keyof ProtocolMessageMap> = ProtocolMessageMap[K
  * `UNKNOWN_MESSAGE`.
  */
 export const MESSAGE_DIRECTION = {
+  file_fetch_begin: 'c2d',
+  file_fetch_accepted: 'd2c',
+  file_fetch_read: 'c2d',
+  file_fetch_chunk: 'd2c',
+  file_fetch_complete: 'c2d',
+  file_fetch_result: 'd2c',
+  file_fetch_cancel: 'c2d',
+  file_fetch_cancel_result: 'd2c',
+  file_fetch_refused: 'd2c',
+  browser_link_receiver_request: 'c2d',
+  browser_link_receiver_result: 'd2c',
+  browser_link_receiver_ended: 'd2c',
+  browser_link_candidate: 'd2c',
+  image_insert_request: 'c2d',
+  chat_submit_request: 'c2d',
+  chat_submit_result: 'd2c',
+  image_insert_result: 'd2c',
+  image_upload_begin: 'c2d',
+  image_upload_accepted: 'd2c',
+  image_upload_chunk: 'c2d',
+  image_upload_chunk_ack: 'd2c',
+  image_upload_complete: 'c2d',
+  image_upload_result: 'd2c',
+  image_upload_cancel: 'c2d',
+  image_upload_cancel_result: 'd2c',
+  image_upload_refused: 'd2c',
+
+  native_answer: 'c2d',
+  secure_push_register_request: 'c2d',
+  secure_push_register_response: 'd2c',
+  secure_push_unregister_request: 'c2d',
+  secure_push_unregister_response: 'd2c',
   hello: 'c2d',
   hello_ack: 'd2c',
   agent_output: 'd2c',
@@ -193,6 +341,11 @@ export const MESSAGE_DIRECTION = {
   edit: 'd2c',
   question: 'd2c',
   answer: 'c2d',
+  answer_result: 'd2c',
+  relay_devices_request: 'c2d',
+  relay_devices_response: 'd2c',
+  relay_device_revoke_request: 'c2d',
+  relay_device_revoke_response: 'd2c',
   session_update: 'd2c',
   ping: 'both',
   pong: 'both',
@@ -202,6 +355,8 @@ export const MESSAGE_DIRECTION = {
   bullet_expand_response: 'd2c',
   session_list_request: 'c2d',
   session_list_response: 'd2c',
+  recent_repositories_request: 'c2d',
+  recent_repositories_response: 'd2c',
   transcript_content: 'd2c',
   transcript_load_request: 'c2d',
   transcript_load_complete: 'd2c',
@@ -283,7 +438,27 @@ export interface HelloAckMessage {
   readonly type: 'hello_ack';
   readonly id: UUID;
   readonly timestamp: Timestamp;
+  /**
+   * A constant that never versioned anything: the daemon's acks send `'1.0.0'` and a bare
+   * `Connection` sends `'0.1.0'`. Kept because the WebView Mac app's `HubProtocol.swift` requires it
+   * to decode an ack; read {@link protocolVersion} instead (ADR 0035). It goes only with a protocol
+   * version change.
+   */
   readonly serverVersion: string;
+  /**
+   * The wire's version, `PROTOCOL_VERSION` (#1237, ADR 0035). It changes only on a breaking
+   * change. Every ack carries it since #1237 (`createHelloAck` stamps it); an ack without it comes
+   * from an older daemon, whose wire is the baseline of version 1. Decide with `hubSupport`.
+   */
+  readonly protocolVersion?: number | undefined;
+  /**
+   * The additive features this daemon has that a client cannot see in the messages themselves,
+   * named in `PROTOCOL_CAPABILITIES` (#1237, ADR 0035), such as `workspaces` (#1236). On every ack
+   * since #1237; a name a client does not know is ignored.
+   */
+  readonly capabilities?: readonly string[] | undefined;
+  /** Authenticated hosting machine metadata; absent on older or auth-disabled daemons (#1234). */
+  readonly machine?: MachineDescriptor | undefined;
   /**
    * The daemon's primary session (null on a session-less hub daemon, #542):
    * a hub boots with no session of its own, so a connecting client still
@@ -348,8 +523,8 @@ export interface HelloAckMessage {
    */
   readonly attachState?: 'attached' | 'queued' | undefined;
   /**
-   * The daemon's remi BINARY version (e.g. "0.6.19-dev.2") — distinct from
-   * `serverVersion`, which is the protocol version. Lets clients flag a
+   * The daemon's remi BINARY version (e.g. "0.6.19-dev.2"), distinct from
+   * `protocolVersion`, the wire's version (#1237). Lets clients flag a
    * daemon running older code than the installed binary (#539: daemons hold
    * their binary for life; upgrades only affect new daemons). Sent on
    * connection-time and promotion acks; absent on resume acks and from
@@ -534,8 +709,25 @@ export interface QuestionResolvedMessage {
   readonly sessionId: UUID;
   /** The resolved question's id; clients remove the card carrying it. */
   readonly questionId: UUID;
-  /** Why it resolved, for diagnostics + client UX (all dismiss the card the same). */
+  /**
+   * Why it resolved, coarsely (all dismiss the card the same): `answered` is a phone answer remi
+   * applied, `cancelled` anything else (the terminal, the agent, a deadline, a refused answer). A
+   * client labels the card from `resolvedBy` when it is present, and from `reason` only otherwise.
+   */
   readonly reason: 'answered' | 'cancelled' | DeprecatedQuestionResolvedReason;
+  /**
+   * What resolved it, when the daemon knows (#1235, ADR 0038): `phone` (an answer from an app
+   * over its connection, or Telegram), `lockscreen` (an answer from a notification action, through
+   * the answer endpoint), `terminal` (a person at the machine), `harness` (the agent itself decided
+   * or moved on: an auto-deny, a session that ended, a new transcript or thread) or `timeout`
+   * (remi's own hold deadline). Absent when the cause is not known, which is never guessed: a No
+   * or an Esc at the terminal fires no hook, and Codex does not say who answered.
+   * `phone` and `lockscreen` mean remi delivered that answer first, not that it decided: after a
+   * terminal Yes Claude's hold stays open until the tool finishes, and Codex keeps whichever answer
+   * reached it first. `harness` names what ended the prompt, not who caused it: a person's /clear,
+   * /exit or Stop ends a session too.
+   */
+  readonly resolvedBy?: ResolvedBy | undefined;
 }
 
 /**
@@ -773,6 +965,44 @@ export interface SessionListResponseMessage {
   readonly requestId: UUID;
   /** Other daemon ports on this machine (for auto-connect) */
   readonly daemonPorts?: readonly number[];
+  /** Hosting machine; every entry's machineId matches it when present (#1234). */
+  readonly machine?: MachineDescriptor | undefined;
+}
+
+/**
+ * The repositories of the machine's recent sessions (#1236 phase C, ADR 0036), for a client to
+ * offer "new session in repository X on machine Y". Part of the `workspaces` capability: a daemon
+ * that does not list it does not answer, so a client checks `hubSupport(ack, ['workspaces'])` first.
+ */
+export interface RecentRepositoriesRequestMessage {
+  readonly type: 'recent_repositories_request';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  /** How many to return: 1 to 20 as asked; above 20 is 20; absent or anything else is 10. */
+  readonly limit?: number | undefined;
+}
+
+/** One repository a recent session ran in (#1236 phase C). */
+export interface RecentRepository {
+  /** The repository's main worktree (a submodule or a separate-git-dir checkout is its own). */
+  readonly repository: string;
+  /** Its directory name, for display. */
+  readonly name: string;
+  /** The last time a session ran in it: when the session ended, or the time of the answer while one runs. */
+  readonly lastUsedAt: Timestamp;
+}
+
+/**
+ * The answer to a {@link RecentRepositoriesRequestMessage}: most recently used first, each once.
+ * A list the deadline cut short is not marked: it is a convenience, and a client can always ask
+ * for a path instead.
+ */
+export interface RecentRepositoriesResponseMessage {
+  readonly type: 'recent_repositories_response';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  readonly requestId: UUID;
+  readonly repositories: readonly RecentRepository[];
 }
 
 /**
@@ -912,6 +1142,37 @@ export interface TerminalResizeMessage {
   readonly rows: number;
 }
 
+/**
+ * Where a new session should run (#1236, ADR 0036): a repository on the hub's machine and,
+ * optionally, a new worktree the hub creates on a new branch.
+ */
+export interface WorkspaceRequest {
+  /**
+   * A directory in a git repository on the hub's machine: its top level, a directory inside it, or
+   * one of its linked worktrees. Absolute, or under `~` (the hub's home).
+   */
+  readonly repository: string;
+  /**
+   * A new worktree on the new branch `branch`, made from `base` (a branch, tag or commit; default:
+   * the main worktree's `HEAD`). Absent: the session starts in the repository's main worktree; to
+   * start in an existing worktree, send its path as `directory` with no `workspace`.
+   */
+  readonly worktree?: { readonly branch: string; readonly base?: string | undefined } | undefined;
+}
+
+/**
+ * The workspace a session was started in (#1236, ADR 0036), as the hub resolved it when it made
+ * it. Not `SessionGitWorkspace` (types.ts), which is what git says about a session's directory now.
+ */
+export interface SessionWorkspace {
+  /** The repository's main worktree, whichever directory the request named. */
+  readonly repository: string;
+  /** Where the session runs: the main worktree, or the new worktree. */
+  readonly directory: string;
+  /** For a new worktree: its branch, and the commit it was made from. */
+  readonly worktree?: { readonly branch: string; readonly base: string } | undefined;
+}
+
 /** Request to create a new session (Claude Code unless `harness` says otherwise) */
 export interface CreateSessionRequestMessage {
   readonly type: 'create_session_request';
@@ -932,6 +1193,13 @@ export interface CreateSessionRequestMessage {
    * command line, so they can never be read as remi flags.
    */
   readonly args?: readonly string[] | undefined;
+  /**
+   * Where to start the session (#1236): a repository, and optionally a new worktree the hub makes.
+   * A daemon older than this field ignores it and starts the session in `directory`, so a client
+   * checks for the `workspaces` capability first (`hubSupport`, ADR 0035) and sets `directory` to
+   * `workspace.repository`; the daemon refuses a request whose `directory` names another place.
+   */
+  readonly workspace?: WorkspaceRequest | undefined;
 }
 
 /** Response after creating a new session */
@@ -950,12 +1218,16 @@ export interface CreateSessionResponseMessage {
   /** Port of the new daemon (when session was spawned on a new daemon) */
   readonly port?: number;
   /**
-   * What a success does not say (#1179): for a harness started without a terminal that may stop at a
-   * prompt only a terminal can answer (Codex's Update and Trust prompts), the daemon cannot know the
-   * session reached its prompt, so it says so and what to do. `success` means the session daemon was
-   * spawned and registered, never that the harness is ready. Absent for Claude and for a refusal.
+   * What a success does not say, one line each: for a harness started without a terminal that may
+   * stop at a prompt only a terminal can answer (Codex's Update and Trust prompts, #1179), the
+   * daemon cannot know the session reached its prompt, so it says so and what to do; for a workspace
+   * (#1236), a worktree git made but then reported an error for (a hook or filter in the repository).
+   * `success` means the session daemon was spawned and registered, never that the harness is ready.
+   * Absent when there is nothing to add, and for a refusal.
    */
   readonly notice?: string | undefined;
+  /** The workspace the session was started in, when the request named one (#1236). */
+  readonly workspace?: SessionWorkspace | undefined;
 }
 
 /** Request to resume a dead/ended Claude Code session */
@@ -974,6 +1246,16 @@ export interface ResumeSessionResponseMessage {
   readonly timestamp: Timestamp;
   /** Session ID to use (existing if still alive, or newly created). Present on success. */
   readonly sessionId?: UUID;
+  /**
+   * Port of the child session daemon a HUB started for the resume (#1129), present only on a
+   * success from a hub. The session runs in that other process, not in the one that answered, so a
+   * client does not open `sessionId` on this connection: it learns of the session through the
+   * session list's `daemonPorts` and a direct connection, as it does for a `create_session_response`
+   * with a port. Absent when the answering daemon resumed the session itself (a session daemon or a
+   * wrapper) and on a failure, so absence means the session is on this connection. Additive: an
+   * older hub refuses the request instead (`UNSUPPORTED`), and an older client ignores the field.
+   */
+  readonly port?: number;
   /** Whether resume succeeded */
   readonly success: boolean;
   /** Error message if resume failed */
@@ -982,7 +1264,9 @@ export interface ResumeSessionResponseMessage {
    * Machine-readable failure code, from the same vocabulary as the `error`
    * frame's `code` (e.g. `'UNSUPPORTED'`). Present only on failures that have
    * a stable code; absent on success and on older daemons, so clients must
-   * keep treating `error` as the human-readable fallback (#1124).
+   * keep treating `error` as the human-readable fallback (#1124). Today only a
+   * daemon that hosts another harness than Claude sets it (`UNSUPPORTED`); a
+   * hub used to (#1124) and now starts a child session daemon (#1129).
    *
    * No client reads this field yet: the web client shows `error` only
    * (`App.tsx`, `resume_session_response` case), and the Telegram adapter does
@@ -1006,22 +1290,15 @@ export interface AuthChallengeMessage {
   /** Base64-encoded server Ed25519 public key */
   readonly serverPublicKey: string;
   /**
-   * Relay end-to-end encryption (#543). Present ONLY on the relay transport;
-   * the direct WebSocket path leaves both absent and is unchanged by this.
-   *
-   * The daemon's ephemeral P-256 public key, and an Ed25519 signature over
-   * `kexSigningInput(challenge, thisKey, null)` made with the identity key in
-   * `serverPublicKey`. The signature is what stops the worker substituting its
-   * own key: it forwards these fields and can replace them, but cannot forge a
-   * signature the client will accept.
+   * Retired v1 relay key-exchange fields (#1202, ADR 0034 section 14).
+   * Retained only for additive wire/read compatibility at PROTOCOL_VERSION 1.
+   * Current direct auth never emits them; relay v2 uses its own signed handshake.
    */
   readonly relayEphemeralKey?: string;
   readonly relayKexSignature?: string;
   /**
-   * The daemon's long-lived P-256 answer key, base64 (#875). Phones pin this
-   * alongside the fingerprint so a lock-screen answer can be sealed with no
-   * live connection to negotiate over. Absent on a daemon that has none, in
-   * which case a client must refuse to send rather than send in the clear.
+   * Retired v1 answer-key announcement, retained only for historical wire reads.
+   * Current daemon startup neither creates the old key file nor advertises this field.
    */
   readonly answerEncryptionKey?: string;
 }
@@ -1038,18 +1315,23 @@ export interface AuthResponseMessage {
   /** Client's fingerprint for display */
   readonly clientFingerprint: string;
   /**
-   * Relay end-to-end encryption (#543), relay transport only.
-   *
-   * The client's ephemeral P-256 public key, and an Ed25519 signature over
-   * `kexSigningInput(challenge, daemonKey, thisKey)` made with the identity in
-   * `clientPublicKey`. Binding BOTH keys means neither side's contribution can
-   * be swapped after the fact.
-   *
-   * `signature` above is unchanged and still covers the challenge alone, so the
-   * direct path's verification is untouched.
+   * Retired v1 relay key-exchange fields: decode/additive compatibility only.
+   * They grant no authority and are not used by direct Ed25519 verification.
    */
   readonly relayEphemeralKey?: string;
   readonly relayKexSignature?: string;
+  /**
+   * The `nonce` of a pairing link the phone scanned (#1275, ADR 0037). It ties this key's first
+   * connection to the `remi pair` that showed the code; it authorizes nothing. Not signed: the trust
+   * step is the person comparing fingerprints at the machine. Sent only by a key not yet authorized.
+   */
+  readonly pairingNonce?: string | undefined;
+  /**
+   * The name the person gave this device, shown at the terminal: 1 to 64 Unicode code points, with
+   * nothing `escapeUnsafeText` writes out and no `"` or `\` (`isPlainPairingText`). It names the
+   * device; it proves nothing.
+   */
+  readonly pairingLabel?: string | undefined;
 }
 
 /** Authentication result from server to client */
@@ -1059,7 +1341,14 @@ export interface AuthResultMessage {
   readonly timestamp: Timestamp;
   /** Whether authentication succeeded */
   readonly success: boolean;
-  /** Error code if failed: UNKNOWN_KEY, INVALID_SIGNATURE, NO_PENDING_CHALLENGE, VERIFICATION_ERROR */
+  /**
+   * Error code if failed: UNKNOWN_KEY (pending local approval, #873), INVALID_SIGNATURE,
+   * FINGERPRINT_MISMATCH, NO_PENDING_CHALLENGE, VERIFICATION_ERROR, INVALID_KEY_DATA,
+   * PENDING_QUEUE_FULL, AUTH_STORE_ERROR, SERVER_SIGN_ERROR; and for a pairing code (#1275,
+   * ADR 0037): PAIRING_PENDING (claimed, the person has not decided: retry), PAIRING_REJECTED,
+   * PAIRING_CANCELLED, PAIRING_EXPIRED, PAIRING_USED (another key claimed it), PAIRING_UNKNOWN,
+   * PAIRING_MALFORMED.
+   */
   readonly error?: string;
   /** Server's signature of the challenge (for mutual authentication) */
   readonly serverSignature?: string;
@@ -1318,6 +1607,16 @@ export interface SessionHistoryResponseMessage {
  * Throws if message is invalid.
  */
 export function serialize(message: ProtocolMessage): string {
+  if (message.type.startsWith('file_fetch_'))
+    return encodeFileDownloadFrame(message as import('./file-download.ts').FileDownloadMessage);
+  if (message.type.startsWith('browser_link_'))
+    return encodeBrowserLinkFrame(message as import('./browser-links.ts').BrowserLinkMessage);
+  if (message.type === 'chat_submit_request' || message.type === 'chat_submit_result')
+    return encodeStructuredChatFrame(message);
+  if (message.type === 'image_insert_request' || message.type === 'image_insert_result')
+    return encodeImageInsertionFrame(message);
+  if (message.type.startsWith('image_upload_'))
+    return encodeImageStagingFrame(message as import('./image-staging.ts').ImageStagingMessage);
   return JSON.stringify(message);
 }
 
@@ -1326,8 +1625,24 @@ export function serialize(message: ProtocolMessage): string {
  * Returns null if parsing fails or message is invalid.
  */
 export function deserialize(data: string): ProtocolMessage | null {
+  if (isFileDownloadCandidate(data)) return decodeFileDownloadFrame(data);
+  if (isBrowserLinkCandidate(data)) return decodeBrowserLinkFrame(data);
+  if (isStructuredChatCandidate(data)) return decodeStructuredChatFrame(data);
+  // Stage frames never pass through the permissive legacy parser (#1170).
+  if (isImageStagingCandidate(data)) return decodeImageStagingFrame(data);
+  if (isImageInsertionCandidate(data)) return decodeImageInsertionFrame(data);
   try {
     const parsed: unknown = JSON.parse(data);
+    // Inspect the original spelling before choosing a protocol. JSON.parse's
+    // last-key-wins behavior must not hide native_answer under legacy answer.
+    if (!hasUniqueRootType(data)) return null;
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      (parsed as Record<string, unknown>)['type'] === 'native_answer'
+    ) {
+      return decodeNativeAnswer(data);
+    }
     if (!isValidMessage(parsed)) {
       return null;
     }
@@ -1335,6 +1650,39 @@ export function deserialize(data: string): ProtocolMessage | null {
   } catch {
     return null;
   }
+}
+
+/** Grammar was validated by JSON.parse; scan only root member names, iteratively.
+ * Native size/depth limits must not restrict legacy transcripts (#1201). */
+function hasUniqueRootType(data: string): boolean {
+  let depth = 0;
+  let rootKey = false;
+  let typeSeen = false;
+  for (let i = 0; i < data.length; i++) {
+    const character = data[i];
+    if (character === '"') {
+      const start = i;
+      for (i++; i < data.length; i++) {
+        if (data[i] === '\\') i++;
+        else if (data[i] === '"') break;
+      }
+      if (depth === 1 && rootKey) {
+        if (JSON.parse(data.slice(start, i + 1)) === 'type') {
+          if (typeSeen) return false;
+          typeSeen = true;
+        }
+        rootKey = false;
+      }
+    } else if (character === '{' || character === '[') {
+      depth++;
+      if (depth === 1 && character === '{') rootKey = true;
+    } else if (character === '}' || character === ']') {
+      depth--;
+    } else if (character === ',' && depth === 1) {
+      rootKey = true;
+    }
+  }
+  return true;
 }
 
 /**
@@ -1367,6 +1715,22 @@ export function isValidMessage(value: unknown): value is ProtocolMessage {
   if (typeof obj['type'] !== 'string') return false;
   if (typeof obj['id'] !== 'string') return false;
   if (typeof obj['timestamp'] !== 'string') return false;
+
+  if (obj['type'] === 'native_answer') {
+    try {
+      decodeNativeAnswer(encodeNativeAnswer(obj as unknown as NativeAnswer));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // The subscription responses have no other validator on their way to a client (#1200).
+  if (
+    obj['type'] === 'secure_push_register_response' ||
+    obj['type'] === 'secure_push_unregister_response'
+  )
+    return isValidSecurePushResponse(obj);
 
   return VALID_TYPES.has(obj['type']);
 }
@@ -1415,6 +1779,8 @@ export function createHello(
  *  new optionals never requires threading `undefined` through positional
  *  callsites (same rationale as {@link CreateHelloOptions}). */
 export interface CreateHelloAckOptions {
+  /** One snapshot also supplies daemonVersion, harnesses and capabilities (#1234). */
+  machine?: MachineDescriptor | undefined;
   resumeInfo?: { isResume: boolean; replayCount: number; nextBulletId: number } | undefined;
   /**
    * Who the session is and which transcript it writes (#430, #1179). The
@@ -1429,6 +1795,11 @@ export interface CreateHelloAckOptions {
   daemonVersion?: string | undefined;
   /** The harnesses this daemon can start (#1179), on every ack. */
   harnesses?: readonly HarnessId[] | undefined;
+  /**
+   * The daemon's capabilities (#1237, ADR 0035), on every ack it sends; none when omitted. The
+   * protocol version needs no option: every ack is stamped with `PROTOCOL_VERSION`.
+   */
+  capabilities?: readonly string[] | undefined;
   /**
    * The harness this daemon hosts, for an ack with no `binding` (the brief window before its session
    * exists). Ignored when a binding is given, which names the harness itself. A hub hosts none and
@@ -1445,12 +1816,16 @@ export function createHelloAck(
   sessionId: UUID | null,
   options: CreateHelloAckOptions = {},
 ): HelloAckMessage {
-  const { resumeInfo, binding, attachState, daemonVersion, harnesses, harness } = options;
+  const { resumeInfo, binding, attachState, harness, machine } = options;
+  const daemonVersion = machine?.remiVersion ?? options.daemonVersion;
+  const harnesses = machine?.harnesses ?? options.harnesses;
+  const capabilities = machine?.capabilities ?? options.capabilities;
   return {
     type: 'hello_ack',
     id: generateId(),
     timestamp: now(),
     serverVersion,
+    protocolVersion: PROTOCOL_VERSION,
     sessionId,
     ...(resumeInfo && {
       isResume: resumeInfo.isResume,
@@ -1471,6 +1846,8 @@ export function createHelloAck(
     ...(attachState !== undefined && { attachState }),
     ...(daemonVersion !== undefined && { daemonVersion }),
     ...(harnesses !== undefined && { harnesses }),
+    capabilities: capabilities ?? [],
+    ...(machine !== undefined && { machine }),
   };
 }
 
@@ -1734,6 +2111,7 @@ export function createQuestionResolved(
   sessionId: UUID,
   questionId: UUID,
   reason: QuestionResolvedMessage['reason'],
+  resolvedBy?: ResolvedBy,
 ): QuestionResolvedMessage {
   return {
     type: 'question_resolved',
@@ -1742,6 +2120,7 @@ export function createQuestionResolved(
     sessionId,
     questionId,
     reason,
+    ...(resolvedBy !== undefined && { resolvedBy }),
   };
 }
 
@@ -1871,6 +2250,30 @@ export function createSessionListRequest(includeExternal?: boolean): SessionList
   };
 }
 
+/** Create a recent-repositories request (#1236 phase C). */
+export function createRecentRepositoriesRequest(limit?: number): RecentRepositoriesRequestMessage {
+  return {
+    type: 'recent_repositories_request',
+    id: generateId(),
+    timestamp: now(),
+    ...(limit !== undefined && { limit }),
+  };
+}
+
+/** Create the answer to a recent-repositories request (#1236 phase C). */
+export function createRecentRepositoriesResponse(
+  repositories: readonly RecentRepository[],
+  requestId: UUID,
+): RecentRepositoriesResponseMessage {
+  return {
+    type: 'recent_repositories_response',
+    id: generateId(),
+    timestamp: now(),
+    requestId,
+    repositories,
+  };
+}
+
 /**
  * Create a session list response containing discovered sessions for a given request.
  */
@@ -1878,14 +2281,18 @@ export function createSessionListResponse(
   sessions: readonly DiscoverableSession[],
   requestId: UUID,
   daemonPorts?: readonly number[],
+  machine?: MachineDescriptor,
 ): SessionListResponseMessage {
   return {
     type: 'session_list_response',
     id: generateId(),
     timestamp: now(),
-    sessions,
+    sessions: machine
+      ? sessions.map((session) => ({ ...session, machineId: machine.id }))
+      : sessions,
     requestId,
     ...(daemonPorts && daemonPorts.length > 0 && { daemonPorts }),
+    ...(machine !== undefined && { machine }),
   };
 }
 
@@ -1962,9 +2369,13 @@ export function createTranscriptLoadComplete(
  */
 export function createCreateSessionRequest(
   directory?: string,
-  options: { harness?: HarnessId | undefined; args?: readonly string[] | undefined } = {},
+  options: {
+    harness?: HarnessId | undefined;
+    args?: readonly string[] | undefined;
+    workspace?: WorkspaceRequest | undefined;
+  } = {},
 ): CreateSessionRequestMessage {
-  const { harness, args } = options;
+  const { harness, args, workspace } = options;
   return {
     type: 'create_session_request',
     id: generateId(),
@@ -1972,6 +2383,7 @@ export function createCreateSessionRequest(
     ...(directory !== undefined && { directory }),
     ...(harness !== undefined && { harness }),
     ...(args !== undefined && { args }),
+    ...(workspace !== undefined && { workspace }),
   };
 }
 
@@ -1985,6 +2397,7 @@ export function createCreateSessionResponse(
   error?: string,
   port?: number,
   notice?: string,
+  workspace?: SessionWorkspace,
 ): CreateSessionResponseMessage {
   return {
     type: 'create_session_response',
@@ -1996,6 +2409,7 @@ export function createCreateSessionResponse(
     ...(error !== undefined && { error }),
     ...(port !== undefined && { port }),
     ...(notice !== undefined && { notice }),
+    ...(workspace !== undefined && { workspace }),
   };
 }
 
@@ -2013,7 +2427,8 @@ export function createTerminalResize(cols: number, rows: number): TerminalResize
 }
 
 /**
- * Create an auth challenge message.
+ * Create an auth challenge message. Optional legacy arguments retain their wire positions
+ * for additive compatibility only; they do not implement key exchange or answer sealing.
  */
 export function createAuthChallenge(
   challenge: string,
@@ -2038,13 +2453,15 @@ export function createAuthChallenge(
 }
 
 /**
- * Create an auth response message.
+ * Create an auth response message. The optional legacy relayKex position is retained
+ * for additive compatibility only; direct verification still signs only the challenge.
  */
 export function createAuthResponse(
   clientPublicKey: string,
   signature: string,
   clientFingerprint: string,
   relayKex?: { readonly ephemeralKey: string; readonly signature: string },
+  pairing?: { readonly nonce: string; readonly label?: string | undefined },
 ): AuthResponseMessage {
   return {
     type: 'auth_response',
@@ -2056,6 +2473,10 @@ export function createAuthResponse(
     ...(relayKex && {
       relayEphemeralKey: relayKex.ephemeralKey,
       relayKexSignature: relayKex.signature,
+    }),
+    ...(pairing && {
+      pairingNonce: pairing.nonce,
+      ...(pairing.label !== undefined && { pairingLabel: pairing.label }),
     }),
   };
 }
@@ -2170,6 +2591,7 @@ export function createResumeSessionResponse(
   sessionId?: UUID,
   error?: string,
   errorCode?: string,
+  port?: number,
 ): ResumeSessionResponseMessage {
   return {
     type: 'resume_session_response',
@@ -2180,6 +2602,7 @@ export function createResumeSessionResponse(
     ...(sessionId !== undefined && { sessionId }),
     ...(error !== undefined && { error }),
     ...(errorCode !== undefined && { errorCode }),
+    ...(port !== undefined && { port }),
   };
 }
 

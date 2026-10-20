@@ -46,13 +46,16 @@ const onDisk = (): Array<Record<string, unknown>> =>
   (JSON.parse(readFileSync(file, 'utf8')) as { tokens: Array<Record<string, unknown>> }).tokens;
 
 describe('the push lease (#1254)', () => {
-  test('a token whose phone was not seen within the lease is dropped, and the drop is logged', () => {
-    seed([entry('stale', Date.now() - 25 * HOUR), entry('fresh', Date.now() - HOUR)]);
+  test('a token whose phone was not seen within the lease is dropped, and the drop is logged without the token', () => {
+    const stale = 'stale-private-token-1254'.repeat(3);
+    seed([entry(stale, Date.now() - 25 * HOUR), entry('fresh', Date.now() - HOUR)]);
     const store = new DeviceTokenStore(file, { leaseMs: LEASE });
     store.load();
 
     expect([...store.map.keys()]).toEqual(['fresh']);
-    expect(logs.some((l) => l.includes('lease') && l.includes('stale'.slice(0, 5)))).toBe(true);
+    expect(logs.some((l) => l.includes('Push lease expired (not seen for 25h)'))).toBe(true);
+    // The relay epic's log rule (#1200): no part of a device token reaches a log line.
+    expect(logs.join('\n')).not.toContain(stale.slice(0, 8));
   });
 
   test('the phone being seen after it registered keeps an old registration alive', () => {

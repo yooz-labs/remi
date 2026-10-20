@@ -99,7 +99,7 @@ export function sanitizePushPreferences(
  * An entry with no stored preferences (registered before #968, or by a client
  * that sends none) wants everything.
  */
-export function wantsPush(entry: DeviceTokenEntry, kind: PushKind): boolean {
+export function wantsPush(entry: Pick<DeviceTokenEntry, 'pushPrefs'>, kind: PushKind): boolean {
   const prefs = entry.pushPrefs ?? DEFAULT_PUSH_PREFERENCES;
   switch (kind) {
     case 'question':

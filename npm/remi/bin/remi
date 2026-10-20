@@ -7,7 +7,6 @@ const os = require("os");
 
 const PLATFORMS = {
   "darwin-arm64": "@yooz-labs/remi-darwin-arm64",
-  "darwin-x64": "@yooz-labs/remi-darwin-x64",
   "linux-arm64": "@yooz-labs/remi-linux-arm64",
   "linux-x64": "@yooz-labs/remi-linux-x64",
 };
@@ -19,7 +18,10 @@ const pkg = PLATFORMS[key];
 
 if (!pkg) {
   console.error(`Unsupported platform: ${key}`);
-  console.error("Remi supports: darwin-arm64, darwin-x64, linux-arm64, linux-x64");
+  console.error("Remi supports Apple Silicon Macs and Linux ARM64/x86_64.");
+  if (platform === "darwin") {
+    console.error("Use a native ARM64 Node.js runtime on Apple Silicon.");
+  }
   process.exit(1);
 }
 

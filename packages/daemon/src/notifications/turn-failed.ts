@@ -9,6 +9,8 @@
  * every prompt), stacking in the app and on the lock screen.
  *
  * What this module owns: the readable text and the per-session collapse key.
+ * The displayed excerpt removes the shared unsafe characters (#1211), while
+ * `turnFailureKey` continues to classify the original StopFailure input.
  * Who is pushed, and how, is `NotificationDispatcher.pushTurnFailed`, which
  * alerts once per failure (`turnFailureKey`: who failed, and why) until the
  * notice is cleared (#1226): by a turn that finished, a Codex turn that was
@@ -28,6 +30,7 @@
  * (`turn-events.ts`), and the title names Codex instead of Claude.
  */
 
+import { boundedEscape, escapeUnsafeText, pushProse } from '@remi/shared';
 import type { UUID } from '@remi/shared';
 
 import type { StopFailureHookInput } from '../hooks/hook-types.ts';
@@ -92,6 +95,31 @@ function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
+/** Cut display text without splitting an escape written by `escapeUnsafeText` or a surrogate pair. */
+function truncateDisplay(text: string, max: number, marker = false): string {
+  if (text.length <= max) return text;
+  let end = Math.min(max, text.length);
+  for (const match of text.matchAll(/\\u(?:[0-9A-F]{4}|\{[0-9A-F]+\})/gu)) {
+    const start = match.index;
+    const escapeEnd = start + match[0].length;
+    if (start < end && end < escapeEnd) {
+      end = start;
+      break;
+    }
+  }
+  if (
+    end > 0 &&
+    end < text.length &&
+    text.charCodeAt(end - 1) >= 0xd800 &&
+    text.charCodeAt(end - 1) <= 0xdbff &&
+    text.charCodeAt(end) >= 0xdc00 &&
+    text.charCodeAt(end) <= 0xdfff
+  ) {
+    end -= 1;
+  }
+  return `${text.slice(0, end)}${marker ? '…' : ''}`;
+}
+
 /** A short phrase for an `error` code: the mapped phrase (sentence case) for
  *  a documented code, the code itself, verbatim, for any other string, and a
  *  fixed phrase for a missing or non-string one. Never `undefined` or
@@ -112,8 +140,8 @@ function failureExcerpt(
 ): string {
   for (const candidate of [input.last_assistant_message, input.error_details]) {
     if (typeof candidate !== 'string') continue;
-    const text = oneLine(candidate);
-    if (text !== '') return truncate(text, EXCERPT_MAX);
+    const text = oneLine(pushProse(candidate));
+    if (text !== '') return truncateDisplay(text, EXCERPT_MAX, true);
   }
   return '';
 }
@@ -160,14 +188,17 @@ export function buildTurnFailedText(
   agentName: string = DEFAULT_AGENT_NAME,
 ): { title: string; body: string } {
   const agent = oneLine(agentName) || 'Agent';
-  const title = `${oneLine(sessionName) || 'Agent'}: ${agent} stopped`.slice(0, TITLE_MAX);
-  const reason = describeTurnFailure(input.error);
+  const title = truncateDisplay(
+    escapeUnsafeText(`${oneLine(sessionName) || 'Agent'}: ${agent} stopped`),
+    TITLE_MAX,
+  );
+  const reason = boundedEscape(describeTurnFailure(input.error), UNKNOWN_CODE_MAX);
   const excerpt = failureExcerpt(input);
   const who =
     typeof input.agent_type === 'string' && oneLine(input.agent_type) !== ''
-      ? `${truncate(oneLine(input.agent_type), AGENT_TYPE_MAX)} · `
+      ? `${boundedEscape(oneLine(input.agent_type), AGENT_TYPE_MAX)} · `
       : '';
-  const body = `${who}${reason}${excerpt ? `. ${excerpt}` : ''}`.slice(0, BODY_MAX);
+  const body = truncateDisplay(`${who}${reason}${excerpt ? `. ${excerpt}` : ''}`, BODY_MAX);
   return { title, body };
 }
 

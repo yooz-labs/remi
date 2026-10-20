@@ -51,7 +51,8 @@ function rig(over: { admits?: (input: StopHookInput) => boolean; primary?: UUID 
     sessionName: (id) => names.get(id),
     notifiers: new Map(),
     signalingUrl: () => 'https://signal.test',
-    pushSecret: () => undefined,
+    pushSecret: () => 'owned-test-secret',
+    legacyPolicy: () => ({ legacyEnabled: true }),
     send: (_url, token, opts) => {
       sent.push({ token, opts });
       return Promise.resolve();

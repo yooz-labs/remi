@@ -17,6 +17,7 @@
  *
  * Special handling:
  * - Cursor right (ESC[nC) is replaced with spaces to preserve word spacing
+ * - Forward cursor-column positioning (ESC[nG) is padded to preserve word spacing
  */
 export function stripAnsi(text: string): string {
   // First, replace cursor-up/down with newlines (they indicate line changes in screen-based UI)
@@ -45,12 +46,90 @@ export function stripAnsi(text: string): string {
   const privatePattern = /\u001b\[\?[0-9;]*[hlsr]/g;
   result = result.replace(privatePattern, '');
 
+  // Keep unsupported, oversized digit-only CHA commands from leaking as raw
+  // text. The general CSI recognizer below intentionally accepts at most four
+  // parameter digits; this also avoids parsing or allocating from an arbitrary
+  // cursor count.
+  // eslint-disable-next-line no-control-regex
+  const oversizedChaPattern = /(?:\u001b\[|\u009b)\d{5,}G/g;
+  result = result.replace(oversizedChaPattern, '');
+
   // Comprehensive ANSI escape sequence patterns (colors, other cursor moves, etc.)
   // eslint-disable-next-line no-control-regex
   const ansiPattern = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
-  result = result.replace(ansiPattern, '');
+  result = result.replace(ansiPattern, (sequence) => preserveSupportedCha(sequence));
 
-  return result;
+  return addChaSpacing(result);
+}
+
+/** The display-column bound for generated CHA padding; larger positions are
+ * ignored so an arbitrary CSI count cannot allocate an unbounded string. */
+const MAX_CHA_COLUMN = 4096;
+
+/** Preserve only the supported, digit-only CHA form for the spacing pass. */
+function preserveSupportedCha(sequence: string): string {
+  // eslint-disable-next-line no-control-regex
+  const cha = /^(?:\u001b\[|\u009b)(\d*)G$/.exec(sequence);
+  if (!cha) return '';
+
+  const parameter = cha[1] ?? '';
+  const requestedColumn = parameter === '' ? 1 : Number.parseInt(parameter, 10) || 1;
+  return requestedColumn <= MAX_CHA_COLUMN ? sequence : '';
+}
+
+/**
+ * Turn forward CHA commands into spacing in the append-history text. This is
+ * not a terminal screen emulator: backward movement and overwriting stay
+ * outside this parser's model (#1137). The 4096-column limit is deliberately
+ * bounded because the result is used only as parse text, not display output.
+ */
+function addChaSpacing(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  const chaPattern = /(?:\u001b\[|\u009b)(\d*)G/g;
+  let output = '';
+  let displayColumn = 0;
+  let copiedThrough = 0;
+
+  for (const match of text.matchAll(chaPattern)) {
+    const index = match.index;
+    const plainText = text.slice(copiedThrough, index);
+    output += plainText;
+    displayColumn = advanceDisplayColumn(displayColumn, plainText);
+
+    const parameter = match[1] ?? '';
+    const requestedColumn = parameter === '' ? 1 : Number.parseInt(parameter, 10) || 1;
+    const targetColumn = requestedColumn - 1;
+    if (targetColumn > displayColumn) {
+      output += ' '.repeat(targetColumn - displayColumn);
+      displayColumn = targetColumn;
+    }
+    copiedThrough = index + match[0].length;
+  }
+
+  return output + text.slice(copiedThrough);
+}
+
+/** Measure already ANSI-free text in terminal display columns. Bun's width
+ * routine handles grapheme clusters; tabs use the terminal's eight-column
+ * stops because Bun.stringWidth reports a tab as zero columns. */
+function advanceDisplayColumn(column: number, text: string): number {
+  let currentColumn = column;
+  let segmentStart = 0;
+
+  for (let index = 0; index < text.length; index++) {
+    const character = text[index];
+    if (character !== '\t' && character !== '\r' && character !== '\n') continue;
+
+    currentColumn += Bun.stringWidth(text.slice(segmentStart, index));
+    if (character === '\t') {
+      currentColumn = (Math.floor(currentColumn / 8) + 1) * 8;
+    } else {
+      currentColumn = 0;
+    }
+    segmentStart = index + 1;
+  }
+
+  return currentColumn + Bun.stringWidth(text.slice(segmentStart));
 }
 
 /**

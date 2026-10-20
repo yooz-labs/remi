@@ -5,7 +5,7 @@
  * `bindConnectionId`) that replaced 13 hand-written per-event closures each
  * in `websocket-adapter.ts` and `websocket-server.ts`.
  *
- * `GOLDEN_KEYS` below is a hand-transcribed copy of the 13 event names,
+ * `GOLDEN_KEYS` below is a hand-transcribed copy of the original event names plus explicit additions,
  * deliberately NOT imported from `CLIENT_MESSAGE_EVENT_KEYS` -- the same
  * reason `protocol-registry.test.ts`'s `GOLDEN_TYPES` isn't derived from
  * `MESSAGE_DIRECTION`: a test that reads its expectation from the thing it's
@@ -24,10 +24,18 @@ import {
 /** Hand-transcribed, verbatim, from the pre-#900 `ConnectionEvents` /
  *  `ServerEvents` / `AdapterEvents` per-message field names. */
 const GOLDEN_KEYS = [
+  'onFileDownload',
+  'onBrowserLinkReceiver',
+  'onStructuredChat',
+  'onImageInsert',
+  // Explicit R6 signed-proof event, added to the original 13 (#1201).
+  'onImageUpload',
+  'onNativeAnswer',
   'onUserInput',
   'onAnswer',
   'onBulletExpandRequest',
   'onSessionListRequest',
+  'onRecentRepositoriesRequest',
   'onTranscriptLoadRequest',
   'onCreateSessionRequest',
   'onTerminalResize',
@@ -39,10 +47,55 @@ const GOLDEN_KEYS = [
   'onUnregisterDeviceToken',
 ];
 
+test('the browser semantic event crosses the actual generic pick/bind forwarders', async () => {
+  const seen: unknown[] = [];
+  const source: Partial<ClientMessageEventsWithConnectionId> = {
+    onBrowserLinkReceiver(id, request) {
+      seen.push(id, request);
+    },
+  };
+  const request = {
+    type: 'browser_link_receiver_request' as const,
+    id: generateId(),
+    timestamp: new Date().toISOString(),
+    sessionId: generateId(),
+    binding: { harness: 'claude' as const, harnessSessionId: generateId() },
+    seq: 1,
+    action: 'select' as const,
+  };
+  const connectionId = generateId();
+  await bindConnectionId(connectionId, pickClientMessageEvents(source)).onBrowserLinkReceiver?.(
+    request,
+  );
+  expect(seen).toEqual([connectionId, request]);
+});
+
+test('the file download semantic event crosses the actual generic pick/bind forwarders', async () => {
+  const seen: unknown[] = [];
+  const source: Partial<ClientMessageEventsWithConnectionId> = {
+    onFileDownload(id, ingress) {
+      seen.push(id, ingress);
+    },
+  };
+  const ingress = {
+    kind: 'malformed' as const,
+    correlation: {
+      operation: 'file_fetch_cancel' as const,
+      requestId: generateId(),
+      sessionId: generateId(),
+      transferId: null,
+      beginId: generateId(),
+    },
+  };
+  const id = generateId();
+  await bindConnectionId(id, pickClientMessageEvents(source)).onFileDownload?.(ingress);
+  expect(seen).toEqual([id, ingress]);
+});
+
 describe('CLIENT_MESSAGE_EVENT_KEYS', () => {
-  test('has exactly 13 entries with no duplicates', () => {
-    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(13);
-    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(13);
+  test('has exactly 20 entries with no duplicates', () => {
+    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(20);
+    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(20);
   });
 
   test('is exactly the golden key set, no more, no fewer', () => {
@@ -91,7 +144,7 @@ describe('pickClientMessageEvents', () => {
     expect(Object.keys(result).sort()).toEqual(['onUserInput']);
   });
 
-  test('round-trips every one of the 13 keys with connectionId-prefixed args intact', () => {
+  test('round-trips every one of the 14 keys with connectionId-prefixed args intact', () => {
     for (const key of CLIENT_MESSAGE_EVENT_KEYS) {
       const calls: unknown[][] = [];
       const source: Partial<ClientMessageEventsWithConnectionId> = {
@@ -106,7 +159,7 @@ describe('pickClientMessageEvents', () => {
 
       const connId = generateId();
       const sentinel = `sentinel-${key}`;
-      // biome-ignore lint/suspicious/noExplicitAny: exercising the forwarder generically across all 13 differently-shaped handlers.
+      // biome-ignore lint/suspicious/noExplicitAny: exercising the forwarder generically across all 14 differently-shaped handlers.
       (handler as any)(connId, sentinel);
 
       expect(calls).toEqual([[connId, sentinel]]);
@@ -142,7 +195,7 @@ describe('bindConnectionId', () => {
     }
   });
 
-  test('binds every one of the 13 keys to the SAME connectionId', () => {
+  test('binds every declared key to the SAME connectionId', () => {
     for (const key of CLIENT_MESSAGE_EVENT_KEYS) {
       const calls: unknown[][] = [];
       const sink: Partial<ClientMessageEventsWithConnectionId> = {
@@ -157,7 +210,7 @@ describe('bindConnectionId', () => {
       expect(handler).toBeDefined();
 
       const sentinel = `sentinel-${key}`;
-      // biome-ignore lint/suspicious/noExplicitAny: exercising the binder generically across all 13 differently-shaped handlers.
+      // biome-ignore lint/suspicious/noExplicitAny: exercising the binder generically across all 14 differently-shaped handlers.
       (handler as any)(sentinel);
 
       expect(calls).toEqual([[connId, sentinel]]);

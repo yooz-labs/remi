@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { createIdentity, fingerprint, fromBase64, isSmallOrderPublicKey } from '@remi/shared';
 
 const source = readFileSync(
-  resolve(import.meta.dir, '../../../shared/src/ed25519-public-key.ts'),
+  resolve(import.meta.dir, '../../../shared/src/relay/small-order.ts'),
   'utf8',
 );
 const hexKeys = [...source.matchAll(/'([0-9a-f]{64})'/g)].map((match) => match[1] ?? '');

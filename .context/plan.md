@@ -1,26 +1,36 @@
 # Plan: the roadmap
 
-Updated 2026-10-06.
+Updated 2026-10-15.
 One page: where remi stands, what comes next and in what order, and how each step is tested.
 The work itself lives in GitHub milestones and issues; standing decisions live in [decisions/](decisions/) as ADRs; history lives in [archive/](archive/).
 
 ## Where things stand
 
-- **Released:** 0.7.15 (stable on npm and Homebrew).
-- **On develop (0.7.16-dev), not released yet:**
+- **Codex remote chat (#1207):** the reviewed combined direct/relay implementation landed in #1507 at `49094b02`, including #1504 and its reviewed prerequisites. The actual hosted suite passed 9,808 tests with 30 skips and zero failures, 91.79% line coverage and the actual 61-minute relay gate. Two earlier direct-head Test timeouts remain preserved; the combined pass does not diagnose them. Relay child proxies retain the original device/grant/enrollment snapshot and the child's sole sequence owner; losing it retires the machine channel. Accountless installed-server controls and rendered web phone/tablet/desktop checks cover submission, uncertainty, explicit reconnect without replay and new input after native failure. Native conformance/UI, physical-device acceptance and provider completion beyond the bounded observation remain separate. See [ADR 0043](decisions/0043-structured-chat-submission.md) and the [native handoff](../docs/codex-remote-chat.md#native-integration-handoff).
+
+- **File-tunnel relay follow-up (#1170 T2):** ordinary transcript links already open explicitly. Owner-accepted [ADR 0044](decisions/0044-explicit-browser-link-forwarding.md) adds exclusive explicit recipient selection, bounded ephemeral candidates and a separate Open action. This phase wires the Claude BROWSER producer and web receiver through the authenticated encrypted relay channel. Local tests use the source Worker under Miniflare, HubRelay, the actual child proxy and rendered web app; this does not establish deployed Worker, signed-device or native acceptance. The direct WSS path and its existing certificate requirements remain unchanged. Codex producer support, native conformance and deployed acceptance remain separate.
+
+- **Supported hosts (owner decision, ADR 0040):** Apple Silicon Macs (M1 and
+  later), Linux ARM64 and Linux x86_64. Intel Mac/Rosetta is outside acceptance
+  and future distribution scope.
+- **Relay file-download follow-up (#1170 T3):** accepted ADR0045 fetches now route through the existing encrypted relay channel for Claude and Codex child sessions, with an explicit Save after client digest verification. Local source Worker/HubRelay/ChildProxy and rendered app checks cover 10 MiB transfers. Deployed Worker behavior, native clients, physical-device acceptance, empty files and larger limits remain separate.
+- **Released on GitHub:** [0.7.16](https://github.com/yooz-labs/remi/releases/tag/v0.7.16), published 2026-10-07.
+- **On develop (0.7.17-dev), ahead of the stable release:**
   - no local judge: Claude Code decides permissions, remi relays them (#1125, ADR 0030);
   - held-hook answers (#1126, #1127, ADR 0031);
   - the Codex adapter (epic #1175, ADR 0033);
   - first-connect approval: every client key is approved once with `remi authorize` (#873);
   - the relay off by default and fail-closed (#1193);
   - one `turn_failed` alert per failure until the agent works again (#1153, #1226).
-- **On the relay epic branch** (`feature/issue-1195-epic-relay`): relay v2 R1 to R5 and the daemon side of R6 (#1205, #1214, #1219, #1220, #1222), always-on end-to-end encryption, sealed push. Not in develop yet.
+- **Relay backend landed in develop:** [#1331](https://github.com/yooz-labs/remi/pull/1331), merge `b1168126`, includes the existing R1-R5 and daemon R6 contracts, the authority-contention correction, v1 retirement and heartbeat replies. Relay remains off by default. Both full Bun suites and the actual [61-minute Linux relay gate](https://github.com/yooz-labs/remi/actions/runs/37905906897) passed at backend `2858e4bd`, whose tree equals the merge. Signed-device and deployed-Worker acceptance remain open; #1195/#1202 are not closed by the source landing.
+- **File tunnel:** [#1329](https://github.com/yooz-labs/remi/pull/1329) records the broader proposal. Direct PNG/JPEG staging and its web caller landed in #1487 under accepted [ADR 0041](decisions/0041-direct-image-staging.md). [ADR 0042](decisions/0042-claude-image-insertion.md) separately covers explicit no-Enter insertion and visible original expiry: host lease/coordinator/strict direct dispatch controls are recorded below; the explicit client action and native conformance remain availability gates. Links and downloads are later scope.
 - **Apps today:**
   - a sandboxed macOS menu-bar app that hosts the web UI;
   - the Capacitor iPhone app with a Notification Service Extension;
   - the web client.
 
-  Native SwiftUI apps are planned: [native-apps-plan-2026-10.md](native-apps-plan-2026-10.md).
+  Native SwiftUI source lives in `packages/native`: [native-apps-plan-2026-10.md](native-apps-plan-2026-10.md).
+  Relay and secure native answers continue in existing [#1330](https://github.com/yooz-labs/remi/pull/1330), against the landed backend; its handoff lists the foreground Ping/Pong fix, source-test refresh and remaining signed/device gates.
 
 ## Milestones, in order
 
@@ -36,17 +46,48 @@ Each milestone is a GitHub milestone of the same name. Issues outside a mileston
 | 6 | **Native depth (X5-X6)** | Diffs, files and a terminal view (#1245); Live Activities, Watch and widgets (#1246) | Per phase issue |
 
 Milestones 2 and 3 run in parallel.
-On 2026-10-06 the owner started the native apps (milestones 4 and 5) in parallel too: two Codex agents in Xcode, one for the Mac app and one for the iPhone app, on the epic branch `feature/issue-1239-epic-native` (`packages/native/AGENTS.md` and `packages/native/handoff/`).
+The native apps (milestones 4 and 5) run in parallel too: Codex builds them in Xcode from `packages/native/handoff/README.md`, on `develop` (the scaffold moved there on 2026-10-07 in #1267; there is no epic branch), as two tracks, the Mac app and the iPhone app.
 They build against today's wire and adopt the freeze's shapes as they land.
 The epic for 4 to 6 is #1239.
 
+## Completed backend continuation: recent repositories (#1284)
+
+The owner selected #1284 on 2026-10-09 while the native developer continues X2 separately.
+The wire stays unchanged; only successful hub starts write history, capped at 20 with no age expiry.
+Landed through [#1332](https://github.com/yooz-labs/remi/pull/1332) at `ef84b4c6`, with the same tree as tested `28ea5daf`.
+Both full Bun suites passed 7,942 tests with no failures; Linux CI and the actual 61-minute relay gate passed.
+The existing native caller needs no new Swift model or wire field for this persistence behavior.
+
+1. Pin the removed-worktree and expired-session regressions against the original source, plus ordinary creates and hub resumes (`tests/integration/hub-create-session.test.ts`, `hub-resume.test.ts`).
+2. Add restricted atomic history (`workspace/recent-store.ts`), merge it into `workspace/recent.ts`, and wire the successful shared starter and recent-repositories handler in `cli.ts`; async lock waiting reuses the existing ownership and stale recovery rules.
+3. Verify canonical main repositories, latest-use deduplication, cap, permissions, damaged-source fallback, simultaneous writers and responsive bounded lock waiting; update ADR 0036's source and disclosure descriptions.
+4. Review, mutation-check each behavior, run fresh full suites on Bun 1.4.2 and 1.3.11 and the existing CI gates, then land through a PR to develop.
+
+## Next work while native acceptance proceeds
+
+1. Complete the backend machine descriptor in #1234, with the existing relay room ID and shared bounded pairing name, hello/list fields, entry machine IDs, fixtures and ADR 0039. Native persisted aliases, rename controls and profile transfer follow these contracts in the Xcode track. #1330 and #1342 have landed; remaining signed/native acceptance stays with #1242/#1201.
+2. The file-tunnel proposal [#1329](https://github.com/yooz-labs/remi/pull/1329) landed at `35254d7e`. Packaging [#1350](https://github.com/yooz-labs/remi/pull/1350), admission [#1362](https://github.com/yooz-labs/remi/pull/1362) and private-copy proof [#1381](https://github.com/yooz-labs/remi/pull/1381) landed; six supported target/version executions passed 27 storage/admission/copy controls. Decoder admission #1383 and child lifetime #1397 landed. The held-answer proof [#1411](https://github.com/yooz-labs/remi/pull/1411) keeps a real hook's No responsive under repeated owned decoding; its synchronous parent-block control crosses the one-second limit. Palette admission [#1416](https://github.com/yooz-labs/remi/pull/1416) passed the combined six-pair 21-group matrix. These are standalone controls, not production adoption. Portable CPU/memory enforcement and the native macOS worker startup failure [#1417](https://github.com/yooz-labs/remi/issues/1417) remain open. Trusted reservation accounting [#1415](https://github.com/yooz-labs/remi/pull/1415) and its private-copy composition [#1419](https://github.com/yooz-labs/remi/pull/1419) landed, including failed-cleanup allocation retention and unknown-allocation blocking debt. The standalone [storage-load held-answer proof](../scripts/tunnel-storage-proof/README.md#held-answer-storage-load-proof) passed all six supported compiled cells with the unchanged 43 storage groups plus four real held-answer controls. The standalone immutable ownership journal [#1440](https://github.com/yooz-labs/remi/issues/1440) passed all six supported compiled cells with 61 groups (43 predecessors plus 18 recovery groups), an independent 43-group compatibility matrix and five semantic mutations on both Bun gates. Original canonical-byte guards passed duplicate/noncanonical/empty/truncated marker controls on both compiled Mac gates before a shared-predicate extraction. The 61-group recovery profile retains its reservation charge after journal cleanup. Standalone quota reconciliation and bounded journal retirement #1443 passed all six supported compiled cells with 88 groups (61 predecessors plus 27 settlement groups), independent six-cell 61/43-group compatibility profiles, and six semantic mutations on both Bun gates (12 exact compiled failures). It retires witnessed journal markers before quota release and retains at most 128 pending/completed ledger rows without evicting pending debt. Managed writes precharge and retain measured or blocking debt under the same nonblocking transaction before further admission. Real partial-write and close failures preserve intent ownership until process death; 130 completed cycles leave bounded receipts and empty owned namespaces. Independent review completed. These are standalone observations; no production authority is implemented. Production lifecycle and decoder availability/resource enforcement still precede staging. Internal journal-helper adoption is recorded below; no attachment capability is available. Keep #1170 open.
+   **Decoder worker policy (#1417):** the standalone candidate now supplies `BUN_JSC_useJIT=0` through its existing private environment whitelist on both one-shot and repeated workers. The default 19-group and held 22-group profiles retain all original 18/21 checks and passed all six supported platform/Bun cells each; removing the setting produced the exact compiled assertion and actual child exit 23 on both Mac Bun gates. Original pixels, cancellation, five-second lifetime, two-second reap and 1000 ms held-answer thresholds passed unchanged. Parent runtime settings are preserved. Independent review and root verification matched the compiled inputs, binaries and logs. This is finite standalone acceptance, not a general Bun startup fix or production helper selection. The extra OS resource-limit investigation is deferred by owner direction; continue the practical file-transfer plan.
+3. Follow the [file-tunnel execution queue](../docs/FILE-TUNNEL.md#next-independently-reviewable-changes): reuse the standalone storage/decoder proofs and accepted staging codec/fixtures, settle production helper/budget adoption, integrate reservations and authenticated direct staging, then add one production client caller. Coordinate Swift wire conformance against the shared vectors in the existing native track. Claude insertion, links, outbound files and relay/native depth each have separate gates. The sharp candidate failed compiled loading; the existing pngjs/jpeg-js candidate has standalone malformed-input, cancellation and held-answer evidence, with production decoder/budget selection still pending. Do not duplicate the native developer's work or wait for relay deployment to prepare direct staging.
+
 ## Tracks (work outside the milestones)
+
+The #1190 fixture cleanup continuation records actual ownership assertions for
+attachment output directories and Claude-session directories.
+The original whole two-file population passed 75 cases but left 18 attachment
+directories and one Claude directory on each Mac Bun runtime.
+The cleanup closes output before removing its owned directory and awaits the
+existing PTY exit before removing the session store directory.
+All 75 cases now pass on both runtimes with zero new fixture directories;
+removing either cleanup fails its specific assertion on both runtimes.
+Historical temporary directories are untouched. Independent review and fresh
+hosted acceptance remain separate; no product behavior or timeout changes.
 
 Labeled by area and prioritized P1 to P3.
 Take P1 and P2 items between milestones; P3 items when they are in the way.
 
 - **claude** (the Claude Code harness): #375 (P1, suspend and resume loses input), then #808, #1147, #940, #1189 with #1211, #1137.
-- **codex:** #1192 (Guardian reviews), #1187; #1207 waits on an owner decision.
+- **codex:** #1192 (Guardian reviews), #1187; #1207 uses structured start/steer and retains the host default (owner decision, 2026-10-13).
 - **web:** #1146, then the P3 list.
 - **quality:**
   - #1232: one port helper; it supersedes #1150, #1159 and #1169.
@@ -75,7 +116,7 @@ Collected in #1233. Decided on 2026-10-06:
 Still open:
 - the push lease: how many days a phone can go without reconnecting before a machine stops pushing to it (#1254; proposed 30);
 - whether closing a session deletes its worktree (until decided, it does not);
-- Codex typed chat (#1207).
+- Codex typed chat (#1207) was decided on 2026-10-13: structured start/steer with the current full-access default; explicit read-only remains honored.
 
 ## How every step is tested
 
@@ -89,3 +130,812 @@ Still open:
   - the integration scripts and browser tests when the daemon wire or the web client changes.
 - Each PR gets a Sonnet review, and every finding is fixed or recorded with its reason.
 - Owner hardware gates (signed builds, real devices, a deployed Worker) are listed in their milestone and are never claimed as passed without the owner's run (ADR 0011).
+
+## Internal file-tunnel accounting adoption
+
+The existing reservation and strict journal schema now live under
+`packages/daemon/src/tunnel`, with proof adapters sharing the same implementation
+and `RecoveryError` constructor.
+The accounting bodies, limits and registered guard variants are preserved.
+Six supported compiled executions each passed the unchanged 88 groups; twelve
+exact Mac guard controls passed, alongside both-Bun actual filesystem and boundary checks.
+The one-time CI relocation rule in #1462 preserves ordinary gates and skips the
+unrelated relay soak only while reviewed producer/consumer provenance remains exact.
+
+Descriptor, journal and explicit helper ownership are recorded below.
+Next adopt the disposable decoder and active production lifecycle, then the
+authenticated direct upload handler and one client.
+No attachment capability or runtime transfer caller is available from this move.
+
+## Internal descriptor admission adoption
+
+The daemon owns the existing descriptor admission implementation and exact
+`PrivateOps` type; the proof paths explicitly re-export the same classes and type.
+The shared ancestor checks, file admission rules and private-copy behavior are
+unchanged. There is no package index export or active daemon caller.
+
+The original 88-group Mac baseline passed on both Bun versions before the move.
+The moved implementation passed those same 88 groups on all six supported
+Mac/Linux and Bun combinations, plus twelve exact Mac settlement guard controls.
+A focused test uses the real native operations to verify constructor identity,
+actual captured directory descriptors and closure. Shared and boundary tests pass
+on both Buns. These results cover the internal descriptor move; journal lifecycle adoption
+and journal-helper packaging are recorded below. Transfer handlers, client
+upload and capability advertisement remain upcoming.
+
+## Internal journal lifecycle adoption
+
+The daemon owns the existing descriptor-backed recovery and settlement bodies.
+The proof paths explicitly re-export the same implementation and error constructor;
+mutation controls now target the moved source while preserving every guard and witness.
+No package index export, startup initialization or active transfer caller is added.
+
+The unchanged 88-group compiled profile passed all six supported Mac/Linux and
+Bun combinations after the move. Twenty-two exact Mac guard controls passed,
+and their 44 misleading setup/success controls were rejected. Both Bun versions
+passed shared and focused boundary tests; the new filesystem test writes and
+closes the actual private journal, verifies owned cleanup and retires its lease.
+These results cover internal adoption, not a physical allocation ceiling or
+power-loss guarantee. Helper adoption is recorded below; decoder adoption,
+authenticated upload handlers, a client caller and capability advertisement
+remain upcoming.
+
+## Internal native journal helper adoption
+
+The existing explicit journal factory and exact C bytes now live under
+`packages/daemon/src/tunnel`; its proof module re-exports the same function.
+The daemon owns the C asset declaration, referenced by the factory and proof
+assets. This preserves the original root TypeScript graph without an extra
+focused declaration input. Native operations, errno, flags and exactly-one
+closure semantics are unchanged; link remains unsupported for the separate copy
+path. No index export, startup initialization or active upload caller is added.
+
+All six supported compiled cells pass the unchanged 88 groups with frozen source
+and clean owned temporary state. Both root type checks and both 41-test/500-assertion
+focused populations pass. The new test verifies actual descriptor operations,
+successful CLOEXEC results and lock contention/release before ordered closure.
+Prior guard receipts remain source-qualified historical observations.
+
+Image header admission and full decoding are recorded below. Next integrate the
+existing owned worker/controller and trusted entry, then authenticated direct
+staging and one production client.
+These internal packaging results do not establish a physical allocation ceiling,
+power-loss guarantee, active lifecycle or upload availability. Keep #1170 open.
+
+## Internal image header admission adoption
+
+The daemon owns the existing bounded image header parser in
+`tunnel/image-admission.ts`, distinct from descriptor admission.
+Proof callers use explicit re-exports of the same function, constant and type.
+Thirteen bound-proven numeric type assertions satisfy the unchanged root
+TypeScript configuration while preserving byte-identical emitted JavaScript.
+Runtime guards, input/format/dimension limits and decoder worker policy are unchanged.
+
+The existing default runner now captures the actual moved daemon implementation
+through its shared tree/entry/snapshot support. Final default 19-group and held
+22-group profiles each pass all six supported platform/Bun cells, preserving
+original controls, full-decoded fixture pixels, pinned 42-member proof dependencies
+and clean owned temporary state. The header phase passed both root type checks
+and focused 42-test/495-assertion populations with no new diagnostics or warnings.
+After journal-helper integration, both unchanged root checks and the combined
+43-test/520-assertion populations also pass; the four header source paths retain
+their reviewed hashes.
+
+This selects internal header-parser ownership. Full-decoder ownership and
+dependencies are recorded below; owned worker/entry/lifecycle, authenticated
+upload and one client remain subsequent phases.
+Header admission is not full pixel validation;
+no active upload caller or capability is advertised. Keep #1170 open.
+
+## Internal full image decoder adoption
+
+The daemon owns the existing synchronous `decodeImage` implementation and exact
+PNG declarations. Proof callers explicitly re-export the same function and
+reference that declaration, retaining their image asset types.
+Direct dependencies select the measured pngjs 7.0.0 and jpeg-js 0.4.4 bytes.
+The generated lock preserves every other package entry and qrcode's PNG 5.0.0
+resolution. Actual bundle/license checks show the decoder's two selected
+packages; the CLI still has its original 17-package graph with PNG 5 only.
+There is no startup or active transfer decoder caller.
+
+Both unchanged root type checks and both focused 53-test/618-assertion populations
+pass. The real-fixture test preserves input and pixel hashes, shared function
+identity, header refusal and normalized PNG CRC refusal. Python diagnostics are
+unchanged; formatting and spelling checks pass. The two existing profiles now
+capture daemon metadata as well as moved source and the root lock.
+
+Final default 19-group and held 22-group profiles each pass all six supported
+platform/Bun cells, with all 24 build/run exits zero, original ordered controls
+and pixels, exact 42-member dependencies and clean owned temporary state.
+Actual held No latency under decoder load was 0.72-61.16 ms against the unchanged
+1,000-ms limit; all six deliberate parent-block controls exceeded that limit.
+These are finite standalone results, not portable memory/CPU ceilings.
+
+Controller/worker ownership is recorded below. Next select a trusted entry before
+CLI initialization, then implement authenticated staging and one production
+client. Dependency/body ownership does not advertise upload availability.
+Keep #1170 open.
+
+## Internal image controller and worker adoption
+
+`tunnel/image-process.ts` and `tunnel/image-worker.ts` now own the existing
+controller and worker bodies. Only ownership comments and admission/decoder
+import targets change. The proof modules explicitly re-export the same runtime
+and type symbols. No production child entry, startup caller, message registration
+or upload capability is added.
+
+The controller retains owned input, its single busy slot, 4,096-byte output cap,
+at-most-5,000-ms deadline, SIGKILL cancellation and awaited child exit before
+slot release. Its child environment still admits PATH, LANG and TMPDIR plus the
+fixed interpreter policy; the parent environment remains unchanged. Worker input
+bounds, normalized refusal, scalar pixel result and repeated proof mode retain
+their measured behavior.
+
+Both original root TypeScript checks pass. Both focused populations pass 54 tests
+and 662 assertions. The new actual-child test checks shared symbol identity,
+PNG/JPEG input and pixel hashes, input ownership, CRC refusal, busy rejection,
+repeated cancellation, reaping, slot reuse and parent policy isolation.
+Scoped formatting, spelling and diff checks pass with no new warnings.
+The decoder graph selects its existing two packages; the CLI keeps its unchanged
+17-package graph and licenses.
+
+Both existing default 19-group and held 22-group profiles pass all six supported
+platform/Bun cells; all 24 build/run exits are zero. Original ordered controls,
+fixture pixels, the 42-member decoder dependency tree and clean owned temporary
+state are preserved. Actual held No latency under repeated decoding was
+0.55-15.29 ms against the unchanged 1,000-ms limit; all six deliberate parent-block
+controls exceeded it. These finite observations do not establish a universal
+process memory/CPU ceiling or an active upload path.
+
+Trusted pre-CLI entry packaging is recorded below. Next implement the
+authenticated staging lifecycle and one production client.
+Keep #1170 open; capability availability follows that completed path.
+
+## Trusted image worker entry
+
+The daemon entry now selects the exact local `--internal-image-worker` mode
+before importing CLI, home or configuration modules. It accepts one PNG/JPEG
+media argument; malformed internal shapes are refused before imports.
+Every other invocation imports the existing CLI. Only the first operand selects
+the internal mode, so words after `--` retain their ordinary harness meaning.
+Root and daemon source/build scripts, the release compiler, integration Docker
+compiler and default notice graph now point to this entry. The compiled-version
+marker stays in `cli.ts`, whose implementation bytes are unchanged.
+
+The fixed local factory derives the source entry from its own module or uses the
+actual compiled executable, including arbitrary artifact names. It requires a
+locally generated private empty directory owned by the service; it accepts no
+client executable or command. The service must retain that directory exclusively
+until its child is reaped. The factory check does not protect against later
+mutation by the owning user. The controller adds only an optional cwd and two
+spawn properties; absent cwd preserves the original proof callers.
+Child environment, JIT policy, bounds, input ownership, cancellation and awaited
+exit remain unchanged. Normal CLI runtime configuration behavior is preserved;
+the private worker cwd prevents loading a repository's runtime configuration.
+
+Both original root checks and both focused populations pass on Bun 1.3.11 and
+1.4.2: 58 tests and 741 assertions. The new integration profile has a separate
+strict type check using the unchanged root options and exact existing declarations.
+Actual default-entry bundle/license checks include PNG 5, PNG 7 and JPEG across
+19 packages. Two Mac source controls and all six supported compiled platform/Bun
+cells pass 36 identical ordered controls each, covering actual entry pixels,
+private-cwd factory/self-exec, argument boundaries, normal help/version, a real
+sessionless hub and an inert child. All 20 entry build/run exits are zero.
+Owned dotenv and bunfig positive controls are observable on every runtime cell;
+private-cwd controls remain clear. Linux source-runtime acceptance is not claimed.
+
+The unchanged default 19-group and held 22-group profiles also pass all six
+supported compiled cells, for 24 additional zero-exit rows. Original ordered
+controls, pixels, 42 dependency members, fixture limits, reaping and cleanup are
+preserved. Held No latency was 0.52-69.21 ms below the unchanged 1,000-ms limit;
+all six deliberate parent-block controls exceeded it. Earlier test-only CLI
+environment and remote-argument failures remain superseded evidence. No
+production guard or deadline was weakened to pass them.
+
+This establishes the owned child entry and its finite packaging acceptance.
+The authenticated staging lifecycle still owns reservations, current transfer
+authority, private worker-directory lifetime and staged cleanup. One production
+client remains required before `image_staging` advertisement. No upload handler
+or capability is added here. Keep #1170 open.
+
+## Internal staged journal read ownership
+
+A successfully closed managed journal now opens one internal `JournalRead` view.
+It reacquires and holds the journal's intent lock and an owned read descriptor,
+exposes only bounded reads of at most 32 KiB, and requires the exact declared file
+length. Cleanup may win between writer close and read open; that open then refuses.
+Current roots, private ownership, marker witnesses, inode, size and modification
+metadata are checked around reads and staged retention. Missing artifacts refuse;
+cleanup's zero-allocation observation never supplies a readable file. Failed closes
+latch failure without retrying a potentially reused descriptor; the tested artifact
+descriptor failures retain the intent until process death.
+
+`captureJournalRead` and `retainJournal` use the existing nonblocking ledger lock.
+Staged conversion retains the same lease, declaration, ownership, bytes, artifact
+slot and monotone accounting debt; it frees only active-transfer counts. Repeating
+retention on the same current held staged reader allocates nothing more. Generic
+retain/refund methods still reject journal rows, and original witnessed settlement
+remains the only refund path. The v1 ledger schema and native helper are unchanged.
+
+Both original root type checks pass. Both focused populations pass 59 tests and
+750 assertions across 13 files, including 17 shared real-filesystem groups and
+two actual failed-close/recycled-descriptor children whose deaths are awaited.
+The existing compiled settlement profile preserves its original 88 ordered
+groups and appends those 17. All six supported platform/Bun cells pass 105 groups,
+with all 12 build/run exits zero, exact PNG/JPEG inputs, child reaping and clean
+owned temporary state. Existing 256 MiB/64-process Linux fixtures and deadlines
+are unchanged; these are finite observations. Python diagnostics preserve one
+existing Ruff result and zero Pyright diagnostics, with none added.
+
+Transfer IDs, authorization grant/session/binding, digest/decode, retry deadlines
+and published completion belong to the subsequent authenticated coordinator.
+This storage API does not recreate live readers after restart, register messages
+or advertise uploads. One production client still precedes `image_staging`
+availability. Keep #1170 open.
+
+## Configurable CLI harness (#1473)
+
+The owner requested a local CLI default on 2026-10-12.
+`[harness] default` selects Claude or Codex, with Claude as the built-in default.
+Explicit `remi claude`, `remi codex` and `--harness` override it; conflicting
+explicit choices and invalid tables/values are refused.
+One resolver drives local and remote creation plus resume/recent/directory guards.
+Hub and management commands stay session-less or administrative.
+Each hub child receives its resolved harness explicitly, including Claude for
+legacy/native omitted requests and hub resume. Wire and stored omissions retain
+their existing Claude identity meaning.
+
+Both original root type checks pass. Both focused populations pass 471 tests
+and 1,776 assertions across 12 files, with no failures or formatting warnings.
+A repeatable actual-config/parser/protocol scenario suite scores 36/36 after
+versus 18/36 using the original selector expressions. Owned CLI subprocess
+checks verify configuration, help, management and early routing refusals.
+These observations do not claim a new real Claude/Codex turn or device acceptance.
+Independent review precedes publication; fresh hosted CI precedes landing.
+
+## Direct staging coordinator: dormant milestone
+
+`ImageStagingService` now composes the owned journal and decoder for begin,
+acknowledged chunks, completion and cancellation. It captures the actual signed
+direct connection, canonical public key, authorization epoch, attached session,
+PTY and exact Claude binding; each effect rechecks that captured authority.
+Storage quotas use the full public-key hash, independently of the display fingerprint.
+Admitted completions share one decoder queue and retain their original deadlines.
+Completed artifacts retain the managed read lock until expiry or session exit.
+Cancellation receipts remain bounded and cannot revive an evicted lease.
+
+Both root type checks and the focused 55-test, 563-assertion population pass on
+Bun 1.3.11 and 1.4.2. These Mac source checks construct real signed sockets,
+PTYs, files and decoder children, including foreign-client refusals, grant
+replacement, binding changes, shared-home recovery/capacity, cancellation during
+completion, the actual 30-second idle deadline and retirement at shutdown.
+That dormant milestone had no startup caller or advertised capability.
+The subsequent direct integration and its acceptance are recorded below.
+Keep #1170 open for the remaining native, relay and explicit insertion work.
+
+## Direct image staging integration
+
+The candidate now registers all nine ADR 0041 messages and routes staging frames
+through the strict bounded parser before ordinary JSON decoding or deduplication.
+Only an authenticated supported Claude host initializes the coordinator.
+Its actual signed direct attachment selects `image_staging`; session-less hubs,
+query connections, relay virtual connections and capability-only peers retain the
+base capabilities. Hello and direct reattachment carry the current binding and
+matching connection-scoped machine descriptor.
+
+The production web connection manager owns a stop-and-wait upload controller.
+The chat panel selects a PNG/JPEG, shows acknowledged progress, permits explicit
+cancellation and reports the staged result or uncertainty. An unconfirmed attempt
+cannot blindly restart on the same context. No upload inserts an image into the
+harness or returns a host path. Direct WebSocket encryption remains outside Remi;
+use an existing private transport as described in ADR 0009.
+
+Both Bun source populations pass 1,462 tests and 5,427 assertions across eleven
+files, including both shipping direct-dispatch endpoints. Root, web app and web
+test type checks pass on both Bun gates. A real source hub, child and shipping
+web transport/controller stage exact PNG/JPEG bytes; reattachment carries binding
+and capability. All six compiled server cells pass the corresponding 21-assertion
+control on Apple Silicon macOS, Linux ARM64 and Linux x64 under Bun 1.3.11 and
+1.4.2. The Linux test driver is Bun 1.3.11 for both compiled server versions;
+its fixture uses 256 MiB, 64 processes and an executable private tmpfs for the
+inert test CLI. These are finite observations, with no new OS resource campaign
+or model turn.
+
+Fresh rendered Chrome acceptance of the production App at 1,024 and 390 pixels
+passes PNG/JPEG staging, content refusal and cancellation without page errors or
+overflow. A real held PermissionRequest returns HTTP 200 with `behavior: deny`
+while image completion is in flight; the observed UI answer resolves 225 ms before
+the staged result. The full review and one fix review completed. Retired preparation
+stops permanently, optional browser APIs have compatible fallbacks, and upload
+eligibility honors protocol compatibility and current mutual authentication.
+A matching identity prop effect preserves a proof completed after synchronous
+identity provision; a different identity disables upload. The isolated real-browser
+regression passes eight assertions on each Bun, and restoring the old effect fails
+its post-effect enabled assertion. Native/Swift and physical-device acceptance,
+relay transport and harness insertion remain separate. Hosted checks precede landing.
+
+## Image insertion: installed CLI and queue prerequisite
+
+Direct staging #1487 and queued-input guards #1489 are now merged on develop.
+The next #1170 slice reuses the guarded queue and held JournalRead; no second upload store is planned.
+The [installed-CLI observation](../docs/claude-image-insertion-characterization.md) records four owner-authorized turns on Claude Code 2.1.296.
+Quoted absolute PNG paths with spaces, JPEG and extensionless PNG bytes became actual image attachments only after a separate Enter.
+A normal exit/resume worked after removal of the submitted originals.
+Removing a new draft reference's original before submission produced no new image attachment.
+The response to that negative control was unusable; only the missing embedding is accepted as evidence.
+
+The dormant `PTYSession.insertText` method uses the existing write queue, checks its required guard at the effect, rejects controls and adds no Enter.
+Real PTY tests cover exact literal input, queue ordering, queued validity changes, guard failure and exited terminals.
+This does not advertise insertion or add a production caller.
+Artifact acquisition/one-effect retirement, an accepted expiration contract, shared/native wire conformance and explicit client action remain the next slice.
+The current 24-hour/session-exit policy does not promise an indefinitely valid unsent reference; settle that product behavior explicitly before freezing insertion.
+
+## Image insertion: owned reference preparation
+
+The internal `JournalRead.referencePath()` candidate reuses its held staged file and current descriptor/name/root/accounting checks.
+It supplies no path before successful retention or after close, creates no copy and changes no quota or deadline.
+The later coordinator must still check device/grant/session/binding/prompt and expiration at the queued effect; this internal accessor supplies none of that authority.
+No protocol field, capability or production insertion caller is registered by this slice.
+
+Both Bun source populations pass 25 tests/593 assertions, including staged PNG/JPEG access and actual replacement, mutation, symlink, hardlink, unlink and configured-root refusal on macOS.
+Six supported compiled executions pass the 105-group storage/journal profile; added reference controls cover staged-only access, exact named bytes and closed access.
+Specific accessor mutation controls remain source macOS observations, while the compiled profile exercises the reused ownership validators' existing fault controls.
+All six executions retain identical current source/dependency inputs and report no cleanup errors.
+
+The first compiled attempt found a stale predecessor control before the new reference groups: 130 same-device cycles expected 128 home rows but correctly retained 32 device receipts plus one pending row.
+The unchanged 95702c73 base reproduced the same `33 != 128` failure.
+The corrected control independently checks 130 same-device cycles and 130 distinct-device cycles, proving both 32/device and 128/home history bounds, retained pending charge and both eviction/retry outcomes.
+Production reservation limits and algorithms remain unchanged; original failures and corrected receipts are retained on S1.
+Independent review completed without actionable findings; publication/hosted checks precede landing.
+The insertion contract was subsequently accepted by the owner; the exact-path
+result and correction are recorded below. Production caller/native acceptance remain later gates.
+
+## Image insertion: accepted contract and filename correction
+
+The owner accepted ADR0042 on 2026-10-13, including the first-version original
+direct connection, one possible insertion, separate Send and visible original
+24-hour/session-end expiry. Exactly one additionally authorized Claude turn
+tested actual private `.artifact` references outside its project: neither became
+an embedded image. Insertion remains unavailable; no capability/caller is added.
+
+New image journals select `.png` / `.jpg` from their declared media type at
+creation; completion already verifies that type against bytes and full decoding.
+The exact extension is stored in the lease/reservation and immutable version2
+markers. Original `.artifact` journals retain version1 naming and recovery.
+Read, accounting, cleanup and retirement use that same persisted choice.
+No existing file is renamed, copied or linked, and no quota/deadline changes.
+Older binaries reject the extended ledger schema instead of guessing cleanup;
+these rows require the matching daemon for recovery and remain charged otherwise.
+
+The correction preserves all 105 predecessor compiled groups and adds 18
+actual-file/image-name groups, including both formats, wrong-format refusal,
+descriptor/name/root mutation and six killed-retirement restart boundaries per
+format. Both Bun source populations pass 25 tests/635 assertions, and all six
+supported compiled cells pass 123 groups with unchanged source, clean runtime
+temp and no cleanup errors, using the predecessor's 256 MiB/64-PID Linux envelope.
+Independent review found only stale caller banners in three touched storage
+modules; those descriptions are corrected in this same change.
+The subsequent corrected exact-path model check passed, as recorded below.
+Managed insertion retirement, shared vectors, handler/client integration and
+native conformance are separate subsequent gates.
+
+## Image insertion: corrected CLI route and internal lease
+
+The filename correction landed in #1495 at `9a6ef90b`.
+One separately approved corrective Claude turn passed with exact retained PNG
+and JPEG paths outside its project: both image payloads and color answers match,
+with zero CR/LF before one explicit Enter. Exactly six authorized turns are used.
+
+The internal lease prepares the existing reader, original PTY and expiry.
+It rechecks original signed socket, grant incarnation, attachment incarnation,
+live session/runtime, binding, deadline, prompt and current file at retirement.
+Retirement marks one possible write for the image before a sink can run; a
+lease reports whether it crossed that boundary. It allocates no new file,
+reader, quota, deadline or retry map and registers no wire message/capability.
+
+A real detach/reattach control exposed that membership alone revived an old
+capture on the same socket. Process-local attachment tokens now preserve
+duplicate attach, change on genuine reattach and clear on detach/session exit.
+Staging's existing authority checks use the same token. The original control
+failed before this fix and passes afterward; the old upload cannot revive either.
+
+The following sections record outcome/retry handling, shared vectors and direct
+host dispatch. The explicit client action, capability availability and native
+conformance remain separate gates; the lease alone is not Add to draft.
+
+## Image insertion: shared structural contract
+
+The accepted two-message codec and request-only correlated ingress reuse the
+existing strict scalar/UUID/date/opaque-ID/binding/frame guards. Before extraction,
+all 503 staging vector outcomes were pinned; their decoded/ingress/encoded hash
+remains unchanged. At that stage the public registry and capability advertisement
+were unchanged; direct dispatch is recorded below.
+
+An independent generator imports no production codec/guard and supplies 14
+positive and 282 negative insertion vectors. Both Bun source populations pass
+1,747 focused tests and 16,249 assertions, including existing protocol fixtures.
+The supported compiled matrix passes the new vectors and the preserved staging
+hash on Apple Silicon Mac and Linux ARM64/x64 with Bun 1.3.11 and 1.4.2.
+The outer corpus loads in Foundation; this is fixture interchange, not native
+decoder conformance. The later sections record the coordinator and queued host
+caller. The explicit client action and native conformance remain separate gates.
+
+## Image insertion: internal outcome coordinator
+
+The coordinator captures request fields and retains at most 128 process-local
+attempts. Exact concurrent/repeated requests share one immutable recorded result;
+changed fields conflict only while the original signed owner remains current.
+A pre-write refusal stays recorded for that ID; a fresh explicit ID can try again.
+The artifact's separate retirement still permits only one possible write.
+Cache validation after retirement grants no new write authority. Lost authority,
+file validity or deadline prevents cached delivery; busy never discards a receipt.
+At capacity, unusable receipts are pruned before returning busy. Close cancels
+queued effects and drops correlations; no file, quota or lifetime is added.
+
+Actual signed/decoded/PTY controls cover both formats, concurrent/lost response
+replay, caller mutation, held-hook refusal then a fresh explicit attempt, queued
+grant/reattach/binding/exit/file/close changes and foreign/revoked cached access.
+Closing the actual terminal at the retirement boundary records an uncertain
+effect and prevents replay; session exit may separately end delivery authority.
+The first 128-request bound control timed out because each request revalidated
+all retained files. Sweeping only at capacity makes that same unchanged control
+pass in 2.1 seconds, without relaxing its 15-second limit.
+
+The direct dispatch section below records the supported compiled caller controls.
+The coordinator alone does not provide the explicit client action or native
+conformance required for availability.
+
+The coordinator's R1 found that spreading binding members preserved their JSON
+order in the retry signature. Copying the two binding fields in a fixed order
+now makes equivalent reordered retries share the recorded outcome. The actual
+signed-wire regression failed before this fix; the coordinator source controls
+pass 169 tests and 1,508 assertions on both supported Bun versions afterward.
+
+## Image insertion: strict direct host dispatch
+
+Exactly two public message/direction entries use the strict codec before legacy
+parsing and ordinary ID deduplication. The existing fixed-unit candidacy scanner
+is reused with a second fixed prefix; a separately committed original 503-case
+candidacy hash remains unchanged, alongside the earlier codec/ingress hash.
+Malformed hints locate only the original current owner for a fixed refusal code.
+Uncorrelatable, wrong-direction and oversized frames close without an effect.
+
+The CLI constructs the coordinator beside the supported authenticated direct
+Claude staging service, uses the same current harness prompt-up wiring as chat,
+and closes the coordinator before staging cleanup. The signed-socket fixture
+uses that same production handler factory. On Apple Silicon Mac, both Bun source
+populations pass 1,764 shared/event tests (16,623 assertions) plus 178 daemon/PTY/registry/journal
+tests (1,705 assertions), with root and web type checks clean.
+
+The actual compiled production entry passes on Apple Silicon Mac and Linux
+ARM64/x64 with Bun 1.3.11 and 1.4.2. Each cell provisions an ephemeral signed
+client, stages PNG and JPEG through the actual worker, writes one original
+reference per image with zero CR/LF, replays an equivalent reordered retry,
+refuses another ID, refuses insertion during the actual HTTP permission hold,
+answers No, and rejects cached delivery after grant revocation. Owned helper and
+daemon exits are awaited/ESRCH-confirmed; three rows settle to zero charge and
+staging names are gone. The harness executable is inert cat, with no model or
+owner configuration used. This complements the six earlier approved Claude
+turns; it does not claim additional model, native or device acceptance.
+
+`image_insertion` is still not advertised. The production explicit Add to draft
+client, visible original expiry, client result correlation and rendered QA are
+the next step; native runs the shared corpus independently.
+
+
+## Image insertion: explicit expiring web draft
+
+The web caller reuses ImageUploadController, WebSocketClient and the existing connection manager.
+Successful staging exposes Add to draft only with the original authenticated direct Claude context and `image_insertion`.
+Strict response correlation keeps one pending request; explicit status retry preserves all original fields and never creates another possible effect.
+An inserted reference enables a separate Send, including image-only Send; its ordinary transport receipt is not proof of submission, and later correlated input errors still update the status.
+A possible reference retains its original expiry and blocks replacement until the person explicitly clears its status through the explained abandonment choice; clearing does not remove terminal text.
+Known session end and the single local expiry timer retire that affordance; there is no background polling, automatic Enter or terminal-draft edit.
+
+Source controls and actual rendered App checks exercise the caller, finite expiry and paused-daemon uncertainty.
+The existing six-cell compiled host proof checks conditional availability with original ownership, held No and revocation controls.
+No additional model, phone or native action is used.
+The accepted two-message contract and storage deadline are unchanged; native runs the shared corpus independently.
+The reviewed host/codec/coordinator/dispatch slices can land with this final caller as one integration PR to avoid duplicate whole-stack CI runs.
+
+## Codex structured chat (#1207)
+
+The owner accepted structured app-server start/steer while retaining the current full-access default.
+The implementation reuses the existing app-server client, thread tracker and decision channel; no typed Codex PTY fallback is enabled.
+The internal writer is the first reviewable step, with a 16 KiB text bound, exact main-thread/runtime binding, final authority check, explicit accepted/refused/uncertain outcomes and no turn policy overrides.
+Its ordinary controls construct a real unstarted client; an optional installed Codex control uses an empty file-only account and actual native server to check start, steer, explicit read-only parameters and real response loss.
+The initial immediate-steer control exposed the server's delayed active-status publication; the retained original failure is followed by a bounded wait for actual active status.
+No account-backed model completion or permission enforcement is claimed.
+
+Next connect a harness-neutral submission seam and additive correlated wire result with expected binding, bounded replay/conflict handling and uncertain-outcome retention.
+Then add an actual web caller and capability only where that path exists; provide the same contract to the native developer.
+Run source controls on both supported Buns, actual daemon/client routing, and separately approved installed-model acceptance before claiming the complete feature.
+Keep #1207 open until the connected path lands.
+
+
+## Structured chat contract preparation
+
+Proposed [ADR0043](decisions/0043-structured-chat-submission.md) records a separate submit/result pair and bounded per-connection/session sequence receipts.
+The standalone codec and internal sequencer have no registry, capability advertisement or production caller.
+Both-Bun codec/sequence controls and actual accountless installed-server duplicate/eviction/uncertainty probes pass; these do not prove a Remi authenticated route or model completion.
+Next connect the harness-neutral submission member with its CLI/adapter caller, then actual web UI and direct/relay conformance.
+Fresh hub first-turn identity and separately approved model acceptance remain explicit gates.
+
+
+## Codex signed direct chat integration (#1207)
+
+The connected phase reuses the reviewed writer/codec/receipt components from PRs1501/1502 and normally merges current develop, including the image caller, into one integration branch.
+It adds the actual CodexSession neutral submission member, current runtime epochs and pending-main-request guard; a signed direct service owns grant/attachment/binding checks and atomic grant-locked RPC sends.
+Strict original text/binary ingress and a dedicated client callback bypass legacy ACK/deduplication; per-connection/session watermarks survive context changes.
+Web Send reports pending/accepted/refused/uncertain and never uses the legacy automatic retry tracker; unknown delivery requires checking the session and reconnecting.
+Actual rendered App checks found transcript replacement erasing delivery status; it now retains that independent status, with one rendered row for the live echo and no blind retry.
+The installed0.162.1 history method removal is handled by a first-page method-not-found-only full-turn fallback, with empty-first-thread and materialized-history controls against that actual server.
+
+The accountless signed control constructs the real stores, adapter, CodexHarness, native server and shipping web client/controller and observes the real grant lock at each RPC send.
+The actual compiled hub/child plus rendered App are checked at390x844,1024x768 and1440x1000, including paused-daemon uncertainty and no replay.
+This fixture uses inert cat and no account; it complements the earlier three approved model starts/two steers without claiming further model completion.
+Original failures, cleanup and source/test receipts remain on S1.
+Remaining gates are independent integration review, final hosted checks, relay routing, genuine fresh native hub first-thread identity and native UI.
+Keep1207 open; no phone or additional account quota is used for this direct phase.
+
+
+## Workspace updates after existing reads (#1285)
+
+The cache's existing registration/stale-list reads now notify the daemon only
+when published repository/directory/branch metadata changes. The callback runs
+after value/freshness/pending state is committed, so the shared `buildSessionList`
+push uses the new metadata without blocking requests or starting another read.
+Initial known metadata and removal notify once; unchanged/unknown/initial-none
+reads do not. Callback failure is logged while the cached answer remains usable.
+The current session membership, harness decoration, machine descriptor and
+sibling ports are read at broadcast time; a read finishing after closure pushes
+nothing. No new polling, timer, watcher, message shape or native code.
+
+Real repository/cache controls first reproduced the original missing change
+notification. The connected control constructs the shipping WebSocketServer,
+real registry/binding/transcript/harness objects and an unstarted genuine PTY;
+no harness process/model is launched. Its port-zero setup exposed the server's
+configured-zero getter: the server now reports its actual held OS port when
+running, including onStart (#1232), allowing held ephemeral listeners without
+port guessing. Configured nonzero ports retain their existing value.
+
+Focused workspace/cache/builder/real-client/server/authority and harness-boundary
+controls passed 107 tests with 562 assertions on each installed Mac Bun gate.
+Root types and format checks passed; independent review and fresh exact-head
+hosted checks remain before landing. These focused controls are not a full-suite,
+native-device or actual R7 acceptance result.
+Artifacts: `/Volumes/S1/yooz/remi/artifacts/2026-10-14-workspace-change-push/`.
+
+Pre-merge caller tracing found that the hub dropped unsolicited child lists,
+so the first daemon-only change did not update enrolled relay clients. The same
+PR now adds a payload-free invalidation from a verified current child to the
+existing filtered hub aggregate. Updates coalesce behind one active list, keep
+the last accepted external-session preference, and preserve BUSY and answer
+responsiveness. Duplicate recent replies do not invalidate; revoked, unverified,
+retired or replaced child sockets cannot notify. Background refresh failures
+are logged without payloads and retire the channel. No new polling or wire shape.
+The original head's full suite and actual R7 soak remain evidence for that head;
+the corrected relay source needs fix-delta review and fresh hosted validation.
+
+## Remaining named loopback fixtures (#1232)
+
+The named origin-policy and direct-answer fixture cases in #1232 now have a
+local continuation based on #1515's actual WebSocket port reporting.
+The origin fixture binds loopback port zero directly and uses the held port;
+the raw answer fixture binds the same loopback address its clients dial.
+Both new listener assertions fail against the original setup on both Mac Bun
+versions, while all 30 predecessor cases pass there.
+This is a narrow test setup correction: the broader fixed/random-port and
+wildcard-listener inventory remains open under #1232; no production origin or
+answer behavior changes.
+All 32 original and added cases pass on each Mac Bun runtime; root and web
+TypeScript checks pass. Independent R1 has no actionable source findings; hosted acceptance remains pending.
+
+## Accepted direct download contract (#1170 T3)
+
+The owner accepted [ADR 0045](decisions/0045-direct-file-download.md) on 2026-10-14,
+then explicitly kept the 10 MiB ceiling and required HTTPS/WSS before the first
+direct link/download release. Browser-link fields in ADR 0044 are separately
+accepted and landed in #1508. Full relay tunneling follows the direct release.
+Existing descriptor admission and generic managed-journal ownership are reused;
+the extra publication factory remains unpublished because the managed path does
+not need it.
+
+The contract specifies one explicit project-relative nonempty regular file up to
+10 MiB, exact completed private-copy validation, one 32 KiB pull response at a time,
+preparation cancellation by begin ID, five-minute total/30-second idle expiry and
+explicit client Save with no automatic preview/open/extraction. It requires
+HTTPS/WSS plus signed device authentication and known Claude/Codex bindings.
+Empty files remain an explicit first-version limitation of current positive-byte
+reservations. No download availability, native UI or relay acceptance is claimed.
+
+Implement secure direct transport while retaining local CLI/hub/child operation.
+The admitted-read extraction and managed preparation already have reviewed local
+continuations and standalone six-cell compiled/held-answer observations; they
+remain unpublished and do not establish an authenticated download handler.
+Strict codec/goldens, actual daemon/web Save and rendered acceptance follow.
+Native URL construction/conformance/Save stay with the Xcode track. Use one
+implementation lead and one independent reviewer per bounded change.
+
+## Direct connections after key removal (#1305)
+
+Local continuation reuses the already verified exact identity and the existing
+heartbeat: reread the shared grant before generic/typed text or binary domain
+dispatch and at each ping tick. A removed or unreadable grant closes through
+the ordinary visible CLOSING/disconnect cleanup. Connected silent peers retire at the
+next existing tick (default 30 seconds plus scheduling delay). Current-grant
+checks retain existing in-flight cancellation and separate capability/relay
+admission. No new timer, watcher, wire shape, native code or account call.
+
+Real signed WebSocket clients first reproduced next-frame, idle and unreadable
+store failures on both Mac Buns. Caller tracing and additional valid binary
+controls exposed the three dedicated ingress paths; their guards now precede
+domain callbacks too. The real hub/CLI provisioning case requires the old
+socket to close and retains fresh UNKNOWN_KEY, pending and reapproval checks.
+The complete focused auth/connection/server/provisioning population passes
+73 tests with 281 assertions on each Mac Bun; root/web types and format pass.
+Eight exact guard-removal/original failure cells passed their negative oracles;
+source bytes were restored. Independent full R1 has no actionable findings.
+The reviewed source is normally integrated with the landed #1515 held-port fix,
+#1519 fixture cleanup and owner-accepted #1508 contract.
+
+The first hosted full suite passed the 73 focused cases but failed an older
+image insertion case: after removing its own grant, that case awaited a semantic
+reply on the connection that #1305 now closes. The unchanged case passes the
+base and times out on the candidate on both Mac Buns. Its corrected expectation
+requires CLOSING, a closed socket, no image result or acknowledgement, and no
+PTY output; it fails against the old base and passes the candidate on both Buns.
+No runtime guard or timeout was relaxed. The expanded nine-module population
+passes 126 tests with 1,648 assertions on each Mac Bun; final root/web types and
+formatting pass, and fix-only R2 has no actionable findings. The corrected head
+passed the hosted full suite (9,834 pass, 30 skips, zero failures, 91.83% line
+coverage) and the actual 61-minute relay run, with producer and artifact identity
+verified. It landed in [#1520](https://github.com/yooz-labs/remi/pull/1520).
+The first hosted failure and all differential attempts are preserved separately;
+the earlier head's relay run did not qualify the corrected head.
+Artifacts: `/Volumes/S1/yooz/remi/artifacts/2026-10-14-connection-revocation/`.
+
+## Optional direct TLS continuation (#1170)
+
+The host now loads an optional `[daemon.tls]` certificate/key pair once per start,
+relative to its config file, and shares the loaded policy across all daemon and
+wrapper adapter construction paths. Configured TLS failures stop startup without
+a plaintext public fallback. Local CLI and verified relay-child connections use
+a separately held loopback capability endpoint; off-machine CLI targets receive
+no host-local capability. Public status and session ports remain public ports.
+
+The web discovery/reconnect continuation preserves an existing WSS scheme,
+certificate hostname and effective port, with HTTPS-only probing and no HTTP
+redirect follow. Legacy mDNS cannot describe TLS and is suppressed; direct v1
+pairing refuses a verified same-PID TLS endpoint. Native/secure QR and remote
+CLI WSS adoption remain later.
+See [setup and client limits](../docs/DIRECT-TLS.md).
+
+The exact B2 backend head passed 969 tests across 59 modules on each Mac Bun: zero
+failures, 5,435 assertions on 1.3.11 and 5,433 on 1.4.2. Public unsolicited update
+counts account for the assertion difference. Its 27 source hashes and the five
+accepted B1 hashes were verified after the normal develop merge. The separately
+reviewed WSS unit passed 155 tests on each runtime; all six source hashes were
+retained in the normal combined merge. Hosted checks, full rendered WSS client
+and native/device acceptance remain separate from those local results. Browser
+link/download handlers and callers remain unadvertised until their own gates.
+
+
+Historical preparation result sections preserved from 1b302801 follow. Their policy-status wording describes that snapshot; current accepted ADR0045 controls the 10 MiB and HTTPS/WSS decisions.
+
+## Admitted-source cursor preparation (#1170)
+
+The existing private-copy proof now shares its source cursor under
+`packages/daemon/src/tunnel/admitted-read.ts`, with a proof reexport at
+`scripts/tunnel-storage-proof/admitted-read.ts`. The source length+one read budget,
+32 KiB chunks, source digest, before/after metadata/current-name validation and
+later publication recheck are preserved. Destination creation, partial writes,
+independent private-byte validation, fsync, publication and cleanup/debt remain
+in their existing implementation. No transfer is selected into production by this
+preparation; the managed-journal caller still needs its own authority,
+yield/cancellation/recovery and held-answer controls.
+
+The original 43-group compiled matrix passed all six supported platform/Bun
+cells at unchanged current develop before extraction. The extracted candidate
+then passed those same 43 ordered group identities in all six cells, with direct
+cursor assertions inside the existing empty/nonempty/10 MiB group. Six isolated
+removed-guard variants failed their exact named compiled assertions on both Mac
+Bun gates (12/12); Linux mutation execution is unmeasured. Preserve the original
+receipts and exact final source hashes before landing. Review and hosted checks
+remain required. Artifacts: `/Volumes/S1/yooz/remi/artifacts/2026-10-14-admitted-read-core/`.
+
+The owner accepted the ADR0045 baseline in #1513 and the separate link contract
+in #1508. Larger download limits and HTTPS/WSS phasing are pending clarification.
+No fetch fields, models, capability,
+handler, native UI or relay transfer is added by this extraction. The extra
+private-publication factory remains unpublished because the existing journal
+already owns generic bytes.
+
+## Managed download copy preparation (#1170)
+
+The local prototype composes the existing admitted cursor, reservation ledger
+and managed journal writer/reader. It copies and independently verifies private
+bytes in yielded 32 KiB effects, closes the source before returning a guarded
+reader, and retires through the existing journal settlement. Source validation
+is repeated after private verification yields. Failed cleanup retains charged
+debt; a failed descriptor close is not retried by numeric descriptor.
+
+All six supported compiled platform/Bun cells passed the original 43 ordered
+groups and eight new preparation groups. The relocated cursor also passed all
+12 original named removed-guard controls on compiled Mac binaries. Current
+source limits remain 10 MiB; these measurements establish no larger transfer
+limit, network throughput, current-grant service or held-answer latency result.
+The first combined source run failed on a too-long macOS Unix socket path;
+the unchanged fixture passed using an owned short S1 temporary root. A fixture
+typing error and a missing source check after verification were corrected before
+the compiled matrix. Evidence is under
+`/Volumes/S1/yooz/remi/artifacts/2026-10-14-direct-tunnel-acceptance/`.
+
+Independent R1 found two publication/cleanup truth defects: the final private
+verification yield needed a bounded current-reader check, and confirmed
+settlement needed a local idempotent result after unrelated ledger faults.
+Both were reproduced against the original reviewed preparer and corrected in
+one batch. The fixed candidate passed all six compiled 51-group cells, both
+source gates, focused/root types, format and 14 named compiled Mac removed-guard
+controls. The final fix-only R2 found no Critical or Important defects. An
+earlier digest-removal control did not discriminate the hash guard because
+metadata checks caught its write; the replacement corrupts the private file
+after the final write and before reader capture, and fails on both Buns when
+the digest guard is removed. Preserve the failed oracle and original receipts.
+
+This remains a local prototype, with no advertised capability,
+download handler, web/native Save action or relay transfer. Independent review
+has completed for preparation; actual current-grant caller, further managed-copy
+failure and held-answer acceptance remain pending. The workspace-update gate
+subsequently passed its full suite and actual 61-minute measurement, landing in
+#1515 at `5efb5665`; its evidence remains separate from download preparation.
+
+## TestFlight backend continuation (2026-10-19, #1272)
+
+The app-session handoff is `packages/native/handoff/testflight-backend.md`
+(PR #1549). Preserve the primary checkout's local native edits and existing
+worktrees; backend changes run in `agents/secure-push-leases`.
+
+- Reuse `SecurePushStore`, the shared authorization lock and original grant,
+  enrollment and subscription generations. No protocol or native UI changes.
+- Apply the already-decided push lease to all secure store consumers and the
+  source hub: register/connected/close renewal, locked expiry at fan-out and
+  final invocation, 0 disables new expiry, one migration lease for old records.
+  Preserve dormant key floors within 64 total records; persist observed expiry
+  so clock/config changes cannot revive a previous subscription epoch.
+- Require real-store and source hub/Worker regression checks, both Bun gates,
+  mutation checks, independent review and exact-head CI/R7 before landing.
+- #1225's reviewed #1271 fix is already an ancestor of develop. Verify current
+  close tests before reconciling the stale issue; do not rebuild the fix.
+- #1303 backend provisioning landed in #1315; native identity/approval UI and
+  physical fleet acceptance remain separate. #1385 source lifecycle landed in
+  #1386; battery improvement remains unmeasured.
+- Apple distribution signing/upload and deployed Cloudflare measurements are
+  still the owner's gates. Relay remains opt-in.
+
+The two-round review identified automatic-expiry key rollback and clock/config
+revival of dormant epochs. Both are fixed on the same branch; the driver
+verified the final marker fix, with no third review. Final mutation controls
+failed as expected in all 28 cases (14 semantic changes on each supported Bun).
+Earlier whole-suite attempts are preserved as superseded: the first exposed
+canonical TMPDIR/color-environment requirements; subsequent runs were stopped
+for the accepted review corrections. Final complete gates use a canonical
+owned TMPDIR and no contradictory color variables. Receipts are retained under
+`/private/tmp/remi-1272-validation/`; they do not imply Apple/device/deployment
+acceptance.
+
+Final source acceptance at `b6e66aad`: both Bun full suites passed 10,369 tests
+(37 skips); the pinned 1.3.11 CI union reported 89.91% line coverage. The first
+1.4.2 full run had one discovery failure; the one quiet full retry passed.
+#1550 preserves that undiagnosed event and the isolated candidate/base controls.
+Current loaded R3 grant/BYE and orderly-close controls passed twice per runtime.
+Native gates passed 230 Swift tests and unsigned Mac/Phone builds. The optional
+source interoperability fixture remains pinned to reviewed backend `1e96c688`;
+this is not a current-backend native interoperability claim. Durable receipts
+are under `/Volumes/S1/yooz/remi/artifacts/2026-10-19-testflight-backend/`.
+
+The owner's authenticated App Store Connect session confirmed Yooz Remi app
+6785313030 and existing iOS 0.1.0 build 10. Prepare build 11 or higher through the
+shared app-version script. The portal requests Account Holder acceptance of an
+updated Developer Program License Agreement before updates/new submissions;
+no agreement acceptance, signing or upload was performed here.

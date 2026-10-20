@@ -23,4 +23,22 @@ extend-exclude = [
   # spell checker. See fixtures/build-hook-corpus.ts for how these are
   # generated.
   "packages/daemon/tests/hooks/fixtures/hook-corpus.jsonl",
+  # Relay v2 test vectors (R1): hex and base64url tokens, not prose; random-looking
+  # substrings such as "Iy" and "Ot" trip the checker by chance.
+  "packages/shared/tests/fixtures/relay-v2/vectors.json",
+  # Signed push vectors (#1200): the same synthetic binary fixture encoding.
+  "packages/shared/tests/fixtures/relay-v2/push-vectors.json",
+  # Signed native-answer vectors and their protocol fixture (#1201): generated
+  # base64url keys/signatures, not prose. Keep the original cryptographic bytes.
+  "packages/shared/tests/fixtures/relay-v2/native-answer-vectors.json",
+  "packages/shared/tests/fixtures/protocol/native_answer.json",
+  # Pairing link vectors (#1275): base64url bodies, not prose; they tokenize into
+  # false-positive "words" such as "UE" and "Iz".
+  "packages/shared/tests/fixtures/pairing/vectors.json",
+  # Image-staging vectors (#1170): encoded PNG/JPEG bytes, not prose.
+  # Preserve exact fixture bytes; the generator and README remain checked.
+  "packages/shared/tests/fixtures/image-staging/vectors.json",
+  # The direct protocol chunk golden contains those same encoded PNG bytes.
+  # Its exact envelope and data are checked by the strict codec/dispatch tests.
+  "packages/shared/tests/fixtures/protocol/image_upload_chunk.json",
 ]

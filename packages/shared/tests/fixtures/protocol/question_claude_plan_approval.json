@@ -1,0 +1,38 @@
+{
+  "type": "question",
+  "id": "4329b487-3a12-4c16-88c3-19e2ea0a165d",
+  "timestamp": "2026-10-07T21:19:37.304Z",
+  "question": {
+    "id": "fixture-question-id",
+    "text": "Approve this plan?",
+    "options": [
+      {
+        "label": "Option A",
+        "value": "1",
+        "description": "The first approach",
+        "isRecommended": false,
+        "isYes": false,
+        "isNo": false
+      },
+      {
+        "label": "Option B",
+        "value": "2",
+        "description": "The second approach",
+        "isRecommended": false,
+        "isYes": false,
+        "isNo": false
+      }
+    ],
+    "allowsFreeText": false,
+    "isAnswered": false,
+    "detail": "# Plan\n1. Read the code\n2. Change it",
+    "source": "permission_request",
+    "kind": "plan_approval",
+    "held": true,
+    "answerPath": "structured"
+  },
+  "sessionId": "fixture-session-id",
+  "harness": "claude",
+  "harnessSessionId": "fixture-claude-session-id",
+  "claudeSessionId": "fixture-claude-session-id"
+}

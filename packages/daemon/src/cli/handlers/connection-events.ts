@@ -17,10 +17,11 @@
  */
 
 import { createError, createHelloAck, createReplayBatch } from '@remi/shared';
-import type { CreateHelloAckOptions, HarnessId, UUID } from '@remi/shared';
+import type { CreateHelloAckOptions, HarnessId, MachineDescriptor, UUID } from '@remi/shared';
 
 import type { AdapterMetadata } from '../../adapters/index.ts';
 import type { SessionRegistry } from '../../session/index.ts';
+import { DAEMON_CAPABILITIES } from '../capabilities.ts';
 import type { CurrentOwnedSession } from '../current-session.ts';
 import { log } from '../logger.ts';
 import { getPrimarySessionId } from '../session-state.ts';
@@ -28,6 +29,10 @@ import { resendPendingQuestions } from './pending-question-resend.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface ConnectionHandlerDeps {
+  /** Selected session startup only; false refuses this exact connection without attach/hello. */
+  beforeAttach?: (id: UUID) => Promise<boolean>;
+  /** Read after identity initialization; undefined when authentication is disabled (#1234). */
+  machine?: () => MachineDescriptor | undefined;
   sessionRegistry: SessionRegistry;
   /** Resolves the daemon's current owned session so every hello_ack carries the
    *  authoritative claudeSessionId + transcriptPath the client must follow (#499). */
@@ -47,6 +52,13 @@ export interface ConnectionHandlerDeps {
    * each ack so a command installed later is offered without a restart (#1179).
    */
   harnesses: () => readonly HarnessId[];
+  /**
+   * The capabilities named on every ack (#1237, ADR 0035): {@link DAEMON_CAPABILITIES} unless a
+   * test gives another list to see it reach each ack.
+   */
+  capabilities?: readonly string[];
+  /** Current direct attachment capabilities, evaluated after attachment. */
+  capabilitiesForConnection?: (id: UUID) => readonly string[];
   /** Forward to AdapterRegistry.trackConnection. */
   trackConnection: (connectionId: UUID, adapterType: string) => void;
   /** Forward to AdapterRegistry.untrackConnection. */
@@ -76,6 +88,29 @@ export interface ConnectionHandlerDeps {
 
 export type ConnectionHandlers = ReturnType<typeof createConnectionHandlers>;
 
+/** Same scoped hello fields for initial attach and an event-driven readiness refresh. */
+export function createConnectionHello(
+  deps: Pick<
+    ConnectionHandlerDeps,
+    'machine' | 'capabilities' | 'capabilitiesForConnection' | 'harnesses' | 'remiVersion'
+  >,
+  connectionId: UUID,
+  sessionId: UUID | null,
+  options: CreateHelloAckOptions = {},
+) {
+  const selectedCapabilities =
+    deps.capabilitiesForConnection?.(connectionId) ?? deps.capabilities ?? DAEMON_CAPABILITIES;
+  const descriptor = deps.machine?.();
+  const machine = descriptor ? { ...descriptor, capabilities: selectedCapabilities } : undefined;
+  return createHelloAck('1.0.0', sessionId, {
+    ...options,
+    daemonVersion: deps.remiVersion,
+    harnesses: machine?.harnesses ?? deps.harnesses(),
+    capabilities: selectedCapabilities,
+    machine,
+  });
+}
+
 export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
   const {
     sessionRegistry,
@@ -83,6 +118,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
     harnessId,
     hubMode,
     harnesses,
+    capabilities = DAEMON_CAPABILITIES,
     trackConnection,
     untrackConnection,
     onConnectionAdded,
@@ -95,13 +131,18 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
     onConnectionClosed,
   } = deps;
 
-  /** Every hello_ack names the daemon's version and the harnesses it can start (#539, #1179). */
-  const ack = (sessionId: UUID | null, options: CreateHelloAckOptions = {}) =>
-    createHelloAck('1.0.0', sessionId, {
-      ...options,
-      daemonVersion: remiVersion,
-      harnesses: harnesses(),
-    });
+  /**
+   * Every hello_ack names the daemon's version, the harnesses it can start and its capabilities
+   * (#539, #1179, #1237); `createHelloAck` adds the protocol version.
+   */
+  const ack = (connectionId: UUID, sessionId: UUID | null, options: CreateHelloAckOptions = {}) => {
+    return createConnectionHello(
+      { ...deps, capabilities, harnesses, remiVersion },
+      connectionId,
+      sessionId,
+      options,
+    );
+  };
 
   /** The current binding for hello_ack: who the session is, and the transcript it writes. */
   const currentBinding = () => {
@@ -118,6 +159,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
 
       trackConnection(connectionId, metadata.adapterType);
       onConnectionAdded();
+      if (deps.beforeAttach && !(await deps.beforeAttach(connectionId))) return;
 
       // resumeSessionId and mode are only carried by the websocket adapter.
       // Telegram and relay clients have no equivalent (their adapter selects
@@ -152,7 +194,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
           if (result.success) {
             send(
               connectionId,
-              ack(currentPrimary, {
+              ack(connectionId, currentPrimary, {
                 resumeInfo: {
                   isResume: result.replayMessages.length > 0,
                   replayCount: result.replayMessages.length,
@@ -190,7 +232,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
         // without attach so utility clients (ls, kill) can still send
         // requests. Still carry the binding so the client follows the
         // current session (#499).
-        send(connectionId, ack(currentPrimary, { binding: currentBinding() }));
+        send(connectionId, ack(connectionId, currentPrimary, { binding: currentBinding() }));
         onPeerConnect?.(connectionId, metadata);
         log(
           `Connection ${connectionId} connected without attach (${isQueryMode ? 'query mode' : 'attach race'})`,
@@ -203,7 +245,7 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
       // session-less hub daemon (#542) and also covers the brief startup
       // window on an ordinary daemon before its primary session is created,
       // whose ack names its harness: a Codex daemon must not read as Claude.
-      send(connectionId, ack(null, hubMode ? {} : { harness: harnessId }));
+      send(connectionId, ack(connectionId, null, hubMode ? {} : { harness: harnessId }));
       onPeerConnect?.(connectionId, metadata);
       log(`Connection ${connectionId} connected session-less (no active session)`);
     },

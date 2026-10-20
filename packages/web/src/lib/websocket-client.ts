@@ -4,9 +4,44 @@
  * Handles connection, reconnection, and protocol message serialization.
  */
 
+import { type BrowserLinkMessage, type BrowserLinkReceiverRequest, decodeBrowserLinkFrame, encodeBrowserLinkFrame, isBrowserLinkCandidate } from '@remi/shared';
 import type { ConnectionStatus } from '@/types';
+import { type FileDownloadMessage, type FileDownloadOperation, decodeFileDownloadFrame, encodeFileDownloadFrame } from '../../../shared/src/file-download.ts';
+import { type ChatSubmitRequest, type ChatSubmitResult, decodeStructuredChatFrame, encodeStructuredChatFrame } from '@remi/shared';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import { createPing, createPong, deserialize, serialize } from '@remi/shared/protocol.ts';
+import {
+  type ImageInsertRequest,
+  type ImageInsertResult,
+  decodeImageInsertionFrame,
+  encodeImageInsertionFrame,
+} from '../../../shared/src/image-insertion.ts';
+import {
+  isImageInsertionCandidate,
+  isImageStagingCandidate,
+  isStructuredChatCandidate,
+  isFileDownloadCandidate,
+} from '../../../shared/src/image-staging-ingress.ts';
+import type {
+  ImageStagingMessage,
+  ImageStagingRequest,
+} from '../../../shared/src/image-staging.ts';
+import {
+  decodeImageStagingFrame,
+  encodeImageStagingFrame,
+} from '../../../shared/src/image-staging.ts';
+
+export type ImageStagingResponse = Extract<
+  ImageStagingMessage,
+  {
+    type:
+      | 'image_upload_accepted'
+      | 'image_upload_chunk_ack'
+      | 'image_upload_result'
+      | 'image_upload_cancel_result'
+      | 'image_upload_refused';
+  }
+>;
 
 /** WebSocket client configuration */
 export interface WebSocketClientConfig {
@@ -44,10 +79,17 @@ export interface WebSocketClientConfig {
 
 /** WebSocket client events */
 export interface WebSocketClientEvents {
+  /** Strict host file frames, before generic IDs, acknowledgements or message caches. */
+  onFileDownloadMessage?: (raw: string | Uint8Array) => void;
+  onBrowserLinkMessage?: (message: Exclude<BrowserLinkMessage, BrowserLinkReceiverRequest>) => void;
+  onStructuredChatResult?: (message: ChatSubmitResult) => void;
   /** Called when connection status changes */
   onStatusChange?: (status: ConnectionStatus) => void;
   /** Called when a message is received */
   onMessage?: (message: ProtocolMessage) => void;
+  /** Called only for strictly decoded daemon-to-client image staging messages. */
+  onImageStagingMessage?: (message: ImageStagingResponse) => void;
+  onImageInsertionMessage?: (message: ImageInsertResult) => void;
   /** Called on error */
   onError?: (error: Error) => void;
   /**
@@ -89,6 +131,15 @@ export const DEFAULT_MAX_RECONNECT_ATTEMPTS = 6;
  * idleTimeout backstop (120s, websocket-server.ts).
  */
 const MAX_MISSED_HEARTBEATS = 3;
+
+function isImageStagingRequest(message: ImageStagingMessage): boolean {
+  return (
+    message.type === 'image_upload_begin' ||
+    message.type === 'image_upload_chunk' ||
+    message.type === 'image_upload_complete' ||
+    message.type === 'image_upload_cancel'
+  );
+}
 
 /**
  * Multiplier on `heartbeatInterval` used by `isHealthy` to decide whether a
@@ -148,6 +199,8 @@ export class WebSocketClient {
   private readonly events: WebSocketClientEvents;
 
   private ws: WebSocket | null = null;
+  /** Opaque identity for this concrete WebSocket instance; never exposes the socket. */
+  private imageStagingGeneration: object | null = null;
   private status: ConnectionStatus = 'disconnected';
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -193,13 +246,21 @@ export class WebSocketClient {
     return this.ws?.readyState === WebSocket.OPEN;
   }
 
+  /** A per-WebSocket identity available only after authentication reaches connected. */
+  get imageUploadGeneration(): object | null {
+    if (this.status !== 'connected' || this.ws?.readyState !== WebSocket.OPEN) return null;
+    return this.imageStagingGeneration;
+  }
+
   /** Whether this connection is open and has seen inbound traffic recently
    *  enough that a caller doing proactive housekeeping (e.g. an app-resume
    *  force-reconnect sweep, #664) can trust it without tearing it down. */
   get isHealthy(): boolean {
     if (!this.isTransportOpen) return false;
     if (this.config.heartbeatInterval <= 0) return true;
-    return Date.now() - this.lastDataReceived < this.config.heartbeatInterval * HEALTHY_WINDOW_MULTIPLIER;
+    return (
+      Date.now() - this.lastDataReceived < this.config.heartbeatInterval * HEALTHY_WINDOW_MULTIPLIER
+    );
   }
 
   /** Connect to the daemon */
@@ -213,7 +274,11 @@ export class WebSocketClient {
     this.clearTimers();
 
     try {
-      this.ws = new WebSocket(this.currentUrl);
+      const ws = new WebSocket(this.currentUrl);
+      // Strict image codecs inspect original binary bytes instead of bypassing Blob frames.
+      ws.binaryType = 'arraybuffer';
+      this.ws = ws;
+      this.imageStagingGeneration = Object.freeze({});
 
       // Set connection timeout
       this.connectionTimer = setTimeout(() => {
@@ -223,10 +288,10 @@ export class WebSocketClient {
         }
       }, this.config.connectionTimeout);
 
-      this.ws.onopen = this.handleOpen.bind(this);
-      this.ws.onclose = this.handleClose.bind(this);
-      this.ws.onerror = this.handleWsError.bind(this);
-      this.ws.onmessage = this.handleMessage.bind(this);
+      ws.onopen = () => this.handleOpen(ws);
+      ws.onclose = () => this.handleClose(ws);
+      ws.onerror = () => this.handleWsError(ws);
+      ws.onmessage = (event) => this.handleMessage(event, ws);
     } catch (error) {
       this.handleError(error instanceof Error ? error : new Error(String(error)));
     }
@@ -245,6 +310,7 @@ export class WebSocketClient {
       this.ws.close();
       this.ws = null;
     }
+    this.imageStagingGeneration = null;
     this.setStatus('reconnecting');
     // Small delay for the new network interface to stabilize
     setTimeout(() => this.connect(), 500);
@@ -266,6 +332,7 @@ export class WebSocketClient {
       this.ws.close();
       this.ws = null;
     }
+    this.imageStagingGeneration = null;
     this.connect();
   }
 
@@ -278,6 +345,7 @@ export class WebSocketClient {
       this.ws.close();
       this.ws = null;
     }
+    this.imageStagingGeneration = null;
 
     this.setStatus('disconnected');
   }
@@ -297,8 +365,60 @@ export class WebSocketClient {
     }
   }
 
+  /** Send a direct image staging request through its strict additive codec. */
+  sendImageStaging(request: ImageStagingRequest): boolean {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN || this.status !== 'connected') return false;
+
+    try {
+      ws.send(encodeImageStagingFrame(request));
+      return true;
+    } catch {
+      this.handleError(new Error('Unable to send image upload request'));
+      return false;
+    }
+  }
+
+  /** Strict direct draft request; never includes a submit/Enter. */
+  sendImageInsertion(request: ImageInsertRequest): boolean {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN || this.status !== 'connected') return false;
+    try {
+      ws.send(encodeImageInsertionFrame(request));
+      return true;
+    } catch {
+      this.handleError(new Error('Unable to send image draft request'));
+      return false;
+    }
+  }
+
+  sendBrowserLink(request: BrowserLinkReceiverRequest, generation: object): boolean {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN || this.status !== 'connected' ||
+      generation !== this.imageStagingGeneration || new URL(this.config.url).protocol !== 'wss:') return false;
+    try { ws.send(encodeBrowserLinkFrame(request)); return true; }
+    catch { this.handleError(new Error('Unable to send browser receiver request')); return false; }
+  }
+
+  /** One attempt on the exact current direct WSS generation; never queued or replayed. */
+  sendFileDownload(request: Extract<FileDownloadMessage, {type: FileDownloadOperation}>, generation: object): boolean {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN || this.status !== 'connected' ||
+      generation !== this.imageStagingGeneration || new URL(this.config.url).protocol !== 'wss:') return false;
+    try { ws.send(encodeFileDownloadFrame(request)); return true; }
+    catch { this.handleError(new Error('Unable to send file download request')); return false; }
+  }
+
+  sendStructuredChat(request: ChatSubmitRequest): boolean {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN || this.status !== 'connected') return false;
+    try { ws.send(encodeStructuredChatFrame(request)); return true; }
+    catch { this.handleError(new Error('Unable to send structured chat')); return false; }
+  }
+
   /** Handle WebSocket open */
-  private handleOpen(): void {
+  private handleOpen(source: WebSocket): void {
+    if (this.ws !== source) return;
     this.clearConnectionTimer();
     this.lastDataReceived = Date.now();
     this.missedHeartbeats = 0;
@@ -327,8 +447,10 @@ export class WebSocketClient {
   }
 
   /** Handle WebSocket close */
-  private handleClose(): void {
+  private handleClose(source: WebSocket): void {
+    if (this.ws !== source) return;
     this.ws = null;
+    this.imageStagingGeneration = null;
     this.clearConnectionTimer();
     this.stopHeartbeat();
 
@@ -354,19 +476,89 @@ export class WebSocketClient {
   }
 
   /** Handle WebSocket error */
-  private handleWsError(): void {
+  private handleWsError(source: WebSocket): void {
+    if (this.ws !== source) return;
     // The close event will follow, so we don't need to do much here
     this.handleError(new Error('WebSocket error'));
   }
 
   /** Handle incoming message */
-  private handleMessage(event: MessageEvent): void {
+  private handleMessage(event: MessageEvent, source: WebSocket): void {
+    if (this.ws !== source) return;
     this.lastDataReceived = Date.now();
     this.missedHeartbeats = 0;
 
     try {
-      const data = typeof event.data === 'string' ? event.data : '';
-      const message = deserialize(data);
+      const raw =
+        typeof event.data === 'string'
+          ? event.data
+          : event.data instanceof ArrayBuffer
+            ? new Uint8Array(event.data)
+            : null;
+      if (this.ws !== source) return;
+      if (raw !== null && isFileDownloadCandidate(raw)) {
+        const message = decodeFileDownloadFrame(raw);
+        if (!message || !('requestId' in message)) {
+          this.handleError(new Error('Invalid file download response'));
+          source.close(1002, 'Invalid file download response'); return;
+        }
+        try { this.events.onFileDownloadMessage?.(raw); }
+        catch { this.handleError(new Error('File download response handler failed')); }
+        return;
+      }
+      if (raw !== null && isBrowserLinkCandidate(raw)) {
+        const message = decodeBrowserLinkFrame(raw);
+        if (!message || message.type === 'browser_link_receiver_request') {
+          this.handleError(new Error('Invalid browser link response'));
+          source.close(1002, 'Invalid browser link response'); return;
+        }
+        try { this.events.onBrowserLinkMessage?.(message); }
+        catch { this.handleError(new Error('Browser link response handler failed')); }
+        return;
+      }
+      if (raw !== null && isStructuredChatCandidate(raw)) {
+        const message = decodeStructuredChatFrame(raw);
+        if (!message || message.type !== 'chat_submit_result') {
+          this.handleError(new Error('Invalid structured chat result'));
+          source.close(1002, 'Invalid structured chat result'); return;
+        }
+        try { this.events.onStructuredChatResult?.(message); }
+        catch { this.handleError(new Error('Structured chat result handler failed')); }
+        return;
+      }
+      if (raw !== null && isImageStagingCandidate(raw)) {
+        const message = decodeImageStagingFrame(raw);
+        if (!message || isImageStagingRequest(message)) {
+          this.handleError(new Error('Invalid image staging response'));
+          source.close(1002, 'Invalid image staging response');
+          return;
+        }
+
+        try {
+          this.events.onImageStagingMessage?.(message as ImageStagingResponse);
+        } catch {
+          this.handleError(new Error('Image staging response handler failed'));
+        }
+        return;
+      }
+
+      if (raw !== null && isImageInsertionCandidate(raw)) {
+        const message = decodeImageInsertionFrame(raw);
+        if (!message || message.type !== 'image_insert_result') {
+          this.handleError(new Error('Invalid image insertion response'));
+          source.close(1002, 'Invalid image insertion response');
+          return;
+        }
+        try {
+          this.events.onImageInsertionMessage?.(message);
+        } catch {
+          this.handleError(new Error('Image insertion response handler failed'));
+        }
+        return;
+      }
+
+      // Keep the established legacy decoder and behavior for every non-staging frame.
+      const message = deserialize(typeof event.data === 'string' ? event.data : '');
 
       if (message) {
         // Reply to the server's keep-alive ping (#662 review): the daemon's

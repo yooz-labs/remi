@@ -28,6 +28,8 @@ async function generateTestP8(): Promise<string> {
 }
 
 interface TestEnv {
+  LEGACY_PUSH_ENABLED: string;
+  PUSH_SECRET: string;
   CONNECTIONS: unknown;
   MAX_CONNECTIONS_PER_ROOM: string;
   CONNECTION_TIMEOUT_MS: string;
@@ -45,6 +47,8 @@ describe('/push NSE dynamic-category contract (#719)', () => {
 
   beforeEach(async () => {
     env = {
+      LEGACY_PUSH_ENABLED: 'true',
+      PUSH_SECRET: `owned-legacy-${crypto.randomUUID()}`,
       CONNECTIONS: {},
       MAX_CONNECTIONS_PER_ROOM: '10',
       CONNECTION_TIMEOUT_MS: '60000',
@@ -78,6 +82,7 @@ describe('/push NSE dynamic-category contract (#719)', () => {
     return new Request('https://signaling.example/push', {
       method: 'POST',
       headers: {
+        Authorization: `Bearer ${env.PUSH_SECRET}`,
         'Content-Type': 'application/json',
         'CF-Connecting-IP': `203.0.113.${100 + ipCounter}`,
       },

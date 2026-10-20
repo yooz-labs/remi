@@ -39,6 +39,7 @@ interface SessionListProps {
   readonly onAddConnection?: () => void;
   readonly onDisconnect: (connectionId: ConnectionId) => void;
   /** Retry a connection that became 'unreachable' (re-runs port discovery). */
+  readonly onManageRelay?: (connectionId: ConnectionId) => void;
   readonly onReconnect?: (connectionId: ConnectionId) => void;
   readonly onDisconnectAll: () => void;
   /** Open the new-session sheet (recent paths + custom path) (#638). */
@@ -70,6 +71,7 @@ export function SessionList({
   onConnect,
   onDisconnect,
   onReconnect,
+  onManageRelay,
   onDisconnectAll,
   onOpenNewSession,
   onKillSession,
@@ -201,6 +203,12 @@ export function SessionList({
           <ApprovalNeeded approval={c.approval} host={c.connectionId} onRetry={onReconnect ? () => onReconnect(c.connectionId) : undefined} retrying={c.status === 'connecting' || c.status === 'authenticating' || c.status === 'reconnecting'} />
         </div>
       ))}
+      {connections.filter(c => c.mode === 'relay').map(connection => <div key={connection.connectionId} className="mx-4 mb-2 flex items-center justify-between rounded-lg border border-[var(--color-border)] p-3 text-sm">
+        <span>{connection.status === 'connected' ? 'Relay machine connected' : `Relay machine: ${connection.status}`}</span>
+        <button type="button" onClick={() => onManageRelay?.(connection.connectionId)}>Machine devices</button>
+        {connection.status !== 'connected' && <button type="button" onClick={() => onReconnect?.(connection.connectionId)}>Retry relay</button>}
+      </div>)}
+
       {/* Connection problem banners */}
       {problemConnections.length > 0 && (
         <div className="space-y-1 px-3 pb-2">

@@ -18,7 +18,7 @@ COPY packages/shared/ packages/shared/
 COPY packages/daemon/ packages/daemon/
 
 # Build compiled binary
-RUN bun build --compile --outfile=/build/remi packages/daemon/src/cli.ts
+RUN bun build --compile --outfile=/build/remi packages/daemon/src/entry.ts
 
 # Stage 2: Runtime environment
 FROM debian:bookworm-slim

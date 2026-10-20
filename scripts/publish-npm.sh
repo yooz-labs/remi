@@ -17,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 NPM_DIR="$ROOT_DIR/npm"
 
-PLATFORMS=("darwin-arm64" "darwin-x64" "linux-arm64" "linux-x64")
+PLATFORMS=("darwin-arm64" "linux-arm64" "linux-x64")
 
 echo "==> Building all platform binaries..."
 cd "$ROOT_DIR"

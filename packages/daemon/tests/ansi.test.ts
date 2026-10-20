@@ -42,6 +42,33 @@ describe('stripAnsi()', () => {
     expect(stripAnsi('\x1b[Hmove home')).toBe('move home');
   });
 
+  test('pure ANSI boundary control: CHA defaults and zero mean column one', () => {
+    expect(stripAnsi('\x1b[Gx')).toBe('x');
+    expect(stripAnsi('\x1b[0Gx')).toBe('x');
+    expect(stripAnsi('\x1b[2Gx')).toBe(' x');
+  });
+
+  test('pure ANSI boundary control: CHA measures text after stripping zero-width controls', () => {
+    expect(stripAnsi('abc\x1b[31m\x1b]0;title\x07\x1b[?25l\x1b[5Gx')).toBe('abc x');
+  });
+
+  test('pure ANSI boundary control: CHA resets its column after CR and LF', () => {
+    expect(stripAnsi('abcdef\r\x1b[3Gx\nabcdef\n\x1b[3Gx')).toBe('abcdef\r  x\nabcdef\n  x');
+  });
+
+  test('pure ANSI boundary control: CHA uses display width for Unicode and tab stops', () => {
+    expect(stripAnsi('日本\x1b[6Gx')).toBe('日本 x');
+    expect(stripAnsi('e\u0301\x1b[3Gx')).toBe('e\u0301 x');
+    expect(stripAnsi('👩‍💻\x1b[4Gx')).toBe('👩‍💻 x');
+    expect(stripAnsi('\t\x1b[10Gx')).toBe('\t x');
+  });
+
+  test('pure ANSI boundary control: CHA ignores columns beyond its display limit', () => {
+    expect(stripAnsi('a\x1b[999999999999999999Gz')).toBe('az');
+    expect(stripAnsi('\x1b[4096Gx')).toBe(`${' '.repeat(4095)}x`);
+    expect(stripAnsi('\x1b[4097Gx')).toBe('x');
+  });
+
   test('removes screen clear codes', () => {
     expect(stripAnsi('\x1b[2Jclear screen')).toBe('clear screen');
     expect(stripAnsi('\x1b[Kclear line')).toBe('clear line');

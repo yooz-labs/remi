@@ -27,5 +27,9 @@
 		<key>NSExtensionPrincipalClass</key>
 		<string>$(PRODUCT_MODULE_NAME).NotificationService</string>
 	</dict>
+    <key>RemiIdentityAccessGroup</key>
+    <string>$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>RemiPushAccessGroup</key>
+    <string>$(AppIdentifierPrefix)live.yooz.remi.secure-push</string>
 </dict>
 </plist>

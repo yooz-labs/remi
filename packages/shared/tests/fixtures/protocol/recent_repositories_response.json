@@ -1,0 +1,13 @@
+{
+  "type": "recent_repositories_response",
+  "id": "64d73dca-d49f-43a2-bbe1-b9172d6de728",
+  "timestamp": "2026-10-07T19:00:25.992Z",
+  "requestId": "fixture-request-id",
+  "repositories": [
+    {
+      "repository": "/Users/fixture/project",
+      "name": "project",
+      "lastUsedAt": "2026-10-07T10:00:00.000Z"
+    }
+  ]
+}

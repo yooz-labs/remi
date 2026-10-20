@@ -31,7 +31,9 @@ import {
   setupHookBridge,
   terminalNoticeReason,
 } from '../../../src/cli/session-phases/hook-bridge-setup.ts';
+import type { AnswerCommit } from '../../../src/harness/decision.ts';
 import { ClaudeHarness } from '../../../src/harness/index.ts';
+import type { DecisionChannel } from '../../../src/harness/types.ts';
 import { HookServer } from '../../../src/hooks/hook-server.ts';
 import { REMI_REGISTERED_HOOK_EVENTS } from '../../../src/hooks/hook-types.ts';
 import type { PermissionDecision, StopFailureHookInput } from '../../../src/hooks/index.ts';
@@ -128,6 +130,8 @@ interface MessageApiCallLog {
   resetCalls: { n: number };
   statusCalls: string[];
   questionCalls: number;
+  /** How each card reached the real MessageAPI: the push options the tracker or bridge gave (#1235). */
+  questionPaths?: Array<{ id: string; answerPath: string | undefined }>;
 }
 
 function fakeMessageAPI(
@@ -260,7 +264,7 @@ describe('setupHookBridge', () => {
       /** Capture every broadcastQuestionResolved call (#585, P7). Each entry is
        *  the (questionId, reason) the bridge forwarded. Defaults to undefined
        *  (dep not wired). */
-      broadcastResolvedLog?: Array<{ questionId: UUID; reason: string }>;
+      broadcastResolvedLog?: Array<{ questionId: UUID; reason: string; resolvedBy?: string }>;
       /** Capture every foreignSessionEscalator.handleUnadmitted call (#672).
        *  Each entry is the (input, callerSessionId) the resolver forwarded.
        *  Defaults to undefined (dep not wired). */
@@ -325,8 +329,13 @@ describe('setupHookBridge', () => {
       ? new MessageAPI(
           { sessionId: SID, initialBulletId: 1 },
           {
-            onQuestion: (question) => {
+            onQuestion: (question, questionOpts) => {
               messageApiLog.questionCalls += 1;
+              if (messageApiLog.questionPaths === undefined) messageApiLog.questionPaths = [];
+              messageApiLog.questionPaths.push({
+                id: question.id,
+                answerPath: questionOpts?.answerPath,
+              });
               sessionRegistry.addQuestion(SID, question, question.source ?? 'unknown');
             },
             onStatusChange: (status) => {
@@ -417,8 +426,17 @@ describe('setupHookBridge', () => {
         ...(opts.subagentAlerts ? { subagentAlerts: opts.subagentAlerts } : {}),
         ...(opts.broadcastResolvedLog
           ? {
-              broadcastQuestionResolved: (_sid: UUID, questionId: UUID, reason: 'cancelled') =>
-                opts.broadcastResolvedLog?.push({ questionId, reason }),
+              broadcastQuestionResolved: (
+                _sid: UUID,
+                questionId: UUID,
+                reason: 'cancelled',
+                resolvedBy?: string,
+              ) =>
+                opts.broadcastResolvedLog?.push({
+                  questionId,
+                  reason,
+                  ...(resolvedBy !== undefined && { resolvedBy }),
+                }),
             }
           : {}),
         ...(opts.foreignEscalationLog
@@ -563,6 +581,8 @@ describe('setupHookBridge', () => {
     });
 
     test('an admitted StopFailure reaches pushTurnFailed once, with this session id and the payload (#1153)', () => {
+      const logs: string[] = [];
+      configureLogger({ writeLog: (msg) => logs.push(msg) });
       const pushed: Array<{ sessionId: UUID; input: StopFailureHookInput }> = [];
       build({ pushTurnFailed: (sessionId, input) => pushed.push({ sessionId, input }) });
       lock('claude-A');
@@ -571,6 +591,7 @@ describe('setupHookBridge', () => {
       expect(pushed[0]?.sessionId).toBe(SID);
       expect(pushed[0]?.input.error).toBe('rate_limit');
       expect(pushed[0]?.input.last_assistant_message).toBe("You've hit your session limit");
+      expect(logs.filter((line) => line.includes('Turn failed'))).toEqual(['[Hooks] Turn failed']);
     });
 
     test('a throwing pushTurnFailed never escapes into the hook dispatch loop (#1153)', () => {
@@ -636,7 +657,11 @@ describe('setupHookBridge', () => {
           {
             sessionRegistry,
             deviceTokens,
-            pushConfig: () => ({ signalingUrl: 'ws://x' }),
+            pushConfig: () => ({
+              signalingUrl: 'ws://x',
+              legacyEnabled: true,
+              pushSecret: 'owned-test-secret',
+            }),
             getPrimarySessionId: () => SID,
             pushFn,
           },
@@ -1500,7 +1525,8 @@ describe('setupHookBridge', () => {
     // hide a missing rotation sweep. A stale-lock reclaim (#518) rotates
     // with nothing else firing: an event for an unknown id whose transcript
     // carries OUR port marker.
-    const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+    const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+      [];
     build({ realMessageApi: true, broadcastResolvedLog });
     hookServer.fire('Notification', {
       session_id: 'claude-sweep-A',
@@ -1594,7 +1620,8 @@ describe('setupHookBridge', () => {
   });
 
   test('restart (/clear) broadcasts question_resolved for each pending question and clears them (#585 P7)', () => {
-    const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+    const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+      [];
     build({ broadcastResolvedLog });
 
     // Lock onto claude-A.
@@ -1643,7 +1670,10 @@ describe('setupHookBridge', () => {
 
     // The pending card is dismissed on every client (broadcast) AND dropped from
     // the registry, so nothing lingers across the rotation.
-    expect(broadcastResolvedLog).toEqual([{ questionId: QID, reason: 'cancelled' }]);
+    // The old session ended: the harness moved on (#1235).
+    expect(broadcastResolvedLog).toEqual([
+      { questionId: QID, reason: 'cancelled', resolvedBy: 'harness' },
+    ]);
     expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(0);
   });
 
@@ -2140,6 +2170,57 @@ describe('setupHookBridge', () => {
       return { ...built, hook, card, handlers, sent };
     }
 
+    describe('how each card is answered, and sweeps that name no cause (#1235, #1292 review)', () => {
+      /** The answer path the card was pushed with, as the real MessageAPI received it. */
+      const pathOf = (id: string) =>
+        messageApiLog.questionPaths?.find((p) => p.id === id)?.answerPath;
+
+      test('a held binary card is structured', async () => {
+        const { card, handle } = held('claude-path-held');
+        expect(pathOf(card.id)).toBe('structured');
+        handle.gate.forceRelease('test');
+      });
+
+      test('a multi-choice permission is typed', async () => {
+        const { card } = held('claude-path-multi', {
+          permission_suggestions: ['Option A', 'Option B', 'Option C'],
+        });
+        expect(pathOf(card.id)).toBe('keystroke');
+      });
+
+      test('a question-shaped tool that is not AskUserQuestion is pushed as typed, terminal only', async () => {
+        const { card } = held('claude-path-mcp-ask', {
+          tool_name: 'mcp__custom__ask',
+          tool_input: { questions: [{ question: 'Proceed?', options: ['A', 'B'] }] },
+        });
+        expect(card.terminalOnly).toBe(true);
+        // The gate says keystroke (not held); the stamp turns every terminal-only card into none,
+        // which message-api-setup.test.ts pins.
+        expect(pathOf(card.id)).toBe('keystroke');
+      });
+
+      for (const event of ['Stop', 'UserPromptSubmit'] as const) {
+        test(`a ${event} that sweeps an open card names no cause`, async () => {
+          const broadcastResolvedLog: Array<{
+            questionId: UUID;
+            reason: string;
+            resolvedBy?: string;
+          }> = [];
+          const { card } = held(
+            `claude-sweep-${event}`,
+            { permission_suggestions: ['Option A', 'Option B', 'Option C'] },
+            { broadcastResolvedLog },
+          );
+          hookServer.fire(event, {
+            session_id: `claude-sweep-${event}`,
+            hook_event_name: event,
+            ...(event === 'UserPromptSubmit' ? { prompt: 'next' } : {}),
+          });
+          expect(broadcastResolvedLog).toEqual([{ questionId: card.id, reason: 'cancelled' }]);
+        });
+      }
+    });
+
     test('the card is pushed at hook time with options by meaning, before any render', async () => {
       const { card, hook, handle } = held('claude-held-card', {
         permission_suggestions: E5_SUGGESTIONS,
@@ -2249,6 +2330,29 @@ describe('setupHookBridge', () => {
       expect(cards()).toHaveLength(0);
     });
 
+    test('the bridge handle forwards the final authority commit to the gate (#1201)', async () => {
+      const { card, hook, handle } = held('claude-held-commit');
+      // Read the handle the way its consumers do: through the channel's wider signature.
+      const answerHeld: DecisionChannel['answerHeld'] = handle.gate.answerHeld;
+      let refusals = 0;
+      const refusing: AnswerCommit = () => {
+        refusals++;
+        return { kind: 'refused' };
+      };
+      expect(answerHeld(card.id, { kind: 'cancel' }, refusing)).toBe('authority-refused');
+      expect(refusals).toBe(1);
+      expect(handle.gate.isHeld(card.id)).toBe(true);
+      expect(cards().map((q) => q.id)).toEqual([card.id]);
+      let commits = 0;
+      const committing: AnswerCommit = <T>(effect: () => T) => {
+        commits++;
+        return { kind: 'committed', value: effect() };
+      };
+      expect(answerHeld(card.id, { kind: 'cancel' }, committing)).toBe('resolved');
+      expect(commits).toBe(1);
+      expect(await hook).toBe('deny');
+    });
+
     test('a duplicate delivery of the same tap resolves once and reports delivered (#752)', async () => {
       const { card, hook, handlers } = held('claude-held-dup');
       const [a, b] = await Promise.all([
@@ -2268,7 +2372,7 @@ describe('setupHookBridge', () => {
         card.id,
         'no, do not create the file',
       );
-      expect(outcome).toBeUndefined();
+      expect(outcome).toBe('stale');
       expect(ptySubmits).toEqual([]);
       expect((sent.find((m) => m.type === 'error') as { code?: string })?.code).toBe(
         'STALE_ANSWER',
@@ -2279,7 +2383,8 @@ describe('setupHookBridge', () => {
     });
 
     test('a Yes answered in the terminal: the paired PostToolUse closes the hold empty and dismisses the card', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({
         realTracker: true,
         realMessageApi: true,
@@ -2318,7 +2423,10 @@ describe('setupHookBridge', () => {
       });
       expect(await hook).toBe('passthrough');
       expect(cards()).toHaveLength(0);
-      expect(broadcastResolvedLog).toEqual([{ questionId: card.id, reason: 'cancelled' }]);
+      // The run paired by tool_use_id: the terminal answered (#1235).
+      expect(broadcastResolvedLog).toEqual([
+        { questionId: card.id, reason: 'cancelled', resolvedBy: 'terminal' },
+      ]);
       expect(ptySubmits).toEqual([]);
     });
 
@@ -2347,7 +2455,8 @@ describe('setupHookBridge', () => {
     });
 
     test('a No or Esc in the terminal: Claude closes the held request and the card is dismissed', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       const { handle } = build({
         realTracker: true,
         realMessageApi: true,
@@ -2375,7 +2484,8 @@ describe('setupHookBridge', () => {
 
     test('a main-agent StopFailure ends a live held prompt: hook released, card resolved, no later deadline notice (#1153)', async () => {
       const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       const { card, hook } = held(
         'claude-held-sf',
         {},
@@ -2508,7 +2618,8 @@ describe('setupHookBridge', () => {
     });
 
     test('a transcript rotation releases a live hold and clears its card', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({
         realTracker: true,
         realMessageApi: true,
@@ -2534,6 +2645,9 @@ describe('setupHookBridge', () => {
       expect(await hook).toBe('passthrough');
       expect(cards()).toHaveLength(0);
       expect(broadcastResolvedLog.map((r) => r.questionId)).toContain(card.id);
+      expect(broadcastResolvedLog.find((r) => r.questionId === card.id)?.resolvedBy).toBe(
+        'harness',
+      );
     });
 
     test('a released main prompt stops suppressing after the hold length: a redraw takes the guarded hook-less path', async () => {
@@ -2771,7 +2885,8 @@ describe('setupHookBridge', () => {
     });
 
     test('daemon mode: Claude closing the request with no hook (No, Esc, its own timeout) dismisses the card before the long deadline', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
       const { handle } = build({
         realTracker: true,
@@ -2808,7 +2923,8 @@ describe('setupHookBridge', () => {
       // Measured live on Claude Code 2.1.287 (#1126): the auto-deny fires
       // PermissionDenied for the held call 120 s after the prompt, before
       // any close of the request reaches remi.
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       const noticeLog: Array<{ questionId: UUID; text: string; reason: string }> = [];
       const { handle } = build({
         realTracker: true,
@@ -2839,7 +2955,10 @@ describe('setupHookBridge', () => {
         reason: 'The server-side auto mode classifier judged this action dangerous',
       });
       expect(cards()).toHaveLength(0);
-      expect(broadcastResolvedLog).toEqual([{ questionId: card.id, reason: 'cancelled' }]);
+      // Claude's classifier decided (#1235).
+      expect(broadcastResolvedLog).toEqual([
+        { questionId: card.id, reason: 'cancelled', resolvedBy: 'harness' },
+      ]);
       expect(noticeLog).toEqual([]);
       // The hold ends with the empty response; Claude has already decided.
       expect(await hook).toBe('passthrough');
@@ -3077,7 +3196,7 @@ describe('setupHookBridge', () => {
       expect(sessionRegistry.getQuestion(SID, qid)).not.toBeNull();
 
       // A repeat push for the same id is a no-op (pushedHeldIds).
-      expect(tracker.pushHeldHook(qid)).toBe(false);
+      expect(tracker.pushHeldHook(qid, 'structured')).toBe(false);
       expect(pushLog).toHaveLength(1);
       expect(
         [...(sessionRegistry.getSession(SID)?.currentQuestions.values() ?? [])].filter(
@@ -3180,7 +3299,7 @@ describe('setupHookBridge', () => {
 
       expect(ptySubmits).toEqual([]);
       // Refused by the screen check, not by the presence guard before it.
-      expect(logs.some((m) => m.includes('"4" is not an option on screen [1, 2, 3]'))).toBe(true);
+      expect(logs.some((m) => m.includes('option-not-on-screen; 1 characters'))).toBe(true);
       const errors = sent.filter((m) => m.type === 'error');
       expect(errors).toHaveLength(1);
       expect((errors[0] as { code?: string }).code).toBe('STALE_ANSWER');
@@ -3295,7 +3414,7 @@ describe('setupHookBridge', () => {
             card.id,
             'Yes, auto-accept edits',
           ),
-        ).toBeUndefined();
+        ).toBe('stale');
         expect((sent.find((m) => m.type === 'error') as { code?: string })?.code).toBe(
           'STALE_ANSWER',
         );
@@ -3470,7 +3589,8 @@ describe('setupHookBridge', () => {
     }
 
     test('a matching subagent PreToolUse resolves a parked permission (question_resolved fires)', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-pre');
 
@@ -3500,7 +3620,8 @@ describe('setupHookBridge', () => {
     });
 
     test('a matching subagent PostToolUse also resolves it', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-post');
 
@@ -3530,7 +3651,8 @@ describe('setupHookBridge', () => {
     });
 
     test('(b) a non-matching subagent PreToolUse leaves the parked permission open', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-nomatch');
 
@@ -3556,7 +3678,8 @@ describe('setupHookBridge', () => {
     });
 
     test("SubagentStop resolves that agent's still-open permission (denied in the terminal, no tool call ever followed)", async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       const { tracker } = build({
         broadcastResolvedLog,
       });
@@ -3593,7 +3716,8 @@ describe('setupHookBridge', () => {
     });
 
     test("never fires ambiguously: SubagentStop for one agent does not resolve a DIFFERENT agent's still-open permission", async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-ambig');
 
@@ -3628,7 +3752,8 @@ describe('setupHookBridge', () => {
     });
 
     test('a matching subagent PostToolUseFailure resolves it (a failed tool still proves the permission was granted)', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-failure');
 
@@ -3657,7 +3782,8 @@ describe('setupHookBridge', () => {
     });
 
     test('a non-matching subagent PostToolUseFailure leaves the parked permission open', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-799-failure-nomatch');
 
@@ -3721,7 +3847,8 @@ describe('setupHookBridge', () => {
     }
 
     test('a matching MAIN PermissionDenied resolves the open (parked/passthrough) escalation', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-889-denied-main');
 
@@ -3749,7 +3876,8 @@ describe('setupHookBridge', () => {
     });
 
     test('a matching SUBAGENT PermissionDenied resolves the parked escalation, scoped to that agent', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       const { tracker } = build({
         broadcastResolvedLog,
       });
@@ -3789,7 +3917,8 @@ describe('setupHookBridge', () => {
       // a PermissionDenied closing another agent's still-open question is the
       // swallow class #925 was. Same tool + same tool_input on purpose, so
       // agent identity is the ONLY thing that can disambiguate.
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ broadcastResolvedLog, realMessageApi: true, hasLocalTerminal: false });
       lock('claude-889-denied-2agents');
 
@@ -3836,7 +3965,8 @@ describe('setupHookBridge', () => {
     });
 
     test('a non-matching PermissionDenied (different tool_input) leaves the open escalation untouched', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       const { handle } = build({
         broadcastResolvedLog,
         realMessageApi: true,
@@ -3864,7 +3994,8 @@ describe('setupHookBridge', () => {
     });
 
     test('PermissionDenied for a FOREIGN session_id is dropped by the admit gate (no cross-session resolution)', async () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       const { handle } = build({
         broadcastResolvedLog,
         realMessageApi: true,
@@ -3969,10 +4100,15 @@ describe('setupHookBridge', () => {
       expect(questions[0]?.source).toBe('elicitation');
       expect(questions[0]?.allowsFreeText).toBe(true);
       expect(questions[0]?.options).toEqual([]);
+      // No hold stands behind it: a phone answer is typed (#1235).
+      expect(messageApiLog.questionPaths?.find((p) => p.id === questions[0]?.id)?.answerPath).toBe(
+        'keystroke',
+      );
     });
 
     test('ElicitationResult resolves the exact card by elicitation_id', () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ realMessageApi: true, broadcastResolvedLog });
       lock('claude-889-elicit-2');
 
@@ -3996,6 +4132,32 @@ describe('setupHookBridge', () => {
       expect(sessionRegistry.getSession(SID)?.currentQuestions.size).toBe(0);
       expect(broadcastResolvedLog).toHaveLength(1);
       expect(broadcastResolvedLog[0]?.reason).toBe('cancelled');
+      // An answer may come from a user's own hook or from a chat message typed into the dialog,
+      // so an accepted elicitation names no cause (#1292 review).
+      expect(broadcastResolvedLog[0]).not.toHaveProperty('resolvedBy');
+    });
+
+    test('an ElicitationResult cancel names no cause: an Esc, a client, or a timeout (#1235)', () => {
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
+      build({ realMessageApi: true, broadcastResolvedLog });
+      lock('claude-889-elicit-cancel');
+      hookServer.fire('Elicitation', {
+        session_id: 'claude-889-elicit-cancel',
+        hook_event_name: 'Elicitation',
+        mcp_server_name: 'weather-mcp',
+        message: 'Which city?',
+        elicitation_id: 'elicit-cancel',
+      });
+      hookServer.fire('ElicitationResult', {
+        session_id: 'claude-889-elicit-cancel',
+        hook_event_name: 'ElicitationResult',
+        mcp_server_name: 'weather-mcp',
+        elicitation_id: 'elicit-cancel',
+        action: 'cancel',
+      });
+      expect(broadcastResolvedLog).toHaveLength(1);
+      expect(broadcastResolvedLog[0]).not.toHaveProperty('resolvedBy');
     });
 
     test('a re-fired Elicitation for the same id keeps the live card resolvable (review finding)', () => {
@@ -4005,7 +4167,8 @@ describe('setupHookBridge', () => {
       // registered. Blindly overwriting the correlation pointed
       // ElicitationResult at that phantom and orphaned card A -- the card the
       // user is actually looking at -- with no automated way to clear it.
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ realMessageApi: true, broadcastResolvedLog });
       lock('claude-889-elicit-dup');
 
@@ -4052,7 +4215,8 @@ describe('setupHookBridge', () => {
       // fingerprint, so QuestionDedup lets it through (registers, does not
       // dedupe) -- the only way to isolate `previousIsLive` from the dedup
       // guard it sits beside.
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ realMessageApi: true, broadcastResolvedLog });
       lock('claude-889-elicit-changed');
 
@@ -4098,7 +4262,8 @@ describe('setupHookBridge', () => {
     });
 
     test('ElicitationResult with an UNKNOWN elicitation_id is a no-op (card, if any, stays)', () => {
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ realMessageApi: true, broadcastResolvedLog });
       lock('claude-889-elicit-3');
 
@@ -4156,7 +4321,8 @@ describe('setupHookBridge', () => {
       // registered (deduped against an unrelated still-live baseline) must
       // not be tracked either -- decided directly from handleElicitation's
       // returned QuestionRegistrationOutcome, not a SessionRegistry re-query.
-      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string }> = [];
+      const broadcastResolvedLog: Array<{ questionId: UUID; reason: string; resolvedBy?: string }> =
+        [];
       build({ realMessageApi: true, broadcastResolvedLog });
       lock('claude-889-elicit-notreg');
 
@@ -4458,7 +4624,7 @@ describe('setupHookBridge', () => {
       expect(subagentViews.resolvePath('sub-1')).toBe(derived);
     });
 
-    test('Stop logs the truncated last_assistant_message (turn genuinely complete)', () => {
+    test('Stop logs only the operation when the turn genuinely completes', () => {
       const logs: string[] = [];
       configureLogger({ writeLog: (msg) => logs.push(msg) });
       build();
@@ -4472,15 +4638,13 @@ describe('setupHookBridge', () => {
       });
       const turnCompleteLines = logs.filter((l) => l.includes('Turn complete'));
       expect(turnCompleteLines.length).toBe(1);
-      // The log line is keyed by remi's daemon-side session id (SID), not the
-      // raw Claude session_id from the hook payload -- same convention every
-      // other [Hooks] log line in this file uses.
-      expect(turnCompleteLines[0]).toContain(SID);
-      // Truncated: the 300+ char filler must not appear in full, and whitespace
-      // (including the embedded newlines) is collapsed to single spaces.
+      expect(turnCompleteLines[0]).toBe('[Hooks] Turn complete');
+      expect(turnCompleteLines[0]).not.toContain(SID);
+      expect(turnCompleteLines[0]).not.toContain('claude-891-stop');
       expect(turnCompleteLines[0]?.includes('x'.repeat(300))).toBe(false);
       expect(turnCompleteLines[0]).not.toContain('\n');
-      expect(turnCompleteLines[0]).toContain('Line one. Line two with lots of detail.');
+      expect(turnCompleteLines[0]).not.toContain('Line one.');
+      expect(turnCompleteLines[0]).not.toContain('Line two with lots of detail.');
     });
 
     test('Stop does NOT log when stop_hook_active is true (turn is not actually done)', () => {

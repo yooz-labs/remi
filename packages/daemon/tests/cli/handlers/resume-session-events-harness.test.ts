@@ -71,7 +71,7 @@ describe('createResumeSessionHandlers launch arguments, driven by the harness (#
     const spawned: string[][] = [];
     const sent: ProtocolMessage[] = [];
     await createResumeSessionHandlers({
-      hubMode: false,
+      childSessions: null,
       harnessId: 'claude',
       harnesses: () => ['claude'],
       sessionRegistry,

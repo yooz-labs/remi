@@ -9,6 +9,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { escapeUnsafeText } from '@remi/shared';
 import type { UUID } from '@remi/shared';
 import type { DeviceTokenEntry } from '../../src/cli/handlers/trivial-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
@@ -17,11 +18,13 @@ import {
   NotificationDispatcher,
   type PushFn,
 } from '../../src/notifications/notification-dispatcher.ts';
+import { LegacyPushError } from '../../src/notifications/push-client.ts';
 import {
   buildTurnFailedText,
   createTurnFailedRoutes,
   describeTurnFailure,
   turnFailedCollapseId,
+  turnFailureKey,
 } from '../../src/notifications/turn-failed.ts';
 import { shouldNotifyTurnComplete } from '../../src/notifications/turn-timer.ts';
 import type { PTYSession } from '../../src/pty/pty-session.ts';
@@ -255,6 +258,32 @@ describe('buildTurnFailedText', () => {
     });
     expect(body.length).toBeLessThanOrEqual(200);
   });
+
+  test('push excerpts strip unsafe prose; titles and error/agent identifiers are visibly escaped (#1211)', () => {
+    const hostile =
+      'start\x1b]52;c;QUJD\x07middle\x1b[2K\rRTL\u202eoverride\u2066isolate\u200bzero\u200fend';
+    const errorCode = 'custom\u202e';
+    const agentType = 'reviewer\u2066\u200b';
+    const sessionName = 'session\u202e';
+    const agentName = 'Agent\u200f';
+    const input = {
+      error: errorCode,
+      last_assistant_message: `Failure ${hostile}`,
+      agent_type: agentType,
+    };
+    const original = structuredClone(input);
+    const { title, body } = buildTurnFailedText(sessionName, input, agentName);
+
+    expect(title).toBe(`${escapeUnsafeText(sessionName)}: ${escapeUnsafeText(agentName)} stopped`);
+    expect(body).toBe(
+      `${escapeUnsafeText(agentType)} · ${escapeUnsafeText(errorCode)}. Failure start]52;c;QUJDmiddle[2KRTLoverrideisolatezeroend`,
+    );
+    expect(input).toEqual(original);
+    expect(turnFailureKey(input)).toBe(`main:${describeTurnFailure(input.error)}`);
+    for (const unsafe of ['\x1b', '\x07', '\u202e', '\u2066', '\u200b', '\u200f']) {
+      expect(body).not.toContain(unsafe);
+    }
+  });
 });
 
 describe('turnFailedCollapseId', () => {
@@ -279,7 +308,7 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
   let refreshes: number;
 
   const pushFn: PushFn = async (_url, token, opts) => {
-    if (failFor.has(token)) throw new Error('BadDeviceToken');
+    if (failFor.has(token)) throw new LegacyPushError('LEGACY_PUSH_REJECTED', 502, true);
     sent.push({ token, opts: opts as unknown as Record<string, unknown> });
   };
 
@@ -309,7 +338,7 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
       {
         sessionRegistry: registry,
         deviceTokens,
-        pushConfig: () => ({ signalingUrl: 'ws://x', pushSecret: 'secret' }),
+        pushConfig: () => ({ signalingUrl: 'ws://x', pushSecret: 'secret', legacyEnabled: true }),
         refreshDeviceTokens: () => {
           refreshes += 1;
         },
@@ -372,6 +401,30 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
       expect(opts['dynOptions']).toBeUndefined();
       expect(opts['dismiss']).toBeUndefined();
     }
+  });
+
+  test('the push transport receives the safe excerpt while failure identity keeps the raw code (#1211)', async () => {
+    register(false);
+    deviceTokens.set('a', device('a'));
+    const sessionName = registry.getSession(SID)?.name ?? '';
+    const family = '\u{1f468}\u200d\u{1f469}\u200d\u{1f467}';
+    const input = {
+      error: 'custom\u202e',
+      last_assistant_message: `Failure \x1b\x07\u2066hidden\u200b ${family}`,
+      agent_type: 'reviewer\u2066',
+    };
+
+    expect(await make().pushTurnFailed(input)).toBe('pushed');
+    const payload = sent[0]?.opts;
+    if (!payload) throw new Error('turn_failed push was not captured');
+    const expected = buildTurnFailedText(sessionName, input);
+    expect(payload['title']).toBe(expected.title);
+    expect(payload['body']).toBe(expected.body);
+    expect(payload['body']).toContain(family);
+    for (const unsafe of ['\x1b', '\x07', '\u202e', '\u2066', '\u200b']) {
+      expect(payload['body']).not.toContain(unsafe);
+    }
+    expect(turnFailureKey(input)).toBe(`main:${describeTurnFailure(input.error)}`);
   });
 
   test('the agent the caller names is the one the notification says stopped (#1180)', async () => {
@@ -521,6 +574,48 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
 
       failFor.clear();
       expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('pushed');
+    });
+
+    describe('on the secure channel (#1226 with #1200)', () => {
+      /** The secure fan-out as the dispatcher sees it: what it reports per send. Delivery itself
+       *  is covered through the real Worker in claude-session.test.ts; this pins only which
+       *  outcomes count as alerted. */
+      function secureOnly(outcomes: string[]): NotificationDispatcher {
+        const sends: string[] = [];
+        return new NotificationDispatcher(
+          {
+            sessionRegistry: registry,
+            deviceTokens,
+            pushConfig: () => ({ signalingUrl: 'ws://x', legacyEnabled: false }),
+            getPrimarySessionId: () => null,
+            pushFn,
+            securePush: {
+              hasRecipients: () => true,
+              send: (event) => {
+                sends.push(event.kind);
+                return Promise.resolve((outcomes.shift() ?? 'pushed') as never);
+              },
+            },
+          },
+          SID,
+        );
+      }
+
+      test('an uncertain secure send may have alerted, so the repeat is not sent', async () => {
+        register(false);
+        const dispatcher = secureOnly(['uncertain']);
+        expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('uncertain');
+        expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('deduped');
+      });
+
+      test('a failed or refused secure send does not count: the next failure tries again', async () => {
+        register(false);
+        const dispatcher = secureOnly(['failed', 'no_channel', 'pushed']);
+        expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('failed');
+        expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('no_channel');
+        expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('pushed');
+        expect(await dispatcher.pushTurnFailed({ error: 'rate_limit' })).toBe('deduped');
+      });
     });
 
     test('a successful turn ends the streak: the same failure alerts again after it', async () => {
@@ -764,7 +859,11 @@ describe('NotificationDispatcher.pushTurnFailed', () => {
         {
           sessionRegistry: registry,
           deviceTokens,
-          pushConfig: () => ({ signalingUrl: 'ws://x' }),
+          pushConfig: () => ({
+            signalingUrl: 'ws://x',
+            legacyEnabled: true,
+            pushSecret: 'owned-test-secret',
+          }),
           getPrimarySessionId: () => null,
           pushFn,
         },

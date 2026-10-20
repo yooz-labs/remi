@@ -1125,6 +1125,28 @@ describe('Message factory functions', () => {
       expect(deserialized?.type).toBe('resume_session_response');
     });
 
+    test('carries the port of the child daemon a hub started for the resume (#1129)', () => {
+      const requestId = generateId();
+      const sessionId = generateId();
+      const msg = createResumeSessionResponse(
+        true,
+        requestId,
+        sessionId,
+        undefined,
+        undefined,
+        19931,
+      );
+      expect(msg.port).toBe(19931);
+      expect(deserialize(serialize(msg))).toMatchObject({ success: true, sessionId, port: 19931 });
+    });
+
+    test("leaves port off when there is none, so a session daemon's response is unchanged (#1129)", () => {
+      const msg = createResumeSessionResponse(true, generateId(), generateId());
+      expect('port' in msg).toBe(false);
+      const failed = createResumeSessionResponse(false, generateId(), undefined, 'no');
+      expect('port' in failed).toBe(false);
+    });
+
     test('carries an optional machine-readable errorCode on failure (#1124)', () => {
       const requestId = generateId();
       const msg = createResumeSessionResponse(

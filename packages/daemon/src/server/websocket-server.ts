@@ -5,9 +5,27 @@
  * Handles connection lifecycle, message routing, and broadcasting.
  */
 
-import { generateId } from '@remi/shared';
+import { randomUUID } from 'node:crypto';
+import {
+  isFileDownloadCandidate,
+  isImageInsertionCandidate,
+  isImageStagingCandidate,
+  isStructuredChatCandidate,
+} from '@remi/shared';
+import { createError, generateId } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
+import { isBrowserLinkCandidate } from '@remi/shared';
 import { CAPABILITY_HEADER, capabilityTokenMatches } from '../auth/capability-token.ts';
+import {
+  RELAY_CHAT_AUTHORITY_HEADER,
+  decodeRelayChatAuthority,
+} from '../auth/relay-chat-authority';
+import type { SecurePushAuthority } from '../notifications/secure-push-store';
+import {
+  type LocalDaemonEndpoint,
+  publishLocalDaemonEndpoint,
+  releaseLocalDaemonEndpoint,
+} from '../storage/local-daemon-endpoints.ts';
 import {
   type ClientMessageEventsWithConnectionId,
   bindConnectionId,
@@ -15,14 +33,29 @@ import {
 import { Connection, type ConnectionConfig, type ConnectionEvents } from './connection.ts';
 import { corsHeadersForOrigin, isAllowedOrigin, rejectionNotice } from './origin-policy.ts';
 import { shouldSkipAuthForPeer } from './peer-helpers.ts';
+export interface RelayLocalControl {
+  open(id: string, send: (text: string) => void): void;
+  message(id: string, text: string): void;
+  close(id: string): void;
+}
 
 /** Server configuration */
 export interface ServerConfig {
+  readonly relayControl?: RelayLocalControl;
   /** Port to listen on */
   readonly port: number;
 
   /** Host to bind to */
   readonly host?: string;
+
+  /** Optional PEM contents for HTTPS/WSS on this listener (#1170). */
+  readonly tls?: {
+    readonly key: string;
+    readonly cert: string;
+  };
+
+  /** Optional capability-only loopback listener and restricted local record (#1170). */
+  readonly localControl?: { readonly home: string };
 
   /** Path for WebSocket connections */
   readonly path?: string;
@@ -106,6 +139,9 @@ const MAX_REFUSED_ORIGINS_TRACKED = 64;
 
 /** WebSocket data attached to each connection */
 interface WSData {
+  readonly listenerTransport: import('./connection.ts').ConnectionListenerTransport;
+  relayChatAuthority?: SecurePushAuthority;
+  relayControl?: boolean;
   connectionId: UUID;
   /** Peer IP captured at upgrade time (used to skip auth for loopback). */
   peerAddress: string | null;
@@ -133,11 +169,15 @@ interface WSData {
  * ```
  */
 export class WebSocketServer {
-  private readonly config: Required<ServerConfig>;
+  private readonly config: Required<Omit<ServerConfig, 'relayControl' | 'tls' | 'localControl'>> &
+    Pick<ServerConfig, 'relayControl' | 'tls' | 'localControl'>;
   private readonly events: Partial<ServerEvents>;
   private readonly connections: Map<UUID, Connection> = new Map();
 
+  private readonly controls = new Map<string, { close(code?: number, reason?: string): void }>();
   private server: ReturnType<typeof Bun.serve> | null = null;
+  private localServer: ReturnType<typeof Bun.serve> | null = null;
+  private localEndpoint: LocalDaemonEndpoint | null = null;
   private isRunning = false;
 
   /**
@@ -158,6 +198,9 @@ export class WebSocketServer {
       allowedOrigins: config.allowedOrigins ?? [],
       logFn: config.logFn ?? ((msg: string) => console.warn(msg)),
       capabilityToken: config.capabilityToken ?? '',
+      ...(config.tls !== undefined && { tls: config.tls }),
+      ...(config.localControl !== undefined && { localControl: config.localControl }),
+      ...(config.relayControl && { relayControl: config.relayControl }),
     };
     this.events = events;
   }
@@ -196,9 +239,14 @@ export class WebSocketServer {
     return this.isRunning;
   }
 
-  /** Get server port */
+  /** The held OS-assigned port when running, including an ephemeral port request (#1232). */
   get port(): number {
-    return this.config.port;
+    return this.server?.port ?? this.config.port;
+  }
+
+  /** Internal held control port; never added to protocol or public status. */
+  get localControlPort(): number | null {
+    return this.localServer?.port ?? null;
   }
 
   /**
@@ -212,16 +260,56 @@ export class WebSocketServer {
    * Start the WebSocket server.
    */
   async start(): Promise<void> {
-    if (this.isRunning) {
+    if (this.isRunning || this.server || this.localServer || this.localEndpoint) {
       throw new Error('Server already running');
     }
+    if (this.config.localControl && (!this.config.tls || !this.config.capabilityToken)) {
+      throw new Error('Local control requires TLS and a local capability');
+    }
 
+    try {
+      this.server = this.createListener(this.config.port, this.config.host, false);
+      if (this.config.localControl) {
+        this.localServer = this.createListener(0, '127.0.0.1', true);
+        this.localEndpoint = {
+          version: 1,
+          publicPort: this.port,
+          pid: process.pid,
+          privatePort: this.localServer.port as number,
+          instanceId: randomUUID(),
+        };
+        // Synchronous bounded transaction: no request-serving await between bind and publication.
+        publishLocalDaemonEndpoint(this.localEndpoint, this.config.localControl.home);
+      }
+      this.isRunning = true;
+      this.events.onStart?.(this.port);
+    } catch (error) {
+      try {
+        this.shutdown();
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], 'WebSocket startup and cleanup failed');
+      }
+      throw error;
+    }
+  }
+
+  private createListener(
+    port: number,
+    host: string,
+    localControl: boolean,
+  ): ReturnType<typeof Bun.serve> {
     const path = this.config.path;
     const self = this;
+    const listenerTransport = localControl
+      ? 'private-control'
+      : this.config.tls
+        ? 'public-tls'
+        : 'public-plain';
 
-    this.server = Bun.serve<WSData>({
-      port: this.config.port,
-      hostname: this.config.host,
+    return Bun.serve<WSData>({
+      port,
+      hostname: host,
+      ...(!localControl && this.config.tls !== undefined && { tls: this.config.tls }),
 
       fetch(req, server) {
         const url = new URL(req.url);
@@ -233,6 +321,45 @@ export class WebSocketServer {
         // client sends none and passes.
         if (!self.originAllowed(origin)) {
           return new Response('Forbidden origin', { status: 403 });
+        }
+
+        // Private HTTP and upgrades share one gate, even with public auth disabled.
+        if (
+          localControl &&
+          !shouldSkipAuthForPeer(true, server.requestIP(req)?.address, {
+            hasCapability: capabilityTokenMatches(
+              req.headers.get(CAPABILITY_HEADER),
+              self.config.capabilityToken,
+            ),
+          })
+        )
+          return new Response('Forbidden', { status: 403 });
+
+        if (url.pathname === '/relay-control') {
+          const peer = server.requestIP(req)?.address;
+          const hasCapability = capabilityTokenMatches(
+            req.headers.get(CAPABILITY_HEADER),
+            self.config.capabilityToken,
+          );
+          if (
+            self.controls.size >= 16 ||
+            !self.config.relayControl ||
+            !shouldSkipAuthForPeer(true, peer, { hasCapability })
+          )
+            return new Response('Forbidden', { status: 403 });
+          if (
+            server.upgrade(req, {
+              data: {
+                listenerTransport,
+                connectionId: generateId(),
+                peerAddress: peer ?? null,
+                hasCapability,
+                relayControl: true,
+              },
+            })
+          )
+            return;
+          return new Response('Upgrade required', { status: 426 });
         }
 
         // Only handle WebSocket upgrade on the configured path
@@ -252,12 +379,24 @@ export class WebSocketServer {
             self.config.capabilityToken,
           );
 
+          const relayHeader = req.headers.get(RELAY_CHAT_AUTHORITY_HEADER);
+          let relayChatAuthority: SecurePushAuthority | null = null;
+          if (relayHeader !== null) {
+            if (!shouldSkipAuthForPeer(true, peerAddress, { hasCapability }))
+              return new Response('Forbidden', { status: 403 });
+            relayChatAuthority = decodeRelayChatAuthority(relayHeader);
+            if (!relayChatAuthority)
+              return new Response('Invalid relay descriptor', { status: 400 });
+          }
+
           // Upgrade to WebSocket
           const success = server.upgrade(req, {
             data: {
+              listenerTransport,
               connectionId: generateId(),
               peerAddress,
               hasCapability,
+              ...(relayChatAuthority ? { relayChatAuthority } : {}),
             },
           });
 
@@ -291,9 +430,9 @@ export class WebSocketServer {
         }
 
         // Auth-info endpoint: lets clients probe whether this daemon will
-        // require an Ed25519 challenge before opening the WebSocket. Loopback
-        // peers are always exempt regardless of authenticator config, so the
-        // probe answers from the same vantage point the WebSocket would.
+        // require an Ed25519 challenge before opening the WebSocket. Only actual
+        // TCP loopback with a valid daemon capability bypasses configured auth
+        // (#873); the probe uses the same boundary as WebSocket admission.
         // See ConnectModal in packages/web for the consumer (#257).
         if (url.pathname === '/auth-info') {
           const peer = server.requestIP(req);
@@ -315,7 +454,7 @@ export class WebSocketServer {
         }
 
         // Connection-independent answer relay (#575, P4a). Lets a cold-start
-        // push tap deliver an answer over plain HTTP before any WebSocket is
+        // push tap deliver an answer over HTTP(S) before any WebSocket is
         // warm. Authenticated with the SAME trust model as the WebSocket
         // (loopback bypass + Ed25519 signature over an authorized key); routes
         // through the SAME answer core as the WebSocket `onAnswer`.
@@ -350,14 +489,34 @@ export class WebSocketServer {
         idleTimeout: WS_IDLE_TIMEOUT_SECONDS,
 
         open(ws) {
+          if (ws.data.relayControl) {
+            self.controls.set(ws.data.connectionId, ws);
+            self.config.relayControl?.open(ws.data.connectionId, (text) => {
+              ws.send(text);
+            });
+            return;
+          }
           self.handleOpen(ws);
         },
 
         message(ws, message) {
+          if (ws.data.relayControl) {
+            if (typeof message !== 'string' || new TextEncoder().encode(message).length > 4096) {
+              ws.close(4400, 'closed');
+              return;
+            }
+            self.config.relayControl?.message(ws.data.connectionId, message);
+            return;
+          }
           self.handleMessage(ws, message);
         },
 
         close(ws) {
+          if (ws.data.relayControl) {
+            self.controls.delete(ws.data.connectionId);
+            self.config.relayControl?.close(ws.data.connectionId);
+            return;
+          }
           self.handleClose(ws);
         },
 
@@ -365,31 +524,72 @@ export class WebSocketServer {
         // Errors are handled through the close event or try/catch
       },
     });
-
-    this.isRunning = true;
-    this.events.onStart?.(this.config.port);
   }
 
   /**
    * Stop the WebSocket server.
    */
   async stop(): Promise<void> {
-    if (!this.isRunning || !this.server) {
-      return;
-    }
+    this.shutdown();
+  }
 
-    // Close all connections
-    for (const connection of this.connections.values()) {
-      connection.close('Server shutting down');
-    }
-    this.connections.clear();
-
-    // Stop server
-    this.server.stop();
-    this.server = null;
+  private shutdown(): void {
+    const wasRunning = this.isRunning;
     this.isRunning = false;
+    const failures: unknown[] = [];
+    try {
+      if (this.localEndpoint && this.config.localControl) {
+        releaseLocalDaemonEndpoint(this.localEndpoint, this.config.localControl.home);
+        this.localEndpoint = null;
+      }
+    } catch (error) {
+      // Keep the tuple for an explicit retry, but always close both listeners below.
+      failures.push(error);
+    } finally {
+      for (const [id, socket] of this.controls) {
+        try {
+          this.config.relayControl?.close(id);
+        } catch (error) {
+          failures.push(error);
+        } finally {
+          try {
+            socket.close(1000);
+          } catch (error) {
+            failures.push(error);
+          }
+        }
+      }
+      this.controls.clear();
+      // Close all connections
+      for (const connection of this.connections.values()) {
+        try {
+          connection.close('Server shutting down');
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      this.connections.clear();
 
-    this.events.onStop?.();
+      for (const server of [this.server, this.localServer]) {
+        try {
+          server?.stop(!wasRunning);
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      this.server = null;
+      this.localServer = null;
+    }
+
+    if (wasRunning) {
+      try {
+        this.events.onStop?.();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, 'WebSocket cleanup failed');
   }
 
   /**
@@ -575,10 +775,8 @@ export class WebSocketServer {
       ...bindConnectionId(ws.data.connectionId, this.events),
     };
 
-    // Localhost-no-auth (#257): even when an authenticator is configured,
-    // peers connecting from the loopback interface are trusted by virtue of
-    // being on the same machine. Drop the authenticator from this peer's
-    // connection so it never receives an auth_challenge.
+    // #873: only a valid capability on actual TCP loopback bypasses identity
+    // authentication. Bare loopback remains challenged, including a proxy peer.
     let perConnectionConfig = this.config.connection;
     if (
       shouldSkipAuthForPeer(!!perConnectionConfig?.authenticator, ws.data.peerAddress, {
@@ -594,6 +792,8 @@ export class WebSocketServer {
       perConnectionConfig,
       ws.data.connectionId,
       ws.data.peerAddress,
+      ws.data.relayChatAuthority,
+      ws.data.listenerTransport,
     );
 
     this.connections.set(ws.data.connectionId, connection);
@@ -602,7 +802,41 @@ export class WebSocketServer {
   private handleMessage(ws: { data: WSData }, message: string | Buffer): void {
     const connection = this.connections.get(ws.data.connectionId);
     if (connection) {
-      const data = typeof message === 'string' ? message : new TextDecoder().decode(message);
+      if (typeof message !== 'string' && isFileDownloadCandidate(message)) {
+        connection.handleFileDownloadFrame(message);
+        return;
+      }
+      if (
+        this.events.onBrowserLinkReceiver &&
+        typeof message !== 'string' &&
+        isBrowserLinkCandidate(message)
+      ) {
+        connection.handleBrowserLinkFrame(message);
+        return;
+      }
+      if (typeof message !== 'string' && isStructuredChatCandidate(message)) {
+        connection.handleStructuredChatFrame(message);
+        return;
+      }
+      if (typeof message !== 'string' && isImageInsertionCandidate(message)) {
+        connection.handleImageInsertionFrame(message);
+        return;
+      }
+      if (typeof message !== 'string' && isImageStagingCandidate(message)) {
+        connection.handleImageStagingFrame(message);
+        return;
+      }
+      let data: string;
+      try {
+        // Preserve a leading BOM so strict JSON validation sees the original bytes (#1201).
+        data =
+          typeof message === 'string'
+            ? message
+            : new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(message);
+      } catch {
+        connection.send(createError('INVALID_MESSAGE', 'Failed to parse message'));
+        return;
+      }
       connection.handleMessage(data);
     }
   }

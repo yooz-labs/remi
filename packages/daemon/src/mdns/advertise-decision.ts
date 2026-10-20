@@ -25,6 +25,7 @@ import { configPathForDisplay } from '../config/remi-home.ts';
 
 /** What is suppressing the advertisement, in the order the caller checks. */
 export type MdnsSuppression =
+  | { readonly kind: 'tls' }
   /** `--no-mdns` on the command line. */
   | { readonly kind: 'cli-flag' }
   /** `network.mdns = false` in config.toml. */
@@ -33,6 +34,7 @@ export type MdnsSuppression =
   | { readonly kind: 'loopback'; readonly bindHost: string };
 
 export interface MdnsAdvertiseInputs {
+  readonly tlsConfigured?: boolean;
   readonly cliNoMdns: boolean;
   readonly configMdns: boolean;
   readonly isLocalhostBind: boolean;
@@ -51,6 +53,7 @@ export interface MdnsAdvertiseInputs {
 export function mdnsSuppression(inputs: MdnsAdvertiseInputs): MdnsSuppression | null {
   if (inputs.cliNoMdns) return { kind: 'cli-flag' };
   if (!inputs.configMdns) return { kind: 'config' };
+  if (inputs.tlsConfigured) return { kind: 'tls' };
   if (inputs.isLocalhostBind) return { kind: 'loopback', bindHost: inputs.bindHost };
   return null;
 }
@@ -66,6 +69,8 @@ export function mdnsSuppression(inputs: MdnsAdvertiseInputs): MdnsSuppression | 
  */
 export function mdnsSuppressionMessage(suppression: MdnsSuppression): string {
   switch (suppression.kind) {
+    case 'tls':
+      return '[mDNS] Not advertising: TLS is configured; secure discovery support is pending.';
     case 'cli-flag':
       return '[mDNS] Not advertising: --no-mdns was passed.';
     case 'config':

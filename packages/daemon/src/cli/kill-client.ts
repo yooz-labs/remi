@@ -15,7 +15,7 @@ import {
 } from '@remi/shared';
 import type { DiscoverableSession, ProtocolMessage, UUID } from '@remi/shared';
 import { performAuthHandshake } from './auth-helper.ts';
-import { capabilityWsOptions } from './capability-client.ts';
+import { resolveDaemonWsTarget } from './daemon-target.ts';
 import { resolveSession as sharedResolveSession } from './session-resolver.ts';
 
 export interface KillClientOptions {
@@ -28,7 +28,6 @@ export interface KillClientOptions {
 
 export async function runKillClient(opts: KillClientOptions): Promise<void> {
   const { host, port, target, timeout = 5000 } = opts;
-  const url = `ws://${host}:${port}/ws`;
 
   return new Promise<void>((resolve, reject) => {
     let settled = false;
@@ -37,7 +36,8 @@ export async function runKillClient(opts: KillClientOptions): Promise<void> {
     let ws: WebSocket;
 
     try {
-      ws = new WebSocket(url, capabilityWsOptions() as never);
+      const target = resolveDaemonWsTarget(host, port);
+      ws = new WebSocket(target.url, target.options as never);
     } catch {
       reject(new Error(`Cannot connect to daemon at ${host}:${port}. Is remi running?`));
       return;

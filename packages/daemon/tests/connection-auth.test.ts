@@ -1,6 +1,6 @@
 /**
  * Tests for Connection auth state machine.
- * Uses real crypto operations (no mocks).
+ * Uses real crypto operations and a captured transport for state-machine checks.
  *
  * Tests the state transitions:
  *   With auth:    authenticating -> connecting -> connected -> disconnected
@@ -100,6 +100,7 @@ describe('Connection auth state machine', () => {
       const conn = new Connection(ws as unknown as WebSocket, {}, { authenticator });
 
       expect(conn.connectionState).toBe('authenticating');
+      expect(conn.connectionClientPublicKey).toBeNull();
       expect(ws.sentMessages.length).toBe(1);
       expect(ws.sentMessages[0]?.type).toBe('auth_challenge');
     });
@@ -107,12 +108,15 @@ describe('Connection auth state machine', () => {
     test('transitions to connecting after valid auth_response', async () => {
       const ws = new MockWebSocket();
       let authSuccess = false;
+      const authenticated = Promise.withResolvers<void>();
       const conn = new Connection(
         ws as unknown as WebSocket,
         {
           onAuthSuccess: () => {
             authSuccess = true;
+            authenticated.resolve();
           },
+          onAuthFailed: (error) => authenticated.reject(new Error(error)),
         },
         { authenticator },
       );
@@ -128,11 +132,12 @@ describe('Connection auth state machine', () => {
       // Send auth_response to connection
       conn.handleMessage(serialize(response));
 
-      // Wait for async auth processing
-      await new Promise((r) => setTimeout(r, 100));
+      // Wait for the actual auth outcome, within the existing test deadline.
+      await authenticated.promise;
 
       expect(conn.connectionState).toBe('connecting');
       expect(authSuccess).toBe(true);
+      expect(conn.connectionClientPublicKey).toBe(clientPublicKeyBase64);
 
       // Should have sent auth_result(success)
       const result = ws.lastOfType('auth_result') as ProtocolMessage & { success: boolean };
@@ -201,22 +206,38 @@ describe('Connection auth state machine', () => {
       await store.addAuthorizedKey(otherIdFile.publicKey, 'Other Client');
 
       const wsA = new MockWebSocket();
-      const connA = new Connection(wsA as unknown as WebSocket, {}, { authenticator });
+      const authenticatedA = Promise.withResolvers<void>();
+      const connA = new Connection(
+        wsA as unknown as WebSocket,
+        {
+          onAuthSuccess: () => authenticatedA.resolve(),
+          onAuthFailed: (error) => authenticatedA.reject(new Error(error)),
+        },
+        { authenticator },
+      );
       const challengeA = wsA.sentMessages[0] as ProtocolMessage & { challenge: string };
       const sigA = await sign(clientIdentity.privateKey, fromBase64(challengeA.challenge));
       connA.handleMessage(
         serialize(createAuthResponse(clientPublicKeyBase64, sigA, clientFingerprint)),
       );
-      await new Promise((r) => setTimeout(r, 100));
+      await authenticatedA.promise;
 
       const wsB = new MockWebSocket();
-      const connB = new Connection(wsB as unknown as WebSocket, {}, { authenticator });
+      const authenticatedB = Promise.withResolvers<void>();
+      const connB = new Connection(
+        wsB as unknown as WebSocket,
+        {
+          onAuthSuccess: () => authenticatedB.resolve(),
+          onAuthFailed: (error) => authenticatedB.reject(new Error(error)),
+        },
+        { authenticator },
+      );
       const challengeB = wsB.sentMessages[0] as ProtocolMessage & { challenge: string };
       const sigB = await sign(otherIdentity.privateKey, fromBase64(challengeB.challenge));
       connB.handleMessage(
         serialize(createAuthResponse(otherIdFile.publicKey, sigB, otherIdFile.fingerprint)),
       );
-      await new Promise((r) => setTimeout(r, 100));
+      await authenticatedB.promise;
 
       expect(connA.connectionClientFingerprint).toBe(clientFingerprint);
       expect(connB.connectionClientFingerprint).toBe(otherIdFile.fingerprint);
@@ -505,7 +526,7 @@ describe('Connection auth state machine', () => {
   });
 });
 
-describe('Connection answer extraction (#627)', () => {
+describe('Connection answer extraction (#627)', async () => {
   function connectedConn(
     onAnswer: (
       sessionId: UUID,
@@ -514,44 +535,60 @@ describe('Connection answer extraction (#627)', () => {
       claudeSessionId?: UUID,
       extra?: AnswerExtras,
     ) => void,
-  ): Connection {
+  ): { conn: Connection; answered: Promise<void> } {
+    let delivered!: () => void;
+    const answered = new Promise<void>((resolve) => {
+      delivered = resolve;
+    });
     const ws = new MockWebSocket();
-    const conn = new Connection(ws as unknown as WebSocket, { onAnswer }, { skipHelloAck: false });
+    const conn = new Connection(
+      ws as unknown as WebSocket,
+      {
+        onAnswer: (...args) => {
+          onAnswer(...args);
+          delivered();
+        },
+      },
+      { skipHelloAck: false },
+    );
     conn.handleMessage(serialize(createHello('c', '1.0.0')));
-    return conn;
+    return { conn, answered };
   }
   const SID = 's0000000-0000-0000-0000-000000000000' as UUID;
   const QID = 'q0000000-0000-0000-0000-000000000000' as UUID;
 
-  test('a cancel message forwards extra.cancel = true', () => {
+  test('a cancel message forwards extra.cancel = true', async () => {
     let captured: AnswerExtras | undefined;
     let called = false;
-    const conn = connectedConn((_s, _q, _a, _c, extra) => {
+    const { conn, answered } = connectedConn((_s, _q, _a, _c, extra) => {
       called = true;
       captured = extra;
     });
     conn.handleMessage(serialize(createCancelQuestion(SID, QID)));
+    await answered;
     expect(called).toBe(true);
     expect(captured).toEqual({ selections: undefined, cancel: true });
   });
 
-  test('a selections message forwards extra.selections (no cancel)', () => {
+  test('a selections message forwards extra.selections (no cancel)', async () => {
     const sels = [{ questionIndex: 0, optionIndices: [1] }];
     let captured: AnswerExtras | undefined;
-    const conn = connectedConn((_s, _q, _a, _c, extra) => {
+    const { conn, answered } = connectedConn((_s, _q, _a, _c, extra) => {
       captured = extra;
     });
     conn.handleMessage(serialize(createAuqAnswer(SID, QID, sels)));
+    await answered;
     expect(captured?.selections).toEqual(sels);
     expect(captured?.cancel).toBeUndefined();
   });
 
-  test('a plain answer forwards undefined extra', () => {
+  test('a plain answer forwards undefined extra', async () => {
     let captured: AnswerExtras | undefined = { cancel: true }; // sentinel != undefined
-    const conn = connectedConn((_s, _q, _a, _c, extra) => {
+    const { conn, answered } = connectedConn((_s, _q, _a, _c, extra) => {
       captured = extra;
     });
     conn.handleMessage(serialize(createAnswer(SID, QID, 'y')));
+    await answered;
     expect(captured).toBeUndefined();
   });
 });

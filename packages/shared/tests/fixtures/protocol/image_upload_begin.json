@@ -1,0 +1,13 @@
+{
+  "id": "00112233-4455-4677-8899-aabbccddeeff",
+  "timestamp": "2026-10-11T12:00:00.000Z",
+  "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+  "type": "image_upload_begin",
+  "binding": {
+    "harness": "claude",
+    "harnessSessionId": "session-🌱"
+  },
+  "mediaType": "image/png",
+  "byteLength": 4774,
+  "digest": "BLa5u7scPUxMLEMJbHhCf9QaH79Tr3XBZ6Xx1SmD1xw"
+}

@@ -30,6 +30,7 @@ import {
   isolatedEnv,
   makeIsolatedDirs,
   pollUntil,
+  waitForRegisteredDeviceToken,
 } from './hub-test-utils.ts';
 
 interface PushBody {
@@ -74,6 +75,11 @@ describe('a held prompt reaches the dispatcher registered for its session (#1176
     });
 
     const { home, work } = makeIsolatedDirs();
+    fs.mkdirSync(path.join(home, '.remi'), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, '.remi', 'config.toml'),
+      '[notifications]\nlegacy_push_enabled = true\n',
+    );
     const fakeDir = path.join(home, 'fake-claude');
     const fakeBin = path.join(home, 'fake-bin');
     fs.mkdirSync(fakeDir, { recursive: true });
@@ -98,6 +104,8 @@ describe('a held prompt reaches the dispatcher registered for its session (#1176
         '--no-auth',
         '--signaling-url',
         `http://127.0.0.1:${signaling.port}`,
+        '--push-secret',
+        'session-notifier-test-secret',
       ],
       {
         cwd: work,
@@ -109,6 +117,7 @@ describe('a held prompt reaches the dispatcher registered for its session (#1176
           PATH: `${fakeBin}:/usr/bin:/bin`,
           SHELL: fakeShell,
           FAKE_CLAUDE_DIR: fakeDir,
+          REMI_HOME: path.join(home, '.remi'),
         }),
         stdout: 'pipe',
         stderr: 'pipe',
@@ -154,11 +163,7 @@ describe('a held prompt reaches the dispatcher registered for its session (#1176
     try {
       const token = 'a'.repeat(64);
       ws.send(serialize(createRegisterDeviceToken(token, 'ios')));
-      await pollUntil(
-        () => output.text.includes('Device token registered'),
-        8000,
-        'the device token to be registered',
-      );
+      await waitForRegisteredDeviceToken(home, token, 8000);
 
       // Claude Code POSTs a PermissionRequest and waits: the daemon holds it.
       const response = fetch(`http://127.0.0.1:${hookPort}/hooks`, {

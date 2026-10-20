@@ -1,0 +1,13 @@
+{
+  "type": "create_session_request",
+  "id": "90ca6f43-5cc8-4dba-8a86-37bcd045e674",
+  "timestamp": "2026-10-07T16:38:34.576Z",
+  "directory": "/Users/fixture/project",
+  "workspace": {
+    "repository": "/Users/fixture/project",
+    "worktree": {
+      "branch": "feature/fixture",
+      "base": "main"
+    }
+  }
+}

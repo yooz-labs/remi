@@ -1,0 +1,246 @@
+// #1170 feasibility candidate only; the optional reserved-copy adapter is not a daemon caller.
+import { createHash, randomBytes } from 'node:crypto';
+import * as fs from 'node:fs';
+import type { PrivateOps } from '../../packages/daemon/src/tunnel/private-ops';
+import type { AdmittedFile, DirectoryRoot, OpenAt } from './admission';
+import { ADMITTED_READ_CHUNK_SIZE, AdmittedRead } from './admitted-read';
+
+export type { PrivateOps } from '../../packages/daemon/src/tunnel/private-ops';
+export type CopyCheckpoint =
+  | { stage: 'created'; directory: number; partial: string; final: string; fd: number }
+  | { stage: 'read'; bytes: number }
+  | { stage: 'validated'; directory: number; partial: string; final: string };
+const C = fs.constants;
+const CHUNK = ADMITTED_READ_CHUNK_SIZE;
+const DIRECTORY = C.O_RDONLY | C.O_DIRECTORY | C.O_NOFOLLOW;
+
+export class PrivateCopyCleanupError extends Error {
+  constructor(readonly allocatedBytes: number | null) {
+    super('private cleanup failed');
+  }
+}
+
+function ownedAllocation(fd: number, owned: fs.BigIntStats | undefined): number | null {
+  try {
+    if (!owned) return null;
+    const stat = fs.fstatSync(fd, { bigint: true });
+    const bytes = Number(stat.blocks * 512n);
+    return stat.isFile() &&
+      stat.dev === owned.dev &&
+      stat.ino === owned.ino &&
+      stat.uid === owned.uid &&
+      stat.uid === BigInt(process.getuid?.() ?? -1) &&
+      Number.isSafeInteger(bytes) &&
+      bytes >= 0
+      ? bytes
+      : null;
+  } catch {
+    return null; // No path inspection or guessed allocation after losing the owned descriptor.
+  }
+}
+
+function sameName(directory: number, name: string, owned: fs.BigIntStats, openAt: OpenAt): boolean {
+  const fd = openAt(directory, name, C.O_RDONLY | C.O_NOFOLLOW | C.O_NONBLOCK);
+  if (fd < 0) return false;
+  try {
+    const stat = fs.fstatSync(fd, { bigint: true });
+    return stat.isFile() && stat.dev === owned.dev && stat.ino === owned.ino;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function digest(fd: number, size: number): string {
+  const hash = createHash('sha256');
+  const buffer = Buffer.alloc(CHUNK);
+  let offset = 0;
+  while (offset < size) {
+    const count = fs.readSync(fd, buffer, 0, Math.min(buffer.length, size - offset), offset);
+    if (!count) throw new Error('private copy short read');
+    hash.update(buffer.subarray(0, count));
+    offset += count;
+  }
+  return hash.digest('hex');
+}
+
+export class PrivateCopy {
+  private closed = false;
+  constructor(
+    private readonly fd: number,
+    private readonly directory: number,
+    private readonly name: string,
+    readonly size: number,
+    readonly sha256: string,
+    private readonly owned: fs.BigIntStats,
+    private readonly ops: PrivateOps,
+  ) {}
+
+  read(buffer: Buffer, offset: number): number {
+    if (this.closed || !Number.isSafeInteger(offset) || offset < 0 || offset > this.size)
+      throw new Error('private copy unavailable');
+    return fs.readSync(this.fd, buffer, 0, Math.min(buffer.length, this.size - offset), offset);
+  }
+
+  /** Actual allocated blocks of the same completed descriptor, not its path. */
+  allocatedBytes(): number {
+    if (this.closed) throw new Error('private copy unavailable');
+    const stat = fs.fstatSync(this.fd, { bigint: true });
+    const bytes = Number(stat.blocks * 512n);
+    if (
+      !stat.isFile() ||
+      stat.dev !== this.owned.dev ||
+      stat.ino !== this.owned.ino ||
+      stat.uid !== this.owned.uid ||
+      stat.uid !== BigInt(process.getuid?.() ?? -1) ||
+      stat.nlink !== 1n ||
+      stat.size !== BigInt(this.size) ||
+      (stat.mode & 0o777n) !== 0o600n ||
+      !Number.isSafeInteger(bytes) ||
+      bytes < 0
+    )
+      throw new Error('private copy unavailable');
+    return bytes;
+  }
+
+  close(): void {
+    if (this.closed) return;
+    // A failed unlink remains visible and retryable; future quota accounting must retain it.
+    if (
+      !sameName(this.directory, this.name, this.owned, this.ops.openAt) ||
+      this.ops.unlink(this.directory, this.name) !== 0
+    )
+      throw new Error('private cleanup failed');
+    this.closed = true;
+    try {
+      fs.closeSync(this.fd);
+    } finally {
+      fs.closeSync(this.directory);
+    }
+  }
+}
+
+export function copyToPrivate(
+  source: AdmittedFile,
+  root: DirectoryRoot,
+  ops: PrivateOps,
+  checkpoint?: (event: CopyCheckpoint) => void,
+): PrivateCopy | null {
+  let directory = -1;
+  let fd = -1;
+  let partialOwned = false;
+  let finalOwned = false;
+  let completed = false;
+  let owned: fs.BigIntStats | undefined;
+  const token = randomBytes(16).toString('hex');
+  const partial = `${token}.partial`;
+  const final = `${token}.complete`;
+  const discard = () => {
+    let cleanupFailed = false;
+    let allocatedBytes: number | null = null;
+    try {
+      for (const [present, name] of [
+        [finalOwned, final],
+        [partialOwned, partial],
+      ] as const) {
+        if (!present) continue;
+        if (
+          !owned ||
+          !sameName(directory, name, owned, ops.openAt) ||
+          ops.unlink(directory, name) !== 0
+        )
+          cleanupFailed = true;
+      }
+    } catch {
+      cleanupFailed = true;
+    } finally {
+      // The failed unlink may have changed allocation; measure before either descriptor closes.
+      allocatedBytes = ownedAllocation(fd, owned);
+      try {
+        if (fd >= 0) fs.closeSync(fd);
+      } catch {
+        cleanupFailed = true;
+      } finally {
+        try {
+          if (directory >= 0) fs.closeSync(directory);
+        } catch {
+          cleanupFailed = true;
+        }
+      }
+    }
+    // Cleanup failure overrides a normal refusal so a future reservation cannot be released.
+    if (cleanupFailed) throw new PrivateCopyCleanupError(allocatedBytes);
+  };
+  try {
+    if (!root.isCurrent()) return null;
+    const reader = AdmittedRead.capture(source);
+    if (!reader) return null;
+    // Retain our own directory FD for cleanup even if its configured path is replaced.
+    directory = ops.openAt(root.fd, '.', DIRECTORY);
+    if (directory < 0) return null;
+    const privateStat = fs.fstatSync(directory, { bigint: true });
+    if (
+      !privateStat.isDirectory() ||
+      (privateStat.mode & 0o777n) !== 0o700n ||
+      privateStat.uid !== BigInt(process.getuid?.() ?? -1)
+    )
+      return null;
+    fd = ops.create(directory, partial, C.O_RDWR | C.O_CREAT | C.O_EXCL | C.O_NOFOLLOW, 0o600);
+    if (fd < 0) return null;
+    partialOwned = true;
+    owned = fs.fstatSync(fd, { bigint: true });
+    checkpoint?.({ stage: 'created', directory, partial, final, fd });
+    const created = fs.fstatSync(fd, { bigint: true });
+    if (
+      !created.isFile() ||
+      created.nlink !== 1n ||
+      created.size !== 0n ||
+      (created.mode & 0o777n) !== 0o600n
+    )
+      return null;
+    const size = reader.byteLength;
+    while (reader.bytesRead < size) {
+      const offset = reader.bytesRead;
+      const buffer = reader.readNext();
+      const count = buffer.length;
+      let written = 0;
+      while (written < count) {
+        const amount = fs.writeSync(fd, buffer, written, count - written, offset + written);
+        if (!amount) return null;
+        written += amount;
+      }
+      checkpoint?.({ stage: 'read', bytes: reader.bytesRead });
+    }
+    const { sha256 } = reader.finish();
+    if (!root.isCurrent()) return null;
+    fs.fsyncSync(fd);
+    const validCopy = () => {
+      const copied = fs.fstatSync(fd, { bigint: true });
+      return (
+        copied.isFile() &&
+        copied.dev === owned?.dev &&
+        copied.ino === owned.ino &&
+        copied.nlink === 1n &&
+        copied.size === source.size &&
+        (copied.mode & 0o777n) === 0o600n &&
+        digest(fd, size) === sha256
+      );
+    };
+    if (!validCopy()) return null;
+    checkpoint?.({ stage: 'validated', directory, partial, final });
+    // A checkpoint may mutate real filesystem state; validate again at the effect.
+    if (!reader.isCurrent() || !root.isCurrent()) return null;
+    if (!validCopy() || !sameName(directory, partial, owned, ops.openAt)) return null;
+    if (ops.link(directory, partial, final) !== 0) return null;
+    finalOwned = true;
+    if (!sameName(directory, partial, owned, ops.openAt) || ops.unlink(directory, partial) !== 0)
+      return null;
+    partialOwned = false;
+    if (!validCopy() || !sameName(directory, final, owned, ops.openAt)) return null;
+    completed = true;
+    return new PrivateCopy(fd, directory, final, size, sha256, owned, ops);
+  } catch {
+    return null; // Actual native/read/write failures refuse; no project-path fallback.
+  } finally {
+    if (!completed) discard();
+  }
+}

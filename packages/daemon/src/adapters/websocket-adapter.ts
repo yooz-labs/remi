@@ -9,6 +9,7 @@ import type { AgentStatus, Message, ProtocolMessage, UUID } from '@remi/shared';
 import { createAgentOutput, createSessionUpdate } from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
 import { pickClientMessageEvents } from '../server/client-message-events.ts';
+import type { Connection } from '../server/connection.ts';
 import {
   type ServerConfig,
   type ServerEvents,
@@ -23,11 +24,18 @@ import type {
 
 /** WebSocket adapter configuration */
 export interface WebSocketAdapterConfig extends AdapterConfig {
+  readonly relayControl?: ServerConfig['relayControl'];
   /** Port to listen on */
   readonly port: number;
 
   /** Host to bind to */
   readonly host?: string;
+
+  /** Optional PEM contents for HTTPS/WSS on the existing listener (#1170). */
+  readonly tls?: ServerConfig['tls'];
+
+  /** Optional private capability listener and record owned by the same server. */
+  readonly localControl?: ServerConfig['localControl'];
 
   /** Path for WebSocket connections */
   readonly path?: string;
@@ -65,11 +73,14 @@ export class WebSocketAdapter implements ConnectionAdapter {
       enabled: config.enabled ?? true,
       port: config.port ?? DEFAULT_PORT,
       ...(config.host && { host: config.host }),
+      ...(config.tls !== undefined && { tls: config.tls }),
+      ...(config.localControl !== undefined && { localControl: config.localControl }),
       ...(config.path && { path: config.path }),
       ...(config.maxConnections !== undefined && { maxConnections: config.maxConnections }),
       ...(config.authenticator && { authenticator: config.authenticator }),
       ...(config.allowedOrigins && { allowedOrigins: config.allowedOrigins }),
       ...(config.capabilityToken && { capabilityToken: config.capabilityToken }),
+      ...(config.relayControl && { relayControl: config.relayControl }),
     } as WebSocketAdapterConfig;
     this.events = events;
   }
@@ -83,7 +94,7 @@ export class WebSocketAdapter implements ConnectionAdapter {
   }
 
   async start(): Promise<void> {
-    if (this.running) {
+    if (this.running || this.server) {
       throw new Error('WebSocket adapter already running');
     }
 
@@ -144,12 +155,15 @@ export class WebSocketAdapter implements ConnectionAdapter {
     const serverConfig: Partial<ServerConfig> = {
       port: this.config.port,
       ...(this.config.host && { host: this.config.host }),
+      ...(this.config.tls !== undefined && { tls: this.config.tls }),
+      ...(this.config.localControl !== undefined && { localControl: this.config.localControl }),
       ...(this.config.path && { path: this.config.path }),
       ...(this.config.maxConnections !== undefined && {
         maxConnections: this.config.maxConnections,
       }),
       ...(this.config.allowedOrigins && { allowedOrigins: this.config.allowedOrigins }),
       ...(this.config.capabilityToken && { capabilityToken: this.config.capabilityToken }),
+      ...(this.config.relayControl && { relayControl: this.config.relayControl }),
       // Let daemon handle HelloAck to include resume info
       connection: {
         skipHelloAck: true,
@@ -157,19 +171,43 @@ export class WebSocketAdapter implements ConnectionAdapter {
       },
     };
 
-    this.server = new WebSocketServer(serverConfig, serverEvents);
-    await this.server.start();
-    this.running = true;
+    const server = new WebSocketServer(serverConfig, serverEvents);
+    this.server = server;
+    try {
+      await server.start();
+      if (this.server !== server || !server.running) {
+        throw new Error('WebSocket adapter start cancelled');
+      }
+      this.running = true;
+    } catch (error) {
+      if (this.server === server) {
+        this.running = false;
+      }
+      try {
+        await server.stop();
+      } catch (cleanupError) {
+        // A retained endpoint tuple still needs this exact server for a later stop retry.
+        throw new AggregateError([error, cleanupError], 'WebSocket adapter startup cleanup failed');
+      }
+      if (this.server === server) this.server = null;
+      throw error;
+    }
   }
 
   async stop(): Promise<void> {
-    if (!this.running || !this.server) {
+    const server = this.server;
+    if (!server) {
       return;
     }
 
-    await this.server.stop();
-    this.server = null;
     this.running = false;
+    // Failed retirement closes the sockets but retains the server's owned tuple.
+    // Keep that reference, and block starts, until explicit cleanup succeeds.
+    await server.stop();
+    if (this.server === server) {
+      this.server = null;
+      this.running = false;
+    }
   }
 
   sendMessage(connectionId: UUID, message: Message): boolean {
@@ -209,6 +247,11 @@ export class WebSocketAdapter implements ConnectionAdapter {
 
   hasConnection(connectionId: UUID): boolean {
     return this.server?.getConnection(connectionId) !== undefined;
+  }
+
+  /** Owned direct server lookup; adapter metadata and virtual relay peers cannot supply this object. */
+  getDirectConnection(connectionId: UUID): Connection | undefined {
+    return this.server?.getConnection(connectionId);
   }
 
   closeConnection(connectionId: UUID, reason: string): boolean {

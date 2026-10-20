@@ -42,6 +42,20 @@ const ADVERTISING: MdnsAdvertiseInputs = {
 };
 
 describe('mdnsSuppression', () => {
+  test('TLS suppresses legacy advertising before a loopback remedy, preserving explicit flags', () => {
+    expect(mdnsSuppression({ ...ADVERTISING, tlsConfigured: true, isLocalhostBind: true })).toEqual(
+      { kind: 'tls' },
+    );
+    expect(mdnsSuppression({ ...ADVERTISING, tlsConfigured: true, cliNoMdns: true })).toEqual({
+      kind: 'cli-flag',
+    });
+    expect(mdnsSuppression({ ...ADVERTISING, tlsConfigured: true, configMdns: false })).toEqual({
+      kind: 'config',
+    });
+    expect(mdnsSuppressionMessage({ kind: 'tls' })).toContain(
+      'secure discovery support is pending',
+    );
+  });
   test('a network bind with mDNS enabled advertises', () => {
     expect(mdnsSuppression(ADVERTISING)).toBeNull();
   });

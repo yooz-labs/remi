@@ -12,8 +12,19 @@ import { parseConnectionId, useConnectionManager } from '@/hooks';
 import { type AckWaiters, awaitAck, resolveAckWaiter } from '@/lib/ack-waiter';
 import { probeAuthInfo } from '@/lib/auth-probe';
 import { deriveConnectionBannerError } from '@/lib/connection-banner';
-import { dedupeConnectionUrls } from '@/lib/connection-id';
+import { childDaemonUrl, dedupeConnectionUrls } from '@/lib/connection-id';
 import { nativeHubUrlToConnect } from '@/lib/native-host';
+import { RelayDevicesPanel } from '@/components/session/RelayDevicesPanel';
+import { forgetRelayPin, loadRelayPins } from '@/lib/relay-pins';
+import { forgetNativeRelayPin, loadNativeRelayPins } from '@/lib/native-push-trust';
+import {
+  enableNativeSecurePush,
+  prepareNativePushRegistration,
+  validateNativePushRegistration,
+} from '@/lib/native-push-registration';
+import { SecurePushSubscriptions } from '@/lib/secure-push-subscriptions';
+import { chatSubmissionLabel } from '@/lib/structured-chat';
+import type { RelayAnswerStatus } from '@/lib/relay-requests';
 import { getIdentityRevision, hasIdentity, isIdentityEncrypted, loadIdentity, unlockStoredIdentity } from '@/lib/identity-client';
 import {
   acknowledgeSend,
@@ -23,15 +34,23 @@ import {
   sweepTimeouts,
   trackSend,
 } from '@/lib/message-ack-tracker';
-import { deduplicateMessage } from '@/lib/message-dedup';
+import { deduplicateMessage, replaceTranscriptMessage } from '@/lib/message-dedup';
 import { cleanPreviewText, stripProtocolTags } from '@/lib/message-filter';
 import { mergeResyncSurvivors, selectResyncSurvivors } from '@/lib/message-resync';
 import { clearNativeRoute, setNativeRoute, syncNativeIdentity } from '@/lib/native-bridge';
 import { syncNativeStatusBarTheme } from '@/lib/native-theme';
 import { setSoundEnabled } from '@/lib/notifications';
 import { promptWaitingRefusedMessageId } from '@/lib/prompt-waiting';
+import { markInputReceipt, markPartialInput, partialInputMessageId, refusedInputMessageId } from '@/lib/input-refusal';
 import { pushPreferencesEqual, pushPreferencesFromSettings } from '@/lib/push-preferences';
 import { relayAnswerDirect } from '@/lib/push-answer-relay';
+import {
+  FOLLOW_WINDOW_MS,
+  type PendingFollow,
+  followLanding,
+  resumeOutcome,
+  startFollow,
+} from '@/lib/resume-follow';
 import { resolvePushAnswerTarget } from '@/lib/push-answer-resolver';
 import {
   RESOLVED_TRACE_LINGER_MS,
@@ -66,7 +85,9 @@ import type {
 } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
 import { LocalNotifications } from '@capacitor/local-notifications';
-import type { UnlockedIdentity } from '@remi/shared';
+import type { ClientSigningIdentity, NativeSigningIdentity } from '@/lib/client-signer';
+import { NativeIdentityPanel } from '@/components/settings/NativeIdentityPanel';
+import { currentNativeIdentity, inspectNativeIdentity, unlockNativeIdentity, usesNativeIdentity } from '@/lib/native-identity';
 import { assertNever, isValidMessage } from '@remi/shared';
 import type { ProtocolMessage, PushPreferences, RecentDirectory } from '@remi/shared/protocol.ts';
 import {
@@ -256,6 +277,8 @@ function App() {
   // banner and outgoing user input is wrapped in a markdown blockquote so
   // Claude Code receives the quoted context (#401).
   const [replyContexts, setReplyContexts] = useState<Map<UUID, ReplyContext>>(new Map());
+  const [deviceConnectionId, setDeviceConnectionId] = useState<ConnectionId | null>(null);
+  const [relayForgetError, setRelayForgetError] = useState<string | null>(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [modalConnectionId, setModalConnectionId] = useState<ConnectionId | null>(null);
   const openConnectModal = useCallback(() => {
@@ -269,10 +292,19 @@ function App() {
   const [resumingSession, setResumingSession] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
-  const [unlockedIdentity, setUnlockedIdentity] = useState<UnlockedIdentity | null>(null);
+  const [unlockedIdentity, setUnlockedIdentity] = useState<ClientSigningIdentity | null>(null);
+  const [relayIdentityRevision, setRelayIdentityRevision] = useState(0);
+  const restoredRelayIdentityRef = useRef<string | null>(null);
 
   const activeSessionIdRef = useRef<UUID | null>(null);
   const resumingSessionRef = useRef<string | null>(null);
+  /** A resume through a hub started a child daemon on another port (#1129): the session to open
+   *  when that connection says hello, if the person has not moved on. */
+  const pendingFollowRef = useRef<PendingFollow | null>(null);
+  /** The session the person was on when they tapped Resume: a follow lands only if they are still
+   *  there. Captured at the tap, not at the answer, because a hub answers only once the child has
+   *  registered, seconds later, and the person may have gone elsewhere meanwhile (#688). */
+  const resumeAskedFromRef = useRef<UUID | null>(null);
   const loadedTranscriptsRef = useRef<Set<string>>(new Set());
   const messagesRef = useRef(messages);
   const questionsRef = useRef(questions);
@@ -294,6 +326,8 @@ function App() {
   // re-create handleSend and bust InputArea memoization.
   const replyContextsRef = useRef<Map<UUID, ReplyContext>>(replyContexts);
   const requestSessionListRef = useRef<typeof requestSessionList | null>(null);
+  const connectionModeRef = useRef<((id: ConnectionId) => 'direct' | 'relay' | null) | null>(null);
+  const directConnectionUrlRef = useRef<((id: ConnectionId) => string | null) | null>(null);
   const connectionsRef = useRef<readonly ConnectionState[]>([]);
   // Outstanding user_input sends awaiting their `ack`, keyed by message id
   // (#663). Mutated by handleSend (track), the 'ack' case (acknowledge), and
@@ -511,6 +545,7 @@ function App() {
 
     switch (message.type) {
       case 'hello_ack': {
+        const relayConnection = connectionModeRef.current?.(connectionId) === 'relay';
         // The attached session from this daemon. Additional sessions may arrive via session_list_response.
         if (!message.sessionId) {
           // Normal for a session-less hub (#542): its ack carries null and
@@ -556,7 +591,7 @@ function App() {
           // session ID (the daemon may have assigned a new session). Keep sessions from
           // other connections and sessions matching the new ID untouched.
           const cleaned = prev.filter(
-            (s) => s.connectionId !== connectionId || s.id === sessionId,
+            (s) => relayConnection || s.connectionId !== connectionId || s.id === sessionId,
           );
 
           const exists = cleaned.some((s) => s.id === sessionId);
@@ -570,6 +605,7 @@ function App() {
                     ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
                     ...(ackTranscriptPath !== undefined && { transcriptPath: ackTranscriptPath }),
                     ...(message.harness !== undefined && { harness: message.harness }),
+                    ...(message.harnessSessionId !== undefined && { harnessSessionId: message.harnessSessionId }),
                     // #662/#663: refresh on EVERY hello_ack, not just the
                     // first -- this also fires when a queued connection is
                     // promoted (fresh hello_ack with attachState: 'attached'),
@@ -595,6 +631,7 @@ function App() {
               ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
               ...(ackTranscriptPath !== undefined && { transcriptPath: ackTranscriptPath }),
               ...(message.harness !== undefined && { harness: message.harness }),
+                    ...(message.harnessSessionId !== undefined && { harnessSessionId: message.harnessSessionId }),
               ...(message.attachState !== undefined && { attachState: message.attachState }),
             } satisfies UISession,
           ];
@@ -605,11 +642,10 @@ function App() {
         // right daemon when multiple are paired. Look up the connection's URL
         // synchronously from the latest snapshot.
         const conn = connectionsRef.current.find((c) => c.connectionId === connectionId);
-        if (conn?.url) {
+        if (conn?.url && conn.mode === 'direct') {
           rememberSessionDaemon(sessionId, conn.url);
-          // Mirror the daemon URL + signer to native storage (#591 P2) so a
-          // lock-screen answer can sign + POST to the daemon's /answer endpoint
-          // without opening the app. No-ops off-native; never throws.
+          // Store only the public daemon route for the native direct-answer
+          // handler. Its signer uses the durable native identity (#1199).
           void setNativeRoute(sessionId, {
             wsUrl: conn.url,
             ...(ackClaudeSessionId !== undefined && { claudeSessionId: ackClaudeSessionId }),
@@ -630,13 +666,25 @@ function App() {
         // deep-links navigate via their own `push-notification-tap` handler,
         // not here.
         const oldActive = activeSessionIdRef.current;
-        if (oldActive && oldActive !== sessionId) {
+        if (!relayConnection && oldActive && oldActive !== sessionId) {
           const oldSession = sessionsRef.current.find((s) => s.id === oldActive);
           if (oldSession?.connectionId === connectionId) {
             setActiveSessionId(evictIfActive(activeSessionIdRef.current, oldActive));
             setMessages((prev) => prev.filter((m) => m.sessionId !== oldActive));
             setQuestions((prev) => clearSessionQuestions(prev, oldActive));
           }
+        }
+        // The child daemon a resume through a hub started has said hello (#1129): open its
+        // session, unless the person went elsewhere since they asked (#688).
+        const landing = followLanding(
+          pendingFollowRef.current,
+          sessionId,
+          activeSessionIdRef.current,
+          Date.now(),
+        );
+        if (landing !== null) {
+          pendingFollowRef.current = null;
+          setActiveSessionId(landing as UUID);
         }
         break;
       }
@@ -724,7 +772,7 @@ function App() {
           if (dedup.action === 'replace') {
             // Replace the optimistic/PTY duplicate with the transcript version,
             // preserving the original id as React key to prevent remount flicker
-            const replaced = dedup.preserveId ? { ...uiMessage, id: dedup.preserveId } : uiMessage;
+            const replaced = replaceTranscriptMessage(prev[dedup.replaceIndex], uiMessage);
             return prev.map((m, i) => (i === dedup.replaceIndex ? replaced : m));
           }
 
@@ -904,7 +952,8 @@ function App() {
         // answer with no in-app confirmation), flip a still-pending card to a
         // brief "resolved elsewhere" trace, then fade it after the linger window.
         // resolveQuestionCard decides per card: pending => trace+fade, submitting
-        // (#627) => removed here, answered-locally => left to its own timer.
+        // (#627 direct) => removed here, relay receipt => waits for correlation,
+        // answered-locally => left to its own timer.
         const resolvedSessionId = message.sessionId;
         const resolvedQuestionId = message.questionId;
         // Compute the next map from the CURRENT committed ref, then drive both
@@ -966,6 +1015,9 @@ function App() {
         // degradation is a stated principle, so skip-and-continue preserves it
         // while keeping the compile-time guarantee for types we do know (#897).
         for (const replayMsg of message.messages) {
+          // Browser links are live ephemeral frames; never replay or print their destinations.
+          if (replayMsg && typeof replayMsg === 'object' && 'type' in replayMsg &&
+            typeof replayMsg.type === 'string' && replayMsg.type.startsWith('browser_link_')) continue;
           if (!isValidMessage(replayMsg)) {
             console.debug('Skipping unknown message type in replay batch', replayMsg);
             continue;
@@ -1019,6 +1071,7 @@ function App() {
               ...(ds.claudeSessionId !== undefined && { claudeSessionId: ds.claudeSessionId }),
               ...(ds.transcriptPath !== undefined && { transcriptPath: ds.transcriptPath }),
               ...(ds.harness !== undefined && { harness: ds.harness }),
+              ...(ds.harnessSessionId !== undefined && { harnessSessionId: ds.harnessSessionId }),
             };
           })
           // Dedup: same session ID from daemon + transcript → keep daemon version.
@@ -1106,7 +1159,10 @@ function App() {
           if (attachedSession && !discoveredIds.has(attachedSession.id)) {
             result.push(attachedSession);
           }
-          result.push(...discovered);
+          result.push(...discovered.map(session => {
+            const previous = live.find(item => item.id === session.id && item.connectionId === connectionId);
+            return previous?.attachState ? { ...session, attachState: previous.attachState } : session;
+          }));
           // Ensure the hello_ack session is always marked connected
           if (helloAckSessionId) {
             for (let i = 0; i < result.length; i++) {
@@ -1131,13 +1187,14 @@ function App() {
 
         // Auto-connect to other daemon ports on the same machine.
         // Use setTimeout to run after this handler completes (avoids stale refs).
-        if (message.daemonPorts && message.daemonPorts.length > 0) {
+        const parentUrl = directConnectionUrlRef.current?.(connectionId);
+        if (parentUrl && message.daemonPorts && message.daemonPorts.length > 0) {
           const ports = [...message.daemonPorts];
-          const host = connectionId.replace(/:\d+$/, '');
           setTimeout(() => {
+            if (directConnectionUrlRef.current?.(connectionId) !== parentUrl) return;
             for (const port of ports) {
-              const url = `ws://${host}:${port}/ws`;
-              connectDirectRef.current(url);
+              const url = childDaemonUrl(parentUrl, port);
+              if (url) connectDirectRef.current(url);
             }
           }, 100);
         }
@@ -1259,17 +1316,68 @@ function App() {
       case 'resume_session_response': {
         const targetSessionId = resumingSessionRef.current;
         setResumingSession(null);
-        if (message.success && message.sessionId) {
-          setActiveSessionId(message.sessionId);
+        const outcome = resumeOutcome(message);
+        if (outcome.kind === 'open') {
+          setActiveSessionId(outcome.sessionId as UUID);
+        } else if (outcome.kind === 'follow') {
+          // A hub started a child daemon on another port (#1129). The session is not in our list
+          // and no connection owns it yet, so opening its id now would point the chat at nothing:
+          // refresh the list (its `daemonPorts` make us connect to the child, as for a created
+          // session) and open the session when that connection says hello, if the person is still
+          // where they were when they tapped Resume.
+          const pending = startFollow(
+            outcome.sessionId,
+            resumeAskedFromRef.current,
+            Date.now(),
+          );
+          // The child may already have said hello, if this client was connected to it.
+          const here = sessionsRef.current.some(
+            (s) => s.id === outcome.sessionId && s.connectionStatus === 'connected',
+          );
+          const landing = here
+            ? followLanding(pending, outcome.sessionId, activeSessionIdRef.current, Date.now())
+            : null;
+          if (landing !== null) {
+            setActiveSessionId(landing as UUID);
+          } else {
+            pendingFollowRef.current = pending;
+            const reqList = requestSessionListRef.current;
+            if (reqList) {
+              const conns = connectionsRef.current.filter((c) => c.status === 'connected');
+              for (const conn of conns) {
+                reqList(conn.connectionId, conns.length === 1);
+              }
+            }
+            // A child this client cannot reach (an SSH tunnel that forwards only the hub's port)
+            // never says hello: say so when the window ends instead of leaving the person waiting.
+            const expiredSessionId = (targetSessionId ?? activeSessionIdRef.current ?? '') as UUID;
+            setTimeout(() => {
+              if (pendingFollowRef.current !== pending) return;
+              pendingFollowRef.current = null;
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: generateId(),
+                  sessionId: expiredSessionId,
+                  sender: 'system',
+                  content:
+                    'The resumed session did not appear. It is running on the host; refresh the list, or reconnect if it is on a port this device cannot reach.',
+                  timestamp: new Date().toISOString(),
+                  state: 'delivered',
+                  isEditing: false,
+                } satisfies UIMessage,
+              ]);
+            }, FOLLOW_WINDOW_MS);
+          }
         } else {
-          console.error(`Failed to resume session: ${message.error}`);
+          console.error(`Failed to resume session: ${outcome.error}`);
           // Use the target session ID so the error appears in the right session's chat
           const errorSessionId = (targetSessionId ?? activeSessionIdRef.current ?? '') as UUID;
           const errorMsg: UIMessage = {
             id: generateId(),
             sessionId: errorSessionId,
             sender: 'system',
-            content: `Failed to resume session: ${message.error ?? 'Unknown error'}`,
+            content: `Failed to resume session: ${outcome.error}`,
             timestamp: new Date().toISOString(),
             state: 'delivered',
             isEditing: false,
@@ -1293,7 +1401,8 @@ function App() {
         };
         setMessages((prev) => [...prev, detachedMsg]);
         // On successful detach, clear active session so the UI reflects
-        // the disconnected state. The WebSocket close will handle cleanup.
+        // the detached view. The connection manager invalidates receiver context;
+        // the daemon may keep this WebSocket open.
         if (message.success) {
           setActiveSessionId(null);
         }
@@ -1452,6 +1561,40 @@ function App() {
             break;
           }
         }
+        // #1488: the text may have landed before a queued submission was stopped.
+        // Remove automatic retries and keep this result even if its receipt ACK is late.
+        const partialMessageId = partialInputMessageId(message);
+        if (partialMessageId) {
+          pendingSendsRef.current = rejectSend(pendingSendsRef.current, partialMessageId);
+          setMessages((prev) => {
+            const matched = prev.some((m) => m.id === partialMessageId && m.sender === 'user' && m.connectionId === connectionId);
+            if (matched) return prev.map((m) => m.id === partialMessageId && m.connectionId === connectionId ? markPartialInput(m) : m);
+            // Rotation can remove the optimistic row before this refusal arrives.
+            // Keep an independent notice in the error's session instead of hiding it.
+            const refusedSession = asNonEmptyString(message.details?.['sessionId']) as UUID | undefined;
+            if (!refusedSession) return prev;
+            return [...prev, {
+              id: message.id,
+              sessionId: refusedSession,
+              connectionId,
+              sender: 'system' as const,
+              content: errorText,
+              timestamp: message.timestamp,
+              state: 'delivered' as const,
+              isEditing: false,
+              inputMayBePartial: true,
+            }];
+          });
+          break;
+        }
+        const refusedMessageId = refusedInputMessageId(message);
+        if (refusedMessageId) {
+          pendingSendsRef.current = rejectSend(pendingSendsRef.current, refusedMessageId);
+          setMessages((prev) => prev.map((m) =>
+            m.id === refusedMessageId && m.sender === 'user' && m.connectionId === connectionId
+              ? { ...m, state: 'failed' as const } : m,
+          ));
+        }
         // NOT_ACTIVE_CONNECTION (#662/#663): this connection is read-only --
         // another client holds the session's exclusive write lock -- and the
         // input that triggered this error was never delivered to the PTY
@@ -1600,7 +1743,8 @@ function App() {
           // "Answering..." forever (#800 review). Force-remove it outright by
           // id first, mirroring resolveQuestionCard's submitting-card branch
           // for question_resolved: no trace, no protection.
-          if (staleSessionId && staleQuestionId) {
+          if (staleSessionId && staleQuestionId && !getSessionQuestions(questionsRef.current, staleSessionId)
+            .some(question => question.id === staleQuestionId && question.awaitingRelayOutcome)) {
             commitQuestionsIfChanged(
               removeQuestionById(questionsRef.current, staleSessionId, staleQuestionId),
               staleSessionId,
@@ -1666,7 +1810,7 @@ function App() {
           setMessages((prev) =>
             prev.map((m) =>
               m.id === message.ack.messageId && m.sender === 'user'
-                ? { ...m, state: 'delivered' as const }
+                ? markInputReceipt(m)
                 : m,
             ),
           );
@@ -1690,9 +1834,12 @@ function App() {
       // omitted -- if a future/older daemon ever echoes one, it is silently
       // dropped instead of console.debug-spamming, and the #897 exhaustiveness
       // sweep records that this was decided, not forgotten.
+      case 'relay_devices_request':
+      case 'relay_device_revoke_request':
       case 'hello':
       case 'user_input':
       case 'answer':
+      case 'native_answer':
       case 'bullet_expand_request':
       case 'session_list_request':
       case 'transcript_load_request':
@@ -1717,6 +1864,54 @@ function App() {
       case 'auth_result':
         break;
 
+      // The insertion client action is a separate gate; its frames never become chat bubbles.
+      case 'image_insert_request':
+      case 'chat_submit_request':
+      case 'chat_submit_result':
+      case 'image_insert_result':
+        break;
+
+      // Direct tunnel frames are strictly decoded by WebSocketClient and owned by
+      // their connection controllers; they never become chat bubbles.
+      case 'file_fetch_begin':
+      case 'file_fetch_read':
+      case 'file_fetch_complete':
+      case 'file_fetch_cancel':
+      case 'file_fetch_accepted':
+      case 'file_fetch_chunk':
+      case 'file_fetch_result':
+      case 'file_fetch_cancel_result':
+      case 'file_fetch_refused':
+      case 'browser_link_receiver_request':
+      case 'browser_link_receiver_result':
+      case 'browser_link_receiver_ended':
+      case 'browser_link_candidate':
+      case 'image_upload_begin':
+      case 'image_upload_chunk':
+      case 'image_upload_complete':
+      case 'image_upload_cancel':
+      case 'image_upload_accepted':
+      case 'image_upload_chunk_ack':
+      case 'image_upload_result':
+      case 'image_upload_cancel_result':
+      case 'image_upload_refused':
+        break;
+
+      // R5 secure subscription responses are settled by RelayRequests in the
+      // connection manager for SecurePushSubscriptions; nothing more to do here (#1200).
+      case 'secure_push_register_request':
+      case 'secure_push_register_response':
+      case 'secure_push_unregister_request':
+      case 'secure_push_unregister_response':
+        break;
+
+      // R4 encrypted outcomes are routed through the connection coordinator.
+      // Its handlers are installed together with the relay channel below.
+      case 'answer_result':
+      case 'relay_devices_response':
+      case 'relay_device_revoke_response':
+        break;
+
       // Keep-alive, both directions. lib/websocket-client.ts's own
       // `handleMessage` already auto-replies pong to an inbound ping before
       // forwarding it up, and both ping and pong double as proof-of-life for
@@ -1729,7 +1924,7 @@ function App() {
       // d2c per MESSAGE_DIRECTION, but createAgentOutput (protocol.ts) has no
       // live caller on the WebSocket/relay path today: AdapterRegistry.
       // sendMessage, the only thing that would invoke
-      // WebSocketAdapter.sendMessage/RelayAdapter.sendMessage, is never
+      // WebSocketAdapter.sendMessage, is never
       // called anywhere in packages/daemon/src (verified by grep) outside
       // TelegramAdapter's unrelated same-named internal helper. Chat delivery
       // to the web client goes through structured_agent_output and
@@ -1754,6 +1949,12 @@ function App() {
       case 'raw_pty_output':
         break;
 
+      // #1236 phase C: the native new-session sheet asks for the hub's recent repositories; the
+      // web client has no such sheet yet, so it neither sends the request nor reads the answer.
+      case 'recent_repositories_request':
+      case 'recent_repositories_response':
+        break;
+
       default:
         assertNever(message);
     }
@@ -1767,10 +1968,9 @@ function App() {
     resumingSessionRef.current = resumingSession;
   }, [resumingSession]);
 
-  // Bridge the current signer to native storage once on launch (#591 P2) so the
-  // lock-screen answer handler can sign even before a fresh connection — covers
-  // a cold start from a push and identity changes made in Settings. No-op
-  // off-native; re-pinned per-connection at hello_ack.
+  // Cleanup of the old Preferences seed is permitted only after verified
+  // inward native migration (#1199). The native signer owns its durable key;
+  // this call never writes private bytes from JavaScript.
   useEffect(() => {
     void syncNativeIdentity();
   }, []);
@@ -1787,14 +1987,38 @@ function App() {
     replyContextsRef.current = replyContexts;
   }, [replyContexts]);
 
+  const handleRelayAnswerOutcome = useCallback((_connectionId: ConnectionId, status: RelayAnswerStatus) => {
+    const next = new Map(questionsRef.current);
+    for (const [key, question] of next) {
+      if (question.sessionId !== status.sessionId || question.id !== status.questionId) continue;
+      next.set(key, { ...question, submitting: false, awaitingRelayOutcome: true, deliveryOutcome: status.outcome,
+        ...(status.outcome === 'delivered' ? { answeredWith: question.submittedAnswer ?? 'Submitted' } : {}) });
+    }
+    questionsRef.current = next; setQuestions(next);
+    if (status.outcome === 'delivered') {
+      setTimeout(() => {
+        const remaining = removeQuestionById(questionsRef.current, status.sessionId, status.questionId);
+        questionsRef.current = remaining; setQuestions(remaining);
+      }, RESOLVED_TRACE_LINGER_MS);
+    }
+  }, []);
+
   // Connection manager: manages N simultaneous WebSocket connections
   const {
     connections,
     connectDirect,
+    connectRelay,
+    requestSessionAttach,
+    listRelayDevices,
+    revokeRelayDevice,
+    registerRelayPush,
+    unregisterRelayPush,
     disconnect: disconnectConnection,
     reconnect: reconnectConnection,
+    reconnectChat: reconnectChatConnection,
     disconnectAll,
     sendInput,
+    submitStructuredChat,
     sendEscape,
     sendAnswer,
     sendAuqAnswer,
@@ -1811,13 +2035,40 @@ function App() {
     passphraseServerFingerprint,
     provideIdentity,
     getSessionId,
+    receiveBrowserLinks, stopBrowserLinks, openBrowserLink,
+    downloadFile, cancelFileDownload, dismissFileDownload, saveDownloadedFile,
+    releaseFileDownloadSave,
+    uploadImage,
+    cancelImageUpload,
+    dismissImageUpload,
+    addImageToDraft,
+    takeImageDraftForSend,
+    getConnectionMode,
+    getDirectConnectionUrl,
+    getOwnFingerprint,
   } = useConnectionManager({
     onMessage: handleMessage,
+    onAnswerOutcome: handleRelayAnswerOutcome,
     unlockedIdentity,
     clientId: 'remi-web',
     clientVersion: '0.0.1',
     autoReconnect: settings.autoReconnect,
   });
+
+  const nativeConnectionsRef = useRef(connections);
+  nativeConnectionsRef.current = connections;
+  connectionModeRef.current = getConnectionMode;
+  directConnectionUrlRef.current = getDirectConnectionUrl;
+
+  const handleNativeIdentityReady = useCallback((identity: NativeSigningIdentity | null) => {
+    setUnlockedIdentity(identity);
+    if (!identity) { restoredRelayIdentityRef.current = null; disconnectAll(); return; }
+    provideIdentity('' as ConnectionId, identity);
+    for (const connection of nativeConnectionsRef.current) {
+      if (connection.status === 'error' || connection.status === 'disconnected') reconnectConnection(connection.connectionId);
+    }
+  }, [disconnectAll, provideIdentity, reconnectConnection]);
+
 
   // Keep refs in sync for use in handleMessage callbacks
   getSessionIdRef.current = getSessionId;
@@ -1866,9 +2117,9 @@ function App() {
       });
       return changed ? next : prev;
     });
-    // Clear stale questions if all connections are down
+    // Drop actionable stale cards while keeping delivery receipts after close (#1199).
     if (!hasAnyConnected && !isAnyConnecting) {
-      setQuestions(new Map());
+      setQuestions(previous => new Map([...previous].filter(([, question]) => question.awaitingRelayOutcome)));
       setResumingSession(null);
     }
   }, [connections, hasAnyConnected, isAnyConnecting]);
@@ -1892,6 +2143,28 @@ function App() {
   }, [connectedIds, requestSessionList]);
 
   // Auto-connect from localStorage on mount (run once)
+  useEffect(() => {
+    const changed = () => { restoredRelayIdentityRef.current = null; setUnlockedIdentity(null); setRelayIdentityRevision(value => value + 1); };
+    window.addEventListener('remi:identity-changed', changed);
+    return () => window.removeEventListener('remi:identity-changed', changed);
+  }, []);
+  useEffect(() => {
+    const stored = usesNativeIdentity() ? null : loadIdentity();
+    const publicKey = unlockedIdentity?.publicKeyRaw ?? (stored && !isIdentityEncrypted() ? stored.publicKey : null);
+    if (!publicKey) { restoredRelayIdentityRef.current = null; return; }
+    const context = `${relayIdentityRevision}:${publicKey}`;
+    if (restoredRelayIdentityRef.current === context) return;
+    restoredRelayIdentityRef.current = context;
+    let cancelled = false;
+    void (async () => {
+      const pins = unlockedIdentity && 'kind' in unlockedIdentity
+        ? await loadNativeRelayPins(unlockedIdentity) : loadRelayPins();
+      if (cancelled || restoredRelayIdentityRef.current !== context) return;
+      for (const pin of pins) void connectRelay(pin).catch(() => { /* Explicit retry keeps the public native/browser pin. */ });
+    })().catch(() => { /* Missing or replaced native authority never imports a browser pin. */ });
+    return () => { cancelled = true; };
+  }, [unlockedIdentity, connectRelay, relayIdentityRevision]);
+
   const connectDirectRef = useRef(connectDirect);
   useEffect(() => {
     connectDirectRef.current = connectDirect;
@@ -2079,7 +2352,7 @@ function App() {
         notifyFailure();
         return;
       }
-      // relay.kind === 'unreachable' (network / WebRTC-relay-only daemon) or
+      // relay.kind === 'unreachable' (daemon unreachable directly) or
       // 'auth-failed' (HTTP 401 — no/invalid detached signature, but the WS
       // challenge-response may still succeed). Both fall back to the WebSocket
       // reconnect path.
@@ -2093,7 +2366,7 @@ function App() {
       // waiting out the 25s deadline. Covers both "no identity" and "encrypted
       // identity" (isIdentityEncrypted() is false when none is stored, so both
       // are checked).
-      if (authRequired && (!hasIdentity() || isIdentityEncrypted())) {
+      if (authRequired && (usesNativeIdentity() ? !currentNativeIdentity() : (!hasIdentity() || isIdentityEncrypted()))) {
         console.warn('[App] WS fallback blocked: identity missing or needs passphrase');
         notifyFailure();
         return;
@@ -2219,6 +2492,54 @@ function App() {
     [connectedIds, cmSendMessage],
   );
 
+  // Secure relay push (#1200): this device subscribes on each natively paired
+  // relay machine once the OS has a token, and again on a new token, a
+  // reconnect or a preference change. Separate from the plaintext path above,
+  // which a relay-paired machine never uses (the daemon's activation latch).
+  const nativeIdentity = unlockedIdentity && 'kind' in unlockedIdentity ? unlockedIdentity : null;
+  const securePushRef = useRef<SecurePushSubscriptions | null>(null);
+  if (!securePushRef.current) {
+    securePushRef.current = new SecurePushSubscriptions(
+      {
+        prepare: async (machinePublicKey) => {
+          const identity = currentNativeIdentity();
+          if (!identity) throw new Error('Native identity unavailable.');
+          const ticket = await prepareNativePushRegistration(identity, machinePublicKey);
+          return { metadata: ticket.metadata, validate: () => validateNativePushRegistration(ticket) };
+        },
+        register: (connectionId, registration) =>
+          registerRelayPush(connectionId as ConnectionId, registration),
+      },
+      (_connectionId, outcome) => {
+        // Codes only: nothing here carries a token, key or content.
+        if (outcome.kind === 'refused') console.warn(`[SecurePush] registration refused: ${outcome.error}`);
+        else if (outcome.kind === 'unverified') console.warn('[SecurePush] registration outcome unverified');
+      },
+    );
+  }
+  useEffect(() => {
+    const changed = () => securePushRef.current?.tokenChanged();
+    window.addEventListener('remi:native-push-token-changed', changed);
+    return () => window.removeEventListener('remi:native-push-token-changed', changed);
+  }, []);
+  const nativeIdentityKey = nativeIdentity ? `${nativeIdentity.publicKeyRaw}:${nativeIdentity.revision}` : null;
+  useEffect(() => {
+    if (nativeIdentityKey !== null) securePushRef.current?.reset();
+  }, [nativeIdentityKey]);
+  const securePushPrefs = useMemo(
+    () => pushPreferencesFromSettings(settings),
+    [settings],
+  );
+  useEffect(() => {
+    const targets = nativeIdentityKey === null ? [] : connections.flatMap((connection) =>
+      connection.mode === 'relay' && connection.status === 'connected' && connection.relayPin
+        ? [{ connectionId: connection.connectionId, machinePublicKey: connection.relayPin.machinePublicKey }]
+        : [],
+    );
+    securePushRef.current?.sync(targets, securePushPrefs);
+  }, [connections, nativeIdentityKey, securePushPrefs]);
+  const hasRelayMachine = connections.some((connection) => connection.mode === 'relay');
+
   // Get active session. Derive connectionStatus from live connection state
   // at render time to avoid stale status from session_list_response merge timing.
   const rawActiveSession = sessions.find((s) => s.id === activeSessionId);
@@ -2232,6 +2553,29 @@ function App() {
         return rawActiveSession;
       })()
     : undefined;
+  const activeConnection = activeSession
+    ? connections.find((connection) => connection.connectionId === activeSession.connectionId)
+    : undefined;
+  const activeImageUploadState =
+    activeSession && activeConnection?.imageUploadSessionId === activeSession.id
+      ? activeConnection.imageUploadState
+      : { phase: 'idle' as const };
+  const selectedImageConnectionId = activeSession?.connectionId ?? null;
+  const selectedImageSessionId = activeSession?.id ?? null;
+  const previousImageAttachmentRef = useRef<{ connectionId: ConnectionId; sessionId: UUID } | null>(null);
+  useEffect(() => {
+    const previous = previousImageAttachmentRef.current;
+    const next = selectedImageConnectionId && selectedImageSessionId
+      ? { connectionId: selectedImageConnectionId, sessionId: selectedImageSessionId }
+      : null;
+    if (
+      previous &&
+      (previous.connectionId !== next?.connectionId || previous.sessionId !== next?.sessionId)
+    ) {
+      void cancelImageUpload(previous.connectionId, previous.sessionId).catch(() => {});
+    }
+    previousImageAttachmentRef.current = next;
+  }, [selectedImageConnectionId, selectedImageSessionId, cancelImageUpload]);
   const sessionMessages = messages.filter((m) => m.sessionId === activeSessionId);
   // All pending prompts for the active session (main + any subagents), oldest
   // first; rendered as a stack of cards (#437).
@@ -2249,6 +2593,9 @@ function App() {
       // This covers both external transcript sessions and daemon sessions (which use a
       // Remi UUID as their ID — the daemon resolves it via its active watcher).
       const session = sessions.find((s) => s.id === id);
+      if (session && connectionModeRef.current?.(session.connectionId) === 'relay') {
+        requestSessionAttach(session.connectionId, id);
+      }
       const hasMessages = messagesRef.current.some((m) => m.sessionId === id);
       if (session && !hasMessages && !loadedTranscriptsRef.current.has(id)) {
         loadedTranscriptsRef.current.add(id);
@@ -2258,7 +2605,7 @@ function App() {
         requestTranscriptLoad(session.connectionId, id);
       }
     },
-    [sessions, requestTranscriptLoad],
+    [sessions, requestTranscriptLoad, requestSessionAttach],
   );
 
   const handleBack = useCallback(() => {
@@ -2270,6 +2617,16 @@ function App() {
   // bottom InputArea is no longer hijacked when a question is pending
   // (#401): the user can ask the agent a fresh question without it
   // being treated as an answer to a stale prompt.
+  const recordRelaySubmission = useCallback((question: UIQuestion, answer: string) => {
+    const key = questionKey(question.sessionId, question.agentId);
+    const existing = questionsRef.current.get(key);
+    if (!existing || existing.id !== question.id) return;
+    const next = new Map(questionsRef.current);
+    next.set(key, { ...existing, submitting: true, awaitingRelayOutcome: true, submittedAnswer: answer, deliveryOutcome: undefined });
+    // Publish before any decrypt continuation can process a resolution/result.
+    questionsRef.current = next; setQuestions(next);
+  }, []);
+
   const handleAnswer = useCallback(
     (question: UIQuestion, content: string) => {
       const sid = question.sessionId;
@@ -2307,6 +2664,10 @@ function App() {
           isEditing: false,
         };
         setMessages((prev) => [...prev, failMsg]);
+        return;
+      }
+      if (connectionModeRef.current?.(connId) === 'relay') {
+        recordRelaySubmission(question, content);
         return;
       }
       const key = questionKey(sid, question.agentId);
@@ -2350,7 +2711,7 @@ function App() {
       };
       setMessages((prev) => [...prev, userMsg]);
     },
-    [getActiveConnectionId, sendAnswer],
+    [getActiveConnectionId, recordRelaySubmission, sendAnswer],
   );
 
   // #627: submit a structured AskUserQuestion answer. The daemon answers it
@@ -2370,6 +2731,7 @@ function App() {
       const binding = sessionsRef.current.find((s) => s.id === sid)?.claudeSessionId;
       const sent = sendAuqAnswer(connId, sid, question.id, selections, binding as UUID | undefined);
       if (!sent) return;
+      if (connectionModeRef.current?.(connId) === 'relay') { recordRelaySubmission(question, 'Submitted'); return; }
       // The card a refusal naming no question can be about (#1126): a held
       // AskUserQuestion keeps its hold on an answer it refuses (#1127).
       lastAnsweredIdRef.current.set(sid, question.id);
@@ -2382,7 +2744,7 @@ function App() {
         return next;
       });
     },
-    [getActiveConnectionId, sendAuqAnswer],
+    [getActiveConnectionId, recordRelaySubmission, sendAuqAnswer],
   );
 
   // #627: cancel a pending question — the universal unstick. The daemon
@@ -2395,7 +2757,9 @@ function App() {
         sessionsRef.current.find((s) => s.id === sid)?.connectionId ?? getActiveConnectionId();
       if (!connId) return;
       const binding = sessionsRef.current.find((s) => s.id === sid)?.claudeSessionId;
-      sendCancelQuestion(connId, sid, question.id, binding as UUID | undefined);
+      const sent = sendCancelQuestion(connId, sid, question.id, binding as UUID | undefined);
+      if (!sent) return;
+      if (connectionModeRef.current?.(connId) === 'relay') { recordRelaySubmission(question, 'Cancelled'); return; }
       const key = questionKey(sid, question.agentId);
       setQuestions((prev) => {
         const existing = prev.get(key);
@@ -2405,7 +2769,7 @@ function App() {
         return next;
       });
     },
-    [getActiveConnectionId, sendCancelQuestion],
+    [getActiveConnectionId, recordRelaySubmission, sendCancelQuestion],
   );
 
   // Persistent escape: send a bare Esc to the ACTIVE session at any time — it
@@ -2446,17 +2810,45 @@ function App() {
         return;
       }
 
+      if (sessionsRef.current.find((s) => s.id === activeSessionId)?.harness === 'codex') {
+        const selected = sessionsRef.current.find((s) => s.id === activeSessionId);
+        const messageId = generateId();
+        const reply = replyContextsRef.current.get(activeSessionId);
+        const wireContent = reply && content ? formatReplyMessage(reply, content) : content;
+        setMessages((prev) => [...prev, {
+          id: messageId, sessionId: activeSessionId, connectionId: connId, sender: 'user',
+          content: wireContent, timestamp: new Date().toISOString(), state: 'sending',
+          isEditing: false, source: 'optimistic',
+          chatSubmission: {outcome: 'pending', label: 'Sending to Codex…'},
+        }]);
+        void submitStructuredChat(connId, activeSessionId, selected?.harnessSessionId ?? '', wireContent, messageId)
+          .then((outcome) => {
+            setMessages((prev) => prev.map((message) => message.id === messageId ? {...message,
+              state: outcome.outcome === 'accepted' ? 'delivered' : 'failed',
+              chatSubmission: {outcome: outcome.outcome, label: chatSubmissionLabel(outcome)},
+            } : message));
+          });
+        if (reply) setReplyContexts((prev) => {
+          const next = new Map(prev); next.delete(activeSessionId); return next;
+        });
+        return;
+      }
+
+      // Claim the confirmed image Send once before queuing ordinary input (including an empty image-only turn).
+      const messageId = generateId();
+      const hasImageDraft = takeImageDraftForSend(connId, activeSessionId, messageId);
+      if (!content && !hasImageDraft) return;
       const reply = replyContextsRef.current.get(activeSessionId);
-      const wireContent = reply ? formatReplyMessage(reply, content) : content;
+      const wireContent = reply && content ? formatReplyMessage(reply, content) : content;
       // Same id for the UI bubble AND the wire message (#663): the daemon's
       // `ack.messageId` echoes back whatever id we send, so this is what
       // lets an inbound ack find its bubble. Also what a retry reuses so
       // the daemon's MessageIdTracker dedups it.
-      const messageId = generateId();
 
       const newMessage: UIMessage = {
         id: messageId,
         sessionId: activeSessionId,
+        connectionId: connId,
         sender: 'user',
         content: wireContent,
         timestamp: new Date().toISOString(),
@@ -2514,7 +2906,7 @@ function App() {
         setMessages((prev) => [...prev, errorMsg]);
       }
     },
-    [activeSessionId, getActiveConnectionId, sendInput, sessions],
+    [activeSessionId, getActiveConnectionId, sendInput, submitStructuredChat, sessions, takeImageDraftForSend],
   );
 
   // Tap-to-retry a 'failed' bubble (#663). Reuses the SAME message id so the
@@ -2523,6 +2915,7 @@ function App() {
   // resumes watching it.
   const handleRetryMessage = useCallback(
     (message: UIMessage) => {
+      if (message.inputMayBePartial || message.chatSubmission) return;
       const sid = message.sessionId;
       const connId =
         sessionsRef.current.find((s) => s.id === sid)?.connectionId ?? getActiveConnectionId();
@@ -2714,12 +3107,6 @@ function App() {
   // never hang this UI action: on timeout (or an immediate send failure),
   // proceed with the re-registers anyway -- the same race as before this
   // fix, which self-heals on the sibling's next connection cycle either way.
-  // Known gap: the relay (WebRTC) transport does not send acks for this
-  // message type at all (packages/daemon/src/remote/relay-adapter.ts never
-  // calls sendAck), so removing a relay-connected server always takes the
-  // full timeout before re-registering siblings -- same bounded, self-healing
-  // fallback, just always on that path rather than only when the daemon is
-  // slow.
   const handleDisconnect = useCallback(
     (connectionId: ConnectionId) => {
       const finish = (): void => {
@@ -2868,6 +3255,7 @@ function App() {
         return;
       }
       setResumingSession(sessionId);
+      resumeAskedFromRef.current = activeSessionIdRef.current;
       const sent = requestResumeSession(connId, sessionId);
       if (!sent) {
         setResumingSession(null);
@@ -3038,6 +3426,7 @@ function App() {
       onAddConnection={openConnectModal}
       onDisconnect={handleDisconnect}
       onReconnect={reconnectConnection}
+      onManageRelay={setDeviceConnectionId}
       onDisconnectAll={handleDisconnectAll}
       onOpenNewSession={handleOpenNewSession}
       onKillSession={handleKillSession}
@@ -3061,6 +3450,11 @@ function App() {
       questions={sessionQuestions}
       error={chatError}
       onSend={handleSend}
+      chatUnavailable={activeSession.harness === 'codex' && !activeConnection?.structuredChatEnabled &&
+        !activeConnection?.structuredChatSessions?.includes(activeSession.id)
+        ? 'Codex chat is waiting for the connection or submission. After an unknown delivery, check the session and reconnect.' : null}
+      onReconnectChat={activeSession.harness === 'codex' && activeConnection?.structuredChatNeedsReconnect
+        ? () => reconnectChatConnection(activeConnection.connectionId) : undefined}
       onAnswer={handleAnswer}
       onAuqAnswer={handleAuqAnswer}
       onCancelQuestion={handleCancelQuestion}
@@ -3078,6 +3472,50 @@ function App() {
       onDetach={handleDetach}
       onEndSession={activeSession?.source === 'daemon' ? handleEndSession : undefined}
       showTimestamps={settings.showTimestamps}
+      browserLinks={{
+        state: activeConnection?.mode === 'relay'
+          ? activeConnection.relayBrowserLinks?.find((entry) => entry.sessionId === activeSession.id)?.state ?? {phase: 'unavailable', candidates: []}
+          : activeConnection?.sessionId === activeSession.id
+          ? activeConnection.browserLinks ?? {phase: 'unavailable', candidates: []}
+          : {phase: 'unavailable', candidates: []},
+        onReceive: () => receiveBrowserLinks(activeSession.connectionId, activeSession.id),
+        onStop: () => stopBrowserLinks(activeSession.connectionId, activeSession.id),
+        onOpen: (id) => openBrowserLink(activeSession.connectionId, id, activeSession.id),
+      }}
+      fileDownload={{
+        available: activeConnection?.mode === 'relay'
+          ? !!activeConnection.relayFileDownloadSessions?.includes(activeSession.id)
+          : activeConnection?.sessionId === activeSession.id && !!activeConnection.fileDownloadAvailable,
+        unavailableMessage: activeConnection?.mode === 'relay' &&
+          activeConnection.relayFileDownloadBusySessionId &&
+          activeConnection.relayFileDownloadBusySessionId !== activeSession.id
+          ? 'A download is active in another session. Finish or discard it there.' : undefined,
+        canCancel: activeConnection?.fileDownloadSessionId === activeSession.id && !!activeConnection.fileDownloadCanCancel,
+        state: activeConnection?.fileDownloadSessionId === activeSession.id
+          ? activeConnection.fileDownloadState ?? {phase: 'idle'} : {phase: 'idle'},
+        saveMessage: activeConnection?.fileDownloadSessionId === activeSession.id ? activeConnection.fileDownloadSaveMessage : null,
+        onDownload: (path) => downloadFile(activeSession.connectionId, activeSession.id, path),
+        onCancel: () => cancelFileDownload(activeSession.connectionId, activeSession.id),
+        onDismiss: () => dismissFileDownload(activeSession.connectionId, activeSession.id),
+        onSave: () => saveDownloadedFile(activeSession.connectionId, activeSession.id),
+        onReleaseSave: () => releaseFileDownloadSave(activeSession.connectionId),
+      }}
+      imageUpload={{
+        enabled:
+          activeConnection?.mode === 'direct' &&
+          activeConnection.sessionId === activeSession.id &&
+          activeConnection.imageUploadEnabled,
+        state: activeImageUploadState,
+        onSelect: (file) => {
+          void uploadImage(activeSession.connectionId, activeSession.id, file).catch(() => {});
+        },
+        onCancel: () => {
+          void cancelImageUpload(activeSession.connectionId, activeSession.id).catch(() => {});
+        },
+        onDismiss: () => dismissImageUpload(activeSession.connectionId, activeSession.id),
+        onAddToDraft: () => addImageToDraft(activeSession.connectionId, activeSession.id),
+        onAbandonDraft: () => dismissImageUpload(activeSession.connectionId, activeSession.id, true),
+      }}
     />
   ) : (
     <div className="flex h-full items-center justify-center text-[var(--color-text-muted)]">
@@ -3087,25 +3525,78 @@ function App() {
 
   return (
     <>
+      {usesNativeIdentity() && <NativeIdentityPanel gate onReady={handleNativeIdentityReady} />}
       <AppLayout sidebar={sidebar} main={main} showSidebar={!activeSessionId} />
+      {relayForgetError && <div role="alert" className="fixed inset-x-3 top-12 z-50 rounded-xl bg-[var(--color-surface)] p-4 shadow-lg">
+        <p>{relayForgetError}</p>
+        <button type="button" onClick={() => setRelayForgetError(null)}>Dismiss</button>
+      </div>}
 
       <SettingsPanel
         open={showSettings}
         settings={settings}
         onClose={() => setShowSettings(false)}
         onChange={handleSettingsChange}
+        onEnableSecurePush={
+          nativeIdentity && hasRelayMachine ? () => enableNativeSecurePush(nativeIdentity) : undefined
+        }
       />
+
+      {deviceConnectionId && (() => {
+        const connection = connections.find(item => item.connectionId === deviceConnectionId);
+        return connection?.relayPin ? <RelayDevicesPanel key={deviceConnectionId} connection={connection}
+          ownFingerprint={getOwnFingerprint() ?? undefined}
+          list={() => listRelayDevices(deviceConnectionId)}
+          revoke={fingerprint => revokeRelayDevice(deviceConnectionId, fingerprint)}
+          onClose={() => setDeviceConnectionId(null)}
+          forget={async () => {
+            const machine = connection.relayPin?.machinePublicKey ?? '';
+            setRelayForgetError(null);
+            // Best effort: the machine stops sealing pushes to this device. The frame
+            // is queued before the close; its outcome is not awaited (#1200).
+            if (usesNativeIdentity() && connection.status === 'connected')
+              void unregisterRelayPush(deviceConnectionId).catch(() => {});
+            // Forget intent ends the actual reconnect/READY lifetime synchronously.
+            // Durable removal follows; a storage refusal remains visible afterward.
+            disconnectConnection(deviceConnectionId);
+            setDeviceConnectionId(null);
+            try {
+              if (usesNativeIdentity()) {
+                const identity = currentNativeIdentity();
+                if (!identity) throw new Error('Unlock your identity before forgetting this machine.');
+                await forgetNativeRelayPin(identity, machine);
+              } else forgetRelayPin(machine);
+            } catch {
+              setRelayForgetError('Machine disconnected, but its saved trust could not be removed. Unlock your identity and try forgetting it again.');
+            }
+          }} /> : null;
+      })()}
 
       <ConnectModal
         isOpen={showConnectModal || needsPassphrase}
-        onClose={() => setShowConnectModal(false)}
+        onClose={() => {
+          if (modalConnection?.mode === 'relay' && modalConnection.status !== 'connected') disconnectConnection(modalConnection.connectionId);
+          setShowConnectModal(false);
+        }}
         onConnectDirect={handleConnectDirect}
+        onConnectRelay={async (token, signal) => {
+          const id = await connectRelay(token, signal);
+          if (!signal.aborted) setModalConnectionId(id);
+          else disconnectConnection(id);
+        }}
+        onUnlockNative={async () => {
+          const state = await inspectNativeIdentity();
+          const unlocked = state.kind === 'locked' ? await unlockNativeIdentity(state.native) : state;
+          if (unlocked.kind !== 'ready') throw new Error('Native identity requires setup.');
+          handleNativeIdentityReady(unlocked.identity);
+        }}
+        relayConnection={modalConnection?.mode === 'relay' ? modalConnection : undefined}
         connectionStatus={effectiveStatus}
         approvalConnection={approvalConnection}
         onRetryApproval={approvalConnection ? () => reconnectConnection(approvalConnection.connectionId) : undefined}
         error={error}
         needsPassphrase={showConnectModal ? Boolean(modalConnection?.needsPassphrase) : needsPassphrase}
-        hasIdentity={hasIdentity()}
+        hasIdentity={usesNativeIdentity() ? unlockedIdentity != null : hasIdentity()}
         hasUnlockedIdentity={unlockedIdentity != null}
         serverFingerprint={showConnectModal ? modalConnection?.serverFingerprint : passphraseServerFingerprint}
         onPassphraseSubmit={handlePassphraseSubmit}

@@ -16,6 +16,16 @@ struct HubSetupView: View {
     var body: some View {
         Group {
             switch hubClient.phase {
+            case let .identityUnavailable(reason):
+                VStack(spacing: 16) {
+                    Text("Native identity unavailable").font(.title2).bold()
+                    Text(reason).foregroundStyle(.secondary)
+                    if hubClient.canUnlockIdentity {
+                        Button("Unlock Identity") { Task { await hubClient.unlockIdentity() } }
+                    } else {
+                        Text("Resolve the Keychain problem and restart Remi. A different identity has not been created.")
+                    }
+                }.padding(32)
             case .scanning:
                 scanningView
             case let .rejected(port, reason):

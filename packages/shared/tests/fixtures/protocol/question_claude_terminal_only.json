@@ -1,0 +1,21 @@
+{
+  "type": "question",
+  "id": "4dc3663b-b33f-4e6f-97ec-fa6a8cad6139",
+  "timestamp": "2026-10-07T21:19:37.304Z",
+  "question": {
+    "id": "fixture-question-id",
+    "text": "mcp__custom__ask wants to ask you something",
+    "options": [],
+    "allowsFreeText": false,
+    "isAnswered": false,
+    "source": "permission_request",
+    "kind": "permission",
+    "held": true,
+    "terminalOnly": true,
+    "answerPath": "none"
+  },
+  "sessionId": "fixture-session-id",
+  "harness": "claude",
+  "harnessSessionId": "fixture-claude-session-id",
+  "claudeSessionId": "fixture-claude-session-id"
+}

@@ -68,7 +68,7 @@ const LEGACY: Record<string, { value: { [key: string]: Json }; added: string[] }
       attachState: 'attached',
       daemonVersion: '0.7.4-dev.1',
     },
-    added: ['harness', 'harnessSessionId', 'harnesses'],
+    added: ['harness', 'harnessSessionId', 'harnesses', 'protocolVersion', 'capabilities'],
   },
   question: {
     value: {
@@ -159,6 +159,23 @@ describe('the Phase 5 golden fixtures only add fields (#1179)', () => {
     expect(listed?.['harnessSessionId']).toBe(listed?.['claudeSessionId']);
   });
 
+  test('the hello_ack fixture names the protocol version and the capabilities (#1237)', () => {
+    const ack = load('hello_ack');
+    expect(ack['protocolVersion']).toBe(1);
+    expect(ack['capabilities']).toEqual(['workspaces']);
+  });
+
+  test('the hello_ack_legacy golden is the ack of a daemon before #1237: no version, no capabilities', () => {
+    // A literal, not the current golden minus two fields: a field added to hello_ack later must
+    // not appear in the ack of a daemon that predates it.
+    expect(load('hello_ack_legacy')).toEqual({
+      ...LEGACY['hello_ack']?.value,
+      harness: 'claude',
+      harnessSessionId: CLAUDE_ID,
+      harnesses: ['claude', 'codex'],
+    });
+  });
+
   test('the hello_ack fixture advertises the harnesses a client may ask for', () => {
     expect(load('hello_ack')['harnesses']).toEqual(['claude', 'codex']);
   });
@@ -169,6 +186,52 @@ describe('the Phase 5 golden fixtures only add fields (#1179)', () => {
       type: 'create_session_request',
       directory: '/Users/fixture/project',
     });
+  });
+
+  test('the session list golden with a workspace: repository, directory and branch (#1236 phase B)', () => {
+    const listed = (
+      load('session_list_response_workspace')['sessions'] as { [key: string]: Json }[]
+    )[0];
+    expect(listed?.['workspace']).toEqual({
+      repository: '/Users/fixture/project',
+      directory: '/Users/fixture/remi-worktrees/project-feature-fixture',
+      branch: 'feature/fixture',
+    });
+  });
+
+  test('the workspace goldens: a request for a new worktree, and the response that says where (#1236)', () => {
+    expect(load('create_session_request_workspace')).toEqual({
+      type: 'create_session_request',
+      directory: '/Users/fixture/project',
+      workspace: {
+        repository: '/Users/fixture/project',
+        worktree: { branch: 'feature/fixture', base: 'main' },
+      },
+    });
+    expect(load('create_session_response_workspace')).toEqual({
+      type: 'create_session_response',
+      success: true,
+      requestId: 'fixture-request-id',
+      sessionId: 'fixture-session-id',
+      port: 19924,
+      workspace: {
+        repository: '/Users/fixture/project',
+        directory: '/Users/fixture/remi-worktrees/project-feature-fixture',
+        worktree: { branch: 'feature/fixture', base: '0123456789abcdef0123456789abcdef01234567' },
+      },
+    });
+  });
+
+  test('the resume golden for a hub: the child daemon the session runs on (#1129)', () => {
+    expect(load('resume_session_response_child')).toEqual({
+      type: 'resume_session_response',
+      success: true,
+      requestId: 'fixture-request-id',
+      sessionId: 'fixture-session-id',
+      port: 19924,
+    });
+    // The response of a session daemon, which resumes in its own process, has no port.
+    expect('port' in load('resume_session_response')).toBe(false);
   });
 
   test('the create_session_request fixture names a harness and its arguments', () => {

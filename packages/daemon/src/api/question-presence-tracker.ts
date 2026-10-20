@@ -77,7 +77,7 @@
  */
 
 import { MAIN_AGENT_ID } from '@remi/shared';
-import type { AgentStatus, Question, QuestionOption } from '@remi/shared';
+import type { AgentStatus, AnswerPath, Question, QuestionOption } from '@remi/shared';
 import type { QuestionRegistrationOutcome } from './message-api.ts';
 
 export interface PushOptions {
@@ -90,6 +90,8 @@ export interface PushOptions {
    * AskUserQuestion or ExitPlanMode, #1127) and a multi-choice escalation.
    */
   held?: boolean;
+  /** How the card's answer is applied (#1235): the gate's word for a held push, typed for a render. */
+  answerPath?: AnswerPath;
 }
 
 /**
@@ -385,14 +387,11 @@ export class QuestionPresenceTracker {
       // source safe, and re-deriving it after a regression is how #574 was
       // found in the first place.
       if (existing.source === 'permission_request' && question.source !== 'permission_request') {
-        console.debug(
-          `[QuestionPresenceTracker] Keeping richer pending permission_request for agent "${key}"; not evicting with source="${question.source ?? 'undefined'}" (kept="${existing.text.slice(0, 50)}", dropped="${question.text.slice(0, 50)}")`,
-        );
+        // #1200: question text belongs to the client surface, never diagnostics.
+        console.debug('[QuestionPresenceTracker] Keeping richer pending permission_request');
         return;
       }
-      console.debug(
-        `[QuestionPresenceTracker] Replacing pending hook for agent "${key}" (old="${existing.text.slice(0, 50)}", new="${question.text.slice(0, 50)}")`,
-      );
+      console.debug('[QuestionPresenceTracker] Replacing pending hook');
     }
     // Re-insert so this agent's entry is the most recent (matters for the
     // PTY-pairing fallback below).
@@ -429,9 +428,7 @@ export class QuestionPresenceTracker {
       at: this.deps.nowMs?.() ?? Date.now(),
       onRender: opts.onRender,
     });
-    console.debug(
-      `[QuestionPresenceTracker] Parked question awaiting PTY render (agent "${agentKey(question)}"): "${question.text.slice(0, 60)}"`,
-    );
+    console.debug('[QuestionPresenceTracker] Parked question awaiting PTY render');
   }
 
   /**
@@ -468,7 +465,7 @@ export class QuestionPresenceTracker {
    * same id (or one whose record was already consumed) is a no-op, guarded by
    * `pushedHeldIds`. Returns true iff a push fired.
    */
-  pushHeldHook(questionId: string): boolean {
+  pushHeldHook(questionId: string, answerPath: AnswerPath): boolean {
     if (this.pushedHeldIds.has(questionId)) return false;
     let recordKey: string | undefined;
     for (const [key, q] of this.pending) {
@@ -494,7 +491,7 @@ export class QuestionPresenceTracker {
     try {
       // held: bypass the cosmetic dedup + deliver regardless of an attached
       // client — the held card is load-bearing for answerability (#603 Phase 3).
-      this.push(question, { held: true });
+      this.push(question, { held: true, answerPath });
     } catch (err) {
       console.error(
         `[QuestionPresenceTracker] pushHeldHook push sink threw: ${err instanceof Error ? err.message : String(err)}`,
@@ -874,7 +871,8 @@ export class QuestionPresenceTracker {
     context = 'render',
   ): QuestionRegistrationOutcome | undefined {
     try {
-      return this.push(merged);
+      // A rendered prompt is answered by typing into it, behind the screen guards (#1134).
+      return this.push(merged, { answerPath: 'keystroke' });
     } catch (err) {
       console.error(
         `[QuestionPresenceTracker] push sink threw (${context}): ${err instanceof Error ? err.message : String(err)}`,
@@ -927,9 +925,7 @@ export class QuestionPresenceTracker {
     // this marking exists to surface).
     const markedKey = this.matchAwaitingPTYKey(ptyQuestion);
     if (markedKey !== undefined) {
-      console.debug(
-        `[QuestionPresenceTracker] Marked question's prompt rendered (agent "${markedKey}"): "${ptyQuestion.text.slice(0, 60)}"`,
-      );
+      console.debug('[QuestionPresenceTracker] Marked question prompt rendered');
       const onRender = this.awaitingPTY.get(markedKey)?.onRender;
       const { merged } = this.consumeAndMerge(ptyQuestion);
       // #1126: a prompt only the terminal can answer. Its notice, never a
@@ -945,7 +941,7 @@ export class QuestionPresenceTracker {
     }
     if (this.isGateOwnedCycle(ptyQuestion)) {
       console.debug(
-        `[QuestionPresenceTracker] Orphan PTY prompt suppressed (gate owns this cycle): "${ptyQuestion.text.slice(0, 60)}"`,
+        '[QuestionPresenceTracker] Orphan PTY prompt suppressed (gate owns this cycle)',
       );
       return;
     }
@@ -998,9 +994,7 @@ export class QuestionPresenceTracker {
       // Re-check ownership: the gate could have taken the prompt (registered
       // / stashed a same-agent hook record) during the debounce window.
       if (this.isGateOwnedCycle(armed)) {
-        console.debug(
-          `[QuestionPresenceTracker] Orphan PTY prompt suppressed at debounce fire (gate took ownership): "${armed.text.slice(0, 60)}"`,
-        );
+        console.debug('[QuestionPresenceTracker] Orphan PTY prompt suppressed at debounce fire');
         return;
       }
       // Still orphaned: push through the SAME pair core a non-orphan PTY

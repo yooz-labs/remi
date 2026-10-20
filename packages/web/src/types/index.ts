@@ -4,6 +4,7 @@
  * These types extend the shared protocol types with UI-specific state.
  */
 
+import type { ImageUploadState } from '@/components/chat/ImageUpload';
 import type { HarnessId } from '@remi/shared';
 import type { QuestionResolvedMessage } from '@remi/shared/protocol.ts';
 import type { AgentStatus, MessageState, Timestamp, UUID } from '@remi/shared/types.ts';
@@ -31,7 +32,7 @@ export type UIQuestionResolvedReason = QuestionResolvedMessage['reason'];
  */
 export type UIMessageState = MessageState | 'failed';
 
-/** Peer role in WebRTC connection */
+/** @deprecated Unused v1 code-room role; v2 roles belong to relayV2 (#1202). */
 export type PeerRole = 'host' | 'client';
 
 /** Connection status for the daemon */
@@ -53,6 +54,8 @@ export type ConnectionId = string & { readonly __brand: 'ConnectionId' };
 /** Per-connection state tracked by the connection manager */
 export interface ConnectionState {
   /** Own public identity after manual-approval refusal (#873). */
+  readonly relayPin?: import('@/lib/relay-machine-channel').RelayMachinePin;
+  readonly relayConfirmation?: string;
   readonly approval?: import('@/lib/connection-approval').ClientApproval | null;
   readonly connectionId: ConnectionId;
   readonly url: string;
@@ -71,6 +74,33 @@ export interface ConnectionState {
    * read-only/waiting state in the UI.
    */
   readonly attachState: 'attached' | 'queued' | null;
+  /** Capabilities on this connection's latest hello_ack; absent until then. */
+  readonly capabilities?: readonly string[];
+  /** Harness binding on this connection's latest hello_ack. */
+  readonly harness?: HarnessId;
+  readonly harnessSessionId?: string | null;
+  /** Ephemeral browser receiver owned by this concrete connection. */
+  readonly browserLinks?: import('@/lib/browser-links').BrowserLinksState;
+  /** Independently owned child browser receivers on the encrypted machine channel. */
+  readonly relayBrowserLinks?: readonly { readonly sessionId: string;
+    readonly state: import('@/lib/browser-links').BrowserLinksState }[];
+  /** Private local download state; available only from this connection's scoped hello. */
+  readonly fileDownloadState?: import('@/lib/file-download').FileDownloadState;
+  readonly fileDownloadSessionId?: UUID | null;
+  readonly fileDownloadAvailable?: boolean;
+  readonly relayFileDownloadSessions?: readonly string[];
+  readonly relayFileDownloadBusySessionId?: string | null;
+  readonly fileDownloadCanCancel?: boolean;
+  readonly fileDownloadSaveMessage?: string | null;
+  /** Direct image staging UI state owned by this concrete connection. */
+  readonly imageUploadState: ImageUploadState;
+  /** Session whose upload status should be displayed, retained across reconnects. */
+  readonly imageUploadSessionId?: UUID | null;
+  /** True only while its exact direct socket/session context can start an upload. */
+  readonly imageUploadEnabled: boolean;
+  readonly structuredChatEnabled?: boolean;
+  readonly structuredChatSessions?: readonly string[];
+  readonly structuredChatNeedsReconnect?: boolean;
 }
 
 /** Message sender type */
@@ -105,6 +135,10 @@ export interface UIMessage {
   readonly content: string;
   readonly timestamp: Timestamp;
   readonly state: UIMessageState;
+  /** Text may be in the terminal but Enter was withheld; never retry blindly (#1488). */
+  readonly inputMayBePartial?: boolean;
+  /** Structured submission is distinct from a transport receipt or model completion. */
+  readonly chatSubmission?: { readonly outcome: 'pending' | 'accepted' | 'refused' | 'uncertain'; readonly label: string };
   readonly isEditing: boolean;
   readonly editedAt?: Timestamp;
   readonly tool?: string;
@@ -171,6 +205,8 @@ export interface UISession {
    * only a harness other than Claude is labeled (`harnessLabel`).
    */
   readonly harness?: HarnessId;
+  /** Current harness thread, kept separate from the Claude-specific identity. */
+  readonly harnessSessionId?: string | null;
   /**
    * This entry is a subagent view spawned by a parent session, not a
    * top-level session (epic #499 phase 3). Its `id` is the subagent's
@@ -243,7 +279,8 @@ export interface UIQuestion {
    *  collection so a main + subagent prompt coexist rather than overwrite. */
   readonly agentId?: string;
   /** #626: 'multi_question' for an AskUserQuestion with structured sub-questions;
-   *  #1127: 'plan_approval' for an ExitPlanMode (its plan in `detail`). */
+   *  #1127: 'plan_approval' for an ExitPlanMode (its plan in `detail`). The wire set is open
+   *  (ADR 0038): a kind this build does not list renders as a generic card. */
   readonly kind?: 'permission' | 'multi_question' | 'plan_approval';
   /** #1127: the long text the prompt is about (an ExitPlanMode's plan), shown in full. */
   readonly detail?: string;
@@ -260,6 +297,9 @@ export interface UIQuestion {
   /** #627: the answer was submitted and is being applied ("Answering…"). Set on
    *  submit, cleared when the question resolves or fails. */
   readonly submitting?: boolean;
+  readonly awaitingRelayOutcome?: boolean;
+  readonly submittedAnswer?: string;
+  readonly deliveryOutcome?: import('@remi/shared').AnswerResultOutcome;
   /** #627: a daemon older than #1127 could not auto-answer; the card invites
    *  Cancel / terminal. */
   readonly autoAnswerFailed?: boolean;
@@ -297,11 +337,11 @@ export interface AppSettings {
   readonly showTimestamps: boolean;
 }
 
-/** Connection configuration */
+/** @deprecated Unused v1 code-room configuration (#1202). */
 export interface ConnectionConfig {
   /** Direct connection URL (local daemon) */
   readonly directUrl?: string;
-  /** Signaling server URL for WebRTC */
+  /** Legacy v1 signaling URL */
   readonly signalingUrl?: string;
   /** Connection code for remote access */
   readonly connectionCode?: string;

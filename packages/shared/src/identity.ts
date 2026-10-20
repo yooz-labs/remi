@@ -67,10 +67,8 @@ export interface KnownHost {
   readonly firstSeen: string;
   readonly lastSeen: string;
   /**
-   * The daemon's published P-256 answer key (#875), pinned so a lock-screen
-   * answer can be sealed with no live connection. Absent for a host last seen
-   * before this shipped: the client must then refuse to send an answer over the
-   * relay rather than send it in the clear, and it re-pins on next connect.
+   * Retired v1 answer-key pin, retained only to read historical known-host records.
+   * Current daemon challenges do not advertise it and it is not a relay v2 credential.
    */
   readonly answerEncryptionKey?: Base64;
 }

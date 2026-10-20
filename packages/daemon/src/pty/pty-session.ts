@@ -52,6 +52,14 @@ export interface PTYSessionConfig {
   readonly size?: TerminalSize;
 }
 
+/** Injectable scheduling boundary for the text-to-Enter pause. Production uses a 50 ms delay. */
+export interface PTYSessionDependencies {
+  readonly submitDelay?: () => Promise<void>;
+}
+
+/** Synchronous caller validity at each queued submission effect (#1488). */
+export type SubmitInputGuard = (phase: 'text' | 'enter') => boolean;
+
 /** Default terminal size */
 const DEFAULT_SIZE: TerminalSize = {
   cols: 120,
@@ -81,15 +89,22 @@ export class PTYSession {
   private state: SessionState = 'created';
   private readonly config: Required<PTYSessionConfig>;
   private readonly events: Partial<PTYSessionEvents>;
+  private readonly submitDelay: () => Promise<void>;
 
   private process: ReturnType<typeof Bun.spawn> | null = null;
   private exitCode: number | null = null;
   private exitSignal: string | null = null;
 
-  constructor(config: PTYSessionConfig = {}, events: Partial<PTYSessionEvents> = {}) {
+  constructor(
+    config: PTYSessionConfig = {},
+    events: Partial<PTYSessionEvents> = {},
+    dependencies: PTYSessionDependencies = {},
+  ) {
     this.id = generateId();
     this.createdAt = now();
     this.events = events;
+    this.submitDelay =
+      dependencies.submitDelay ?? (() => new Promise((resolve) => setTimeout(resolve, 50)));
 
     this.config = {
       command: config.command ?? DEFAULT_COMMAND,
@@ -175,7 +190,7 @@ export class PTYSession {
 
   /**
    * Per-session write serialization (#795). Every write-ish entry point
-   * (`write`, `submitInput`) chains its terminal writes onto this promise so
+   * (`write`, `insertText`, `submitInput`) chains its terminal writes onto this promise so
    * only one write sequence is ever in flight — one submit's full multi-step
    * sequence (text, delay, CR) always completes before the next one starts.
    *
@@ -228,6 +243,30 @@ export class PTYSession {
   }
 
   /**
+   * Insert literal text without submitting a turn (#1170). The required guard
+   * runs at the serialized write, after earlier input has settled. A true result
+   * confirms the terminal write only; it does not establish harness consumption.
+   * The caller owns authorization, prompt checks and possible-write retirement.
+   */
+  insertText(text: string, guard: () => boolean): Promise<boolean> {
+    // Control bytes could submit or operate a dialog, rather than insert text.
+    if (!text || /[\u0000-\u001f\u007f-\u009f]/u.test(text)) {
+      throw new Error('Insertion requires nonempty text without control characters');
+    }
+    if (this.state !== 'running' || !this.process?.terminal) {
+      throw new Error(`Cannot write to session in state: ${this.state}`);
+    }
+    return this.enqueueWrite(() => {
+      if (this.state !== 'running' || !this.process?.terminal) {
+        throw new Error(`Cannot write to session in state: ${this.state}`);
+      }
+      if (!guard()) return false;
+      this.termWrite(text);
+      return true;
+    });
+  }
+
+  /**
    * The single sink for every byte sent to the child's terminal. Routes the
    * input through the optional capture (#627) so a keystroke recording sees the
    * exact bytes, then writes them. Callers must have already checked `running`
@@ -246,7 +285,7 @@ export class PTYSession {
    * with respect to any other queued write (another submit, or a raw write)
    * for this session.
    */
-  async submitInput(text: string): Promise<void> {
+  async submitInput(text: string, guard?: SubmitInputGuard): Promise<void> {
     if (this.state !== 'running' || !this.process?.terminal) {
       throw new Error(`Cannot write to session in state: ${this.state}`);
     }
@@ -258,12 +297,19 @@ export class PTYSession {
         throw new Error(`Cannot write to session in state: ${this.state}`);
       }
 
+      // The caller's attachment/binding/prompt can change while queued (#1488).
+      if (guard && !guard('text')) return;
       // Write the text first
       this.termWrite(text);
 
       // Small delay to let Claude Code process the text
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await this.submitDelay();
 
+      if (this.state !== 'running' || !this.process?.terminal) {
+        throw new Error(`Cannot write to session in state: ${this.state}`);
+      }
+      // A prompt can also appear during the text-to-Enter delay (#1488).
+      if (guard && !guard('enter')) return;
       // Send CR (Enter key) separately
       this.termWrite('\r');
     });

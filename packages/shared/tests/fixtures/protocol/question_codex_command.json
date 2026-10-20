@@ -1,0 +1,33 @@
+{
+  "type": "question",
+  "id": "dd4070df-07e4-48c2-b802-fcb778de5374",
+  "timestamp": "2026-10-07T21:19:37.305Z",
+  "question": {
+    "id": "fixture-question-id",
+    "text": "Allow Codex to run: ls",
+    "options": [
+      {
+        "label": "Yes",
+        "value": "yes",
+        "isRecommended": true,
+        "isYes": true,
+        "isNo": false
+      },
+      {
+        "label": "No",
+        "value": "no",
+        "isRecommended": false,
+        "isYes": false,
+        "isNo": true
+      }
+    ],
+    "allowsFreeText": false,
+    "isAnswered": false,
+    "kind": "permission",
+    "held": true,
+    "answerPath": "structured"
+  },
+  "sessionId": "fixture-session-id",
+  "harness": "codex",
+  "harnessSessionId": "0199b0a0-0000-7000-8000-000000000000"
+}

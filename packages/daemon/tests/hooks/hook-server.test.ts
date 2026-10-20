@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { HookServer } from '../../src/hooks/hook-server.ts';
 import type {
   NotificationHookInput,
@@ -14,10 +14,8 @@ import type {
   SubagentStopHookInput,
 } from '../../src/hooks/hook-types.ts';
 
-const TEST_PORT = 19876;
-
-function makeUrl(port: number): string {
-  return `http://127.0.0.1:${port}/hooks`;
+function makeUrl(server: HookServer): string {
+  return `http://127.0.0.1:${server.port}/hooks`;
 }
 
 function makePayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -30,20 +28,15 @@ function makePayload(overrides: Record<string, unknown> = {}): Record<string, un
   };
 }
 
+// Port 0 keeps each OS-assigned listener held through its requests and afterEach cleanup (#1232).
 describe('HookServer', () => {
   let server: HookServer;
-  let port: number;
-
-  beforeEach(() => {
-    port = TEST_PORT + Math.floor(Math.random() * 1000);
-  });
-
   afterEach(() => {
     server?.stop();
   });
 
   it('starts and stops', () => {
-    server = new HookServer({ port });
+    server = new HookServer({ port: 0 });
     expect(server.isRunning).toBe(false);
 
     server.start();
@@ -54,26 +47,26 @@ describe('HookServer', () => {
   });
 
   it('returns 404 for non-hook paths', async () => {
-    server = new HookServer({ port });
+    server = new HookServer({ port: 0 });
     server.start();
 
-    const res = await fetch(`http://127.0.0.1:${port}/other`);
+    const res = await fetch(`http://127.0.0.1:${server.port}/other`);
     expect(res.status).toBe(404);
   });
 
   it('returns 404 for GET requests', async () => {
-    server = new HookServer({ port });
+    server = new HookServer({ port: 0 });
     server.start();
 
-    const res = await fetch(makeUrl(port));
+    const res = await fetch(makeUrl(server));
     expect(res.status).toBe(404);
   });
 
   it('accepts unknown event names with 200 (future-proofing)', async () => {
-    server = new HookServer({ port });
+    server = new HookServer({ port: 0 });
     server.start();
 
-    const res = await fetch(makeUrl(port), {
+    const res = await fetch(makeUrl(server), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(makePayload({ hook_event_name: 'UnknownEvent' })),
@@ -82,10 +75,10 @@ describe('HookServer', () => {
   });
 
   it('returns 400 for missing hook_event_name', async () => {
-    server = new HookServer({ port });
+    server = new HookServer({ port: 0 });
     server.start();
 
-    const res = await fetch(makeUrl(port), {
+    const res = await fetch(makeUrl(server), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(makePayload({})),
@@ -95,10 +88,10 @@ describe('HookServer', () => {
 
   it('returns 400 for invalid JSON', async () => {
     const errors: Error[] = [];
-    server = new HookServer({ port }, { onError: (e) => errors.push(e) });
+    server = new HookServer({ port: 0 }, { onError: (e) => errors.push(e) });
     server.start();
 
-    const res = await fetch(makeUrl(port), {
+    const res = await fetch(makeUrl(server), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: 'not json',
@@ -110,7 +103,7 @@ describe('HookServer', () => {
   it('dispatches PreToolUse events via constructor callback', async () => {
     const received: PreToolUseHookInput[] = [];
     server = new HookServer(
-      { port },
+      { port: 0 },
       {
         onPreToolUse: (input) => received.push(input),
       },
@@ -123,7 +116,7 @@ describe('HookServer', () => {
       tool_input: { command: 'ls' },
     });
 
-    const res = await fetch(makeUrl(port), {
+    const res = await fetch(makeUrl(server), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -136,14 +129,14 @@ describe('HookServer', () => {
   it('dispatches PostToolUse events', async () => {
     const received: PostToolUseHookInput[] = [];
     server = new HookServer(
-      { port },
+      { port: 0 },
       {
         onPostToolUse: (input) => received.push(input),
       },
     );
     server.start();
 
-    const res = await fetch(makeUrl(port), {
+    const res = await fetch(makeUrl(server), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
@@ -162,14 +155,14 @@ describe('HookServer', () => {
   it('dispatches Notification events', async () => {
     const received: NotificationHookInput[] = [];
     server = new HookServer(
-      { port },
+      { port: 0 },
       {
         onNotification: (input) => received.push(input),
       },
     );
     server.start();
 
-    const res = await fetch(makeUrl(port), {
+    const res = await fetch(makeUrl(server), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
@@ -189,14 +182,14 @@ describe('HookServer', () => {
   it('dispatches Stop events', async () => {
     const received: StopHookInput[] = [];
     server = new HookServer(
-      { port },
+      { port: 0 },
       {
         onStop: (input) => received.push(input),
       },
     );
     server.start();
 
-    const res = await fetch(makeUrl(port), {
+    const res = await fetch(makeUrl(server), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
@@ -213,14 +206,14 @@ describe('HookServer', () => {
   it('dispatches SessionStart events', async () => {
     const received: SessionStartHookInput[] = [];
     server = new HookServer(
-      { port },
+      { port: 0 },
       {
         onSessionStart: (input) => received.push(input),
       },
     );
     server.start();
 
-    const res = await fetch(makeUrl(port), {
+    const res = await fetch(makeUrl(server), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
@@ -238,10 +231,10 @@ describe('HookServer', () => {
 
   it('dispatches PermissionRequest events', async () => {
     const received: PermissionRequestHookInput[] = [];
-    server = new HookServer({ port }, { onPermissionRequest: (input) => received.push(input) });
+    server = new HookServer({ port: 0 }, { onPermissionRequest: (input) => received.push(input) });
     server.start();
 
-    const res = await fetch(makeUrl(port), {
+    const res = await fetch(makeUrl(server), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
@@ -260,10 +253,10 @@ describe('HookServer', () => {
 
   it('dispatches PostToolUseFailure events', async () => {
     const received: PostToolUseFailureHookInput[] = [];
-    server = new HookServer({ port }, { onPostToolUseFailure: (input) => received.push(input) });
+    server = new HookServer({ port: 0 }, { onPostToolUseFailure: (input) => received.push(input) });
     server.start();
 
-    const res = await fetch(makeUrl(port), {
+    const res = await fetch(makeUrl(server), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
@@ -282,10 +275,10 @@ describe('HookServer', () => {
 
   it('dispatches SubagentStart events', async () => {
     const received: SubagentStartHookInput[] = [];
-    server = new HookServer({ port }, { onSubagentStart: (input) => received.push(input) });
+    server = new HookServer({ port: 0 }, { onSubagentStart: (input) => received.push(input) });
     server.start();
 
-    const res = await fetch(makeUrl(port), {
+    const res = await fetch(makeUrl(server), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
@@ -299,10 +292,10 @@ describe('HookServer', () => {
 
   it('dispatches SubagentStop events', async () => {
     const received: SubagentStopHookInput[] = [];
-    server = new HookServer({ port }, { onSubagentStop: (input) => received.push(input) });
+    server = new HookServer({ port: 0 }, { onSubagentStop: (input) => received.push(input) });
     server.start();
 
-    const res = await fetch(makeUrl(port), {
+    const res = await fetch(makeUrl(server), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
@@ -315,10 +308,10 @@ describe('HookServer', () => {
 
   it('dispatches StopFailure events', async () => {
     const received: StopFailureHookInput[] = [];
-    server = new HookServer({ port }, { onStopFailure: (input) => received.push(input) });
+    server = new HookServer({ port: 0 }, { onStopFailure: (input) => received.push(input) });
     server.start();
 
-    const res = await fetch(makeUrl(port), {
+    const res = await fetch(makeUrl(server), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(makePayload({ hook_event_name: 'StopFailure', error: 'rate_limit' })),
@@ -330,10 +323,10 @@ describe('HookServer', () => {
 
   it('dispatches SessionEnd events', async () => {
     const received: SessionEndHookInput[] = [];
-    server = new HookServer({ port }, { onSessionEnd: (input) => received.push(input) });
+    server = new HookServer({ port: 0 }, { onSessionEnd: (input) => received.push(input) });
     server.start();
 
-    const res = await fetch(makeUrl(port), {
+    const res = await fetch(makeUrl(server), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(makePayload({ hook_event_name: 'SessionEnd', reason: 'user_exit' })),
@@ -344,13 +337,13 @@ describe('HookServer', () => {
   });
 
   it('dispatches medium-priority events to dynamic listeners only', async () => {
-    server = new HookServer({ port });
+    server = new HookServer({ port: 0 });
     server.start();
 
     const received: unknown[] = [];
     server.on('UserPromptSubmit', (input) => received.push(input));
 
-    const res = await fetch(makeUrl(port), {
+    const res = await fetch(makeUrl(server), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(makePayload({ hook_event_name: 'UserPromptSubmit' })),
@@ -360,13 +353,13 @@ describe('HookServer', () => {
   });
 
   it('supports dynamic listeners via on()', async () => {
-    server = new HookServer({ port });
+    server = new HookServer({ port: 0 });
     server.start();
 
     const received: PreToolUseHookInput[] = [];
     server.on('PreToolUse', (input) => received.push(input));
 
-    await fetch(makeUrl(port), {
+    await fetch(makeUrl(server), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
@@ -387,7 +380,7 @@ describe('HookServer', () => {
     const dynamicReceived: PreToolUseHookInput[] = [];
 
     server = new HookServer(
-      { port },
+      { port: 0 },
       {
         onPreToolUse: (input) => constructorReceived.push(input),
       },
@@ -395,7 +388,7 @@ describe('HookServer', () => {
     server.start();
     server.on('PreToolUse', (input) => dynamicReceived.push(input));
 
-    await fetch(makeUrl(port), {
+    await fetch(makeUrl(server), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
@@ -412,14 +405,14 @@ describe('HookServer', () => {
   });
 
   it('removeListeners clears specific event', async () => {
-    server = new HookServer({ port });
+    server = new HookServer({ port: 0 });
     server.start();
 
     const received: PreToolUseHookInput[] = [];
     server.on('PreToolUse', (input) => received.push(input));
     server.removeListeners('PreToolUse');
 
-    await fetch(makeUrl(port), {
+    await fetch(makeUrl(server), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
@@ -435,8 +428,10 @@ describe('HookServer', () => {
   });
 
   it('exposes url property', () => {
-    server = new HookServer({ port });
-    expect(server.url).toBe(`http://127.0.0.1:${port}/hooks`);
+    server = new HookServer({ port: 0 });
+    server.start();
+    expect(server.port).toBeGreaterThan(0);
+    expect(server.url).toBe(`http://127.0.0.1:${server.port}/hooks`);
   });
 
   // -------------------------------------------------------------------------
@@ -447,7 +442,7 @@ describe('HookServer', () => {
       const any: string[] = [];
       const stops: StopHookInput[] = [];
       server = new HookServer(
-        { port },
+        { port: 0 },
         {
           onAnyEvent: (input) => any.push(input.hook_event_name),
           onStop: (input) => stops.push(input),
@@ -455,7 +450,7 @@ describe('HookServer', () => {
       );
       server.start();
 
-      await fetch(makeUrl(port), {
+      await fetch(makeUrl(server), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(makePayload({ hook_event_name: 'Stop', stop_hook_active: false })),
@@ -467,10 +462,13 @@ describe('HookServer', () => {
 
     it('fires for an event with no typed handler (medium-priority events)', async () => {
       const any: string[] = [];
-      server = new HookServer({ port }, { onAnyEvent: (input) => any.push(input.hook_event_name) });
+      server = new HookServer(
+        { port: 0 },
+        { onAnyEvent: (input) => any.push(input.hook_event_name) },
+      );
       server.start();
 
-      await fetch(makeUrl(port), {
+      await fetch(makeUrl(server), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(makePayload({ hook_event_name: 'UserPromptSubmit' })),
@@ -484,14 +482,17 @@ describe('HookServer', () => {
       // exactly the gap onAnyEvent exists to cover (#914).
       const any: string[] = [];
       let permissionFired = 0;
-      server = new HookServer({ port }, { onAnyEvent: (input) => any.push(input.hook_event_name) });
+      server = new HookServer(
+        { port: 0 },
+        { onAnyEvent: (input) => any.push(input.hook_event_name) },
+      );
       server.setPermissionResolver(async () => {
         permissionFired++;
         return 'allow';
       });
       server.start();
 
-      await fetch(makeUrl(port), {
+      await fetch(makeUrl(server), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
@@ -507,7 +508,7 @@ describe('HookServer', () => {
       const errors: Error[] = [];
       let stopFired = 0;
       server = new HookServer(
-        { port },
+        { port: 0 },
         {
           onError: (e) => errors.push(e),
           onAnyEvent: () => {
@@ -518,7 +519,7 @@ describe('HookServer', () => {
       );
       server.start();
 
-      const res = await fetch(makeUrl(port), {
+      const res = await fetch(makeUrl(server), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(makePayload({ hook_event_name: 'Stop', stop_hook_active: false })),
@@ -533,10 +534,13 @@ describe('HookServer', () => {
 
     it('does not fire for a request refused before eventName is read (missing hook_event_name)', async () => {
       const any: string[] = [];
-      server = new HookServer({ port }, { onAnyEvent: (input) => any.push(input.hook_event_name) });
+      server = new HookServer(
+        { port: 0 },
+        { onAnyEvent: (input) => any.push(input.hook_event_name) },
+      );
       server.start();
 
-      const res = await fetch(makeUrl(port), {
+      const res = await fetch(makeUrl(server), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(makePayload({})),
@@ -552,7 +556,7 @@ describe('HookServer', () => {
   // -------------------------------------------------------------------------
   describe('synchronous PermissionRequest decision', () => {
     it("hands the resolver the request's abort signal, which aborts when the client closes (#1126)", async () => {
-      server = new HookServer({ port });
+      server = new HookServer({ port: 0 });
       let seen: AbortSignal | undefined;
       // Resolved by the resolver itself, so the test waits for the request to
       // arrive rather than for a fixed delay.
@@ -570,7 +574,7 @@ describe('HookServer', () => {
       });
       server.start();
       const client = new AbortController();
-      const req = fetch(makeUrl(port), {
+      const req = fetch(makeUrl(server), {
         method: 'POST',
         body: JSON.stringify(
           makePayload({ hook_event_name: 'PermissionRequest', tool_name: 'Bash' }),
@@ -585,8 +589,8 @@ describe('HookServer', () => {
       expect(await req).toBeInstanceOf(Error);
     });
 
-    async function postPermission(p: number): Promise<Response> {
-      return fetch(makeUrl(p), {
+    async function postPermission(server: HookServer): Promise<Response> {
+      return fetch(makeUrl(server), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
@@ -596,10 +600,10 @@ describe('HookServer', () => {
     }
 
     it("returns hookSpecificOutput decision behavior 'allow'", async () => {
-      server = new HookServer({ port });
+      server = new HookServer({ port: 0 });
       server.setPermissionResolver(async () => 'allow');
       server.start();
-      const res = await postPermission(port);
+      const res = await postPermission(server);
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({
         hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } },
@@ -607,10 +611,10 @@ describe('HookServer', () => {
     });
 
     it("returns hookSpecificOutput decision behavior 'deny'", async () => {
-      server = new HookServer({ port });
+      server = new HookServer({ port: 0 });
       server.setPermissionResolver(async () => 'deny');
       server.start();
-      const res = await postPermission(port);
+      const res = await postPermission(server);
       expect(await res.json()).toEqual({
         hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny' } },
       });
@@ -621,13 +625,13 @@ describe('HookServer', () => {
       // PermissionRequest: `message` lives INSIDE `decision`, alongside
       // `behavior` — not as a top-level `reason`, and not as PreToolUse's
       // `permissionDecisionReason` (a different event's field).
-      server = new HookServer({ port });
+      server = new HookServer({ port: 0 });
       server.setPermissionResolver(async () => ({
         behavior: 'deny' as const,
         message: 'no authorization; ask the user',
       }));
       server.start();
-      const res = await postPermission(port);
+      const res = await postPermission(server);
       expect(await res.json()).toEqual({
         hookSpecificOutput: {
           hookEventName: 'PermissionRequest',
@@ -640,13 +644,13 @@ describe('HookServer', () => {
       // `interrupt: true` STOPS Claude. Leaving it unset is what lets Claude act
       // on the message (route around, or ask the user). An accidental `true`
       // here would silently kill the turn instead.
-      server = new HookServer({ port });
+      server = new HookServer({ port: 0 });
       server.setPermissionResolver(async () => ({
         behavior: 'deny' as const,
         message: 'why',
       }));
       server.start();
-      const body = (await (await postPermission(port)).json()) as {
+      const body = (await (await postPermission(server)).json()) as {
         hookSpecificOutput: { decision: Record<string, unknown> };
       };
       expect('interrupt' in body.hookSpecificOutput.decision).toBe(false);
@@ -661,10 +665,10 @@ describe('HookServer', () => {
           destination: 'session',
         },
       ];
-      server = new HookServer({ port });
+      server = new HookServer({ port: 0 });
       server.setPermissionResolver(async () => ({ behavior: 'allow', updatedPermissions }));
       server.start();
-      const res = await postPermission(port);
+      const res = await postPermission(server);
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({
         hookSpecificOutput: {
@@ -675,29 +679,29 @@ describe('HookServer', () => {
     });
 
     it("returns {} for 'passthrough' (Claude renders the prompt)", async () => {
-      server = new HookServer({ port });
+      server = new HookServer({ port: 0 });
       server.setPermissionResolver(async () => 'passthrough');
       server.start();
-      const res = await postPermission(port);
+      const res = await postPermission(server);
       expect(await res.json()).toEqual({});
     });
 
     it('falls back to {} when no resolver is installed (legacy path)', async () => {
-      server = new HookServer({ port });
+      server = new HookServer({ port: 0 });
       server.start();
-      const res = await postPermission(port);
+      const res = await postPermission(server);
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({});
     });
 
     it('a throwing resolver fails to passthrough ({}) and reports onError', async () => {
       const errors: Error[] = [];
-      server = new HookServer({ port }, { onError: (e) => errors.push(e) });
+      server = new HookServer({ port: 0 }, { onError: (e) => errors.push(e) });
       server.setPermissionResolver(async () => {
         throw new Error('resolver boom');
       });
       server.start();
-      const res = await postPermission(port);
+      const res = await postPermission(server);
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({}); // fail to the user, never block/allow
       expect(errors.length).toBe(1);
@@ -705,10 +709,10 @@ describe('HookServer', () => {
 
     it('only intercepts PermissionRequest; other events still dispatch + {}', async () => {
       let preToolFired = 0;
-      server = new HookServer({ port }, { onPreToolUse: () => preToolFired++ });
+      server = new HookServer({ port: 0 }, { onPreToolUse: () => preToolFired++ });
       server.setPermissionResolver(async () => 'deny');
       server.start();
-      const res = await fetch(makeUrl(port), {
+      const res = await fetch(makeUrl(server), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(makePayload({ hook_event_name: 'PreToolUse', tool_name: 'Bash' })),
@@ -726,14 +730,17 @@ describe('HookServer', () => {
       // fake "Claude needs your permission" notification to the user's phone.
       let permissionFired = 0;
       let preToolFired = 0;
-      server = new HookServer({ port }, { onPreToolUse: () => preToolFired++, onError: () => {} });
+      server = new HookServer(
+        { port: 0 },
+        { onPreToolUse: () => preToolFired++, onError: () => {} },
+      );
       server.setPermissionResolver(async () => {
         permissionFired++;
         return 'allow';
       });
       server.start();
 
-      const res = await fetch(makeUrl(port), {
+      const res = await fetch(makeUrl(server), {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain', Origin: 'https://evil.example' },
         body: JSON.stringify(
@@ -749,10 +756,10 @@ describe('HookServer', () => {
     it('refuses even an origin the WebSocket would admit', async () => {
       // Stricter than origin-policy.ts on purpose: Claude Code is the only
       // legitimate caller here, and it is not a browser.
-      server = new HookServer({ port }, { onError: () => {} });
+      server = new HookServer({ port: 0 }, { onError: () => {} });
       server.start();
       for (const origin of ['capacitor://localhost', 'http://localhost:5173']) {
-        const res = await fetch(makeUrl(port), {
+        const res = await fetch(makeUrl(server), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Origin: origin },
           body: JSON.stringify(makePayload({ hook_event_name: 'Stop' })),
@@ -763,9 +770,9 @@ describe('HookServer', () => {
 
     it('reports the refusal instead of dropping it silently', async () => {
       const errors: Error[] = [];
-      server = new HookServer({ port }, { onError: (e) => errors.push(e) });
+      server = new HookServer({ port: 0 }, { onError: (e) => errors.push(e) });
       server.start();
-      await fetch(makeUrl(port), {
+      await fetch(makeUrl(server), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' },
         body: JSON.stringify(makePayload({ hook_event_name: 'Stop' })),
@@ -776,9 +783,9 @@ describe('HookServer', () => {
 
     it('Claude Code sends no Origin and is unaffected', async () => {
       let stopFired = 0;
-      server = new HookServer({ port }, { onStop: () => stopFired++ });
+      server = new HookServer({ port: 0 }, { onStop: () => stopFired++ });
       server.start();
-      const res = await fetch(makeUrl(port), {
+      const res = await fetch(makeUrl(server), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(makePayload({ hook_event_name: 'Stop' })),

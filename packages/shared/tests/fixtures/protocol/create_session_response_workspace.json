@@ -1,0 +1,17 @@
+{
+  "type": "create_session_response",
+  "id": "1d1077ce-a348-4b62-8be3-56378d99ee47",
+  "timestamp": "2026-10-07T16:38:34.576Z",
+  "success": true,
+  "requestId": "fixture-request-id",
+  "sessionId": "fixture-session-id",
+  "port": 19924,
+  "workspace": {
+    "repository": "/Users/fixture/project",
+    "directory": "/Users/fixture/remi-worktrees/project-feature-fixture",
+    "worktree": {
+      "branch": "feature/fixture",
+      "base": "0123456789abcdef0123456789abcdef01234567"
+    }
+  }
+}

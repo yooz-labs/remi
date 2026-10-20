@@ -121,7 +121,11 @@ async function pushBodyOf(
             {
               sessionRegistry: registry,
               deviceTokens,
-              pushConfig: () => ({ signalingUrl: 'https://signal.test' }),
+              pushConfig: () => ({
+                signalingUrl: 'https://signal.test',
+                legacyEnabled: true,
+                pushSecret: 'owned-test-secret',
+              }),
               getPrimarySessionId: () => null,
               pushFn: push,
             },
@@ -130,7 +134,8 @@ async function pushBodyOf(
         ],
       ]),
       signalingUrl: () => 'https://signal.test',
-      pushSecret: () => undefined,
+      pushSecret: () => 'owned-test-secret',
+      legacyPolicy: () => ({ legacyEnabled: true }),
       send: (url, token, pushOpts) => push(url, token, pushOpts),
       log: () => {},
       onError: () => {},
@@ -1116,7 +1121,8 @@ describe('Codex turns through the real sink and dispatcher', () => {
       sessionName: (id) => registry.getSession(id)?.name,
       notifiers,
       signalingUrl: () => 'https://signal.test',
-      pushSecret: () => undefined,
+      pushSecret: () => 'owned-test-secret',
+      legacyPolicy: () => ({ legacyEnabled: true }),
       send: (_url, token, opts) => {
         sent.push({ token, opts: opts as unknown as Record<string, unknown> });
         return Promise.resolve();
@@ -1148,7 +1154,11 @@ describe('Codex turns through the real sink and dispatcher', () => {
           {
             sessionRegistry: registry,
             deviceTokens,
-            pushConfig: () => ({ signalingUrl: 'https://signal.test' }),
+            pushConfig: () => ({
+              signalingUrl: 'https://signal.test',
+              legacyEnabled: true,
+              pushSecret: 'owned-test-secret',
+            }),
             getPrimarySessionId: () => null,
             pushFn,
           },

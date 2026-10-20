@@ -39,10 +39,16 @@
  */
 import type {
   AnswerExtras,
+  ChatSubmitRequest,
   CreateSessionRequestMessage,
+  FileDownloadIngressResult,
+  ImageInsertionIngressResult,
+  ImageStagingIngressResult,
+  NativeAnswerMessage,
   PushPreferences,
   UUID,
 } from '@remi/shared';
+import type { BrowserLinkReceiverRequest } from '../../../shared/src/browser-links.ts';
 
 /**
  * What a create request asks of a harness (#1179), as it arrived: untrusted JSON, so `unknown`.
@@ -51,19 +57,26 @@ import type {
 export interface CreateSessionExtra {
   readonly harness?: unknown;
   readonly args?: unknown;
+  /** The workspace (#1236), as the peer sent it; the create handler parses it. */
+  readonly workspace?: unknown;
 }
 
 /**
  * The `extra` argument of `onCreateSessionRequest`, built from the wire message: undefined for a
  * plain request, so an older caller's request reads exactly as before. Both transports call it
- * (`connection.ts`, `relay-adapter.ts`), so they cannot drift on which fields they forward.
+ * (direct and HubRelay virtual `Connection`), so they cannot drift on which fields they forward.
  */
 export function createSessionExtra(
-  message: Pick<CreateSessionRequestMessage, 'harness' | 'args'>,
+  message: Pick<CreateSessionRequestMessage, 'harness' | 'args' | 'workspace'>,
 ): CreateSessionExtra | undefined {
-  return message.harness === undefined && message.args === undefined
-    ? undefined
-    : { harness: message.harness, args: message.args };
+  if (message.harness === undefined && message.args === undefined) {
+    return message.workspace === undefined ? undefined : { workspace: message.workspace };
+  }
+  return {
+    harness: message.harness,
+    args: message.args,
+    ...(message.workspace !== undefined && { workspace: message.workspace }),
+  };
 }
 
 /**
@@ -73,6 +86,14 @@ export function createSessionExtra(
  * message-id echoing without breaking existing positional callers.
  */
 export interface ClientMessageEventArgs {
+  onFileDownload: [ingress: Exclude<FileDownloadIngressResult, { kind: 'uncorrelatable' }>];
+  onBrowserLinkReceiver: [request: BrowserLinkReceiverRequest];
+  onStructuredChat: [request: ChatSubmitRequest];
+  onImageInsert: [ingress: Exclude<ImageInsertionIngressResult, { kind: 'uncorrelatable' }>];
+  /** Strictly decoded request or bounded lookup hints; authority stays on the host (#1170). */
+  onImageUpload: [ingress: Exclude<ImageStagingIngressResult, { kind: 'uncorrelatable' }>];
+  /** Signed native proof; its child-owned ledger is separate from ordinary answer aliases (#1201). */
+  onNativeAnswer: [message: NativeAnswerMessage];
   /** User input received. `messageId` is the wire message's own id (#681),
    *  carried so a rejection (e.g. NOT_ACTIVE_CONNECTION) can name the
    *  specific bubble that was dropped. */
@@ -99,6 +120,8 @@ export interface ClientMessageEventArgs {
 
   /** Session list request received. */
   onSessionListRequest: [requestId: UUID, includeExternal: boolean];
+  /** The repositories of the machine's recent sessions (#1236 phase C). */
+  onRecentRepositoriesRequest: [requestId: UUID, limit: number | undefined];
 
   /** Transcript load request received. */
   onTranscriptLoadRequest: [sessionId: string, requestId: UUID];
@@ -147,10 +170,17 @@ export interface ClientMessageEventArgs {
  * assertion) so the two cannot silently drift apart.
  */
 export const CLIENT_MESSAGE_EVENT_KEYS = [
+  'onFileDownload',
+  'onBrowserLinkReceiver',
+  'onStructuredChat',
+  'onImageInsert',
+  'onImageUpload',
+  'onNativeAnswer',
   'onUserInput',
   'onAnswer',
   'onBulletExpandRequest',
   'onSessionListRequest',
+  'onRecentRepositoriesRequest',
   'onTranscriptLoadRequest',
   'onCreateSessionRequest',
   'onTerminalResize',
@@ -193,11 +223,29 @@ void _allKeysCovered;
  *  handlers are async and which a caller may await: the Telegram
  *  `/interrupt` waits for the daemon's verdict on its Escape (#1140), and a
  *  Telegram answer button for the verdict on its answer (#1127 review S2),
- *  so their result is `void | Promise<void>`. */
+ *  so answers expose their actual verdict while input remains `void | Promise<void>`. */
 export type ClientMessageEvents = {
   [K in keyof ClientMessageEventArgs]: (
     ...args: ClientMessageEventArgs[K]
-  ) => K extends 'onUserInput' | 'onAnswer' ? void | Promise<void> : void;
+  ) => K extends 'onNativeAnswer'
+    ?
+        | import('@remi/shared').AnswerResultOutcome
+        | Promise<import('@remi/shared').AnswerResultOutcome>
+    : K extends 'onAnswer'
+      ?
+          | void
+          | import('@remi/shared').AnswerOutcome
+          | Promise<void>
+          | Promise<import('@remi/shared').AnswerOutcome>
+      : K extends
+            | 'onUserInput'
+            | 'onImageUpload'
+            | 'onImageInsert'
+            | 'onStructuredChat'
+            | 'onBrowserLinkReceiver'
+            | 'onFileDownload'
+        ? void | Promise<void>
+        : void;
 };
 
 /** `ClientMessageEvents` with `connectionId` prepended -- what a fan-out
@@ -207,7 +255,25 @@ export type ClientMessageEventsWithConnectionId = {
   [K in keyof ClientMessageEventArgs]: (
     connectionId: UUID,
     ...args: ClientMessageEventArgs[K]
-  ) => K extends 'onUserInput' | 'onAnswer' ? void | Promise<void> : void;
+  ) => K extends 'onNativeAnswer'
+    ?
+        | import('@remi/shared').AnswerResultOutcome
+        | Promise<import('@remi/shared').AnswerResultOutcome>
+    : K extends 'onAnswer'
+      ?
+          | void
+          | import('@remi/shared').AnswerOutcome
+          | Promise<void>
+          | Promise<import('@remi/shared').AnswerOutcome>
+      : K extends
+            | 'onUserInput'
+            | 'onImageUpload'
+            | 'onImageInsert'
+            | 'onStructuredChat'
+            | 'onBrowserLinkReceiver'
+            | 'onFileDownload'
+        ? void | Promise<void>
+        : void;
 };
 
 /**

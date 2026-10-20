@@ -10,13 +10,14 @@ export {
   initConfigFile,
   loadConfig,
   loadConfigWithNotices,
-  relayRequested,
 } from './config.ts';
 
 export type {
   AuthConfig,
   DaemonConfig,
+  DaemonTlsConfig,
   DisplayConfig,
+  HarnessConfig,
   LoadedConfig,
   NetworkConfig,
   NotificationsConfig,
