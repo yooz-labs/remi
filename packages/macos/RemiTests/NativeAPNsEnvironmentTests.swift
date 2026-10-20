@@ -1,5 +1,10 @@
 import XCTest
 
+private final class APNsCallbackDelivery: @unchecked Sendable {
+    let callback: (NativeAPNsEnvironment.Match) -> Void
+    init(_ callback: @escaping (NativeAPNsEnvironment.Match) -> Void) { self.callback = callback }
+}
+
 final class NativeAPNsEnvironmentTests: XCTestCase {
     @MainActor
     private func awaitQueries(_ ready: () -> Bool) async throws {
@@ -157,6 +162,41 @@ final class NativeAPNsEnvironmentTests: XCTestCase {
         })
         let result = await environment.resolve(stillCurrent: { true })
         XCTAssertEqual(result, .unavailable, "An ambiguous duplicate callback is not a runtime entitlement proof")
+    }
+
+    @MainActor
+    func testEarlierDuplicateIsNeverOvertakenInRepeatedAttempts() async {
+        var accepted = 0
+        for _ in 0..<1_000 {
+            let environment = NativeAPNsEnvironment(query: { production, completion in
+                completion(production ? .match : .mismatch)
+                if production { completion(.match) }
+                return {}
+            })
+            if await environment.resolve(stillCurrent: { true }) != .unavailable {
+                accepted += 1
+            }
+        }
+        XCTAssertEqual(accepted, 0, "An earlier duplicate must refuse every actual resolver attempt")
+    }
+
+    @MainActor
+    func testCallbackPriorityCannotReorderAnEarlierDuplicate() async {
+        let environment = NativeAPNsEnvironment(query: { production, completion in
+            let delivery = APNsCallbackDelivery(completion)
+            let priorities: [TaskPriority] = production ? [.high, .background] : [.high]
+            for priority in priorities {
+                let returned = DispatchSemaphore(value: 0)
+                Task.detached(priority: priority) {
+                    delivery.callback(production ? .match : .mismatch)
+                    returned.signal()
+                }
+                XCTAssertEqual(returned.wait(timeout: .now() + 3), .success)
+            }
+            return {}
+        })
+        let result = await environment.resolve(stillCurrent: { true })
+        XCTAssertEqual(result, .unavailable, "Callback priority cannot move a prior duplicate after completion")
     }
 
 
