@@ -7,10 +7,10 @@ exported, uploaded, processed, cleared for export compliance with owner
 confirmation, and verified as **Testing** in the existing internal group.
 
 The CLI is a separate release: npm and Homebrew still publish 0.7.16 at this
-snapshot. #1556 tracks publishing CLI 0.7.17 through `develop` to `main` so
+snapshot. #1556 tracks publishing CLI 0.8.0 through `develop` to `main` so
 `remi pair` is available from those channels. A reviewed local compiled backend
 at the candidate source reaches the real QR pairing flow; this does not prove
-completed phone pairing. See [the upgrade guide](../../../docs/UPGRADING-0.7.17.md).
+completed phone pairing. See [the upgrade guide](../../../docs/UPGRADING-0.8.0.md).
 
 The old primary-checkout native edits were compared with landed #1535 and removed
 at the owner's request. The primary checkout is clean; other pre-existing

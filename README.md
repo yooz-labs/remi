@@ -52,7 +52,7 @@ remi ls --network
 remi attach --host 192.168.1.5 macbook/remi/main
 ```
 
-Upgrading for native iPhone TestFlight? See [the CLI 0.7.17 upgrade guide](docs/UPGRADING-0.7.17.md).
+Upgrading for native iPhone TestFlight? See [the CLI 0.8.0 upgrade guide](docs/UPGRADING-0.8.0.md).
 
 ### Choose the CLI default
 
