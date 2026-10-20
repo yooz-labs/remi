@@ -37,6 +37,7 @@ struct HomeScreen: View {
     let onRemoveMachine: (String) -> Void
     let onRetryApproval: (MachineEndpoint) -> Void
     let onRetryConnection: (MachineEndpoint) -> Void
+    let onSetConnectionPreference: (MachineEndpoint, MachineConnectionPreference) -> Void
     let onEnableRelayNotifications: (MachineEndpoint) -> Void
     let enablingRelayNotifications: Bool
     let onDismissError: () -> Void
@@ -68,6 +69,7 @@ struct HomeScreen: View {
         onRemoveMachine: @escaping (String) -> Void = { _ in },
         onRetryApproval: @escaping (MachineEndpoint) -> Void = { _ in },
         onRetryConnection: @escaping (MachineEndpoint) -> Void = { _ in },
+        onSetConnectionPreference: @escaping (MachineEndpoint, MachineConnectionPreference) -> Void = { _, _ in },
         onEnableRelayNotifications: @escaping (MachineEndpoint) -> Void = { _ in },
         enablingRelayNotifications: Bool = false,
         onDismissError: @escaping () -> Void = {},
@@ -98,6 +100,7 @@ struct HomeScreen: View {
         self.onRemoveMachine = onRemoveMachine
         self.onRetryApproval = onRetryApproval
         self.onRetryConnection = onRetryConnection
+        self.onSetConnectionPreference = onSetConnectionPreference
         self.onEnableRelayNotifications = onEnableRelayNotifications
         self.enablingRelayNotifications = enablingRelayNotifications
         self.onDismissError = onDismissError
@@ -352,6 +355,7 @@ struct HomeScreen: View {
                     onRemove: onRemoveMachine,
                     onRetryApproval: onRetryApproval,
                     onRetryConnection: onRetryConnection,
+                    onSetConnectionPreference: onSetConnectionPreference,
                     onPairAgain: { showingPairing = true },
                     onEnableRelayNotifications: onEnableRelayNotifications,
                     enablingRelayNotifications: enablingRelayNotifications,
@@ -1124,6 +1128,7 @@ private struct MachinesSection: View {
     let onRemove: (String) -> Void
     let onRetryApproval: (MachineEndpoint) -> Void
     let onRetryConnection: (MachineEndpoint) -> Void
+    let onSetConnectionPreference: (MachineEndpoint, MachineConnectionPreference) -> Void
     let onPairAgain: () -> Void
     let onEnableRelayNotifications: (MachineEndpoint) -> Void
     let enablingRelayNotifications: Bool
@@ -1143,6 +1148,7 @@ private struct MachinesSection: View {
                     enablingRelayNotifications: enablingRelayNotifications,
                     onEnableRelayNotifications: onEnableRelayNotifications,
                     onRetryConnection: onRetryConnection,
+                    onSetConnectionPreference: onSetConnectionPreference,
                     onRemove: { pendingRemoval = machine }
                 )
                 if let state = states.first(where: { $0.id == machine.id }),
@@ -1296,6 +1302,7 @@ private struct PhoneMachineManagementRow: View {
     let enablingRelayNotifications: Bool
     let onEnableRelayNotifications: (MachineEndpoint) -> Void
     let onRetryConnection: (MachineEndpoint) -> Void
+    let onSetConnectionPreference: (MachineEndpoint, MachineConnectionPreference) -> Void
     let onRemove: () -> Void
 
     var body: some View {
@@ -1309,6 +1316,18 @@ private struct PhoneMachineManagementRow: View {
                 .layoutPriority(1)
 
             Menu {
+                if let state {
+                    Picker("Connection layer", selection: Binding(
+                        get: { state.connectionPreference },
+                        set: { onSetConnectionPreference(state.endpoint, $0) }
+                    )) {
+                        ForEach(MachineConnectionPreference.allCases) { preference in
+                            Text(preference.title).tag(preference)
+                        }
+                    }
+                    Divider()
+                    Text("\(state.status == .connected ? "Active" : "Selected"): \(state.endpoint.connectionLayer.title)")
+                }
                 if let state, canRetryConnection(state) {
                     Button("Retry connection", systemImage: "arrow.clockwise") {
                         onRetryConnection(state.endpoint)

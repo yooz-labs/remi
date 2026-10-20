@@ -274,10 +274,6 @@ struct MacLiveRootView: View {
         .sheet(isPresented: $showingAddMachine) {
             MacAddMachineSheet { endpoint in
                 relayNotifications.machineWillChange(endpoint)
-                if let existing = store.machines.first(where: { $0.id == endpoint.id }) {
-                    guard store.removeMachine(existing.endpoint) else { return }
-                    relayNotifications.didForget(existing.endpoint)
-                }
                 store.addMachine(endpoint)
                 MachineConfigurationStore.shared.saveProfiles(store.persistableProfiles)
             }

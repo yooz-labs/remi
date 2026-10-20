@@ -10,7 +10,7 @@ struct MacPreferencesView: View {
 
     @State private var copiedValue: CopiedValue?
     @State private var notificationPermission = MacNotificationPermission.shared
-    @State private var relayNotifications = NativeRelayNotifications.shared
+    @State private var relayNotifications: NativeRelayNotifications
     @State private var selectedMachineID: String?
     @State private var machineToForget: MachineState?
     @State private var machineToRename: MachineState?
@@ -20,11 +20,13 @@ struct MacPreferencesView: View {
     init(
         store: MachineStore,
         notificationPermission: MacNotificationPermission = .shared,
+        relayNotifications: NativeRelayNotifications = .shared,
         refreshNotificationPermission: Bool = true
     ) {
         self.store = store
         self.refreshNotificationPermission = refreshNotificationPermission
         _notificationPermission = State(initialValue: notificationPermission)
+        _relayNotifications = State(initialValue: relayNotifications)
     }
 
     var body: some View {
@@ -172,6 +174,18 @@ struct MacPreferencesView: View {
                 }
 
                 PreferencesCard(title: "Connection", systemImage: "point.3.connected.trianglepath.dotted") {
+                    Picker("Connection layer", selection: Binding(
+                        get: { machine.connectionPreference },
+                        set: { store.setConnectionPreference($0, for: machine.endpoint) }
+                    )) {
+                        ForEach(MachineConnectionPreference.allCases) { preference in
+                            Text(preference.title).tag(preference)
+                        }
+                    }
+                    Text(machine.connectionPreference.guidance)
+                        .font(.caption).foregroundStyle(.secondary)
+                    LabeledContent(machine.status == .connected ? "Active layer" : "Selected layer",
+                        value: machine.endpoint.connectionLayer.title)
                     LabeledContent("Transport", value: transportLabel(machine.endpoint))
                     LabeledContent("Endpoint") {
                         Text(machine.endpoint.displayAddress)

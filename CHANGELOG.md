@@ -4,6 +4,7 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+- Native app source adds per-machine Automatic, Local only, Tailscale only and Relay only preferences, bounded direct handshakes and full authenticated machine-pin persistence. Re-pairing preserves the saved policy and routes. Automatic advances on reachability failure; an unavailable locked layer does not fall back. This requires a separate app upload; alternate-address pairing and local discovery remain subsequent phases of #1571.
 - Card Cancel checks the exact prompt again at the queued terminal write. A stale or formerly held card clears without sending Esc into a running agent. Confirmed owning-turn completion also clears a render-owned card that the permission gate does not track (#1570). Ambiguous status updates alone still do not dismiss questions.
 
 ## [0.8.0] - 2026-10-20
