@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// User policy limits the routes a profile may attempt; it conveys no trust.
@@ -60,11 +61,17 @@ extension MachineEndpoint {
     public var connectionLayer: MachineConnectionLayer {
         if relayPin != nil { return .relay }
         let address = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        let parts = address.split(separator: ".")
-        let octets = parts.compactMap { Int($0) }
-        if parts.count == 4, octets.count == 4, octets.allSatisfy({ (0...255).contains($0) }),
-           octets[0] == 100, (64...127).contains(octets[1]) { return .tailscale }
-        if address.hasSuffix(".ts.net") || address.hasPrefix("fd7a:115c:a1e0:") { return .tailscale }
-        return .local
+        if address == "ts.net" || address.hasSuffix(".ts.net") { return .tailscale }
+        var ipv4 = in_addr(), ipv6 = in6_addr()
+        let bytes: Data
+        if inet_pton(AF_INET, address, &ipv4) == 1 {
+            bytes = withUnsafeBytes(of: ipv4) { Data($0) }
+        } else if inet_pton(AF_INET6, address, &ipv6) == 1 {
+            let groups = withUnsafeBytes(of: ipv6) { Data($0) }
+            if groups.prefix(6) == Data([0xfd, 0x7a, 0x11, 0x5c, 0xa1, 0xe0]) { return .tailscale }
+            guard groups.prefix(12) == Data(repeating: 0, count: 10) + Data([255, 255]) else { return .local }
+            bytes = Data(groups.suffix(4))
+        } else { return .local }
+        return bytes.count == 4 && bytes[0] == 100 && (64...127).contains(bytes[1]) ? .tailscale : .local
     }
 }
