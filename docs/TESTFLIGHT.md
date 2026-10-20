@@ -24,6 +24,12 @@ exports exactly one IPA, writes an acceptance receipt, and uploads only when
 `--upload` is explicit. `--preflight-only` and `--unsigned-archive` provide
 non-upload validation paths used by CI.
 
+Automatic signing may use a development profile for the archive. App Store
+export re-signs the payload with distribution profiles. The helper requires
+production APNS on the exported app and verifies signatures, shared groups and
+disabled debugger access on both exported targets before writing the receipt
+or uploading (#1554).
+
 Output lands in `build/ios-native/` (gitignored; override with
 `REMI_ARCHIVE_DIR`).
 
