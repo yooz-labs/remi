@@ -22,6 +22,11 @@ const server = Bun.serve({
   },
   websocket: {
     open(ws) {
+      if (mode === 'silent') return;
+      if (mode === 'retry-without-challenge') {
+        ws.send(frame('auth_result', { success: false, error: 'PAIRING_PENDING' }));
+        return;
+      }
       if (mode === 'preauth') {
         ws.send(JSON.stringify(question));
         return;

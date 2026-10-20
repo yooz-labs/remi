@@ -8,6 +8,8 @@ public struct MachineRouteProfile: Codable, Sendable, Equatable, Identifiable {
     public var routes: [MachineEndpoint]
     public var displayName: String?
     public var connectionPreference: MachineConnectionPreference
+    /// Local navigation identity survives adding a route that sorts before the original.
+    public var navigationID: String?
     /// Public pin captured from an authenticated Hello, never a device secret.
     public var machinePublicKey: String?
 
@@ -15,15 +17,16 @@ public struct MachineRouteProfile: Codable, Sendable, Equatable, Identifiable {
 
     public init(machineID: String?, routes: [MachineEndpoint], displayName: String? = nil,
                 connectionPreference: MachineConnectionPreference = .automatic,
-                machinePublicKey: String? = nil) {
+                machinePublicKey: String? = nil, navigationID: String? = nil) {
         self.machineID = machineID
         self.routes = routes
         self.displayName = displayName
         self.connectionPreference = connectionPreference
         self.machinePublicKey = machinePublicKey
+        self.navigationID = navigationID
     }
 
-    private enum CodingKeys: String, CodingKey { case machineID, routes, displayName, connectionPreference, machinePublicKey }
+    private enum CodingKeys: String, CodingKey { case machineID, routes, displayName, connectionPreference, machinePublicKey, navigationID }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         machineID = try values.decodeIfPresent(String.self, forKey: .machineID)
@@ -32,11 +35,15 @@ public struct MachineRouteProfile: Codable, Sendable, Equatable, Identifiable {
         connectionPreference = try values.decodeIfPresent(MachineConnectionPreference.self,
             forKey: .connectionPreference) ?? .automatic
         machinePublicKey = try values.decodeIfPresent(String.self, forKey: .machinePublicKey)
+        navigationID = try values.decodeIfPresent(String.self, forKey: .navigationID)
     }
 
     /// A missing full pin is a legacy profile. A present but invalid pin is
     /// corrupt trust, never permission to connect without the saved pin (#1571).
     func verifiedSavedIdentity() throws -> (key: Data, machineID: String)? {
+        guard navigationID == nil || routes.contains(where: { $0.id == navigationID }) else {
+            throw MachineConfigurationStore.ReadError.invalidSavedConfiguration
+        }
         let relayKeys = routes.compactMap(\.relayPin).map(\.machinePublicKey)
         guard let encoded = machinePublicKey ?? relayKeys.first else { return nil }
         guard let key = try? RelayCrypto.unb64(encoded), key.count == 32,

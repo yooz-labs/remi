@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Observation
 import RemiPush
@@ -76,6 +77,28 @@ public struct MachineEndpoint: Codable, Sendable, Hashable, Identifiable {
         return components.url
     }
 
+    var withoutPairingContext: MachineEndpoint {
+        MachineEndpoint(host: host, port: port, expectedFingerprint: expectedFingerprint,
+            expectedPublicKey: expectedPublicKey, relayPin: relayPin)
+    }
+
+    /// Address ownership is textual/numeric normalization, never DNS resolution.
+    var pairingAddressIdentity: String {
+        guard relayPin == nil else { return id }
+        var ipv4 = in_addr(), ipv6 = in6_addr()
+        let normalized: String
+        if inet_pton(AF_INET, host, &ipv4) == 1 {
+            normalized = withUnsafeBytes(of: ipv4) { Data($0).base64EncodedString() }
+        } else if inet_pton(AF_INET6, host, &ipv6) == 1 {
+            let bytes = withUnsafeBytes(of: ipv6) { Data($0) }
+            normalized = bytes.prefix(12) == Data(repeating: 0, count: 10) + Data([255, 255])
+                ? bytes.suffix(4).base64EncodedString() : bytes.base64EncodedString()
+        } else {
+            normalized = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        }
+        return "\(normalized):\(port)"
+    }
+
     var publicConfiguration: MachineEndpoint {
         guard let relayPin else { return self }
         return MachineEndpoint(host: host, port: port, relayPin: relayPin)
@@ -119,7 +142,8 @@ public enum MachineConnectionStatus: Sendable, Equatable {
 public struct MachineState: Sendable, Equatable, Identifiable {
     /// Stable local profile identity. Authenticated wire identity remains `machineID`,
     /// so navigation keys do not change when the active route or descriptor changes.
-    public var id: String { routes[0].id }
+    public var id: String { navigationID ?? routes[0].id }
+    private var navigationID: String?
 
     public private(set) var routes: [MachineEndpoint]
     public var connectionPreference: MachineConnectionPreference = .automatic
@@ -129,6 +153,8 @@ public struct MachineState: Sendable, Equatable, Identifiable {
     private var persistedMachineID: String?
     private var persistedMachinePublicKey: String?
     var policyOwner = MachineConnectionPolicyFence.shared.makeOwner()
+    /// Forget/recreate is a new authority lifetime even when the full pin is identical.
+    let pairingLifetime = UUID()
     var configurationIssue: String?
     public var status: MachineConnectionStatus
     public var sessionConnectionIssue: String?
@@ -199,6 +225,17 @@ public struct MachineState: Sendable, Equatable, Identifiable {
         routes.sort { ($0.relayPin == nil ? 0 : 1) < ($1.relayPin == nil ? 0 : 1) }
     }
 
+    mutating func preserveNavigationID(_ id: String) {
+        guard routes.contains(where: { $0.id == id }) else { return }
+        navigationID = id
+    }
+
+    mutating func appendPairingHint(_ route: MachineEndpoint) {
+        guard !routes.contains(where: { $0.id == route.id }) else { return }
+        // Admission preserves the first route's navigation identity (#1574).
+        routes.append(route)
+    }
+
     mutating func replaceRoute(_ route: MachineEndpoint) {
         guard let index = routes.firstIndex(where: { $0.id == route.id }) else { return }
         routes[index] = route
@@ -241,6 +278,13 @@ public struct ResolvedQuestionRecord: Sendable, Equatable, Identifiable {
 @Observable
 public final class MachineStore {
     public private(set) var machines: [MachineState]
+    public private(set) var pairingAttempts: [PairingAttemptState] = []
+    @ObservationIgnored private var pairingCoordinator: PairingAttemptCoordinator?
+    @ObservationIgnored private var pairingOriginLifetime: UUID?
+    #if DEBUG
+    @ObservationIgnored var ownedBeforePairingAdmission: (@MainActor () async -> Void)?
+    var ownedPairingCoordinator: PairingAttemptCoordinator? { pairingCoordinator }
+    #endif
     public private(set) var transcriptsBySession: [String: [TranscriptContentMessage]] = [:]
     public private(set) var sessionViewsBySession: [String: [SessionViewMeta]] = [:]
     public private(set) var recentRepositoriesByMachine: [String: [RecentRepository]] = [:]
@@ -309,7 +353,7 @@ public final class MachineStore {
                 routes: machine.routes.filter { !pendingRelayIDs.contains($0.id) },
                 displayName: machine.usesConfiguredDisplayName ? machine.displayName : nil,
                 connectionPreference: machine.connectionPreference,
-                machinePublicKey: machine.durableMachinePublicKey
+                machinePublicKey: machine.durableMachinePublicKey, navigationID: machine.id
             )
         }.filter { !$0.routes.isEmpty }
     }
@@ -318,6 +362,7 @@ public final class MachineStore {
 
     #if DEBUG
     func useOwnedTestSession(_ session: URLSession) { ownedTestSession = session }
+    var ownedPendingAnswerCount: Int { pendingAnswers.count }
     var ownedResumeRequestIDs: [String] { Array(resumeAttemptsByRequest.keys) }
     var ownedConnectionMachineIDs: [MachineEndpoint: String] { connections.compactMapValues(\.ownedExpectedMachineID) }
     #endif
@@ -621,7 +666,7 @@ public final class MachineStore {
                         pairingNonce: route.pairingNonce, pairingLabel: route.pairingLabel)
                 }
                 return [(MachineRouteProfile(machineID: verified.machineID, routes: pinned, displayName: profile.displayName,
-                    connectionPreference: profile.connectionPreference, machinePublicKey: RelayCrypto.b64(verified.key)), false)]
+                    connectionPreference: profile.connectionPreference, machinePublicKey: RelayCrypto.b64(verified.key), navigationID: profile.navigationID), false)]
             } catch {
                 return [(profile, true)]
             }
@@ -635,6 +680,7 @@ public final class MachineStore {
                 configuredDisplayName: profile.displayName != nil
             )
             for route in profile.routes.dropFirst() { state.addRoute(route.publicConfiguration) }
+            if let navigationID = profile.navigationID { state.preserveNavigationID(navigationID) }
             state.connectionPreference = profile.connectionPreference
             if item.invalid {
                 state.preserveInvalidSavedIdentity(profile)
@@ -684,12 +730,27 @@ public final class MachineStore {
     /// outstanding operation. Retire generations before closing the sockets.
     public func setConnectionPreference(_ preference: MachineConnectionPreference, for endpoint: MachineEndpoint) {
         guard let index = machineIndex(containing: endpoint) else { return }
+        if machines[index].connectionPreference != preference,
+           pairingOriginLifetime == machines[index].pairingLifetime { pairingCoordinator?.cancel() }
         if let id = machines[index].policyMachineID {
             MachineConnectionPolicyFence.shared.publish(preference, machineID: id,
                 owner: machines[index].policyOwner, explicit: true)
         }
         guard machines[index].connectionPreference != preference else { return }
         machines[index].connectionPreference = preference
+        retireProfileConnections(machineIndex: index,
+            reason: "The connection layer changed. Check the session list before resuming again.")
+        machines[index].status = running ? .connecting : .disconnected
+        machines[index].sessionConnectionIssue = nil
+        if let selected = preference.orderedRoutes(machines[index].routes).first {
+            machines[index].activate(selected)
+        } else {
+            machines[index].status = .unavailable(reason: "No \(preference.title) route is configured.")
+        }
+        if running { startPermittedRoutes(machineIndex: index) }
+    }
+
+    private func retireProfileConnections(machineIndex index: Int, reason: String) {
         let roots = Set(machines[index].routes)
         failedDirectRoutes.subtract(roots)
         for root in roots { terminalRootStates[root] = nil }
@@ -699,7 +760,7 @@ public final class MachineStore {
             finishAnswer(answer.id, outcome: "uncertain")
         }
         for (requestID, attempt) in Array(resumeAttemptsByRequest) where roots.contains(attempt.parent) {
-            finishResume(requestID: requestID, error: "The connection layer changed. Check the session list before resuming again.")
+            finishResume(requestID: requestID, error: reason)
         }
         routeBySession = routeBySession.filter { !retiredSet.contains($0.value) }
         for route in retired {
@@ -712,14 +773,6 @@ public final class MachineStore {
             parentByConnection[route] = nil
             if let connection = connections.removeValue(forKey: route) { Task { await connection.stop() } }
         }
-        machines[index].status = running ? .connecting : .disconnected
-        machines[index].sessionConnectionIssue = nil
-        if let selected = preference.orderedRoutes(machines[index].routes).first {
-            machines[index].activate(selected)
-        } else {
-            machines[index].status = .unavailable(reason: "No \(preference.title) route is configured.")
-        }
-        if running { startPermittedRoutes(machineIndex: index) }
     }
 
     public func stop() {
@@ -733,6 +786,7 @@ public final class MachineStore {
     }
 
     private func retireForeground(invalidateAnswers: Bool) {
+        pairingCoordinator?.cancel()
         running = false
         registrationEpoch.replace()
         if invalidateAnswers { answerEpoch.replace() }
@@ -836,6 +890,144 @@ public final class MachineStore {
         connect(publicEndpoint, parent: publicEndpoint)
     }
 
+    public func pairingAttempt(id: UUID) -> PairingAttemptState? {
+        pairingAttempts.first { $0.id == id }
+    }
+
+    public func cancelPairing(_ id: UUID) {
+        guard pairingCoordinator?.id == id else { return }
+        pairingCoordinator?.cancel()
+    }
+
+    struct PairingOrigin: Equatable {
+        let lifetime: UUID
+        let preference: MachineConnectionPreference
+    }
+
+    /// Select policy before any dial. Pins and endpoint ownership must agree across
+    /// every hint; a QR never chooses between conflicting or ambiguous profiles.
+    private func pairingOrigin(hints: [MachineEndpoint], key: Data, machineID: String) throws -> PairingOrigin? {
+        let addresses = Set(hints.map(\.pairingAddressIdentity))
+        let matches = machines.filter { machine in
+            machine.durableMachineID == machineID
+                || machine.durableMachinePublicKey == RelayCrypto.b64(key)
+                || machine.routes.contains { route in
+                    addresses.contains(route.pairingAddressIdentity)
+                        || route.expectedPublicKey == key.base64EncodedString()
+                        || route.relayPin?.machinePublicKey == RelayCrypto.b64(key)
+                }
+        }
+        guard matches.count <= 1 else { throw PairingAdmissionError.refused("Several saved profiles match this pairing code. Resolve them before pairing.") }
+        guard let machine = matches.first else { return nil }
+        if let issue = machine.configurationIssue { throw PairingAdmissionError.refused(issue) }
+        guard machine.durableMachineID == nil || machine.durableMachineID == machineID,
+              machine.durableMachinePublicKey == nil || machine.durableMachinePublicKey == RelayCrypto.b64(key),
+              machine.routes.allSatisfy({ route in
+                  (route.expectedPublicKey == nil || route.expectedPublicKey == key.base64EncodedString())
+                      && (route.expectedFingerprint == nil || route.expectedFingerprint == ClientIdentity.fingerprint(ofPublicKeyRaw: key))
+                      && (route.relayPin == nil || route.relayPin?.machinePublicKey == RelayCrypto.b64(key))
+              }) else {
+            throw PairingAdmissionError.refused("The pairing key conflicts with the saved machine pin. Forget only if you intend to replace that machine.")
+        }
+        return PairingOrigin(lifetime: machine.pairingLifetime, preference: machine.connectionPreference)
+    }
+
+    private func publishPairing(_ state: PairingAttemptState) {
+        pairingAttempts.removeAll { $0.id == state.id }
+        pairingAttempts.append(state)
+        while pairingAttempts.filter({ $0.phase.isTerminal }).count > 8 {
+            if let index = pairingAttempts.firstIndex(where: { $0.phase.isTerminal }) { pairingAttempts.remove(at: index) }
+        }
+    }
+
+    @discardableResult
+    public func beginPairing(_ payload: PairingPayload, label: String,
+                             newProfilePreference: MachineConnectionPreference = .automatic) -> UUID {
+        let retirement = pairingCoordinator?.cancel()
+        let id = UUID()
+        pairingOriginLifetime = nil
+        do {
+            guard let key = Data(base64Encoded: payload.daemonPublicKey), key.count == 32,
+                  key.base64EncodedString() == payload.daemonPublicKey,
+                  ClientIdentity.fingerprint(ofPublicKeyRaw: key) == payload.daemonFingerprint else {
+                throw PairingAdmissionError.refused("The pairing authority is invalid.")
+            }
+            let machineID = try MachineIdentityVerifier.machineID(forPublicKey: key)
+            let endpoints = payload.candidateEndpoints(pairingLabel: label)
+            let hints = endpoints.map(\.withoutPairingContext)
+            let origin = try pairingOrigin(hints: hints, key: key, machineID: machineID)
+            let preference = origin?.preference ?? newProfilePreference
+            let candidates = preference.orderedRoutes(endpoints)
+            guard !candidates.isEmpty else { throw PairingAdmissionError.refused("The pairing code has no address permitted by \(preference.title). Choose that layer explicitly before pairing.") }
+            guard PairingPayload.isValidLabel(label), payload.expiresAt.addingTimeInterval(120) > Date() else {
+                throw PairingAdmissionError.refused("The pairing code expired or the device label is invalid.")
+            }
+            pairingOriginLifetime = origin?.lifetime
+            let validate: () throws -> Void = { [weak self] in
+                guard let self, self.pairingCoordinator?.id == id,
+                      try self.pairingOrigin(hints: hints, key: key, machineID: machineID) == origin else {
+                    throw PairingAdmissionError.refused("The saved profile or connection layer changed. Start pairing again.")
+                }
+            }
+            let coordinator = PairingAttemptCoordinator(id: id, candidates: candidates, authority: key,
+                machineID: machineID, deadline: payload.expiresAt.addingTimeInterval(120), identity: identity,
+                clientVersion: clientVersion, clientID: clientId, validate: validate,
+                publish: { [weak self] in self?.publishPairing($0) },
+                admit: { [weak self] connection, endpoint, hello, authority in
+                    try validate()
+                    guard let self else { throw RelayFailure.closed }
+                    return self.admitPairing(connection, endpoint: endpoint, hints: hints, hello: hello,
+                        authority: authority, origin: origin, preference: preference)
+                }, forward: { [weak self] callback, adoption in
+                    switch callback {
+                    case .state(let state): self?.receive(state, from: adoption.endpoint, generation: adoption.generation)
+                    case .event(let event): self?.receive(event, from: adoption.endpoint, generation: adoption.generation)
+                    case .authenticationRetry: break
+                    }
+                })
+            #if DEBUG
+            coordinator.ownedBeforeAdmission = ownedBeforePairingAdmission
+            #endif
+            pairingCoordinator = coordinator
+            publishPairing(.init(id: id, address: nil, layer: nil, phase: .connecting))
+            coordinator.start(after: retirement)
+        } catch {
+            publishPairing(.init(id: id, address: nil, layer: nil, phase: .failed(reason: error.localizedDescription)))
+        }
+        return id
+    }
+
+    func admitPairing(_ connection: RemiConnection, endpoint: MachineEndpoint, hints: [MachineEndpoint],
+                              hello: HelloAckMessage, authority: Data, origin: PairingOrigin?,
+                              preference: MachineConnectionPreference) -> PairingAdoption {
+        let index: Int
+        if let origin, let existing = machines.firstIndex(where: { $0.pairingLifetime == origin.lifetime }) {
+            index = existing
+            retireProfileConnections(machineIndex: index,
+                reason: "The pairing connection changed. Check the session before resuming again.")
+        } else {
+            machines.append(MachineState(endpoint: endpoint, displayName: endpoint.displayAddress))
+            index = machines.count - 1
+            machines[index].connectionPreference = preference
+        }
+        let navigationID = machines[index].id
+        for hint in hints {
+            if machines[index].routes.contains(where: { $0.id == hint.id }) { machines[index].replaceRoute(hint) }
+            else { machines[index].appendPairingHint(hint) }
+        }
+        machines[index].preserveNavigationID(navigationID)
+        machines[index].bindAuthenticatedPublicKey(authority)
+        machines[index].activate(endpoint)
+        let generation = UUID()
+        running = true
+        connections[endpoint] = connection
+        connectionGenerations[endpoint] = generation
+        parentByConnection[endpoint] = endpoint
+        let adoption = PairingAdoption(endpoint: endpoint, generation: generation, profileID: machines[index].id)
+        receive(.hello(hello, authorityPublicKey: authority), from: endpoint, generation: generation)
+        return adoption
+    }
+
     public func renameMachine(_ endpoint: MachineEndpoint, to proposedName: String) {
         let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name.count <= 80,
@@ -847,6 +1039,7 @@ public final class MachineStore {
     @discardableResult public func removeMachine(_ endpoint: MachineEndpoint) -> Bool {
         registrationEpoch.replace(); answerEpoch.replace()
         let removedMachine = machines.first { $0.routes.contains(where: { $0.id == endpoint.id }) }
+        if removedMachine?.pairingLifetime == pairingOriginLifetime { pairingCoordinator?.cancel() }
         let configuredRoutes = removedMachine?.routes ?? [endpoint]
         for route in configuredRoutes {
             if let pin = route.relayPin, let room = try? RelayCrypto.room(RelayCrypto.unb64(pin.machinePublicKey)),
