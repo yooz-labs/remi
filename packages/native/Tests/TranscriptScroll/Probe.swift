@@ -25,9 +25,14 @@ struct ScrollRoot: View {
 }
 
 @main struct Probe {
-    @MainActor static func main() async {
+    @MainActor static func main() {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
+        Task { @MainActor in await runProbe() }
+        app.run()
+    }
+
+    @MainActor static func runProbe() async {
         let scenario = ScrollScenario()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 600),
             styleMask: [.titled], backing: .buffered, defer: false)
@@ -98,18 +103,19 @@ struct ScrollRoot: View {
 
     @MainActor static func bottomGap(_ scroll: NSScrollView) -> CGFloat {
         guard let document = scroll.documentView else { return .infinity }
-        let visible = scroll.documentVisibleRect
-        return document.isFlipped ? document.bounds.maxY - visible.maxY : visible.minY - document.bounds.minY
+        let clip = scroll.contentView
+        let proposed = clip.bounds.offsetBy(dx: 0, dy: document.isFlipped ? 1_000_000 : -1_000_000)
+        let limit = clip.constrainBoundsRect(proposed).minY
+        return document.isFlipped ? limit - clip.bounds.minY : clip.bounds.minY - limit
     }
 
     @MainActor static func atBottom(_ scroll: NSScrollView) -> Bool { abs(bottomGap(scroll)) < 4 }
 
     @MainActor static func moveToBottom(_ scroll: NSScrollView) {
         guard let document = scroll.documentView else { return }
-        let y = document.isFlipped
-            ? max(0, document.bounds.maxY - scroll.documentVisibleRect.height)
-            : document.bounds.minY
-        scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+        let clip = scroll.contentView
+        let proposed = clip.bounds.offsetBy(dx: 0, dy: document.isFlipped ? 1_000_000 : -1_000_000)
+        scroll.contentView.scroll(to: clip.constrainBoundsRect(proposed).origin)
         scroll.reflectScrolledClipView(scroll.contentView)
     }
 
@@ -127,6 +133,7 @@ struct ScrollRoot: View {
         ["case": name, "passed": passed, "bottomGap": bottomGap(scroll),
             "visibleMinY": scroll.documentVisibleRect.minY, "visibleMaxY": scroll.documentVisibleRect.maxY,
             "documentHeight": scroll.documentView?.bounds.height ?? 0,
+            "contentInsetBottom": scroll.contentInsets.bottom,
             "flipped": scroll.documentView?.isFlipped ?? false]
     }
 }
