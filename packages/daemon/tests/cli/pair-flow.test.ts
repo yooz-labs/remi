@@ -21,6 +21,7 @@ import {
   pairFlow,
   pairPreconditions,
   pairingHosts,
+  selectPairingCandidates,
   storeErrorMessage,
 } from '../../src/cli/cmd-pair.ts';
 
@@ -104,6 +105,8 @@ describe('pairFlow (#1275)', () => {
       ok: true,
       code: { name: 'test-mac', host: '192.168.1.23', port: 18765, key: env.machine.publicKey },
     });
+    if (!decoded.ok) throw new Error(`link refused: ${decoded.error}`);
+    expect(decoded.code.v).toBe(1);
     const text = env.out.join('');
     expect(text).toContain('▀'); // half-block QR rows
     expect(text).toMatch(/[0-9a-f]{4} [0-9a-f]{4} [0-9a-f]{4} [0-9a-f]{4}/);
@@ -118,6 +121,52 @@ describe('pairFlow (#1275)', () => {
     expect(env.store.isAuthorized(env.phone.publicKey, env.phone.fingerprint)).toBe(true);
     expect(env.store.listAuthorizedKeys()[0]?.label).toBe('Sam phone');
     expect((await env.phoneConnects(env.linkOf())).result.success).toBe(true);
+  });
+
+  test('v2 opts in to shared-identity candidates and keeps terminal approval unchanged', async () => {
+    const env = await setup();
+    const flow = pairFlow(
+      deps(env, async () => env.phone.fingerprint.slice(0, 4), {
+        qrVersion: 2,
+        hosts: [
+          '192.168.1.23',
+          '100.101.102.103',
+          '203.0.113.9',
+          'studio.tailnet.ts.net',
+          '192.168.64.1',
+        ],
+      }),
+    );
+    while (env.linkOf() === '') await Bun.sleep(10);
+    const decoded = decodePairingLink(env.linkOf());
+    expect(decoded).toMatchObject({
+      ok: true,
+      code: {
+        v: 2,
+        hosts: ['192.168.1.23', '203.0.113.9', '192.168.64.1', '100.101.102.103'],
+        port: 18765,
+        key: env.machine.publicKey,
+      },
+    });
+    if (!decoded.ok || decoded.code.v !== 2) throw new Error('expected a v2 pairing link');
+    expect(decoded.code.nonce.length).toBe(22);
+    expect(decoded.code.exp).toBeGreaterThan(0);
+    expect(env.out.join('')).toContain('Candidates');
+    const first = await env.phoneConnects(env.linkOf());
+    expect(['PAIRING_PENDING', undefined]).toContain(first.result.error);
+    expect(await flow).toBe(0);
+    expect(env.store.isAuthorized(env.phone.publicKey, env.phone.fingerprint)).toBe(true);
+    expect(env.store.listAuthorizedKeys()[0]?.label).toBe('Sam phone');
+  });
+
+  test('a v2 loopback candidate is refused before a pairing record is created', async () => {
+    const env = await setup();
+    const result = await pairFlow(
+      deps(env, async () => 'unused', { qrVersion: 2, hosts: ['127.0.0.1'] }),
+    );
+    expect(result).toBe(1);
+    expect(env.out.join('')).toContain('candidate address');
+    expect(fs.existsSync(path.join(env.dir, 'pairings.json'))).toBe(false);
   });
 
   test('the first four characters of the fingerprint approve, in either case and with spaces around', async () => {
@@ -352,9 +401,12 @@ describe('pairingHosts and pairPreconditions (#1275)', () => {
     en0: [
       { address: 'fe80::1', family: 'IPv6', internal: false },
       { address: '192.168.1.23', family: 'IPv4', internal: false },
+      { address: 'fd00::123', family: 'IPv6', internal: false },
+      { address: '2001:db8::9', family: 'IPv6', internal: false },
     ],
     en7: [{ address: '169.254.10.20', family: 'IPv4', internal: false }],
     utun4: [{ address: '100.101.102.103', family: 'IPv4', internal: false }],
+    utun6: [{ address: 'fd7a:115c:a1e0::1', family: 'IPv6', internal: false }],
     en5: [{ address: '203.0.113.9', family: 'IPv4', internal: false }],
   } as never;
 
@@ -366,7 +418,24 @@ describe('pairingHosts and pairPreconditions (#1275)', () => {
       '192.168.64.1',
       '172.17.0.1',
     ]);
-    expect(pairingHosts('::', interfaces)[0]).toBe('192.168.1.23');
+    expect(pairingHosts('::', interfaces)).toEqual([
+      'fd00::123',
+      'fd7a:115c:a1e0::1',
+      '2001:db8::9',
+    ]);
+  });
+
+  test('v2 reserves one candidate from each policy layer then fills four, Local first', () => {
+    expect(
+      selectPairingCandidates([
+        '192.168.1.23',
+        '100.101.102.103',
+        '203.0.113.9',
+        'studio.tailnet.ts.net',
+        '192.168.64.1',
+        '100.101.102.104',
+      ]),
+    ).toEqual(['192.168.1.23', '203.0.113.9', '192.168.64.1', '100.101.102.103']);
   });
 
   test('a specific bind offers that address alone', () => {

@@ -9,16 +9,18 @@
  * holds no private key, capability, relay credential or secret that admits anyone.
  *
  * The text is `remi://pair#` followed by the base64url (no padding) of a JSON object whose keys come
- * in exactly the order of {@link PairingCode}, with no whitespace. A fragment is never sent anywhere
- * by a URL handler. Decoding is strict: one canonical form, every field required, no field the
- * version does not define, and a version this build does not know is refused by name.
+ * in exactly the order for its version, with no whitespace. A fragment is never sent anywhere by a
+ * URL handler. Decoding is strict: one canonical form, every field required, no field the version
+ * does not define, and a version this build does not know is refused by name.
  */
 
 import { escapeUnsafeText } from './display-text.ts';
 import { PROTOCOL_VERSION } from './protocol-version.ts';
 
-/** The only pairing code version this build reads and writes. */
+/** The default pairing code version while v2 native distribution is pending. */
 export const PAIRING_CODE_VERSION = 1;
+/** Version 2 adds a bounded list of direct endpoint candidates. */
+export const PAIRING_CODE_V2_VERSION = 2;
 /** What every pairing link starts with. */
 export const PAIRING_LINK_PREFIX = 'remi://pair#';
 /** How many random bytes a pairing nonce has. */
@@ -30,22 +32,23 @@ export const PAIRING_TTL_SECONDS = 300;
 const MAX_TTL_SECONDS = 900;
 /** How far a phone's clock may be from the machine's before a code reads as expired or malformed. */
 const CLOCK_SKEW_SECONDS = 120;
-/** The longest link accepted, so a hostile QR cannot make a client parse megabytes. */
-const MAX_LINK_LENGTH = 1024;
+/** The longest v1 link accepted, kept for clients that only know the original envelope. */
+const MAX_V1_LINK_LENGTH = 1024;
+/** The longest v2 link accepted, including the remi://pair# prefix. */
+const MAX_V2_LINK_LENGTH = 2048;
+/** The largest decoded v2 JSON envelope accepted. */
+const MAX_V2_JSON_BYTES = 1527;
+/** V2 offers a small ordered set of addresses, all sharing one key and nonce. */
+export const PAIRING_CANDIDATE_HOSTS_MAX = 4;
 /** The most a name may hold, in Unicode code points (Swift: `unicodeScalars.count`). */
 export const PAIRING_NAME_MAX_CODE_POINTS = 64;
 
-/** A pairing code, in its canonical field order. */
-export interface PairingCode {
-  /** Always {@link PAIRING_CODE_VERSION}. */
-  readonly v: number;
+interface PairingCodeFields {
   /**
    * The machine's name, for display: 1 to 64 code points, well formed, nothing `escapeUnsafeText`
    * writes out, and no `"` or `\\`, so the canonical JSON holds no escape at all.
    */
   readonly name: string;
-  /** Where the phone connects: an IPv4 or IPv6 address (no brackets, no zone) or a DNS name. */
-  readonly host: string;
   /** The hub's port. */
   readonly port: number;
   /**
@@ -61,7 +64,27 @@ export interface PairingCode {
   readonly proto: number;
 }
 
-const FIELD_ORDER = ['v', 'name', 'host', 'port', 'key', 'nonce', 'exp', 'proto'] as const;
+/** The original single-host pairing envelope. Existing links remain supported without changes. */
+export interface PairingCodeV1 extends PairingCodeFields {
+  /** Version 1 uses one host. */
+  readonly v: 1;
+  /** One address or DNS name, using the original strict host grammar. */
+  readonly host: string;
+}
+
+/** A version 2 envelope with one to four ordered endpoint candidates. */
+export interface PairingCodeV2 extends PairingCodeFields {
+  /** Version 2 adds multiple candidates without changing admission or protocol version. */
+  readonly v: 2;
+  /** Ordered addresses; every candidate shares this envelope's key, nonce, expiry and port. */
+  readonly hosts: readonly string[];
+}
+
+/** Pairing envelopes are explicitly versioned so callers must narrow before reading host(s). */
+export type PairingCode = PairingCodeV1 | PairingCodeV2;
+
+const FIELD_ORDER_V1 = ['v', 'name', 'host', 'port', 'key', 'nonce', 'exp', 'proto'] as const;
+const FIELD_ORDER_V2 = ['v', 'name', 'hosts', 'port', 'key', 'nonce', 'exp', 'proto'] as const;
 
 /** Why a link was refused; each is its own message on a client. */
 export type PairingCodeError =
@@ -140,8 +163,13 @@ const HEX_GROUP = /^[0-9A-Fa-f]{1,4}$/;
 
 /** An IPv6 address in hexadecimal groups: eight, or fewer around one `::`; no zone, no IPv4 tail. */
 function isIpv6(host: string): boolean {
+  return parseIpv6Groups(host) !== null;
+}
+
+/** Expand a strictly valid IPv6 address to its eight numeric groups. */
+function parseIpv6Groups(host: string): number[] | null {
   const halves = host.split('::');
-  if (halves.length > 2) return false;
+  if (halves.length > 2) return null;
   const groups = (part: string): string[] | null => {
     if (part === '') return [];
     const parts = part.split(':');
@@ -149,11 +177,16 @@ function isIpv6(host: string): boolean {
   };
   if (halves.length === 1) {
     const all = groups(host);
-    return all !== null && all.length === 8;
+    return all !== null && all.length === 8 ? all.map((group) => Number.parseInt(group, 16)) : null;
   }
   const head = groups(halves[0] as string);
   const tail = groups(halves[1] as string);
-  return head !== null && tail !== null && head.length + tail.length <= 7;
+  if (head === null || tail === null || head.length + tail.length > 7) return null;
+  return [
+    ...head.map((group) => Number.parseInt(group, 16)),
+    ...Array<number>(8 - head.length - tail.length).fill(0),
+    ...tail.map((group) => Number.parseInt(group, 16)),
+  ];
 }
 
 /**
@@ -168,6 +201,101 @@ export function isPairingHost(host: string): boolean {
   const labels = name.split('.');
   if (/^\d+$/.test(labels.at(-1) ?? '')) return false;
   return labels.every((label) => DNS_LABEL.test(label));
+}
+
+function parseIpv4Octets(host: string): number[] | null {
+  if (!IPV4.test(host)) return null;
+  return host.split('.').map((part) => Number.parseInt(part, 10));
+}
+
+function mappedIpv4(groups: readonly number[]): number[] | null {
+  if (
+    groups.length !== 8 ||
+    groups.slice(0, 5).some((group) => group !== 0) ||
+    groups[5] !== 0xffff
+  ) {
+    return null;
+  }
+  const high = groups[6];
+  const low = groups[7];
+  if (high === undefined || low === undefined) return null;
+  return [high >>> 8, high & 0xff, low >>> 8, low & 0xff];
+}
+
+function isUnsafeIpv4(octets: readonly number[]): boolean {
+  return (
+    octets[0] === 127 ||
+    (octets[0] === 0 && octets[1] === 0 && octets[2] === 0 && octets[3] === 0) ||
+    (octets[0] === 169 && octets[1] === 254)
+  );
+}
+
+/**
+ * A normalized identity for duplicate detection. IP addresses are compared by numeric value,
+ * including IPv4-mapped IPv6; DNS names are compared lowercase without one trailing dot. It never
+ * resolves a DNS name.
+ */
+export function normalizePairingHost(host: string): string | null {
+  const ipv4 = parseIpv4Octets(host);
+  if (ipv4 !== null) return `ipv4:${ipv4.join('.')}`;
+  if (host.includes(':')) {
+    const groups = parseIpv6Groups(host);
+    if (groups === null) return null;
+    const mapped = mappedIpv4(groups);
+    if (mapped !== null) return `ipv4:${mapped.join('.')}`;
+    let value = 0n;
+    for (const group of groups) value = (value << 16n) | BigInt(group);
+    return `ipv6:${value.toString(16)}`;
+  }
+  if (!isPairingHost(host)) return null;
+  const name = host.endsWith('.') ? host.slice(0, -1) : host;
+  return `dns:${name.toLowerCase()}`;
+}
+
+/** A routing hint only; it does not resolve, authenticate or enroll a candidate. */
+export type PairingHostClass = 'local' | 'tailscale';
+
+/** Classifies direct candidates for deterministic scheduling without DNS resolution. */
+export function classifyPairingHost(host: string): PairingHostClass {
+  const ipv4 = parseIpv4Octets(host);
+  if (ipv4 !== null) {
+    const [first = 0, second = 0] = ipv4;
+    if (first === 100 && second >= 64 && second <= 127) return 'tailscale';
+    return 'local';
+  }
+  const groups = host.includes(':') ? parseIpv6Groups(host) : null;
+  if (groups !== null) {
+    const mapped = mappedIpv4(groups);
+    if (mapped !== null) return classifyPairingHost(mapped.join('.'));
+    if (groups[0] === 0xfd7a && groups[1] === 0x115c && groups[2] === 0xa1e0) {
+      return 'tailscale';
+    }
+    return 'local';
+  }
+  const normalized = host.toLowerCase().replace(/\.$/, '');
+  return normalized === 'ts.net' || normalized.endsWith('.ts.net') ? 'tailscale' : 'local';
+}
+
+/**
+ * Whether a v2 candidate is safe to display as a dialable target. The v1 decoder intentionally
+ * keeps its original grammar and validation; v2 rejects loopback, unspecified and link-local IPs.
+ */
+export function isPairingCandidateHost(host: string): boolean {
+  if (!isPairingHost(host)) return false;
+  const ipv4 = parseIpv4Octets(host);
+  if (ipv4 !== null) return !isUnsafeIpv4(ipv4);
+  if (host.includes(':')) {
+    const groups = parseIpv6Groups(host);
+    if (groups === null) return false;
+    const mapped = mappedIpv4(groups);
+    if (mapped !== null) return !isUnsafeIpv4(mapped);
+    const unspecified = groups.every((group) => group === 0);
+    const loopback = groups.slice(0, 7).every((group) => group === 0) && groups[7] === 1;
+    const linkLocal = ((groups[0] ?? 0) & 0xffc0) === 0xfe80;
+    return !unspecified && !loopback && !linkLocal;
+  }
+  const normalized = host.toLowerCase().replace(/\.$/, '');
+  return normalized !== 'localhost' && !normalized.endsWith('.localhost');
 }
 
 /**
@@ -196,16 +324,22 @@ export function isPlainPairingText(text: unknown, maxCodePoints: number): text i
   return !text.includes('"') && !text.includes('\\');
 }
 
-/** Why `code` is not a valid version 1 code, or null. Expiry and protocol are checked separately. */
-function shapeError(code: Record<string, unknown>): string | null {
+function fieldSetError(code: Record<string, unknown>, order: readonly string[]): string | null {
   const keys = Object.keys(code);
   for (const key of keys) {
-    if (!(FIELD_ORDER as readonly string[]).includes(key)) return `unknown field ${key}`;
+    if (!(order as readonly string[]).includes(key)) return `unknown field ${key}`;
   }
-  for (const key of FIELD_ORDER) if (!(key in code)) return `missing field ${key}`;
-  const { name, host, port, key, nonce, exp, proto } = code;
-  if (!isPlainPairingText(name, PAIRING_NAME_MAX_CODE_POINTS)) return 'name';
-  if (typeof host !== 'string' || !isPairingHost(host)) return 'host';
+  for (const key of order) if (!(key in code)) return `missing field ${key}`;
+  return null;
+}
+
+function nameShapeError(code: Record<string, unknown>): string | null {
+  return isPlainPairingText(code['name'], PAIRING_NAME_MAX_CODE_POINTS) ? null : 'name';
+}
+
+/** Shared fields after the version-specific name and host(s); expiry/protocol follow canonicality. */
+function sharedShapeError(code: Record<string, unknown>): string | null {
+  const { port, key, nonce, exp, proto } = code;
   if (typeof port !== 'number' || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
     return 'port';
   }
@@ -218,23 +352,70 @@ function shapeError(code: Record<string, unknown>): string | null {
   return null;
 }
 
+/** Why `code` is not a valid v1 code, or null. */
+function shapeErrorV1(code: Record<string, unknown>): string | null {
+  const fields = fieldSetError(code, FIELD_ORDER_V1);
+  if (fields !== null) return fields;
+  const name = nameShapeError(code);
+  if (name !== null) return name;
+  if (typeof code['host'] !== 'string' || !isPairingHost(code['host'])) return 'host';
+  return sharedShapeError(code);
+}
+
+/** Why `code` is not a valid v2 code, or null. */
+function shapeErrorV2(code: Record<string, unknown>): string | null {
+  const fields = fieldSetError(code, FIELD_ORDER_V2);
+  if (fields !== null) return fields;
+  const name = nameShapeError(code);
+  if (name !== null) return name;
+  const hosts = code['hosts'];
+  if (!Array.isArray(hosts) || hosts.length < 1 || hosts.length > PAIRING_CANDIDATE_HOSTS_MAX) {
+    return 'hosts';
+  }
+  if (!hosts.every((host) => typeof host === 'string' && isPairingCandidateHost(host))) {
+    return 'hosts';
+  }
+  const identities = hosts.map((host) => normalizePairingHost(host as string));
+  if (new Set(identities).size !== identities.length) return 'duplicate hosts';
+  return sharedShapeError(code);
+}
+
+function orderedCode(code: PairingCode): Record<string, unknown> {
+  const fields = code.v === 1 ? FIELD_ORDER_V1 : FIELD_ORDER_V2;
+  const values = code as unknown as Record<string, unknown>;
+  const ordered: Record<string, unknown> = {};
+  for (const field of fields) ordered[field] = values[field];
+  return ordered;
+}
+
 /** The link for `code`, in canonical form. Throws on a code that would not decode. */
 export function encodePairingLink(code: PairingCode): string {
-  const shape = shapeError(code as unknown as Record<string, unknown>);
-  if (shape !== null || code.v !== PAIRING_CODE_VERSION) {
-    throw new Error(`Not a valid pairing code (${shape ?? 'version'})`);
+  const record = code as unknown as Record<string, unknown>;
+  const shape =
+    code.v === 1
+      ? shapeErrorV1(record)
+      : code.v === PAIRING_CODE_V2_VERSION
+        ? shapeErrorV2(record)
+        : 'version';
+  if (shape !== null) throw new Error(`Not a valid pairing code (${shape})`);
+  const bytes = new TextEncoder().encode(JSON.stringify(orderedCode(code)));
+  const link = PAIRING_LINK_PREFIX + toBase64Url(bytes);
+  if (
+    (code.v === 1 && link.length > MAX_V1_LINK_LENGTH) ||
+    (code.v === PAIRING_CODE_V2_VERSION &&
+      (link.length > MAX_V2_LINK_LENGTH || bytes.byteLength > MAX_V2_JSON_BYTES))
+  ) {
+    throw new Error('Not a valid pairing code (too long)');
   }
-  const ordered: Record<string, unknown> = {};
-  for (const key of FIELD_ORDER) ordered[key] = code[key];
-  return PAIRING_LINK_PREFIX + toBase64Url(new TextEncoder().encode(JSON.stringify(ordered)));
+  return link;
 }
 
 /**
  * Reads a scanned or pasted link. Refuses, each with its own error: text that is not a pairing
- * link; a body that is not canonical base64url JSON in the field order; a version other than 1
- * (`UNSUPPORTED_VERSION`, read before anything else so a newer code is named as newer); a missing,
- * unknown or out-of-range field; an expired code (with two minutes for the clocks to differ); and a
- * protocol version other than the client's.
+ * link; a body that is not canonical base64url JSON in the version's field order; an unsupported
+ * version (read before other fields so a newer code is named as newer); a missing, unknown or
+ * out-of-range field; an expired code (with two minutes for the clocks to differ); and a protocol
+ * version other than the client's.
  */
 export function decodePairingLink(
   text: string,
@@ -248,7 +429,7 @@ export function decodePairingLink(
   if (typeof text !== 'string' || !text.startsWith(PAIRING_LINK_PREFIX)) {
     return fail('NOT_A_PAIRING_LINK', 'not a remi://pair# link');
   }
-  if (text.length > MAX_LINK_LENGTH) return fail('MALFORMED', 'too long');
+  if (text.length > MAX_V2_LINK_LENGTH) return fail('MALFORMED', 'too long');
   const body = text.slice(PAIRING_LINK_PREFIX.length);
   const bytes = fromBase64Url(body);
   if (bytes === null) return fail('MALFORMED', 'not base64url');
@@ -270,10 +451,17 @@ export function decodePairingLink(
   }
   const record = parsed as Record<string, unknown>;
   if (!('v' in record)) return fail('MALFORMED', 'missing field v');
-  if (record['v'] !== PAIRING_CODE_VERSION) {
+  if (record['v'] !== PAIRING_CODE_VERSION && record['v'] !== PAIRING_CODE_V2_VERSION) {
     return fail('UNSUPPORTED_VERSION', `version ${String(record['v'])}`);
   }
-  const shape = shapeError(record);
+  const version = record['v'];
+  if (version === PAIRING_CODE_VERSION && text.length > MAX_V1_LINK_LENGTH) {
+    return fail('MALFORMED', 'too long');
+  }
+  if (version === PAIRING_CODE_V2_VERSION && bytes.byteLength > MAX_V2_JSON_BYTES) {
+    return fail('MALFORMED', 'too long');
+  }
+  const shape = version === PAIRING_CODE_VERSION ? shapeErrorV1(record) : shapeErrorV2(record);
   if (shape !== null) return fail('MALFORMED', shape);
   const code = record as unknown as PairingCode;
   const canonical = encodePairingLink(code);

@@ -696,7 +696,12 @@ if (cliSubcommand === 'pair') {
     process.exit(await runRelayCommand('pair', parsedArgs.subcommandArgs, cliPort));
   }
   const { runPairCommand } = await import('./cli/cmd-pair.ts');
-  process.exit(await runPairCommand({ ...(cliHost !== undefined && { host: cliHost }) }));
+  process.exit(
+    await runPairCommand({
+      ...(cliHost !== undefined && { host: cliHost }),
+      ...(parsedArgs.qrVersion !== undefined && { qrVersion: parsedArgs.qrVersion }),
+    }),
+  );
 }
 
 // Handle key management subcommands (keygen, export-key, import-key, authorize, keys)

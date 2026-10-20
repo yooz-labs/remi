@@ -16,14 +16,19 @@
 import * as os from 'node:os';
 import * as readline from 'node:readline';
 import {
+  PAIRING_CANDIDATE_HOSTS_MAX,
   PAIRING_NAME_MAX_CODE_POINTS,
   PROTOCOL_VERSION,
-  type PairingCode,
+  type PairingCodeV1,
+  type PairingCodeV2,
+  classifyPairingHost,
   encodePairingLink,
   errorToString,
   escapeUnsafeText,
+  isPairingCandidateHost,
   isPairingHost,
   isPlainPairingText,
+  normalizePairingHost,
 } from '@remi/shared';
 import { renderUnicodeCompact } from 'uqr';
 import { IdentityStore, PairingLimitError } from '../auth/identity-store.ts';
@@ -46,6 +51,10 @@ export interface PairFlowDeps {
   readonly name: string;
   readonly host: string;
   readonly port: number;
+  /** The v1 default remains until the compatible native app is distributed. */
+  readonly qrVersion?: 1 | 2;
+  /** Candidate inventory for v2; one explicit `--host` passes a one-item list. */
+  readonly hosts?: readonly string[];
   /** Other addresses the hub can be reached on, offered as `--host` choices. */
   readonly others?: readonly string[];
   readonly write: (text: string) => void;
@@ -67,6 +76,42 @@ export function formatFingerprint(fp: string): string {
 /** `host:port`, with an IPv6 address in brackets. */
 function formatAddress(host: string, port: number): string {
   return host.includes(':') ? `[${host}]:${port}` : `${host}:${port}`;
+}
+
+/**
+ * Select at most four eligible candidates. When both policy layers exist, reserve one of each,
+ * fill in inventory order, then put all Local candidates before Tailscale candidates.
+ */
+export function selectPairingCandidates(hosts: readonly string[]): string[] {
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const host of hosts) {
+    if (!isPairingCandidateHost(host)) continue;
+    const identity = normalizePairingHost(host);
+    if (identity === null || seen.has(identity)) continue;
+    seen.add(identity);
+    unique.push(host);
+  }
+  const local = unique.filter((host) => classifyPairingHost(host) === 'local');
+  const tailscale = unique.filter((host) => classifyPairingHost(host) === 'tailscale');
+  const selected: string[] = [];
+  if (local[0] !== undefined && tailscale[0] !== undefined) {
+    selected.push(local[0], tailscale[0]);
+  } else if (local[0] !== undefined || tailscale[0] !== undefined) {
+    selected.push((local[0] ?? tailscale[0]) as string);
+  }
+  for (const host of [...local, ...tailscale]) {
+    if (selected.length >= PAIRING_CANDIDATE_HOSTS_MAX) break;
+    if (
+      !selected.some((candidate) => normalizePairingHost(candidate) === normalizePairingHost(host))
+    ) {
+      selected.push(host);
+    }
+  }
+  return [
+    ...selected.filter((host) => classifyPairingHost(host) === 'local'),
+    ...selected.filter((host) => classifyPairingHost(host) === 'tailscale'),
+  ];
 }
 
 /** The QR, white modules drawn on black, so it reads the same on a light or a dark terminal. */
@@ -92,13 +137,42 @@ export async function pairFlow(deps: PairFlowDeps): Promise<number> {
   const { store, write } = deps;
   const now = deps.now ?? Date.now;
   const pollMs = deps.pollMs ?? 300;
+  const qrVersion = deps.qrVersion ?? 1;
 
   // Checked before a record exists, so a code that cannot be shown leaves nothing open.
-  if (!isPairingHost(deps.host)) {
+  if (qrVersion !== 1 && qrVersion !== 2) {
+    write('Choose pairing QR version 1 or 2.\n');
+    return 1;
+  }
+  if (qrVersion === 1 && !isPairingHost(deps.host)) {
     write(
       `${escapeUnsafeText(deps.host)} cannot go in a pairing code. Choose an address with remi pair --host <address>.\n`,
     );
     return 1;
+  }
+  let flowDeps = deps;
+  if (qrVersion === 2) {
+    const availableHosts = deps.hosts ?? [deps.host, ...(deps.others ?? [])];
+    if (availableHosts.some((host) => !isPairingCandidateHost(host))) {
+      write('A candidate address cannot go in a version 2 pairing code.\n');
+      return 1;
+    }
+    const selectedHosts = selectPairingCandidates(availableHosts);
+    if (selectedHosts.length === 0) {
+      write('Choose a phone-reachable address with remi pair --host <address>.\n');
+      return 1;
+    }
+    const selectedIdentities = new Set(selectedHosts.map(normalizePairingHost));
+    const remainingAddresses = deps.others?.filter(
+      (host) => !selectedIdentities.has(normalizePairingHost(host)),
+    );
+    flowDeps = {
+      ...deps,
+      host: selectedHosts[0] as string,
+      hosts: selectedHosts,
+      qrVersion,
+      ...(remainingAddresses !== undefined && { others: remainingAddresses }),
+    };
   }
   if (!isPlainPairingText(deps.name, PAIRING_NAME_MAX_CODE_POINTS)) {
     write('The machine name cannot go in a pairing code.\n');
@@ -119,7 +193,7 @@ export async function pairFlow(deps: PairFlowDeps): Promise<number> {
   }
   const { nonce, record } = created;
   try {
-    return await showAndDecide(deps, nonce, Date.parse(record.expiresAt), now, pollMs);
+    return await showAndDecide(flowDeps, nonce, Date.parse(record.expiresAt), now, pollMs);
   } finally {
     // A decided code is left as decided (cancelling it does nothing); any other stops working.
     try {
@@ -140,16 +214,18 @@ async function showAndDecide(
   pollMs: number,
 ): Promise<number> {
   const { store, write, signal } = deps;
-  const code: PairingCode = {
-    v: 1,
+  const shared = {
     name: deps.name,
-    host: deps.host,
     port: deps.port,
     key: deps.machineKey,
     nonce,
     exp: Math.floor(expiresAt / 1000),
     proto: PROTOCOL_VERSION,
   };
+  const code: PairingCodeV1 | PairingCodeV2 =
+    deps.qrVersion === 2
+      ? { ...shared, v: 2, hosts: deps.hosts ?? [deps.host] }
+      : { ...shared, v: 1, host: deps.host };
   const link = encodePairingLink(code);
   const qr = renderQr(link);
   const expiry = new Date(expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -160,6 +236,11 @@ async function showAndDecide(
   write(`\n${qr}\n\n`);
   write(`  Machine      ${escapeUnsafeText(deps.name)}\n`);
   write(`  Address      ${formatAddress(deps.host, deps.port)}\n`);
+  if (deps.qrVersion === 2) {
+    write(
+      `  Candidates   ${(deps.hosts ?? [deps.host]).map((host) => formatAddress(host, deps.port)).join(', ')}\n`,
+    );
+  }
   write(`  Fingerprint  ${formatFingerprint(deps.machineFingerprint)}  (the app shows the same)\n`);
   write(`  Expires      ${expiry}, single use\n`);
   write(`  Link         ${link}\n`);
@@ -279,26 +360,38 @@ function isUnspecifiedHost(host: string): boolean {
 /** Interfaces of virtual machines and containers: reachable from this machine, rarely a phone. */
 const VIRTUAL_INTERFACE = /^(bridge|docker|br-|vmnet|vboxnet|veth|virbr|lxc|lxd|cni|podman|vnic)/;
 
-/**
- * Addresses a phone could use for a hub bound to `bind`: LAN first, then Tailscale, then the rest,
- * then virtual bridges; never loopback or link-local (169.254.0.0/16).
- */
+/** Addresses on the actual listener family, ranked for local selection; never unsafe targets. */
 export function pairingHosts(
   bind: string,
   interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]>,
 ): string[] {
   if (bind !== '' && !isUnspecifiedHost(bind)) return [bind];
   const rank = (name: string, address: string): number => {
+    if (classifyPairingHost(address) === 'tailscale') return 1;
     if (VIRTUAL_INTERFACE.test(name)) return 3;
     if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(address)) return 0;
-    if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(address)) return 1;
+    if (/^f[cd][0-9a-f]{2}:/i.test(address)) return 0;
     return 2;
   };
   const found: { address: string; rank: number; order: number }[] = [];
+  const expectedFamily = bind === '' ? undefined : bind.includes(':') ? 'IPv6' : 'IPv4';
+  const seen = new Set<string>();
   for (const [name, infos] of Object.entries(interfaces)) {
     for (const info of infos ?? []) {
       const ipv4 = info.family === 'IPv4' || (info.family as unknown) === 4;
-      if (info.internal || !ipv4 || info.address.startsWith('169.254.')) continue;
+      const ipv6 = info.family === 'IPv6' || (info.family as unknown) === 6;
+      const family = ipv4 ? 'IPv4' : ipv6 ? 'IPv6' : undefined;
+      if (
+        info.internal ||
+        family === undefined ||
+        (expectedFamily !== undefined && family !== expectedFamily) ||
+        !isPairingCandidateHost(info.address)
+      ) {
+        continue;
+      }
+      const identity = normalizePairingHost(info.address);
+      if (identity === null || seen.has(identity)) continue;
+      seen.add(identity);
       found.push({ address: info.address, rank: rank(name, info.address), order: found.length });
     }
   }
@@ -350,7 +443,7 @@ export function pairPreconditions(
       message: `This hub listens on ${escapeUnsafeText(status.bind)} only, which a phone cannot reach. Set \`daemon.bind\` in ~/.remi/config.toml to "0.0.0.0" or to your LAN or VPN address, restart the hub, and run remi pair again. (An SSH tunnel needs no pairing code: use remi keys and remi authorize.)`,
     };
   }
-  const hosts = pairingHosts(status.bind, interfaces).filter(isPairingHost);
+  const hosts = pairingHosts(status.bind, interfaces).filter(isPairingCandidateHost);
   if (requestedHost !== undefined) {
     if (!isPairingHost(requestedHost)) {
       return {
@@ -358,21 +451,18 @@ export function pairPreconditions(
         message: `--host ${escapeUnsafeText(requestedHost)} is not an IP address or a host name.`,
       };
     }
-    if (
-      isLoopbackHost(requestedHost) ||
-      isUnspecifiedHost(requestedHost) ||
-      isLinkLocalHost(requestedHost)
-    ) {
+    if (!isPairingCandidateHost(requestedHost)) {
       return {
         ok: false,
         message: `--host ${escapeUnsafeText(requestedHost)} is not an address a phone can reach. Use this machine's LAN or VPN address.`,
       };
     }
+    const requestedIdentity = normalizePairingHost(requestedHost);
     return {
       ok: true,
       host: requestedHost,
       port: status.port,
-      others: hosts.filter((h) => h !== requestedHost),
+      others: hosts.filter((host) => normalizePairingHost(host) !== requestedIdentity),
     };
   }
   const [host, ...others] = hosts;
@@ -407,7 +497,7 @@ const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 } as const;
 const TYPE_AHEAD_GRACE_MS = 300;
 
 /** `remi pair [--host <address>]`: the flow on the real terminal, hub status and identity store. */
-export async function runPairCommand(flags: { host?: string }): Promise<number> {
+export async function runPairCommand(flags: { host?: string; qrVersion?: 1 | 2 }): Promise<number> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     console.error(
       'remi pair needs an interactive terminal: it shows a QR code and asks you to approve the phone. Without one, use remi keys and remi authorize <fingerprint>.',
@@ -487,6 +577,10 @@ export async function runPairCommand(flags: { host?: string }): Promise<number> 
       name: defaultMachineName(),
       host: checked.host,
       port: checked.port,
+      qrVersion: flags.qrVersion ?? 1,
+      ...(flags.qrVersion === 2 && {
+        hosts: flags.host === undefined ? [checked.host, ...checked.others] : [checked.host],
+      }),
       others: checked.others,
       write: (text) => process.stdout.write(text),
       ask,
