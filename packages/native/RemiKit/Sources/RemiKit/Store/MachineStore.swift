@@ -281,6 +281,8 @@ public final class MachineStore {
 
     #if DEBUG
     func useOwnedTestSession(_ session: URLSession) { ownedTestSession = session }
+    var ownedConnectionGenerations: [MachineEndpoint: UUID] { connectionGenerations }
+    var ownedResumeRequestIDs: [String] { Array(resumeAttemptsByRequest.keys) }
     #endif
 
     private func commitPushReady(_ endpoint: MachineEndpoint, connection: UUID,
