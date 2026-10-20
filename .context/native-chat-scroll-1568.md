@@ -33,10 +33,15 @@ actual constrained scroll range. Original probes, including the earlier inset
 measurement limitation, are retained in the release artifacts.
 
 An unconditional bottom anchor followed new content but failed the older-history
-reading control. The final control passes all 12 checks: eight behavior cases
+reading control. The final control passes all 14 checks: ten behavior cases
 (initial history, append, growth, resize, history review, delayed history,
-session replacement and explicit question focus) plus four setup controls.
-The gates were not relaxed to accept the partial candidates.
+session replacement, explicit question focus, selecting Latest from history and
+following the next append) plus four setup controls. The Latest interaction uses
+the actual rendered toolbar control's Command-Down shortcut in the owned window;
+it never reproduces the action closure or manually moves the viewport afterward.
+A separate owned copy with only the Latest action disconnected fails exactly
+those two interaction cases; the other 12 still pass. The gates were not relaxed
+to accept the partial candidates.
 
 Native package tests, native Mac build/tests and iPhone simulator build pass.
 The separate owned source-hub/Worker run passes with four remaining configured

@@ -42,7 +42,9 @@ struct ScrollRoot: View {
             styleMask: [.titled], backing: .buffered, defer: false)
         window.title = "Remi owned scroll renderer control"
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ScrollRoot(scenario: scenario))
+        let hostingView = NSHostingView(rootView: ScrollRoot(scenario: scenario))
+        hostingView.sceneBridgingOptions = .toolbars
+        window.contentView = hostingView
         window.orderBack(nil)
         await settle(window)
         var records: [[String: Any]] = []
@@ -76,6 +78,15 @@ struct ScrollRoot: View {
         await settle(window)
         records.append(record("preserve-history-review", scroll,
             passed: abs(scroll.documentVisibleRect.minY - readingY) < 2 && !atBottom(scroll)))
+        let latestPressed = selectLatest(in: window)
+        await settle(window)
+        var latestRecord = record("latest-control-jumps-from-history", scroll,
+            passed: latestPressed && atBottom(scroll))
+        latestRecord["renderedControlActionDispatched"] = latestPressed
+        records.append(latestRecord)
+        scenario.entries.append(.agent(id: "owned-after-latest", text: "Owned output after selecting Latest"))
+        await settle(window)
+        records.append(record("latest-control-resumes-following", scroll, passed: atBottom(scroll)))
         scenario.entries = []
         scenario.generation += 1
         await settle(window)
@@ -124,6 +135,18 @@ struct ScrollRoot: View {
         if let scroll = view as? NSScrollView { candidates.append(scroll) }
         for child in view.subviews { if let scroll = largestScroll(child) { candidates.append(scroll) } }
         return candidates.max { $0.frame.height < $1.frame.height }
+    }
+
+    @MainActor static func selectLatest(in window: NSWindow) -> Bool {
+        // Exercise the rendered Latest control through its advertised Command-Down
+        // shortcut, in this owned window only. No action closure is reproduced.
+        guard let item = window.toolbar?.items.first(where: { $0.label == "Jump to latest activity" }),
+              item.isEnabled,
+              let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                  timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                  characters: "\u{F701}", charactersIgnoringModifiers: "\u{F701}",
+                  isARepeat: false, keyCode: 125) else { return false }
+        return window.performKeyEquivalent(with: event)
     }
 
     @MainActor static func bottomGap(_ scroll: NSScrollView) -> CGFloat {
