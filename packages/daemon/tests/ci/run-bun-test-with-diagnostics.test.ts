@@ -1,9 +1,10 @@
 import { expect, test } from 'bun:test';
+import { constants, closeSync, openSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
-import { runChild } from '../../../../scripts/ci/run-bun-test-with-diagnostics';
+import { runChild, sampleProc } from '../../../../scripts/ci/run-bun-test-with-diagnostics';
 
 function sink() {
   const stream = new PassThrough();
@@ -18,6 +19,101 @@ function sink() {
 
 function bun(code: string): string[] {
   return [process.execPath, '-e', code];
+}
+
+test.skipIf(process.platform !== 'linux')(
+  'samples the real blocked child kernel wait channel',
+  async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'remi-ci-wait-'));
+    const fifo = path.join(directory, 'blocked-read');
+    const out = sink();
+    const err = sink();
+    let captured: { waitChannel: string | null; kernel: string | null } | undefined;
+    try {
+      expect(Bun.spawnSync(['mkfifo', fifo]).exitCode).toBe(0);
+      const result = await runChild(
+        bun(
+          `const fs = require('node:fs'); fs.writeSync(1, 'fifo-ready\\n'); const fd = fs.openSync(${JSON.stringify(fifo)}, 'r'); fs.closeSync(fd);`,
+        ),
+        {
+          stdout: out.stream,
+          stderr: err.stream,
+          timeoutMs: 2_000,
+          diagnosticAfterMs: 40,
+          diagnosticEveryMs: 40,
+          procSampler: async (pid) => {
+            const sample = await sampleProc(pid);
+            if (
+              pid !== process.pid &&
+              !captured &&
+              out.text().includes('fifo-ready') &&
+              sample.available &&
+              sample.state === 'S'
+            ) {
+              let kernel: string | null = null;
+              try {
+                kernel = (await readFile(`/proc/${pid}/wchan`, 'utf8')).trim();
+              } catch {
+                // Restricted kernel introspection is an explicit null in the production sample.
+              }
+              // Release the actual FIFO reader; runChild owns the deadline and cleanup if setup fails.
+              const writer = openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK);
+              closeSync(writer);
+              captured = { waitChannel: sample.waitChannel, kernel };
+            }
+            return sample;
+          },
+        },
+      );
+      expect(result.exitCode).toBe(0);
+      expect(result.cleanupVerified).toBe(true);
+      expect(captured).toBeDefined();
+      if (!captured) throw new Error('blocked child was not sampled');
+      if (captured.kernel !== null) expect(captured.kernel).toMatch(/^[A-Za-z0-9_.]{1,128}$/);
+      expect(captured.waitChannel).toBe(captured.kernel);
+      const records = err
+        .text()
+        .split('\n')
+        .filter((line) => line.startsWith('[ci-test-diagnostic] '))
+        .map((line) => JSON.parse(line.slice('[ci-test-diagnostic] '.length)));
+      expect(records.some((record) => record.process.waitChannel === captured?.kernel)).toBe(true);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+for (const actions of [false, true]) {
+  test(`logging boundary stages preserve the real cases (GitHub Actions=${actions})`, async () => {
+    const loggingTest = path.resolve(import.meta.dir, '../cli/log-file.test.ts');
+    const child = Bun.spawn([process.execPath, 'test', loggingTest], {
+      env: { ...process.env, GITHUB_ACTIONS: String(actions) },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [exit, out, err] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    const text = `${out}${err}`.replace(/\x1b\[[0-9;]*m/g, '');
+    expect(exit).toBe(0);
+    expect(text).toContain('14 pass');
+    expect(text).toContain('0 fail');
+    const stages = text.split('\n').filter((line) => line.startsWith('[log-file-stage] '));
+    if (actions) {
+      expect(stages).toContain('[log-file-stage] module-body');
+      expect(stages.filter((line) => line.includes('first:'))).toEqual([
+        '[log-file-stage] first:entered',
+        '[log-file-stage] first:opened',
+        '[log-file-stage] first:read',
+      ]);
+      expect(stages.filter((line) => line === '[log-file-stage] setup:entered')).toHaveLength(14);
+      expect(stages.filter((line) => line === '[log-file-stage] setup:reset')).toHaveLength(14);
+    } else {
+      expect(stages).toEqual([]);
+    }
+  });
 }
 
 test('forwards child stdout and stderr bytes unchanged and returns success', async () => {

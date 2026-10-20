@@ -2,7 +2,14 @@ import { readFile } from 'node:fs/promises';
 import type { Writable } from 'node:stream';
 
 type ProcSample =
-  | { available: true; state: string; cpuTicks: number; threads: number; rssPages: number }
+  | {
+      available: true;
+      state: string;
+      cpuTicks: number;
+      threads: number;
+      rssPages: number;
+      waitChannel: string | null;
+    }
   | { available: false; reason: 'unsupported' | 'unavailable' | 'malformed' };
 
 type RunOptions = {
@@ -285,7 +292,25 @@ export async function sampleProc(pid: number): Promise<ProcSample> {
   ) {
     return { available: false, reason: 'malformed' };
   }
-  return { available: true, state, cpuTicks: userTicks + systemTicks, threads, rssPages };
+  // #1206: state S does not distinguish an event-loop wait from a native lock.
+  // This optional kernel symbol contains no argv/environment/payload data.
+  // Null explicitly records unavailable introspection; it never changes the test verdict.
+  // Preserve "0" as reported; it is not evidence that a quiet process is healthy.
+  let waitChannel: string | null = null;
+  try {
+    const value = (await readFile(`/proc/${pid}/wchan`, 'utf8')).trim();
+    if (/^[A-Za-z0-9_.]{1,128}$/.test(value)) waitChannel = value;
+  } catch {
+    // The task may have exited or its kernel may restrict wait-channel access.
+  }
+  return {
+    available: true,
+    state,
+    cpuTicks: userTicks + systemTicks,
+    threads,
+    rssPages,
+    waitChannel,
+  };
 }
 
 function signalGroup(pid: number, signal: NodeJS.Signals): void {

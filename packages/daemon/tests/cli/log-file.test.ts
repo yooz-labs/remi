@@ -10,13 +10,34 @@ import {
   writeToLog,
 } from '../../src/cli/log-file.ts';
 
+// #1206: a file header alone does not establish module-body or test-body entry.
+type LogFileStage =
+  | 'module-body'
+  | 'setup:entered'
+  | 'setup:tempdir'
+  | 'setup:reset'
+  | 'first:entered'
+  | 'first:opened'
+  | 'first:read';
+
+function checkpoint(stage: LogFileStage): void {
+  if (process.env['GITHUB_ACTIONS'] === 'true') {
+    fs.writeSync(2, `[log-file-stage] ${stage}\n`);
+  }
+}
+
+checkpoint('module-body');
+
 describe('log-file session', () => {
   let sandbox: string;
 
   beforeEach(() => {
+    checkpoint('setup:entered');
     sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-log-'));
+    checkpoint('setup:tempdir');
     // Tests share module state; make sure previous runs aren't leaking.
     endLogFileSession();
+    checkpoint('setup:reset');
   });
 
   afterEach(() => {
@@ -25,13 +46,16 @@ describe('log-file session', () => {
   });
 
   test('opens the primary log file and writes the session header', () => {
+    checkpoint('first:entered');
     const primary = path.join(sandbox, 'remi.log');
     const result = startLogFileSession(primary);
+    checkpoint('first:opened');
     expect(result.fd).not.toBeNull();
     expect(result.path).toBe(primary);
     expect(result.usedFallback).toBe(false);
     expect(fs.existsSync(primary)).toBe(true);
     const content = fs.readFileSync(primary, 'utf-8');
+    checkpoint('first:read');
     expect(content).toMatch(/^\n--- Remi session started at /);
   });
 
