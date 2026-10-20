@@ -923,3 +923,19 @@ for the accepted review corrections. Final complete gates use a canonical
 owned TMPDIR and no contradictory color variables. Receipts are retained under
 `/private/tmp/remi-1272-validation/`; they do not imply Apple/device/deployment
 acceptance.
+
+Final source acceptance at `b6e66aad`: both Bun full suites passed 10,369 tests
+(37 skips); the pinned 1.3.11 CI union reported 89.91% line coverage. The first
+1.4.2 full run had one discovery failure; the one quiet full retry passed.
+#1550 preserves that undiagnosed event and the isolated candidate/base controls.
+Current loaded R3 grant/BYE and orderly-close controls passed twice per runtime.
+Native gates passed 230 Swift tests and unsigned Mac/Phone builds. The optional
+source interoperability fixture remains pinned to reviewed backend `1e96c688`;
+this is not a current-backend native interoperability claim. Durable receipts
+are under `/Volumes/S1/yooz/remi/artifacts/2026-10-19-testflight-backend/`.
+
+The owner's authenticated App Store Connect session confirmed Yooz Remi app
+6785313030 and existing iOS 0.1.0 build 10. Prepare build 11 or higher through the
+shared app-version script. The portal requests Account Holder acceptance of an
+updated Developer Program License Agreement before updates/new submissions;
+no agreement acceptance, signing or upload was performed here.

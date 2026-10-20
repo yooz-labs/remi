@@ -36,8 +36,8 @@ Work these as their own reviewed changes; do not fold them into release signing.
    generation. Old records receive one migration lease. Review identified and
    corrected a stale-key rollback after expiry; regressions cover restart,
    physical capacity, clock/config changes, actual HTTP send and a real held-hook
-   commit. Final
-   exact-head CI and R7 remain merge gates, not implied by these source changes.
+   commit. Both supported Bun full suites and loaded close controls passed
+   locally; exact-head CI and R7 remain merge gates.
 2. **#1225 — the fix already landed.** Reviewed #1271 (`5cb6c49f`) is an ancestor
    of current develop. The hub preserves its authenticated BYE with a bounded
    orderly-close grace and forgets the control before shutdown. Keep the
@@ -83,15 +83,23 @@ or deploy on the owner's behalf.
 
 ## Apple/TestFlight owner queue
 
-1. Ensure App Store Connect has the iOS app record for `live.yooz.remi` and the
+App Store Connect was checked in the owner's authenticated session on 2026-10-19.
+[Yooz Remi](https://appstoreconnect.apple.com/apps/6785313030/testflight/ios)
+already has iOS version 0.1.0 build 10, marked Ready to Submit and expiring in
+eight days. The next candidate needs build 11 or higher. The portal also displays
+an updated Apple Developer Program License Agreement awaiting the Account
+Holder's acceptance before updates or new submissions. No agreement was
+accepted, and no upload was attempted during this continuation.
+
+1. Resolve that agreement in the owner's Apple Developer account and ensure the
    App ID has Push Notifications, App Groups and the required keychain capability.
 2. Ensure the distribution certificate/profile can sign both the app and
    `live.yooz.remi.native-push-service`, including production APNS and
    `group.live.yooz.remi`.
 3. Install the App Store Connect API key locally and set `ASC_KEY_ID`,
    `ASC_ISSUER_ID`, and optionally `ASC_KEY_PATH`. Do not commit them.
-4. Bump and commit `config/app-release.json`'s build number, then run from a clean
-   checkout:
+4. Prepare the next build with `bun run app:version --bump-build`, commit the
+   shared release metadata through a PR, then run from a clean checkout:
 
    ```sh
    bun install --frozen-lockfile
@@ -118,6 +126,21 @@ or deploy on the owner's behalf.
   Yes/No answers, dismissal and revocation. Do not recommend `tailscale serve`.
 
 ## Go/no-go boundary
+
+Local acceptance at backend source `b6e66aad` passed 10,369 tests on each Bun
+1.4.2 and 1.3.11 (37 skips), 101 focused checks on each runtime, and all 28
+semantic mutation controls. The initial 1.4.2 full run had one discovery failure;
+the single quiet full rerun passed. #1550 retains the original failure and its
+undetermined cause. Loaded original R3 grant/BYE and orderly-close controls also
+passed twice on each runtime with one owned load process per CPU.
+
+The current Swift package passed 230 tests, unsigned Mac build/tests and an
+unsigned iPhone simulator build. Its optional source fixture deliberately pins
+backend `1e96c688f89409043e17177c1914d8eec247de7e`; that interoperability pass is
+against the reviewed reference, not the changed lease backend. Real current
+backend store, HTTP, held-hook and source-hub tests cover the lease change.
+Receipts and full logs are retained under
+`/Volumes/S1/yooz/remi/artifacts/2026-10-19-testflight-backend/`.
 
 The native assets, release-contract script and preflight can be validated without
 Apple credentials. They do not prove distribution signing or upload.
