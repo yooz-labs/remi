@@ -5,7 +5,8 @@ import Testing
 #if DEBUG
 @MainActor
 struct ChildRouteOriginTests {
-    // These synchronous tests deliver verified transport events to the real Store.
+    // These synchronous tests supply fixtures at the real Store's post-verification boundary.
+    // Transport authentication is tested separately.
     // stop() retires generations before its queued connection tasks can start.
     @Test func activeSessionChildDeliversTranscriptEvents() throws {
         let origin = MachineEndpoint(host: "192.0.2.20", port: 28002)
