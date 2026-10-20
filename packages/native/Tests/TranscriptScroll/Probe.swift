@@ -9,17 +9,21 @@ import SwiftUI
 @MainActor @Observable final class ScrollScenario {
     var entries: [RemiTranscriptEntry] = ScrollScenario.history()
     var generation = 0
-    static func history() -> [RemiTranscriptEntry] {
-        (0..<80).map { .agent(id: "owned-\($0)", text: "Owned renderer row \($0)\nA second line of fixture text.\nA third line of fixture text.") }
+    var sessionID = "owned-scroll-session"
+    var focusedQuestionID: String?
+    static func history(prefix: String = "owned") -> [RemiTranscriptEntry] {
+        (0..<80).map { .agent(id: "\(prefix)-\($0)", text: "Owned renderer row \($0)\nA second line of fixture text.\nA third line of fixture text.") }
     }
 }
 
 struct ScrollRoot: View {
     let scenario: ScrollScenario
     var body: some View {
-        MacSessionDetail(session: RemiSessionSummary(id: "owned-scroll-session", machineName: "Owned fixture",
+        MacSessionDetail(session: RemiSessionSummary(id: scenario.sessionID, machineName: "Owned fixture",
             name: "Scroll regression control", harness: "Claude", project: "owned", status: .idle),
-            transcript: scenario.entries, questions: [])
+            transcript: scenario.entries,
+            questions: scenario.focusedQuestionID == nil ? [] : [RemiPreviewData.binaryQuestion],
+            initialQuestionID: scenario.focusedQuestionID)
             .id(scenario.generation)
     }
 }
@@ -57,6 +61,11 @@ struct ScrollRoot: View {
         scenario.entries[scenario.entries.count - 1] = .agent(id: "owned-new", text: String(repeating: "Owned streaming growth\n", count: 25))
         await settle(window)
         records.append(record("same-entry-growth", scroll, passed: atBottom(scroll)))
+        await startAtBottom(scroll, window)
+        records.append(record("resize-control-starts-at-bottom", scroll, passed: atBottom(scroll)))
+        window.setContentSize(NSSize(width: 600, height: 480))
+        await settle(window)
+        records.append(record("resize-while-following", scroll, passed: atBottom(scroll)))
         let document = scroll.documentView!
         let middle = max(0, (document.bounds.height - scroll.contentView.bounds.height) / 2)
         scroll.contentView.scroll(to: NSPoint(x: 0, y: middle))
@@ -74,6 +83,22 @@ struct ScrollRoot: View {
         await settle(window)
         guard let reloaded = largestScroll(window.contentView!) else { window.close(); exit(2) }
         records.append(record("delayed-initial-history", reloaded, passed: atBottom(reloaded)))
+        let middleOfReload = max(0, (reloaded.documentView!.bounds.height - reloaded.contentView.bounds.height) / 2)
+        reloaded.contentView.scroll(to: NSPoint(x: 0, y: middleOfReload))
+        reloaded.reflectScrolledClipView(reloaded.contentView)
+        await settle(window)
+        records.append(record("session-switch-control-is-reviewing", reloaded,
+            passed: bottomGap(reloaded) > 1_000))
+        scenario.sessionID = "owned-other-session"
+        scenario.entries = ScrollScenario.history(prefix: "owned-other")
+        await settle(window)
+        records.append(record("switch-session-starts-latest", reloaded, passed: atBottom(reloaded)))
+        scenario.focusedQuestionID = RemiPreviewData.binaryQuestion.questionID
+        scenario.generation += 1
+        await settle(window)
+        guard let focused = largestScroll(window.contentView!) else { window.close(); exit(2) }
+        records.append(record("explicit-question-focus", focused,
+            passed: focused.documentVisibleRect.minY < 500 && bottomGap(focused) > 1_000))
         let passed = records.allSatisfy { $0["passed"] as? Bool == true }
         let receipt: [String: Any] = ["outcome": passed ? "pass" : "fail", "actualShippingView": "MacSessionDetail.swift",
             "ownedFixtureOnly": true, "records": records]

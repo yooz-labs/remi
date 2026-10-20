@@ -47,7 +47,52 @@ let package = Package(name: "RemiScrollProbe", platforms: [.macOS(.v26)],
 PY
 
 probe_status=0
-swift run --package-path "$probe_work" RemiScrollProbe "$artifact_dir/result.json" \
-  > "$artifact_dir/renderer.log" 2>&1 || probe_status=$?
+python3 - "$probe_work" "$artifact_dir" <<'PY' || probe_status=$?
+import json, os, pathlib, signal, subprocess, sys, time
+work, artifacts = map(pathlib.Path, sys.argv[1:])
+started = time.monotonic()
+timed_out = False
+status = 1
+with (artifacts / 'renderer.log').open('w') as log:
+    child = subprocess.Popen(['swift', 'run', '--package-path', str(work),
+        'RemiScrollProbe', str(artifacts / 'result.json')],
+        stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    def send_owned(sig):
+        try:
+            if child.poll() is None and os.getpgid(child.pid) == child.pid:
+                os.killpg(child.pid, sig)
+        except ProcessLookupError:
+            pass
+
+    def interrupted(signum, frame):
+        raise InterruptedError(signum)
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, interrupted)
+    try:
+        try:
+            status = child.wait(timeout=240)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            status = 124
+        except InterruptedError as error:
+            status = 128 + int(error.args[0])
+    finally:
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(sig, signal.SIG_IGN)
+        if child.poll() is None:
+            send_owned(signal.SIGTERM)
+            try:
+                child.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                send_owned(signal.SIGKILL)
+                child.wait(timeout=2)
+(artifacts / 'runner.json').write_text(json.dumps({
+    'exit': status, 'timed_out': timed_out, 'deadline_seconds': 240,
+    'seconds': round(time.monotonic() - started, 2),
+    'owned_child_reaped': child.poll() is not None,
+}, indent=2) + '\n')
+sys.exit(status)
+PY
 cat "$artifact_dir/renderer.log"
 exit "$probe_status"
