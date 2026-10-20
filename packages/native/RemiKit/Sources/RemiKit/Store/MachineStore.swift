@@ -1245,7 +1245,7 @@ public final class MachineStore {
                 index = consolidateRoute(endpoint, parent: parent, descriptor: descriptor, fallbackIndex: index)
                 machines[index].apply(descriptor)
             }
-            if endpoint == parent {
+            if endpoint == parent && machines[index].endpoint.id == endpoint.id {
                 machines[index].capabilities = acknowledgment.capabilities ?? []
                 machines[index].harnesses = acknowledgment.harnesses ?? ["claude"]
                 if machines[index].capabilities.contains("workspaces") {
@@ -1275,7 +1275,7 @@ public final class MachineStore {
                 machines[index].sessions,
                 with: response.sessions
             )
-            if endpoint == parent {
+            if endpoint == parent && activeOrigin {
                 machines[index].hasLoadedSessions = true
             }
             if activeOrigin {

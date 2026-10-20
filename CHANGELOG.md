@@ -8,13 +8,18 @@ All notable changes to Remi are documented here.
 
 ### Upgrade for the native TestFlight app
 
-- CLI 0.8.0 provides `remi pair` for native iPhone app 0.2.0 (11). CLI 0.7.16 does not recognize that subcommand and can pass `pair` to Claude as its prompt. Updating the app alone does not update the machine's CLI or a daemon already running. See [the upgrade guide](docs/UPGRADING-0.8.0.md) for package installation, daemon restart and pairing.
+- CLI 0.8.0 provides `remi pair` for native iPhone app 0.2.0 (12). CLI 0.7.16 does not recognize that subcommand and can pass `pair` to Claude as its prompt. Updating the app alone does not update the machine's CLI or a daemon already running. See [the upgrade guide](docs/UPGRADING-0.8.0.md) for package installation, daemon restart and pairing.
 - The native iPhone app is distributed separately through TestFlight. This CLI release does not publish the native Mac app or establish all signed-device, deployed-relay or battery acceptance gates.
 - Secure push subscriptions now enforce the configured 24-hour lease by default, including final send and answer commits. Expired subscriptions retain their push-key version floor until explicit removal; periodic authenticated relay activity renews a current subscription (#1272).
 - Direct connections recheck the device's authorization before domain dispatch and at the existing ping interval. Removing a device closes an active connection on its next message or ping tick (#1305).
 - Optional direct TLS fails closed when its certificate, private key or local control capability is unavailable. Native secure endpoint/QR support remains pending; ordinary direct QR pairing refuses a TLS hub. See [DIRECT-TLS.md](docs/DIRECT-TLS.md).
 - The web client can submit structured Codex chat and explicitly transfer supported images, links and downloads through their authenticated direct/relay capabilities. Native conformance and physical acceptance remain separate gates; legacy typed Codex input stays refused.
 - Relay v2 remains opt-in. Publishing the CLI does not deploy the Worker, configure push credentials, retire legacy push or complete R7 provider/device measurements. Old connection codes are retired in the CLI; use direct pairing or the separately configured v2 relay.
+
+### Native child connections (#1561)
+
+- Native app 0.2.0 (12) keeps session chat and questions on the active machine route. Re-pairing a Mac at a new address no longer opens session connections at the old address. Child connections verify the advertising machine identity, including when an older daemon omits its machine descriptor. Retired foreground sockets display as disconnected.
+- The native app remains a separate TestFlight upload; this CLI release does not upload it.
 
 ### Keep repositories available for native session creation (#1284)
 

@@ -1,11 +1,13 @@
 # Upgrade the CLI for native TestFlight
 
-The native iPhone app 0.2.0 (11) and CLI 0.8.0 have separate version numbers and
+The native iPhone app 0.2.0 (12) and CLI 0.8.0 have separate version numbers and
 distribution channels. Installing the new app does not update the CLI or a daemon
 already running on a machine.
 
 CLI 0.7.16 does not recognize `remi pair`: it can launch Claude with `pair` as a
 prompt. Use CLI 0.8.0 or later on every machine you pair with the native app.
+
+Build 12 fixes native session chat and question delivery, plus child discovery after a Mac address changes (#1561). Update TestFlight build 11 before checking those flows.
 
 ## Install the published CLI
 

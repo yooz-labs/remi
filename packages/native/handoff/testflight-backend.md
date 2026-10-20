@@ -1,10 +1,12 @@
 # TestFlight and relay handoff
 
-This handoff is reconciled on 2026-10-20. The iPhone candidate is **0.2.0 (11)**,
+This handoff is reconciled on 2026-10-20. The uploaded iPhone candidate is **0.2.0 (11)**,
 from clean source `e72012e6f8aa67c300b9bdf478653d8936f80c56`, which includes
 #1551's secure push lease fix and #1552's release metadata. It has been signed,
 exported, uploaded, processed, cleared for export compliance with owner
 confirmation, and verified as **Testing** in the existing internal group.
+
+The next candidate is **0.2.0 (12)** for #1561. Build 11 drops child chat/question events and can open child connections at an old saved address after route consolidation. The correction keeps actual route ownership, binds child authentication to the advertising machine, and clears retired connection status. Build 12 source validation is separate from its still-pending upload and physical acceptance.
 
 The CLI is a separate release: npm and Homebrew still publish 0.7.16 at this
 snapshot. #1556 tracks publishing CLI 0.8.0 through `develop` to `main` so
