@@ -1,15 +1,15 @@
 # Upgrade the CLI for native TestFlight
 
-The native iPhone app 0.2.0 (11) and CLI 0.7.17 have separate version numbers and
+The native iPhone app 0.2.0 (11) and CLI 0.8.0 have separate version numbers and
 distribution channels. Installing the new app does not update the CLI or a daemon
 already running on a machine.
 
 CLI 0.7.16 does not recognize `remi pair`: it can launch Claude with `pair` as a
-prompt. Use CLI 0.7.17 or later on every machine you pair with the native app.
+prompt. Use CLI 0.8.0 or later on every machine you pair with the native app.
 
 ## Install the published CLI
 
-After the 0.7.17 release is published, use the package manager that owns your CLI.
+After the 0.8.0 release is published, use the package manager that owns your CLI.
 For Homebrew:
 
 ```sh
@@ -22,7 +22,7 @@ remi --version
 For the scoped npm package, using Bun:
 
 ```sh
-bun install -g @yooz-labs/remi@0.7.17
+bun install -g @yooz-labs/remi@0.8.0
 command -v remi
 remi --version
 ```
