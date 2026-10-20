@@ -61,13 +61,17 @@ enum MachineIdentityVerifier {
     static func verify(
         descriptor: MachineDescriptor?,
         sessions: [DiscoverableSession] = [],
-        authorityPublicKey: Data?
+        authorityPublicKey: Data?,
+        expectedMachineID: String? = nil
     ) throws {
-        guard descriptor != nil || sessions.contains(where: { $0.machineId != nil }) else { return }
+        guard expectedMachineID != nil || descriptor != nil || sessions.contains(where: { $0.machineId != nil }) else { return }
         guard let authorityPublicKey else {
             throw MachineIdentityVerificationError.authorityUnavailable
         }
         let expectedID = try machineID(forPublicKey: authorityPublicKey)
+        if let expectedMachineID, expectedID != expectedMachineID {
+            throw MachineIdentityVerificationError.descriptorMismatch
+        }
 
         if let descriptor {
             guard isValidDescriptor(descriptor), descriptor.id == expectedID else {

@@ -246,6 +246,12 @@ struct MacPreferencesView: View {
                     Button("Retry connection", systemImage: "arrow.clockwise") { store.retryConnection(for: machine.endpoint) }
                 }
             }
+        case .connected where machine.sessionConnectionIssue != nil:
+            PreferencesCard(title: "Session connection unavailable", systemImage: "exclamationmark.triangle") {
+                Text(machine.sessionConnectionIssue ?? "Retry the session connections.")
+                    .foregroundStyle(.secondary)
+                Button("Retry connection", systemImage: "arrow.clockwise") { store.retryConnection(for: machine.endpoint) }
+            }
         case .connecting, .connected:
             EmptyView()
         }

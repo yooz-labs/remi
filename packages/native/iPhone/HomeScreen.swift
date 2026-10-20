@@ -1341,7 +1341,7 @@ private struct PhoneMachineManagementRow: View {
     }
 
     private func canRetryConnection(_ state: MachineState) -> Bool {
-        RemiMachineRecoveryState.resolve(
+        state.sessionConnectionIssue != nil || RemiMachineRecoveryState.resolve(
             status: state.status,
             isRelay: state.endpoint.relayPin != nil
         ).allowsConnectionRetry

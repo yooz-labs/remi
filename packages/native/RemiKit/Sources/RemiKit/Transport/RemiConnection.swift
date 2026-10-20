@@ -10,6 +10,8 @@ public struct RemiConnectionConfiguration: Sendable, Equatable {
     public let expectedServerPublicKey: String?
     public let pairingNonce: String?
     public let pairingLabel: String?
+    /// Child connections must authenticate as the Mac that advertised their port.
+    public let expectedMachineID: String?
     public let relayPin: RelayMachinePin?
 
     public init(
@@ -21,6 +23,7 @@ public struct RemiConnectionConfiguration: Sendable, Equatable {
         expectedServerPublicKey: String? = nil,
         pairingNonce: String? = nil,
         pairingLabel: String? = nil,
+        expectedMachineID: String? = nil,
         relayPin: RelayMachinePin? = nil
     ) {
         self.url = url
@@ -31,6 +34,7 @@ public struct RemiConnectionConfiguration: Sendable, Equatable {
         self.expectedServerPublicKey = expectedServerPublicKey
         self.pairingNonce = pairingNonce
         self.pairingLabel = pairingLabel
+        self.expectedMachineID = expectedMachineID
         self.relayPin = relayPin
     }
 }
@@ -77,6 +81,24 @@ public enum RemiConnectionError: Error, Sendable, Equatable {
     case authentication(String)
 }
 
+/// Pinned relay broadcasts can arrive between READY and application Hello.
+/// Keep them bounded and invisible until Hello verifies the machine descriptor.
+struct RelayHelloBuffer {
+    private var frames: [Data] = []
+    private var bytes = 0
+
+    mutating func append(_ data: Data) throws {
+        guard frames.count < 32, data.count <= 1_048_576 - bytes else { throw RelayFailure.oversize }
+        frames.append(data)
+        bytes += data.count
+    }
+
+    mutating func drain() -> [Data] {
+        defer { frames.removeAll(); bytes = 0 }
+        return frames
+    }
+}
+
 /// One authenticated daemon connection with bounded exponential reconnect.
 /// Unknown client keys pause in `awaitingLocalApproval` until a manual retry is requested.
 public actor RemiConnection {
@@ -107,6 +129,8 @@ public actor RemiConnection {
     private var pendingAuthentication: PendingAuthentication?
     /// The key that authenticated this direct connection. Relay authority comes from the pin.
     private var authenticatedServerPublicKey: Data?
+    private var applicationAdmitted = false
+    private var relayHelloBuffer = RelayHelloBuffer()
     private var initialDirectHelloPending = false
     private var shouldRun = false
     private var relayHandshake: RelayHandshake?
@@ -143,6 +167,7 @@ public actor RemiConnection {
         singleAttempt = true; applicationHello = false
     }
     #if DEBUG
+    nonisolated var ownedExpectedMachineID: String? { configuration.expectedMachineID }
     /// Owned integration sessions only; production always uses normal URLSession trust.
     func useOwnedTestSession(_ session: URLSession) throws {
         guard !shouldRun else { throw RelayFailure.state }
@@ -277,9 +302,7 @@ public actor RemiConnection {
             defer { pendingSends -= 1 }
             try await job.value
         } else {
-            if validateBeforeSend != nil {
-                guard case .connected = state else { throw RelayFailure.closed }
-            }
+            guard applicationAdmitted else { throw RelayFailure.closed }
             try validateBeforeSend?()
             try await socket.send(.data(data))
         }
@@ -368,8 +391,23 @@ public actor RemiConnection {
         if configuration.relayPin != nil && ["auth_challenge", "auth_result", "raw_pty_output", "terminal_resize"].contains(envelope.type) {
             throw RelayFailure.type
         }
+        // The source daemon receipts Hello before sending its asynchronous
+        // hello_ack. Receipts convey no authority or application outcome.
+        if envelope.type == "ack" { return }
+        // #1561: child domain traffic is visible in the Store. No application
+        // frame may reach it before hello verifies the authenticated machine.
+        if !["auth_challenge", "auth_result", "hello_ack", "ping", "error"].contains(envelope.type),
+           !applicationAdmitted {
+            if configuration.relayPin != nil, relayChannel != nil {
+                try relayHelloBuffer.append(data)
+                return
+            }
+            throw RemiConnectionError.authentication("Application frame before verified hello")
+        }
         switch envelope.type {
         case "auth_challenge":
+            guard !applicationAdmitted, pendingAuthentication == nil,
+                  authenticatedServerPublicKey == nil else { throw AuthenticationHandshakeError.malformedChallenge }
             let challenge = try decoder.decode(AuthChallengeMessage.self, from: data)
             if let expected = configuration.expectedServerFingerprint,
                challenge.serverFingerprint != expected {
@@ -416,20 +454,33 @@ public actor RemiConnection {
             try AuthenticationHandshake.verify(result, pending: pendingAuthentication)
             authenticatedServerPublicKey = pendingAuthentication?.serverPublicKey
             pendingAuthentication = nil
+            guard acceptMachineIdentity(descriptor: nil) else { return }
             try await sendHello(on: task)
         case "hello_ack":
+            guard pendingAuthentication == nil else { throw AuthenticationHandshakeError.missingPendingChallenge }
+            if configuration.relayPin == nil,
+               configuration.expectedServerPublicKey != nil || configuration.expectedServerFingerprint != nil {
+                guard authenticatedServerPublicKey != nil else { throw AuthenticationHandshakeError.missingPendingChallenge }
+            }
             initialDirectHelloPending = false
             let message = try decoder.decode(HelloAckMessage.self, from: data)
             guard acceptMachineIdentity(descriptor: message.machine) else { return }
+            applicationAdmitted = true
             transition(to: .connected(sessionId: message.sessionId))
             eventHandler(.hello(message))
+            for buffered in relayHelloBuffer.drain() {
+                guard applicationAdmitted, socket === task else { throw RelayFailure.closed }
+                try await handle(buffered, on: task)
+            }
         case "ping":
             let ping = try decoder.decode(PingMessage.self, from: data)
-            try await send(PongMessage(
+            let pong = PongMessage(
                 id: UUID().uuidString.lowercased(),
                 timestamp: Date().ISO8601Format(),
                 pingId: ping.id
-            ))
+            )
+            if configuration.relayPin != nil { try await send(pong) }
+            else { try await task.send(.data(encoder.encode(pong))) }
         case "session_list_response":
             let message = try decoder.decode(SessionListResponse.self, from: data)
             guard acceptMachineIdentity(descriptor: message.machine, sessions: message.sessions) else { return }
@@ -475,6 +526,7 @@ public actor RemiConnection {
                 initialDirectHelloPending = false
                 return
             }
+            guard applicationAdmitted else { throw RemiConnectionError.malformedMessage }
             eventHandler(.error(message))
         case "answer_result":
             let result = try decoder.decode(AnswerResultMessage.self, from: data)
@@ -515,6 +567,8 @@ public actor RemiConnection {
         for id in Array(rpcWaiters.keys) { finishRPC(id, result: .failure(RelayFailure.closed)) }
         pendingAuthentication = nil
         authenticatedServerPublicKey = nil
+        applicationAdmitted = false
+        relayHelloBuffer = RelayHelloBuffer()
         initialDirectHelloPending = false
         relayDeadline?.cancel()
         relayDeadline = nil
@@ -544,7 +598,8 @@ public actor RemiConnection {
             try MachineIdentityVerifier.verify(
                 descriptor: descriptor,
                 sessions: sessions,
-                authorityPublicKey: authority
+                authorityPublicKey: authority,
+                expectedMachineID: configuration.expectedMachineID
             )
             return true
         } catch {
@@ -642,6 +697,9 @@ public actor RemiConnection {
                 try await readyHandler?()
                 guard shouldRun, socket === task, relayChannel != nil, !Task.isCancelled else { throw RelayFailure.closed }
                 ready = true
+                // Background RPCs deliberately skip the application hello. Their
+                // authority is the completed, pinned relay handshake (#1242).
+                applicationAdmitted = !applicationHello
                 let waiting = readyWaiters; readyWaiters.removeAll()
                 for waiter in waiting.values { waiter.resume() }
                 relayDeadline?.cancel()
