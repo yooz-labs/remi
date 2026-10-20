@@ -10,6 +10,8 @@ public struct RemiConnectionConfiguration: Sendable, Equatable {
     public let expectedServerPublicKey: String?
     public let pairingNonce: String?
     public let pairingLabel: String?
+    /// Child connections must authenticate as the Mac that advertised their port.
+    public let expectedMachineID: String?
     public let relayPin: RelayMachinePin?
 
     public init(
@@ -21,6 +23,7 @@ public struct RemiConnectionConfiguration: Sendable, Equatable {
         expectedServerPublicKey: String? = nil,
         pairingNonce: String? = nil,
         pairingLabel: String? = nil,
+        expectedMachineID: String? = nil,
         relayPin: RelayMachinePin? = nil
     ) {
         self.url = url
@@ -31,6 +34,7 @@ public struct RemiConnectionConfiguration: Sendable, Equatable {
         self.expectedServerPublicKey = expectedServerPublicKey
         self.pairingNonce = pairingNonce
         self.pairingLabel = pairingLabel
+        self.expectedMachineID = expectedMachineID
         self.relayPin = relayPin
     }
 }
@@ -143,6 +147,7 @@ public actor RemiConnection {
         singleAttempt = true; applicationHello = false
     }
     #if DEBUG
+    nonisolated var ownedExpectedMachineID: String? { configuration.expectedMachineID }
     /// Owned integration sessions only; production always uses normal URLSession trust.
     func useOwnedTestSession(_ session: URLSession) throws {
         guard !shouldRun else { throw RelayFailure.state }
@@ -544,7 +549,8 @@ public actor RemiConnection {
             try MachineIdentityVerifier.verify(
                 descriptor: descriptor,
                 sessions: sessions,
-                authorityPublicKey: authority
+                authorityPublicKey: authority,
+                expectedMachineID: configuration.expectedMachineID
             )
             return true
         } catch {

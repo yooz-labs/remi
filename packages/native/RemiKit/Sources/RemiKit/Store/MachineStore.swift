@@ -281,8 +281,8 @@ public final class MachineStore {
 
     #if DEBUG
     func useOwnedTestSession(_ session: URLSession) { ownedTestSession = session }
-    var ownedConnectionGenerations: [MachineEndpoint: UUID] { connectionGenerations }
     var ownedResumeRequestIDs: [String] { Array(resumeAttemptsByRequest.keys) }
+    var ownedConnectionMachineIDs: [MachineEndpoint: String] { connections.compactMapValues(\.ownedExpectedMachineID) }
     #endif
 
     private func commitPushReady(_ endpoint: MachineEndpoint, connection: UUID,
@@ -600,7 +600,7 @@ public final class MachineStore {
         for machine in machines {
             let directRoutes = machine.routes.filter { $0.relayPin == nil }
             let initialRoutes = directRoutes.isEmpty ? Array(machine.routes.prefix(1)) : directRoutes
-            for route in initialRoutes { connect(route, parent: machine.routes[0]) }
+            for route in initialRoutes { connect(route, parent: route) }
         }
     }
 
@@ -626,6 +626,8 @@ public final class MachineStore {
         relayPairingContexts.removeAll()
         connections.removeAll()
         parentByConnection.removeAll()
+        connectedRoutes.removeAll()
+        for index in machines.indices { machines[index].status = .disconnected }
         for task in resumeTimeoutTasks.values { task.cancel() }
         resumeTimeoutTasks.removeAll()
         resumeAttemptsByRequest.removeAll()
@@ -1050,6 +1052,8 @@ public final class MachineStore {
                 expectedServerPublicKey: endpoint.expectedPublicKey,
                 pairingNonce: endpoint.pairingNonce,
                 pairingLabel: endpoint.pairingLabel,
+                expectedMachineID: endpoint.id == parent.id ? nil : machineIndex(containing: parent)
+                    .flatMap { machines[$0].machineDescriptor?.id },
                 relayPin: endpoint.relayPin
             ),
             identity: identity,
@@ -1130,10 +1134,8 @@ public final class MachineStore {
         let removed = fallbackIndex
         machines.remove(at: removed)
         let finalIndex = other > removed ? other - 1 : other
-        let anchor = machines[finalIndex].routes[0]
-        for (route, owner) in parentByConnection where source.routes.contains(where: { $0.id == owner.id }) {
-            parentByConnection[route] = anchor
-        }
+        // #1561: both profiles' routes are retained. Keep each socket's actual
+        // owning route so child discovery and dispatch follow that transport.
         return finalIndex
     }
 
@@ -1166,7 +1168,7 @@ public final class MachineStore {
         }
         machines[machineIndex].activate(relay)
         machines[machineIndex].status = .connecting
-        connect(relay, parent: machines[machineIndex].routes[0])
+        connect(relay, parent: relay)
     }
 
     private func failClosed(_ endpoint: MachineEndpoint, machineIndex: Int, reason: String) {
@@ -1184,6 +1186,12 @@ public final class MachineStore {
         guard connectionGenerations[endpoint] == generation, let parent = parentByConnection[endpoint],
               let index = machineIndex(containing: parent)
         else { return }
+
+        // Session sockets do not describe the machine route's reachability.
+        guard endpoint.id == parent.id else { return }
+        if machines[index].endpoint.id != endpoint.id {
+            guard case .connected = state else { return }
+        }
 
         switch state {
         case .stopped:
@@ -1212,7 +1220,7 @@ public final class MachineStore {
         var index = initialIndex
 
         if machines[index].machineDescriptor != nil,
-           machines[index].endpoint.id != endpoint.id {
+           machines[index].endpoint.id != parent.id {
             switch event {
             case .hello, .sessions:
                 break
@@ -1257,8 +1265,11 @@ public final class MachineStore {
                 index = consolidateRoute(endpoint, parent: parent, descriptor: descriptor, fallbackIndex: index)
                 machines[index].apply(descriptor)
             }
-            for session in response.sessions {
-                routeBySession[session.sessionId] = endpoint
+            let activeOrigin = machines[index].endpoint.id == parent.id
+            if activeOrigin {
+                for session in response.sessions {
+                    routeBySession[session.sessionId] = endpoint
+                }
             }
             machines[index].sessions = mergeSessions(
                 machines[index].sessions,
@@ -1267,8 +1278,10 @@ public final class MachineStore {
             if endpoint == parent {
                 machines[index].hasLoadedSessions = true
             }
-            for port in response.daemonPorts ?? [] where port != parent.port && parent.relayPin == nil {
-                connect(MachineEndpoint(host: parent.host, port: port), parent: parent)
+            if activeOrigin {
+                for port in response.daemonPorts ?? [] where port != parent.port && parent.relayPin == nil {
+                    connect(MachineEndpoint(host: parent.host, port: port), parent: parent)
+                }
             }
             if let requestID = resumeRequestByChild[endpoint],
                let attempt = resumeAttemptsByRequest[requestID] {

@@ -12,17 +12,44 @@ struct ChildRouteOriginTests {
         let store = MachineStore(endpoints: [origin], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
         store.start()
         defer { store.stop() }
-        let generation = try #require(store.ownedConnectionGenerations[origin])
+        let generation = try #require(store.connectionGenerations[origin])
         store.receive(.hello(try hello()), from: origin, generation: generation)
         store.receive(.sessions(try sessions(ports: [28003])), from: origin, generation: generation)
-        let child = try #require(store.ownedConnectionGenerations.keys.first { $0.port == 28003 })
-        let childGeneration = try #require(store.ownedConnectionGenerations[child])
+        let child = try #require(store.connectionGenerations.keys.first { $0.port == 28003 })
+        let childGeneration = try #require(store.connectionGenerations[child])
+        #expect(store.ownedConnectionMachineIDs[child] == store.machines.first?.machineID)
         store.receive(.hello(try hello()), from: child, generation: childGeneration)
         let message = try JSONDecoder().decode(TranscriptContentMessage.self,
             from: FixtureConformanceTests.fixture("transcript_content"))
         store.receive(.transcript(message), from: child, generation: childGeneration)
+        let question = try JSONDecoder().decode(QuestionMessage.self,
+            from: FixtureConformanceTests.fixture("question"))
+        store.receive(.question(question), from: child, generation: childGeneration)
 
         #expect(store.transcriptsBySession[message.sessionId]?.count == 1)
+        #expect(store.machines.first?.questions.count == 1)
+    }
+
+    @Test func oldRouteFailuresCannotReplaceTheActiveRouteStatus() throws {
+        let (store, old, current, generation) = try consolidatedStore()
+        defer { store.stop() }
+        store.receive(.connected(sessionId: nil), from: current, generation: generation)
+        let oldGeneration = try #require(store.connectionGenerations[old])
+        store.receive(.reachabilityFailed(attempt: 3), from: old, generation: oldGeneration)
+        #expect(store.machines.first?.status == .connected)
+        store.receive(.rejected(reason: "Inactive route identity mismatch"), from: old, generation: oldGeneration)
+        #expect(store.machines.first?.status == .connected)
+    }
+
+    @Test func sessionChildFailureDoesNotDeclareItsHubUnavailable() throws {
+        let (store, _, current, generation) = try consolidatedStore()
+        defer { store.stop() }
+        store.receive(.connected(sessionId: nil), from: current, generation: generation)
+        store.receive(.sessions(try sessions(ports: [28003])), from: current, generation: generation)
+        let child = try #require(store.connectionGenerations.keys.first { $0.port == 28003 })
+        let childGeneration = try #require(store.connectionGenerations[child])
+        store.receive(.rejected(reason: "Session identity mismatch"), from: child, generation: childGeneration)
+        #expect(store.machines.first?.status == .connected)
     }
 
     @Test func oldRouteChildrenCannotDeliverAfterANewRouteBecomesActive() throws {
@@ -31,13 +58,13 @@ struct ChildRouteOriginTests {
         let store = MachineStore(endpoints: [old], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
         store.start()
         defer { store.stop() }
-        let first = try #require(store.ownedConnectionGenerations[old])
+        let first = try #require(store.connectionGenerations[old])
         store.receive(.hello(try hello()), from: old, generation: first)
         store.receive(.sessions(try sessions(ports: [28003])), from: old, generation: first)
-        let child = try #require(store.ownedConnectionGenerations.keys.first { $0.port == 28003 })
-        let childGeneration = try #require(store.ownedConnectionGenerations[child])
+        let child = try #require(store.connectionGenerations.keys.first { $0.port == 28003 })
+        let childGeneration = try #require(store.connectionGenerations[child])
         store.addMachine(current)
-        let next = try #require(store.ownedConnectionGenerations[current])
+        let next = try #require(store.connectionGenerations[current])
         store.receive(.hello(try hello()), from: current, generation: next)
         let message = try JSONDecoder().decode(TranscriptContentMessage.self,
             from: FixtureConformanceTests.fixture("transcript_content"))
@@ -50,7 +77,7 @@ struct ChildRouteOriginTests {
         let origin = MachineEndpoint(host: "192.0.2.20", port: 28002)
         let store = MachineStore(endpoints: [origin], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
         store.start()
-        let generation = try #require(store.ownedConnectionGenerations[origin])
+        let generation = try #require(store.connectionGenerations[origin])
         store.receive(.connected(sessionId: nil), from: origin, generation: generation)
         #expect(store.machines.first?.status == .connected)
         store.suspendForegroundConnections()
@@ -64,8 +91,8 @@ struct ChildRouteOriginTests {
         defer { store.stop() }
         store.receive(.sessions(try sessions(ports: [28003])), from: current, generation: generation)
 
-        #expect(store.ownedConnectionGenerations[MachineEndpoint(host: current.host, port: 28003)] != nil)
-        #expect(store.ownedConnectionGenerations[MachineEndpoint(host: old.host, port: 28003)] == nil)
+        #expect(store.connectionGenerations[MachineEndpoint(host: current.host, port: 28003)] != nil)
+        #expect(store.connectionGenerations[MachineEndpoint(host: old.host, port: 28003)] == nil)
     }
 
     @Test func discoveryNeverRedialsItsOwnPortWithoutThePin() throws {
@@ -73,7 +100,7 @@ struct ChildRouteOriginTests {
         defer { store.stop() }
         store.receive(.sessions(try sessions(ports: [current.port])), from: current, generation: generation)
 
-        #expect(store.ownedConnectionGenerations.count == 2)
+        #expect(store.connectionGenerations.count == 2)
     }
 
     @Test func relayDiscoveryCannotDialChildrenThroughTheDirectAnchor() throws {
@@ -84,7 +111,7 @@ struct ChildRouteOriginTests {
         defer { store.stop() }
         store.receive(.sessions(try sessions(ports: [28003])), from: relay, generation: generation)
 
-        #expect(store.ownedConnectionGenerations.count == 2)
+        #expect(store.connectionGenerations.count == 2)
     }
 
     @Test func createResponseUsesTheRespondingAddress() throws {
@@ -96,8 +123,8 @@ struct ChildRouteOriginTests {
         ])
         store.receive(.createSessionResponse(response), from: current, generation: generation)
 
-        #expect(store.ownedConnectionGenerations[MachineEndpoint(host: current.host, port: 28004)] != nil)
-        #expect(store.ownedConnectionGenerations[MachineEndpoint(host: old.host, port: 28004)] == nil)
+        #expect(store.connectionGenerations[MachineEndpoint(host: current.host, port: 28004)] != nil)
+        #expect(store.connectionGenerations[MachineEndpoint(host: old.host, port: 28004)] == nil)
     }
 
     @Test func relayCreateResponseNeverDialsADirectChild() throws {
@@ -112,7 +139,7 @@ struct ChildRouteOriginTests {
         ])
         store.receive(.createSessionResponse(response), from: relay, generation: generation)
 
-        #expect(store.ownedConnectionGenerations.count == 2)
+        #expect(store.connectionGenerations.count == 2)
     }
 
     @Test func resumeResponseKeepsExactCorrelationAndUsesTheRespondingAddress() throws {
@@ -124,13 +151,13 @@ struct ChildRouteOriginTests {
             "type": "resume_session_response", "requestId": requestID, "success": true,
             "sessionId": "resumed", "port": 28005,
         ])
-        let oldGeneration = try #require(store.ownedConnectionGenerations[old])
+        let oldGeneration = try #require(store.connectionGenerations[old])
         store.receive(.resumeSessionResponse(response), from: old, generation: oldGeneration)
-        #expect(store.ownedConnectionGenerations.count == 2)
+        #expect(store.connectionGenerations.count == 2)
         store.receive(.resumeSessionResponse(response), from: current, generation: generation)
 
-        #expect(store.ownedConnectionGenerations[MachineEndpoint(host: current.host, port: 28005)] != nil)
-        #expect(store.ownedConnectionGenerations[MachineEndpoint(host: old.host, port: 28005)] == nil)
+        #expect(store.connectionGenerations[MachineEndpoint(host: current.host, port: 28005)] != nil)
+        #expect(store.connectionGenerations[MachineEndpoint(host: old.host, port: 28005)] == nil)
     }
 
     private func consolidatedStore(current: MachineEndpoint = MachineEndpoint(host: "192.0.2.20", port: 28002)) throws
@@ -138,10 +165,10 @@ struct ChildRouteOriginTests {
         let old = MachineEndpoint(host: "192.0.2.10", port: 28000)
         let store = MachineStore(endpoints: [old], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
         store.start()
-        let first = try #require(store.ownedConnectionGenerations[old])
+        let first = try #require(store.connectionGenerations[old])
         store.receive(.hello(try hello()), from: old, generation: first)
         store.addMachine(current)
-        let next = try #require(store.ownedConnectionGenerations[current])
+        let next = try #require(store.connectionGenerations[current])
         store.receive(.hello(try hello()), from: current, generation: next)
         #expect(store.machines.count == 1)
         #expect(store.machines.first?.routes.first == old)

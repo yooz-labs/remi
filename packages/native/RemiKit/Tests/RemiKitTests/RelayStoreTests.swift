@@ -29,8 +29,9 @@ struct RelayStoreTests {
         store.receive(.relayReady, from: publicEndpoint, generation: second)
         #expect(store.persistableEndpoints == [publicEndpoint])
         store.stop()
+        #expect(store.machines.first?.status == .disconnected)
         store.receive(.connected(sessionId: nil), from: publicEndpoint, generation: second)
-        #expect(store.machines.first?.status == .waitingForRelayConfirmation(fingerprint: "current"))
+        #expect(store.machines.first?.status == .disconnected)
     }
 
     @Test func relayResumeIsRefusedBeforeSending() throws {

@@ -81,6 +81,22 @@ struct MachineIdentityTests {
         }
     }
 
+    @Test func childAuthorityMustMatchItsAdvertisingMachineEvenForLegacyFrames() throws {
+        let expected = try MachineIdentityVerifier.machineID(forPublicKey: machineKey)
+        #expect(throws: Never.self) {
+            try MachineIdentityVerifier.verify(descriptor: nil, authorityPublicKey: machineKey,
+                expectedMachineID: expected)
+        }
+        #expect(throws: MachineIdentityVerificationError.descriptorMismatch) {
+            try MachineIdentityVerifier.verify(descriptor: nil,
+                authorityPublicKey: Data(repeating: 9, count: 32), expectedMachineID: expected)
+        }
+        #expect(throws: MachineIdentityVerificationError.authorityUnavailable) {
+            try MachineIdentityVerifier.verify(descriptor: nil, authorityPublicKey: nil,
+                expectedMachineID: expected)
+        }
+    }
+
     @Test func descriptorRequiresBoundedDisplayName() throws {
         let invalid = MachineDescriptor(
             id: "397e2eedccc2603b7f5e9cf484fd763e",
