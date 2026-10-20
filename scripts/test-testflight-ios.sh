@@ -40,6 +40,13 @@ contains "$SCRIPT" 'ipa_sha256' "IPA is not hashed"
 excludes "$SCRIPT" 'packages/web/ios/App' "retired Capacitor project remains in the native release path"
 excludes "$SCRIPT" 'bunx cap sync' "Capacitor sync remains in the native release path"
 
+# Automatic signing can archive with a development profile; App Store export
+# applies the distribution profile. Enforce production APNS on what ships.
+export_line=$(awk '/EXPORT_CMD=\(xcodebuild -exportArchive/ { print NR; exit }' "$SCRIPT")
+apns_line=$(awk '/fail ".*app is not using production APNS"/ { print NR; exit }' "$SCRIPT")
+[ -n "$export_line" ] && [ -n "$apns_line" ] || fail "export/APNS checks are absent"
+[ "$apns_line" -gt "$export_line" ] || fail "production APNS is checked before distribution export"
+
 "$SCRIPT" --preflight-only
 if "$SCRIPT" --preflight-only --upload >/tmp/remi-testflight-invalid.out 2>&1; then
   fail "--preflight-only --upload was accepted"
