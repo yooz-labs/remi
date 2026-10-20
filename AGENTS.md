@@ -735,10 +735,13 @@ those two are both exactly `{token, title, body}`.
   cannot renew. A stalled hub or failed renewal can therefore lose a secure
   lease; fresh registration is then required.
   Every push reads fresh disk state. Secure fan-out and final send/answer
-  invocation check expiry under the authorization lock and durably prune expired
-  subscriptions; an already expired or unregistered subscription is never
+  invocation check expiry under the authorization lock; an already expired or
+  unregistered subscription is never
   recreated by renewal. A new registration has a new subscription generation,
-  so it cannot revive a prepared old push or answer.
+  so it cannot revive a prepared old push or answer. Expired subscriptions remain
+  dormant to preserve the push-key version floor until explicit unregister or
+  revoke. The file keeps at most 64 total rows; a full dormant file refuses a
+  new device with `CAPACITY` until a row is explicitly removed.
   Pre-lease secure records receive one lease from their first locked read;
   future sightings are clamped and persisted once. Timestamped records require
   the upgraded daemon reader; stop older daemons sharing the same remi home.

@@ -125,20 +125,22 @@ export class SecurePushStore {
           return { success: false, error: 'NOT_AUTHORIZED' };
         if (!this.enrollmentCurrent(captured)) return { success: false, error: 'NOT_ENROLLED' };
         activateSecurePushLocked(this.directory);
-        const current = this.currentSubscriptionsInsideLock();
+        const stored = this.subscriptionsInsideLock();
+        const current = stored.filter((entry) => this.leaseCurrent(entry));
+        const known = stored.find((entry) => entry.publicKey === captured.publicKey);
         const existing = current.find((entry) => entry.publicKey === captured.publicKey);
         if (
-          existing &&
-          (prepared.keyVersion < existing.keyVersion ||
-            (prepared.keyVersion === existing.keyVersion &&
-              prepared.pushPublicKey !== existing.pushPublicKey))
+          known &&
+          (prepared.keyVersion < known.keyVersion ||
+            (prepared.keyVersion === known.keyVersion &&
+              prepared.pushPublicKey !== known.pushPublicKey))
         )
           return { success: false, error: 'STALE_KEY_VERSION' };
         if (existing && this.sameRegistration(existing, prepared)) {
-          this.touchInsideLock(current, existing);
+          this.touchInsideLock(stored, existing);
           return { success: true, keyVersion: existing.keyVersion };
         }
-        if (!existing && current.length >= this.capacity)
+        if ((!existing && current.length >= this.capacity) || (!known && stored.length >= 64))
           return { success: false, error: 'CAPACITY' };
         const next: StoredSecurePushSubscription = {
           ...captured,
@@ -147,7 +149,7 @@ export class SecurePushStore {
           lastSeenAt: Date.now(),
         };
         writeSecurePushSubscriptions(this.directory, [
-          ...current.filter((entry) => entry.publicKey !== captured.publicKey),
+          ...stored.filter((entry) => entry.publicKey !== captured.publicKey),
           next,
         ]);
         return { success: true, keyVersion: next.keyVersion };
@@ -205,10 +207,10 @@ export class SecurePushStore {
   renew(authority: SecurePushAuthority): boolean {
     return this.trust.withAuthorizationEpochNonblocking(authority.publicKey, (epoch) => {
       if (!this.isCurrentAuthorityInsideLock(authority, epoch)) return false;
-      const current = this.currentSubscriptionsInsideLock();
-      const entry = current.find((row) => row.publicKey === authority.publicKey);
-      if (!entry) return false;
-      this.touchInsideLock(current, entry);
+      const stored = this.subscriptionsInsideLock();
+      const entry = stored.find((row) => row.publicKey === authority.publicKey);
+      if (!entry || !this.leaseCurrent(entry)) return false;
+      this.touchInsideLock(stored, entry);
       return true;
     });
   }
@@ -225,6 +227,12 @@ export class SecurePushStore {
   }
   /** Every fan-out and final invocation applies expiry to fresh disk state under the lock. */
   private currentSubscriptionsInsideLock(): StoredSecurePushSubscription[] {
+    return this.subscriptionsInsideLock().filter((entry) => this.leaseCurrent(entry));
+  }
+  private leaseCurrent(entry: StoredSecurePushSubscription): boolean {
+    return this.leaseMs === 0 || Date.now() - (entry.lastSeenAt ?? 0) < this.leaseMs;
+  }
+  private subscriptionsInsideLock(): StoredSecurePushSubscription[] {
     const stored = readSecurePushSubscriptions(this.directory);
     const now = Date.now();
     let changed = false;
@@ -237,10 +245,8 @@ export class SecurePushStore {
       // Existing v1 records get one migration lease, not an unlimited historical registration.
       // Persist clock rollback clamping once, so re-reads cannot repeatedly extend the lease.
       const lastSeenAt = Math.min(entry.lastSeenAt ?? now, now);
-      if (this.leaseMs > 0 && now - lastSeenAt >= this.leaseMs) {
-        changed = true;
-        continue;
-      }
+      // Retain expired rows (at most 64 total) to keep their push-key version floor.
+      // Only explicit unregister/revoke resets that floor; a fresh registration rotates epoch.
       changed ||= entry.lastSeenAt !== lastSeenAt;
       current.push(entry.lastSeenAt === lastSeenAt ? entry : { ...entry, lastSeenAt });
     }

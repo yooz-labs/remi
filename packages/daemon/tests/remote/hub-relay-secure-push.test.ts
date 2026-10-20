@@ -101,7 +101,7 @@ test('source hub renews secure leases while connected and on close, then stops r
   writeFileSync(file, JSON.stringify(disconnected));
   const sibling = new SecurePushStore(hub.dir, hub.trust, 64, { leaseMs });
   expect(sibling.listCurrent()).toEqual([]);
-  expect(read().subscriptions).toEqual([]);
+  expect(read().subscriptions).toHaveLength(1);
 }, 15000);
 
 test('sender availability is read per request: registration succeeds once a sender exists (#1200, B5)', async () => {
