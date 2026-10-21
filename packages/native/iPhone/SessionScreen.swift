@@ -4,7 +4,6 @@ import SwiftUI
 import UIKit
 
 struct SessionScreen: View {
-    @Environment(\.dismiss) private var dismiss
     let session: RemiSessionSummary
     let transcript: [RemiTranscriptEntry]
     let questions: [RemiQuestionCardModel]
@@ -207,7 +206,6 @@ struct SessionScreen: View {
             Button("Exit session", role: .destructive) {
                 onTerminate()
                 onClose()
-                dismiss()
             }
             Button("Cancel", role: .cancel) {}
         } message: {

@@ -8,8 +8,9 @@ public enum PhoneSessionPane: Hashable, Sendable {
 
 /// Where a session screen points.
 ///
-/// `machineKey` is the machine identity id when it is known, else the profile id; the
-/// view layer decides which. A question id is deliberately not part of a route: a
+/// `machineKey` is the machine id exactly as `MachineStore` uses it today, the profile
+/// id (`MachineState.id`). The authenticated machine identity id is a later follow-up.
+/// A question id is deliberately not part of a route: a
 /// question to focus travels in ``PhoneQuestionFocus``.
 public struct PhoneSessionRoute: Hashable, Sendable {
     public var machineKey: String
@@ -58,8 +59,8 @@ public struct PhoneShellState: Equatable, Sendable {
         self.pendingFocus = pendingFocus
     }
 
-    public var selectedSessionID: String? {
-        if case .session(let route) = destination { return route.sessionID }
+    public var selectedRoute: PhoneSessionRoute? {
+        if case .session(let route) = destination { return route }
         return nil
     }
 
@@ -83,20 +84,11 @@ public struct PhoneShellState: Equatable, Sendable {
         return focus.questionID
     }
 
-    /// A resumed session gets a new id; keep the person where they are.
-    public mutating func replaceSession(from oldID: String, to newID: String) {
-        guard case .session(var route) = destination, route.sessionID == oldID else { return }
-        route.sessionID = newID
-        destination = .session(route)
-        if let focus = pendingFocus, focus.sessionID == oldID {
-            pendingFocus = PhoneQuestionFocus(sessionID: newID, questionID: focus.questionID)
-        }
-    }
-
-    /// The shown session left the list. Before `graceElapsed` the caller shows a
-    /// Reconnecting placeholder; after it, the Inbox.
-    public mutating func sessionVanished(sessionID: String, graceElapsed: Bool) {
-        guard graceElapsed, selectedSessionID == sessionID else { return }
+    /// The route to leave when it disappears. The caller owns the grace period (it shows
+    /// a Reconnecting placeholder first); this goes to the Inbox only when the current
+    /// destination is exactly this route, machine included.
+    public mutating func sessionVanished(_ route: PhoneSessionRoute) {
+        guard destination == .session(route) else { return }
         destination = .inbox
     }
 

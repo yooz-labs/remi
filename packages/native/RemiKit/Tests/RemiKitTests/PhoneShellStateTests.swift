@@ -11,7 +11,7 @@ import Testing
         #expect(state.destination == .inbox)
         #expect(!state.isDrawerOpen)
         #expect(state.pendingFocus == nil)
-        #expect(state.selectedSessionID == nil)
+        #expect(state.selectedRoute == nil)
     }
 
     @Test func selectClosesDrawerAndClearsFocus() {
@@ -22,7 +22,7 @@ import Testing
         )
         state.select(.session(route("s2")))
         #expect(state.destination == .session(route("s2")))
-        #expect(state.selectedSessionID == "s2")
+        #expect(state.selectedRoute == route("s2"))
         #expect(!state.isDrawerOpen)
         #expect(state.pendingFocus == nil)
     }
@@ -44,34 +44,20 @@ import Testing
         #expect(state.pendingFocus == nil)
     }
 
-    @Test func replaceSessionCarriesRouteAndFocus() {
-        var state = PhoneShellState()
-        state.openFromNotification(route: route("old", machine: "m7", conversation: "c1"), questionID: "q1")
-        state.replaceSession(from: "old", to: "new")
-        #expect(state.destination == .session(PhoneSessionRoute(machineKey: "m7", sessionID: "new", conversationID: "c1", pane: .chat)))
-        #expect(state.consumeFocus(forSessionID: "old") == nil)
-        #expect(state.consumeFocus(forSessionID: "new") == "q1")
-    }
-
-    @Test func replaceSessionWithOtherIDIsNoOp() {
-        var state = PhoneShellState()
-        state.openFromNotification(route: route("s1"), questionID: "q1")
-        let before = state
-        state.replaceSession(from: "other", to: "new")
-        #expect(state == before)
-        var inbox = PhoneShellState()
-        inbox.replaceSession(from: "s1", to: "s2")
-        #expect(inbox == PhoneShellState())
-    }
-
-    @Test func vanishedSessionFallsBackOnlyAfterGrace() {
+    @Test func vanishedRouteFallsBackToInbox() {
         var state = PhoneShellState(destination: .session(route("s1")))
-        state.sessionVanished(sessionID: "s1", graceElapsed: false)
-        #expect(state.destination == .session(route("s1")))
-        state.sessionVanished(sessionID: "other", graceElapsed: true)
-        #expect(state.destination == .session(route("s1")))
-        state.sessionVanished(sessionID: "s1", graceElapsed: true)
+        state.sessionVanished(route("s1"))
         #expect(state.destination == .inbox)
+    }
+
+    @Test func vanishedOtherRouteIsIgnored() {
+        var state = PhoneShellState(destination: .session(route("s1", machine: "m1")))
+        state.sessionVanished(route("s1", machine: "m2"))
+        state.sessionVanished(route("s2", machine: "m1"))
+        #expect(state.destination == .session(route("s1", machine: "m1")))
+        var inbox = PhoneShellState()
+        inbox.sessionVanished(route("s1"))
+        #expect(inbox.destination == .inbox)
     }
 
     @Test func drawerToggles() {

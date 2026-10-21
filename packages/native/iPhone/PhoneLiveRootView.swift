@@ -630,7 +630,7 @@ struct PhoneLiveRootView: View {
         .task(id: route) {
             try? await Task.sleep(for: .seconds(8))
             guard !Task.isCancelled else { return }
-            shell.sessionVanished(sessionID: route.sessionID, graceElapsed: true)
+            shell.sessionVanished(route)
         }
     }
 
