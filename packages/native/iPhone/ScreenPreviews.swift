@@ -63,6 +63,37 @@ private struct SessionPreview: View {
     }
 }
 
+private struct ShellPreview: View {
+    @State private var state: PhoneShellState
+
+    init(isDrawerOpen: Bool) {
+        let route = PhoneSessionRoute(
+            machineKey: RemiPreviewData.primarySession.machineID,
+            sessionID: RemiPreviewData.primarySession.id
+        )
+        _state = State(initialValue: PhoneShellState(destination: .session(route), isDrawerOpen: isDrawerOpen))
+    }
+
+    var body: some View {
+        PhoneShell(state: $state) {
+            SessionPreview()
+        } drawer: {
+            PhoneDrawerView(
+                sessions: RemiPreviewData.sessions,
+                questionCount: 1,
+                destination: state.destination,
+                isPresented: state.isDrawerOpen,
+                canCreateSession: true,
+                onSelectInbox: { state.select(.inbox) },
+                onSelectSession: { state.select(.session(PhoneSessionRoute(machineKey: $0.machineID, sessionID: $0.id))) },
+                onNewSession: {},
+                onAddMachine: {},
+                onPreferences: {}
+            )
+        }
+    }
+}
+
 private struct PairingPreview: View {
     var draft = AddMachineDraft()
 
@@ -128,6 +159,11 @@ private struct EmptyHomePreview: View {
         initialQuestionID: RemiPreviewData.binaryQuestion.questionID
     )
 }
+
+#Preview("Shell · Drawer closed") { ShellPreview(isDrawerOpen: false) }
+#Preview("Shell · Drawer open · Light") { ShellPreview(isDrawerOpen: true).preferredColorScheme(.light) }
+#Preview("Shell · Drawer open · Dark") { ShellPreview(isDrawerOpen: true).preferredColorScheme(.dark) }
+#Preview("Shell · Drawer open · Accessibility") { ShellPreview(isDrawerOpen: true).environment(\.dynamicTypeSize, .accessibility5) }
 
 #Preview("Pairing · Light") { PairingPreview().preferredColorScheme(.light) }
 #Preview("Pairing · Dark") { PairingPreview().preferredColorScheme(.dark) }
