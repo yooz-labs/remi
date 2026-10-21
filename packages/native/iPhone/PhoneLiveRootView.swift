@@ -11,6 +11,7 @@ struct PhoneLiveRootView: View {
     @State private var answerFeedbackTrigger = 0
     @State private var notificationRouter = PhoneNotificationRouter.shared
     @State private var notificationPath: [RemiNavigationDestination] = []
+    @State private var pairingAttemptID: UUID?
     @State private var pendingResume: ResumeSessionKey?
     @State private var relayNotifications = NativeRelayNotifications.shared
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
@@ -39,10 +40,13 @@ struct PhoneLiveRootView: View {
                 onTerminateSession: store.terminateSession,
                 onResumeSession: resumeSession,
                 onCreateSession: createSession,
+                pairingAttempts: store.pairingAttempts,
+                onCancelPairing: store.cancelPairing,
                 onAddMachine: addMachine,
                 onRemoveMachine: removeMachine,
                 onRetryApproval: store.retryApproval,
                 onRetryConnection: store.retryConnection,
+                onSetConnectionPreference: { store.setConnectionPreference($1, for: $0) },
                 onEnableRelayNotifications: relayNotifications.enable,
                 enablingRelayNotifications: relayNotifications.enabling,
                 onDismissError: store.clearLatestError,
@@ -51,6 +55,12 @@ struct PhoneLiveRootView: View {
             .navigationDestination(for: RemiNavigationDestination.self) { destination in
                 notificationDestination(destination)
             }
+        }
+        .onChange(of: store.pairingAttempts) { _, _ in
+            guard let id = pairingAttemptID, let result = store.pairingAttempt(id: id),
+                  case .admitted(let profileID) = result.phase else { return }
+            selectedMachineID = profileID
+            pairingAttemptID = nil
         }
         .onChange(of: store.persistableProfiles) { _, profiles in
             MachineConfigurationStore.shared.saveProfiles(profiles)
@@ -373,14 +383,18 @@ struct PhoneLiveRootView: View {
         return await store.sendChat(sessionId: sessionId, content: content, claudeSessionId: binding)
     }
 
-    private func addMachine(_ endpoint: MachineEndpoint) {
-        relayNotifications.machineWillChange(endpoint)
-        if let existing = store.machines.first(where: { $0.id == endpoint.id }) {
-            guard store.removeMachine(existing.endpoint) else { return }
-            relayNotifications.didForget(existing.endpoint)
+    private func addMachine(_ request: AddMachineRequest) -> UUID? {
+        switch request {
+        case .pairing(let payload, let label):
+            let id = store.beginPairing(payload, label: label)
+            pairingAttemptID = id
+            return id
+        case .endpoint(let endpoint):
+            relayNotifications.machineWillChange(endpoint)
+            store.addMachine(endpoint)
+            MachineConfigurationStore.shared.saveProfiles(store.persistableProfiles)
+            return nil
         }
-        store.addMachine(endpoint)
-        MachineConfigurationStore.shared.saveProfiles(store.persistableProfiles)
     }
 
     private func removeMachine(_ machineID: String) {

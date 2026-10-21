@@ -2,6 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_remi._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Remi finds and reconnects to your saved machines on the local network.</string>
 	<key>RemiSourceCommit</key>
 	<string>$(REMI_SOURCE_COMMIT)</string>
 	<key>RemiPushAppGroup</key>

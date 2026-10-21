@@ -36,6 +36,29 @@ describe('explicit Claude alias (#1473)', () => {
   });
 });
 
+describe('--qr-version (#1574)', () => {
+  test('accepts explicit v1 or v2 and leaves the default unset', () => {
+    expect(parseArgs(['pair']).qrVersion).toBeUndefined();
+    expect(parseArgs(['pair', '--qr-version', '1']).qrVersion).toBe(1);
+    expect(parseArgs(['--qr-version', '2', 'pair']).qrVersion).toBe(2);
+  });
+
+  test('refuses missing, invalid, out-of-scope and relay combinations', () => {
+    expect(parseArgs(['pair', '--qr-version']).error).toContain('requires 1 or 2');
+    expect(parseArgs(['pair', '--qr-version', '3']).error).toContain('Choose 1 or 2');
+    expect(parseArgs(['serve', '--qr-version', '2']).error).toContain('only valid with remi pair');
+    expect(parseArgs(['pair', '--relay', '--qr-version', '2']).error).toContain(
+      'cannot be combined with --relay',
+    );
+  });
+
+  test('a separator keeps the option as an application argument', () => {
+    const parsed = parseArgs(['pair', '--', '--qr-version', '2']);
+    expect(parsed.qrVersion).toBeUndefined();
+    expect(parsed.explicitArgs).toEqual(['--qr-version', '2']);
+  });
+});
+
 describe('parseArgs', () => {
   // -------------------------------------------------------------------------
   // The main bug fix: remi new + flags

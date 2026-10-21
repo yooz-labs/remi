@@ -33,10 +33,13 @@ struct HomeScreen: View {
     let onTerminateSession: (String) -> Void
     let onResumeSession: (String, String) -> Void
     let onCreateSession: (MachineEndpoint, String, String, [String], WorkspaceRequest?) -> Void
-    let onAddMachine: (MachineEndpoint) -> Void
+    let pairingAttempts: [PairingAttemptState]
+    let onCancelPairing: (UUID) -> Void
+    let onAddMachine: (AddMachineRequest) -> UUID?
     let onRemoveMachine: (String) -> Void
     let onRetryApproval: (MachineEndpoint) -> Void
     let onRetryConnection: (MachineEndpoint) -> Void
+    let onSetConnectionPreference: (MachineEndpoint, MachineConnectionPreference) -> Void
     let onEnableRelayNotifications: (MachineEndpoint) -> Void
     let enablingRelayNotifications: Bool
     let onDismissError: () -> Void
@@ -64,10 +67,13 @@ struct HomeScreen: View {
         onTerminateSession: @escaping (String) -> Void = { _ in },
         onResumeSession: @escaping (String, String) -> Void = { _, _ in },
         onCreateSession: @escaping (MachineEndpoint, String, String, [String], WorkspaceRequest?) -> Void = { _, _, _, _, _ in },
-        onAddMachine: @escaping (MachineEndpoint) -> Void = { _ in },
+        pairingAttempts: [PairingAttemptState] = [],
+        onCancelPairing: @escaping (UUID) -> Void = { _ in },
+        onAddMachine: @escaping (AddMachineRequest) -> UUID? = { _ in nil },
         onRemoveMachine: @escaping (String) -> Void = { _ in },
         onRetryApproval: @escaping (MachineEndpoint) -> Void = { _ in },
         onRetryConnection: @escaping (MachineEndpoint) -> Void = { _ in },
+        onSetConnectionPreference: @escaping (MachineEndpoint, MachineConnectionPreference) -> Void = { _, _ in },
         onEnableRelayNotifications: @escaping (MachineEndpoint) -> Void = { _ in },
         enablingRelayNotifications: Bool = false,
         onDismissError: @escaping () -> Void = {},
@@ -94,10 +100,13 @@ struct HomeScreen: View {
         self.onTerminateSession = onTerminateSession
         self.onResumeSession = onResumeSession
         self.onCreateSession = onCreateSession
+        self.pairingAttempts = pairingAttempts
+        self.onCancelPairing = onCancelPairing
         self.onAddMachine = onAddMachine
         self.onRemoveMachine = onRemoveMachine
         self.onRetryApproval = onRetryApproval
         self.onRetryConnection = onRetryConnection
+        self.onSetConnectionPreference = onSetConnectionPreference
         self.onEnableRelayNotifications = onEnableRelayNotifications
         self.enablingRelayNotifications = enablingRelayNotifications
         self.onDismissError = onDismissError
@@ -252,6 +261,8 @@ struct HomeScreen: View {
                 PairingScreen(
                     publicIdentity: publicIdentity,
                     machineStates: sessionMachines,
+                    pairingAttempts: pairingAttempts,
+                    onCancelPairing: onCancelPairing,
                     onAddMachine: onAddMachine
                 )
                     .toolbar {
@@ -352,6 +363,7 @@ struct HomeScreen: View {
                     onRemove: onRemoveMachine,
                     onRetryApproval: onRetryApproval,
                     onRetryConnection: onRetryConnection,
+                    onSetConnectionPreference: onSetConnectionPreference,
                     onPairAgain: { showingPairing = true },
                     onEnableRelayNotifications: onEnableRelayNotifications,
                     enablingRelayNotifications: enablingRelayNotifications,
@@ -1124,6 +1136,7 @@ private struct MachinesSection: View {
     let onRemove: (String) -> Void
     let onRetryApproval: (MachineEndpoint) -> Void
     let onRetryConnection: (MachineEndpoint) -> Void
+    let onSetConnectionPreference: (MachineEndpoint, MachineConnectionPreference) -> Void
     let onPairAgain: () -> Void
     let onEnableRelayNotifications: (MachineEndpoint) -> Void
     let enablingRelayNotifications: Bool
@@ -1143,6 +1156,7 @@ private struct MachinesSection: View {
                     enablingRelayNotifications: enablingRelayNotifications,
                     onEnableRelayNotifications: onEnableRelayNotifications,
                     onRetryConnection: onRetryConnection,
+                    onSetConnectionPreference: onSetConnectionPreference,
                     onRemove: { pendingRemoval = machine }
                 )
                 if let state = states.first(where: { $0.id == machine.id }),
@@ -1296,6 +1310,7 @@ private struct PhoneMachineManagementRow: View {
     let enablingRelayNotifications: Bool
     let onEnableRelayNotifications: (MachineEndpoint) -> Void
     let onRetryConnection: (MachineEndpoint) -> Void
+    let onSetConnectionPreference: (MachineEndpoint, MachineConnectionPreference) -> Void
     let onRemove: () -> Void
 
     var body: some View {
@@ -1309,6 +1324,20 @@ private struct PhoneMachineManagementRow: View {
                 .layoutPriority(1)
 
             Menu {
+                if let state {
+                    Picker("Connection layer", selection: Binding(
+                        get: { state.connectionPreference },
+                        set: { onSetConnectionPreference(state.endpoint, $0) }
+                    )) {
+                        ForEach(MachineConnectionPreference.allCases) { preference in
+                            Text(preference.title).tag(preference)
+                        }
+                    }
+                    Divider()
+                    Text("Active: \(state.activeConnectionLayer?.title ?? "Not connected")")
+                    if let attempted = state.attemptedConnectionLayer { Text("Attempting: \(attempted.title)") }
+                    if let progress = state.recoveryProgress { Text(progress.message) }
+                }
                 if let state, canRetryConnection(state) {
                     Button("Retry connection", systemImage: "arrow.clockwise") {
                         onRetryConnection(state.endpoint)
@@ -1341,7 +1370,7 @@ private struct PhoneMachineManagementRow: View {
     }
 
     private func canRetryConnection(_ state: MachineState) -> Bool {
-        state.sessionConnectionIssue != nil || RemiMachineRecoveryState.resolve(
+        state.sessionConnectionIssue != nil || state.recoveryProgress?.allowsRetry == true || RemiMachineRecoveryState.resolve(
             status: state.status,
             isRelay: state.endpoint.relayPin != nil
         ).allowsConnectionRetry

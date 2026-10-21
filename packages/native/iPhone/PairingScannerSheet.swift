@@ -6,13 +6,15 @@ import VisionKit
 struct PairingScannerSheet: View {
     @Environment(\.dismiss) private var dismiss
     let phoneFingerprint: String?
-    let machineStates: [MachineState]
-    let onConnect: (MachineEndpoint) -> Void
+    let pairingAttempts: [PairingAttemptState]
+    let onCancelPairing: (UUID) -> Void
+    let onConnect: (AddMachineRequest) -> UUID?
 
     @State private var payload: PairingPayload?
     @State private var error: PairingPayloadError?
     @State private var pastedCode = ""
     @State private var requestedApproval = false
+    @State private var attemptID: UUID?
     @State private var scannerFailed = false
 
     var body: some View {
@@ -23,7 +25,7 @@ struct PairingScannerSheet: View {
                         PairingApprovalWait(
                             payload: payload,
                             phoneFingerprint: phoneFingerprint,
-                            status: machineStates.first(where: { $0.id == payload.endpoint.id })?.status,
+                            attempt: attemptID.flatMap { id in pairingAttempts.first { $0.id == id } },
                             onTryAgain: {
                                 requestedApproval = false
                                 self.payload = nil
@@ -31,15 +33,7 @@ struct PairingScannerSheet: View {
                         )
                     } else {
                         PairingConfirmation(payload: payload, phoneFingerprint: phoneFingerprint) {
-                        let label = UIDevice.current.name
-                        onConnect(MachineEndpoint(
-                            host: payload.endpoint.host,
-                            port: payload.endpoint.port,
-                            expectedFingerprint: payload.endpoint.expectedFingerprint,
-                            expectedPublicKey: payload.endpoint.expectedPublicKey,
-                            pairingNonce: payload.endpoint.pairingNonce,
-                            pairingLabel: PairingPayload.isValidLabel(label) ? label : nil
-                        ))
+                            attemptID = onConnect(.pairing(payload, proposedLabel: UIDevice.current.name, fallback: "iPhone"))
                             requestedApproval = true
                         }
                     }
@@ -61,6 +55,7 @@ struct PairingScannerSheet: View {
                     Button(requestedApproval ? "Done" : "Cancel") { dismiss() }
                 }
             }
+            .onDisappear { if let attemptID { onCancelPairing(attemptID) } }
             .alert("Pairing code not accepted", isPresented: errorBinding) {
                 Button("Try again") { error = nil }
             } message: {
@@ -148,7 +143,7 @@ struct PairingScannerSheet: View {
 private struct PairingApprovalWait: View {
     let payload: PairingPayload
     let phoneFingerprint: String?
-    let status: MachineConnectionStatus?
+    let attempt: PairingAttemptState?
     let onTryAgain: () -> Void
 
     var body: some View {
@@ -178,11 +173,11 @@ private struct PairingApprovalWait: View {
                 )
                 .foregroundStyle(.secondary)
 
-                Text("Remi retries with a fresh challenge while the terminal is waiting. You can close this screen; the connection continues in the background.")
+                Text("Retries stay on this address while the machine reports pending approval. Closing this screen cancels the attempt.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
-                if case .unavailable = status {
+                if attempt?.phase.isTerminal == true {
                     Button("Scan a new code", action: onTryAgain)
                         .buttonStyle(.glassProminent)
                 }
@@ -194,12 +189,12 @@ private struct PairingApprovalWait: View {
 
     @ViewBuilder
     private var statusSymbol: some View {
-        switch status {
-        case .connected:
+        switch attempt?.phase {
+        case .admitted:
             Image(systemName: "checkmark.circle.fill")
                 .font(.largeTitle)
                 .foregroundStyle(.green)
-        case .unavailable:
+        case .failed, .cancelled:
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.largeTitle)
                 .foregroundStyle(.orange)
@@ -208,15 +203,7 @@ private struct PairingApprovalWait: View {
         }
     }
 
-    private var statusTitle: String {
-        switch status {
-        case .connected: "Pairing approved"
-        case .unavailable(let reason): reason ?? "Pairing could not be completed"
-        case .waitingForApproval: "Waiting for manual authorization"
-        case .waitingForRelayConfirmation: "Waiting for relay confirmation"
-        default: "Waiting for terminal approval"
-        }
-    }
+    private var statusTitle: String { attempt?.message ?? "Connecting to the machine" }
 
     private func fingerprintRow(_ title: LocalizedStringKey, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {

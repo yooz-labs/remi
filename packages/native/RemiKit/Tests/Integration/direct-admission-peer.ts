@@ -22,6 +22,11 @@ const server = Bun.serve({
   },
   websocket: {
     open(ws) {
+      if (mode === 'silent') return;
+      if (mode === 'retry-without-challenge') {
+        ws.send(frame('auth_result', { success: false, error: 'PAIRING_PENDING' }));
+        return;
+      }
       if (mode === 'preauth') {
         ws.send(JSON.stringify(question));
         return;
@@ -36,17 +41,21 @@ const server = Bun.serve({
         ws.send(JSON.stringify(question));
         return;
       }
-      ws.send(
-        frame('auth_challenge', {
-          challenge: challenge.toString('base64'),
-          serverPublicKey: raw(signer.publicKey).toString('base64'),
-          serverFingerprint: digest(signer.publicKey).slice(0, 16),
-        }),
-      );
+      const sendChallenge = () =>
+        ws.send(
+          frame('auth_challenge', {
+            challenge: challenge.toString('base64'),
+            serverPublicKey: raw(signer.publicKey).toString('base64'),
+            serverFingerprint: digest(signer.publicKey).slice(0, 16),
+          }),
+        );
+      if (mode === 'delayed-challenge') setTimeout(sendChallenge, 350);
+      else sendChallenge();
     },
     message(ws, bytes) {
       const message = JSON.parse(String(bytes));
       if (message.type === 'auth_response') {
+        if (mode === 'delayed-challenge') return;
         ws.send(
           frame('auth_result', {
             success: true,
