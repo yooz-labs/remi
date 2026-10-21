@@ -27,6 +27,8 @@ struct MacSessionDetail: View {
     @State private var reviewState = RemiTranscriptReviewState()
     @State private var reviewMemory = RemiConversationReviewMemory()
     @State private var visibleEntryID: String?
+    @State private var followsLatest = true
+    @State private var latestScrollRequest = 0
     @State private var reviewSessionID: String
     @AccessibilityFocusState private var accessibilityQuestionID: String?
 
@@ -131,7 +133,11 @@ struct MacSessionDetail: View {
                         .padding(.vertical, RemiTheme.Spacing.m)
                         .frame(maxWidth: .infinity)
                         .scrollTargetLayout()
+                        .id(RemiTranscriptScrollTarget.latest)
                     }
+                    .modifier(RemiTranscriptScrollBehavior(followsLatest: $followsLatest,
+                        isReviewing: isSearchPresented || focusedQuestionID != nil,
+                        onFollow: { scrollToLatest(using: proxy) }))
                     .scrollPosition(id: $visibleEntryID, anchor: .top)
                     .onAppear { focusQuestion(using: proxy) }
                     .onChange(of: questions.map(\.questionID)) { _, questionIDs in
@@ -146,9 +152,11 @@ struct MacSessionDetail: View {
                     .onChange(of: reviewState.selectedEntryID) { _, entryID in
                         scrollToSearchResult(entryID, using: proxy)
                     }
-                    .onChange(of: visibleTranscript) { _, entries in
+                    .onChange(of: visibleTranscript) { previous, entries in
                         reviewState.refresh(entries: entries)
+                        if previous.last?.id != entries.last?.id { scrollToLatest(using: proxy) }
                     }
+                    .onChange(of: latestScrollRequest) { _, _ in scrollToLatest(using: proxy) }
                 }
             }
             .remiSessionInteractionBar(
@@ -175,6 +183,8 @@ struct MacSessionDetail: View {
             reviewMemory.reset()
             resetReview()
             visibleEntryID = nil
+            followsLatest = true
+            latestScrollRequest += 1
             if selectedViewID.isEmpty {
                 reviewSessionID = session.id
             } else {
@@ -228,6 +238,7 @@ struct MacSessionDetail: View {
 
     private var searchButton: some View {
         Button("Search conversation", systemImage: "magnifyingglass") {
+            followsLatest = false
             isSearchPresented = true
             searchFocusRequest += 1
         }
@@ -238,20 +249,22 @@ struct MacSessionDetail: View {
 
     private var latestActivityButton: some View {
         Button("Jump to latest activity", systemImage: "arrow.down.to.line") {
-            guard let latestActivityID else { return }
-            withAnimation(.easeInOut(duration: 0.2)) {
-                visibleEntryID = latestActivityID
-            }
+            focusedQuestionID = nil
+            accessibilityQuestionID = nil
+            resetReview()
+            followsLatest = true
+            latestScrollRequest += 1
         }
         .labelStyle(.iconOnly)
         .keyboardShortcut(.downArrow, modifiers: .command)
-        .disabled(latestActivityID == nil || visibleEntryID == latestActivityID)
+        .disabled(latestActivityID == nil || followsLatest)
         .help("Jump to latest activity (Command-↓)")
     }
 
     private var firstActivityButton: some View {
         Button("Jump to first activity", systemImage: "arrow.up.to.line") {
             guard let firstActivityID else { return }
+            followsLatest = false
             withAnimation(.easeInOut(duration: 0.2)) {
                 visibleEntryID = firstActivityID
             }
@@ -328,6 +341,7 @@ struct MacSessionDetail: View {
         guard let focusedQuestionID,
               questions.contains(where: { $0.questionID == focusedQuestionID })
         else { return }
+        followsLatest = false
         withAnimation(.easeInOut(duration: 0.25)) {
             proxy.scrollTo(focusedQuestionID, anchor: .center)
         }
@@ -336,6 +350,7 @@ struct MacSessionDetail: View {
 
     private func scrollToSearchResult(_ entryID: String?, using proxy: ScrollViewProxy) {
         guard let entryID else { return }
+        followsLatest = false
         withAnimation(.easeInOut(duration: 0.2)) {
             proxy.scrollTo(entryID, anchor: .center)
         }
@@ -347,6 +362,7 @@ struct MacSessionDetail: View {
     }
 
     private func closeSearch() {
+        followsLatest = false
         isSearchPresented = false
         reviewState.reset()
     }
@@ -376,6 +392,14 @@ struct MacSessionDetail: View {
         reviewState = snapshot.reviewState
         visibleEntryID = snapshot.visibleEntryID
         isSearchPresented = snapshot.isSearchPresented
+        followsLatest = snapshot.visibleEntryID == nil && !snapshot.isSearchPresented
+        if followsLatest { latestScrollRequest += 1 }
+    }
+
+    private func scrollToLatest(using proxy: ScrollViewProxy) {
+        guard followsLatest, !isSearchPresented, focusedQuestionID == nil,
+              latestActivityID != nil else { return }
+        proxy.scrollTo(RemiTranscriptScrollTarget.latest, anchor: .bottom)
     }
 }
 
