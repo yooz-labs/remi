@@ -283,8 +283,6 @@ private struct PhoneDrawerActions: View {
             .contentShape(.rect)
         }
         .buttonStyle(.glassProminent)
-        .tint(RemiTheme.Color.attention)
-        .foregroundStyle(RemiTheme.Color.attentionInk)
         .disabled(!canCreateSession)
         .accessibilityHint(canCreateSession ? "Starts a session on a connected machine" : "Connect a machine first")
     }
