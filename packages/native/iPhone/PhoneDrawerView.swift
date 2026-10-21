@@ -83,6 +83,7 @@ struct PhoneDrawerView: View {
             .padding(.horizontal, RemiTheme.Spacing.m)
             .padding(.vertical, RemiTheme.Spacing.s)
             .accessibilityAddTraits(.isHeader)
+            .accessibilitySortPriority(1)
             .accessibilityFocused($headerFocused)
     }
 

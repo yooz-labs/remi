@@ -48,9 +48,10 @@ struct PhoneShell<Content: View, Drawer: View>: View {
                 .frame(maxHeight: .infinity)
                 .background { Rectangle().fill(.regularMaterial).ignoresSafeArea() }
                 .opacity(reduceMotion ? progress : 1)
-                .allowsHitTesting(progress > 0)
+                .allowsHitTesting(state.isDrawerOpen)
                 .accessibilityHidden(!state.isDrawerOpen)
-                .accessibilityAddTraits(.isModal)
+                .accessibilityElement(children: .contain)
+                .accessibilitySortPriority(2)
                 .accessibilityAction(.escape) { setOpen(false) }
                 .simultaneousGesture(closeDrag(width: width))
                 .zIndex(reduceMotion ? 3 : 0)
@@ -100,6 +101,7 @@ struct PhoneShell<Content: View, Drawer: View>: View {
                 .gesture(closeDrag(width: width))
                 .accessibilityLabel("Close menu")
                 .accessibilityAddTraits(.isButton)
+                .accessibilitySortPriority(1)
                 .zIndex(2)
         }
     }
