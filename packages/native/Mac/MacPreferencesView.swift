@@ -184,8 +184,13 @@ struct MacPreferencesView: View {
                     }
                     Text(machine.connectionPreference.guidance)
                         .font(.caption).foregroundStyle(.secondary)
-                    LabeledContent(machine.status == .connected ? "Active layer" : "Selected layer",
-                        value: machine.endpoint.connectionLayer.title)
+                    LabeledContent("Active layer", value: machine.activeConnectionLayer?.title ?? "Not connected")
+                    if let attempted = machine.attemptedConnectionLayer {
+                        LabeledContent("Attempted layer", value: attempted.title)
+                    }
+                    if let progress = machine.recoveryProgress {
+                        Text(progress.message).font(.caption).foregroundStyle(.secondary)
+                    }
                     LabeledContent("Transport", value: transportLabel(machine.endpoint))
                     LabeledContent("Endpoint") {
                         Text(machine.endpoint.displayAddress)

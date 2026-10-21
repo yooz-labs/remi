@@ -87,6 +87,27 @@ struct LocalDiscoverySourceTests {
             #expect(await recorder.receivedSessions)
         }
         await connection.stop()
+
+        // The actual Store must discover and promote a quarantined real socket,
+        // retaining its original configured address and stable navigation ID.
+        let store = MachineStore(profiles: [saved], identity: identity, clientVersion: "owned-recovery", clientId: "owned-recovery")
+        let before = store.persistableProfiles
+        let navigationID = try #require(store.machines.first?.id)
+        store.start()
+        defer { store.stop() }
+        let recoveryDeadline = ContinuousClock.now.advanced(by: .seconds(20))
+        while (store.machines.first?.status != .connected || store.machines.first?.hasLoadedSessions != true), ContinuousClock.now < recoveryDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(store.machines.first?.status == .connected)
+        let active = try #require(store.machines.first?.endpoint)
+        #expect(active.port == hubPort && active.host != "192.0.2.1")
+        #expect(store.machines.first?.id == navigationID)
+        #expect(store.persistableProfiles == before)
+        let generation = try #require(store.connectionGenerations[active])
+        #expect(store.ownedConnectionID(active) == store.ownedRecoveryCoordinator?.ownedAdmittedConnections[generation])
+        #expect(store.ownedRecoveryCoordinator?.ownedStarts.allSatisfy { $0.1 == .local } == true)
+        #expect(store.machines.first?.hasLoadedSessions == true)
     }
 }
 #endif

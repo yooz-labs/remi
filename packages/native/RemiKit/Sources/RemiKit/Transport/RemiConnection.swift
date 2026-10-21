@@ -5,6 +5,8 @@ public enum DirectRetryPolicy: Sendable, Equatable {
     case runtime
     /// The initial-pairing owner advances candidates only on reachability failure.
     case coordinatedPairing
+    /// A quarantined saved-profile probe gets exactly one socket attempt.
+    case recoveryProbe
 }
 
 public struct RemiConnectionConfiguration: Sendable, Equatable {
@@ -56,7 +58,7 @@ public struct RemiConnectionConfiguration: Sendable, Equatable {
         self.directRetryPolicy = directRetryPolicy
     }
 
-    func admittedPairingConfiguration() -> Self {
+    func admittedConfiguration() -> Self {
         Self(url: url, clientVersion: clientVersion, clientId: clientId, deviceId: deviceId,
             expectedServerFingerprint: expectedServerFingerprint, expectedServerPublicKey: expectedServerPublicKey,
             expectedMachineID: expectedMachineID, relayPin: relayPin,
@@ -197,13 +199,16 @@ public actor RemiConnection {
         self.readyHandler = readyHandler
     }
 
-    /// Keeps this verified socket, but removes the claim from every future reconnect (#1574).
-    func completeCoordinatedPairing() throws {
-        guard configuration.directRetryPolicy == .coordinatedPairing,
-              configuration.relayPin == nil, applicationAdmitted,
-              authenticatedServerPublicKey != nil, socket != nil, shouldRun,
+    /// Keeps the verified socket and all pins/deadlines, clearing transient claims
+    /// before runtime ownership. A probe never becomes a background one-shot RPC.
+    func completeCoordinatedAdmission() throws {
+        let policy = configuration.directRetryPolicy
+        let direct = configuration.relayPin == nil && authenticatedServerPublicKey != nil
+        let enrolledRelay = policy == .recoveryProbe && configuration.relayPin != nil && relayEnrolled && ready
+        guard policy == .coordinatedPairing || policy == .recoveryProbe,
+              direct || enrolledRelay, applicationAdmitted, socket != nil, shouldRun,
               case .connected = state else { throw RelayFailure.closed }
-        configuration = configuration.admittedPairingConfiguration()
+        configuration = configuration.admittedConfiguration()
     }
 
     func configureOneShot() throws {
@@ -364,6 +369,11 @@ public actor RemiConnection {
                 if singleAttempt { shouldRun = false; return }
                 if case .awaitingLocalApproval = state { return }
                 if case .rejected = state { return }
+                if configuration.directRetryPolicy == .recoveryProbe {
+                    shouldRun = false
+                    transition(to: .rejected(reason: "The recovery connection ended before admission."))
+                    return
+                }
             } catch {
                 if !shouldRun || Task.isCancelled { return }
                 if error is CancellationError && directDeadlineFailure == nil { return }
@@ -374,12 +384,21 @@ public actor RemiConnection {
                     socket?.cancel(with: .init(rawValue: 4400) ?? .policyViolation, reason: Data("closed".utf8))
                 }
                 closeSocket()
-                if directFailure == .authentication || (configuration.directRetryPolicy == .coordinatedPairing && authenticationStarted) {
+                if directFailure == .authentication || (configuration.relayPin == nil && configuration.directRetryPolicy != .runtime && authenticationStarted) {
                     shouldRun = false
                     transition(to: .rejected(reason: "The machine did not finish authentication. Check its terminal and retry this layer."))
                     return
                 }
                 if singleAttempt { shouldRun = false; transition(to: .rejected(reason: "The relay attempt ended.")); return }
+                if configuration.directRetryPolicy == .recoveryProbe {
+                    shouldRun = false
+                    if configuration.relayPin == nil, directFailure == .unreachable || Self.isDirectReachabilityFailure(error) {
+                        transition(to: .reachabilityFailed(attempt: attempt))
+                    } else {
+                        transition(to: .rejected(reason: "The recovery connection failed authentication or protocol validation."))
+                    }
+                    return
+                }
                 if configuration.relayPin != nil && (!relayEnrolled || attempt >= 5 || error is RelayFailure) {
                     shouldRun = false
                     transition(to: .rejected(reason: "The relay connection closed. Pair again if this machine has not been saved."))
@@ -394,7 +413,7 @@ public actor RemiConnection {
                 }
                 if configuration.relayPin == nil {
                     transition(to: .reachabilityFailed(attempt: attempt))
-                    if configuration.directRetryPolicy == .coordinatedPairing { shouldRun = false; return }
+                    if configuration.directRetryPolicy != .runtime { shouldRun = false; return }
                 }
             }
 
@@ -474,14 +493,18 @@ public actor RemiConnection {
                challenge.serverFingerprint != expected {
                 shouldRun = false
                 closeSocket()
-                transition(to: .rejected(reason: "The daemon fingerprint does not match the scanned pairing code."))
+                transition(to: .rejected(reason: configuration.directRetryPolicy == .recoveryProbe
+                    ? "The endpoint fingerprint does not match the saved machine identity."
+                    : "The daemon fingerprint does not match the scanned pairing code."))
                 return
             }
             if let expected = configuration.expectedServerPublicKey,
                challenge.serverPublicKey != expected {
                 shouldRun = false
                 closeSocket()
-                transition(to: .rejected(reason: "The daemon public key does not match the scanned pairing code."))
+                transition(to: .rejected(reason: configuration.directRetryPolicy == .recoveryProbe
+                    ? "The endpoint public key does not match the saved machine identity."
+                    : "The daemon public key does not match the scanned pairing code."))
                 return
             }
             transition(to: .authenticating(serverFingerprint: challenge.serverFingerprint))
@@ -508,7 +531,7 @@ public actor RemiConnection {
                     transition(to: .awaitingLocalApproval(fingerprint: identity.fingerprint))
                     return
                 }
-                if Self.shouldRetryAuthentication(result.error) {
+                if configuration.directRetryPolicy != .recoveryProbe, Self.shouldRetryAuthentication(result.error) {
                     authenticationRetryHandler(result.error ?? "AUTH_STORE_ERROR")
                     closeSocket()
                     return
@@ -535,6 +558,8 @@ public actor RemiConnection {
             applicationAdmitted = true
             directDeadline?.cancel()
             directDeadline = nil
+            relayDeadline?.cancel()
+            relayDeadline = nil
             transition(to: .connected(sessionId: message.sessionId))
             let authority = configuration.relayPin.flatMap { try? RelayCrypto.unb64($0.machinePublicKey) }
                 ?? authenticatedServerPublicKey
@@ -779,7 +804,10 @@ public actor RemiConnection {
                 for waiter in waiting.values { waiter.resume() }
                 relayDeadline?.cancel()
                 eventHandler(.relayReady)
-                if applicationHello { try await sendHello(on: task) }
+                if applicationHello {
+                    if configuration.directRetryPolicy == .recoveryProbe { armRelayDeadline(task, after: configuration.directHelloTimeout) }
+                    try await sendHello(on: task)
+                }
                 phase = "data"
             default: throw RelayFailure.state
             }

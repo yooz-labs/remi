@@ -83,18 +83,17 @@ struct MachineConnectionPreferenceTests {
         #expect(store.persistableProfiles.first?.connectionPreference == .tailscaleOnly)
     }
 
-    @Test func automaticExhaustsDirectRoutesBeforeStartingRelayAndAuthRejectionNeverDoes() throws {
+    @Test func pinnedReachabilityUsesQuarantinedRecoveryAndAuthRejectionStops() throws {
         let stored = try profile(.automatic)
         let store = MachineStore(profiles: [stored], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
         store.start()
         defer { store.stop() }
         let local = try #require(store.connectionGenerations.keys.first { $0.connectionLayer == .local })
         store.receive(.reachabilityFailed(attempt: 1), from: local, generation: try #require(store.connectionGenerations[local]))
-        let tail = try #require(store.connectionGenerations.keys.first { $0.connectionLayer == .tailscale })
-        #expect(store.machines.first?.endpoint.connectionLayer == .tailscale)
-        #expect(!store.connectionGenerations.keys.contains { $0.connectionLayer == .relay })
-        store.receive(.reachabilityFailed(attempt: 1), from: tail, generation: try #require(store.connectionGenerations[tail]))
-        #expect(store.connectionGenerations.keys.contains { $0.connectionLayer == .relay })
+        // #1575: bounded recovery owns the next candidates outside active maps.
+        #expect(store.connectionGenerations.isEmpty)
+        #expect(store.ownedRecoveryCoordinator != nil)
+        #expect(store.persistableProfiles.first?.routes.count == 3)
 
         let rejected = MachineStore(profiles: [stored], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
         rejected.start()

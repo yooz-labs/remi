@@ -15,7 +15,7 @@ struct LocalDiscoveryTarget: Sendable, Equatable {
     init?(profile: MachineRouteProfile, lifetime: UUID, policyRevision: UInt64) {
         guard profile.connectionPreference == .automatic || profile.connectionPreference == .localOnly,
               let identity = try? profile.verifiedSavedIdentity() else { return nil }
-        profileID = profile.id
+        profileID = profile.navigationID ?? profile.id
         self.lifetime = lifetime
         self.policyRevision = policyRevision
         machineID = identity.machineID

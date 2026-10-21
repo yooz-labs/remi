@@ -242,7 +242,7 @@ final class PairingAttemptCoordinator {
                         #if DEBUG
                         await ownedBeforeAdmission?()
                         #endif
-                        try await connection.completeCoordinatedPairing()
+                        try await connection.completeCoordinatedAdmission()
                         #if DEBUG
                         let admittedConfiguration = await connection.ownedConfiguration
                         #endif

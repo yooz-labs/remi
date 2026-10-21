@@ -1334,7 +1334,9 @@ private struct PhoneMachineManagementRow: View {
                         }
                     }
                     Divider()
-                    Text("\(state.status == .connected ? "Active" : "Selected"): \(state.endpoint.connectionLayer.title)")
+                    Text("Active: \(state.activeConnectionLayer?.title ?? "Not connected")")
+                    if let attempted = state.attemptedConnectionLayer { Text("Attempting: \(attempted.title)") }
+                    if let progress = state.recoveryProgress { Text(progress.message) }
                 }
                 if let state, canRetryConnection(state) {
                     Button("Retry connection", systemImage: "arrow.clockwise") {

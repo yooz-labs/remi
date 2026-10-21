@@ -27,6 +27,42 @@ limits: 750 ms debounce, 30-second cooldown, at most three sweeps per episode,
 eight starts per sweep, two concurrent probes and one per profile. These value
 objects do not install connections or replay operations.
 
+The Store owns `MachineRecoveryCoordinator`. Initial configured routes keep
+their normal connection path; a saved pinned route's reachability failure
+retires its generations and hands subsequent candidates to bounded recovery.
+A configured authentication or approval stop still stops that attempt.
+Path changes, foreground activation and explicit Retry start new episodes,
+subject to the global cooldown. A healthy route stays active while only a
+strictly preferred layer is probed; a healthy same-layer route is not replaced.
+
+Each `MachineRecoveryProbe` owns a real connection outside active Store maps.
+Its `recoveryProbe` policy performs exactly one direct or relay socket attempt,
+including authentication refusals and orderly relay endings. It keeps the
+five-second opening, 30-second authentication and five-second post-auth Hello
+limits for direct connections. Relay requires an existing exact pinned
+enrollment and the channel broker; one-shot notification contention is reported
+as busy, and a retired candidate cannot resume outside the recovery budget.
+Recovery never uses the background mode that skips application Hello.
+
+Before promotion the candidate must authenticate the saved full key and derived
+machine ID and return session-less Hello. Older configured hubs can omit the
+optional machine descriptor; their authenticated full key still has to derive
+the saved ID. A bounded 128-callback bridge fences overflow synchronously, and a
+separate producer fence revokes admission if the candidate socket fails while
+the MainActor awaits transport admission. The final synchronous Store commit
+rechecks profile lifetime, policy revision, lifecycle epoch and current healthy
+layer before retiring old root/child generations and installing the same socket.
+
+Promotion makes held answer and resume outcomes uncertain, leaves an explicit
+notice for other pending operations, and requests fresh sessions. No answer,
+Cancel, chat, resume or create operation is replayed. Discovered routes have a
+separate four-route memory cap and never enter persisted route profiles; alias,
+full pin, enrollment and navigation identity are retained. iPhone background
+suspension stops browsing, monitoring and probes before invalidating callbacks;
+Mac monitoring follows its existing foreground-service lifecycle. Notification
+answer actions do not start discovery. Both settings surfaces show active and
+attempted layers separately, including recovery refusal and exhaustion messages.
+
 Both app plists declare `_remi._tcp`; the Mac plist supplies a local-network
 purpose string and the existing iPhone purpose remains in its build settings.
 The entitlements do not add a server or multicast entitlement. Bonjour denial
@@ -78,9 +114,31 @@ monitor lifecycle. Sockaddr controls cover malformed lengths/families/ports,
 IPv4/IPv6 exclusions and mapped IPv4 normalization. Schedule controls cover
 debounce, cooldown across path epochs, exhaustion and nonrefundable probe leases.
 
-At this independent-component checkpoint, Store-owned probing, same-socket
-promotion and app lifecycle integration are still awaiting phase 2's admission
-seam. These controls do not prove that integration, rendered UI, signed Mac or
-iPhone permission behavior, physical network transitions or TestFlight
-acceptance. Discovery requires a compatible advertising hub on a reachable
-local network and supplies no VPN.
+The integrated controls also use hostile owned Bonjour peers that copy a saved
+fingerprint but present another full key, refuse authentication with approval,
+queue or store errors, claim a session Hello, overflow callbacks or close during
+admission. The candidate socket is real; those controls explicitly identify
+their post-verification healthy Store fixture rather than claiming real relay
+acceptance. A separate source-hub control proves real discovery, authenticated
+same-socket Store promotion, unchanged durable routes and fresh session state.
+
+An additional opt-in control requires explicitly selected existing owned LAN
+and Tailscale interface addresses. It establishes a real saved full-key source
+hub connection over Tailscale, publishes a hostile Local service with its copied
+short fingerprint, checks that Local is refused without changing that healthy
+connection object or generation, then requests and receives a fresh correlated
+session list on the original socket. It does not configure or administer a VPN:
+
+```sh
+PATH=/private/tmp/remi-1570-tools:/usr/bin:/bin \
+REMI_OWNED_RECOVERY_NETWORK_TEST=1 \
+REMI_RECOVERY_LOCAL=<owned-existing-lan-address> \
+REMI_RECOVERY_TAIL=<owned-existing-tailscale-address> \
+swift test --package-path packages/native/RemiKit --jobs 2 \
+  --filter MachineRecoveryIntegrationTests.realHealthyTailscaleSourceSurvivesWrongKeyLocalDiscovery
+```
+
+Unsigned native builds, rendered UI, signed Mac/iPhone permission behavior,
+physical device network transitions and TestFlight acceptance remain separate
+gates. Discovery requires a compatible advertising hub on a reachable local
+network and supplies no VPN.

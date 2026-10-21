@@ -8,6 +8,9 @@ import { IdentityStore } from '../../../../daemon/src/auth/identity-store.ts';
 import { reserveRange } from '../../../../daemon/tests/session/port-test-helpers.ts';
 
 const repository = resolve(import.meta.dir, '../../../../..');
+const tailMode = process.argv[2] === 'tail';
+const bind = tailMode ? process.env['REMI_RECOVERY_SOURCE_BIND'] : '0.0.0.0';
+if (!bind) throw new Error('Tail mode requires an explicitly owned existing address');
 const owned = mkdtempSync(join(tmpdir(), 'remi-local-discovery-'));
 chmodSync(owned, 0o700);
 for (const folder of ['bin', 'home', 'state', 'work'])
@@ -69,7 +72,7 @@ try {
         join(repository, 'packages/daemon/src/cli.ts'),
         ...args,
         '--bind',
-        '0.0.0.0',
+        bind,
         '--auth',
         '--no-relay',
         '--no-telegram',
@@ -99,26 +102,29 @@ try {
     void new Response(child.stderr).text();
     return { process: child, advertised: () => advertised };
   };
-  const hub = launch(['serve', '--port', String(port)]);
-  const session = launch(['--daemon', '--port', String(port + 21)]);
+  const hub = launch(['serve', '--port', String(port), ...(tailMode ? ['--no-mdns'] : [])]);
+  const session = tailMode ? undefined : launch(['--daemon', '--port', String(port + 21)]);
   await until(() => {
-    if (hub.process.exitCode !== null || session.process.exitCode !== null)
+    if (hub.process.exitCode !== null || (session && session.process.exitCode !== null))
       throw new Error('Owned source daemon exited');
+    if (tailMode) return existsSync(join(owned, 'state/daemon-status.json'));
     return (
       hub.advertised() &&
-      session.advertised() &&
+      session?.advertised() &&
       existsSync(join(owned, 'state', `status-${port + 21}.json`))
     );
   });
   await Bun.sleep(1500);
   const observedTargets: string[] = [];
-  const observer = new Bonjour();
-  const browser = observer.find({ type: 'remi' }, (service) => {
-    if (service.txt?.['fingerprint'] === machine.fingerprint) observedTargets.push(service.host);
-  });
-  await Bun.sleep(1500);
-  browser.stop();
-  observer.destroy();
+  if (!tailMode) {
+    const observer = new Bonjour();
+    const browser = observer.find({ type: 'remi' }, (service) => {
+      if (service.txt?.['fingerprint'] === machine.fingerprint) observedTargets.push(service.host);
+    });
+    await Bun.sleep(1500);
+    browser.stop();
+    observer.destroy();
+  }
   process.stdout.write(
     `${JSON.stringify({ publicKey: machine.publicKey, hubPort: port, sessionPort: port + 21, collisions, observedTargets })}\n`,
   );
