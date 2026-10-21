@@ -17,6 +17,7 @@ struct PhoneDrawerView: View {
     let onAddMachine: () -> Void
     let onPreferences: () -> Void
 
+    @Environment(\.phoneDrawerBlocksTaps) private var blocksTaps
     @State private var snapshot: RemiSessionGrouping
     @AccessibilityFocusState private var headerFocused: Bool
 
@@ -62,9 +63,9 @@ struct PhoneDrawerView: View {
             Divider()
             PhoneDrawerActions(
                 canCreateSession: canCreateSession,
-                onNewSession: onNewSession,
-                onAddMachine: onAddMachine,
-                onPreferences: onPreferences
+                onNewSession: { if !blocksTaps { onNewSession() } },
+                onAddMachine: { if !blocksTaps { onAddMachine() } },
+                onPreferences: { if !blocksTaps { onPreferences() } }
             )
         }
         .onChange(of: sessions) { _, latest in
@@ -94,7 +95,7 @@ struct PhoneDrawerView: View {
                 PhoneDrawerInboxRow(
                     count: questionCount,
                     isSelected: destination == .inbox,
-                    action: onSelectInbox
+                    action: { if !blocksTaps { onSelectInbox() } }
                 )
                 section("Needs you", groups.needsYou)
                 section("Active", groups.active)
@@ -118,7 +119,7 @@ struct PhoneDrawerView: View {
                 PhoneDrawerSessionRow(
                     session: session,
                     isSelected: selectedSessionID == session.id,
-                    action: { onSelectSession(session) }
+                    action: { if !blocksTaps { onSelectSession(session) } }
                 )
             }
         }

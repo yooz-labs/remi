@@ -15,6 +15,7 @@ struct PhoneShell<Content: View, Drawer: View>: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var dragProgress: CGFloat?
     @State private var isSettling = false
+    @State private var recentlyDragged = false
 
     private var progress: CGFloat { dragProgress ?? (state.isDrawerOpen ? 1 : 0) }
 
@@ -48,6 +49,7 @@ struct PhoneShell<Content: View, Drawer: View>: View {
                 .frame(maxHeight: .infinity)
                 .background { Rectangle().fill(.regularMaterial).ignoresSafeArea() }
                 .opacity(reduceMotion ? progress : 1)
+                .environment(\.phoneDrawerBlocksTaps, dragProgress != nil || recentlyDragged)
                 .allowsHitTesting(state.isDrawerOpen)
                 .accessibilityHidden(!state.isDrawerOpen)
                 .accessibilityElement(children: .contain)
@@ -138,6 +140,7 @@ struct PhoneShell<Content: View, Drawer: View>: View {
             }
             .onEnded { value in
                 guard dragProgress != nil else { return }
+                suppressTapsBriefly()
                 let progress = RemiDrawerGesture.progress(
                     translationX: value.translation.width,
                     drawerWidth: width,
@@ -145,6 +148,16 @@ struct PhoneShell<Content: View, Drawer: View>: View {
                 )
                 settle(progress: progress, velocityX: value.velocity.width, wasOpen: true)
             }
+    }
+
+    /// A drag that ends over a row must not also fire the row's button. The drawer reads
+    /// `phoneDrawerBlocksTaps` and ignores taps while a drag runs and for a moment after.
+    private func suppressTapsBriefly() {
+        recentlyDragged = true
+        Task {
+            try? await Task.sleep(for: .milliseconds(350))
+            recentlyDragged = false
+        }
     }
 
     private func settle(progress: CGFloat, velocityX: CGFloat, wasOpen: Bool) {
@@ -166,6 +179,12 @@ struct PhoneShell<Content: View, Drawer: View>: View {
     private static func resignFirstResponder() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
+}
+
+extension EnvironmentValues {
+    /// True while the drawer is being dragged shut and just after, so the drawer's own
+    /// buttons ignore the tap a release over them would otherwise fire.
+    @Entry var phoneDrawerBlocksTaps = false
 }
 
 /// A `UIScreenEdgePanGestureRecognizer` for the left edge, driving the drawer open.
