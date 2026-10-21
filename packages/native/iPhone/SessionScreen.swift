@@ -17,6 +17,7 @@ struct SessionScreen: View {
     let onSend: (String) async -> Bool
     let onTerminate: () -> Void
     let onClose: () -> Void
+    let focusQuestionRequest: String?
 
     @State private var draft = ""
     @State private var selectedViewID = ""
@@ -47,7 +48,8 @@ struct SessionScreen: View {
         onCancel: @escaping (String) -> Void = { _ in },
         onSend: @escaping (String) async -> Bool = { _ in true },
         onTerminate: @escaping () -> Void = {},
-        onClose: @escaping () -> Void = {}
+        onClose: @escaping () -> Void = {},
+        focusQuestionRequest: String? = nil
     ) {
         self.session = session
         self.transcript = transcript
@@ -65,6 +67,7 @@ struct SessionScreen: View {
         self.onSend = onSend
         self.onTerminate = onTerminate
         self.onClose = onClose
+        self.focusQuestionRequest = focusQuestionRequest
     }
 
     var body: some View {
@@ -147,6 +150,12 @@ struct SessionScreen: View {
                             self.focusedQuestionID = nil
                             accessibilityQuestionID = nil
                         }
+                    }
+                    .onChange(of: focusQuestionRequest) { _, request in
+                        guard let request else { return }
+                        focusedQuestionID = request
+                        accessibilityQuestionID = nil
+                        focusQuestion(using: proxy)
                     }
                     .onChange(of: reviewState.selectedEntryID) { _, entryID in
                         scrollToSearchResult(entryID, using: proxy)

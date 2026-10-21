@@ -78,4 +78,15 @@ import Testing
         #expect(state.selectedSessionKey != RemiSessionKey(machineID: "m2", sessionID: "s1"))
         #expect(PhoneShellState().selectedSessionKey == nil)
     }
+
+    @Test func notificationForTheOpenSessionSetsFocusWithoutMovingAnywhere() {
+        var state = PhoneShellState(destination: .session(route("s1", conversation: "agent")), isDrawerOpen: true)
+        state.openFromNotification(route: route("s1", conversation: "agent"), questionID: "q2")
+        #expect(state.destination == .session(route("s1", conversation: "agent")))
+        #expect(!state.isDrawerOpen)
+        #expect(state.pendingFocus == PhoneQuestionFocus(sessionID: "s1", questionID: "q2"))
+        #expect(state.consumeFocus(forSessionID: "s1") == "q2")
+        #expect(state.consumeFocus(forSessionID: "s1") == nil)
+        #expect(state.destination == .session(route("s1", conversation: "agent")))
+    }
 }

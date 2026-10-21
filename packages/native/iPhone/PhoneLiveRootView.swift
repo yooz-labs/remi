@@ -610,12 +610,18 @@ struct PhoneLiveRootView: View {
             onCancel: { cancel(sessionId: session.id, questionId: $0) },
             onSend: { await sendChat(sessionId: session.id, content: $0) },
             onTerminate: { store.terminateSession(sessionId: session.id) },
-            onClose: { shell.select(.inbox) }
+            onClose: { shell.select(.inbox) },
+            focusQuestionRequest: focus
         )
         .id(route)
         .onAppear {
             store.loadTranscript(sessionId: route.conversationID ?? session.id)
-            _ = shell.consumeFocus(forSessionID: route.sessionID)
+        }
+        .onChange(of: shell.pendingFocus, initial: true) { _, pending in
+            guard pending?.sessionID == route.sessionID else { return }
+            // Consume in a later transaction so SessionScreen's own onChange sees the
+            // request first.
+            Task { @MainActor in _ = shell.consumeFocus(forSessionID: route.sessionID) }
         }
     }
 
