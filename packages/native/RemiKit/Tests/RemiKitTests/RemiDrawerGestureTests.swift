@@ -57,4 +57,18 @@ import Testing
         #expect(RemiDrawerGesture.settledIsOpen(progress: 1 - t + 0.01, velocityX: 0, isOpen: true))
         #expect(!RemiDrawerGesture.settledIsOpen(progress: 1 - t, velocityX: 0, isOpen: true))
     }
+
+    @Test func openDrawerRefusesAHorizontalVerticalTie() {
+        #expect(!RemiDrawerGesture.shouldBegin(startX: 200, translation: CGSize(width: -20, height: 20), isOpen: true, isAtRoot: true))
+    }
+
+    @Test func openDrawerRefusesAZeroLengthDrag() {
+        #expect(!RemiDrawerGesture.shouldBegin(startX: 200, translation: .zero, isOpen: true, isAtRoot: true))
+    }
+
+    @Test func openDrawerNeedsMoreThanTheVelocityThresholdToCloseFast() {
+        let threshold = RemiDrawerGesture.velocityThreshold
+        #expect(RemiDrawerGesture.settledIsOpen(progress: 0.9, velocityX: -threshold, isOpen: true))
+        #expect(!RemiDrawerGesture.settledIsOpen(progress: 0.9, velocityX: -threshold - 1, isOpen: true))
+    }
 }
