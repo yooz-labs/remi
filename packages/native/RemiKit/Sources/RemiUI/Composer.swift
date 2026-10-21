@@ -31,43 +31,77 @@ public struct RemiComposer: View {
             }
 
             GlassEffectContainer(spacing: RemiTheme.Spacing.xs) {
+                // Field and button share one height, so a single line is centered on the button
+                // and a growing field keeps the button on its last line.
                 HStack(alignment: .bottom, spacing: RemiTheme.Spacing.xs) {
                     TextField("Message", text: $text, axis: .vertical)
                         .lineLimit(1...5)
                         .textFieldStyle(.plain)
-                        .padding(.horizontal, RemiTheme.Spacing.s)
-                        .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+                        .padding(.horizontal, RemiTheme.Spacing.m)
+                        .padding(.vertical, RemiTheme.Spacing.xs)
+                        .frame(minHeight: Self.controlSize)
                         .modifier(ComposerInputSurface(reduceTransparency: reduceTransparency))
                         .disabled(promptWaiting || isSending)
 
                     if !promptWaiting || onInterrupt != nil {
-                        Button(action: promptWaiting ? interrupt : onSend) {
-                            Group {
-                                if isSending && !promptWaiting {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                } else {
-                                    Image(systemName: promptWaiting ? "escape" : "arrow.up")
-                                        .font(.headline)
-                                }
-                            }
-                            .frame(width: RemiTheme.Size.minimumTapTarget, height: RemiTheme.Size.minimumTapTarget)
-                        }
-                        .buttonStyle(.glassProminent)
-                        .buttonBorderShape(.circle)
-                        .tint(promptWaiting ? .secondary : RemiTheme.Color.attention)
-                        .foregroundStyle(promptWaiting ? Color.primary : RemiTheme.Color.attentionInk)
-                        .disabled(!promptWaiting && (isSending || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
-                        .accessibilityLabel(promptWaiting ? "Interrupt agent" : "Send message")
-                        .accessibilityValue(isSending ? "Sending" : "")
+                        actionButton
                     }
                 }
             }
         }
     }
 
+    /// Height of the field and diameter of the action button.
+    private static let controlSize = RemiTheme.Size.minimumTapTarget
+
+    private var canSend: Bool {
+        !isSending && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var actionButton: some View {
+        let isActive = promptWaiting || canSend
+        return Button(action: promptWaiting ? interrupt : onSend) {
+            Group {
+                if isSending && !promptWaiting {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: promptWaiting ? "escape" : "arrow.up")
+                        .font(.body.weight(.semibold))
+                }
+            }
+            .foregroundStyle(promptWaiting || !isActive ? Color.primary : RemiTheme.Color.attentionInk)
+            .frame(width: Self.controlSize, height: Self.controlSize)
+            .contentShape(.circle)
+        }
+        .buttonStyle(.plain)
+        .modifier(ComposerButtonSurface(
+            tint: promptWaiting || !isActive ? nil : RemiTheme.Color.attention,
+            reduceTransparency: reduceTransparency
+        ))
+        .opacity(isActive || isSending ? 1 : 0.5)
+        .disabled(!promptWaiting && !canSend)
+        .animation(RemiTheme.Motion.quick, value: isActive)
+        .accessibilityLabel(promptWaiting ? "Interrupt agent" : "Send message")
+        .accessibilityValue(isSending ? "Sending" : "")
+    }
+
     private func interrupt() {
         onInterrupt?()
+    }
+}
+
+private struct ComposerButtonSurface: ViewModifier {
+    let tint: Color?
+    let reduceTransparency: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            content.background(tint ?? Color.primary.opacity(0.09), in: .circle)
+        } else {
+            content.glassEffect(.regular.tint(tint).interactive(), in: .circle)
+        }
     }
 }
 
@@ -76,15 +110,17 @@ private struct ComposerInputSurface: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
+        // A capsule at one line; the corner radius caps at the line height as the field grows.
+        let shape = RoundedRectangle(cornerRadius: RemiTheme.Size.minimumTapTarget / 2)
         if reduceTransparency {
-            content.background(.background, in: .rect(cornerRadius: RemiTheme.Radius.control))
+            content.background(.background, in: shape)
                 .overlay {
-                    RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
+                    shape
                         .stroke(RemiTheme.Color.hairline, lineWidth: 1)
                         .allowsHitTesting(false)
                 }
         } else {
-            content.glassEffect(.regular, in: .rect(cornerRadius: RemiTheme.Radius.control))
+            content.glassEffect(.regular, in: shape)
         }
     }
 }

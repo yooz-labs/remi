@@ -75,9 +75,10 @@ public struct RemiSessionInteractionBar: View {
             }
         }
         .padding(.horizontal, RemiTheme.Spacing.m)
-        .padding(.vertical, RemiTheme.Spacing.s)
+        .padding(.vertical, RemiTheme.Spacing.xs)
         .frame(maxWidth: .infinity)
-        .background(reduceTransparency ? AnyShapeStyle(.background) : AnyShapeStyle(.bar))
+        // The glass controls float over the transcript; the soft scroll edge keeps them legible.
+        .background(reduceTransparency ? AnyShapeStyle(.background) : AnyShapeStyle(.clear))
     }
 
     private func readOnlyLabel(_ title: LocalizedStringKey, systemImage: String) -> some View {
