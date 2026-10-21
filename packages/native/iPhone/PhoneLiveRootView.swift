@@ -7,12 +7,14 @@ enum PhoneShellSheet: Identifiable {
     case newSession(machineID: String?, repository: String?)
     case pairing
     case preferences
+    case machines
 
     var id: String {
         switch self {
         case .newSession: "newSession"
         case .pairing: "pairing"
         case .preferences: "preferences"
+        case .machines: "machines"
         }
     }
 }
@@ -230,6 +232,20 @@ struct PhoneLiveRootView: View {
             }
         case .preferences:
             PhonePreferencesSheet(publicIdentity: store.publicIdentity)
+        case .machines:
+            PhoneMachinesSheet(
+                machines: machineSummaries,
+                states: store.machines,
+                publicIdentity: store.publicIdentity,
+                enablingRelayNotifications: relayNotifications.enabling,
+                onRemove: removeMachine,
+                onRetryApproval: store.retryApproval,
+                onRetryConnection: store.retryConnection,
+                onSetConnectionPreference: { store.setConnectionPreference($1, for: $0) },
+                onEnableRelayNotifications: relayNotifications.enable,
+                onAddMachine: { activeSheet = .pairing },
+                onDone: { activeSheet = nil }
+            )
         }
     }
 

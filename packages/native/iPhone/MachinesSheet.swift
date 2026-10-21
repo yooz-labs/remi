@@ -3,6 +3,53 @@ import RemiUI
 import SwiftUI
 import UIKit
 
+/// The machines sheet: every machine with its connection controls, recovery and approval
+/// help. It takes the same inputs the inline Home section took.
+struct PhoneMachinesSheet: View {
+    let machines: [RemiMachineSummary]
+    let states: [MachineState]
+    let publicIdentity: PublicClientIdentity?
+    let enablingRelayNotifications: Bool
+    let onRemove: (String) -> Void
+    let onRetryApproval: (MachineEndpoint) -> Void
+    let onRetryConnection: (MachineEndpoint) -> Void
+    let onSetConnectionPreference: (MachineEndpoint, MachineConnectionPreference) -> Void
+    let onEnableRelayNotifications: (MachineEndpoint) -> Void
+    let onAddMachine: () -> Void
+    let onDone: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                MachinesSection(
+                    machines: machines,
+                    states: states,
+                    publicIdentity: publicIdentity,
+                    onRemove: onRemove,
+                    onRetryApproval: onRetryApproval,
+                    onRetryConnection: onRetryConnection,
+                    onSetConnectionPreference: onSetConnectionPreference,
+                    onPairAgain: onAddMachine,
+                    onEnableRelayNotifications: onEnableRelayNotifications,
+                    enablingRelayNotifications: enablingRelayNotifications,
+                    showsTitle: false
+                )
+                .padding(RemiTheme.Spacing.m)
+            }
+            .navigationTitle("Machines")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done", action: onDone)
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Add machine", systemImage: "desktopcomputer.and.arrow.down", action: onAddMachine)
+                }
+            }
+        }
+    }
+}
+
 struct MachinesSection: View {
     let machines: [RemiMachineSummary]
     let states: [MachineState]
