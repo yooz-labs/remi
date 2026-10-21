@@ -70,4 +70,57 @@ import Testing
         #expect(grouping.active.map(\.id) == ["2"])
         #expect(grouping.recent.map(\.id) == ["3"])
     }
+
+    @Test func frozenKeepsOrderAndMembership() {
+        let snapshot = RemiSessionGrouping(sessions: [
+            session("a", status: .needsYou, activity: "2026-10-03T10:00:00Z"),
+            session("b", status: .working, activity: "2026-10-02T10:00:00Z"),
+            session("c", status: .working, activity: "2026-10-01T10:00:00Z"),
+        ])
+        let latest = RemiSessionGrouping(sessions: [
+            session("c", status: .working, activity: "2026-10-09T10:00:00Z"),
+            session("b", status: .working, activity: "2026-10-02T10:00:00Z"),
+            session("a", status: .working, activity: "2026-10-03T10:00:00Z"),
+        ])
+        let frozen = latest.frozen(to: snapshot)
+        #expect(frozen.needsYou.map(\.id) == ["a"])
+        #expect(frozen.active.map(\.id) == ["b", "c"])
+    }
+
+    @Test func frozenUpdatesRowsInPlace() {
+        let snapshot = RemiSessionGrouping(sessions: [session("a", status: .working)])
+        let latest = RemiSessionGrouping(sessions: [session("a", status: .needsYou, questions: 2)])
+        let frozen = latest.frozen(to: snapshot)
+        #expect(frozen.needsYou.isEmpty)
+        #expect(frozen.active.first?.status == .needsYou)
+        #expect(frozen.active.first?.openQuestionCount == 2)
+    }
+
+    @Test func frozenAppendsNewSessionsToTheirCurrentSection() {
+        let snapshot = RemiSessionGrouping(sessions: [session("a", status: .working, activity: "2026-10-01T10:00:00Z")])
+        let latest = RemiSessionGrouping(sessions: [
+            session("n", status: .working, activity: "2026-10-09T10:00:00Z"),
+            session("a", status: .working, activity: "2026-10-01T10:00:00Z"),
+            session("r", status: .offline),
+        ])
+        let frozen = latest.frozen(to: snapshot)
+        #expect(frozen.active.map(\.id) == ["a", "n"])
+        #expect(frozen.recent.map(\.id) == ["r"])
+    }
+
+    @Test func frozenDropsVanishedSessions() {
+        let snapshot = RemiSessionGrouping(sessions: [session("a"), session("gone", status: .offline)])
+        let latest = RemiSessionGrouping(sessions: [session("a")])
+        let frozen = latest.frozen(to: snapshot)
+        #expect(frozen.active.map(\.id) == ["a"])
+        #expect(frozen.recent.isEmpty)
+    }
+
+    @Test func frozenEmptyCases() {
+        let some = RemiSessionGrouping(sessions: [session("a")])
+        let none = RemiSessionGrouping(sessions: [])
+        #expect(some.frozen(to: none).active.map(\.id) == ["a"])
+        #expect(none.frozen(to: some).isEmpty)
+        #expect(none.frozen(to: none).isEmpty)
+    }
 }
