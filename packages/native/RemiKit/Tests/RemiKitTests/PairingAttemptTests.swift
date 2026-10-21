@@ -224,12 +224,14 @@ private final class PairingSourceFixture {
     init(mode: String) throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("remi-swift-pairing-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        process.executableURL = URL(fileURLWithPath: "/Volumes/S1/yooz/remi/cache/tools/bun-1.3.11-darwin-arm64")
-        process.arguments = [URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["bun", URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Integration/pairing-source-fixture.ts").path, mode]
         process.currentDirectoryURL = directory
         process.environment = ["HOME": directory.path,
-            "PATH": "/private/tmp/remi-1570-tools:/usr/bin:/bin", "TMPDIR": "/private/tmp"]
+            "REMI_HOME": directory.appendingPathComponent("state").path,
+            "PATH": ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin",
+            "TMPDIR": FileManager.default.temporaryDirectory.path]
         if mode == "v2" {
             process.environment?["REMI_NATIVE_PAIRING_LOCAL"] = ProcessInfo.processInfo.environment["REMI_NATIVE_PAIRING_LOCAL"]
             process.environment?["REMI_NATIVE_PAIRING_TAIL"] = ProcessInfo.processInfo.environment["REMI_NATIVE_PAIRING_TAIL"]
