@@ -60,13 +60,7 @@ struct PhoneMachineStrip: View {
         return Button(action: onManage) {
             HStack(spacing: RemiTheme.Spacing.xs) {
                 PhoneMachineDot(style: style)
-                Text(verbatim: label(machine))
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-                Text(style.accessibilityWord)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                nameAndState(label: label(machine), style: style)
                 Spacer(minLength: RemiTheme.Spacing.xs)
                 PhoneMachineCountCapsule(count: machine.openQuestionCount)
                 Image(systemName: "chevron.right")
@@ -81,6 +75,22 @@ struct PhoneMachineStrip: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(RemiMachineStripPresentation.accessibilityLabel(for: machine, label: label(machine)))
         .accessibilityHint("Opens machines")
+    }
+
+    /// Name and state side by side, stacked at accessibility sizes so neither is squeezed.
+    private func nameAndState(label: String, style: RemiMachineStripPresentation.DotStyle) -> some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: RemiTheme.Spacing.xxxs))
+            : AnyLayout(HStackLayout(spacing: RemiTheme.Spacing.xs))
+        return layout {
+            Text(verbatim: label)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+            Text(style.accessibilityWord)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+        }
     }
 
     /// The chips in a horizontal scroll. Manage stays outside it as a fixed trailing
@@ -266,7 +276,6 @@ struct PhoneMachineCountCapsule: View {
 /// One line per machine that needs the person to act ("Studio Mac is offline"). It opens
 /// the machines sheet. Secondary text with an icon; the attention color is for questions.
 struct PhoneMachineProblemRows: View {
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let machines: [RemiMachineSummary]
     let onManage: () -> Void
 
@@ -279,7 +288,7 @@ struct PhoneMachineProblemRows: View {
                             .accessibilityHidden(true)
                         Text(verbatim: row.message)
                             .multilineTextAlignment(.leading)
-                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                            .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: RemiTheme.Spacing.xs)
                         Image(systemName: "chevron.right")
                             .font(.caption.weight(.semibold))

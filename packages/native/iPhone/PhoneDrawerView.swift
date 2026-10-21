@@ -24,6 +24,7 @@ struct PhoneDrawerView: View {
     let onAddMachine: () -> Void
     let onPreferences: () -> Void
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.phoneDrawerBlocksTaps) private var blocksTaps
     @Environment(\.phoneDrawerOrderFrozen) private var orderFrozen
     @Environment(\.phoneDrawerIsOpen) private var isOpen
@@ -88,24 +89,11 @@ struct PhoneDrawerView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            PhoneMachineStrip(
-                machines: machines,
-                filter: filter,
-                onSelectAll: { if !blocksTaps { onSelectAllMachines() } },
-                onSelectMachine: { if !blocksTaps { onSelectMachine($0) } },
-                onManage: { if !blocksTaps { onManageMachines() } }
-            )
-            PhoneMachineProblemRows(machines: machines, onManage: { if !blocksTaps { onManageMachines() } })
-                .padding(.horizontal, RemiTheme.Spacing.m)
-            if showsSearch { searchField }
-            list
-            Divider()
-            PhoneDrawerActions(
-                canCreateSession: canCreateSession,
-                onNewSession: { if !blocksTaps { onNewSession() } },
-                onAddMachine: { if !blocksTaps { onAddMachine() } },
-                onPreferences: { if !blocksTaps { onPreferences() } }
-            )
+            if dynamicTypeSize.isAccessibilitySize {
+                accessibilityColumn
+            } else {
+                regularColumn
+            }
         }
         .onChange(of: sessions) { _, _ in refresh() }
         .onChange(of: orderFrozen) { _, _ in refresh() }
@@ -121,6 +109,59 @@ struct PhoneDrawerView: View {
 
     /// While the order is frozen, rows keep the position they had; once it is free the
     /// list takes the live order and that becomes the next snapshot.
+    /// Normal sizes: the strip, problems and search stay pinned, the list scrolls, and the
+    /// actions are pinned below it.
+    private var regularColumn: some View {
+        VStack(spacing: 0) {
+            strip
+            problemRows
+            if showsSearch { searchField }
+            ScrollView { listContent }
+            Divider()
+            actions
+        }
+    }
+
+    /// Accessibility sizes: the strip, problems, search, list and actions are one column
+    /// that scrolls together, so every row is reachable however large the text is and the
+    /// actions never overlap the list. Only the header is pinned.
+    private var accessibilityColumn: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                strip
+                problemRows
+                if showsSearch { searchField }
+                listContent
+                Divider().padding(.vertical, RemiTheme.Spacing.xs)
+                actions
+            }
+        }
+    }
+
+    private var strip: some View {
+        PhoneMachineStrip(
+            machines: machines,
+            filter: filter,
+            onSelectAll: { if !blocksTaps { onSelectAllMachines() } },
+            onSelectMachine: { if !blocksTaps { onSelectMachine($0) } },
+            onManage: { if !blocksTaps { onManageMachines() } }
+        )
+    }
+
+    private var problemRows: some View {
+        PhoneMachineProblemRows(machines: machines, onManage: { if !blocksTaps { onManageMachines() } })
+            .padding(.horizontal, RemiTheme.Spacing.m)
+    }
+
+    private var actions: some View {
+        PhoneDrawerActions(
+            canCreateSession: canCreateSession,
+            onNewSession: { if !blocksTaps { onNewSession() } },
+            onAddMachine: { if !blocksTaps { onAddMachine() } },
+            onPreferences: { if !blocksTaps { onPreferences() } }
+        )
+    }
+
     private var filteredKey: String? {
         if case .machine(let key) = filter { return key }
         return nil
@@ -211,22 +252,20 @@ struct PhoneDrawerView: View {
         .padding(.bottom, RemiTheme.Spacing.xxs)
     }
 
-    private var list: some View {
+    private var listContent: some View {
         let groups = displayed
-        return ScrollView {
-            LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
-                PhoneDrawerInboxRow(
-                    count: questionCount,
-                    isSelected: destination == .inbox,
-                    action: { if !blocksTaps { onSelectInbox() } }
-                )
-                section("Needs you", groups.needsYou)
-                section("Active", groups.active)
-                section("Recent", groups.recent)
-                if groups.isEmpty && isNarrowed { noMatches }
-            }
-            .padding(.horizontal, RemiTheme.Spacing.xs)
+        return LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
+            PhoneDrawerInboxRow(
+                count: questionCount,
+                isSelected: destination == .inbox,
+                action: { if !blocksTaps { onSelectInbox() } }
+            )
+            section("Needs you", groups.needsYou)
+            section("Active", groups.active)
+            section("Recent", groups.recent)
+            if groups.isEmpty && isNarrowed { noMatches }
         }
+        .padding(.horizontal, RemiTheme.Spacing.xs)
     }
 
     private var noMatches: some View {
