@@ -2,6 +2,21 @@ import RemiKit
 import RemiUI
 import SwiftUI
 
+/// A sheet the shell presents over any destination.
+enum PhoneShellSheet: Identifiable {
+    case newSession(machineID: String?, repository: String?)
+    case pairing
+    case preferences
+
+    var id: String {
+        switch self {
+        case .newSession: "newSession"
+        case .pairing: "pairing"
+        case .preferences: "preferences"
+        }
+    }
+}
+
 struct PhoneLiveRootView: View {
     let store: MachineStore
     @AppStorage("selectedMachineID") private var selectedMachineID = ""
@@ -11,6 +26,7 @@ struct PhoneLiveRootView: View {
     @State private var answerFeedbackTrigger = 0
     @State private var notificationRouter = PhoneNotificationRouter.shared
     @State private var notificationPath: [RemiNavigationDestination] = []
+    @State private var activeSheet: PhoneShellSheet?
     @State private var pairingAttemptID: UUID?
     @State private var pendingResume: ResumeSessionKey?
     @State private var relayNotifications = NativeRelayNotifications.shared
@@ -23,7 +39,6 @@ struct PhoneLiveRootView: View {
                 sessions: allSessions,
                 machines: machineSummaries,
                 sessionMachines: store.machines,
-                recentRepositories: store.recentRepositoriesByMachine,
                 publicIdentity: store.publicIdentity,
                 selectedMachineID: $selectedMachineID,
                 errorMessage: store.latestOperationError ?? store.latestError?.message,
@@ -39,10 +54,9 @@ struct PhoneLiveRootView: View {
                 onSend: sendChat,
                 onTerminateSession: store.terminateSession,
                 onResumeSession: resumeSession,
-                onCreateSession: createSession,
-                pairingAttempts: store.pairingAttempts,
-                onCancelPairing: store.cancelPairing,
-                onAddMachine: addMachine,
+                onNewSession: { activeSheet = .newSession(machineID: $0, repository: $1) },
+                onPresentPairing: { activeSheet = .pairing },
+                onPresentPreferences: { activeSheet = .preferences },
                 onRemoveMachine: removeMachine,
                 onRetryApproval: store.retryApproval,
                 onRetryConnection: store.retryConnection,
@@ -55,6 +69,9 @@ struct PhoneLiveRootView: View {
             .navigationDestination(for: RemiNavigationDestination.self) { destination in
                 notificationDestination(destination)
             }
+        }
+        .sheet(item: $activeSheet) { sheet in
+            sheetContent(sheet)
         }
         .onChange(of: store.pairingAttempts) { _, _ in
             guard let id = pairingAttemptID, let result = store.pairingAttempt(id: id),
@@ -121,6 +138,41 @@ struct PhoneLiveRootView: View {
             )]
             store.consumeResumedSessionDestination(id: destination.id)
         }
+    }
+
+    @ViewBuilder
+    private func sheetContent(_ sheet: PhoneShellSheet) -> some View {
+        switch sheet {
+        case .newSession(let machineID, let repository):
+            PhoneNewSessionSheet(
+                machines: availableSessionMachines,
+                recentRepositories: store.recentRepositoriesByMachine,
+                preferredMachineID: machineID,
+                preferredRepository: repository,
+                onCreate: createSession
+            )
+        case .pairing:
+            NavigationStack {
+                PairingScreen(
+                    publicIdentity: store.publicIdentity,
+                    machineStates: store.machines,
+                    pairingAttempts: store.pairingAttempts,
+                    onCancelPairing: store.cancelPairing,
+                    onAddMachine: addMachine
+                )
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { activeSheet = nil }
+                    }
+                }
+            }
+        case .preferences:
+            PhonePreferencesSheet(publicIdentity: store.publicIdentity)
+        }
+    }
+
+    private var availableSessionMachines: [MachineState] {
+        store.machines.filter { $0.status == .connected }
     }
 
     private func dismissNotice() {
