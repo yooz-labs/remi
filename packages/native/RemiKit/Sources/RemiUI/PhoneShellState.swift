@@ -33,10 +33,12 @@ public enum PhoneShellDestination: Hashable, Sendable {
 
 /// A question to bring into view once its session is on screen.
 public struct PhoneQuestionFocus: Hashable, Sendable {
+    public let machineKey: String
     public let sessionID: String
     public let questionID: String
 
-    public init(sessionID: String, questionID: String) {
+    public init(machineKey: String, sessionID: String, questionID: String) {
+        self.machineKey = machineKey
         self.sessionID = sessionID
         self.questionID = questionID
     }
@@ -77,15 +79,24 @@ public struct PhoneShellState: Equatable, Sendable {
     public mutating func openFromNotification(route: PhoneSessionRoute, questionID: String?) {
         destination = .session(route)
         isDrawerOpen = false
-        pendingFocus = questionID.map { PhoneQuestionFocus(sessionID: route.sessionID, questionID: $0) }
+        pendingFocus = questionID.map { PhoneQuestionFocus(machineKey: route.machineKey, sessionID: route.sessionID, questionID: $0) }
     }
 
-    /// Returns the question id to focus, only when the pending focus belongs to
-    /// `sessionID`, and clears it. A different session leaves the focus untouched.
-    public mutating func consumeFocus(forSessionID sessionID: String) -> String? {
-        guard let focus = pendingFocus, focus.sessionID == sessionID else { return nil }
-        pendingFocus = nil
+    /// The question to focus for `route`, without consuming it: only when the pending
+    /// focus belongs to that machine and session.
+    public func focusQuestionID(for route: PhoneSessionRoute) -> String? {
+        guard let focus = pendingFocus,
+              focus.machineKey == route.machineKey, focus.sessionID == route.sessionID
+        else { return nil }
         return focus.questionID
+    }
+
+    /// Returns the question id to focus and clears it, only when the pending focus belongs
+    /// to `route`'s machine and session. Another route leaves the focus untouched.
+    public mutating func consumeFocus(for route: PhoneSessionRoute) -> String? {
+        guard let questionID = focusQuestionID(for: route) else { return nil }
+        pendingFocus = nil
+        return questionID
     }
 
     /// The route to leave when it disappears. The caller owns the grace period (it shows

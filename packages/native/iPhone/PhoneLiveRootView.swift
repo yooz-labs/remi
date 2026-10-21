@@ -594,7 +594,7 @@ struct PhoneLiveRootView: View {
     }
 
     private func sessionScreen(_ session: RemiSessionSummary, route: PhoneSessionRoute) -> some View {
-        let focus = shell.pendingFocus?.sessionID == route.sessionID ? shell.pendingFocus?.questionID : nil
+        let focus = shell.focusQuestionID(for: route)
         return SessionScreen(
             session: session,
             transcript: transcript(session.id),
@@ -617,11 +617,11 @@ struct PhoneLiveRootView: View {
         .onAppear {
             store.loadTranscript(sessionId: route.conversationID ?? session.id)
         }
-        .onChange(of: shell.pendingFocus, initial: true) { _, pending in
-            guard pending?.sessionID == route.sessionID else { return }
+        .onChange(of: shell.pendingFocus, initial: true) { _, _ in
+            guard shell.focusQuestionID(for: route) != nil else { return }
             // Consume in a later transaction so SessionScreen's own onChange sees the
             // request first.
-            Task { @MainActor in _ = shell.consumeFocus(forSessionID: route.sessionID) }
+            Task { @MainActor in _ = shell.consumeFocus(for: route) }
         }
     }
 

@@ -18,7 +18,7 @@ import Testing
         var state = PhoneShellState(
             destination: .inbox,
             isDrawerOpen: true,
-            pendingFocus: PhoneQuestionFocus(sessionID: "s1", questionID: "q1")
+            pendingFocus: PhoneQuestionFocus(machineKey: "m1", sessionID: "s1", questionID: "q1")
         )
         state.select(.session(route("s2")))
         #expect(state.destination == .session(route("s2")))
@@ -32,10 +32,10 @@ import Testing
         state.openFromNotification(route: route("s1"), questionID: "q1")
         #expect(state.destination == .session(route("s1")))
         #expect(!state.isDrawerOpen)
-        #expect(state.consumeFocus(forSessionID: "s2") == nil)
+        #expect(state.consumeFocus(for: route("s2")) == nil)
         #expect(state.pendingFocus != nil)
-        #expect(state.consumeFocus(forSessionID: "s1") == "q1")
-        #expect(state.consumeFocus(forSessionID: "s1") == nil)
+        #expect(state.consumeFocus(for: route("s1")) == "q1")
+        #expect(state.consumeFocus(for: route("s1")) == nil)
     }
 
     @Test func notificationWithoutQuestionSetsNoFocus() {
@@ -84,9 +84,19 @@ import Testing
         state.openFromNotification(route: route("s1", conversation: "agent"), questionID: "q2")
         #expect(state.destination == .session(route("s1", conversation: "agent")))
         #expect(!state.isDrawerOpen)
-        #expect(state.pendingFocus == PhoneQuestionFocus(sessionID: "s1", questionID: "q2"))
-        #expect(state.consumeFocus(forSessionID: "s1") == "q2")
-        #expect(state.consumeFocus(forSessionID: "s1") == nil)
+        #expect(state.pendingFocus == PhoneQuestionFocus(machineKey: "m1", sessionID: "s1", questionID: "q2"))
+        #expect(state.consumeFocus(for: route("s1")) == "q2")
+        #expect(state.consumeFocus(for: route("s1")) == nil)
         #expect(state.destination == .session(route("s1", conversation: "agent")))
+    }
+
+    @Test func focusForOneMachineIsNotConsumedByTheSameSessionIDOnAnother() {
+        var state = PhoneShellState()
+        state.openFromNotification(route: route("s1", machine: "m1"), questionID: "q1")
+        #expect(state.consumeFocus(for: route("s1", machine: "m2")) == nil)
+        #expect(state.pendingFocus?.machineKey == "m1")
+        #expect(state.focusQuestionID(for: route("s1", machine: "m2")) == nil)
+        #expect(state.focusQuestionID(for: route("s1", machine: "m1")) == "q1")
+        #expect(state.consumeFocus(for: route("s1", machine: "m1")) == "q1")
     }
 }
