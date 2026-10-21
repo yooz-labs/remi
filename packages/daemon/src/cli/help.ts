@@ -362,6 +362,7 @@ const commandHelp: Record<Subcommand, string[]> = {
     bold('Usage:'),
     entry('remi pair', 'Show a pairing QR for the running hub, then approve or reject the phone'),
     entry('remi pair --host <address>', 'Show this address in the code (a LAN or VPN address)'),
+    entry('remi pair --qr-version 2', 'Opt in to a QR with up to four direct address candidates'),
     entry(
       'remi pair --relay',
       'Pair a relay device through an authenticated hub started with --relay',
@@ -373,6 +374,7 @@ const commandHelp: Record<Subcommand, string[]> = {
     'fingerprint. Without a terminal, use remi keys and remi authorize.',
     'Relay pairing needs a local terminal and an authenticated hub started with --relay;',
     'it does not require a phone-reachable daemon.bind.',
+    'Version 1 remains the default; version 2 is opt-in and cannot be combined with --relay.',
     'No released app scans the code yet (#1283).',
   ],
   keys: [

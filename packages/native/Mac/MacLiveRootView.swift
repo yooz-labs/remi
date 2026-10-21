@@ -12,6 +12,7 @@ struct MacLiveRootView: View {
     @State private var newSessionMachineID: String?
     @State private var newSessionRepository: String?
     @State private var showingAddMachine = false
+    @State private var pairingAttemptID: UUID?
     @State private var pendingMachineRemoval: MachineState?
     @State private var notificationRouter = MacNotificationRouter.shared
     @State private var notificationDestination: RemiNavigationDestination?
@@ -271,15 +272,26 @@ struct MacLiveRootView: View {
             preferredCompactColumn = .detail
             store.consumeResumedSessionDestination(id: destination.id)
         }
+        .onChange(of: store.pairingAttempts) { _, _ in
+            guard let id = pairingAttemptID, let result = store.pairingAttempt(id: id),
+                  case .admitted(let profileID) = result.phase else { return }
+            selectedMachineID = profileID
+            pairingAttemptID = nil
+        }
         .sheet(isPresented: $showingAddMachine) {
-            MacAddMachineSheet { endpoint in
-                relayNotifications.machineWillChange(endpoint)
-                if let existing = store.machines.first(where: { $0.id == endpoint.id }) {
-                    guard store.removeMachine(existing.endpoint) else { return }
-                    relayNotifications.didForget(existing.endpoint)
+            MacAddMachineSheet(pairingAttempts: store.pairingAttempts,
+                publicIdentity: store.publicIdentity, onCancelPairing: store.cancelPairing) { request in
+                switch request {
+                case .pairing(let payload, let label):
+                    let id = store.beginPairing(payload, label: label)
+                    pairingAttemptID = id
+                    return id
+                case .endpoint(let endpoint):
+                    relayNotifications.machineWillChange(endpoint)
+                    store.addMachine(endpoint)
+                    MachineConfigurationStore.shared.saveProfiles(store.persistableProfiles)
+                    return nil
                 }
-                store.addMachine(endpoint)
-                MachineConfigurationStore.shared.saveProfiles(store.persistableProfiles)
             }
         }
         .sheet(isPresented: $relayNotifications.presentsRelayNotification, onDismiss: relayNotifications.closeNotification) {
@@ -1566,14 +1578,24 @@ private struct MacAddMachineSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var draft = AddMachineDraft()
-    let onAdd: (MachineEndpoint) -> Void
+    let onAdd: (AddMachineRequest) -> UUID?
+    let pairingAttempts: [PairingAttemptState]
+    let publicIdentity: PublicClientIdentity?
+    let onCancelPairing: (UUID) -> Void
+    @State private var attemptID: UUID?
 
     init(
         draft: AddMachineDraft = AddMachineDraft(),
-        onAdd: @escaping (MachineEndpoint) -> Void
+        pairingAttempts: [PairingAttemptState] = [],
+        publicIdentity: PublicClientIdentity? = nil,
+        onCancelPairing: @escaping (UUID) -> Void = { _ in },
+        onAdd: @escaping (AddMachineRequest) -> UUID?
     ) {
         _draft = State(initialValue: draft)
         self.onAdd = onAdd
+        self.pairingAttempts = pairingAttempts
+        self.publicIdentity = publicIdentity
+        self.onCancelPairing = onCancelPairing
     }
 
     var body: some View {
@@ -1588,6 +1610,8 @@ private struct MacAddMachineSheet: View {
                     Picker("Connection method", selection: $draft.mode) {
                         Label("Direct", systemImage: "point.3.connected.trianglepath.dotted")
                             .tag(AddMachineDraft.ConnectionMode.direct)
+                        Label("Pairing code", systemImage: "qrcode")
+                            .tag(AddMachineDraft.ConnectionMode.pairingCode)
                         Label("Relay", systemImage: "network")
                             .tag(AddMachineDraft.ConnectionMode.relay)
                     }
@@ -1604,6 +1628,21 @@ private struct MacAddMachineSheet: View {
                         Text("Run remi pair --relay on the machine and paste its token. Compare the fingerprint in the terminal before approving. The machine is saved after confirmation.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                        if let issue = draft.submissionIssue ?? draft.validationIssue {
+                            Label(validationMessage(issue), systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.red)
+                        }
+                    } else if draft.mode == .pairingCode {
+                        TextField("remi://pair#…", text: $draft.pairingCode)
+                            .onSubmit(addMachine)
+                        if let payload = try? PairingPayload(scannedValue: draft.pairingCode.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                            LabeledContent("Machine fingerprint", value: payload.daemonFingerprint)
+                                .fontDesign(.monospaced)
+                            LabeledContent("This Mac", value: publicIdentity?.fingerprint ?? "Unavailable")
+                                .fontDesign(.monospaced)
+                            Text("Compare both fingerprints in the machine's terminal before approving this Mac.")
+                                .font(.footnote)
+                        }
                         if let issue = draft.submissionIssue ?? draft.validationIssue {
                             Label(validationMessage(issue), systemImage: "exclamationmark.triangle.fill")
                                 .foregroundStyle(.red)
@@ -1626,6 +1665,10 @@ private struct MacAddMachineSheet: View {
                 }
 
                 Section {
+                    if let attemptID, let attempt = pairingAttempts.first(where: { $0.id == attemptID }) {
+                        Text(attempt.message)
+                        if !attempt.phase.isTerminal { Button("Cancel pairing") { onCancelPairing(attemptID) } }
+                    }
                     LabeledContent("Connection", value: draft.connectionSummary)
                     MacMachineAccessNotice(relayMode: draft.mode == .relay)
                 } header: {
@@ -1647,6 +1690,7 @@ private struct MacAddMachineSheet: View {
             }
             .padding(RemiTheme.Spacing.m)
         }
+        .onDisappear { if let attemptID { onCancelPairing(attemptID) } }
         .frame(
             minWidth: 480,
             idealWidth: dynamicTypeSize.isAccessibilitySize ? 680 : 560,
@@ -1667,13 +1711,16 @@ private struct MacAddMachineSheet: View {
     }
 
     private func addMachine() {
-        guard let endpoint = draft.makeEndpoint() else { return }
-        onAdd(endpoint)
-        dismiss()
+        guard let request = draft.makeRequest(proposedLabel: Host.current().localizedName ?? "Mac", fallbackLabel: "Mac") else { return }
+        attemptID = onAdd(request)
+        if attemptID == nil { dismiss() }
     }
 
     private func validationMessage(_ issue: AddMachineDraft.ValidationIssue) -> LocalizedStringResource {
         switch issue {
+        case .pairingCodeRequiresForm: "Select Pairing code to paste a complete remi:// link."
+        case .missingPairingCode: "Paste the pairing code from remi pair."
+        case .invalidPairingCode(let error): "Pairing code not accepted (\(error.rawValue)). Run remi pair again."
         case .missingHost: "Enter a host or IP address."
         case .invalidPort: "Enter a port from 1 through 65535."
         case .missingRelayToken: "Paste the relay pairing token from the machine."
@@ -1984,17 +2031,17 @@ private var workspacePreviewMachine: MachineState {
 }
 
 #Preview("Add machine · Accessibility") {
-    MacAddMachineSheet(onAdd: { _ in })
+    MacAddMachineSheet(onAdd: { _ in nil })
         .environment(\.dynamicTypeSize, .accessibility5)
 }
 
 #Preview("Add machine · Dark") {
-    MacAddMachineSheet(onAdd: { _ in })
+    MacAddMachineSheet(onAdd: { _ in nil })
         .preferredColorScheme(.dark)
 }
 
 #Preview("Add machine · Relay error") {
-    MacAddMachineSheet(draft: rejectedRelayMachineDraft, onAdd: { _ in })
+    MacAddMachineSheet(draft: rejectedRelayMachineDraft, onAdd: { _ in nil })
 }
 
 #Preview("Session triage · Dark") {

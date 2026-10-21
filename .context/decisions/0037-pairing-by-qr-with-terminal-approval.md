@@ -13,33 +13,34 @@ That is the right trust step, and too much typing for a first-time user: an addr
 What must not change: a scan must never authorize a key by itself, the terminal stays the place a person approves, and nothing new is trusted because of where a connection comes from.
 
 **No released app scans the code yet.**
-The machine side ships here; the native app's scanner is being built against this ADR (packages/native).
+The machine-side v1 flow ships here. V2 remains opt-in until a compatible native app is distributed. Native source implements strict payload decoding, whole-payload scanner/form handoff and initial candidate admission through `MachineStore.beginPairing` (#1574); signed phone acceptance remains pending.
 
 ## Decision
 
-1. **The pairing link.** `remi pair` shows a QR of `remi://pair#` plus the base64url (no padding) of a JSON object with exactly these fields, in this order: `v` (1), `name`, `host`, `port`, `key`, `nonce`, `exp` and `proto`.
+1. **The pairing link.** `remi pair` shows a QR of `remi://pair#` plus the base64url (no padding) of a canonical JSON object. Version 1 has exactly these fields, in this order: `v` (1), `name`, `host`, `port`, `key`, `nonce`, `exp` and `proto`. Version 2 has exactly `v` (2), `name`, `hosts`, `port`, `key`, `nonce`, `exp` and `proto`, in that order; `hosts` contains one to four candidates. The key, nonce, expiry, port and protocol are shared by every candidate.
    - `name`: the machine's name, 1 to 64 Unicode code points (Swift: `unicodeScalars.count`), well-formed (no lone surrogate), with no control character, nothing `escapeUnsafeText` writes out (bidi, invisible and line-separator characters among them), and no `"` or `\`.
      So no character in a name needs a JSON escape.
-   - `host`: an IPv4 address in dotted decimal; an IPv6 address in hexadecimal groups, without brackets, a zone or an IPv4 tail; or a DNS name whose labels are letters, digits and inner hyphens and whose last label is not all digits.
+   - `host` in v1 and each item in v2 `hosts`: an IPv4 address in dotted decimal; an IPv6 address in hexadecimal groups, without brackets, a zone or an IPv4 tail; or a DNS name whose labels are letters, digits and inner hyphens and whose last label is not all digits. V2 also rejects loopback, unspecified and link-local targets and duplicates after numeric IP or lowercase DNS/trailing-dot normalization. DNS names are never resolved for validation or ordering.
    - `port`: an integer from 1 to 65535.
    - `key`: the machine's Ed25519 public key, canonical standard base64 of the 32 bytes, the same text as `auth_challenge.serverPublicKey`.
    - `nonce`: 16 random bytes, canonical base64url without padding.
    - `exp`: Unix seconds, five minutes after the code was made.
    - `proto`: `PROTOCOL_VERSION` (ADR 0035).
-   - **The canonical form** is the output of `JSON.stringify` on an object with those fields in that order: no whitespace, integers in plain decimal, strings with no escapes (the rules above leave nothing to escape). Then the UTF-8 bytes are encoded as base64url, with no padding and with zero trailing bits.
+   - **The canonical form** is the output of `JSON.stringify` on an object with that version's fields in the stated order: no whitespace, integers in plain decimal, strings with no escapes (the rules above leave nothing to escape). Then the UTF-8 bytes are encoded as base64url, with no padding and with zero trailing bits. V1 keeps its 1024-character link limit. V2 accepts at most 2048 ASCII link characters and at most 1527 decoded JSON bytes.
    - `packages/shared/src/pairing.ts` encodes and decodes it. Decoding is strict.
      - It accepts one canonical form: the bytes must re-encode to the same link, so padding, nonzero trailing bits, escapes, extra whitespace and other number spellings (`1.0`, `1e4`) are refused.
-     - Every field is required. An unknown field, or a version other than 1, is refused by name.
+     - Every field is required. An unknown field or unsupported version is refused by name; a v2 body is never retried as v1.
      - The clocks may differ by two minutes: a code is expired once `exp` plus 120 seconds has passed, and refused as malformed when `exp` is more than seventeen minutes away.
-     - A protocol version other than the client's is refused.
-   - The vectors in `packages/shared/tests/fixtures/pairing/vectors.json` (valid links each with the key's fingerprint, and refusals each with its error) are generated deterministically, and every client, the Swift one included, must decode them the same way.
-   - **The Swift payload merged before this ADR is superseded.**
-     `PairingPayload.swift` (merged in #1277) reads `remi://pair?v=1&host=&port=&fingerprint=&iat=&exp=&nonce=`, and `MachineStore.swift` sends the nonce as a `pairing_nonce` query parameter on the WebSocket URL, which the daemon never reads.
-     The format is the one above, and the nonce goes in `auth_response` (below). Aligning the app is #1283.
+     - A protocol version other than the client's is refused; pairing-code v2 does not change `PROTOCOL_VERSION` from 1.
+   - V1 remains the default while a compatible native app is not distributed. `--qr-version 2` opts in to v2, is refused with `--relay`, and must never create a code for an invalid version or relay combination.
+   - For a wildcard bind, the CLI uses actual interface addresses of the listener's address family. It reserves the first Local and first Tailscale candidate when both exist, fills to four from the inventory, then emits Local candidates before Tailscale candidates with stable order in each layer. `100.64.0.0/10`, `fd7a:115c:a1e0::/48` and `.ts.net` names are Tailscale hints; every other permitted direct candidate is Local. A specific bind and explicit `--host` each produce one candidate.
+   - The vectors in `packages/shared/tests/fixtures/pairing/vectors.json` (valid links each with the key's fingerprint, and refusals each with its error) are generated deterministically, and every client, the Swift one included, must decode them the same way. The future-version refusal vector uses v3 now that v2 is supported.
+   - `PairingPayload.swift` decodes v1 and v2, exposes the payload version and produces ordered `candidateEndpoints(pairingLabel:)`; `endpoint` remains the first entry. Native scanner and Pairing code forms retain the complete payload through `AddMachineRequest` to `MachineStore.beginPairing`. The coordinator keeps candidates in memory until authenticated Hello, then adopts that socket and stores full-key-pinned address hints without the nonce or label. Source-hub controls exercise actual v2 fallback; distributed-app and signed-phone acceptance remain separate gates.
    - **What the link exposes.** A URL handler does not send the fragment to a server, but `remi://` is not an exclusive scheme on iOS: another installed app can register it and receive the link.
-     That app learns what the QR shows anyone who sees it (the machine's address, its public key and a nonce valid for five minutes), which grants nothing by itself (below). The app is expected to scan in-app.
+     That app learns what the QR shows anyone who sees it (the machine's address candidates, its public key and a nonce valid for five minutes), which grants nothing by itself (below). The app is expected to scan in-app.
 2. **What the phone does with it.**
-   - It connects to `host:port` and, before it signs anything, checks that `auth_challenge.serverPublicKey` is the link's `key` (the whole key, not the 16-character fingerprint).
+   - V1 connects to `host:port`; v2 uses `candidateEndpoints(pairingLabel:)`, scheduling Local before Tailscale with stable order within each layer. Every endpoint carries the same key pin, nonce, expiry, port and label. The source coordinator advances only after a transport reachability failure; authentication, identity, protocol or authentication-deadline failures stop the attempt. Actual `PAIRING_PENDING`, `PENDING_QUEUE_FULL` and `AUTH_STORE_ERROR` retries stay on the same candidate. Existing profile policy, pin and lifetime are rechecked before admission. Compatible native distribution and signed phone acceptance remain pending.
+   - Before it signs anything, the phone checks that `auth_challenge.serverPublicKey` is the link's `key` (the whole key, not the 16-character fingerprint).
    - It answers the challenge as always, adding to `auth_response`:
      - `pairingNonce`: the link's `nonce`;
      - `pairingLabel`: the name the person gave the phone, held to the same rule as the machine's `name` (1 to 64 code points, plain text). Without one the key is labeled "paired device".

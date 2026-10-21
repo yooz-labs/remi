@@ -27,6 +27,8 @@ struct SessionScreen: View {
     @State private var reviewState = RemiTranscriptReviewState()
     @State private var reviewMemory = RemiConversationReviewMemory()
     @State private var visibleEntryID: String?
+    @State private var followsLatest = true
+    @State private var latestScrollRequest = 0
     @State private var reviewSessionID: String
     @AccessibilityFocusState private var accessibilityQuestionID: String?
 
@@ -127,7 +129,11 @@ struct SessionScreen: View {
                         }
                         .padding(RemiTheme.Spacing.m)
                         .scrollTargetLayout()
+                        .id(RemiTranscriptScrollTarget.latest)
                     }
+                    .modifier(RemiTranscriptScrollBehavior(followsLatest: $followsLatest,
+                        isReviewing: isSearchPresented || focusedQuestionID != nil,
+                        onFollow: { scrollToLatest(using: proxy) }))
                     .scrollPosition(id: $visibleEntryID, anchor: .top)
                     .modifier(SessionNavigationBarBehavior())
                     .onAppear { focusQuestion(using: proxy) }
@@ -143,9 +149,11 @@ struct SessionScreen: View {
                     .onChange(of: reviewState.selectedEntryID) { _, entryID in
                         scrollToSearchResult(entryID, using: proxy)
                     }
-                    .onChange(of: visibleTranscript) { _, entries in
+                    .onChange(of: visibleTranscript) { previous, entries in
                         reviewState.refresh(entries: entries)
+                        if previous.last?.id != entries.last?.id { scrollToLatest(using: proxy) }
                     }
+                    .onChange(of: latestScrollRequest) { _, _ in scrollToLatest(using: proxy) }
                 }
             }
 
@@ -161,6 +169,10 @@ struct SessionScreen: View {
         .toolbar {
             if #available(iOS 27.0, *) {
                 ToolbarItem(placement: .topBarTrailing) {
+                    latestActivityButton
+                }
+                .visibilityPriority(.high)
+                ToolbarItem(placement: .topBarTrailing) {
                     searchButton
                 }
                 .visibilityPriority(.high)
@@ -171,6 +183,9 @@ struct SessionScreen: View {
                     .visibilityPriority(.low)
                 }
             } else {
+                ToolbarItem(placement: .topBarTrailing) {
+                    latestActivityButton
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     searchButton
                 }
@@ -211,6 +226,8 @@ struct SessionScreen: View {
             reviewMemory.reset()
             resetReview()
             visibleEntryID = nil
+            followsLatest = true
+            latestScrollRequest += 1
             if selectedViewID.isEmpty {
                 reviewSessionID = session.id
             } else {
@@ -238,6 +255,7 @@ struct SessionScreen: View {
 
     private var searchButton: some View {
         Button("Search conversation", systemImage: "magnifyingglass") {
+            followsLatest = false
             isSearchPresented = true
             searchFocusRequest += 1
         }
@@ -250,6 +268,22 @@ struct SessionScreen: View {
                 confirmingTermination = true
             }
         }
+    }
+
+    private var latestActivityID: String? {
+        RemiTranscriptNavigation.latestActivityID(entryIDs: visibleTranscript.map(\.id),
+            questionIDs: visibleQuestions.map(\.questionID))
+    }
+
+    private var latestActivityButton: some View {
+        Button("Jump to latest activity", systemImage: "arrow.down.to.line") {
+            focusedQuestionID = nil
+            accessibilityQuestionID = nil
+            resetReview()
+            followsLatest = true
+            latestScrollRequest += 1
+        }
+        .disabled(latestActivityID == nil || followsLatest)
     }
 
     private var visibleTranscript: [RemiTranscriptEntry] {
@@ -304,6 +338,7 @@ struct SessionScreen: View {
         guard let focusedQuestionID,
               questions.contains(where: { $0.questionID == focusedQuestionID })
         else { return }
+        followsLatest = false
         withAnimation(.easeInOut(duration: 0.25)) {
             proxy.scrollTo(focusedQuestionID, anchor: .center)
         }
@@ -312,12 +347,14 @@ struct SessionScreen: View {
 
     private func scrollToSearchResult(_ entryID: String?, using proxy: ScrollViewProxy) {
         guard let entryID else { return }
+        followsLatest = false
         withAnimation(.easeInOut(duration: 0.2)) {
             proxy.scrollTo(entryID, anchor: .center)
         }
     }
 
     private func closeSearch() {
+        followsLatest = false
         isSearchPresented = false
         reviewState.reset()
     }
@@ -347,6 +384,14 @@ struct SessionScreen: View {
         reviewState = snapshot.reviewState
         visibleEntryID = snapshot.visibleEntryID
         isSearchPresented = snapshot.isSearchPresented
+        followsLatest = snapshot.visibleEntryID == nil && !snapshot.isSearchPresented
+        if followsLatest { latestScrollRequest += 1 }
+    }
+
+    private func scrollToLatest(using proxy: ScrollViewProxy) {
+        guard followsLatest, !isSearchPresented, focusedQuestionID == nil,
+              latestActivityID != nil else { return }
+        proxy.scrollTo(RemiTranscriptScrollTarget.latest, anchor: .bottom)
     }
 }
 

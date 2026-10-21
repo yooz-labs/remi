@@ -497,6 +497,8 @@ export async function runSuite(
       const result = await runChild(argv, {
         ...streams,
         timeoutMs: deadline,
+        captureLoggingStages:
+          index === 1 && lane.includes('packages/daemon/tests/cli/log-file.test.ts'),
         env: { ...process.env, CI_TEST_OWNER_TOKEN: token },
         cwd: root,
       });

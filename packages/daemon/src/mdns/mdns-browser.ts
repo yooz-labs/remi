@@ -10,6 +10,8 @@ export interface DiscoveredDaemon {
   readonly version: string;
   readonly authEnabled: boolean;
   readonly fingerprint?: string | undefined;
+  /** Untrusted advertisement hint, absent on older publishers. */
+  readonly role?: 'hub' | 'session' | undefined;
   /** OS hostname from TXT record */
   readonly hostname: string;
 }
@@ -47,6 +49,7 @@ export async function discoverDaemons(opts?: BrowseOptions): Promise<DiscoveredD
           version: txt['version'] || 'unknown',
           authEnabled: txt['auth'] === 'true',
           fingerprint: txt['fingerprint'],
+          role: txt['role'] === 'hub' || txt['role'] === 'session' ? txt['role'] : undefined,
           hostname: txt['hostname'] || service.name,
         });
       });

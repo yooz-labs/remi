@@ -265,19 +265,31 @@ export { sleep } from './async-utils.ts';
 // Text a peer controls, made safe to show (#1178, #1211)
 export { boundedEscape, escapeUnsafeText, pushProse } from './display-text.ts';
 // The pairing link a machine shows as a QR (#1275, ADR 0037)
-export type { DecodedPairingLink, PairingCode, PairingCodeError } from './pairing.ts';
+export type {
+  DecodedPairingLink,
+  PairingCode,
+  PairingCodeError,
+  PairingCodeV1,
+  PairingCodeV2,
+  PairingHostClass,
+} from './pairing.ts';
 export {
   PAIRING_CODE_VERSION,
+  PAIRING_CODE_V2_VERSION,
+  PAIRING_CANDIDATE_HOSTS_MAX,
   PAIRING_NAME_MAX_CODE_POINTS,
   PAIRING_LINK_PREFIX,
   PAIRING_NONCE_BYTES,
   PAIRING_TTL_SECONDS,
   decodePairingLink,
   encodePairingLink,
+  classifyPairingHost,
   generatePairingNonce,
+  isPairingCandidateHost,
   isPairingHost,
   isPairingNonce,
   isPlainPairingText,
+  normalizePairingHost,
 } from './pairing.ts';
 // The protocol version and capabilities on hello_ack (#1237, ADR 0035)
 export type { HubSupport, HubSupportAck } from './protocol-version.ts';

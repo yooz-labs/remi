@@ -11,7 +11,7 @@ import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fingerprint, fromBase64 } from '../../../src/crypto.ts';
-import { type PairingCode, encodePairingLink } from '../../../src/pairing.ts';
+import { type PairingCodeV1, type PairingCodeV2, encodePairingLink } from '../../../src/pairing.ts';
 
 /** The clock every vector is read at. */
 export const VECTOR_NOW = 1_760_000_000;
@@ -19,7 +19,7 @@ export const VECTOR_NOW = 1_760_000_000;
 const KEY = Buffer.from(Array.from({ length: 32 }, (_, i) => i + 1)).toString('base64');
 const NONCE = Buffer.from(Array.from({ length: 16 }, (_, i) => 0xa0 + i)).toString('base64url');
 
-const BASE: PairingCode = {
+const BASE: PairingCodeV1 = {
   v: 1,
   name: 'fixture-mac',
   host: '192.168.1.23',
@@ -30,12 +30,37 @@ const BASE: PairingCode = {
   proto: 1,
 };
 
+const BASE_V2: PairingCodeV2 = {
+  v: 2,
+  name: 'fixture-mac',
+  hosts: ['192.168.1.23', '100.101.102.103'],
+  port: 18765,
+  key: KEY,
+  nonce: NONCE,
+  exp: VECTOR_NOW + 300,
+  proto: 1,
+};
+
+const SCHEDULE_V2: PairingCodeV2 = {
+  ...BASE_V2,
+  hosts: ['100.101.102.103', '203.0.113.9', '192.168.1.23', 'studio.tailnet.ts.net'],
+};
+
 /** A link whose body is exactly `json`, encoded as base64url without padding. */
 const raw = (json: string): string =>
   `remi://pair#${Buffer.from(json, 'utf8').toString('base64url')}`;
 /** `BASE` with `changes`, keys in the order given, as compact JSON. */
 const withFields = (changes: Record<string, unknown>): string =>
   JSON.stringify({ ...BASE, ...changes });
+/** `BASE_V2` with `changes`, in canonical field order. */
+const withV2Fields = (changes: Record<string, unknown>): string =>
+  JSON.stringify({ ...BASE_V2, ...changes });
+/** Add one unknown ASCII field so the JSON reaches an exact encoded-size boundary. */
+const paddedJson = (json: string, bytes: number): string => {
+  const padding = bytes - new TextEncoder().encode(json).byteLength - 7;
+  if (padding < 0) throw new Error(`Cannot pad ${json.length} bytes to ${bytes}`);
+  return `${json.slice(0, -1)},"x":"${'a'.repeat(padding)}"}`;
+};
 
 export async function buildVectors() {
   const valid = [
@@ -55,6 +80,9 @@ export async function buildVectors() {
     { name: 'expiry at the furthest a code may be', code: { ...BASE, exp: VECTOR_NOW + 1020 } },
     { name: 'IPv6 with an embedded zero run at the end', code: { ...BASE, host: '2001:db8::' } },
     { name: 'IPv6 fully written out', code: { ...BASE, host: '2001:db8:0:0:0:0:0:1' } },
+    { name: 'v2 local and Tailscale candidates', code: BASE_V2 },
+    { name: 'v2 single explicit candidate', code: { ...BASE_V2, hosts: ['203.0.113.9'] } },
+    { name: 'v2 candidates preserve canonical source order', code: SCHEDULE_V2 },
   ].map((v) => ({ ...v, link: encodePairingLink(v.code) }));
   // The machine's fingerprint for each valid link: what the app shows next to it.
   const validWithFingerprints = await Promise.all(
@@ -82,7 +110,7 @@ export async function buildVectors() {
     },
     {
       name: 'a newer version',
-      link: raw(JSON.stringify({ v: 2, anything: true })),
+      link: raw(JSON.stringify({ v: 3, anything: true })),
       error: 'UNSUPPORTED_VERSION',
     },
     { name: 'a missing field', link: raw(JSON.stringify(noNonce)), error: 'MALFORMED' },
@@ -141,7 +169,16 @@ export async function buildVectors() {
       error: 'PROTOCOL_MISMATCH',
     },
     { name: 'protocol version zero', link: raw(withFields({ proto: 0 })), error: 'MALFORMED' },
-    { name: 'too long', link: `remi://pair#${'A'.repeat(1100)}`, error: 'MALFORMED' },
+    {
+      name: 'v1 link at its 1024-character boundary',
+      link: raw(paddedJson(JSON.stringify(BASE), 759)),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v1 link over its 1024-character limit',
+      link: raw(paddedJson(JSON.stringify(BASE), 760)),
+      error: 'MALFORMED',
+    },
     // Added after the #1281 review.
     {
       name: 'base64url with non-zero trailing bits',
@@ -228,6 +265,27 @@ export async function buildVectors() {
       link: raw(withFields({ exp: VECTOR_NOW + 1021 })),
       error: 'MALFORMED',
     },
+    // #1574 R1: Swift's Unicode isHexDigit is broader than the ASCII host grammar.
+    {
+      name: 'v2 IPv6 with fullwidth digits in all groups',
+      link: raw(withV2Fields({ hosts: ['０:０:０:０:０:０:０:１'] })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 compressed IPv6 with fullwidth hexadecimal letters',
+      link: raw(withV2Fields({ hosts: ['::ＦＦＦＦ'] })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v1 IPv6 with fullwidth digits',
+      link: raw(withFields({ host: '２００１:db8:0:0:0:0:0:1' })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v1 compressed IPv6 with fullwidth hexadecimal letters',
+      link: raw(withFields({ host: '2001:db8::Ａ' })),
+      error: 'MALFORMED',
+    },
     { name: 'IPv6 of three colons', link: raw(withFields({ host: ':::' })), error: 'MALFORMED' },
     { name: 'IPv6 of two groups', link: raw(withFields({ host: 'a:b' })), error: 'MALFORMED' },
     {
@@ -248,6 +306,145 @@ export async function buildVectors() {
     {
       name: 'a name whose last label is a number',
       link: raw(withFields({ host: '0x7f.1' })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 has no candidates',
+      link: raw(withV2Fields({ hosts: [] })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 has more than four candidates',
+      link: raw(
+        withV2Fields({
+          hosts: ['192.168.1.23', '192.168.1.24', '192.168.1.25', '192.168.1.26', '192.168.1.27'],
+        }),
+      ),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 requires candidates instead of the v1 host field',
+      link: raw(JSON.stringify({ ...BASE, v: 2, host: BASE.host })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 candidates are required',
+      link: raw(
+        JSON.stringify(
+          Object.fromEntries(Object.entries(BASE_V2).filter(([key]) => key !== 'hosts')),
+        ),
+      ),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 unknown field',
+      link: raw(withV2Fields({ relay: 'wss://x' })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 fields out of order',
+      link: raw(
+        JSON.stringify({
+          v: 2,
+          hosts: BASE_V2.hosts,
+          name: BASE_V2.name,
+          port: BASE_V2.port,
+          key: BASE_V2.key,
+          nonce: BASE_V2.nonce,
+          exp: BASE_V2.exp,
+          proto: BASE_V2.proto,
+        }),
+      ),
+      error: 'NOT_CANONICAL',
+    },
+    {
+      name: 'v2 pretty-printed JSON is not canonical',
+      link: raw(JSON.stringify(BASE_V2, null, 1)),
+      error: 'NOT_CANONICAL',
+    },
+    {
+      name: 'v2 duplicate DNS candidates after case and trailing-dot normalization',
+      link: raw(withV2Fields({ hosts: ['Studio.example', 'studio.example.'] })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 duplicate IPv6 candidates after numeric normalization',
+      link: raw(withV2Fields({ hosts: ['2001:db8::1', '2001:0db8:0:0:0:0:0:1'] })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 duplicate IPv4 and mapped IPv6 candidates',
+      link: raw(withV2Fields({ hosts: ['192.0.2.1', '::ffff:c000:201'] })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 IPv4 loopback candidate',
+      link: raw(withV2Fields({ hosts: ['127.0.0.1'] })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 IPv4 unspecified candidate',
+      link: raw(withV2Fields({ hosts: ['0.0.0.0'] })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 IPv4 link-local candidate',
+      link: raw(withV2Fields({ hosts: ['169.254.1.2'] })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 IPv6 loopback candidate',
+      link: raw(withV2Fields({ hosts: ['::1'] })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 IPv6 unspecified candidate',
+      link: raw(withV2Fields({ hosts: ['::'] })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 IPv6 link-local candidate',
+      link: raw(withV2Fields({ hosts: ['febf::1'] })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 IPv4-mapped loopback candidate',
+      link: raw(withV2Fields({ hosts: ['::ffff:7f00:1'] })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 localhost candidate',
+      link: raw(withV2Fields({ hosts: ['localhost.'] })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 expired candidate set',
+      link: raw(withV2Fields({ exp: VECTOR_NOW - 200 })),
+      error: 'EXPIRED',
+    },
+    {
+      name: 'v2 expiry too far ahead',
+      link: raw(withV2Fields({ exp: VECTOR_NOW + 3600 })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 protocol mismatch',
+      link: raw(withV2Fields({ proto: 2 })),
+      error: 'PROTOCOL_MISMATCH',
+    },
+    {
+      name: 'v2 link at its 2048-character and 1527-byte boundary',
+      link: raw(paddedJson(JSON.stringify(BASE_V2), 1527)),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 link exceeds its 2048-character limit',
+      link: raw(paddedJson(JSON.stringify(BASE_V2), 1530)),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 decoded JSON exceeds 1527 bytes',
+      link: raw(paddedJson(JSON.stringify(BASE_V2), 1528)),
       error: 'MALFORMED',
     },
   ];
