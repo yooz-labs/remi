@@ -24,6 +24,7 @@ struct PhoneShell<Content: View, Drawer: View>: View {
             ZStack(alignment: .leading) {
                 drawerLayer(width: width)
                 contentLayer(width: width)
+                dimLayer(width: width)
             }
         }
         .onChange(of: state.isDrawerOpen) { _, isOpen in
@@ -52,7 +53,7 @@ struct PhoneShell<Content: View, Drawer: View>: View {
                 .accessibilityAddTraits(.isModal)
                 .accessibilityAction(.escape) { setOpen(false) }
                 .simultaneousGesture(closeDrag(width: width))
-                .zIndex(reduceMotion ? 2 : 0)
+                .zIndex(reduceMotion ? 3 : 0)
         }
     }
 
@@ -61,7 +62,6 @@ struct PhoneShell<Content: View, Drawer: View>: View {
             .background { contentBackground(shadow: false) }
             .mask { contentShape.ignoresSafeArea() }
             .background { contentBackground(shadow: true) }
-            .overlay { dimOverlay(width: width) }
             .offset(x: reduceMotion ? 0 : progress * width)
             .allowsHitTesting(!state.isDrawerOpen)
             .accessibilityHidden(state.isDrawerOpen)
@@ -84,17 +84,23 @@ struct PhoneShell<Content: View, Drawer: View>: View {
             .ignoresSafeArea()
     }
 
+    /// A sibling above the content, so only the real content is non-interactive while the
+    /// drawer is open. It covers the whole visible content strip and closes the drawer on
+    /// a tap or a leftward drag.
     @ViewBuilder
-    private func dimOverlay(width: CGFloat) -> some View {
+    private func dimLayer(width: CGFloat) -> some View {
         if progress > 0 {
             Color.black
                 .opacity(progress * (reduceMotion ? 0.25 : 0.12))
-                .clipShape(contentShape)
+                .ignoresSafeArea()
+                .mask { contentShape.ignoresSafeArea() }
                 .contentShape(.rect)
+                .offset(x: reduceMotion ? 0 : progress * width)
                 .onTapGesture { setOpen(false) }
                 .gesture(closeDrag(width: width))
                 .accessibilityLabel("Close menu")
                 .accessibilityAddTraits(.isButton)
+                .zIndex(2)
         }
     }
 
