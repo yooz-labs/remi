@@ -161,6 +161,83 @@ struct MachineRecoveryIntegrationTests {
         #expect(store.ownedRecoveryCoordinator?.ownedActiveProbes == 0)
     }
 
+    @Test func foregroundResetsExhaustedEpisodeWithoutBypassingCooldown() async throws {
+        let socket = try listener()
+        defer { Darwin.close(socket.0) }
+        let key = ClientIdentity().publicKeyRaw
+        let profile = MachineRouteProfile(machineID: try MachineIdentityVerifier.machineID(forPublicKey: key),
+            routes: [MachineEndpoint(host: "127.0.0.1", port: socket.1)], connectionPreference: .relayOnly,
+            machinePublicKey: RelayCrypto.b64(key))
+        let store = MachineStore(profiles: [profile], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
+        store.start(); defer { store.stop() }
+        let until = ContinuousClock.now.advanced(by: .seconds(5))
+        while store.machines.first?.recoveryProgress?.phase != .exhausted, ContinuousClock.now < until {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let coordinator = try #require(store.ownedRecoveryCoordinator)
+        #expect(store.machines.first?.recoveryProgress?.phase == .exhausted && coordinator.ownedSweepCount == 1)
+        let epoch = coordinator.ownedEpoch
+        let started = try #require(coordinator.ownedLastSweepStart)
+        store.foregroundRecoveryActivated()
+        let due = try #require(coordinator.ownedNextSweep)
+        #expect(coordinator.ownedEpoch != epoch && coordinator.ownedSweepCount == 0)
+        #expect(due >= started.advanced(by: MachineRecoverySchedule.cooldown))
+        #expect(store.connectionGenerations.isEmpty && coordinator.ownedStarts.isEmpty && !coordinator.ownedIsBrowsing)
+    }
+
+    @Test(arguments: [false, true])
+    func foregroundKeepsHealthyGenerationAndConfiguredAuthenticationStops(_ approval: Bool) throws {
+        let socket = try listener()
+        defer { Darwin.close(socket.0) }
+        let key = ClientIdentity().publicKeyRaw
+        let profile = MachineRouteProfile(machineID: try MachineIdentityVerifier.machineID(forPublicKey: key),
+            routes: [MachineEndpoint(host: "127.0.0.1", port: socket.1)], machinePublicKey: RelayCrypto.b64(key))
+        let store = MachineStore(profiles: [profile], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
+        store.start(); defer { store.stop() }
+        let root = try #require(store.machines.first?.endpoint)
+        let generation = try #require(store.connectionGenerations[root])
+        store.receive(.hello(try fixture("hello_ack_legacy", as: HelloAckMessage.self), authorityPublicKey: key), from: root, generation: generation)
+        store.foregroundRecoveryActivated()
+        #expect(store.machines.first?.status == .connected && store.connectionGenerations[root] == generation)
+        #expect(store.recoveryTargets().isEmpty)
+        store.receive(approval ? .awaitingLocalApproval(fingerprint: "owned-device") : .rejected(reason: "Wrong saved key"),
+            from: root, generation: generation)
+        let stopped = store.machines.first?.status
+        store.foregroundRecoveryActivated()
+        #expect(store.machines.first?.status == stopped && store.recoveryTargets().isEmpty)
+        #expect(store.ownedRecoveryCoordinator?.ownedStarts.isEmpty == true)
+        #expect(approval ? store.connectionGenerations[root] == generation : store.connectionGenerations.isEmpty)
+    }
+
+    @Test func fullPinRetryStillReplacesFailedChildWithoutRestartingHealthyHub() throws {
+        let hub = try listener(), session = try listener()
+        defer { Darwin.close(hub.0); Darwin.close(session.0) }
+        let key = ClientIdentity().publicKeyRaw
+        let profile = MachineRouteProfile(machineID: try MachineIdentityVerifier.machineID(forPublicKey: key),
+            routes: [MachineEndpoint(host: "127.0.0.1", port: hub.1)], machinePublicKey: RelayCrypto.b64(key))
+        let store = MachineStore(profiles: [profile], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
+        store.start(); defer { store.stop() }
+        let root = try #require(store.machines.first?.endpoint)
+        let generation = try #require(store.connectionGenerations[root])
+        store.receive(.hello(try fixture("hello_ack_legacy", as: HelloAckMessage.self), authorityPublicKey: key), from: root, generation: generation)
+        var payload = try #require(JSONSerialization.jsonObject(with: FixtureConformanceTests.fixture("session_list_response")) as? [String: Any])
+        payload["sessions"] = [] as [String]
+        payload["daemonPorts"] = [session.1]
+        let list = try JSONDecoder().decode(SessionListResponse.self, from: JSONSerialization.data(withJSONObject: payload))
+        store.receive(.sessions(list), from: root, generation: generation)
+        let child = try #require(store.connectionGenerations.keys.first { $0.port == session.1 })
+        let old = try #require(store.connectionGenerations[child])
+        store.receive(.rejected(reason: "Owned child refusal"), from: child, generation: old)
+        #expect(store.machines.first?.sessionConnectionIssue != nil)
+        store.retryConnection(for: root)
+        #expect(store.connectionGenerations[child] != old && store.connectionGenerations[child] != nil)
+        #expect(store.connectionGenerations[root] == generation && store.machines.first?.status == .connected)
+        #expect(store.machines.first?.sessionConnectionIssue == nil)
+        #expect(store.ownedConnectionMachineIDs[child] == profile.machineID)
+        store.receive(.rejected(reason: "Retired child"), from: child, generation: old)
+        #expect(store.machines.first?.sessionConnectionIssue == nil)
+    }
+
     #if os(macOS)
     @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_LOCAL_DISCOVERY_TEST"] == "1",
         "Publishes owned hostile Bonjour services and uses real sockets; never accepts OS permission prompts."),
@@ -169,15 +246,14 @@ struct MachineRecoveryIntegrationTests {
         let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Integration/recovery-probe-peer.ts")
         let process = Process(), input = Pipe(), output = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/Volumes/S1/yooz/remi/cache/tools/bun-1.3.11-darwin-arm64")
-        process.arguments = [script.path, mode]
-        process.environment = ["PATH": "/private/tmp/remi-1570-tools:/usr/bin:/bin"]
+        let directory = try OwnedRecoveryFixture.configure(process, script: script, arguments: [mode])
         process.standardInput = input; process.standardOutput = output; process.standardError = FileHandle.standardError
         try process.run()
         defer {
             try? input.fileHandleForWriting.close()
             if process.isRunning { process.terminate() }
             process.waitUntilExit()
+            try? FileManager.default.removeItem(at: directory)
         }
         let metadata = try #require(try await readLine(output.fileHandleForReading) as? [String: Any])
         let encoded = try #require(metadata["publicKey"] as? String)
@@ -242,14 +318,14 @@ struct MachineRecoveryIntegrationTests {
         let integration = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Integration")
         let identity = ClientIdentity()
         let hub = Process(), hubInput = Pipe(), hubOutput = Pipe()
-        hub.executableURL = URL(fileURLWithPath: "/Volumes/S1/yooz/remi/cache/tools/bun-1.3.11-darwin-arm64")
-        hub.arguments = [integration.appendingPathComponent("local-discovery-fixture.ts").path, "tail"]
-        hub.environment = ["PATH": "/private/tmp/remi-1570-tools:/usr/bin:/bin", "REMI_RECOVERY_SOURCE_BIND": tail]
+        let hubDirectory = try OwnedRecoveryFixture.configure(hub, script: integration.appendingPathComponent("local-discovery-fixture.ts"),
+            arguments: ["tail"], environment: ["REMI_RECOVERY_SOURCE_BIND": tail])
         hub.standardInput = hubInput; hub.standardOutput = hubOutput; hub.standardError = FileHandle.standardError
         try hub.run()
         defer {
             try? hubInput.fileHandleForWriting.close()
             if hub.isRunning { hub.terminate() }; hub.waitUntilExit()
+            try? FileManager.default.removeItem(at: hubDirectory)
         }
         let client = try JSONSerialization.data(withJSONObject: ["publicKey": identity.publicKeyBase64])
         try hubInput.fileHandleForWriting.write(contentsOf: client + Data([10]))
@@ -272,14 +348,14 @@ struct MachineRecoveryIntegrationTests {
         let socket = try #require(store.ownedConnectionID(active))
         let before = store.persistableProfiles
         let peer = Process(), input = Pipe(), output = Pipe()
-        peer.executableURL = hub.executableURL
-        peer.arguments = [integration.appendingPathComponent("recovery-probe-peer.ts").path, "wrong-key", encoded]
-        peer.environment = ["PATH": "/private/tmp/remi-1570-tools:/usr/bin:/bin", "REMI_RECOVERY_PEER_BIND": local]
+        let peerDirectory = try OwnedRecoveryFixture.configure(peer, script: integration.appendingPathComponent("recovery-probe-peer.ts"),
+            arguments: ["wrong-key", encoded], environment: ["REMI_RECOVERY_PEER_BIND": local])
         peer.standardInput = input; peer.standardOutput = output; peer.standardError = FileHandle.standardError
         try peer.run()
         defer {
             try? input.fileHandleForWriting.close()
             if peer.isRunning { peer.terminate() }; peer.waitUntilExit()
+            try? FileManager.default.removeItem(at: peerDirectory)
         }
         _ = try await readLine(output.fileHandleForReading)
         store.retryConnection(for: active)

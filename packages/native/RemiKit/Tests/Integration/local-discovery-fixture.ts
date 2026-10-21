@@ -1,11 +1,11 @@
 /** Owned source hub and inert source session for native Bonjour acceptance (#1575). */
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { Bonjour } from '../../../../daemon/node_modules/bonjour-service';
-import { IdentityStore } from '../../../../daemon/src/auth/identity-store.ts';
-import { reserveRange } from '../../../../daemon/tests/session/port-test-helpers.ts';
+
+if (Bun.version !== '1.3.11') throw new Error('pinned Bun required');
 
 const repository = resolve(import.meta.dir, '../../../../..');
 const tailMode = process.argv[2] === 'tail';
@@ -15,6 +15,10 @@ const owned = mkdtempSync(join(tmpdir(), 'remi-local-discovery-'));
 chmodSync(owned, 0o700);
 for (const folder of ['bin', 'home', 'state', 'work'])
   mkdirSync(join(owned, folder), { mode: 0o700 });
+process.env['REMI_HOME'] = join(owned, 'state');
+const { IdentityStore } = await import('../../../../daemon/src/auth/identity-store.ts');
+const { reserveRange } = await import('../../../../daemon/tests/session/port-test-helpers.ts');
+const inheritedPath = (process.env['PATH'] ?? '/usr/bin:/bin').split(delimiter).filter(isAbsolute);
 const release = join(owned, 'release');
 writeFileSync(
   join(owned, 'bin/claude'),
@@ -82,7 +86,9 @@ try {
         env: {
           HOME: join(owned, 'home'),
           REMI_HOME: join(owned, 'state'),
-          PATH: `${join(owned, 'bin')}:/private/tmp/remi-1570-tools:/usr/bin:/bin`,
+          PATH: [
+            ...new Set([join(owned, 'bin'), dirname(process.execPath), ...inheritedPath]),
+          ].join(delimiter),
           NODE_ENV: 'test',
           TERM: 'xterm',
         },

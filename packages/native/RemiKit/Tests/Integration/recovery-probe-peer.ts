@@ -1,7 +1,9 @@
 /** Hostile owned wire peer plus real Bonjour publisher; never substitutes for a source hub. */
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { createInterface } from 'node:readline';
-import { MdnsPublisher } from '../../../../daemon/src/mdns/mdns-publisher.ts';
+
+if (Bun.version !== '1.3.11') throw new Error('pinned Bun required');
+const { MdnsPublisher } = await import('../../../../daemon/src/mdns/mdns-publisher.ts');
 
 const mode = process.argv[2] ?? 'wrong-key';
 const trusted = generateKeyPairSync('ed25519');

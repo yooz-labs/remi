@@ -6,6 +6,7 @@ public struct MachineRecoveryProgress: Sendable, Equatable {
     public let phase: Phase
     public let attemptedLayer: MachineConnectionLayer?
     public let message: String
+    public var allowsRetry: Bool { phase == .waiting || phase == .exhausted }
     init(phase: Phase, attemptedLayer: MachineConnectionLayer?, message: String) {
         self.phase = phase; self.attemptedLayer = attemptedLayer; self.message = PushDisplayText.escape(message)
     }
@@ -58,6 +59,9 @@ final class MachineRecoveryCoordinator {
     var ownedIsBrowsing: Bool { discovery.isBrowsing }
     var ownedActiveProbes: Int { probes.count }
     var ownedEpoch: UUID { epoch }
+    var ownedSweepCount: Int { schedule.sweeps }
+    var ownedLastSweepStart: ContinuousClock.Instant? { schedule.lastStart }
+    var ownedNextSweep: ContinuousClock.Instant? { schedule.due }
     #endif
 
     init(identity: ClientIdentity, clientVersion: String, clientID: String,

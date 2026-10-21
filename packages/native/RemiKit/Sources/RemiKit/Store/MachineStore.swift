@@ -841,6 +841,12 @@ public final class MachineStore {
         return adoption
     }
 
+    func foregroundRecoveryActivated() {
+        guard running else { return }
+        recovery().start()
+        recovery().trigger(newEpisode: true)
+    }
+
     public func start() {
         running = true
         for index in machines.indices {
@@ -1288,6 +1294,7 @@ public final class MachineStore {
         guard let index = machineIndex(containing: endpoint) else { return }
         guard machines[index].configurationIssue == nil else { return }
         if machines[index].durableMachinePublicKey != nil {
+            if connections[endpoint] != nil { retryFailedChildren(of: endpoint) }
             recoveryCoordinator?.invalidate()
             for route in machines[index].routingRoutes { terminalRootStates[route] = nil }
             recoveryRequestedLifetimes.insert(machines[index].pairingLifetime)
@@ -1302,6 +1309,11 @@ public final class MachineStore {
             startPermittedRoutes(machineIndex: index)
             return
         }
+        retryFailedChildren(of: endpoint)
+        Task { await connection.retry() }
+    }
+
+    private func retryFailedChildren(of endpoint: MachineEndpoint) {
         // A healthy hub does not retry itself. Explicit Retry also replaces its
         // rejected session sockets, preserving their advertising machine pin.
         let children = failedChildConnections.filter { parentByConnection[$0]?.id == endpoint.id }
@@ -1316,7 +1328,6 @@ public final class MachineStore {
             machines[index].sessionConnectionIssue = nil
             latestOperationError = nil
         }
-        Task { await connection.retry() }
     }
 
     /// Resolves either the stable authenticated ID or the legacy endpoint ID. This keeps

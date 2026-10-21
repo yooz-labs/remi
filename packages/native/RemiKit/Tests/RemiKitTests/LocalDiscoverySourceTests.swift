@@ -23,15 +23,14 @@ struct LocalDiscoverySourceTests {
         let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("Integration/local-discovery-fixture.ts")
         let fixture = Process(), input = Pipe(), output = Pipe()
-        fixture.executableURL = URL(fileURLWithPath: "/Volumes/S1/yooz/remi/cache/tools/bun-1.3.11-darwin-arm64")
-        fixture.arguments = [script.path]
-        fixture.environment = ["PATH": "/private/tmp/remi-1570-tools:/usr/bin:/bin"]
+        let directory = try OwnedRecoveryFixture.configure(fixture, script: script)
         fixture.standardInput = input; fixture.standardOutput = output; fixture.standardError = FileHandle.standardError
         try fixture.run()
         defer {
             try? input.fileHandleForWriting.close()
             if fixture.isRunning { fixture.terminate() }
             fixture.waitUntilExit()
+            try? FileManager.default.removeItem(at: directory)
         }
         let client = try JSONSerialization.data(withJSONObject: ["publicKey": identity.publicKeyBase64])
         try input.fileHandleForWriting.write(contentsOf: client + Data([10]))

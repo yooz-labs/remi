@@ -190,6 +190,9 @@ struct MacPreferencesView: View {
                     }
                     if let progress = machine.recoveryProgress {
                         Text(progress.message).font(.caption).foregroundStyle(.secondary)
+                        if progress.allowsRetry {
+                            Button("Retry recovery", systemImage: "arrow.clockwise") { store.retryConnection(for: machine.endpoint) }
+                        }
                     }
                     LabeledContent("Transport", value: transportLabel(machine.endpoint))
                     LabeledContent("Endpoint") {

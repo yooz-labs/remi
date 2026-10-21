@@ -158,7 +158,8 @@ public final class NativeRelayNotifications {
                 let startup = saved.map { profile in
                     MachineRouteProfile(machineID: profile.machineID,
                         routes: Self.startupEndpoints(from: profile.routes), displayName: profile.displayName,
-                        connectionPreference: profile.connectionPreference, machinePublicKey: profile.machinePublicKey)
+                        connectionPreference: profile.connectionPreference, machinePublicKey: profile.machinePublicKey,
+                        navigationID: profile.navigationID)
                 }.filter { !$0.routes.isEmpty }
                 let current = MachineStore(profiles: startup,
                     identity: identity,
@@ -177,7 +178,12 @@ public final class NativeRelayNotifications {
             }
         }
         guard let store else { return }
+        let alreadyStarted = started
         startForegroundStoreIfNeeded()
+        // Mac background entry keeps its menu-bar transports alive. Returning
+        // to the foreground still starts a new bounded recovery episode, without
+        // reconnecting healthy roots or clearing configured approval/auth stops.
+        if alreadyStarted, !actionInFlight { store.foregroundRecoveryActivated() }
         if let carrier = pendingCarrier {
             pendingCarrier = nil
             store.openRelayNotification(carrier: carrier)

@@ -96,10 +96,12 @@ processes.
 
 ## Reproduce the independent controls
 
-Use the repository's pinned Bun 1.3.11 on parent and child PATH:
+Put Bun 1.3.11 on the calling shell's PATH. The Swift helpers resolve `bun`
+through `/usr/bin/env`, pass only PATH plus fresh restricted homes and explicit
+test controls, and put inert agent executables first. The TypeScript entrypoints
+refuse every other Bun version; source children reuse that exact executable.
 
 ```sh
-PATH=/private/tmp/remi-1570-tools:/usr/bin:/bin \
 REMI_LOCAL_DISCOVERY_TEST=1 REMI_LOCAL_DISCOVERY_SOURCE_TEST=1 \
 swift test --package-path packages/native/RemiKit --jobs 2
 bun test packages/daemon/tests/mdns
@@ -130,7 +132,6 @@ connection object or generation, then requests and receives a fresh correlated
 session list on the original socket. It does not configure or administer a VPN:
 
 ```sh
-PATH=/private/tmp/remi-1570-tools:/usr/bin:/bin \
 REMI_OWNED_RECOVERY_NETWORK_TEST=1 \
 REMI_RECOVERY_LOCAL=<owned-existing-lan-address> \
 REMI_RECOVERY_TAIL=<owned-existing-tailscale-address> \
