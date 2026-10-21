@@ -78,7 +78,6 @@ test.skipIf(process.platform !== 'linux')(
   async () => {
     const directory = await mkdtemp(path.join(tmpdir(), 'remi-ci-wait-'));
     const fifo = path.join(directory, 'blocked-read');
-    const nestedReady = path.join(directory, 'nested-ready');
     const out = sink();
     const err = sink();
     let captured:
@@ -93,9 +92,11 @@ test.skipIf(process.platform !== 'linux')(
       | undefined;
     try {
       expect(Bun.spawnSync(['mkfifo', fifo]).exitCode).toBe(0);
-      const nestedCode = `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(nestedReady)}, 'ready'); fs.writeSync(1, 'fifo-child-ready\\n'); const fd = fs.openSync(${JSON.stringify(fifo)}, 'r'); fs.closeSync(fd);`;
-      const parentCode = `const fs = require('node:fs'); const child = Bun.spawn([process.execPath, '-e', ${JSON.stringify(nestedCode)}], { stdout: 'inherit', stderr: 'inherit' }); while (!fs.existsSync(${JSON.stringify(nestedReady)})) await Bun.sleep(5); fs.writeSync(1, 'fifo-parent-ready\\n'); const fd = fs.openSync(${JSON.stringify(fifo)}, 'r'); fs.closeSync(fd); process.exitCode = await child.exited;`;
-      const result = await runChild(bun(parentCode), {
+      const parentCode =
+        `/bin/sh -c 'exec cat "$1" >/dev/null' remi-ci-wait-child "$1" & child=$!; ` +
+        `printf '%s\\n' fifo-child-launched; printf '%s\\n' fifo-parent-ready; ` +
+        `read line < "$1" || true; wait "$child"`;
+      const result = await runChild(['/bin/sh', '-c', parentCode, 'remi-ci-wait-parent', fifo], {
         stdout: out.stream,
         stderr: err.stream,
         timeoutMs: 2_000,
@@ -107,7 +108,7 @@ test.skipIf(process.platform !== 'linux')(
             pid !== process.pid &&
             !captured &&
             out.text().includes('fifo-parent-ready') &&
-            out.text().includes('fifo-child-ready') &&
+            out.text().includes('fifo-child-launched') &&
             sample.available &&
             sample.state === 'S' &&
             sample.waitTopology

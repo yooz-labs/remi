@@ -540,7 +540,13 @@ async function readNumericDirectory(
   } catch {
     return null;
   } finally {
-    if (directory) await directory.close().catch(() => {});
+    if (directory) {
+      try {
+        await directory.close();
+      } catch {
+        // Directory close is best-effort; Bun may complete it synchronously.
+      }
+    }
   }
 }
 
