@@ -21,7 +21,7 @@ struct SessionScreen: View {
 
     @State private var draft = ""
     @State private var selectedViewID = ""
-    @State private var focusedQuestionID: String?
+    @State private var focusState: PhoneQuestionFocusState
     @State private var confirmingTermination = false
     @State private var isSearchPresented = false
     @State private var searchFocusRequest = 0
@@ -57,7 +57,10 @@ struct SessionScreen: View {
         self.views = views
         self.viewsLoaded = viewsLoaded
         _selectedViewID = State(initialValue: initialConversationID ?? "")
-        _focusedQuestionID = State(initialValue: initialQuestionID)
+        _focusState = State(initialValue: PhoneQuestionFocusState(
+            initial: initialQuestionID,
+            loaded: questions.map(\.questionID)
+        ))
         _reviewSessionID = State(initialValue: session.id)
         self.transcriptForView = transcriptForView
         self.onSelectView = onSelectView
@@ -143,19 +146,20 @@ struct SessionScreen: View {
                     .modifier(SessionNavigationBarBehavior())
                     .onAppear { focusQuestion(using: proxy) }
                     .onChange(of: questions.map(\.questionID)) { _, questionIDs in
-                        guard let focusedQuestionID else { return }
-                        if questionIDs.contains(focusedQuestionID) {
+                        focusState.questionsChanged(questionIDs)
+                        if focusedQuestionID != nil {
                             focusQuestion(using: proxy)
                         } else {
-                            self.focusedQuestionID = nil
                             accessibilityQuestionID = nil
                         }
                     }
                     .onChange(of: focusQuestionRequest) { _, request in
                         guard let request else { return }
-                        focusedQuestionID = request
+                        focusState.request(request, loaded: questions.map(\.questionID))
+                        // Clear now and announce in a later transaction, so VoiceOver
+                        // announces the same question again when it is re-notified.
                         accessibilityQuestionID = nil
-                        focusQuestion(using: proxy)
+                        Task { @MainActor in focusQuestion(using: proxy) }
                     }
                     .onChange(of: reviewState.selectedEntryID) { _, entryID in
                         scrollToSearchResult(entryID, using: proxy)
@@ -221,7 +225,7 @@ struct SessionScreen: View {
             Text("The agent process and its Remi session will close. Its transcript remains available for later review.")
         }
         .onChange(of: selectedViewID) { oldValue, newValue in
-            focusedQuestionID = nil
+            focusState.clear()
             accessibilityQuestionID = nil
             guard reviewSessionID == session.id else {
                 reviewSessionID = session.id
@@ -288,7 +292,7 @@ struct SessionScreen: View {
 
     private var latestActivityButton: some View {
         Button("Jump to latest activity", systemImage: "arrow.down.to.line") {
-            focusedQuestionID = nil
+            focusState.clear()
             accessibilityQuestionID = nil
             resetReview()
             followsLatest = true
@@ -344,6 +348,8 @@ struct SessionScreen: View {
         .id(question.questionID)
         .accessibilityFocused($accessibilityQuestionID, equals: question.questionID)
     }
+
+    private var focusedQuestionID: String? { focusState.focused }
 
     private func focusQuestion(using proxy: ScrollViewProxy) {
         guard let focusedQuestionID,
