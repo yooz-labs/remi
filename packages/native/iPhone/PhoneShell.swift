@@ -77,6 +77,13 @@ struct PhoneShell<Content: View, Drawer: View>: View {
         isOpen || drag.isDragging || isSettling || settledOpen != isOpen
     }
 
+    /// With Reduce Motion the drawer and dim layer mount at full progress in the open
+    /// transaction, so their fade-in is an opacity transition on the same animation as the
+    /// state change. Without it the slide carries the motion. Not verified at runtime.
+    private var fadeTransition: AnyTransition {
+        reduceMotion ? .opacity : .identity
+    }
+
     private var animation: Animation {
         reduceMotion ? .easeInOut(duration: 0.2) : RemiTheme.Motion.standard
     }
@@ -127,6 +134,7 @@ struct PhoneShell<Content: View, Drawer: View>: View {
                 .accessibilitySortPriority(2)
                 .accessibilityAction(.escape) { setOpen(false) }
                 .simultaneousGesture(closeDrag(width: width))
+                .transition(fadeTransition)
                 .zIndex(reduceMotion ? 3 : 0)
         }
     }
@@ -179,6 +187,7 @@ struct PhoneShell<Content: View, Drawer: View>: View {
             // the escape action are the accessible close paths.
             .allowsHitTesting(isOpen)
             .accessibilityHidden(true)
+            .transition(fadeTransition)
             .zIndex(2)
         }
     }
