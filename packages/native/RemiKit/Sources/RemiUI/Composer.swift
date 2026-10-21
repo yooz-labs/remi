@@ -3,9 +3,14 @@ import SwiftUI
 /// The message field and its action button.
 ///
 /// `LeadingAccessory` is the seam for future attach controls (images, files). It is empty
-/// today, and nothing is drawn for it until a feature backs it.
+/// today, and nothing is drawn for it until a feature backs it. A future accessory should be
+/// a control as tall as the field (see `RemiTheme.Size.minimumTapTarget`) so the row stays aligned.
 public struct RemiComposer<LeadingAccessory: View>: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// Height of the field and diameter of the action button; grows with Dynamic Type so the
+    /// glyph never outgrows its circle.
+    @ScaledMetric(relativeTo: .body) private var controlSize: CGFloat = RemiTheme.Size.minimumTapTarget
     @Binding private var text: String
     private let promptWaiting: Bool
     private let isSending: Bool
@@ -44,12 +49,16 @@ public struct RemiComposer<LeadingAccessory: View>: View {
                     leadingAccessory
 
                     TextField("Message", text: $text, axis: .vertical)
-                        .lineLimit(1...5)
+                        .lineLimit(1...(dynamicTypeSize.isAccessibilitySize ? 3 : 5))
                         .textFieldStyle(.plain)
                         .padding(.horizontal, RemiTheme.Spacing.m)
                         .padding(.vertical, RemiTheme.Spacing.xs)
                         .frame(minHeight: controlSize)
-                        .modifier(ComposerInputSurface(reduceTransparency: reduceTransparency))
+                        .contentShape(.rect)
+                        .modifier(ComposerInputSurface(
+                            cornerRadius: controlSize / 2,
+                            reduceTransparency: reduceTransparency
+                        ))
                         .disabled(promptWaiting || isSending)
 
                     if !promptWaiting || onInterrupt != nil {
@@ -59,9 +68,6 @@ public struct RemiComposer<LeadingAccessory: View>: View {
             }
         }
     }
-
-    /// Height of the field and diameter of the action button.
-    private var controlSize: CGFloat { RemiTheme.Size.minimumTapTarget }
 
     private var canSend: Bool {
         !isSending && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -88,11 +94,12 @@ public struct RemiComposer<LeadingAccessory: View>: View {
             tint: promptWaiting || !isActive ? nil : RemiTheme.Color.attention,
             reduceTransparency: reduceTransparency
         ))
-        .opacity(isActive || isSending ? 1 : 0.5)
+        .opacity(isActive || isSending ? 1 : 0.6)
         .disabled(!promptWaiting && !canSend)
         .animation(RemiTheme.Motion.quick, value: isActive)
         .accessibilityLabel(promptWaiting ? "Interrupt agent" : "Send message")
         .accessibilityValue(isSending ? "Sending" : "")
+        .accessibilityHint(isActive || isSending ? "" : "Type a message first")
     }
 
     private func interrupt() {
@@ -126,7 +133,13 @@ private struct ComposerButtonSurface: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
         if reduceTransparency {
-            content.background(tint ?? Color.primary.opacity(0.09), in: .circle)
+            content
+                .background(tint ?? Color.primary.opacity(0.14), in: .circle)
+                .overlay {
+                    Circle()
+                        .stroke(RemiTheme.Color.hairline, lineWidth: 1)
+                        .allowsHitTesting(false)
+                }
         } else {
             content.glassEffect(.regular.tint(tint).interactive(), in: .circle)
         }
@@ -134,12 +147,13 @@ private struct ComposerButtonSurface: ViewModifier {
 }
 
 private struct ComposerInputSurface: ViewModifier {
+    let cornerRadius: CGFloat
     let reduceTransparency: Bool
 
     @ViewBuilder
     func body(content: Content) -> some View {
         // A capsule at one line; the corner radius caps at the line height as the field grows.
-        let shape = RoundedRectangle(cornerRadius: RemiTheme.Size.minimumTapTarget / 2)
+        let shape = RoundedRectangle(cornerRadius: cornerRadius)
         if reduceTransparency {
             content.background(.background, in: shape)
                 .overlay {
