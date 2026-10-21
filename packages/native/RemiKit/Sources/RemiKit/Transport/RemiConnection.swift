@@ -386,6 +386,13 @@ public actor RemiConnection {
                     socket?.cancel(with: .init(rawValue: 4400) ?? .policyViolation, reason: Data("closed".utf8))
                 }
                 closeSocket()
+                if configuration.relayPin == nil, let reason = Self.directPolicyRejectionDescription(error) {
+                    // A local OS-policy refusal is terminal, not evidence that
+                    // another transport may bypass the selected layer (#1583).
+                    shouldRun = false
+                    transition(to: .rejected(reason: reason))
+                    return
+                }
                 if directFailure == .authentication || (configuration.relayPin == nil && configuration.directRetryPolicy != .runtime && authenticationStarted) {
                     shouldRun = false
                     transition(to: .rejected(reason: "The machine did not finish authentication. Check its terminal and retry this layer."))
@@ -883,6 +890,13 @@ public actor RemiConnection {
 
     /// Only network reachability failures may activate a relay fallback. TLS trust,
     /// authentication, decoding, and protocol failures deliberately fail closed.
+    static func directPolicyRejectionDescription(_ error: any Error) -> String? {
+        let error = error as NSError
+        guard error.domain == NSURLErrorDomain,
+              error.code == URLError.appTransportSecurityRequiresSecureConnection.rawValue else { return nil }
+        return "The OS blocked this direct address (ATS -1022). Use a private LAN or Tailscale address, or an enrolled relay."
+    }
+
     static func isDirectReachabilityFailure(_ error: any Error) -> Bool {
         if let error = error as? URLError {
             return [

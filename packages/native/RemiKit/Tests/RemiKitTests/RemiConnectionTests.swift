@@ -40,6 +40,15 @@ struct RemiConnectionTests {
             "The daemon's pending approval queue is full.")
     }
 
+    @Test func appTransportPolicyRefusalIsExplicitAndCannotTriggerFallback() {
+        let refusal = URLError(.appTransportSecurityRequiresSecureConnection)
+        #expect(RemiConnection.directPolicyRejectionDescription(refusal)?.contains("ATS -1022") == true)
+        #expect(!RemiConnection.isDirectReachabilityFailure(refusal))
+        #expect(RemiConnection.directPolicyRejectionDescription(URLError(.cannotConnectToHost)) == nil)
+        #expect(RemiConnection.directPolicyRejectionDescription(URLError(.serverCertificateUntrusted)) == nil)
+        #expect(RemiConnection.directPolicyRejectionDescription(RemiConnectionError.malformedMessage) == nil)
+    }
+
     @Test func pairingRetryErrorsAreExplicitAndBounded() {
         #expect(RemiConnection.shouldRetryAuthentication("PAIRING_PENDING"))
         #expect(RemiConnection.shouldRetryAuthentication("PENDING_QUEUE_FULL"))
