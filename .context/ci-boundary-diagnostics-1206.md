@@ -139,3 +139,28 @@ passed. The real quiet-stage control passes on Mac without procfs and still
 needs the hosted Linux gate. The real stage-file FIFO replacement control also
 passes on Mac. The real process-topology and independent-wchan control is
 Linux-only and has not run on this host. No hosted rerun is included here.
+
+## Linux control correction and remaining stall
+
+Hosted run `39523033318` crossed the direct logging boundary with 46 direct
+and 46 nested stages and completed the test population.
+It failed two new Linux diagnostic controls, not the previous quiet deadline.
+On actual Linux x64 Bun 1.3.11, `Dir.close()` returns synchronously;
+calling `.catch()` on that return threw and discarded an otherwise valid topology.
+Awaiting close inside try/catch retains best-effort cleanup on both API shapes.
+
+The real FIFO control also exposed a separate nested-Bun startup race before
+the one-time sample.
+Its fixture now uses a positional-argument shell parent and direct `exec cat`
+child on the same FIFO, retaining the two-second deadline and all assertions.
+The independent kernel wait-channel oracle remains in place.
+Pinned Linux controls passed 2/2 with 49 assertions and the FIFO control passed
+10/10 repeats; the lead independently repeated red and green bundles.
+The focused Mac population passed 32 tests with one Linux-only skip.
+
+The original full-suite cause remains unresolved.
+Phase-three run `39524111700` crossed logging but later reached the unchanged
+20-minute deadline at a `transcript-watcher.test.ts` header, with eight quiet
+samples, flat final CPU and settled forwarding streams.
+The corrected diagnostic helper is included in the combined release candidate;
+there is no unchanged rerun or waiver of the final release checks.

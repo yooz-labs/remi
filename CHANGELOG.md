@@ -4,8 +4,12 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
-- Native app source adds per-machine Automatic, Local only, Tailscale only and Relay only preferences, bounded direct handshakes and full authenticated machine-pin persistence. Re-pairing preserves the saved policy and routes. Automatic advances on reachability failure; an unavailable locked layer does not fall back. This requires a separate app upload; alternate-address pairing and local discovery remain subsequent phases of #1571.
+- Native app source adds per-machine Automatic, Local only, Tailscale only and Relay only preferences, bounded handshakes and full authenticated machine-pin persistence. Re-pairing preserves the saved policy, alias and routes. An unavailable locked layer does not fall back (#1571).
+- `remi pair --qr-version 2` offers one to four direct addresses under the same machine key and pairing nonce. The native candidate tries permitted Local addresses before Tailscale and stops on authentication or identity refusal. V1 remains the CLI default for compatibility; v2 needs the separately distributed compatible app. Relay enrollment stays explicit (#1574).
+- Native recovery discovers compatible local hubs and verifies the saved full key before replacing a connection. A healthy route stays active while a preferred route is checked. Discovery addresses stay in memory; network changes and Retry use bounded episodes without replaying pending operations. Hubs and session daemons now advertise distinct default Bonjour names (#1575).
+- The next native build retains build 14's accepted chat behavior: open at the latest message, follow new messages at the bottom, and preserve the reader's place when scrolling back (#1568). Native build 15, signed permission behavior and physical route transitions have separate distribution and acceptance gates.
 - Card Cancel checks the exact prompt again at the queued terminal write. A stale or formerly held card clears without sending Esc into a running agent. Confirmed owning-turn completion also clears a render-owned card that the permission gate does not track (#1570). Ambiguous status updates alone still do not dismiss questions.
+- CI records bounded owned-process wait metadata and an independent logging-stage channel. Linux Bun 1.3.11 directory cleanup is handled without assuming a Promise return. These diagnostics do not establish the cause of the intermittent full-suite stall (#1206).
 
 ## [0.8.0] - 2026-10-20
 
