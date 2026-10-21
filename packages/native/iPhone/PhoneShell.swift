@@ -153,8 +153,8 @@ struct PhoneShell<Content: View, Drawer: View>: View {
     }
 
     /// A sibling above the content, so only the real content is non-interactive while the
-    /// drawer is open. It is a real button covering the whole visible content strip; a
-    /// leftward drag on it closes the drawer too.
+    /// drawer is open. It is a button covering the whole visible content strip, for sighted
+    /// touch; a leftward drag on it closes the drawer too.
     @ViewBuilder
     private func dimLayer(width: CGFloat) -> some View {
         if isActive {
@@ -168,8 +168,11 @@ struct PhoneShell<Content: View, Drawer: View>: View {
             .buttonStyle(.plain)
             .modifier(PhoneShellSlide(model: drag, open: isOpen, width: width, enabled: !reduceMotion))
             .simultaneousGesture(closeDrag(width: width))
-            .accessibilityLabel("Close menu")
-            .accessibilitySortPriority(1)
+            // Only an open drawer takes touches, so the layer cannot swallow taps and
+            // scrolls on the content while a close settles. The header close button and
+            // the escape action are the accessible close paths.
+            .allowsHitTesting(isOpen)
+            .accessibilityHidden(true)
             .zIndex(2)
         }
     }
