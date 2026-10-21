@@ -169,7 +169,12 @@ private struct PhoneDrawerSessionRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
+        .accessibilityLabel(presentation.accessibilityLabel)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private var presentation: PhoneDrawerSessionPresentation {
+        PhoneDrawerSessionPresentation(session: session)
     }
 
     private var texts: some View {
@@ -177,7 +182,7 @@ private struct PhoneDrawerSessionRow: View {
             Text(session.name)
                 .font(.body)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-            Text("\(session.project) · \(session.machineName)")
+            Text(presentation.subtitle)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
