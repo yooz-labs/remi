@@ -8,9 +8,8 @@ struct PhoneDrawerView: View {
     let sessions: [RemiSessionSummary]
     let questionCount: Int
     let destination: PhoneShellDestination
-    /// True while the drawer is open. The session order freezes while it is.
-    let isPresented: Bool
     let canCreateSession: Bool
+    let onClose: () -> Void
     let onSelectInbox: () -> Void
     let onSelectSession: (RemiSessionSummary) -> Void
     let onNewSession: () -> Void
@@ -18,15 +17,20 @@ struct PhoneDrawerView: View {
     let onPreferences: () -> Void
 
     @Environment(\.phoneDrawerBlocksTaps) private var blocksTaps
+    @Environment(\.phoneDrawerOrderFrozen) private var orderFrozen
+    @Environment(\.phoneDrawerIsOpen) private var isOpen
+    /// The grouping as it was when the order last moved freely; `displayed` is what the
+    /// list shows. Both are memoized here so a body pass does not regroup the sessions.
     @State private var snapshot: RemiSessionGrouping
+    @State private var displayed: RemiSessionGrouping
     @AccessibilityFocusState private var headerFocused: Bool
 
     init(
         sessions: [RemiSessionSummary],
         questionCount: Int,
         destination: PhoneShellDestination,
-        isPresented: Bool,
         canCreateSession: Bool,
+        onClose: @escaping () -> Void,
         onSelectInbox: @escaping () -> Void,
         onSelectSession: @escaping (RemiSessionSummary) -> Void,
         onNewSession: @escaping () -> Void,
@@ -36,19 +40,16 @@ struct PhoneDrawerView: View {
         self.sessions = sessions
         self.questionCount = questionCount
         self.destination = destination
-        self.isPresented = isPresented
         self.canCreateSession = canCreateSession
+        self.onClose = onClose
         self.onSelectInbox = onSelectInbox
         self.onSelectSession = onSelectSession
         self.onNewSession = onNewSession
         self.onAddMachine = onAddMachine
         self.onPreferences = onPreferences
-        _snapshot = State(initialValue: RemiSessionGrouping(sessions: sessions))
-    }
-
-    private var grouping: RemiSessionGrouping {
-        let live = RemiSessionGrouping(sessions: sessions)
-        return isPresented ? live.frozen(to: snapshot) : live
+        let grouping = RemiSessionGrouping(sessions: sessions)
+        _snapshot = State(initialValue: grouping)
+        _displayed = State(initialValue: grouping)
     }
 
     private var selectedKey: RemiSessionKey? {
@@ -67,28 +68,54 @@ struct PhoneDrawerView: View {
                 onPreferences: { if !blocksTaps { onPreferences() } }
             )
         }
-        .onChange(of: sessions) { _, latest in
-            if !isPresented { snapshot = RemiSessionGrouping(sessions: latest) }
+        .onChange(of: sessions) { _, _ in refresh() }
+        .onChange(of: orderFrozen) { _, _ in refresh() }
+        .onChange(of: isOpen) { _, open in
+            if open { headerFocused = true }
         }
-        .onChange(of: isPresented) { _, presented in
-            if presented { headerFocused = true }
+        .onAppear { if isOpen { headerFocused = true } }
+    }
+
+    /// While the order is frozen, rows keep the position they had; once it is free the
+    /// list takes the live order and that becomes the next snapshot.
+    private func refresh() {
+        let live = RemiSessionGrouping(sessions: sessions)
+        if orderFrozen {
+            displayed = live.frozen(to: snapshot)
+        } else {
+            snapshot = live
+            displayed = live
         }
-        .onAppear { if isPresented { headerFocused = true } }
     }
 
     private var header: some View {
-        Text("Remi")
-            .font(.title2.weight(.bold))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, RemiTheme.Spacing.m)
-            .padding(.vertical, RemiTheme.Spacing.s)
-            .accessibilityAddTraits(.isHeader)
-            .accessibilitySortPriority(1)
-            .accessibilityFocused($headerFocused)
+        HStack(spacing: RemiTheme.Spacing.xs) {
+            Text("Remi")
+                .font(.title2.weight(.bold))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilitySortPriority(1)
+                .accessibilityFocused($headerFocused)
+            Button {
+                if !blocksTaps { onClose() }
+            } label: {
+                Image(systemName: "xmark")
+                    .frame(
+                        width: RemiTheme.Size.minimumTapTarget,
+                        height: RemiTheme.Size.minimumTapTarget
+                    )
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close menu")
+        }
+        .padding(.leading, RemiTheme.Spacing.m)
+        .padding(.trailing, RemiTheme.Spacing.xs)
+        .padding(.vertical, RemiTheme.Spacing.xxs)
     }
 
     private var list: some View {
-        let groups = grouping
+        let groups = displayed
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
                 PhoneDrawerInboxRow(
