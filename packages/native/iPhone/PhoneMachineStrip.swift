@@ -260,16 +260,14 @@ struct PhoneMachineProblemRows: View {
     let machines: [RemiMachineSummary]
     let onManage: () -> Void
 
-    private var labels: [String: String] { RemiMachineStripPresentation.uniqueLabels(for: machines) }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(RemiMachineStripPresentation.problems(in: machines)) { problem in
+            ForEach(RemiMachineStripPresentation.problemRows(in: machines)) { row in
                 Button(action: onManage) {
                     HStack(spacing: RemiTheme.Spacing.xs) {
-                        Image(systemName: icon(problem))
+                        Image(systemName: icon(row))
                             .accessibilityHidden(true)
-                        Text(verbatim: problem.message(label: labels[problem.machine.id] ?? problem.machine.name))
+                        Text(verbatim: row.message)
                             .multilineTextAlignment(.leading)
                             .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                         Spacer(minLength: RemiTheme.Spacing.xs)
@@ -283,15 +281,17 @@ struct PhoneMachineProblemRows: View {
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(row.accessibilityLabel)
                 .accessibilityHint("Opens machines")
             }
         }
     }
 
-    private func icon(_ problem: RemiMachineStripPresentation.Problem) -> String {
+    private func icon(_ row: RemiMachineStripPresentation.ProblemRow) -> String {
+        guard case .machine(let problem, _) = row else { return "exclamationmark.triangle" }
         switch problem {
-        case .unreachable: "desktopcomputer.trianglebadge.exclamationmark"
-        case .waitingForApproval: "person.badge.clock"
+        case .unreachable: return "desktopcomputer.trianglebadge.exclamationmark"
+        case .waitingForApproval: return "person.badge.clock"
         }
     }
 }

@@ -66,6 +66,42 @@ public enum RemiMachineStripPresentation {
         }
     }
 
+    /// One line in the drawer's problem area.
+    public enum ProblemRow: Equatable, Sendable, Identifiable {
+        case machine(Problem, label: String)
+        /// Three or more problems collapse into this one line.
+        case summary(count: Int)
+
+        public var id: String {
+            switch self {
+            case .machine(let problem, _): problem.id
+            case .summary: "summary"
+            }
+        }
+
+        public var message: String {
+            switch self {
+            case .machine(let problem, let label): problem.message(label: label)
+            case .summary(let count): "\(count) machines need attention"
+            }
+        }
+
+        public var accessibilityLabel: String { message }
+    }
+
+    /// The most problem lines shown one by one; more than this collapse into one summary.
+    public static let maximumProblemRows = 2
+
+    /// Up to two lines, one per machine; for three or more problems a single summary line.
+    public static func problemRows(in machines: [RemiMachineSummary]) -> [ProblemRow] {
+        let all = problems(in: machines)
+        guard all.count > maximumProblemRows else {
+            let labels = uniqueLabels(for: machines)
+            return all.map { .machine($0, label: labels[$0.machine.id] ?? $0.machine.name) }
+        }
+        return [.summary(count: all.count)]
+    }
+
     public static func layout(for machines: [RemiMachineSummary], isAccessibilitySize: Bool) -> Layout {
         switch machines.count {
         case 0: return .none

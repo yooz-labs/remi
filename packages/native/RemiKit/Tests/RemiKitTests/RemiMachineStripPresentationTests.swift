@@ -126,4 +126,24 @@ import Testing
         #expect(Strip.Problem.waitingForApproval(m).message(label: "X") == "X is waiting for approval")
         #expect(Strip.accessibilityLabel(for: m, label: "Mac (addr)") == "Mac (addr), offline")
     }
+
+    @Test func oneOrTwoProblemsAreListedWithLabels() {
+        let a = named("a", "Same", address: "h:1")
+        let b = RemiMachineSummary(id: "b", name: "Same", address: "h:2", reachability: .unreachable, transport: .direct, sessionCount: 0)
+        let c = RemiMachineSummary(id: "c", name: "Other", address: "h:3", reachability: .waitingForApproval, transport: .direct, sessionCount: 0)
+        #expect(Strip.problemRows(in: [a]).isEmpty)
+        let rows = Strip.problemRows(in: [a, b, c])
+        #expect(rows.map(\.message) == ["Same (h:2) is offline", "Other is waiting for approval"])
+        #expect(Set(rows.map(\.id)).count == 2)
+    }
+
+    @Test func threeOrMoreProblemsCollapseToOneSummary() {
+        let all = (0..<5).map { machine("m\($0)", reachability: .unreachable) }
+        let rows = Strip.problemRows(in: all)
+        #expect(rows == [.summary(count: 5)])
+        #expect(rows[0].message == "5 machines need attention")
+        #expect(rows[0].accessibilityLabel == "5 machines need attention")
+        #expect(Strip.problemRows(in: Array(all.prefix(3))) == [.summary(count: 3)])
+        #expect(Strip.problemRows(in: Array(all.prefix(2))).count == 2)
+    }
 }
