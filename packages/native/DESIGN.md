@@ -36,8 +36,16 @@ The person is busy elsewhere; the app's job is to tell them what needs them, let
 
 ## The iPhone app
 
-- **Home:** the sessions grouped by machine, with the cards that need the person on top.
+- **Home is an Inbox:** the cards that need the person, from all machines, with a short note for each one resolved elsewhere, a one-line row for each machine problem, and the first-run steps when nothing is connected yet.
+  The app launches on the Inbox.
+- **Sessions live in a left drawer,** reached by an edge swipe or a button at the top left.
+  The drawer groups them Needs you, Active and Recent, and each row names its project and its machine.
+  The machine strip in the drawer is a temporary filter: it narrows the list of sessions and never the Inbox or notifications.
 - **The session:** transcript and cards, with a composer.
+  It opens at its latest message and has no back button; the drawer is the way out.
+  A session has a pane, chat today, so files and a terminal can be added later once a hub capability backs them.
+  No control is drawn for a pane that cannot work.
+- **The drawer is a custom container** built on the system edge-pan recognizer and system materials, not web-style chrome (principle 4).
 - **Lock screen:** a notification's buttons follow the daemon's push categories (root AGENTS.md, "Notification channel"), which choose by meaning: Yes and No; Yes, "Yes, always" (an always-allow rule, which needs an unlocked device) and No; or the options of another card with two to four choices and no standing grant, a single-question, single-select AskUserQuestion included. Every other card has no buttons and opens the app: one with `detail`, a "for this session" mode grant, a plan approval, a terminal-only card.
 - **Pairing:** lead with scanning the short-lived code from `remi pair`, then show the endpoint, pinned daemon fingerprint, expiry and explicit terminal-approval requirement before connecting. Manual host/port and `remi authorize` remain the fallback. The scanner, confirmation and fallback states use one focused card with generous spacing and one primary action, not a dense setup form.
 
