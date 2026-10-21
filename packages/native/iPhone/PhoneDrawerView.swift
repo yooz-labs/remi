@@ -6,10 +6,15 @@ import SwiftUI
 /// It takes plain values and closures and never reads the store.
 struct PhoneDrawerView: View {
     let sessions: [RemiSessionSummary]
+    let machines: [RemiMachineSummary]
+    let filter: PhoneDrawerFilter
     let questionCount: Int
     let destination: PhoneShellDestination
     let canCreateSession: Bool
     let onClose: () -> Void
+    let onSelectAllMachines: () -> Void
+    let onSelectMachine: (String) -> Void
+    let onManageMachines: () -> Void
     let onSelectInbox: () -> Void
     let onSelectSession: (RemiSessionSummary) -> Void
     let onNewSession: () -> Void
@@ -23,14 +28,20 @@ struct PhoneDrawerView: View {
     /// list shows. Both are memoized here so a body pass does not regroup the sessions.
     @State private var snapshot: RemiSessionGrouping
     @State private var displayed: RemiSessionGrouping
+    @State private var query = ""
     @AccessibilityFocusState private var headerFocused: Bool
 
     init(
         sessions: [RemiSessionSummary],
+        machines: [RemiMachineSummary] = [],
+        filter: PhoneDrawerFilter = .all,
         questionCount: Int,
         destination: PhoneShellDestination,
         canCreateSession: Bool,
         onClose: @escaping () -> Void,
+        onSelectAllMachines: @escaping () -> Void = {},
+        onSelectMachine: @escaping (String) -> Void = { _ in },
+        onManageMachines: @escaping () -> Void = {},
         onSelectInbox: @escaping () -> Void,
         onSelectSession: @escaping (RemiSessionSummary) -> Void,
         onNewSession: @escaping () -> Void,
@@ -38,16 +49,25 @@ struct PhoneDrawerView: View {
         onPreferences: @escaping () -> Void
     ) {
         self.sessions = sessions
+        self.machines = machines
+        self.filter = filter
         self.questionCount = questionCount
         self.destination = destination
         self.canCreateSession = canCreateSession
         self.onClose = onClose
+        self.onSelectAllMachines = onSelectAllMachines
+        self.onSelectMachine = onSelectMachine
+        self.onManageMachines = onManageMachines
         self.onSelectInbox = onSelectInbox
         self.onSelectSession = onSelectSession
         self.onNewSession = onNewSession
         self.onAddMachine = onAddMachine
         self.onPreferences = onPreferences
-        let grouping = RemiSessionGrouping(sessions: sessions)
+        var initialFilter: String?
+        if case .machine(let key) = filter { initialFilter = key }
+        let grouping = RemiSessionGrouping(
+            sessions: RemiSessionFilter.apply(to: sessions, query: "", machineKey: initialFilter)
+        )
         _snapshot = State(initialValue: grouping)
         _displayed = State(initialValue: grouping)
     }
@@ -59,6 +79,14 @@ struct PhoneDrawerView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            PhoneMachineStrip(
+                machines: machines,
+                filter: filter,
+                onSelectAll: { if !blocksTaps { onSelectAllMachines() } },
+                onSelectMachine: { if !blocksTaps { onSelectMachine($0) } },
+                onManage: { if !blocksTaps { onManageMachines() } }
+            )
+            if showsSearch { searchField }
             list
             Divider()
             PhoneDrawerActions(
@@ -70,6 +98,10 @@ struct PhoneDrawerView: View {
         }
         .onChange(of: sessions) { _, _ in refresh() }
         .onChange(of: orderFrozen) { _, _ in refresh() }
+        // A new filter or query is not a reorder of what is on screen: show the result
+        // at once instead of holding the old order.
+        .onChange(of: filter) { _, _ in refresh(reordering: true) }
+        .onChange(of: query) { _, _ in refresh(reordering: true) }
         .onChange(of: isOpen) { _, open in
             if open { headerFocused = true }
         }
@@ -78,9 +110,22 @@ struct PhoneDrawerView: View {
 
     /// While the order is frozen, rows keep the position they had; once it is free the
     /// list takes the live order and that becomes the next snapshot.
-    private func refresh() {
-        let live = RemiSessionGrouping(sessions: sessions)
-        if orderFrozen {
+    private var filteredKey: String? {
+        if case .machine(let key) = filter { return key }
+        return nil
+    }
+
+    private var isNarrowed: Bool {
+        filteredKey != nil || !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var showsSearch: Bool { !sessions.isEmpty || !query.isEmpty }
+
+    private func refresh(reordering: Bool = false) {
+        let live = RemiSessionGrouping(
+            sessions: RemiSessionFilter.apply(to: sessions, query: query, machineKey: filteredKey)
+        )
+        if orderFrozen && !reordering {
             displayed = live.frozen(to: snapshot)
         } else {
             snapshot = live
@@ -114,6 +159,35 @@ struct PhoneDrawerView: View {
         .padding(.vertical, RemiTheme.Spacing.xxs)
     }
 
+    private var searchField: some View {
+        HStack(spacing: RemiTheme.Spacing.xs) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            TextField("Search sessions", text: $query)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+            if !query.isEmpty {
+                Button {
+                    query = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                        .frame(width: RemiTheme.Size.minimumTapTarget, height: RemiTheme.Size.minimumTapTarget)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.leading, RemiTheme.Spacing.s)
+        .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+        .background(RemiTheme.Color.surface, in: .capsule)
+        .padding(.horizontal, RemiTheme.Spacing.m)
+        .padding(.bottom, RemiTheme.Spacing.xxs)
+    }
+
     private var list: some View {
         let groups = displayed
         return ScrollView {
@@ -126,9 +200,34 @@ struct PhoneDrawerView: View {
                 section("Needs you", groups.needsYou)
                 section("Active", groups.active)
                 section("Recent", groups.recent)
+                if groups.isEmpty && isNarrowed { noMatches }
             }
             .padding(.horizontal, RemiTheme.Spacing.xs)
         }
+    }
+
+    private var noMatches: some View {
+        VStack(spacing: RemiTheme.Spacing.xs) {
+            Text("No sessions match")
+                .font(.headline)
+            Text("Try a different search, or show all machines.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Clear search and filter") {
+                query = ""
+                if !blocksTaps { onSelectAllMachinesIfFiltered() }
+            }
+            .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+            .contentShape(.rect)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(RemiTheme.Spacing.m)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func onSelectAllMachinesIfFiltered() {
+        if filteredKey != nil { onSelectAllMachines() }
     }
 
     @ViewBuilder

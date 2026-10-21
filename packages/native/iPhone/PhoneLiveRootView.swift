@@ -175,10 +175,15 @@ struct PhoneLiveRootView: View {
     private var drawerContent: some View {
         PhoneDrawerView(
             sessions: allSessions,
+            machines: machineSummaries,
+            filter: shell.drawerFilter,
             questionCount: store.machines.reduce(0) { $0 + $1.questions.count },
             destination: shell.destination,
             canCreateSession: !availableSessionMachines.isEmpty,
             onClose: { shell.closeDrawer() },
+            onSelectAllMachines: { shell.clearFilter() },
+            onSelectMachine: { shell.selectMachineFilter($0) },
+            onManageMachines: { present(.machines) },
             onSelectInbox: { shell.select(.inbox) },
             onSelectSession: selectSession,
             onNewSession: { present(.newSession(machineID: nil, repository: nil)) },
