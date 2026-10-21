@@ -99,4 +99,53 @@ import Testing
         #expect(state.focusQuestionID(for: route("s1", machine: "m1")) == "q1")
         #expect(state.consumeFocus(for: route("s1", machine: "m1")) == "q1")
     }
+
+    @Test func filterStartsOnAllAndSelectingNarrowsToOneMachine() {
+        var state = PhoneShellState()
+        #expect(state.drawerFilter == .all)
+        #expect(state.filteredMachineKey == nil)
+        state.selectMachineFilter("m1")
+        #expect(state.drawerFilter == .machine("m1"))
+        #expect(state.filteredMachineKey == "m1")
+        state.selectMachineFilter("m2")
+        #expect(state.filteredMachineKey == "m2")
+    }
+
+    @Test func selectingTheActiveMachineReturnsToAll() {
+        var state = PhoneShellState(drawerFilter: .machine("m1"))
+        state.selectMachineFilter("m1")
+        #expect(state.drawerFilter == .all)
+    }
+
+    @Test func clearFilterReturnsToAll() {
+        var state = PhoneShellState(drawerFilter: .machine("m1"))
+        state.clearFilter()
+        #expect(state.drawerFilter == .all)
+        state.clearFilter()
+        #expect(state.drawerFilter == .all)
+    }
+
+    @Test func removedMachineResetsTheFilter() {
+        var state = PhoneShellState(drawerFilter: .machine("m1"))
+        state.machinesChanged(ids: ["m1", "m2"])
+        #expect(state.filteredMachineKey == "m1")
+        state.machinesChanged(ids: ["m2"])
+        #expect(state.drawerFilter == .all)
+        state.machinesChanged(ids: [])
+        #expect(state.drawerFilter == .all)
+    }
+
+    @Test func notificationClearsTheFilter() {
+        var state = PhoneShellState(drawerFilter: .machine("m2"))
+        state.openFromNotification(route: route("s1", machine: "m1"), questionID: "q1")
+        #expect(state.drawerFilter == .all)
+    }
+
+    @Test func selectingADestinationKeepsTheFilter() {
+        var state = PhoneShellState(isDrawerOpen: true, drawerFilter: .machine("m1"))
+        state.select(.session(route("s1", machine: "m1")))
+        #expect(state.filteredMachineKey == "m1")
+        state.select(.inbox)
+        #expect(state.filteredMachineKey == "m1")
+    }
 }
