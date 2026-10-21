@@ -43,13 +43,13 @@ struct PhoneMachineStrip: View {
             HStack(spacing: RemiTheme.Spacing.xs) {
                 ViewThatFits(in: .horizontal) {
                     chipRow
-                    ScrollView(.horizontal, showsIndicators: false) { chipRow }
+                    chipScroll
                 }
                 manageButton
             }
         case .scrollingChips:
             HStack(spacing: RemiTheme.Spacing.xs) {
-                ScrollView(.horizontal, showsIndicators: false) { chipRow }
+                chipScroll
                 manageButton
             }
         }
@@ -81,6 +81,13 @@ struct PhoneMachineStrip: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(RemiMachineStripPresentation.accessibilityLabel(for: machine, label: label(machine)))
         .accessibilityHint("Opens machines")
+    }
+
+    /// The chips in a horizontal scroll. Manage stays outside it as a fixed trailing
+    /// control, and the trailing margin lets the last chip scroll fully clear of it.
+    private var chipScroll: some View {
+        ScrollView(.horizontal, showsIndicators: false) { chipRow }
+            .contentMargins(.trailing, RemiTheme.Spacing.m, for: .scrollContent)
     }
 
     private var chipRow: some View {
@@ -186,6 +193,8 @@ private struct PhoneMachineChip: View {
                 Text(verbatim: title)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 240)
                 PhoneMachineCountCapsule(count: count)
             }
             .foregroundStyle(isSelected ? AnyShapeStyle(.background) : AnyShapeStyle(.primary))
