@@ -18,6 +18,13 @@ public enum RemiDrawerGesture {
         return isAtRoot && startX <= edgeWidth && translation.width > 0 && horizontal
     }
 
+    /// True when a drag that started at `start` began inside one of `regions`, such as a
+    /// horizontally scrolling strip, which keeps the drag for itself. Both are in the same
+    /// coordinate space. A region's edges count as inside.
+    public static func startsInsideAny(of regions: [CGRect], at start: CGPoint) -> Bool {
+        regions.contains { $0.contains(start) }
+    }
+
     /// 0 is closed and 1 is open. A closed drawer opens with a rightward drag, an open
     /// one closes with a leftward drag. A width of zero or less returns the resting value.
     public static func progress(translationX: CGFloat, drawerWidth: CGFloat, isOpen: Bool) -> CGFloat {

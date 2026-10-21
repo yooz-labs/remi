@@ -24,6 +24,7 @@ struct PhoneMachineStrip: View {
         content
             .padding(.horizontal, RemiTheme.Spacing.m)
             .padding(.vertical, RemiTheme.Spacing.xxs)
+            .phoneDrawerKeepsHorizontalDrag()
     }
 
     @ViewBuilder

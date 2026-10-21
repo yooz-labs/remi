@@ -71,4 +71,13 @@ import Testing
         #expect(RemiDrawerGesture.settledIsOpen(progress: 0.9, velocityX: -threshold, isOpen: true))
         #expect(!RemiDrawerGesture.settledIsOpen(progress: 0.9, velocityX: -threshold - 1, isOpen: true))
     }
+
+    @Test func dragStartingInsideAReservedRegionIsDetected() {
+        let strip = CGRect(x: 0, y: 100, width: 300, height: 60)
+        #expect(RemiDrawerGesture.startsInsideAny(of: [strip], at: CGPoint(x: 150, y: 130)))
+        #expect(RemiDrawerGesture.startsInsideAny(of: [strip], at: CGPoint(x: 0, y: 100)))
+        #expect(!RemiDrawerGesture.startsInsideAny(of: [strip], at: CGPoint(x: 150, y: 400)))
+        #expect(!RemiDrawerGesture.startsInsideAny(of: [strip], at: CGPoint(x: 150, y: 161)))
+        #expect(!RemiDrawerGesture.startsInsideAny(of: [], at: CGPoint(x: 1, y: 1)))
+    }
 }
