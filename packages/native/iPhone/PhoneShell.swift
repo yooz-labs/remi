@@ -14,6 +14,7 @@ struct PhoneShell<Content: View, Drawer: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var dragProgress: CGFloat?
+    @State private var isSettling = false
 
     private var progress: CGFloat { dragProgress ?? (state.isDrawerOpen ? 1 : 0) }
 
@@ -25,7 +26,6 @@ struct PhoneShell<Content: View, Drawer: View>: View {
                 contentLayer(width: width)
             }
         }
-        .background(Color(.systemBackground).ignoresSafeArea())
         .onChange(of: state.isDrawerOpen) { _, isOpen in
             if isOpen { Self.resignFirstResponder() }
         }
@@ -35,24 +35,32 @@ struct PhoneShell<Content: View, Drawer: View>: View {
         dynamicTypeSize.isAccessibilitySize ? containerWidth : min(containerWidth * 0.86, 360)
     }
 
+    /// The drawer exists only while it shows: at rest it is not in the hierarchy, so its
+    /// material cannot paint into the safe areas behind the content.
+    private var drawerVisible: Bool { progress > 0 || isSettling }
+
+    @ViewBuilder
     private func drawerLayer(width: CGFloat) -> some View {
-        drawer()
-            .frame(width: width)
-            .frame(maxHeight: .infinity)
-            .background(.regularMaterial)
-            .opacity(reduceMotion ? progress : 1)
-            .allowsHitTesting(progress > 0)
-            .accessibilityHidden(!state.isDrawerOpen)
-            .accessibilityAddTraits(.isModal)
-            .accessibilityAction(.escape) { setOpen(false) }
-            .simultaneousGesture(closeDrag(width: width))
-            .zIndex(reduceMotion ? 2 : 0)
+        if drawerVisible {
+            drawer()
+                .frame(width: width)
+                .frame(maxHeight: .infinity)
+                .background { Rectangle().fill(.regularMaterial).ignoresSafeArea() }
+                .opacity(reduceMotion ? progress : 1)
+                .allowsHitTesting(progress > 0)
+                .accessibilityHidden(!state.isDrawerOpen)
+                .accessibilityAddTraits(.isModal)
+                .accessibilityAction(.escape) { setOpen(false) }
+                .simultaneousGesture(closeDrag(width: width))
+                .zIndex(reduceMotion ? 2 : 0)
+        }
     }
 
     private func contentLayer(width: CGFloat) -> some View {
         content()
-            .clipShape(.rect(cornerRadius: progress > 0 ? 28 : 0, style: .continuous))
-            .shadow(color: .black.opacity(progress > 0 ? 0.18 : 0), radius: 14)
+            .background { contentBackground(shadow: false) }
+            .mask { contentShape.ignoresSafeArea() }
+            .background { contentBackground(shadow: true) }
             .overlay { dimOverlay(width: width) }
             .offset(x: reduceMotion ? 0 : progress * width)
             .allowsHitTesting(!state.isDrawerOpen)
@@ -61,12 +69,27 @@ struct PhoneShell<Content: View, Drawer: View>: View {
             .zIndex(1)
     }
 
+    private var cornerRadius: CGFloat { progress > 0 ? 28 : 0 }
+
+    private var contentShape: some Shape {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+    }
+
+    /// Opaque, and extended under the status bar and home indicator, so nothing behind
+    /// the content layer shows through.
+    private func contentBackground(shadow: Bool) -> some View {
+        contentShape
+            .fill(Color(.systemBackground))
+            .shadow(color: .black.opacity(shadow && progress > 0 ? 0.18 : 0), radius: 14)
+            .ignoresSafeArea()
+    }
+
     @ViewBuilder
     private func dimOverlay(width: CGFloat) -> some View {
         if progress > 0 {
             Color.black
                 .opacity(progress * (reduceMotion ? 0.25 : 0.12))
-                .clipShape(.rect(cornerRadius: 28, style: .continuous))
+                .clipShape(contentShape)
                 .contentShape(.rect)
                 .onTapGesture { setOpen(false) }
                 .gesture(closeDrag(width: width))
@@ -123,9 +146,12 @@ struct PhoneShell<Content: View, Drawer: View>: View {
 
     private func setOpen(_ open: Bool) {
         let animation: Animation = reduceMotion ? .easeInOut(duration: 0.2) : RemiTheme.Motion.standard
-        withAnimation(animation) {
+        isSettling = true
+        withAnimation(animation, completionCriteria: .logicallyComplete) {
             state.isDrawerOpen = open
             dragProgress = nil
+        } completion: {
+            isSettling = false
         }
     }
 

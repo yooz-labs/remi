@@ -73,6 +73,7 @@ struct PhoneDrawerView: View {
         .onChange(of: isPresented) { _, presented in
             if presented { headerFocused = true }
         }
+        .onAppear { if isPresented { headerFocused = true } }
     }
 
     private var header: some View {
