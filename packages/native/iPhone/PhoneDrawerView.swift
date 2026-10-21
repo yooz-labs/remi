@@ -219,25 +219,69 @@ private struct PhoneDrawerCountBadge: View {
 }
 
 private struct PhoneDrawerActions: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let canCreateSession: Bool
     let onNewSession: () -> Void
     let onAddMachine: () -> Void
     let onPreferences: () -> Void
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: RemiTheme.Spacing.xs) { buttons }
-            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) { buttons }
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
+                    newSessionButton
+                    labeledButton("Add machine", systemImage: "desktopcomputer.and.arrow.down", action: onAddMachine)
+                    labeledButton("Preferences", systemImage: "gearshape", action: onPreferences)
+                }
+            } else {
+                HStack(spacing: RemiTheme.Spacing.xs) {
+                    newSessionButton
+                    iconButton("Add machine", systemImage: "desktopcomputer.and.arrow.down", hint: "Opens pairing", action: onAddMachine)
+                    iconButton("Preferences", systemImage: "gearshape", hint: "Opens preferences", action: onPreferences)
+                }
+            }
         }
-        .buttonStyle(.bordered)
-        .controlSize(.large)
         .padding(RemiTheme.Spacing.s)
     }
 
-    @ViewBuilder private var buttons: some View {
-        Button("New session", systemImage: "plus.rectangle.on.folder", action: onNewSession)
-            .disabled(!canCreateSession)
-        Button("Add machine", systemImage: "desktopcomputer.and.arrow.down", action: onAddMachine)
-        Button("Preferences", systemImage: "gearshape", action: onPreferences)
+    private var newSessionButton: some View {
+        Button(action: onNewSession) {
+            HStack {
+                Label("New session", systemImage: "plus.rectangle.on.folder")
+                if dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
+            }
+            .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.glassProminent)
+        .tint(RemiTheme.Color.attention)
+        .foregroundStyle(RemiTheme.Color.attentionInk)
+        .disabled(!canCreateSession)
+        .accessibilityHint(canCreateSession ? "Starts a session on a connected machine" : "Connect a machine first")
+    }
+
+    private func iconButton(_ title: LocalizedStringKey, systemImage: String, hint: LocalizedStringKey, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .frame(width: RemiTheme.Size.minimumTapTarget, height: RemiTheme.Size.minimumTapTarget)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .accessibilityLabel(title)
+        .accessibilityHint(hint)
+    }
+
+    private func labeledButton(_ title: LocalizedStringKey, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Label(title, systemImage: systemImage)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.glass)
     }
 }
