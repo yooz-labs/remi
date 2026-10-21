@@ -30,12 +30,20 @@ function writeDiagnosticStage(stage: LogFileStage): void {
     !file ||
     !Number.isSafeInteger(expectedParent) ||
     process.ppid !== expectedParent ||
-    typeof fs.constants.O_NOFOLLOW !== 'number'
+    typeof fs.constants.O_NOFOLLOW !== 'number' ||
+    typeof fs.constants.O_NONBLOCK !== 'number'
   )
     return;
   let fd: number | undefined;
   try {
-    fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW);
+    fd = fs.openSync(
+      file,
+      fs.constants.O_WRONLY |
+        fs.constants.O_APPEND |
+        fs.constants.O_NOFOLLOW |
+        fs.constants.O_NONBLOCK,
+    );
+    if (!fs.fstatSync(fd).isFile()) return;
     if (diagnosticStageWrites >= 64) {
       if (!diagnosticStageOverflow) {
         fs.writeSync(fd, '!truncated\n');

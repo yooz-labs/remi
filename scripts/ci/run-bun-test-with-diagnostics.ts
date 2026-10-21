@@ -1,4 +1,13 @@
-import { constants, chmodSync, closeSync, lstatSync, mkdtempSync, openSync, rmSync } from 'node:fs';
+import {
+  constants,
+  chmodSync,
+  closeSync,
+  lstatSync,
+  mkdtempSync,
+  openSync,
+  rmSync,
+  unlinkSync,
+} from 'node:fs';
 import { open, opendir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -58,6 +67,8 @@ type RunOptions = {
   captureLoggingStages?: boolean;
   /** Test harness only: pause the real logging test before its module-body stderr checkpoint. */
   testOnlyLoggingStageHoldPath?: string;
+  /** Test harness only: replace the owned stage file with a real FIFO before child spawn. */
+  testOnlyReplaceLoggingStageFileWithFifo?: boolean;
 };
 
 type RunResult = {
@@ -171,7 +182,10 @@ async function readLoggingStageSnapshot(
   if (typeof constants.O_NOFOLLOW !== 'number') return null;
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    handle = await open(channel.file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    handle = await open(
+      channel.file,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
     const info = await handle.stat();
     if (!info.isFile() || !Number.isSafeInteger(info.size) || info.size < 0) return null;
     const limit = Math.min(info.size, MAX_LOG_STAGE_FILE_BYTES);
@@ -739,6 +753,21 @@ export async function runChild(command: string[], options: RunOptions = {}): Pro
   const loggingStageChannel = options.captureLoggingStages
     ? createLoggingStageChannel(stderr)
     : null;
+  if (options.testOnlyReplaceLoggingStageFileWithFifo) {
+    try {
+      if (!loggingStageChannel) throw new Error('No stage channel');
+      unlinkSync(loggingStageChannel.file);
+      const result = Bun.spawnSync(['mkfifo', loggingStageChannel.file], {
+        stdout: 'ignore',
+        stderr: 'ignore',
+      });
+      if (result.exitCode !== 0) throw new Error('mkfifo failed');
+    } catch {
+      const cleanupVerified = cleanupLoggingStageChannel(loggingStageChannel);
+      if (cleanupVerified === false) reportLoggingStageCleanupFailure(stderr);
+      throw new Error('Test-only stage FIFO setup failed');
+    }
+  }
   const childEnv = { ...(options.env ?? process.env) };
   delete childEnv[LOG_STAGE_FILE_ENV];
   delete childEnv[LOG_STAGE_PARENT_ENV];

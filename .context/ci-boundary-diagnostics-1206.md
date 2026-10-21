@@ -26,8 +26,10 @@ network were removed.
 This change adds observation rather than a claimed root-cause correction:
 
 - The existing quiet-period process sample reads a bounded kernel wait-channel
-  symbol, or records `null` when unavailable. It reads no environment,
-  arguments, memory or payload. `0` is retained without interpreting health.
+  symbol, or records `null` when unavailable. Its bounded `/proc/<pid>/stat`
+  parser uses `comm` only to locate numeric fields and never emits the name; it
+  reads no `argv`, environment, memory contents or payload. `0` is retained
+  without interpreting health.
 - GitHub Actions gets static logging-test module/setup/open/read checkpoints,
   following the existing remote-new-client checkpoint pattern.
 - A real FIFO-blocked child checks kernel sampling and actual emitted metadata.
@@ -104,8 +106,10 @@ The first quiet Linux sample now includes at most 32 task states/wait channels
 and 8 current direct-child states/wait channels. Reads are capped, symbols are
 filtered to short ASCII names, and parent/process-group checks bind the sample
 to the owned child. Missing proc data is recorded as null and cannot change
-the child result. No arguments, environment, command names, memory, or payload
-are read. A real nested FIFO control exercises the owned process and its direct
+the child result. The bounded `/proc/<pid>/stat` record includes a `comm` field;
+the sampler uses its delimiter to reach the numeric fields, discards the name,
+and never emits it. It does not read `argv`, `environ`, memory contents, or test
+payload. A real nested FIFO control exercises the owned process and its direct
 child; it remains Linux-only and still needs the hosted gate.
 
 The rest-lane owner also creates a private 0700 temporary directory and an
@@ -118,14 +122,20 @@ directory after child cleanup; cleanup failure emits a sanitized diagnostic.
 Nested inherited-environment controls are rejected by PID/parent checks. The
 controlled hold used to test a quiet module-body checkpoint runs only in the
 focused diagnostic test; the production lane never sets that hold variable.
+Both stage-file opens use nonblocking I/O and verify a regular-file descriptor;
+FIFO replacement yields unavailable stage data instead of blocking. The
+bounded control replaces the owned stage file with a real FIFO while running
+the real logging test and checks the existing child deadline and cleanup. It
+passed on Mac; the hosted Linux gate remains necessary.
 
 The test inventory, target ownership, assertions, coverage union/threshold,
 release guards, Bun pin, and 20-minute child/22-minute controller deadlines
 remain unchanged. This patch adds diagnostic evidence only; #1206 remains open
 and no root cause or corrective fix is claimed. The focused Mac run after the
-patch passed 31 tests with one Linux-only skip and 148 expectations across
+patch passed 32 tests with one Linux-only skip and 157 expectations across
 the same two files. The original 14 logging cases passed under both checkpoint
 settings with exact coverage/JUnit flags; direct stage capture and owned cleanup
 passed. The real quiet-stage control passes on Mac without procfs and still
-needs the hosted Linux gate. The real FIFO topology control is Linux-only and
-has not run on this host. No hosted rerun is included here.
+needs the hosted Linux gate. The real stage-file FIFO replacement control also
+passes on Mac. The real process-topology and independent-wchan control is
+Linux-only and has not run on this host. No hosted rerun is included here.
