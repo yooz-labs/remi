@@ -8,11 +8,17 @@ import UIKit
 /// or ends, so the shell body can read it cheaply.
 @MainActor @Observable
 final class PhoneShellDragModel {
+    /// Who is driving the drag. One owner at a time: a second touch on another layer
+    /// cannot start, end or reset a drag it does not own.
+    enum Owner { case edge, close }
+
     private(set) var progress: CGFloat?
     private(set) var isDragging = false
+    private(set) var owner: Owner?
 
-    func update(_ value: CGFloat?) {
+    func update(_ value: CGFloat?, owner: Owner? = nil) {
         progress = value
+        self.owner = value == nil ? nil : owner
         let dragging = value != nil
         if dragging != isDragging { isDragging = dragging }
     }
@@ -93,7 +99,7 @@ struct PhoneShell<Content: View, Drawer: View>: View {
             beginSettling()
         }
         .onChange(of: isClosingDrag) { _, closing in
-            if !closing { resetUnfinishedDrag() }
+            if !closing, drag.owner == .close { resetUnfinishedDrag() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { resetUnfinishedDrag() }
@@ -187,14 +193,19 @@ struct PhoneShell<Content: View, Drawer: View>: View {
         PhoneDrawerEdgePan(
             isEnabled: !isOpen && isAtRoot,
             onChange: { translationX in
+                guard drag.owner != .close else { return }
                 if !drag.isDragging { Self.resignFirstResponder() }
-                drag.update(RemiDrawerGesture.progress(translationX: translationX, drawerWidth: width, isOpen: false))
+                drag.update(
+                    RemiDrawerGesture.progress(translationX: translationX, drawerWidth: width, isOpen: false),
+                    owner: .edge
+                )
             },
             onEnd: { translationX, velocityX in
+                guard drag.owner == .edge else { return }
                 let progress = RemiDrawerGesture.progress(translationX: translationX, drawerWidth: width, isOpen: false)
                 settle(progress: progress, velocityX: velocityX, wasOpen: false)
             },
-            onCancel: resetUnfinishedDrag
+            onCancel: { if drag.owner == .edge { resetUnfinishedDrag() } }
         )
     }
 
@@ -202,7 +213,7 @@ struct PhoneShell<Content: View, Drawer: View>: View {
         DragGesture(minimumDistance: 10, coordinateSpace: .global)
             .updating($isClosingDrag) { _, closing, _ in closing = true }
             .onChanged { value in
-                guard isOpen, RemiDrawerGesture.shouldBegin(
+                guard isOpen, drag.owner != .edge, RemiDrawerGesture.shouldBegin(
                     startX: value.startLocation.x,
                     translation: value.translation,
                     isOpen: true,
@@ -212,11 +223,13 @@ struct PhoneShell<Content: View, Drawer: View>: View {
                     translationX: value.translation.width,
                     drawerWidth: width,
                     isOpen: true
-                ))
+                ), owner: .close)
             }
             .onEnded { value in
-                guard drag.isDragging else { return }
+                // Any release after a real drag (the gesture has a 10 pt minimum) is not
+                // a tap, even when the drag did not begin as a drawer drag.
                 suppressTapsBriefly()
+                guard drag.owner == .close else { return }
                 let progress = RemiDrawerGesture.progress(
                     translationX: value.translation.width,
                     drawerWidth: width,
