@@ -38,6 +38,7 @@ struct PhoneDrawerView: View {
         sessions: [RemiSessionSummary],
         machines: [RemiMachineSummary] = [],
         filter: PhoneDrawerFilter = .all,
+        initialQuery: String = "",
         questionCount: Int,
         destination: PhoneShellDestination,
         canCreateSession: Bool,
@@ -70,10 +71,11 @@ struct PhoneDrawerView: View {
         self.onNewSession = onNewSession
         self.onAddMachine = onAddMachine
         self.onPreferences = onPreferences
+        _query = State(initialValue: initialQuery)
         var initialFilter: String?
         if case .machine(let key) = filter { initialFilter = key }
         let grouping = RemiSessionGrouping(
-            sessions: RemiSessionFilter.apply(to: sessions, query: "", machineKey: initialFilter)
+            sessions: RemiSessionFilter.apply(to: sessions, query: initialQuery, machineKey: initialFilter)
         )
         _snapshot = State(initialValue: grouping)
         _displayed = State(initialValue: grouping)
