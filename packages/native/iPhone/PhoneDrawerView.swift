@@ -51,9 +51,8 @@ struct PhoneDrawerView: View {
         return isPresented ? live.frozen(to: snapshot) : live
     }
 
-    private var selectedSessionID: String? {
-        if case .session(let route) = destination { return route.sessionID }
-        return nil
+    private var selectedKey: RemiSessionKey? {
+        PhoneShellState(destination: destination).selectedSessionKey
     }
 
     var body: some View {
@@ -115,10 +114,10 @@ struct PhoneDrawerView: View {
                 .padding(.horizontal, RemiTheme.Spacing.s)
                 .padding(.top, RemiTheme.Spacing.s)
                 .accessibilityAddTraits(.isHeader)
-            ForEach(rows) { session in
+            ForEach(rows, id: \.key) { session in
                 PhoneDrawerSessionRow(
                     session: session,
-                    isSelected: selectedSessionID == session.id,
+                    isSelected: selectedKey == session.key,
                     action: { if !blocksTaps { onSelectSession(session) } }
                 )
             }

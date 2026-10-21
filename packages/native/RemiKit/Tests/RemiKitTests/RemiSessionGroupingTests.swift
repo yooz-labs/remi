@@ -8,11 +8,13 @@ import Testing
         status: RemiSessionStatus = .idle,
         activity: String? = nil,
         questions: Int = 0,
-        live: Bool? = nil
+        live: Bool? = nil,
+        machine: String = "Studio"
     ) -> RemiSessionSummary {
         RemiSessionSummary(
             id: id,
-            machineName: "Studio",
+            machineID: machine,
+            machineName: machine,
             name: name,
             harness: "Claude",
             project: "remi",
@@ -122,5 +124,43 @@ import Testing
         #expect(some.frozen(to: none).active.map(\.id) == ["a"])
         #expect(none.frozen(to: some).isEmpty)
         #expect(none.frozen(to: none).isEmpty)
+    }
+
+    @Test func keyCombinesMachineAndSession() {
+        let a = session("1", machine: "A")
+        let b = session("1", machine: "B")
+        #expect(a.key != b.key)
+        #expect(a.key == RemiSessionKey(machineID: "A", sessionID: "1"))
+    }
+
+    @Test func sameSessionIDOnTwoMachinesStaysTwoRows() {
+        let grouping = RemiSessionGrouping(sessions: [
+            session("1", status: .working, machine: "A"),
+            session("1", status: .working, machine: "B"),
+        ])
+        #expect(grouping.active.count == 2)
+        #expect(grouping.active.map(\.machineID) == ["A", "B"])
+    }
+
+    @Test func frozenKeepsRowsOfTheSameIDOnDifferentMachinesApart() {
+        let snapshot = RemiSessionGrouping(sessions: [
+            session("1", status: .working, machine: "B"),
+            session("1", status: .offline, machine: "A"),
+        ])
+        let latest = RemiSessionGrouping(sessions: [
+            session("1", status: .needsYou, questions: 1, machine: "A"),
+            session("1", status: .working, machine: "B"),
+        ])
+        let frozen = latest.frozen(to: snapshot)
+        #expect(frozen.active.map(\.machineID) == ["B"])
+        #expect(frozen.recent.map(\.machineID) == ["A"])
+        #expect(frozen.recent.first?.openQuestionCount == 1)
+        #expect(frozen.needsYou.isEmpty)
+    }
+
+    @Test func frozenDoesNotTreatAnotherMachinesSessionAsKnown() {
+        let snapshot = RemiSessionGrouping(sessions: [session("1", machine: "A")])
+        let latest = RemiSessionGrouping(sessions: [session("1", machine: "A"), session("1", machine: "B")])
+        #expect(latest.frozen(to: snapshot).active.map(\.machineID) == ["A", "B"])
     }
 }

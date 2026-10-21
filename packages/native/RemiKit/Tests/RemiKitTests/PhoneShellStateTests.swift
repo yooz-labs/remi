@@ -71,4 +71,11 @@ import Testing
         state.toggleDrawer()
         #expect(!state.isDrawerOpen)
     }
+
+    @Test func selectedKeyComparesMachineAndSession() {
+        let state = PhoneShellState(destination: .session(route("s1", machine: "m1")))
+        #expect(state.selectedSessionKey == RemiSessionKey(machineID: "m1", sessionID: "s1"))
+        #expect(state.selectedSessionKey != RemiSessionKey(machineID: "m2", sessionID: "s1"))
+        #expect(PhoneShellState().selectedSessionKey == nil)
+    }
 }

@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Needs you is the live sessions whose status is `needsYou` or that hold an open
 /// question; Active is the other live sessions; Recent is every session that is not live.
-/// Each group is newest activity first, ties by name and then id, so the order is stable.
+/// Each group is newest activity first, ties by name, id and machine, so the order is stable.
 public struct RemiSessionGrouping: Equatable, Sendable {
     public let needsYou: [RemiSessionSummary]
     public let active: [RemiSessionSummary]
@@ -27,10 +27,10 @@ public struct RemiSessionGrouping: Equatable, Sendable {
     /// end of their current section, in this grouping's order; sessions that no longer
     /// exist here are dropped.
     public func frozen(to snapshot: RemiSessionGrouping) -> RemiSessionGrouping {
-        let latest = Dictionary(flattened.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let known = Set(snapshot.flattened.map(\.id))
+        let latest = Dictionary(flattened.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+        let known = Set(snapshot.flattened.map(\.key))
         func section(_ old: [RemiSessionSummary], current: [RemiSessionSummary]) -> [RemiSessionSummary] {
-            old.compactMap { latest[$0.id] } + current.filter { !known.contains($0.id) }
+            old.compactMap { latest[$0.key] } + current.filter { !known.contains($0.key) }
         }
         return RemiSessionGrouping(
             needsYou: section(snapshot.needsYou, current: needsYou),
@@ -52,7 +52,8 @@ public struct RemiSessionGrouping: Equatable, Sendable {
             if left != right { return left > right }
             let byName = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
             if byName != .orderedSame { return byName == .orderedAscending }
-            return lhs.id < rhs.id
+            if lhs.id != rhs.id { return lhs.id < rhs.id }
+            return lhs.machineID < rhs.machineID
         }
     }
 }

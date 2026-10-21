@@ -64,6 +64,10 @@ public struct PhoneShellState: Equatable, Sendable {
         return nil
     }
 
+    public var selectedSessionKey: RemiSessionKey? {
+        selectedRoute.map { RemiSessionKey(machineID: $0.machineKey, sessionID: $0.sessionID) }
+    }
+
     public mutating func select(_ destination: PhoneShellDestination) {
         self.destination = destination
         isDrawerOpen = false
