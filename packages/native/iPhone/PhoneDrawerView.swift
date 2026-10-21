@@ -126,6 +126,10 @@ struct PhoneDrawerView: View {
         return nil
     }
 
+    private var machineLabels: [String: String] {
+        RemiMachineStripPresentation.uniqueLabels(for: machines)
+    }
+
     private var lastKnownMachineIDs: Set<String> {
         RemiMachineStripPresentation.lastKnownMachineIDs(in: machines)
     }
@@ -264,6 +268,7 @@ struct PhoneDrawerView: View {
                     session: session,
                     isSelected: selectedKey == session.key,
                     isLastKnown: lastKnownMachineIDs.contains(session.machineID),
+                    machineLabel: machineLabels[session.machineID],
                     canRunOnMachine: connectedMachineIDs.contains(session.machineID),
                     action: { if !blocksTaps { onSelectSession(session) } },
                     onResume: { onResumeSession(session.machineID, session.id) },
@@ -304,6 +309,7 @@ private struct PhoneDrawerSessionRow: View {
     let session: RemiSessionSummary
     let isSelected: Bool
     let isLastKnown: Bool
+    let machineLabel: String?
     /// True when the session's machine is connected, so Resume and New session here can work.
     let canRunOnMachine: Bool
     let action: () -> Void
@@ -333,7 +339,7 @@ private struct PhoneDrawerSessionRow: View {
     }
 
     private var presentation: PhoneDrawerSessionPresentation {
-        PhoneDrawerSessionPresentation(session: session, isLastKnown: isLastKnown)
+        PhoneDrawerSessionPresentation(session: session, isLastKnown: isLastKnown, machineLabel: machineLabel)
     }
 
     @ViewBuilder

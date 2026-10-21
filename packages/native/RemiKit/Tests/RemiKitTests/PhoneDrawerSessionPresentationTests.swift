@@ -56,4 +56,16 @@ import Testing
         #expect(!presentation.subtitle.contains("Last known"))
         #expect(!presentation.accessibilityLabel.contains("last known"))
     }
+
+    @Test func machineLabelReplacesTheMachineName() {
+        let presentation = PhoneDrawerSessionPresentation(
+            session: session(name: "Native iOS", project: "remi"),
+            isLastKnown: true,
+            machineLabel: "Studio (127.0.0.1:1)"
+        )
+        #expect(presentation.subtitle == "remi · Studio (127.0.0.1:1) · Last known")
+        #expect(presentation.accessibilityLabel.contains("on Studio (127.0.0.1:1)"))
+        let same = PhoneDrawerSessionPresentation(session: session(name: "cli", project: "cli"), machineLabel: "S (a)")
+        #expect(same.subtitle == "S (a)")
+    }
 }

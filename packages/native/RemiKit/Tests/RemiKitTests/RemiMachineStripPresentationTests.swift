@@ -96,4 +96,34 @@ import Testing
         #expect(Strip.accessibilityLabel(for: machine("a", questions: 2)) == "Mac a, connected, 2 waiting")
         #expect(Strip.accessibilityLabel(for: machine("b", reachability: .unreachable)) == "Mac b, offline")
     }
+
+    private func named(_ id: String, _ name: String, address: String) -> RemiMachineSummary {
+        RemiMachineSummary(id: id, name: name, address: address, reachability: .connected, transport: .direct, sessionCount: 0)
+    }
+
+    @Test func uniqueNamesAreLeftAlone() {
+        let all = [named("a", "Studio", address: "1.local:1"), named("b", "Laptop", address: "2.local:1")]
+        #expect(Strip.uniqueLabels(for: all) == ["a": "Studio", "b": "Laptop"])
+        #expect(Strip.uniqueLabels(for: []).isEmpty)
+    }
+
+    @Test func collidingNamesGetTheAddress() {
+        let all = [
+            named("a", "yahyas-mcm", address: "127.0.0.1:18790"),
+            named("b", "yahyas-mcm", address: "127.0.0.1:18791"),
+            named("c", "Studio", address: "10.0.0.2:18765"),
+        ]
+        #expect(Strip.uniqueLabels(for: all) == [
+            "a": "yahyas-mcm (127.0.0.1:18790)",
+            "b": "yahyas-mcm (127.0.0.1:18791)",
+            "c": "Studio",
+        ])
+    }
+
+    @Test func problemMessageAndAccessibilityLabelTakeALabel() {
+        let m = machine("c", reachability: .unreachable)
+        #expect(Strip.Problem.unreachable(m).message(label: "Mac (addr)") == "Mac (addr) is offline")
+        #expect(Strip.Problem.waitingForApproval(m).message(label: "X") == "X is waiting for approval")
+        #expect(Strip.accessibilityLabel(for: m, label: "Mac (addr)") == "Mac (addr), offline")
+    }
 }

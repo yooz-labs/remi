@@ -55,10 +55,13 @@ public enum RemiMachineStripPresentation {
         }
 
         /// The one line the drawer shows, for example "Studio Mac is offline".
-        public var message: String {
+        public var message: String { message(label: machine.name) }
+
+        /// The same line with a label that tells apart machines sharing a name.
+        public func message(label: String) -> String {
             switch self {
-            case .unreachable(let machine): "\(machine.name) is offline"
-            case .waitingForApproval(let machine): "\(machine.name) is waiting for approval"
+            case .unreachable: "\(label) is offline"
+            case .waitingForApproval: "\(label) is waiting for approval"
             }
         }
     }
@@ -97,9 +100,20 @@ public enum RemiMachineStripPresentation {
         Set(machines.filter { $0.reachability == .unreachable }.map(\.id))
     }
 
-    /// "Studio Mac, connected, 2 waiting".
-    public static func accessibilityLabel(for machine: RemiMachineSummary) -> String {
-        var label = "\(machine.name), \(dotStyle(for: machine.reachability).accessibilityWord)"
+    /// Machine id to the label to show. A name that is unique stays as it is; machines that
+    /// share a name each get the address added, "Studio (127.0.0.1:18790)", because the
+    /// app has no way to rename a machine.
+    public static func uniqueLabels(for machines: [RemiMachineSummary]) -> [String: String] {
+        let counts = Dictionary(machines.map { ($0.name, 1) }, uniquingKeysWith: +)
+        return Dictionary(machines.map { machine in
+            let collides = (counts[machine.name] ?? 0) > 1
+            return (machine.id, collides ? "\(machine.name) (\(machine.address))" : machine.name)
+        }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// "Studio Mac, connected, 2 waiting". `label` replaces the name when machines share one.
+    public static func accessibilityLabel(for machine: RemiMachineSummary, label: String? = nil) -> String {
+        var label = "\(label ?? machine.name), \(dotStyle(for: machine.reachability).accessibilityWord)"
         if machine.openQuestionCount > 0 { label += ", \(machine.openQuestionCount) waiting" }
         return label
     }

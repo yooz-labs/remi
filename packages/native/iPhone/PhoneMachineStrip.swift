@@ -12,6 +12,10 @@ struct PhoneMachineStrip: View {
     let onSelectMachine: (String) -> Void
     let onManage: () -> Void
 
+    private var labels: [String: String] { RemiMachineStripPresentation.uniqueLabels(for: machines) }
+
+    private func label(_ machine: RemiMachineSummary) -> String { labels[machine.id] ?? machine.name }
+
     private var layout: RemiMachineStripPresentation.Layout {
         RemiMachineStripPresentation.layout(for: machines, isAccessibilitySize: dynamicTypeSize.isAccessibilitySize)
     }
@@ -55,7 +59,7 @@ struct PhoneMachineStrip: View {
         return Button(action: onManage) {
             HStack(spacing: RemiTheme.Spacing.xs) {
                 PhoneMachineDot(style: style)
-                Text(machine.name)
+                Text(verbatim: label(machine))
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 Text(style.accessibilityWord)
@@ -74,7 +78,7 @@ struct PhoneMachineStrip: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(RemiMachineStripPresentation.accessibilityLabel(for: machine))
+        .accessibilityLabel(RemiMachineStripPresentation.accessibilityLabel(for: machine, label: label(machine)))
         .accessibilityHint("Opens machines")
     }
 
@@ -90,11 +94,11 @@ struct PhoneMachineStrip: View {
             )
             ForEach(machines) { machine in
                 PhoneMachineChip(
-                    title: machine.name,
+                    title: label(machine),
                     style: RemiMachineStripPresentation.dotStyle(for: machine.reachability),
                     count: machine.openQuestionCount,
                     isSelected: filter == .machine(machine.id),
-                    accessibilityLabel: RemiMachineStripPresentation.accessibilityLabel(for: machine),
+                    accessibilityLabel: RemiMachineStripPresentation.accessibilityLabel(for: machine, label: label(machine)),
                     action: { onSelectMachine(machine.id) }
                 )
             }
@@ -142,14 +146,14 @@ struct PhoneMachineStrip: View {
 
     private var menuLabelTitle: String {
         if case .machine(let id) = filter, let machine = machines.first(where: { $0.id == id }) {
-            return machine.name
+            return label(machine)
         }
         return String(localized: "All machines")
     }
 
     private func menuTitle(_ machine: RemiMachineSummary) -> String {
         let word = RemiMachineStripPresentation.dotStyle(for: machine.reachability).accessibilityWord
-        var title = "\(machine.name), \(word)"
+        var title = "\(label(machine)), \(word)"
         if machine.openQuestionCount > 0 { title += ", \(machine.openQuestionCount) waiting" }
         return title
     }
@@ -256,6 +260,8 @@ struct PhoneMachineProblemRows: View {
     let machines: [RemiMachineSummary]
     let onManage: () -> Void
 
+    private var labels: [String: String] { RemiMachineStripPresentation.uniqueLabels(for: machines) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(RemiMachineStripPresentation.problems(in: machines)) { problem in
@@ -263,7 +269,7 @@ struct PhoneMachineProblemRows: View {
                     HStack(spacing: RemiTheme.Spacing.xs) {
                         Image(systemName: icon(problem))
                             .accessibilityHidden(true)
-                        Text(verbatim: problem.message)
+                        Text(verbatim: problem.message(label: labels[problem.machine.id] ?? problem.machine.name))
                             .multilineTextAlignment(.leading)
                             .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                         Spacer(minLength: RemiTheme.Spacing.xs)
