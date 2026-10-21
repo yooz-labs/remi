@@ -1,3 +1,4 @@
+import CoreFoundation
 import Foundation
 import Testing
 
@@ -47,5 +48,14 @@ struct NativeBundleMetadataTests {
             #expect(Set(policy.keys) == ["NSExceptionAllowsInsecureHTTPLoads"])
             #expect(policy["NSExceptionAllowsInsecureHTTPLoads"] as? Bool == true)
         }
+    }
+
+    @Test(arguments: ["Mac", "iPhone"])
+    func exportDeclarationRecordsTheOwnerConfirmedExemption(_ target: String) throws {
+        let plist = try #require(PropertyListSerialization.propertyList(
+            from: Data(contentsOf: Self.native.appendingPathComponent("\(target)/Info.plist")), format: nil) as? [String: Any])
+        let value = try #require(plist["ITSAppUsesNonExemptEncryption"] as? NSNumber)
+        #expect(CFGetTypeID(value) == CFBooleanGetTypeID())
+        #expect(value.boolValue == false)
     }
 }

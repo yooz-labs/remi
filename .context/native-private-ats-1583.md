@@ -42,10 +42,27 @@ Keep the focused review separate from completed route-component reviews.
 A Mac Foundation bundle probe opened numeric Tailscale and MagicDNS sockets
 without an exception. That probe does not reproduce signed iPhone enforcement
 and is not accepted as the physical fix proof.
-Native 0.2.0 (16) must pass the original signed phone numeric-address failure
+Native 0.2.0 (17) must pass the original signed phone numeric-address failure
 after TestFlight distribution; until then the physical fix is unverified.
 No provider input, owner-session restart or implicit relay enrollment is needed.
 
 The frozen CLI 0.8.1 promotion remains at its reviewed commit.
 Do not merge this branch into develop until that promotion has landed.
 Parent #1571 remains open for the remaining physical route acceptance.
+
+## Declaration with the upload
+
+After build 16 was uploaded, the owner requested that the confirmed encryption
+declaration travel with the upload instead of requiring a separate browser step.
+Both application plists now declare `ITSAppUsesNonExemptEncryption=false` for
+the audited Apple-OS-provided implementations.
+This means exempt encryption, not an absence of encryption.
+Apple documents the embedded declaration in
+[ITSAppUsesNonExemptEncryption](https://developer.apple.com/documentation/bundleresources/information-property-list/itsappusesnonexemptencryption).
+
+The iPhone release script requires a Boolean false in the source, archive and
+actual exported payload before upload.
+Crypto implementation or dependency changes require reassessing the declaration;
+the flag does not itself prove an exemption.
+Build 16 and its owner-confirmed browser declaration remain preserved.
+Build 17 verifies the embedded declaration and the original connection failure.

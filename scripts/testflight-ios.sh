@@ -30,6 +30,14 @@ need() { command -v "$1" >/dev/null 2>&1 || fail "$1 not found"; }
 expect_file() { [ -f "$1" ] || fail "missing $2: $1"; }
 expect_contains() { grep -Fq "$2" "$1" || fail "$3"; }
 plist_value() { /usr/libexec/PlistBuddy -c "Print :$2" "$1" 2>/dev/null || true; }
+expect_exempt_encryption() {
+  # Owner-confirmed Apple-OS-only implementation, not a claim of no encryption.
+  # Reassess this declaration before uploading any changed crypto implementation.
+  [ "$(plutil -type ITSAppUsesNonExemptEncryption "$1" 2>/dev/null)" = bool ] ||
+    fail "export compliance must declare a Boolean ITSAppUsesNonExemptEncryption"
+  [ "$(plist_value "$1" ITSAppUsesNonExemptEncryption)" = false ] ||
+    fail "export compliance differs from the owner-confirmed exempt classification"
+}
 
 need git
 need xcodebuild
@@ -40,6 +48,7 @@ need unzip
 expect_file "$CONFIG" "release config"
 expect_file "$PROJECT/project.pbxproj" "native Xcode project"
 expect_file "$PROJECT/xcshareddata/xcschemes/$SCHEME.xcscheme" "shared $SCHEME scheme"
+expect_exempt_encryption "$REPO_ROOT/packages/native/iPhone/Info.plist"
 
 echo "[0/7] Validating native store assets"
 "$REPO_ROOT/scripts/test-native-store-assets.sh"
@@ -129,6 +138,7 @@ expect_file "$EXTENSION/RemiKit_RemiPush.bundle/PrivacyInfo.xcprivacy" "archived
 [ "$(plist_value "$APP_INFO" CFBundleShortVersionString)" = "$MARKETING" ] || fail "archived marketing version mismatch"
 [ "$(plist_value "$APP_INFO" CFBundleVersion)" = "$BUILD" ] || fail "archived build number mismatch"
 [ "$(plist_value "$APP_INFO" RemiSourceCommit)" = "$SOURCE_COMMIT" ] || fail "archived source commit mismatch"
+expect_exempt_encryption "$APP_INFO"
 [ "$(plist_value "$EXTENSION/Info.plist" CFBundleIdentifier)" = "$EXTENSION_ID" ] || fail "archived extension bundle ID mismatch"
 [ "$(plist_value "$EXTENSION/Info.plist" CFBundleShortVersionString)" = "$MARKETING" ] || fail "extension marketing version mismatch"
 [ "$(plist_value "$EXTENSION/Info.plist" CFBundleVersion)" = "$BUILD" ] || fail "extension build number mismatch"
@@ -182,6 +192,7 @@ EXPORTED_APP="$VERIFY_DIR/Payload/Remi.app"
 EXPORTED_EXTENSION="$EXPORTED_APP/PlugIns/PhonePushService.appex"
 [ -d "$EXPORTED_APP" ] || fail "IPA does not contain Payload/Remi.app"
 [ -d "$EXPORTED_EXTENSION" ] || fail "IPA does not contain PhonePushService.appex"
+expect_exempt_encryption "$EXPORTED_APP/Info.plist"
 for TARGET in "$EXPORTED_APP" "$EXPORTED_EXTENSION"; do
   codesign --verify --deep --strict "$TARGET" || fail "exported target signature verification failed"
   ENTITLEMENTS=$(codesign -d --entitlements :- "$TARGET" 2>/dev/null) || fail "cannot read exported target entitlements"
