@@ -21,7 +21,6 @@ enum PhoneShellSheet: Identifiable {
 
 struct PhoneLiveRootView: View {
     let store: MachineStore
-    @AppStorage("selectedMachineID") private var selectedMachineID = ""
     @State private var knownQuestionIDs: Set<String> = []
     @State private var notificationBaselineEstablished = false
     @State private var questionFeedbackTrigger = 0
@@ -45,9 +44,11 @@ struct PhoneLiveRootView: View {
         }
         .onChange(of: store.pairingAttempts) { _, _ in
             guard let id = pairingAttemptID, let result = store.pairingAttempt(id: id),
-                  case .admitted(let profileID) = result.phase else { return }
-            selectedMachineID = profileID
+                  case .admitted = result.phase else { return }
             pairingAttemptID = nil
+        }
+        .onChange(of: store.machines.map(\.id), initial: true) { _, ids in
+            shell.machinesChanged(ids: ids)
         }
         .onChange(of: store.persistableProfiles) { _, profiles in
             MachineConfigurationStore.shared.saveProfiles(profiles)
@@ -149,8 +150,6 @@ struct PhoneLiveRootView: View {
             sessions: allSessions,
             machines: machineSummaries,
             sessionMachines: store.machines,
-            publicIdentity: store.publicIdentity,
-            selectedMachineID: $selectedMachineID,
             errorMessage: store.latestOperationError ?? store.latestError?.message,
             noticeMessage: store.latestOperationNotice ?? relayNotifications.notice ?? store.relayNotificationNotice,
             onAnswer: answer,
@@ -161,12 +160,7 @@ struct PhoneLiveRootView: View {
             onNewSession: { activeSheet = .newSession(machineID: $0, repository: $1) },
             onPresentPairing: { activeSheet = .pairing },
             onPresentPreferences: { activeSheet = .preferences },
-            onRemoveMachine: removeMachine,
-            onRetryApproval: store.retryApproval,
-            onRetryConnection: store.retryConnection,
-            onSetConnectionPreference: { store.setConnectionPreference($1, for: $0) },
-            onEnableRelayNotifications: relayNotifications.enable,
-            enablingRelayNotifications: relayNotifications.enabling,
+            onManageMachines: { activeSheet = .machines },
             onDismissError: store.clearLatestError,
             onDismissNotice: dismissNotice
         )
@@ -188,7 +182,7 @@ struct PhoneLiveRootView: View {
             onNewSessionHere: { present(.newSession(machineID: $0, repository: $1)) },
             onSelectInbox: { shell.select(.inbox) },
             onSelectSession: selectSession,
-            onNewSession: { present(.newSession(machineID: nil, repository: nil)) },
+            onNewSession: { present(.newSession(machineID: shell.filteredMachineKey, repository: nil)) },
             onAddMachine: { present(.pairing) },
             onPreferences: { present(.preferences) }
         )

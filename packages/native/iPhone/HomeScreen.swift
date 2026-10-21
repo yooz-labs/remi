@@ -6,13 +6,10 @@ import UIKit
 struct HomeScreen: View {
     @State private var searchText = ""
     @State private var activityScope = RemiCommandCenterScope.overview
-    @State private var machinesExpanded = false
     let questions: [RemiQuestionCardModel]
     let sessions: [RemiSessionSummary]
     let machines: [RemiMachineSummary]
     let sessionMachines: [MachineState]
-    let publicIdentity: PublicClientIdentity?
-    @Binding var selectedMachineID: String
     let errorMessage: String?
     let noticeMessage: String?
     let onAnswer: (String, String, String) -> Void
@@ -23,12 +20,7 @@ struct HomeScreen: View {
     let onNewSession: (String?, String?) -> Void
     let onPresentPairing: () -> Void
     let onPresentPreferences: () -> Void
-    let onRemoveMachine: (String) -> Void
-    let onRetryApproval: (MachineEndpoint) -> Void
-    let onRetryConnection: (MachineEndpoint) -> Void
-    let onSetConnectionPreference: (MachineEndpoint, MachineConnectionPreference) -> Void
-    let onEnableRelayNotifications: (MachineEndpoint) -> Void
-    let enablingRelayNotifications: Bool
+    let onManageMachines: () -> Void
     let onDismissError: () -> Void
     let onDismissNotice: () -> Void
 
@@ -37,8 +29,6 @@ struct HomeScreen: View {
         sessions: [RemiSessionSummary],
         machines: [RemiMachineSummary],
         sessionMachines: [MachineState] = [],
-        publicIdentity: PublicClientIdentity? = nil,
-        selectedMachineID: Binding<String> = .constant(""),
         errorMessage: String? = nil,
         noticeMessage: String? = nil,
         onAnswer: @escaping (String, String, String) -> Void = { _, _, _ in },
@@ -49,12 +39,7 @@ struct HomeScreen: View {
         onNewSession: @escaping (String?, String?) -> Void = { _, _ in },
         onPresentPairing: @escaping () -> Void = {},
         onPresentPreferences: @escaping () -> Void = {},
-        onRemoveMachine: @escaping (String) -> Void = { _ in },
-        onRetryApproval: @escaping (MachineEndpoint) -> Void = { _ in },
-        onRetryConnection: @escaping (MachineEndpoint) -> Void = { _ in },
-        onSetConnectionPreference: @escaping (MachineEndpoint, MachineConnectionPreference) -> Void = { _, _ in },
-        onEnableRelayNotifications: @escaping (MachineEndpoint) -> Void = { _ in },
-        enablingRelayNotifications: Bool = false,
+        onManageMachines: @escaping () -> Void = {},
         onDismissError: @escaping () -> Void = {},
         onDismissNotice: @escaping () -> Void = {}
     ) {
@@ -62,8 +47,6 @@ struct HomeScreen: View {
         self.sessions = sessions
         self.machines = machines
         self.sessionMachines = sessionMachines
-        self.publicIdentity = publicIdentity
-        _selectedMachineID = selectedMachineID
         self.errorMessage = errorMessage
         self.noticeMessage = noticeMessage
         self.onAnswer = onAnswer
@@ -74,12 +57,7 @@ struct HomeScreen: View {
         self.onNewSession = onNewSession
         self.onPresentPairing = onPresentPairing
         self.onPresentPreferences = onPresentPreferences
-        self.onRemoveMachine = onRemoveMachine
-        self.onRetryApproval = onRetryApproval
-        self.onRetryConnection = onRetryConnection
-        self.onSetConnectionPreference = onSetConnectionPreference
-        self.onEnableRelayNotifications = onEnableRelayNotifications
-        self.enablingRelayNotifications = enablingRelayNotifications
+        self.onManageMachines = onManageMachines
         self.onDismissError = onDismissError
         self.onDismissNotice = onDismissNotice
     }
@@ -95,12 +73,7 @@ struct HomeScreen: View {
                     RemiFeedbackBanner(message: noticeMessage, tone: .information, onDismiss: onDismissNotice)
                 }
 
-                if machines.count > 1 {
-                    MachineScopePicker(
-                        machines: machines,
-                        selectedMachineID: $selectedMachineID
-                    )
-                }
+                PhoneMachineProblemRows(machines: machines, onManage: onManageMachines)
 
                 if !sessions.isEmpty || !questions.isEmpty {
                     CommandCenterScopePicker(
@@ -143,17 +116,8 @@ struct HomeScreen: View {
                         }
                     )
                 }
-
-                if !machines.isEmpty {
-                    machineManagementSection
-                }
             }
             .padding(RemiTheme.Spacing.m)
-        }
-        .onChange(of: machines.map(\.id), initial: true) { _, machineIDs in
-            if !selectedMachineID.isEmpty, !machineIDs.contains(selectedMachineID) {
-                selectedMachineID = ""
-            }
         }
         .navigationTitle("Remi")
         .searchable(text: $searchText, prompt: "Search Remi activity")
@@ -219,7 +183,7 @@ struct HomeScreen: View {
         RemiCommandCenterSnapshot(
             sessions: sessions,
             questions: questions,
-            selectedMachineID: selectedMachineID,
+            selectedMachineID: "",
             query: searchText,
             scope: activityScope
         )
@@ -244,89 +208,20 @@ struct HomeScreen: View {
             machineCount: machines.count,
             visibleSessionCount: snapshot.sessions.count,
             query: searchText,
-            hasSelectedMachine: !selectedMachineID.isEmpty
+            hasSelectedMachine: false
         )
     }
 
     private var hasActiveFilters: Bool {
-        !selectedMachineID.isEmpty
-            || activityScope != .overview
+        activityScope != .overview
             || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var hasMachineRecoveryWork: Bool {
-        sessionMachines.contains { $0.status != .connected }
-    }
-
-    private var showsMachineManagement: Bool {
-        RemiCommandCenterDisclosure.showsMachineManagement(
-            hasRecoveryWork: hasMachineRecoveryWork,
-            manuallyExpanded: machinesExpanded
-        )
-    }
-
-    @ViewBuilder private var machineManagementSection: some View {
-        VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
-            Button {
-                if !hasMachineRecoveryWork {
-                    machinesExpanded.toggle()
-                }
-            } label: {
-                HStack {
-                    VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
-                        Text("Machines").font(.title2.weight(.bold))
-                        Text(machineSummary)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: showsMachineManagement ? "chevron.up" : "chevron.down")
-                        .foregroundStyle(.secondary)
-                }
-                .frame(minHeight: RemiTheme.Size.minimumTapTarget)
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint(machineManagementHint)
-
-            if showsMachineManagement {
-                MachinesSection(
-                    machines: machines,
-                    states: sessionMachines,
-                    publicIdentity: publicIdentity,
-                    onRemove: onRemoveMachine,
-                    onRetryApproval: onRetryApproval,
-                    onRetryConnection: onRetryConnection,
-                    onSetConnectionPreference: onSetConnectionPreference,
-                    onPairAgain: { onPresentPairing() },
-                    onEnableRelayNotifications: onEnableRelayNotifications,
-                    enablingRelayNotifications: enablingRelayNotifications,
-                    showsTitle: false
-                )
-            }
-        }
-    }
-
-    private var machineSummary: LocalizedStringResource {
-        let connected = machines.count { $0.reachability == .connected }
-        return hasMachineRecoveryWork
-            ? "\(connected) of \(machines.count) connected · Action may be needed"
-            : "\(connected) connected"
-    }
-
-    private var machineManagementHint: LocalizedStringResource {
-        if hasMachineRecoveryWork {
-            return "Machine actions remain visible while attention is needed"
-        }
-        return showsMachineManagement ? "Hides machine management" : "Shows machine management"
-    }
-
     private func presentNewSession(machineID: String? = nil, repository: String? = nil) {
-        onNewSession(machineID ?? (selectedMachineID.isEmpty ? nil : selectedMachineID), repository)
+        onNewSession(machineID, repository)
     }
 
     private func resetFilters() {
-        selectedMachineID = ""
         searchText = ""
         activityScope = .overview
     }
@@ -472,84 +367,6 @@ private struct CommandCenterScopePicker: View {
 
     private func sessionCount(_ count: Int) -> LocalizedStringResource {
         count == 1 ? "1 session" : "\(count) sessions"
-    }
-}
-
-private struct MachineScopePicker: View {
-    let machines: [RemiMachineSummary]
-    @Binding var selectedMachineID: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
-            Text("Machine scope")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-            ScrollView(.horizontal) {
-                HStack(spacing: RemiTheme.Spacing.xs) {
-                    ScopeButton(
-                        title: "All",
-                        subtitle: countLabel(machines.count, singular: "machine"),
-                        systemImage: "square.grid.2x2",
-                        selected: selectedMachineID.isEmpty
-                    ) { selectedMachineID = "" }
-
-                    ForEach(machines) { machine in
-                        ScopeButton(
-                            title: machine.name,
-                            subtitle: countLabel(machine.sessionCount, singular: "session"),
-                            systemImage: machine.reachability == .connected
-                                ? "desktopcomputer" : "desktopcomputer.trianglebadge.exclamationmark",
-                            selected: selectedMachineID == machine.id
-                        ) { selectedMachineID = machine.id }
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-            .scrollIndicators(.hidden)
-        }
-    }
-
-    private func countLabel(_ count: Int, singular: String) -> String {
-        count == 1 ? "1 \(singular)" : "\(count) \(singular)s"
-    }
-}
-
-private struct ScopeButton: View {
-    let title: String
-    let subtitle: String
-    let systemImage: String
-    let selected: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: RemiTheme.Spacing.xs) {
-                Image(systemName: systemImage)
-                    .foregroundStyle(selected ? Color.primary : .secondary)
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                Text(subtitle)
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            .frame(minHeight: RemiTheme.Size.minimumTapTarget, alignment: .leading)
-            .padding(.horizontal, RemiTheme.Spacing.s)
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .background(
-            selected ? Color.primary.opacity(0.09) : Color.primary.opacity(0.045),
-            in: RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
-                .stroke(selected ? Color.primary.opacity(0.38) : RemiTheme.Color.hairline, lineWidth: 1)
-                .allowsHitTesting(false)
-        }
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityLabel("\(title), \(subtitle)")
-        .accessibilityHint(selected ? "Selected session scope" : "Filter sessions to this scope")
     }
 }
 
