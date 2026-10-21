@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.8.0'; // REMI_COMPILED_VERSION
+      return '0.8.1-dev.4'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.8.0'; // REMI_COMPILED_VERSION
+    return '0.8.1-dev.4'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -696,7 +696,12 @@ if (cliSubcommand === 'pair') {
     process.exit(await runRelayCommand('pair', parsedArgs.subcommandArgs, cliPort));
   }
   const { runPairCommand } = await import('./cli/cmd-pair.ts');
-  process.exit(await runPairCommand({ ...(cliHost !== undefined && { host: cliHost }) }));
+  process.exit(
+    await runPairCommand({
+      ...(cliHost !== undefined && { host: cliHost }),
+      ...(parsedArgs.qrVersion !== undefined && { qrVersion: parsedArgs.qrVersion }),
+    }),
+  );
 }
 
 // Handle key management subcommands (keygen, export-key, import-key, authorize, keys)
@@ -1839,6 +1844,7 @@ async function startMdnsIfNeeded(
       version: REMI_VERSION,
       authEnabled,
       fingerprint: serverFingerprint,
+      role: serveMode ? 'hub' : 'session',
     });
     await publisher.start();
     logFn('[mDNS] Advertising on local network');

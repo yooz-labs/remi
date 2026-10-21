@@ -1,5 +1,22 @@
 # TestFlight and relay handoff
 
+## Release continuation, 2026-10-21
+
+CLI 0.8.0 is published through npm and Homebrew.
+Native 0.2.0 (14), source `104b0d77`, is Testing in the internal group;
+the owner accepted all three chat-scroll behaviors on the physical iPhone.
+The historical build 11-13 snapshots below are retained as evidence, not current status.
+
+The next candidate is 0.2.0 (15), combining that accepted scroll source with
+the three approved connection phases: persisted layer locks, v2 QR candidates,
+and bounded discovery/recovery.
+CLI 0.8.1 also carries safe stale-card Cancel, v2 QR opt-in and compatible Bonjour advertisements.
+The individual changes have completed their scoped reviews; combined-source
+validation, release checks, build 15 compliance and physical route acceptance remain pending.
+No build 15 compliance declaration has been submitted.
+Media/PDF transfer and project account profiles remain queued until current shipping is complete.
+Check the current release PR and the artifact ledger before claiming these pending gates passed.
+
 This handoff is reconciled on 2026-10-20. The installed iPhone candidate is **0.2.0 (11)**,
 from clean source `e72012e6f8aa67c300b9bdf478653d8936f80c56`, which includes
 #1551's secure push lease fix and #1552's release metadata. It has been signed,

@@ -8,13 +8,17 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fingerprint, fromBase64 } from '../src/crypto.ts';
 import {
+  PAIRING_CODE_VERSION,
   PAIRING_LINK_PREFIX,
   type PairingCode,
+  classifyPairingHost,
   decodePairingLink,
   encodePairingLink,
   generatePairingNonce,
+  isPairingCandidateHost,
   isPairingNonce,
   isPlainPairingText,
+  normalizePairingHost,
 } from '../src/pairing.ts';
 import { buildVectors } from './fixtures/pairing/generate.ts';
 
@@ -26,6 +30,10 @@ const built = await buildVectors();
 const at = { nowSeconds: vectors.now, protocolVersion: vectors.protocolVersion };
 
 describe('pairing link vectors (#1275)', () => {
+  test('the shipped default remains v1 while v2 is opt-in', () => {
+    expect(PAIRING_CODE_VERSION).toBe(1);
+  });
+
   test('the checked-in vectors are what the generator makes (regenerate after a deliberate change)', () => {
     expect(vectors).toEqual(JSON.parse(JSON.stringify(built)));
   });
@@ -76,7 +84,7 @@ describe('encodePairingLink and nonces (#1275)', () => {
       { ...base, nonce: 'short' },
       { ...base, name: 'a‮b' },
     ]) {
-      expect(() => encodePairingLink(bad)).toThrow();
+      expect(() => encodePairingLink(bad as PairingCode)).toThrow();
     }
   });
 
@@ -108,6 +116,39 @@ describe('encodePairingLink and nonces (#1275)', () => {
   test('a decode with the default clock refuses the old vectors as expired', () => {
     const result = decodePairingLink(vectors.valid[0]?.link as string);
     expect(result).toMatchObject({ ok: false, error: 'EXPIRED' });
+  });
+});
+
+describe('version 2 direct candidate hints (#1574)', () => {
+  test('classifies only Tailscale hints specially and never resolves names', () => {
+    expect(classifyPairingHost('100.101.102.103')).toBe('tailscale');
+    expect(classifyPairingHost('fd7a:115c:a1e0::1')).toBe('tailscale');
+    expect(classifyPairingHost('studio.tailnet.ts.net.')).toBe('tailscale');
+    expect(classifyPairingHost('203.0.113.9')).toBe('local');
+    expect(classifyPairingHost('not-resolved.example')).toBe('local');
+  });
+
+  test('normalizes numeric IPs and DNS names without resolving them', () => {
+    expect(normalizePairingHost('2001:db8::1')).toBe(normalizePairingHost('2001:0db8:0:0:0:0:0:1'));
+    expect(normalizePairingHost('Studio.example.')).toBe(normalizePairingHost('studio.example'));
+    expect(normalizePairingHost('192.0.2.1')).toBe(normalizePairingHost('::ffff:c000:201'));
+  });
+
+  test('v2 blocks loopback, unspecified, link-local and localhost targets', () => {
+    for (const host of [
+      '127.0.0.1',
+      '0.0.0.0',
+      '169.254.1.2',
+      '::1',
+      '::',
+      'febf::1',
+      '::ffff:7f00:1',
+      'localhost.',
+    ]) {
+      expect(isPairingCandidateHost(host), host).toBe(false);
+    }
+    expect(isPairingCandidateHost('192.168.1.23')).toBe(true);
+    expect(isPairingCandidateHost('studio.example')).toBe(true);
   });
 });
 

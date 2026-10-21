@@ -104,6 +104,8 @@ export interface ParsedArgs {
   readonly signalingUrl: string | undefined;
   readonly noRelay: boolean;
   readonly relay: boolean;
+  /** Explicit direct pairing QR version; absent keeps the shipped v1 default. */
+  readonly qrVersion: 1 | 2 | undefined;
   readonly resume: string | true | undefined;
   readonly showSessions: 'running' | 'all' | 'exited' | false;
   readonly install: boolean;
@@ -186,6 +188,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   let signalingUrl: string | undefined;
   let noRelay = false;
   let relay = false;
+  let qrVersion: 1 | 2 | undefined;
   let resume: string | true | undefined;
   let showSessions: 'running' | 'all' | 'exited' | false = false;
   let install = false;
@@ -301,6 +304,19 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       noRelay = true;
     } else if (arg === '--relay') {
       relay = true;
+    } else if (arg === '--qr-version') {
+      if (!nextArg || nextArg.startsWith('-')) {
+        error = 'Error: --qr-version requires 1 or 2.';
+      } else if (nextArg === '1') {
+        qrVersion = 1;
+        i++;
+      } else if (nextArg === '2') {
+        qrVersion = 2;
+        i++;
+      } else {
+        error = `Error: Invalid --qr-version "${nextArg}". Choose 1 or 2.`;
+        i++;
+      }
     } else if (arg === '--permanent-code') {
       permanentCode = true;
     } else if (arg === '--signaling-url') {
@@ -487,6 +503,12 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   ) {
     error = `Error: --harness ${harness} conflicts with the ${subcommand} subcommand.`;
   }
+  if (error === undefined && qrVersion !== undefined && subcommand !== 'pair') {
+    error = 'Error: --qr-version is only valid with remi pair.';
+  }
+  if (error === undefined && qrVersion !== undefined && relay) {
+    error = 'Error: --qr-version cannot be combined with --relay.';
+  }
 
   return {
     port,
@@ -496,6 +518,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
     signalingUrl,
     noRelay,
     relay,
+    qrVersion,
     resume,
     showSessions,
     install,

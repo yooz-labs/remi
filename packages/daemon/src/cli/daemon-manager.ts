@@ -261,6 +261,36 @@ export async function startDaemon(opts: StartOptions): Promise<number> {
   child.unref();
   fs.closeSync(logFd);
 
+  const failUnexpectedChildExit = (): never => {
+    console.error('Hub process exited unexpectedly. Check logs:');
+    console.error(`  ${LOG_FILE}`);
+    // Remove the hub's self-written PID file only if it actually names the
+    // child that just died -- never a concurrently started foreign hub's.
+    try {
+      const content = fs.readFileSync(PID_FILE, 'utf-8').trim();
+      if (Number.parseInt(content, 10) === pid) {
+        fs.unlinkSync(PID_FILE);
+      }
+    } catch (err) {
+      // ENOENT expected: the PID file may never have been written or is
+      // already cleaned up. Anything else is worth a trace (we're exiting 1
+      // anyway; a stale file self-heals via readPidFileLive next start).
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        console.error(`Warning: could not clean up PID file: ${code ?? err}`);
+      }
+    }
+    process.exit(1);
+  };
+  const assertChildAlive = (): void => {
+    if (child.exitCode !== null || child.signalCode !== null) failUnexpectedChildExit();
+    try {
+      process.kill(pid, 0);
+    } catch {
+      failUnexpectedChildExit();
+    }
+  };
+
   // Poll until daemon writes daemon-status.json or times out
   const startTime = Date.now();
   const timeout = 5000;
@@ -269,36 +299,24 @@ export async function startDaemon(opts: StartOptions): Promise<number> {
   while (Date.now() - startTime < timeout) {
     const status = readStatus();
     if (status && status['pid'] === pid && status['wsPort']) {
-      port = status['wsPort'] as number;
-      break;
-    }
-    try {
-      process.kill(pid, 0);
-    } catch {
-      console.error('Hub process exited unexpectedly. Check logs:');
-      console.error(`  ${LOG_FILE}`);
-      // Remove the hub's self-written PID file only if it actually names the
-      // child that just died -- never a concurrently started foreign hub's.
-      try {
-        const content = fs.readFileSync(PID_FILE, 'utf-8').trim();
-        if (Number.parseInt(content, 10) === pid) {
-          fs.unlinkSync(PID_FILE);
-        }
-      } catch (err) {
-        // ENOENT expected: the PID file may never have been written or is
-        // already cleaned up. Anything else is worth a trace (we're exiting
-        // 1 anyway; a stale file self-heals via readPidFileLive next start).
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code !== 'ENOENT') {
-          console.error(`Warning: could not clean up PID file: ${code ?? err}`);
-        }
+      // #1559: let child exit events drain before accepting same-PID readiness.
+      await Bun.sleep(0);
+      assertChildAlive();
+      const confirmed = readStatus();
+      if (confirmed && confirmed['pid'] === pid && confirmed['wsPort']) {
+        port = confirmed['wsPort'] as number;
+        break;
       }
-      process.exit(1);
     }
-    Bun.sleepSync(100);
+    assertChildAlive();
+    // #1559: sleep asynchronously so Bun can reap a detached child that exits.
+    await Bun.sleep(100);
   }
 
   if (port === 'unknown') {
+    // Catch an exit between the final poll and reporting the initializing state.
+    await Bun.sleep(0);
+    assertChildAlive();
     console.log(`Hub started (PID ${pid}) but did not report its port within ${timeout / 1000}s.`);
     console.log('The hub may still be initializing. Check status with: remi status');
   } else {
