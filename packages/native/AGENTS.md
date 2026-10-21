@@ -91,6 +91,12 @@ The items marked #1233 are the owner's decisions; the rest were set with the sca
   - `xcodebuild -project packages/native/Remi.xcodeproj -scheme RemiPhone -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build`
 - **The gates build unsigned** (`CODE_SIGNING_ALLOWED=NO`), so they do not exercise the entitlements. To run the Mac app, or check its sandbox, without the team's certificate, sign it ad hoc: add `CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=` to the `xcodebuild` command. The Mac app it builds is sandboxed with `network.client` (`codesign -d --entitlements - <app>` shows it).
 - **Previews must render.** They are the design review surface.
+- **Known baseline failures** (check before blaming your change; remove an entry when it is fixed):
+  - `PairingAttemptTests` (about 30 issues in `swift test --package-path packages/native/RemiKit`) fail locally on a clean `origin/develop` with `owned empty launch directory required` from `RemiKit/Tests/Integration/pairing-source-fixture.ts`: the fixture wants its launch directory empty. Reproduced 2026-10-21 on Xcode 27.1 with `bun install` done; cause not yet found. Run the rest with `--skip PairingAttemptTests` and say so in the PR.
+- **Xcode 27.1 compiler traps** seen in this tree (fix by splitting, not by suppressing):
+  - A large `body` can fail with `failed to produce diagnostic for expression`: split it into `@ViewBuilder private var` parts, and avoid optional closure ternaries such as `cond ? method : nil` as an argument (use a small computed property).
+  - `ScrollView { ... }` can report `ambiguous use of 'init'` (the `showsIndicators:` and plain overloads) when its content is too complex for the checker; the same split fixes it.
+  - `.environment(\.accessibilityReduceTransparency, true)` does not compile in previews (the key path is read-only); `#Preview` setup helpers that touch main-actor types need `@MainActor`.
 - **There is no CI job for the native apps yet.** It needs a macOS 26 runner (#1240); until then the commands above are the gate, and the PR says they passed.
 - **Running a hub for development** from the repository root: `bun install`, then `REMI_HOME=/tmp/remi-dev bun packages/daemon/src/cli.ts serve`. The Mac app and the iPhone simulator reach it on `127.0.0.1`. The app's first connection waits for approval (#873): `REMI_HOME=/tmp/remi-dev bun packages/daemon/src/cli.ts keys` lists its key as pending, and `REMI_HOME=/tmp/remi-dev bun packages/daemon/src/cli.ts authorize <fingerprint> --label dev` approves it.
 
@@ -98,7 +104,8 @@ The items marked #1233 are the owner's decisions; the rest were set with the sca
 
 - **Branches:** one per milestone, off `develop`, named `feature/issue-<number>-<short-name>` (for example `feature/issue-1244-remiui-tokens`). There is no epic branch.
 - **Pull requests** go into `develop`, never into `main`. Never push to `develop` or `main` directly.
-- **Worktrees are optional.** An agent that wants one creates it next to the repository, under `../remi-worktrees/agents/` from the repository root (`../remi-worktrees/` itself is where hubs will create session worktrees, #1236), and removes it once its branch is merged.
+- **Worktrees live on `/Volumes/S1/worktrees/remi/`, never in the git folder** (builds and `node_modules` fill the home disk fast). Worktrees are optional: an agent that wants one creates it there (`git worktree add /Volumes/S1/worktrees/remi/<name> -b <branch> <base>`) and removes it once its branch is merged. `git worktree move` cannot cross devices, so to relocate one, save any uncommitted diff, `git worktree remove` it, and `git worktree add` the same branch on S1. (`../remi-worktrees/` is where hubs will create session worktrees, #1236; agents do not use it.)
+- **Branch from a fresh `origin/develop`.** Run `git fetch` first: a checkout's local `develop` can be far behind (it was 124 commits behind once, and the plan, the build errors and the baseline were all from stale code). Check `git rev-list --count develop..origin/develop`, then base the branch on `origin/develop`.
 - **Run `bun install` once in a new checkout or worktree.** The git hooks (lefthook with Biome) run from its `node_modules`; without it, a commit that stages TypeScript or JSON fails the hook.
 - **Commits:**
   - atomic: one logical change each;
