@@ -37,4 +37,23 @@ import Testing
         let one = PhoneDrawerSessionPresentation(session: session(name: "a", project: "b", questions: 1))
         #expect(one.accessibilityLabel == "a, project b, on Studio, 1 question waiting")
     }
+
+    @Test func lastKnownSessionsSaySoInTheSubtitleAndLabel() {
+        let presentation = PhoneDrawerSessionPresentation(
+            session: session(name: "Native iOS", project: "remi"),
+            isLastKnown: true
+        )
+        #expect(presentation.isLastKnown)
+        #expect(presentation.subtitle == "remi · Studio · Last known")
+        #expect(presentation.accessibilityLabel == "Native iOS, project remi, on Studio, last known, machine offline")
+        let same = PhoneDrawerSessionPresentation(session: session(name: "cli", project: "cli"), isLastKnown: true)
+        #expect(same.subtitle == "Studio · Last known")
+    }
+
+    @Test func sessionsAreNotLastKnownByDefault() {
+        let presentation = PhoneDrawerSessionPresentation(session: session(name: "a", project: "b"))
+        #expect(!presentation.isLastKnown)
+        #expect(!presentation.subtitle.contains("Last known"))
+        #expect(!presentation.accessibilityLabel.contains("last known"))
+    }
 }

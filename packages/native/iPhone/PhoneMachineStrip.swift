@@ -248,3 +248,44 @@ struct PhoneMachineCountCapsule: View {
         }
     }
 }
+
+/// One line per machine that needs the person to act ("Studio Mac is offline"). It opens
+/// the machines sheet. Secondary text with an icon; the attention color is for questions.
+struct PhoneMachineProblemRows: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let machines: [RemiMachineSummary]
+    let onManage: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(RemiMachineStripPresentation.problems(in: machines)) { problem in
+                Button(action: onManage) {
+                    HStack(spacing: RemiTheme.Spacing.xs) {
+                        Image(systemName: icon(problem))
+                            .accessibilityHidden(true)
+                        Text(verbatim: problem.message)
+                            .multilineTextAlignment(.leading)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                        Spacer(minLength: RemiTheme.Spacing.xs)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .accessibilityHidden(true)
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget, alignment: .leading)
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Opens machines")
+            }
+        }
+    }
+
+    private func icon(_ problem: RemiMachineStripPresentation.Problem) -> String {
+        switch problem {
+        case .unreachable: "desktopcomputer.trianglebadge.exclamationmark"
+        case .waitingForApproval: "person.badge.clock"
+        }
+    }
+}

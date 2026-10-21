@@ -7,17 +7,24 @@ public struct PhoneDrawerSessionPresentation: Equatable, Sendable {
     public let subtitle: String
     /// A complete label for VoiceOver, whatever the subtitle leaves out.
     public let accessibilityLabel: String
+    /// True when the session's machine is unreachable and what the row shows is the
+    /// last thing the phone knew. The row is dimmed and its subtitle says so in words.
+    public let isLastKnown: Bool
 
-    public init(session: RemiSessionSummary) {
+    public init(session: RemiSessionSummary, isLastKnown: Bool = false) {
+        self.isLastKnown = isLastKnown
         let trimmedName = session.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedProject = session.project.trimmingCharacters(in: .whitespacesAndNewlines)
         let repeatsName = trimmedName.caseInsensitiveCompare(trimmedProject) == .orderedSame
-        subtitle = repeatsName ? session.machineName : "\(session.project) · \(session.machineName)"
+        var subtitle = repeatsName ? session.machineName : "\(session.project) · \(session.machineName)"
+        if isLastKnown { subtitle += " · Last known" }
+        self.subtitle = subtitle
         var label = "\(session.name), project \(session.project), on \(session.machineName)"
         if session.openQuestionCount > 0 {
             let count = session.openQuestionCount
             label += count == 1 ? ", 1 question waiting" : ", \(count) questions waiting"
         }
+        if isLastKnown { label += ", last known, machine offline" }
         accessibilityLabel = label
     }
 }

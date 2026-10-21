@@ -184,6 +184,8 @@ struct PhoneLiveRootView: View {
             onSelectAllMachines: { shell.clearFilter() },
             onSelectMachine: { shell.selectMachineFilter($0) },
             onManageMachines: { present(.machines) },
+            onResumeSession: resumeSession,
+            onNewSessionHere: { present(.newSession(machineID: $0, repository: $1)) },
             onSelectInbox: { shell.select(.inbox) },
             onSelectSession: selectSession,
             onNewSession: { present(.newSession(machineID: nil, repository: nil)) },

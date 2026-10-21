@@ -1,5 +1,6 @@
 import RemiUI
 import SwiftUI
+import UIKit
 
 /// The phase 2 drawer body: an Inbox row, the sessions grouped Needs you, Active and
 /// Recent, and a bar of actions. Intentionally minimal; the next phase replaces it.
@@ -15,6 +16,8 @@ struct PhoneDrawerView: View {
     let onSelectAllMachines: () -> Void
     let onSelectMachine: (String) -> Void
     let onManageMachines: () -> Void
+    let onResumeSession: (String, String) -> Void
+    let onNewSessionHere: (String, String) -> Void
     let onSelectInbox: () -> Void
     let onSelectSession: (RemiSessionSummary) -> Void
     let onNewSession: () -> Void
@@ -42,6 +45,8 @@ struct PhoneDrawerView: View {
         onSelectAllMachines: @escaping () -> Void = {},
         onSelectMachine: @escaping (String) -> Void = { _ in },
         onManageMachines: @escaping () -> Void = {},
+        onResumeSession: @escaping (String, String) -> Void = { _, _ in },
+        onNewSessionHere: @escaping (String, String) -> Void = { _, _ in },
         onSelectInbox: @escaping () -> Void,
         onSelectSession: @escaping (RemiSessionSummary) -> Void,
         onNewSession: @escaping () -> Void,
@@ -58,6 +63,8 @@ struct PhoneDrawerView: View {
         self.onSelectAllMachines = onSelectAllMachines
         self.onSelectMachine = onSelectMachine
         self.onManageMachines = onManageMachines
+        self.onResumeSession = onResumeSession
+        self.onNewSessionHere = onNewSessionHere
         self.onSelectInbox = onSelectInbox
         self.onSelectSession = onSelectSession
         self.onNewSession = onNewSession
@@ -86,6 +93,8 @@ struct PhoneDrawerView: View {
                 onSelectMachine: { if !blocksTaps { onSelectMachine($0) } },
                 onManage: { if !blocksTaps { onManageMachines() } }
             )
+            PhoneMachineProblemRows(machines: machines, onManage: { if !blocksTaps { onManageMachines() } })
+                .padding(.horizontal, RemiTheme.Spacing.m)
             if showsSearch { searchField }
             list
             Divider()
@@ -113,6 +122,14 @@ struct PhoneDrawerView: View {
     private var filteredKey: String? {
         if case .machine(let key) = filter { return key }
         return nil
+    }
+
+    private var lastKnownMachineIDs: Set<String> {
+        RemiMachineStripPresentation.lastKnownMachineIDs(in: machines)
+    }
+
+    private var connectedMachineIDs: Set<String> {
+        Set(machines.filter { $0.reachability == .connected }.map(\.id))
     }
 
     private var isNarrowed: Bool {
@@ -244,7 +261,11 @@ struct PhoneDrawerView: View {
                 PhoneDrawerSessionRow(
                     session: session,
                     isSelected: selectedKey == session.key,
-                    action: { if !blocksTaps { onSelectSession(session) } }
+                    isLastKnown: lastKnownMachineIDs.contains(session.machineID),
+                    canRunOnMachine: connectedMachineIDs.contains(session.machineID),
+                    action: { if !blocksTaps { onSelectSession(session) } },
+                    onResume: { onResumeSession(session.machineID, session.id) },
+                    onNewSessionHere: { onNewSessionHere(session.machineID, session.projectPath) }
                 )
             }
         }
@@ -280,14 +301,21 @@ private struct PhoneDrawerSessionRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let session: RemiSessionSummary
     let isSelected: Bool
+    let isLastKnown: Bool
+    /// True when the session's machine is connected, so Resume and New session here can work.
+    let canRunOnMachine: Bool
     let action: () -> Void
+    let onResume: () -> Void
+    let onNewSessionHere: () -> Void
 
     var body: some View {
         Button(action: action) {
             HStack(alignment: .center, spacing: RemiTheme.Spacing.s) {
                 texts
+                    .opacity(isLastKnown ? 0.6 : 1)
                 Spacer(minLength: RemiTheme.Spacing.xs)
                 indicator
+                    .opacity(isLastKnown ? 0.6 : 1)
             }
             .padding(.horizontal, RemiTheme.Spacing.s)
             .padding(.vertical, RemiTheme.Spacing.xs)
@@ -299,10 +327,28 @@ private struct PhoneDrawerSessionRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(presentation.accessibilityLabel)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .contextMenu { menuItems }
     }
 
     private var presentation: PhoneDrawerSessionPresentation {
-        PhoneDrawerSessionPresentation(session: session)
+        PhoneDrawerSessionPresentation(session: session, isLastKnown: isLastKnown)
+    }
+
+    @ViewBuilder
+    private var menuItems: some View {
+        if session.canResume && canRunOnMachine {
+            Button(session.isResuming ? "Resuming" : "Resume", systemImage: "play.fill", action: onResume)
+                .disabled(session.isResuming)
+        }
+        if canRunOnMachine {
+            Button("New session here", systemImage: "plus.rectangle.on.folder", action: onNewSessionHere)
+        }
+        Button("Copy directory", systemImage: "doc.on.doc") {
+            UIPasteboard.general.string = session.projectPath
+        }
+        Button("Copy session ID", systemImage: "doc.on.doc") {
+            UIPasteboard.general.string = session.id
+        }
     }
 
     private var texts: some View {
@@ -314,6 +360,12 @@ private struct PhoneDrawerSessionRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+            if let resumeError = session.resumeError {
+                Text(resumeError)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
