@@ -249,6 +249,8 @@ private struct PhoneDrawerActions: View {
         Button(action: onNewSession) {
             HStack {
                 Label("New session", systemImage: "plus.rectangle.on.folder")
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
                 if dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
             }
             .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
@@ -278,6 +280,7 @@ private struct PhoneDrawerActions: View {
             HStack {
                 Label(title, systemImage: systemImage)
                     .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
