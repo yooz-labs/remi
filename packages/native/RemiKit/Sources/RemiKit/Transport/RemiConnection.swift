@@ -171,6 +171,8 @@ public actor RemiConnection {
     private var relayEnrolled: Bool
     private var relayDeadline: Task<Void, Never>?
     private var directDeadline: Task<Void, Never>?
+    /// One absolute authentication budget per socket, never extended by a late challenge (#1574).
+    private var directAuthenticationDeadline: ContinuousClock.Instant?
     private enum DirectDeadlineFailure: Equatable { case unreachable, authentication }
     private var directDeadlineFailure: DirectDeadlineFailure?
     private var sendTail: Task<Void, Never>?
@@ -442,7 +444,9 @@ public actor RemiConnection {
         initialDirectHelloPending = true
         try await sendHello(on: task)
         directOpeningCompleted = true
-        armDirectDeadline(task, after: configuration.directAuthenticationTimeout, opening: false)
+        let authenticationDeadline = ContinuousClock.now.advanced(by: configuration.directAuthenticationTimeout)
+        directAuthenticationDeadline = authenticationDeadline
+        armDirectDeadline(task, until: authenticationDeadline, opening: false)
 
         while shouldRun && !Task.isCancelled {
             let message = try await task.receive()
@@ -507,6 +511,7 @@ public actor RemiConnection {
                     : "The daemon public key does not match the scanned pairing code."))
                 return
             }
+            let authenticationDeadline = try currentDirectAuthenticationDeadline()
             transition(to: .authenticating(serverFingerprint: challenge.serverFingerprint))
             let (response, pending) = try AuthenticationHandshake.response(
                 to: challenge,
@@ -516,12 +521,14 @@ public actor RemiConnection {
                 pairingLabel: configuration.pairingLabel
             )
             pendingAuthentication = pending
-            armDirectDeadline(task, after: configuration.directAuthenticationTimeout, opening: false)
+            _ = try currentDirectAuthenticationDeadline()
+            armDirectDeadline(task, until: authenticationDeadline, opening: false)
             try await task.send(.data(encoder.encode(response)))
         case "auth_result":
             guard !applicationAdmitted, pendingAuthentication != nil else {
                 throw AuthenticationHandshakeError.missingPendingChallenge
             }
+            _ = try currentDirectAuthenticationDeadline()
             let result = try decoder.decode(AuthResultMessage.self, from: data)
             guard result.success else {
                 pendingAuthentication = nil
@@ -541,8 +548,10 @@ public actor RemiConnection {
                 return
             }
             try AuthenticationHandshake.verify(result, pending: pendingAuthentication)
+            _ = try currentDirectAuthenticationDeadline()
             authenticatedServerPublicKey = pendingAuthentication?.serverPublicKey
             pendingAuthentication = nil
+            directAuthenticationDeadline = nil
             guard acceptMachineIdentity(descriptor: nil) else { return }
             armDirectDeadline(task, after: configuration.directHelloTimeout, opening: false)
             try await sendHello(on: task)
@@ -671,6 +680,7 @@ public actor RemiConnection {
         relayDeadline = nil
         directDeadline?.cancel()
         directDeadline = nil
+        directAuthenticationDeadline = nil
         directDeadlineFailure = nil
         relayHandshake?.abort()
         relayHandshake = nil
@@ -814,11 +824,28 @@ public actor RemiConnection {
         }
     }
 
+    private func currentDirectAuthenticationDeadline() throws -> ContinuousClock.Instant {
+        guard let deadline = directAuthenticationDeadline else {
+            throw RemiConnectionError.authentication("Authentication phase has no deadline")
+        }
+        // Fail closed even if an inbound frame runs before an already-expired
+        // timer task gets actor time; that frame cannot extend or complete auth.
+        guard ContinuousClock.now < deadline else {
+            directDeadlineFailure = .authentication
+            throw RemiConnectionError.authentication("Authentication deadline elapsed")
+        }
+        return deadline
+    }
+
     private func armDirectDeadline(_ task: URLSessionWebSocketTask, after delay: Duration, opening: Bool) {
+        armDirectDeadline(task, until: ContinuousClock.now.advanced(by: delay), opening: opening)
+    }
+
+    private func armDirectDeadline(_ task: URLSessionWebSocketTask, until deadline: ContinuousClock.Instant, opening: Bool) {
         guard configuration.relayPin == nil else { return }
         directDeadline?.cancel()
         directDeadline = Task {
-            do { try await Task.sleep(for: delay) } catch { return }
+            do { try await Task.sleep(until: deadline, clock: .continuous) } catch { return }
             guard socket === task, shouldRun, !applicationAdmitted else { return }
             directDeadlineFailure = opening ? .unreachable : .authentication
             task.cancel(with: .goingAway, reason: nil)

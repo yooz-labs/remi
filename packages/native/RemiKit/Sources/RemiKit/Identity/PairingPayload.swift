@@ -315,21 +315,28 @@ public struct PairingPayload: Sendable, Equatable {
         guard !host.contains("%"), !host.contains(".") else { return nil }
         let halves = host.components(separatedBy: "::")
         guard halves.count <= 2 else { return nil }
-        func groups(_ value: String) -> [String]? {
+        func groups(_ value: String) -> [Int]? {
             if value.isEmpty { return [] }
-            let result = value.split(separator: ":", omittingEmptySubsequences: false)
-            return result.allSatisfy {
-                (1...4).contains($0.count) && $0.allSatisfy(\.isHexDigit)
-            } ? result.map(String.init) : nil
+            let tokens = value.split(separator: ":", omittingEmptySubsequences: false)
+            var result: [Int] = []
+            for token in tokens {
+                // Character.isHexDigit accepts fullwidth Unicode forms. The wire
+                // grammar is ASCII, and a failed conversion must never drop a group (#1574).
+                guard (1...4).contains(token.utf8.count), token.utf8.allSatisfy({ byte in
+                    (48...57).contains(byte) || (65...70).contains(byte) || (97...102).contains(byte)
+                }), let number = Int(token, radix: 16) else { return nil }
+                result.append(number)
+            }
+            return result
         }
         guard let head = groups(halves[0]) else { return nil }
         if halves.count == 1 {
             guard head.count == 8 else { return nil }
-            return head.compactMap { Int($0, radix: 16) }
+            return head
         }
         guard let tail = groups(halves[1]), head.count + tail.count <= 7 else { return nil }
-        return head.compactMap { Int($0, radix: 16) }
-            + Array(repeating: 0, count: 8 - head.count - tail.count)
-            + tail.compactMap { Int($0, radix: 16) }
+        let expanded = head + Array(repeating: 0, count: 8 - head.count - tail.count) + tail
+        guard expanded.count == 8 else { return nil }
+        return expanded
     }
 }

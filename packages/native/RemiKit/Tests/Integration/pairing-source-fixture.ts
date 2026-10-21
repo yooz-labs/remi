@@ -1,6 +1,6 @@
 /** Owned source hub; IPC controls only terminal approval and transport retirement (#1574). */
 import * as fs from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 
 const own = fs.realpathSync(process.cwd());
 if (!basename(own).startsWith('remi-swift-pairing-') || fs.readdirSync(own).length !== 0)
@@ -16,11 +16,12 @@ const bin = join(own, 'bin');
 fs.mkdirSync(bin, { mode: 0o700 });
 for (const agent of ['claude', 'codex'])
   fs.writeFileSync(join(bin, agent), '#!/bin/sh\nexit 88\n', { mode: 0o700 });
+const inheritedPath = (process.env['PATH'] ?? '/usr/bin:/bin').split(delimiter).filter(isAbsolute);
 const env = {
   HOME: own,
   REMI_HOME: state,
   NODE_ENV: 'test',
-  PATH: `${bin}:/private/tmp/remi-1570-tools:/usr/bin:/bin`,
+  PATH: [...new Set([bin, dirname(process.execPath), ...inheritedPath])].join(delimiter),
 };
 const store = new IdentityStore(state);
 await store.generate();

@@ -265,6 +265,27 @@ export async function buildVectors() {
       link: raw(withFields({ exp: VECTOR_NOW + 1021 })),
       error: 'MALFORMED',
     },
+    // #1574 R1: Swift's Unicode isHexDigit is broader than the ASCII host grammar.
+    {
+      name: 'v2 IPv6 with fullwidth digits in all groups',
+      link: raw(withV2Fields({ hosts: ['０:０:０:０:０:０:０:１'] })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v2 compressed IPv6 with fullwidth hexadecimal letters',
+      link: raw(withV2Fields({ hosts: ['::ＦＦＦＦ'] })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v1 IPv6 with fullwidth digits',
+      link: raw(withFields({ host: '２００１:db8:0:0:0:0:0:1' })),
+      error: 'MALFORMED',
+    },
+    {
+      name: 'v1 compressed IPv6 with fullwidth hexadecimal letters',
+      link: raw(withFields({ host: '2001:db8::Ａ' })),
+      error: 'MALFORMED',
+    },
     { name: 'IPv6 of three colons', link: raw(withFields({ host: ':::' })), error: 'MALFORMED' },
     { name: 'IPv6 of two groups', link: raw(withFields({ host: 'a:b' })), error: 'MALFORMED' },
     {

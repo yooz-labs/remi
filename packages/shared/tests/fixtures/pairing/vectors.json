@@ -435,6 +435,26 @@
       "error": "MALFORMED"
     },
     {
+      "name": "v2 IPv6 with fullwidth digits in all groups",
+      "link": "remi://pair#eyJ2IjoyLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0cyI6WyLvvJA677yQOu-8kDrvvJA677yQOu-8kDrvvJA677yRIl0sInBvcnQiOjE4NzY1LCJrZXkiOiJBUUlEQkFVR0J3Z0pDZ3NNRFE0UEVCRVNFeFFWRmhjWUdSb2JIQjBlSHlBPSIsIm5vbmNlIjoib0tHaW82U2xwcWVvcWFxcnJLMnVydyIsImV4cCI6MTc2MDAwMDMwMCwicHJvdG8iOjF9",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "v2 compressed IPv6 with fullwidth hexadecimal letters",
+      "link": "remi://pair#eyJ2IjoyLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0cyI6WyI6Ou-8pu-8pu-8pu-8piJdLCJwb3J0IjoxODc2NSwia2V5IjoiQVFJREJBVUdCd2dKQ2dzTURRNFBFQkVTRXhRVkZoY1lHUm9iSEIwZUh5QT0iLCJub25jZSI6Im9LR2lvNlNscHFlb3FhcXJySzJ1cnciLCJleHAiOjE3NjAwMDAzMDAsInByb3RvIjoxfQ",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "v1 IPv6 with fullwidth digits",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0Ijoi77yS77yQ77yQ77yROmRiODowOjA6MDowOjA6MSIsInBvcnQiOjE4NzY1LCJrZXkiOiJBUUlEQkFVR0J3Z0pDZ3NNRFE0UEVCRVNFeFFWRmhjWUdSb2JIQjBlSHlBPSIsIm5vbmNlIjoib0tHaW82U2xwcWVvcWFxcnJLMnVydyIsImV4cCI6MTc2MDAwMDMwMCwicHJvdG8iOjF9",
+      "error": "MALFORMED"
+    },
+    {
+      "name": "v1 compressed IPv6 with fullwidth hexadecimal letters",
+      "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiMjAwMTpkYjg6Ou-8oSIsInBvcnQiOjE4NzY1LCJrZXkiOiJBUUlEQkFVR0J3Z0pDZ3NNRFE0UEVCRVNFeFFWRmhjWUdSb2JIQjBlSHlBPSIsIm5vbmNlIjoib0tHaW82U2xwcWVvcWFxcnJLMnVydyIsImV4cCI6MTc2MDAwMDMwMCwicHJvdG8iOjF9",
+      "error": "MALFORMED"
+    },
+    {
       "name": "IPv6 of three colons",
       "link": "remi://pair#eyJ2IjoxLCJuYW1lIjoiZml4dHVyZS1tYWMiLCJob3N0IjoiOjo6IiwicG9ydCI6MTg3NjUsImtleSI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUE9Iiwibm9uY2UiOiJvS0dpbzZTbHBxZW9xYXFycksydXJ3IiwiZXhwIjoxNzYwMDAwMzAwLCJwcm90byI6MX0",
       "error": "MALFORMED"
