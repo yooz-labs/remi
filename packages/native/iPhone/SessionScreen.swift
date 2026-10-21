@@ -17,6 +17,7 @@ struct SessionScreen: View {
     let onCancel: (String) -> Void
     let onSend: (String) async -> Bool
     let onTerminate: () -> Void
+    let onClose: () -> Void
 
     @State private var draft = ""
     @State private var selectedViewID = ""
@@ -46,7 +47,8 @@ struct SessionScreen: View {
         onSubmit: @escaping (String, [RemiQuestionStepSelection]) -> Void = { _, _ in },
         onCancel: @escaping (String) -> Void = { _ in },
         onSend: @escaping (String) async -> Bool = { _ in true },
-        onTerminate: @escaping () -> Void = {}
+        onTerminate: @escaping () -> Void = {},
+        onClose: @escaping () -> Void = {}
     ) {
         self.session = session
         self.transcript = transcript
@@ -63,6 +65,7 @@ struct SessionScreen: View {
         self.onCancel = onCancel
         self.onSend = onSend
         self.onTerminate = onTerminate
+        self.onClose = onClose
     }
 
     var body: some View {
@@ -203,6 +206,7 @@ struct SessionScreen: View {
         ) {
             Button("Exit session", role: .destructive) {
                 onTerminate()
+                onClose()
                 dismiss()
             }
             Button("Cancel", role: .cancel) {}

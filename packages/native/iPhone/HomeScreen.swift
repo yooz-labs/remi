@@ -15,17 +15,11 @@ struct HomeScreen: View {
     @Binding var selectedMachineID: String
     let errorMessage: String?
     let noticeMessage: String?
-    let transcriptForSession: (String) -> [RemiTranscriptEntry]
-    let questionsForSession: (String) -> [RemiQuestionCardModel]
-    let viewsForSession: (String) -> [SessionViewMeta]
-    let viewsLoadedForSession: (String) -> Bool
     let onAnswer: (String, String, String) -> Void
     let onSubmit: (String, String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (String, String) -> Void
-    let onOpenSession: (String) -> Void
-    let onSend: (String, String) async -> Bool
-    let onTerminateSession: (String) -> Void
     let onResumeSession: (String, String) -> Void
+    let onOpenSessionRoute: (RemiSessionSummary) -> Void
     let onNewSession: (String?, String?) -> Void
     let onPresentPairing: () -> Void
     let onPresentPreferences: () -> Void
@@ -47,17 +41,11 @@ struct HomeScreen: View {
         selectedMachineID: Binding<String> = .constant(""),
         errorMessage: String? = nil,
         noticeMessage: String? = nil,
-        transcriptForSession: @escaping (String) -> [RemiTranscriptEntry] = { _ in RemiPreviewData.transcript },
-        questionsForSession: @escaping (String) -> [RemiQuestionCardModel] = { _ in [] },
-        viewsForSession: @escaping (String) -> [SessionViewMeta] = { _ in [] },
-        viewsLoadedForSession: @escaping (String) -> Bool = { _ in true },
         onAnswer: @escaping (String, String, String) -> Void = { _, _, _ in },
         onSubmit: @escaping (String, String, [RemiQuestionStepSelection]) -> Void = { _, _, _ in },
         onCancel: @escaping (String, String) -> Void = { _, _ in },
-        onOpenSession: @escaping (String) -> Void = { _ in },
-        onSend: @escaping (String, String) async -> Bool = { _, _ in true },
-        onTerminateSession: @escaping (String) -> Void = { _ in },
         onResumeSession: @escaping (String, String) -> Void = { _, _ in },
+        onOpenSessionRoute: @escaping (RemiSessionSummary) -> Void = { _ in },
         onNewSession: @escaping (String?, String?) -> Void = { _, _ in },
         onPresentPairing: @escaping () -> Void = {},
         onPresentPreferences: @escaping () -> Void = {},
@@ -78,17 +66,11 @@ struct HomeScreen: View {
         _selectedMachineID = selectedMachineID
         self.errorMessage = errorMessage
         self.noticeMessage = noticeMessage
-        self.transcriptForSession = transcriptForSession
-        self.questionsForSession = questionsForSession
-        self.viewsForSession = viewsForSession
-        self.viewsLoadedForSession = viewsLoadedForSession
         self.onAnswer = onAnswer
         self.onSubmit = onSubmit
         self.onCancel = onCancel
-        self.onOpenSession = onOpenSession
-        self.onSend = onSend
-        self.onTerminateSession = onTerminateSession
         self.onResumeSession = onResumeSession
+        self.onOpenSessionRoute = onOpenSessionRoute
         self.onNewSession = onNewSession
         self.onPresentPairing = onPresentPairing
         self.onPresentPreferences = onPresentPreferences
@@ -154,16 +136,7 @@ struct HomeScreen: View {
                         sessions: snapshot.sessions,
                         scope: activityScope,
                         query: searchText,
-                        transcriptForSession: transcriptForSession,
-                        questionsForSession: questionsForSession,
-                        viewsForSession: viewsForSession,
-                        viewsLoadedForSession: viewsLoadedForSession,
-                        onAnswer: onAnswer,
-                        onSubmit: onSubmit,
-                        onCancel: onCancel,
-                        onOpenSession: onOpenSession,
-                        onSend: onSend,
-                        onTerminateSession: onTerminateSession,
+                        onOpenSessionRoute: onOpenSessionRoute,
                         onResumeSession: onResumeSession,
                         onNewSessionHere: { machineID, repository in
                             presentNewSession(machineID: machineID, repository: repository)
@@ -631,16 +604,7 @@ private struct SessionsSection: View {
     let sessions: [RemiSessionSummary]
     let scope: RemiCommandCenterScope
     let query: String
-    let transcriptForSession: (String) -> [RemiTranscriptEntry]
-    let questionsForSession: (String) -> [RemiQuestionCardModel]
-    let viewsForSession: (String) -> [SessionViewMeta]
-    let viewsLoadedForSession: (String) -> Bool
-    let onAnswer: (String, String, String) -> Void
-    let onSubmit: (String, String, [RemiQuestionStepSelection]) -> Void
-    let onCancel: (String, String) -> Void
-    let onOpenSession: (String) -> Void
-    let onSend: (String, String) async -> Bool
-    let onTerminateSession: (String) -> Void
+    let onOpenSessionRoute: (RemiSessionSummary) -> Void
     let onResumeSession: (String, String) -> Void
     let onNewSessionHere: (String, String) -> Void
     @State private var focusedWorkspace: PhoneWorkspaceFocus?
@@ -681,16 +645,7 @@ private struct SessionsSection: View {
             if let workspace = workspaces.first(where: { $0.id == focus.id }) {
                 PhoneWorkspaceSessionsSheet(
                     workspace: workspace,
-                    transcriptForSession: transcriptForSession,
-                    questionsForSession: questionsForSession,
-                    viewsForSession: viewsForSession,
-                    viewsLoadedForSession: viewsLoadedForSession,
-                    onAnswer: onAnswer,
-                    onSubmit: onSubmit,
-                    onCancel: onCancel,
-                    onOpenSession: onOpenSession,
-                    onSend: onSend,
-                    onTerminateSession: onTerminateSession,
+                    onOpenSessionRoute: onOpenSessionRoute,
                     onResumeSession: onResumeSession,
                     onNewSessionHere: onNewSessionHere
                 )
@@ -903,16 +858,7 @@ private struct PhoneWorkspaceRow: View {
 
 private struct PhoneWorkspaceSessionsSheet: View {
     let workspace: PhoneSessionWorkspace
-    let transcriptForSession: (String) -> [RemiTranscriptEntry]
-    let questionsForSession: (String) -> [RemiQuestionCardModel]
-    let viewsForSession: (String) -> [SessionViewMeta]
-    let viewsLoadedForSession: (String) -> Bool
-    let onAnswer: (String, String, String) -> Void
-    let onSubmit: (String, String, [RemiQuestionStepSelection]) -> Void
-    let onCancel: (String, String) -> Void
-    let onOpenSession: (String) -> Void
-    let onSend: (String, String) async -> Bool
-    let onTerminateSession: (String) -> Void
+    let onOpenSessionRoute: (RemiSessionSummary) -> Void
     let onResumeSession: (String, String) -> Void
     let onNewSessionHere: (String, String) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -982,44 +928,30 @@ private struct PhoneWorkspaceSessionsSheet: View {
     @ViewBuilder
     private func sessionEntry(_ session: RemiSessionSummary) -> some View {
         if session.canResume {
-            PhoneStoredSessionRow(session: session, onResume: {
-                onResumeSession(session.machineID, session.id)
-            }) {
-                sessionDestination(session)
-            }
+            PhoneStoredSessionRow(
+                session: session,
+                onOpen: { open(session) },
+                onResume: { onResumeSession(session.machineID, session.id) }
+            )
             .contextMenu { copySessionIDButton(session.id) }
         } else {
-            NavigationLink {
-                sessionDestination(session)
-            } label: {
+            Button { open(session) } label: {
                 RemiSessionRow(session: session)
             }
+            .buttonStyle(.plain)
             .contextMenu { copySessionIDButton(session.id) }
         }
+    }
+
+    private func open(_ session: RemiSessionSummary) {
+        onOpenSessionRoute(session)
+        dismiss()
     }
 
     private func copySessionIDButton(_ sessionID: String) -> some View {
         Button("Copy session ID", systemImage: "doc.on.doc") {
             UIPasteboard.general.string = sessionID
         }
-    }
-
-    private func sessionDestination(_ session: RemiSessionSummary) -> some View {
-        SessionScreen(
-            session: session,
-            transcript: transcriptForSession(session.id),
-            questions: questionsForSession(session.id),
-            views: viewsForSession(session.id),
-            viewsLoaded: viewsLoadedForSession(session.id),
-            transcriptForView: transcriptForSession,
-            onSelectView: onOpenSession,
-            onAnswer: { onAnswer(session.id, $0, $1) },
-            onSubmit: { onSubmit(session.id, $0, $1) },
-            onCancel: { onCancel(session.id, $0) },
-            onSend: { await onSend(session.id, $0) },
-            onTerminate: { onTerminateSession(session.id) }
-        )
-        .onAppear { onOpenSession(session.id) }
     }
 }
 
@@ -1048,11 +980,11 @@ private struct PhoneWorkspaceDetailHeader: View {
     }
 }
 
-private struct PhoneStoredSessionRow<Destination: View>: View {
+private struct PhoneStoredSessionRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let session: RemiSessionSummary
+    let onOpen: () -> Void
     let onResume: () -> Void
-    @ViewBuilder let destination: () -> Destination
 
     var body: some View {
         let layout = dynamicTypeSize.isAccessibilitySize
@@ -1060,7 +992,7 @@ private struct PhoneStoredSessionRow<Destination: View>: View {
             : AnyLayout(HStackLayout(alignment: .center, spacing: RemiTheme.Spacing.s))
 
         layout {
-            NavigationLink(destination: destination) {
+            Button(action: onOpen) {
                 RemiSessionRow(session: session)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .layoutPriority(1)
