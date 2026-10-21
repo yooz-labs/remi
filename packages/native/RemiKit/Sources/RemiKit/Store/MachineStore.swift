@@ -152,6 +152,10 @@ public struct MachineState: Sendable, Equatable, Identifiable {
     var recoveryRevision: UInt64 = 0
     public var recoveryProgress: MachineRecoveryProgress?
     public var activeConnectionLayer: MachineConnectionLayer? { status == .connected ? endpoint.connectionLayer : nil }
+    /// #1586: a healthy locked route has no permitted improvement to search for.
+    var needsRouteRecovery: Bool {
+        status != .connected || (connectionPreference == .automatic && endpoint.connectionLayer != .local)
+    }
     public var attemptedConnectionLayer: MachineConnectionLayer? {
         if let progress = recoveryProgress { return progress.attemptedLayer }
         switch status {
@@ -763,6 +767,7 @@ public final class MachineStore {
             }, publish: { [weak self] id, progress in
                 guard let self, let index = self.machines.firstIndex(where: { $0.id == id }),
                       self.recoveryTerminalRoot(for: self.machines[index]) == nil else { return }
+                guard self.machines[index].needsRouteRecovery || progress.phase == .recovered else { return }
                 self.machines[index].recoveryProgress = progress
                 if progress.phase == .probing { self.recoveryRequestedLifetimes.insert(self.machines[index].pairingLifetime) }
                 if self.machines[index].status != .connected {
@@ -783,8 +788,7 @@ public final class MachineStore {
     func recoveryTargets() -> [MachineRecoveryTarget] {
         guard running else { return [] }
         return machines.compactMap { machine in
-            guard machine.configurationIssue == nil,
-                  machine.status != .connected || machine.endpoint.connectionLayer != .local else { return nil }
+            guard machine.configurationIssue == nil, machine.needsRouteRecovery else { return nil }
             if machine.status == .connecting, !recoveryRequestedLifetimes.contains(machine.pairingLifetime) { return nil }
             if pairingOriginLifetime == machine.pairingLifetime,
                pairingAttempts.last?.phase.isTerminal == false { return nil }
@@ -1901,6 +1905,7 @@ public final class MachineStore {
         case .connected:
             routeDidConnect(endpoint, machineIndex: index)
             machines[index].status = .connected
+            if !machines[index].needsRouteRecovery { machines[index].recoveryProgress = nil }
         case .awaitingLocalApproval(let fingerprint):
             machines[index].status = .waitingForApproval(fingerprint: fingerprint)
         case .awaitingRelayConfirmation(let fingerprint):

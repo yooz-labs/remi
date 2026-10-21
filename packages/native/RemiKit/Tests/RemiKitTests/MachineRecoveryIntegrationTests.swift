@@ -515,6 +515,59 @@ struct MachineRecoveryIntegrationTests {
 
     @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_OWNED_RECOVERY_NETWORK_TEST"] == "1",
         "Requires two explicitly selected existing owned interfaces; no network administration."))
+    func realHealthyLockedTailscaleDoesNotReportItsAddressMissing() async throws {
+        let tail = try #require(ProcessInfo.processInfo.environment["REMI_RECOVERY_TAIL"])
+        #expect(MachineEndpoint(host: tail, port: 1).connectionLayer == .tailscale)
+        let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Integration/local-discovery-fixture.ts")
+        let identity = ClientIdentity()
+        let hub = Process(), input = Pipe(), output = Pipe()
+        let directory = try OwnedRecoveryFixture.configure(hub, script: script, arguments: ["tail"],
+            environment: ["REMI_RECOVERY_SOURCE_BIND": tail])
+        hub.standardInput = input; hub.standardOutput = output; hub.standardError = FileHandle.standardError
+        try hub.run()
+        defer {
+            try? input.fileHandleForWriting.close()
+            if hub.isRunning { hub.terminate() }; hub.waitUntilExit()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let client = try JSONSerialization.data(withJSONObject: ["publicKey": identity.publicKeyBase64])
+        try input.fileHandleForWriting.write(contentsOf: client + Data([10]))
+        let metadata = try #require(try await readLine(output.fileHandleForReading) as? [String: Any])
+        let encodedKey = try #require(metadata["publicKey"] as? String)
+        let key = try #require(Data(base64Encoded: encodedKey))
+        let port = try #require(metadata["hubPort"] as? Int)
+        let endpoint = MachineEndpoint(host: tail, port: port)
+        let profile = MachineRouteProfile(machineID: try MachineIdentityVerifier.machineID(forPublicKey: key),
+            routes: [endpoint], connectionPreference: .tailscaleOnly, machinePublicKey: RelayCrypto.b64(key))
+        let store = MachineStore(profiles: [profile], identity: identity, clientVersion: "owned-locked-recovery", clientId: "owned-locked-recovery")
+        store.start(); defer { store.stop() }
+        let connected = ContinuousClock.now.advanced(by: .seconds(10))
+        while (store.machines.first?.status != .connected || store.machines.first?.hasLoadedSessions != true), ContinuousClock.now < connected {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(store.machines.first?.status == .connected && store.machines.first?.hasLoadedSessions == true)
+        let active = try #require(store.machines.first?.endpoint)
+        let generation = try #require(store.connectionGenerations[active])
+        let socket = try #require(store.ownedConnectionID(active))
+        let before = store.persistableProfiles
+        store.foregroundRecoveryActivated()
+        // Exercise the real debounce and coordinator, rather than only testing
+        // the target list. The active owned source hub stays reachable.
+        try await Task.sleep(for: MachineRecoverySchedule.debounce + .milliseconds(500))
+        #expect(store.machines.first?.status == .connected)
+        #expect(store.machines.first?.connectionPreference == .tailscaleOnly)
+        #expect(store.machines.first?.routes.contains { $0.connectionLayer == .tailscale } == true)
+        #expect(store.recoveryTargets().isEmpty)
+        #expect(store.machines.first?.recoveryProgress == nil,
+            Comment(rawValue: store.machines.first?.recoveryProgress?.message ?? "No spurious recovery warning"))
+        #expect(store.ownedRecoveryCoordinator?.ownedStarts.isEmpty == true)
+        #expect(store.connectionGenerations[active] == generation && store.ownedConnectionID(active) == socket)
+        #expect(store.persistableProfiles == before)
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_OWNED_RECOVERY_NETWORK_TEST"] == "1",
+        "Requires two explicitly selected existing owned interfaces; no network administration."))
     func realHealthyTailscaleSourceSurvivesWrongKeyLocalDiscovery() async throws {
         let environment = ProcessInfo.processInfo.environment
         let local = try #require(environment["REMI_RECOVERY_LOCAL"])
