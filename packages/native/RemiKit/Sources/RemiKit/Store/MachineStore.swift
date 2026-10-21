@@ -314,6 +314,9 @@ public final class MachineStore {
     func ownedConnectionID(_ endpoint: MachineEndpoint) -> ObjectIdentifier? { connections[endpoint].map(ObjectIdentifier.init) }
     private(set) var ownedSessionListReceipts: Set<String> = []
     func ownedRequestSessions(_ endpoint: MachineEndpoint) -> String? { requestSessions(from: endpoint) }
+    var ownedSessionRoutes: [String: MachineEndpoint] { routeBySession }
+    var ownedParentRoutes: [MachineEndpoint: MachineEndpoint] { parentByConnection }
+    var ownedTerminalRootIDs: [String] { terminalRootStates.keys.map(\.id).sorted() }
     #endif
     public private(set) var transcriptsBySession: [String: [TranscriptContentMessage]] = [:]
     public private(set) var sessionViewsBySession: [String: [SessionViewMeta]] = [:]
@@ -758,7 +761,8 @@ public final class MachineStore {
             }, resume: { [weak self] adoption in
                 self?.resumeRetiredForeground(adoption.endpoint, generation: adoption.generation)
             }, publish: { [weak self] id, progress in
-                guard let self, let index = self.machines.firstIndex(where: { $0.id == id }) else { return }
+                guard let self, let index = self.machines.firstIndex(where: { $0.id == id }),
+                      self.recoveryTerminalRoot(for: self.machines[index]) == nil else { return }
                 self.machines[index].recoveryProgress = progress
                 if progress.phase == .probing { self.recoveryRequestedLifetimes.insert(self.machines[index].pairingLifetime) }
                 if self.machines[index].status != .connected {
@@ -784,12 +788,7 @@ public final class MachineStore {
             if machine.status == .connecting, !recoveryRequestedLifetimes.contains(machine.pairingLifetime) { return nil }
             if pairingOriginLifetime == machine.pairingLifetime,
                pairingAttempts.last?.phase.isTerminal == false { return nil }
-            for route in machine.routes {
-                switch terminalRootStates[route] {
-                case .rejected, .awaitingLocalApproval, .awaitingRelayConfirmation: return nil
-                default: break
-                }
-            }
+            guard recoveryTerminalRoot(for: machine) == nil else { return nil }
             let profile = MachineRouteProfile(machineID: machine.durableMachineID,
                 routes: machine.routes.filter { !pendingRelayIDs.contains($0.id) },
                 displayName: machine.usesConfiguredDisplayName ? machine.displayName : nil,
@@ -800,8 +799,22 @@ public final class MachineStore {
         }
     }
 
+    /// Only owned root callbacks populate this cache. Compare route IDs because
+    /// authenticated pin learning can change an endpoint's value (#1575).
+    private func recoveryTerminalRoot(for machine: MachineState) -> MachineEndpoint? {
+        let roots = Set(machine.routingRoutes.map(\.id))
+        return terminalRootStates.first { route, state in
+            guard roots.contains(route.id) else { return false }
+            switch state {
+            case .rejected, .awaitingLocalApproval, .awaitingRelayConfirmation: return true
+            default: return false
+            }
+        }?.key
+    }
+
     func validateRecovery(_ target: MachineRecoveryTarget, endpoint: MachineEndpoint) throws {
         guard running, let machine = machines.first(where: { $0.id == target.id && $0.pairingLifetime == target.lifetime }),
+              recoveryTerminalRoot(for: machine) == nil,
               machine.configurationIssue == nil, machine.recoveryRevision == target.revision,
               machine.connectionPreference == target.profile.connectionPreference,
               machine.connectionPreference.permits(endpoint),
@@ -824,20 +837,25 @@ public final class MachineStore {
             throw CancellationError()
         }
         let hadConnection = parentByConnection.values.contains { machines[index].routingRoutes.contains($0) }
+        let configured = machines[index].routes.first { $0.id == endpoint.id }
+        let admitted = configured.map(target.pinned) ?? endpoint
         retireProfileConnections(machineIndex: index,
             reason: "The connection changed. Delivery is uncertain; check the session before resuming again.")
-        if discovered { machines[index].installDiscoveredRoute(endpoint) }
-        machines[index].activate(endpoint)
+        // Retire the previous owner before replacing its value. A candidate
+        // resolving to a configured route is still that route, not ephemeral.
+        if configured != nil { machines[index].replaceRoute(admitted) }
+        else if discovered { machines[index].installDiscoveredRoute(admitted) }
+        machines[index].activate(admitted)
         recoveryRequestedLifetimes.remove(machines[index].pairingLifetime)
-        connections[endpoint] = connection
-        connectionGenerations[endpoint] = generation
-        parentByConnection[endpoint] = endpoint
+        connections[admitted] = connection
+        connectionGenerations[admitted] = generation
+        parentByConnection[admitted] = admitted
         if hadConnection {
             latestOperationNotice = "The connection changed. Pending answers, Cancel, chat and session requests may be uncertain. Check the current session before trying again."
         }
-        let adoption = PairingAdoption(endpoint: endpoint, generation: generation, profileID: machines[index].id)
-        receive(.hello(hello, authorityPublicKey: key), from: endpoint, generation: generation)
-        if endpoint.relayPin != nil, pushEnabled.contains(endpoint.id) { Task { await registerRelayToken(on: endpoint, generation: generation) } }
+        let adoption = PairingAdoption(endpoint: admitted, generation: generation, profileID: machines[index].id)
+        receive(.hello(hello, authorityPublicKey: key), from: admitted, generation: generation)
+        if admitted.relayPin != nil, pushEnabled.contains(admitted.id) { Task { await registerRelayToken(on: admitted, generation: generation) } }
         return adoption
     }
 
@@ -1763,7 +1781,7 @@ public final class MachineStore {
         if machines[machineIndex].durableMachinePublicKey != nil {
             // A configured authentication/approval stop survives later socket
             // failures. Discovery cannot reinterpret it as permission to fall back.
-            if let terminal = machines[machineIndex].routes.first(where: { terminalRootStates[$0] != nil }),
+            if let terminal = recoveryTerminalRoot(for: machines[machineIndex]),
                exposeTerminalState(terminal, machineIndex: machineIndex) { return }
             recoveryRequestedLifetimes.insert(machines[machineIndex].pairingLifetime)
             if machines[machineIndex].status != .connected || machines[machineIndex].endpoint.id == endpoint.id {
@@ -1855,6 +1873,9 @@ public final class MachineStore {
         case .rejected, .awaitingLocalApproval, .awaitingRelayConfirmation:
             connectedRoutes.remove(endpoint)
             terminalRootStates[endpoint] = state
+            machines[index].recoveryProgress = nil
+            recoveryRequestedLifetimes.remove(machines[index].pairingLifetime)
+            recoveryCoordinator?.configuredRootStopped(profileID: machines[index].id)
         default: break
         }
         if machines[index].endpoint.id != endpoint.id {

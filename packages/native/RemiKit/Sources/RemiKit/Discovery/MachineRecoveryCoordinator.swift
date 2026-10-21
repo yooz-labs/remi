@@ -62,6 +62,11 @@ final class MachineRecoveryCoordinator {
     var ownedSweepCount: Int { schedule.sweeps }
     var ownedLastSweepStart: ContinuousClock.Instant? { schedule.lastStart }
     var ownedNextSweep: ContinuousClock.Instant? { schedule.due }
+    private(set) var ownedScheduleEvents: [String] = []
+    private func recordOwnedSchedule(_ event: String) {
+        ownedScheduleEvents.append("\(ContinuousClock.now):\(event) sweeps=\(schedule.sweeps) starts=\(budget.starts) due=\(String(describing: schedule.due)) deadline=\(String(describing: schedule.deadline)) epoch=\(epoch)")
+        if ownedScheduleEvents.count > 32 { ownedScheduleEvents.removeFirst(ownedScheduleEvents.count - 32) }
+    }
     #endif
 
     init(identity: ClientIdentity, clientVersion: String, clientID: String,
@@ -87,6 +92,9 @@ final class MachineRecoveryCoordinator {
     }
 
     func invalidate() {
+        #if DEBUG
+        recordOwnedSchedule("invalidate")
+        #endif
         epoch = UUID()
         scheduled?.cancel(); scheduled = nil; timeout?.cancel(); timeout = nil
         discovery.cancel()
@@ -98,6 +106,9 @@ final class MachineRecoveryCoordinator {
     }
 
     func trigger(newEpisode: Bool) {
+        #if DEBUG
+        recordOwnedSchedule("trigger newEpisode=\(newEpisode)")
+        #endif
         guard active else { return }
         // A transient duplicate failure cannot interrupt an ongoing sweep or
         // endlessly extend its debounce. A new path/foreground/Retry can.
@@ -105,6 +116,24 @@ final class MachineRecoveryCoordinator {
         invalidate()
         schedule.request(at: .now, newEpisode: newEpisode)
         arm()
+    }
+
+    /// An owned configured/admitted root stopped. Candidate refusals never call
+    /// this: they remain quarantined in completed(). Retiring the current sweep
+    /// preserves its consumed starts and the episode's sweep count/cooldown.
+    func configuredRootStopped(profileID: String) {
+        guard active else { return }
+        blocked.insert(profileID)
+        if schedule.deadline != nil {
+            finishSweep()
+        } else {
+            let pending = schedule
+            invalidate()
+            // Preserve an already armed backoff exactly, including its due
+            // instant; requesting again could shorten the 60-second backoff.
+            schedule = pending
+            arm()
+        }
     }
 
     private func arm() {
@@ -127,6 +156,9 @@ final class MachineRecoveryCoordinator {
     }
 
     private func beginSweep(_ snapshots: [MachineRecoveryTarget]) {
+        #if DEBUG
+        recordOwnedSchedule("beginSweep targets=\(snapshots.count)")
+        #endif
         targets = snapshots
         budget = MachineRecoveryProbeBudget(); queue = []; seen = []; blocked = []; promoted = []; failures = [:]
         let run = epoch
@@ -261,6 +293,9 @@ final class MachineRecoveryCoordinator {
     }
 
     private func finishSweep() {
+        #if DEBUG
+        recordOwnedSchedule("finishSweep")
+        #endif
         guard schedule.deadline != nil else { return }
         let remaining = targets.filter { !promoted.contains($0.id) }
         let retry = remaining.contains { !blocked.contains($0.id) }

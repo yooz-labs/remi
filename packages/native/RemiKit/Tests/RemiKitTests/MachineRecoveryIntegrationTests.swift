@@ -4,6 +4,12 @@ import Testing
 @testable import RemiKit
 
 @MainActor
+private final class RecoveryAdmissionGate {
+    var entered = false
+    var released = false
+}
+
+@MainActor
 @Suite(.serialized)
 struct MachineRecoveryIntegrationTests {
     private func fixture<T: Decodable>(_ name: String, as type: T.Type) throws -> T {
@@ -238,7 +244,206 @@ struct MachineRecoveryIntegrationTests {
         #expect(store.machines.first?.sessionConnectionIssue == nil)
     }
 
+    /// Starts with the manual endpoint, then learns its full key through the
+    /// authenticated Hello seam. Recovery must update that configured owner.
+    @Test(arguments: [false, true])
+    func learnedPinRecoveryKeepsCanonicalConfiguredOwner(_ discovered: Bool) async throws {
+        let hub = try listener(), session = try listener()
+        defer { Darwin.close(hub.0); Darwin.close(session.0) }
+        let root = MachineEndpoint(host: "127.0.0.1", port: hub.1)
+        let key = ClientIdentity().publicKeyRaw
+        let store = MachineStore(endpoints: [root], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
+        store.start(); defer { store.stop() }
+        let initial = try #require(store.connectionGenerations[root])
+        let hello = try fixture("hello_ack_legacy", as: HelloAckMessage.self)
+        store.receive(.hello(hello, authorityPublicKey: key), from: root, generation: initial)
+        store.renameMachine(root, to: "Saved manual alias")
+        store.receive(.retrying(attempt: 1, delaySeconds: 1), from: root, generation: initial)
+        let navigationID = try #require(store.machines.first?.id)
+        let target = try #require(store.recoveryTargets().first)
+        let pinned = target.pinned(root)
+        #expect(pinned.id == root.id && pinned != root)
+        let connection = RemiConnection(configuration: .init(url: try #require(pinned.webSocketURL), clientVersion: "test", clientId: "test"),
+            identity: ClientIdentity(), stateHandler: { _ in }, eventHandler: { _ in })
+        defer { Task { await connection.stop() } }
+        let generation = UUID()
+        let adopted = try store.admitRecovery(target: target, endpoint: pinned, discovered: discovered,
+            connection: connection, generation: generation, hello: hello, key: key)
+        #expect(adopted.endpoint == pinned && store.machines.first?.routes.first == pinned)
+        #expect(store.machines.first?.endpoint == pinned && store.machines.first?.id == navigationID)
+        #expect(store.machines.first?.displayName == "Saved manual alias")
+        #expect(store.machines.first?.discoveredRoutes.isEmpty == true)
+        #expect(store.connectionGenerations[root] == nil && store.connectionGenerations[pinned] == generation)
+        var payload = try #require(try JSONSerialization.jsonObject(with: FixtureConformanceTests.fixture("session_list_response")) as? [String: Any])
+        payload["daemonPorts"] = [session.1]
+        let list = try JSONDecoder().decode(SessionListResponse.self, from: JSONSerialization.data(withJSONObject: payload))
+        store.receive(.sessions(list), from: pinned, generation: generation)
+        let child = try #require(store.connectionGenerations.keys.first { $0.port == session.1 })
+        let childGeneration = try #require(store.connectionGenerations[child])
+        store.receive(.sessions(list), from: child, generation: childGeneration)
+        #expect(store.ownedConnectionMachineIDs[child] == target.machineID)
+        #expect(store.ownedParentRoutes[child] == pinned)
+        let sessionID = try #require(list.sessions.first?.sessionId)
+        #expect(store.ownedSessionRoutes[sessionID] == child)
+        store.setConnectionPreference(.relayOnly, for: pinned)
+        #expect(store.connectionGenerations.isEmpty && store.ownedParentRoutes.isEmpty && store.ownedSessionRoutes.isEmpty)
+        #expect(store.machines.first?.connectionPreference == .relayOnly)
+        let stopped = store.machines.first?.status
+        store.receive(.hello(hello, authorityPublicKey: key), from: pinned, generation: generation)
+        store.receive(.sessions(list), from: child, generation: childGeneration)
+        #expect(store.connectionGenerations.isEmpty && store.ownedSessionRoutes.isEmpty && store.machines.first?.status == stopped)
+        store.stop(); await connection.stop()
+    }
+
+    @Test(arguments: [0, 1, 2])
+    func lateConfiguredStopInvalidatesRecoverySnapshot(_ stop: Int) throws {
+        let hub = try listener()
+        defer { Darwin.close(hub.0) }
+        let key = ClientIdentity().publicKeyRaw
+        let root = MachineEndpoint(host: "127.0.0.1", port: hub.1)
+        let profile = MachineRouteProfile(machineID: try MachineIdentityVerifier.machineID(forPublicKey: key),
+            routes: [root], machinePublicKey: RelayCrypto.b64(key))
+        let store = MachineStore(profiles: [profile], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
+        store.start(); defer { store.stop() }
+        let route = try #require(store.machines.first?.endpoint)
+        let generation = try #require(store.connectionGenerations[route])
+        store.receive(.retrying(attempt: 1, delaySeconds: 1), from: route, generation: generation)
+        let target = try #require(store.recoveryTargets().first)
+        let coordinator = try #require(store.ownedRecoveryCoordinator)
+        let due = try #require(coordinator.ownedNextSweep)
+        let state: RemiConnectionState = stop == 0 ? .awaitingLocalApproval(fingerprint: "owned")
+            : stop == 1 ? .awaitingRelayConfirmation(fingerprint: "owned") : .rejected(reason: "Configured refusal")
+        store.receive(state, from: route, generation: generation)
+        #expect(coordinator.ownedNextSweep == due)
+        #expect(store.recoveryTargets().isEmpty)
+        #expect(throws: (any Error).self) { try store.validateRecovery(target, endpoint: target.pinned(route)) }
+    }
+
+    @Test func admittedDiscoveredRootStopBlocksSnapshotAndFinalValidation() async throws {
+        let hub = try listener(), fresh = try listener()
+        defer { Darwin.close(hub.0); Darwin.close(fresh.0) }
+        let key = ClientIdentity().publicKeyRaw
+        let root = MachineEndpoint(host: "127.0.0.1", port: hub.1)
+        let profile = MachineRouteProfile(machineID: try MachineIdentityVerifier.machineID(forPublicKey: key),
+            routes: [root], machinePublicKey: RelayCrypto.b64(key))
+        let store = MachineStore(profiles: [profile], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
+        store.start(); defer { store.stop() }
+        let configured = try #require(store.machines.first?.endpoint)
+        let initial = try #require(store.connectionGenerations[configured])
+        store.receive(.retrying(attempt: 1, delaySeconds: 1), from: configured, generation: initial)
+        let target = try #require(store.recoveryTargets().first)
+        let candidate = target.pinned(MachineEndpoint(host: "127.0.0.1", port: fresh.1))
+        let connection = RemiConnection(configuration: .init(url: try #require(candidate.webSocketURL), clientVersion: "test", clientId: "test"),
+            identity: ClientIdentity(), stateHandler: { _ in }, eventHandler: { _ in })
+        let generation = UUID()
+        _ = try store.admitRecovery(target: target, endpoint: candidate, discovered: true, connection: connection,
+            generation: generation, hello: try fixture("hello_ack_legacy", as: HelloAckMessage.self), key: key)
+        store.receive(.retrying(attempt: 1, delaySeconds: 1), from: candidate, generation: generation)
+        let snapshot = try #require(store.recoveryTargets().first)
+        store.receive(.awaitingLocalApproval(fingerprint: "owned-discovered"), from: candidate, generation: generation)
+        #expect(store.recoveryTargets().isEmpty)
+        #expect(store.machines.first?.status == .waitingForApproval(fingerprint: "owned-discovered"))
+        #expect(throws: (any Error).self) { try store.validateRecovery(snapshot, endpoint: target.pinned(root)) }
+        store.stop(); await connection.stop()
+    }
+
+    @Test func configuredStopReschedulesOtherProfilesWithinExistingEpisode() async throws {
+        let sockets = try (0..<2).map { _ in try listener() }
+        defer { for socket in sockets { Darwin.close(socket.0) } }
+        let profiles = try sockets.map { socket in
+            let key = ClientIdentity().publicKeyRaw
+            return MachineRouteProfile(machineID: try MachineIdentityVerifier.machineID(forPublicKey: key),
+                routes: [MachineEndpoint(host: "127.0.0.1", port: socket.1)], connectionPreference: .localOnly,
+                machinePublicKey: RelayCrypto.b64(key))
+        }
+        let store = MachineStore(profiles: profiles, identity: ClientIdentity(), clientVersion: "test", clientId: "test")
+        store.start(); defer { store.stop() }
+        let routes = store.machines.map(\.endpoint)
+        let generations = try routes.map { try #require(store.connectionGenerations[$0]) }
+        for (route, generation) in zip(routes, generations) {
+            store.receive(.retrying(attempt: 1, delaySeconds: 1), from: route, generation: generation)
+        }
+        let coordinator = try #require(store.ownedRecoveryCoordinator)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while coordinator.ownedActiveProbes < 2, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(coordinator.ownedActiveProbes == 2)
+        let started = try #require(coordinator.ownedLastSweepStart)
+        let sweeps = coordinator.ownedSweepCount, epoch = coordinator.ownedEpoch, starts = coordinator.ownedStarts.count
+        store.receive(.awaitingLocalApproval(fingerprint: "owned-profile"), from: routes[0], generation: generations[0])
+        let due = try #require(coordinator.ownedNextSweep)
+        #expect(coordinator.ownedEpoch != epoch && coordinator.ownedActiveProbes == 0)
+        #expect(coordinator.ownedSweepCount == sweeps && coordinator.ownedLastSweepStart == started)
+        #expect(due >= started.advanced(by: MachineRecoverySchedule.cooldown))
+        #expect(coordinator.ownedStarts.count == starts && store.recoveryTargets().map(\.id) == [store.machines[1].id])
+        #expect(store.machines[0].status == .waitingForApproval(fingerprint: "owned-profile"))
+        #expect(store.machines[0].recoveryProgress == nil && store.machines[1].recoveryProgress?.phase == .scheduled)
+    }
+
     #if os(macOS)
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_LOCAL_DISCOVERY_TEST"] == "1",
+        "Owns a real authenticated candidate socket and gates it before Store admission."), arguments: [0, 1, 2])
+    func configuredStopWhileRealCandidateAwaitsAdmission(_ stop: Int) async throws {
+        let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Integration/recovery-probe-peer.ts")
+        let peer = Process(), input = Pipe(), output = Pipe()
+        let directory = try OwnedRecoveryFixture.configure(peer, script: script, arguments: ["admission"],
+            environment: ["REMI_RECOVERY_PEER_BIND": "127.0.0.1"])
+        peer.standardInput = input; peer.standardOutput = output; peer.standardError = FileHandle.standardError
+        try peer.run()
+        defer {
+            try? input.fileHandleForWriting.close()
+            if peer.isRunning { peer.terminate() }; peer.waitUntilExit()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let metadata = try #require(try await readLine(output.fileHandleForReading) as? [String: Any])
+        let encoded = try #require(metadata["publicKey"] as? String)
+        let key = try #require(Data(base64Encoded: encoded))
+        let port = try #require(metadata["port"] as? Int)
+        let root = MachineEndpoint(host: "100.64.0.1", port: port, expectedFingerprint: ClientIdentity.fingerprint(ofPublicKeyRaw: key), expectedPublicKey: key.base64EncodedString())
+        let candidate = MachineEndpoint(host: "127.0.0.1", port: port)
+        let profile = MachineRouteProfile(machineID: try MachineIdentityVerifier.machineID(forPublicKey: key),
+            routes: [root, candidate], machinePublicKey: RelayCrypto.b64(key))
+        let identity = ClientIdentity()
+        let store = MachineStore(profiles: [profile], identity: identity, clientVersion: "test", clientId: "test")
+        store.start(); defer { store.stop() }
+        let connection = RemiConnection(configuration: .init(url: try #require(root.webSocketURL), clientVersion: "test", clientId: "test"),
+            identity: identity, stateHandler: { _ in }, eventHandler: { _ in })
+        let lifetime = try #require(store.machines.first?.pairingLifetime)
+        // Only the previous configured root uses the post-verification seam.
+        // The quarantined candidate below authenticates over its actual socket.
+        let old = store.admitPairing(connection, endpoint: root, hints: [root, candidate],
+            hello: try fixture("hello_ack_legacy", as: HelloAckMessage.self), authority: key,
+            origin: .init(lifetime: lifetime, preference: .automatic), preference: .automatic)
+        let gate = RecoveryAdmissionGate()
+        store.ownedBeforeRecoveryAdmission = {
+            gate.entered = true
+            while !gate.released { try? await Task.sleep(for: .milliseconds(10)) }
+        }
+        defer { gate.released = true }
+        store.retryConnection(for: root)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(8))
+        while !gate.entered, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(gate.entered)
+        let target = try #require(store.recoveryTargets().first)
+        let coordinator = try #require(store.ownedRecoveryCoordinator)
+        let starts = coordinator.ownedStarts.count
+        let state: RemiConnectionState = stop == 0 ? .awaitingLocalApproval(fingerprint: "owned")
+            : stop == 1 ? .awaitingRelayConfirmation(fingerprint: "owned") : .rejected(reason: "Configured refusal")
+        store.receive(state, from: old.endpoint, generation: old.generation)
+        let stopped = store.machines.first?.status
+        #expect(throws: (any Error).self) { try store.validateRecovery(target, endpoint: target.pinned(candidate)) }
+        gate.released = true
+        let retired = ContinuousClock.now.advanced(by: .seconds(3))
+        while coordinator.ownedActiveProbes != 0, ContinuousClock.now < retired { try await Task.sleep(for: .milliseconds(10)) }
+        try await Task.sleep(for: .milliseconds(850))
+        #expect(coordinator.ownedAdmittedConnections.isEmpty)
+        #expect(coordinator.ownedStarts.count == starts && coordinator.ownedActiveProbes == 0)
+        #expect(store.machines.first?.status == stopped && store.recoveryTargets().isEmpty)
+        store.retryConnection(for: try #require(store.machines.first?.endpoint))
+        #expect(!store.recoveryTargets().isEmpty && coordinator.ownedNextSweep != nil)
+        store.stop(); await connection.stop()
+    }
+
     @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_LOCAL_DISCOVERY_TEST"] == "1",
         "Publishes owned hostile Bonjour services and uses real sockets; never accepts OS permission prompts."),
         arguments: ["wrong-key", "refusal-PAIRING_PENDING", "refusal-PENDING_QUEUE_FULL", "refusal-AUTH_STORE_ERROR", "refusal-UNKNOWN_KEY", "session-hello", "overflow", "hello-close"])
@@ -283,7 +488,8 @@ struct MachineRecoveryIntegrationTests {
         while (store.machines.first?.recoveryProgress?.phase != .waiting || store.ownedRecoveryCoordinator?.ownedActiveProbes != 0), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
-        #expect(store.machines.first?.recoveryProgress?.phase == .waiting)
+        #expect(store.machines.first?.recoveryProgress?.phase == .waiting,
+            Comment(rawValue: "Owned recovery: \(store.ownedRecoveryCoordinator?.ownedScheduleEvents ?? []); starts=\(store.ownedRecoveryCoordinator?.ownedStarts ?? []); stops=\(store.ownedTerminalRootIDs)"))
         let starts = store.ownedRecoveryCoordinator?.ownedStarts.count ?? 0
         #expect((1...4).contains(starts))
         #expect(store.ownedRecoveryCoordinator?.ownedStarts.first?.2 == true)

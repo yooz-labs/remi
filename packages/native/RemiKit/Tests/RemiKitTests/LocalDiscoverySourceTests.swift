@@ -98,7 +98,8 @@ struct LocalDiscoverySourceTests {
         while (store.machines.first?.status != .connected || store.machines.first?.hasLoadedSessions != true), ContinuousClock.now < recoveryDeadline {
             try await Task.sleep(for: .milliseconds(20))
         }
-        #expect(store.machines.first?.status == .connected)
+        #expect(store.machines.first?.status == .connected,
+            Comment(rawValue: "Owned recovery: \(store.ownedRecoveryCoordinator?.ownedScheduleEvents ?? []); starts=\(store.ownedRecoveryCoordinator?.ownedStarts ?? []); stops=\(store.ownedTerminalRootIDs)"))
         let active = try #require(store.machines.first?.endpoint)
         #expect(active.port == hubPort && active.host != "192.0.2.1")
         #expect(store.machines.first?.id == navigationID)
