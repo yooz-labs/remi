@@ -31,8 +31,13 @@ layer locks, operation retirement, deadlines and retry budgets are unchanged.
 The original owned source-hub regression passes after the correction, alongside
 the existing real healthy Tailscale/hostile Local discovery control. The latter
 confirms Automatic still searches Local without replacing the healthy route
-with an untrusted peer. Targeted controls: 15 tests passed. Required full
-Swift/Mac/iPhone gates and physical signed-build confirmation remain separate.
+with an untrusted peer. Targeted controls: 15 tests passed. All full gates pass: 319 Swift tests in
+52 suites, 319 Mac tests in 52 suites and the generic iPhone simulator build.
+Fresh compilation also emitted the existing WireMessages immutable-property
+and AppIntents extraction warnings measured in the clean build17 archive; the
+prior incremental gate logs omitted them. The warning-producing protocol file
+is unchanged. No new warning messages remain after that measured comparison.
+Physical signed-build confirmation remains separate.
 
 Build 18 supersedes consumed build 17 while keeping marketing version 0.2.0.
 The owner-confirmed exempt encryption metadata remains embedded and must be
