@@ -177,7 +177,8 @@ struct InboxScreen: View {
         PhoneQuietInboxState(
             copy: RemiInboxPresentation.quietCopy(
                 activeSessionCount: activeSessionCount,
-                hasConnectedMachine: hasConnectedMachine
+                hasConnectedMachine: hasConnectedMachine,
+                unconnectedMachineCount: machines.count { $0.reachability != .connected }
             ),
             canCreateSession: !availableSessionMachines.isEmpty,
             onNewSession: onNewSession

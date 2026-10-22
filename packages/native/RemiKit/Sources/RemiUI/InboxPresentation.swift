@@ -56,8 +56,13 @@ public enum RemiInboxPresentation {
     }
 
     /// The words of the quiet state. Without a connected machine it must not claim that
-    /// nothing needs the person, and it says nothing about sessions.
-    public static func quietCopy(activeSessionCount: Int, hasConnectedMachine: Bool) -> QuietCopy {
+    /// nothing needs the person, and it says nothing about sessions. While some machines are
+    /// connected and others are not, the detail says it cannot tell for the others.
+    public static func quietCopy(
+        activeSessionCount: Int,
+        hasConnectedMachine: Bool,
+        unconnectedMachineCount: Int = 0
+    ) -> QuietCopy {
         guard hasConnectedMachine else {
             return QuietCopy(
                 title: "No machine is connected",
@@ -65,23 +70,26 @@ public enum RemiInboxPresentation {
                 symbolName: "desktopcomputer.trianglebadge.exclamationmark"
             )
         }
+        let caveat = unconnectedMachineCount > 0
+            ? " \(unconnectedMachineCount) \(unconnectedMachineCount == 1 ? "machine" : "machines") not connected: Remi cannot tell for them."
+            : ""
         switch activeSessionCount {
         case 0:
             return QuietCopy(
                 title: "Nothing needs you",
-                detail: "No active sessions. Open the menu to see recent sessions.",
+                detail: "No active sessions. Open the menu to see recent sessions." + caveat,
                 symbolName: "checkmark.circle"
             )
         case 1:
             return QuietCopy(
                 title: "Nothing needs you",
-                detail: "1 active session. Open the menu to pick a session.",
+                detail: "1 active session. Open the menu to pick a session." + caveat,
                 symbolName: "checkmark.circle"
             )
         default:
             return QuietCopy(
                 title: "Nothing needs you",
-                detail: "\(activeSessionCount) active sessions. Open the menu to pick a session.",
+                detail: "\(activeSessionCount) active sessions. Open the menu to pick a session." + caveat,
                 symbolName: "checkmark.circle"
             )
         }
