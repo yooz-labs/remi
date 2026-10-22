@@ -41,6 +41,19 @@ The person is busy elsewhere; the app's job is to tell them what needs them, let
 - **Sessions live in a left drawer,** reached by an edge swipe or a button at the top left.
   The drawer groups them Needs you, Active and Recent, and each row names its project and its machine.
   The machine strip in the drawer is a temporary filter: it narrows the list of sessions and never the Inbox or notifications.
+  The Inbox has no persisted machine selection; it always spans every machine.
+- **The machine strip** depends on how many machines there are.
+  One machine is a single line with its name and state, no chips.
+  Two to four are an All chip and one chip each; five or more are the same chips in a horizontal scroll that a swipe on them scrolls without closing the drawer.
+  At accessibility text sizes two or more become a menu.
+  A chip shows a state symbol that differs by shape (never color alone), the name, and the count of open questions in the attention color, the only use of it here.
+  Machines that share a display name are told apart by their address.
+- **Machine problems** are one line each under the strip: a machine is offline, or waiting for approval.
+  Three or more collapse into one line, "3 machines need attention".
+  A line opens the Machines sheet.
+  The sessions of an offline machine stay in the list, dimmed and captioned "Last known", so the state is never color alone.
+- **The Machines sheet** is the home of machine management: connection layer, retry, approval help with the fingerprint and the authorize command, relay confirmation, pairing again and removal.
+  The drawer's Manage button and the problem lines open it.
 - **The session:** transcript and cards, with a composer.
   It opens at its latest message and has no back button; the drawer is the way out.
   A session has a pane, chat today, so files and a terminal can be added later once a hub capability backs them.

@@ -7,19 +7,20 @@ enum PhoneShellSheet: Identifiable {
     case newSession(machineID: String?, repository: String?)
     case pairing
     case preferences
+    case machines
 
     var id: String {
         switch self {
         case .newSession: "newSession"
         case .pairing: "pairing"
         case .preferences: "preferences"
+        case .machines: "machines"
         }
     }
 }
 
 struct PhoneLiveRootView: View {
     let store: MachineStore
-    @AppStorage("selectedMachineID") private var selectedMachineID = ""
     @State private var knownQuestionIDs: Set<String> = []
     @State private var notificationBaselineEstablished = false
     @State private var questionFeedbackTrigger = 0
@@ -43,9 +44,13 @@ struct PhoneLiveRootView: View {
         }
         .onChange(of: store.pairingAttempts) { _, _ in
             guard let id = pairingAttemptID, let result = store.pairingAttempt(id: id),
-                  case .admitted(let profileID) = result.phase else { return }
-            selectedMachineID = profileID
+                  case .admitted = result.phase else { return }
+            // A filter on another machine would hide the one just paired.
+            shell.clearFilter()
             pairingAttemptID = nil
+        }
+        .onChange(of: store.machines.map(\.id), initial: true) { _, ids in
+            shell.machinesChanged(ids: ids)
         }
         .onChange(of: store.persistableProfiles) { _, profiles in
             MachineConfigurationStore.shared.saveProfiles(profiles)
@@ -147,8 +152,6 @@ struct PhoneLiveRootView: View {
             sessions: allSessions,
             machines: machineSummaries,
             sessionMachines: store.machines,
-            publicIdentity: store.publicIdentity,
-            selectedMachineID: $selectedMachineID,
             errorMessage: store.latestOperationError ?? store.latestError?.message,
             noticeMessage: store.latestOperationNotice ?? relayNotifications.notice ?? store.relayNotificationNotice,
             onAnswer: answer,
@@ -159,12 +162,7 @@ struct PhoneLiveRootView: View {
             onNewSession: { activeSheet = .newSession(machineID: $0, repository: $1) },
             onPresentPairing: { activeSheet = .pairing },
             onPresentPreferences: { activeSheet = .preferences },
-            onRemoveMachine: removeMachine,
-            onRetryApproval: store.retryApproval,
-            onRetryConnection: store.retryConnection,
-            onSetConnectionPreference: { store.setConnectionPreference($1, for: $0) },
-            onEnableRelayNotifications: relayNotifications.enable,
-            enablingRelayNotifications: relayNotifications.enabling,
+            onManageMachines: { activeSheet = .machines },
             onDismissError: store.clearLatestError,
             onDismissNotice: dismissNotice
         )
@@ -173,13 +171,20 @@ struct PhoneLiveRootView: View {
     private var drawerContent: some View {
         PhoneDrawerView(
             sessions: allSessions,
+            machines: machineSummaries,
+            filter: shell.drawerFilter,
             questionCount: store.machines.reduce(0) { $0 + $1.questions.count },
             destination: shell.destination,
             canCreateSession: !availableSessionMachines.isEmpty,
             onClose: { shell.closeDrawer() },
+            onSelectAllMachines: { shell.clearFilter() },
+            onSelectMachine: { shell.selectMachineFilter($0) },
+            onManageMachines: { present(.machines) },
+            onResumeSession: resumeSession,
+            onNewSessionHere: { present(.newSession(machineID: $0, repository: $1)) },
             onSelectInbox: { shell.select(.inbox) },
             onSelectSession: selectSession,
-            onNewSession: { present(.newSession(machineID: nil, repository: nil)) },
+            onNewSession: { present(.newSession(machineID: shell.filteredMachineKey, repository: nil)) },
             onAddMachine: { present(.pairing) },
             onPreferences: { present(.preferences) }
         )
@@ -214,22 +219,41 @@ struct PhoneLiveRootView: View {
                 onCreate: createSession
             )
         case .pairing:
-            NavigationStack {
-                PairingScreen(
-                    publicIdentity: store.publicIdentity,
-                    machineStates: store.machines,
-                    pairingAttempts: store.pairingAttempts,
-                    onCancelPairing: store.cancelPairing,
-                    onAddMachine: addMachine
-                )
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Done") { activeSheet = nil }
-                    }
-                }
-            }
+            pairingScreen { activeSheet = nil }
         case .preferences:
             PhonePreferencesSheet(publicIdentity: store.publicIdentity)
+        case .machines:
+            PhoneMachinesSheet(
+                machines: machineSummaries,
+                states: store.machines,
+                publicIdentity: store.publicIdentity,
+                enablingRelayNotifications: relayNotifications.enabling,
+                onRemove: removeMachine,
+                onRetryApproval: store.retryApproval,
+                onRetryConnection: store.retryConnection,
+                onSetConnectionPreference: { store.setConnectionPreference($1, for: $0) },
+                onEnableRelayNotifications: relayNotifications.enable,
+                onDone: { activeSheet = nil },
+                pairingContent: { close in pairingScreen(onDone: close) }
+            )
+        }
+    }
+
+    /// The pairing screen, shared by the root sheet and the one the Machines sheet hosts.
+    private func pairingScreen(onDone: @escaping () -> Void) -> some View {
+        NavigationStack {
+            PairingScreen(
+                publicIdentity: store.publicIdentity,
+                machineStates: store.machines,
+                pairingAttempts: store.pairingAttempts,
+                onCancelPairing: store.cancelPairing,
+                onAddMachine: addMachine
+            )
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done", action: onDone)
+                }
+            }
         }
     }
 
@@ -504,6 +528,8 @@ struct PhoneLiveRootView: View {
             pairingAttemptID = id
             return id
         case .endpoint(let endpoint):
+            // Same reason as a paired machine: do not let a filter hide the new one.
+            shell.clearFilter()
             relayNotifications.machineWillChange(endpoint)
             store.addMachine(endpoint)
             MachineConfigurationStore.shared.saveProfiles(store.persistableProfiles)

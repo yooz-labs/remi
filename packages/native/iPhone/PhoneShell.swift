@@ -48,6 +48,30 @@ private struct PhoneShellFade: ViewModifier {
     }
 }
 
+/// Frames, in global coordinates, of drawer regions that scroll horizontally. A drag that
+/// starts inside one belongs to it and never closes the drawer.
+private struct PhoneDrawerHorizontalRegionsKey: PreferenceKey {
+    static let defaultValue: [CGRect] = []
+    static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) {
+        value.append(contentsOf: nextValue())
+    }
+}
+
+extension View {
+    /// Marks this view as a horizontally scrolling region of the drawer: the shell's
+    /// close drag ignores any drag that starts inside it.
+    func phoneDrawerKeepsHorizontalDrag() -> some View {
+        background {
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: PhoneDrawerHorizontalRegionsKey.self,
+                    value: [proxy.frame(in: .global)]
+                )
+            }
+        }
+    }
+}
+
 /// The phone's container: a drawer fixed at the leading edge and a content layer that
 /// slides over it. It is a custom container built on the system edge-pan recognizer and
 /// system materials. The decisions behind the drag live in `RemiDrawerGesture`.
@@ -67,6 +91,9 @@ struct PhoneShell<Content: View, Drawer: View>: View {
     @State private var tapBlockGeneration = 0
     @State private var recentlyDragged = false
     @GestureState private var isClosingDrag = false
+    /// Where the drawer's horizontal scrollers are. The drawer itself does not move during
+    /// a drag (only the content layer slides), so the latest frames are always current.
+    @State private var horizontalRegions: [CGRect] = []
 
     private var isOpen: Bool { state.isDrawerOpen }
 
@@ -133,6 +160,9 @@ struct PhoneShell<Content: View, Drawer: View>: View {
                 .accessibilityElement(children: .contain)
                 .accessibilitySortPriority(2)
                 .accessibilityAction(.escape) { setOpen(false) }
+                .onPreferenceChange(PhoneDrawerHorizontalRegionsKey.self) { regions in
+                    horizontalRegions = regions
+                }
                 .simultaneousGesture(closeDrag(width: width))
                 .transition(fadeTransition)
                 .zIndex(reduceMotion ? 3 : 0)
@@ -222,7 +252,9 @@ struct PhoneShell<Content: View, Drawer: View>: View {
         DragGesture(minimumDistance: 10, coordinateSpace: .global)
             .updating($isClosingDrag) { _, closing, _ in closing = true }
             .onChanged { value in
-                guard isOpen, drag.owner != .edge, RemiDrawerGesture.shouldBegin(
+                guard isOpen, drag.owner != .edge,
+                      !RemiDrawerGesture.startsInsideAny(of: horizontalRegions, at: value.startLocation),
+                      RemiDrawerGesture.shouldBegin(
                     startX: value.startLocation.x,
                     translation: value.translation,
                     isOpen: true,

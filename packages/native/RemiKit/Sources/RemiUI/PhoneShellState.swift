@@ -44,21 +44,51 @@ public struct PhoneQuestionFocus: Hashable, Sendable {
     }
 }
 
+/// The drawer's transient machine filter. It narrows the drawer's session list only;
+/// the Inbox and notifications always span every machine. `machine` holds the machine
+/// id exactly as `PhoneSessionRoute.machineKey` does.
+public enum PhoneDrawerFilter: Hashable, Sendable {
+    case all
+    case machine(String)
+}
+
 /// The phone shell's navigation: what is on screen, whether the drawer is open, and a
 /// question waiting to be focused.
 public struct PhoneShellState: Equatable, Sendable {
     public var destination: PhoneShellDestination
     public var isDrawerOpen: Bool
     public var pendingFocus: PhoneQuestionFocus?
+    public var drawerFilter: PhoneDrawerFilter
 
     public init(
         destination: PhoneShellDestination = .inbox,
         isDrawerOpen: Bool = false,
-        pendingFocus: PhoneQuestionFocus? = nil
+        pendingFocus: PhoneQuestionFocus? = nil,
+        drawerFilter: PhoneDrawerFilter = .all
     ) {
         self.destination = destination
         self.isDrawerOpen = isDrawerOpen
         self.pendingFocus = pendingFocus
+        self.drawerFilter = drawerFilter
+    }
+
+    /// The machine the drawer is narrowed to, nil for all machines.
+    public var filteredMachineKey: String? {
+        if case .machine(let key) = drawerFilter { return key }
+        return nil
+    }
+
+    /// Narrows the drawer to one machine. Selecting the machine that is already the
+    /// filter returns to all machines.
+    public mutating func selectMachineFilter(_ machineKey: String) {
+        drawerFilter = drawerFilter == .machine(machineKey) ? .all : .machine(machineKey)
+    }
+
+    public mutating func clearFilter() { drawerFilter = .all }
+
+    /// Resets the filter when its machine is no longer in `ids`.
+    public mutating func machinesChanged(ids: [String]) {
+        if let key = filteredMachineKey, !ids.contains(key) { drawerFilter = .all }
     }
 
     public var selectedRoute: PhoneSessionRoute? {
@@ -79,6 +109,8 @@ public struct PhoneShellState: Equatable, Sendable {
     public mutating func openFromNotification(route: PhoneSessionRoute, questionID: String?) {
         destination = .session(route)
         isDrawerOpen = false
+        // A notification must never be hidden by a filter.
+        drawerFilter = .all
         pendingFocus = questionID.map { PhoneQuestionFocus(machineKey: route.machineKey, sessionID: route.sessionID, questionID: $0) }
     }
 
