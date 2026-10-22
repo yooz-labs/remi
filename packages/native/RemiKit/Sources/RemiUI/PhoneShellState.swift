@@ -1,4 +1,5 @@
 import Foundation
+import RemiKit
 
 /// What a session shows. Chat is the only pane today; files and a terminal are added
 /// only once a hub capability backs them.
@@ -59,6 +60,9 @@ public struct PhoneShellState: Equatable, Sendable {
     public var isDrawerOpen: Bool
     public var pendingFocus: PhoneQuestionFocus?
     public var drawerFilter: PhoneDrawerFilter
+    /// A Resume the person asked for that has not landed yet. Any explicit navigation
+    /// clears it, so a late landing never pulls them away from where they went.
+    public var pendingResume: ResumeSessionKey?
 
     public init(
         destination: PhoneShellDestination = .inbox,
@@ -104,11 +108,36 @@ public struct PhoneShellState: Equatable, Sendable {
         self.destination = destination
         isDrawerOpen = false
         pendingFocus = nil
+        pendingResume = nil
+    }
+
+    /// Opens a session picked from the drawer. Picking the session already on screen only
+    /// closes the drawer and keeps its route, conversation and scroll position: a new route
+    /// (one without the conversation id a notification carried) would rebuild the screen.
+    public mutating func selectSession(machineKey: String, sessionID: String) {
+        if let current = selectedRoute, current.machineKey == machineKey, current.sessionID == sessionID {
+            isDrawerOpen = false
+            pendingResume = nil
+            return
+        }
+        select(.session(PhoneSessionRoute(machineKey: machineKey, sessionID: sessionID)))
+    }
+
+    public mutating func beginResume(_ key: ResumeSessionKey) { pendingResume = key }
+
+    /// Opens the resumed session at `route`, only while `key` is still the pending resume.
+    /// Returns whether it landed.
+    @discardableResult
+    public mutating func landResume(_ key: ResumeSessionKey, at route: PhoneSessionRoute) -> Bool {
+        guard pendingResume == key else { return false }
+        select(.session(route))
+        return true
     }
 
     public mutating func openFromNotification(route: PhoneSessionRoute, questionID: String?) {
         destination = .session(route)
         isDrawerOpen = false
+        pendingResume = nil
         // A notification must never be hidden by a filter.
         drawerFilter = .all
         pendingFocus = questionID.map { PhoneQuestionFocus(machineKey: route.machineKey, sessionID: route.sessionID, questionID: $0) }

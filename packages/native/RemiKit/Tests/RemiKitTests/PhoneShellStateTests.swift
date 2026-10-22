@@ -1,3 +1,4 @@
+import RemiKit
 import Testing
 @testable import RemiUI
 
@@ -147,5 +148,77 @@ import Testing
         #expect(state.filteredMachineKey == "m1")
         state.select(.inbox)
         #expect(state.filteredMachineKey == "m1")
+    }
+
+    // MARK: Pending resume
+
+    private let resumeKey = ResumeSessionKey(machineID: "m1", sessionID: "old")
+
+    @Test func resumeLandingOpensTheSessionAndClearsThePendingResume() {
+        var state = PhoneShellState()
+        state.beginResume(resumeKey)
+        let landed = state.landResume(resumeKey, at: route("new"))
+        #expect(landed)
+        #expect(state.destination == .session(route("new")))
+        #expect(state.pendingResume == nil)
+    }
+
+    @Test func aResumeForAnotherSessionDoesNotLand() {
+        var state = PhoneShellState()
+        state.beginResume(resumeKey)
+        let landed = state.landResume(ResumeSessionKey(machineID: "m1", sessionID: "other"), at: route("new"))
+        #expect(!landed)
+        #expect(state.destination == .inbox)
+        #expect(state.pendingResume == resumeKey)
+    }
+
+    @Test func everyExplicitNavigationClearsThePendingResume() {
+        var inbox = PhoneShellState()
+        inbox.beginResume(resumeKey)
+        inbox.select(.inbox)
+        #expect(inbox.pendingResume == nil)
+
+        var session = PhoneShellState()
+        session.beginResume(resumeKey)
+        session.selectSession(machineKey: "m2", sessionID: "x")
+        #expect(session.pendingResume == nil)
+
+        var notification = PhoneShellState()
+        notification.beginResume(resumeKey)
+        notification.openFromNotification(route: route("n"), questionID: nil)
+        #expect(notification.pendingResume == nil)
+        let landed = notification.landResume(resumeKey, at: route("new"))
+        #expect(!landed)
+        #expect(notification.destination == .session(route("n")))
+    }
+
+    // MARK: Re-selecting the current session
+
+    @Test func selectingTheCurrentSessionKeepsItsRouteAndClosesTheDrawer() {
+        var state = PhoneShellState(destination: .session(route("s1", conversation: "agent")), isDrawerOpen: true)
+        state.selectSession(machineKey: "m1", sessionID: "s1")
+        #expect(state.destination == .session(route("s1", conversation: "agent")))
+        #expect(!state.isDrawerOpen)
+    }
+
+    @Test func selectingAnotherSessionOrMachineChangesTheRoute() {
+        var state = PhoneShellState(destination: .session(route("s1")), isDrawerOpen: true)
+        state.selectSession(machineKey: "m1", sessionID: "s2")
+        #expect(state.destination == .session(route("s2")))
+        state.selectSession(machineKey: "m2", sessionID: "s2")
+        #expect(state.destination == .session(route("s2", machine: "m2")))
+    }
+
+    @Test func selectingASessionFromTheInboxOpensIt() {
+        var state = PhoneShellState(isDrawerOpen: true)
+        state.selectSession(machineKey: "m1", sessionID: "s1")
+        #expect(state.destination == .session(route("s1")))
+        #expect(!state.isDrawerOpen)
+    }
+
+    @Test func aNotificationRouteForTheSameSessionWithAnotherConversationStillChangesIt() {
+        var state = PhoneShellState(destination: .session(route("s1")))
+        state.openFromNotification(route: route("s1", conversation: "agent"), questionID: nil)
+        #expect(state.destination == .session(route("s1", conversation: "agent")))
     }
 }

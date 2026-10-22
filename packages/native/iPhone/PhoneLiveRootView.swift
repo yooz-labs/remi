@@ -29,7 +29,6 @@ struct PhoneLiveRootView: View {
     @State private var shell = PhoneShellState()
     @State private var activeSheet: PhoneShellSheet?
     @State private var pairingAttemptID: UUID?
-    @State private var pendingResume: ResumeSessionKey?
     @State private var relayNotifications = NativeRelayNotifications.shared
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
 
@@ -97,17 +96,13 @@ struct PhoneLiveRootView: View {
             routePendingNotification()
         }
         .onChange(of: store.resumedSessionDestination) { _, destination in
-            guard let destination,
-                  pendingResume == ResumeSessionKey(
-                    machineID: destination.machineID,
-                    sessionID: destination.requestedSessionID
-                  )
-            else { return }
-            pendingResume = nil
-            shell.select(.session(PhoneSessionRoute(
-                machineKey: destination.machineID,
-                sessionID: destination.sessionID
-            )))
+            guard let destination else { return }
+            // Lands only while this resume is still pending: any navigation the person made
+            // since clears it (PhoneShellState), and then the landing must not move them.
+            shell.landResume(
+                ResumeSessionKey(machineID: destination.machineID, sessionID: destination.requestedSessionID),
+                at: PhoneSessionRoute(machineKey: destination.machineID, sessionID: destination.sessionID)
+            )
             store.consumeResumedSessionDestination(id: destination.id)
         }
     }
@@ -206,13 +201,16 @@ struct PhoneLiveRootView: View {
     }
 
     private func selectSession(_ session: RemiSessionSummary) {
-        openSession(session.id)
-        shell.select(.session(route(for: session)))
+        store.loadTranscript(sessionId: session.id)
+        shell.selectSession(machineKey: session.machineID, sessionID: session.id)
     }
 
     /// Navigates to the conversation of `target` and focuses its question. It never answers.
     private func openQuestionSession(_ target: RemiInboxPresentation.OpenTarget, questionID: String) {
-        openSession(target.sessionID)
+        store.loadTranscript(sessionId: target.sessionID)
+        // Opening a subagent conversation of the session already on screen changes the
+        // route's conversation id on purpose (the screen must show that conversation); the
+        // same route is a no-op.
         shell.openFromNotification(
             route: PhoneSessionRoute(
                 machineKey: target.machineID,
@@ -577,14 +575,9 @@ struct PhoneLiveRootView: View {
         )
     }
 
-    private func openSession(_ sessionID: String) {
-        pendingResume = nil
-        store.loadTranscript(sessionId: sessionID)
-    }
-
     private func resumeSession(machineID: String, sessionID: String) {
         guard let machine = store.machine(withIdentifier: machineID) else { return }
-        pendingResume = ResumeSessionKey(machineID: machine.id, sessionID: sessionID)
+        shell.beginResume(ResumeSessionKey(machineID: machine.id, sessionID: sessionID))
         store.resumeSession(on: machine.endpoint, sessionId: sessionID)
     }
 
@@ -614,7 +607,6 @@ struct PhoneLiveRootView: View {
 
     private func routePendingNotification() {
         guard let destination = notificationRouter.destination else { return }
-        pendingResume = nil
         shell.openFromNotification(
             route: PhoneSessionRoute(
                 machineKey: destination.machineID,
