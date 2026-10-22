@@ -73,6 +73,7 @@ struct PhoneMachineStrip: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
         .accessibilityLabel(RemiMachineStripPresentation.accessibilityLabel(for: machine, label: label(machine)))
         .accessibilityHint("Opens machines")
     }
@@ -108,6 +109,8 @@ struct PhoneMachineStrip: View {
                 count: 0,
                 isSelected: filter == .all,
                 accessibilityLabel: "All machines",
+                hint: "Shows sessions from every machine",
+                showsClearGlyph: false,
                 action: onSelectAll
             )
             ForEach(machines) { machine in
@@ -117,6 +120,8 @@ struct PhoneMachineStrip: View {
                     count: machine.openQuestionCount,
                     isSelected: filter == .machine(machine.id),
                     accessibilityLabel: RemiMachineStripPresentation.accessibilityLabel(for: machine, label: label(machine)),
+                    hint: filter == .machine(machine.id) ? "Shows all machines" : "Shows only this machine's sessions",
+                    showsClearGlyph: filter == .machine(machine.id),
                     action: { onSelectMachine(machine.id) }
                 )
             }
@@ -194,6 +199,10 @@ private struct PhoneMachineChip: View {
     let count: Int
     let isSelected: Bool
     let accessibilityLabel: String
+    let hint: LocalizedStringKey
+    /// A small decorative xmark on the selected machine chip: tapping it again clears the
+    /// filter, and the hint says so for VoiceOver.
+    let showsClearGlyph: Bool
     let action: () -> Void
 
     var body: some View {
@@ -206,6 +215,11 @@ private struct PhoneMachineChip: View {
                     .truncationMode(.middle)
                     .frame(maxWidth: 240)
                 PhoneMachineCountCapsule(count: count)
+                if showsClearGlyph {
+                    Image(systemName: "xmark")
+                        .font(.caption2.weight(.bold))
+                        .accessibilityHidden(true)
+                }
             }
             .foregroundStyle(isSelected ? AnyShapeStyle(.background) : AnyShapeStyle(.primary))
             .padding(.horizontal, RemiTheme.Spacing.s)
@@ -216,7 +230,7 @@ private struct PhoneMachineChip: View {
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .accessibilityHint(isSelected ? "Shows all machines" : "Shows only this machine's sessions")
+        .accessibilityHint(hint)
     }
 
     @ViewBuilder
