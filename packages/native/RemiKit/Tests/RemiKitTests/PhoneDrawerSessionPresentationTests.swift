@@ -148,3 +148,75 @@ import Testing
         #expect(presentation.accessibilityLabel.contains("il y a 2 heures"))
     }
 }
+
+@Suite struct DisplayTextEscapingTests {
+    private let rlo = "evil\u{202E}txt"
+    private let control = "a\u{0007}b"
+
+    @Test func sessionAndMachineNamesAreEscapedInTheModels() {
+        let session = RemiSessionSummary(
+            id: "s", machineName: rlo, name: rlo, harness: "Claude", project: control,
+            status: .idle, lastMessage: control, resumeError: control
+        )
+        #expect(session.name == "evil\\u202Etxt")
+        #expect(session.machineName == "evil\\u202Etxt")
+        #expect(session.project == "a\\u0007b")
+        #expect(session.lastMessage == "a\\u0007b")
+        #expect(session.resumeError == "a\\u0007b")
+        let machine = RemiMachineSummary(
+            id: "m", name: rlo, address: control, reachability: .connected, transport: .direct, sessionCount: 0
+        )
+        #expect(machine.name == "evil\\u202Etxt")
+        #expect(machine.address == "a\\u0007b")
+    }
+
+    @Test func identifiersAndTheProjectPathStayRaw() {
+        let session = RemiSessionSummary(
+            id: "s\u{202E}", machineName: rlo, name: "n", harness: "h", project: "p",
+            projectPath: "/tmp/\(control)", status: .idle
+        )
+        #expect(session.id == "s\u{202E}")
+        #expect(session.machineID == rlo)
+        #expect(session.projectPath == "/tmp/\(control)")
+    }
+
+    @Test func presentationsNeverContainTheRawCharacters() {
+        let session = RemiSessionSummary(id: "s", machineName: rlo, name: rlo, harness: "h", project: control, status: .idle)
+        let presentation = PhoneDrawerSessionPresentation(session: session)
+        for text in [presentation.subtitle, presentation.accessibilityLabel] {
+            #expect(!text.unicodeScalars.contains { $0.value == 0x202E || $0.value == 7 })
+        }
+        let machine = RemiMachineSummary(id: "m", name: rlo, address: "a", reachability: .unreachable, transport: .direct, sessionCount: 0)
+        let labels = RemiMachineStripPresentation.uniqueLabels(for: [machine])
+        #expect(labels["m"] == "evil\\u202Etxt")
+        #expect(RemiMachineStripPresentation.problemRows(in: [machine]).first?.message == "evil\\u202Etxt is offline")
+    }
+
+    @Test func cardNamesAreEscaped() {
+        let card = RemiQuestionCardModel(
+            id: "q", kind: .permission, text: "run \(rlo)", machineName: rlo, sessionID: "s", sessionName: control
+        )
+        #expect(card.machineName == "evil\\u202Etxt")
+        #expect(card.sessionName == "a\\u0007b")
+        #expect(card.text == "run evil\\u202Etxt")
+    }
+
+    @Test func modelsFollowTheSharedReferenceCorpus() throws {
+        let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        struct Corpus: Decodable { let cases: [[String: String]] }
+        let corpus = try JSONDecoder().decode(Corpus.self, from: Data(contentsOf: tests.appendingPathComponent("Fixtures/display-text.json")))
+        for sample in corpus.cases {
+            let text = try #require(sample["text"])
+            let expected = try #require(sample["expected"])
+            let machine = RemiMachineSummary(id: "m", name: text, address: "a", reachability: .connected, transport: .direct, sessionCount: 0)
+            #expect(machine.name == expected)
+        }
+    }
+}
+
+@Suite struct RemiDisplayTextTests {
+    @Test func wrapsTheSharedPolicy() {
+        #expect(RemiDisplayText.escape("a\u{202E}b") == "a\\u202Eb")
+        #expect(RemiDisplayText.escape("plain\ttext\n") == "plain\ttext\n")
+    }
+}

@@ -55,8 +55,8 @@ struct PhoneNewSessionSheet: View {
                             Text("Choose a repository").tag("")
                             ForEach(draft.recentRepositories) { item in
                                 VStack(alignment: .leading) {
-                                    Text(item.name)
-                                    Text(item.repository).font(.caption).foregroundStyle(.secondary)
+                                    Text(RemiDisplayText.escape(item.name))
+                                    Text(RemiDisplayText.escape(item.repository)).font(.caption).foregroundStyle(.secondary)
                                 }
                                 .tag(item.repository)
                             }
@@ -150,7 +150,7 @@ struct PhoneNewSessionSheet: View {
     }
 
     private func label(for machine: MachineState) -> String {
-        machineLabels[machine.id] ?? machine.displayName
+        machineLabels[machine.id] ?? RemiDisplayText.escape(machine.displayName)
     }
 
     private func create() {
