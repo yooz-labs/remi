@@ -154,9 +154,9 @@ import Testing
     @Test func quietCopyNamesMachinesThatAreNotConnected() {
         let one = RemiInboxPresentation.quietCopy(activeSessionCount: 2, hasConnectedMachine: true, unconnectedMachineCount: 1)
         #expect(one.title == "Nothing needs you")
-        #expect(one.detail == "2 active sessions. Open the menu to pick a session. 1 machine not connected: Remi cannot tell for them.")
+        #expect(one.detail == "2 active sessions. Open the menu to pick a session. 1\u{00A0}machine not connected: Remi cannot tell for them.")
         let many = RemiInboxPresentation.quietCopy(activeSessionCount: 0, hasConnectedMachine: true, unconnectedMachineCount: 4)
-        #expect(many.detail == "No active sessions. Open the menu to see recent sessions. 4 machines not connected: Remi cannot tell for them.")
+        #expect(many.detail == "No active sessions. Open the menu to see recent sessions. 4\u{00A0}machines not connected: Remi cannot tell for them.")
     }
 
     @Test func quietCopyIsUnchangedWithNoUnconnectedMachinesOrNoneConnected() {

@@ -71,7 +71,7 @@ public enum RemiInboxPresentation {
             )
         }
         let caveat = unconnectedMachineCount > 0
-            ? " \(unconnectedMachineCount) \(unconnectedMachineCount == 1 ? "machine" : "machines") not connected: Remi cannot tell for them."
+            ? " \(unconnectedMachineCount)\u{00A0}\(unconnectedMachineCount == 1 ? "machine" : "machines") not connected: Remi cannot tell for them."
             : ""
         switch activeSessionCount {
         case 0:
