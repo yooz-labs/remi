@@ -91,8 +91,8 @@ struct PhoneShell<Content: View, Drawer: View>: View {
     @State private var tapBlockGeneration = 0
     @State private var recentlyDragged = false
     @GestureState private var isClosingDrag = false
-    /// Where the drawer's horizontal scrollers are while it rests open. Not updated during
-    /// a drag, so a sliding drawer does not move the regions under a drag's start.
+    /// Where the drawer's horizontal scrollers are. The drawer itself does not move during
+    /// a drag (only the content layer slides), so the latest frames are always current.
     @State private var horizontalRegions: [CGRect] = []
 
     private var isOpen: Bool { state.isDrawerOpen }
@@ -161,7 +161,7 @@ struct PhoneShell<Content: View, Drawer: View>: View {
                 .accessibilitySortPriority(2)
                 .accessibilityAction(.escape) { setOpen(false) }
                 .onPreferenceChange(PhoneDrawerHorizontalRegionsKey.self) { regions in
-                    if !drag.isDragging { horizontalRegions = regions }
+                    horizontalRegions = regions
                 }
                 .simultaneousGesture(closeDrag(width: width))
                 .transition(fadeTransition)
