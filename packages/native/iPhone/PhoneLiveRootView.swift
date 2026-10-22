@@ -623,6 +623,10 @@ struct PhoneLiveRootView: View {
         if let machine = store.machine(withIdentifier: route.machineKey),
            let session = allSessions.first(where: { $0.machineID == machine.id && $0.id == route.sessionID }) {
             sessionScreen(session, route: route)
+        } else if store.machine(withIdentifier: route.machineKey) == nil {
+            // The machine was removed: nothing can bring this session back, so leave at
+            // once. A known machine whose session is briefly missing keeps the grace period.
+            Color.clear.onAppear { shell.sessionVanished(route) }
         } else {
             reconnectingPlaceholder(route)
         }
