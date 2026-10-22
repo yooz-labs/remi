@@ -83,7 +83,7 @@ public struct RemiSessionRow: View {
     }
 }
 
-private extension RemiSessionSummary {
+extension RemiSessionSummary {
     var lastActivityDate: Date? {
         guard let lastActivity else { return nil }
         return (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(lastActivity))

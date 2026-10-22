@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import RemiUI
 
@@ -67,5 +68,40 @@ import Testing
         #expect(presentation.accessibilityLabel.contains("on Studio (127.0.0.1:1)"))
         let same = PhoneDrawerSessionPresentation(session: session(name: "cli", project: "cli"), machineLabel: "S (a)")
         #expect(same.subtitle == "S (a)")
+    }
+
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+    private let english = Locale(identifier: "en_US")
+
+    private func active(hoursAgo: Double) -> RemiSessionSummary {
+        let date = now.addingTimeInterval(-hoursAgo * 3600)
+        return RemiSessionSummary(
+            id: "s",
+            machineName: "Studio",
+            name: "cli",
+            harness: "Claude",
+            project: "cli",
+            lastActivity: date.formatted(.iso8601),
+            status: .idle
+        )
+    }
+
+    @Test func subtitleAndLabelCarryTheRelativeLastActivity() {
+        let presentation = PhoneDrawerSessionPresentation(session: active(hoursAgo: 2), now: now, locale: english)
+        #expect(presentation.subtitle == "Studio · 2h ago")
+        #expect(presentation.accessibilityLabel == "cli, project cli, on Studio, last active 2 hours ago")
+    }
+
+    @Test func lastKnownStaysAfterTheTime() {
+        let presentation = PhoneDrawerSessionPresentation(
+            session: active(hoursAgo: 48), isLastKnown: true, now: now, locale: english
+        )
+        #expect(presentation.subtitle == "Studio · 2d ago · Last known")
+        #expect(presentation.accessibilityLabel.hasSuffix(", last known, machine offline"))
+    }
+
+    @Test func aFutureActivityTimeIsShownAsNow() {
+        let presentation = PhoneDrawerSessionPresentation(session: active(hoursAgo: -3), now: now, locale: english)
+        #expect(!presentation.subtitle.contains("in 3"))
     }
 }
