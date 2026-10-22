@@ -124,7 +124,7 @@ import Testing
         }
     }
 
-    @Test func noActivityOrAnUnparseableOneAddsNothing() {
+    @Test func noActivityOrAnUnparsableOneAddsNothing() {
         for session in [active(secondsAgo: 0, lastActivity: nil, custom: true),
                         active(secondsAgo: 0, lastActivity: "not a date", custom: true)] {
             let presentation = present(session)
