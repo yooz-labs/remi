@@ -895,11 +895,21 @@ public actor RemiConnection {
     /// Whether a failed direct socket is retried instead of rejected.
     ///
     /// A socket that dies after the machine was admitted (a graceful hub close, a restart) is a
-    /// transport loss, whatever error the system reports for it, so the connection retries with
-    /// backoff (#1599). A failure before admission is judged by its error: only reachability
-    /// failures retry, so a changed machine identity or a failed handshake still fails closed.
+    /// transport loss, whatever transport error the system reports for it, so the connection
+    /// retries with backoff (#1599). Protocol violations still fail closed after admission, and a
+    /// failure before admission is judged by its error: only reachability failures retry, so a
+    /// changed machine identity or a failed handshake still fails closed. Every retry runs the
+    /// full pinned handshake again before the machine is admitted.
     static func shouldRetryDirectFailure(error: any Error, deadlineUnreachable: Bool, wasAdmitted: Bool) -> Bool {
-        deadlineUnreachable || wasAdmitted || isDirectReachabilityFailure(error)
+        deadlineUnreachable || isDirectReachabilityFailure(error)
+            || (wasAdmitted && !isLocalProtocolViolation(error))
+    }
+
+    /// Errors this client raises itself when the peer breaks the protocol, as opposed to the
+    /// system reporting that the transport went away.
+    static func isLocalProtocolViolation(_ error: any Error) -> Bool {
+        error is RemiConnectionError || error is AuthenticationHandshakeError
+            || error is RelayFailure || error is DecodingError
     }
 
     /// Only network reachability failures may activate a relay fallback. TLS trust,

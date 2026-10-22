@@ -41,9 +41,21 @@ struct RemiConnectionTests {
         #expect(RemiConnection.shouldRetryDirectFailure(
             error: closedByPeer, deadlineUnreachable: false, wasAdmitted: true
         ))
-        #expect(RemiConnection.shouldRetryDirectFailure(
-            error: RemiConnectionError.malformedMessage, deadlineUnreachable: false, wasAdmitted: true
-        ))
+    }
+
+    @Test func aLocalProtocolViolationAfterAdmissionStillFailsClosed() {
+        for error in [
+            RemiConnectionError.malformedMessage as any Error,
+            RemiConnectionError.nonTextFrame,
+            RemiConnectionError.authentication("INVALID_SIGNATURE"),
+            AuthenticationHandshakeError.invalidServerSignature,
+            RelayFailure.malformed,
+            DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "bad")),
+        ] {
+            #expect(!RemiConnection.shouldRetryDirectFailure(
+                error: error, deadlineUnreachable: false, wasAdmitted: true
+            ))
+        }
     }
 
     @Test func aFailureBeforeAdmissionStillFailsClosedUnlessUnreachable() {
