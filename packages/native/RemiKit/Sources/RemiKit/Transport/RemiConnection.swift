@@ -380,6 +380,8 @@ public actor RemiConnection {
                 if !shouldRun || Task.isCancelled { return }
                 if error is CancellationError && directDeadlineFailure == nil { return }
                 let directFailure = directDeadlineFailure
+                // closeSocket() below resets this; a socket lost after admission is not a login failure.
+                let wasAdmitted = applicationAdmitted
                 let authenticationStarted = directOpeningCompleted || pendingAuthentication != nil || authenticatedServerPublicKey != nil
                 if configuration.relayPin != nil {
                     if let channel = relayChannel { eventHandler(.relayStreamEnded(clean: channel.peerEnded && !channel.failed)) }
@@ -413,7 +415,9 @@ public actor RemiConnection {
                     transition(to: .rejected(reason: "The relay connection closed. Pair again if this machine has not been saved."))
                     return
                 }
-                if configuration.relayPin == nil && directFailure != .unreachable && !Self.isDirectReachabilityFailure(error) {
+                if configuration.relayPin == nil && !Self.shouldRetryDirectFailure(
+                    error: error, deadlineUnreachable: directFailure == .unreachable, wasAdmitted: wasAdmitted
+                ) {
                     shouldRun = false
                     transition(to: .rejected(
                         reason: "The direct connection failed authentication or protocol validation."
@@ -886,6 +890,16 @@ public actor RemiConnection {
 
     public nonisolated static func reconnectDelay(forAttempt attempt: Int) -> Double {
         min(pow(2, Double(max(0, attempt - 1))), 30)
+    }
+
+    /// Whether a failed direct socket is retried instead of rejected.
+    ///
+    /// A socket that dies after the machine was admitted (a graceful hub close, a restart) is a
+    /// transport loss, whatever error the system reports for it, so the connection retries with
+    /// backoff (#1599). A failure before admission is judged by its error: only reachability
+    /// failures retry, so a changed machine identity or a failed handshake still fails closed.
+    static func shouldRetryDirectFailure(error: any Error, deadlineUnreachable: Bool, wasAdmitted: Bool) -> Bool {
+        deadlineUnreachable || wasAdmitted || isDirectReachabilityFailure(error)
     }
 
     /// Only network reachability failures may activate a relay fallback. TLS trust,
