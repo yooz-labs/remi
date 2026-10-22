@@ -254,7 +254,7 @@ private struct PhoneMachineChip: View {
             }
             .foregroundStyle(isSelected ? AnyShapeStyle(.background) : AnyShapeStyle(.primary))
             .padding(.horizontal, RemiTheme.Spacing.s)
-            .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+            .frame(minWidth: RemiTheme.Size.minimumTapTarget, minHeight: RemiTheme.Size.minimumTapTarget)
             .background { chipBackground }
             .contentShape(.capsule)
         }
