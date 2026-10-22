@@ -1,6 +1,7 @@
 import RemiUI
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// The phase 2 drawer body: an Inbox row, the sessions grouped Needs you, Active and
 /// Recent, and a bar of actions. Intentionally minimal; the next phase replaces it.
@@ -473,11 +474,19 @@ private struct PhoneDrawerSessionRow: View {
             Button("New session here", systemImage: "plus.rectangle.on.folder", action: onNewSessionHere)
         }
         Button("Copy directory", systemImage: "doc.on.doc") {
-            UIPasteboard.general.string = session.projectPath
+            Self.copyLocally(session.projectPath)
         }
         Button("Copy session ID", systemImage: "doc.on.doc") {
-            UIPasteboard.general.string = session.id
+            Self.copyLocally(session.id)
         }
+    }
+
+    /// Local only, so Universal Clipboard does not sync a path or an id to other devices.
+    private static func copyLocally(_ value: String) {
+        UIPasteboard.general.setItems(
+            [[UTType.plainText.identifier: value]],
+            options: [.localOnly: true]
+        )
     }
 
     private var texts: some View {
