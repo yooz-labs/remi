@@ -211,6 +211,8 @@ struct PhoneDrawerView: View {
         HStack(spacing: RemiTheme.Spacing.xs) {
             Text("Remi")
                 .font(.title2.weight(.bold))
+                // Capped so the pinned header stays compact; the rest of the column keeps scaling.
+                .dynamicTypeSize(...DynamicTypeSize.accessibility1)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityAddTraits(.isHeader)
                 .accessibilitySortPriority(1)
@@ -257,6 +259,7 @@ struct PhoneDrawerView: View {
             }
         }
         .padding(.leading, RemiTheme.Spacing.s)
+        .padding(.trailing, RemiTheme.Spacing.s)
         .frame(minHeight: RemiTheme.Size.minimumTapTarget)
         .background(RemiTheme.Color.surface, in: .rect(cornerRadius: RemiTheme.Radius.control))
         .padding(.horizontal, RemiTheme.Spacing.m)
