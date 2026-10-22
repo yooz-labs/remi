@@ -321,6 +321,8 @@ public final class MachineStore {
     var ownedSessionRoutes: [String: MachineEndpoint] { routeBySession }
     var ownedParentRoutes: [MachineEndpoint: MachineEndpoint] { parentByConnection }
     var ownedTerminalRootIDs: [String] { terminalRootStates.keys.map(\.id).sorted() }
+    var ownedApprovalPollCount: Int { approvalPollTasks.count }
+    func ownedStartApprovalPolling(_ endpoint: MachineEndpoint) { startApprovalPolling(for: endpoint) }
     #endif
     public private(set) var transcriptsBySession: [String: [TranscriptContentMessage]] = [:]
     public private(set) var sessionViewsBySession: [String: [SessionViewMeta]] = [:]
@@ -358,6 +360,8 @@ public final class MachineStore {
     @ObservationIgnored private var connections: [MachineEndpoint: RemiConnection] = [:]
     /// Bounded retries for machines waiting for local approval (#1599); see ApprovalPollPolicy.
     @ObservationIgnored private var approvalPollTasks: [MachineEndpoint: Task<Void, Never>] = [:]
+    /// Injectable so tests can use a short interval; production always uses the standard policy.
+    @ObservationIgnored var approvalPollPolicy = ApprovalPollPolicy.standard
     @ObservationIgnored private(set) var connectionGenerations: [MachineEndpoint: UUID] = [:]
     @ObservationIgnored private var relayPairingContexts: [MachineEndpoint: (Data, UInt64?)] = [:]
     @ObservationIgnored private var parentByConnection: [MachineEndpoint: MachineEndpoint] = [:]
@@ -1317,7 +1321,7 @@ public final class MachineStore {
     /// loop ends when the machine leaves the waiting state, is removed, or the window closes.
     private func startApprovalPolling(for endpoint: MachineEndpoint) {
         guard approvalPollTasks[endpoint] == nil else { return }
-        let policy = ApprovalPollPolicy.standard
+        let policy = approvalPollPolicy
         approvalPollTasks[endpoint] = Task { [weak self] in
             let start = ContinuousClock.now
             while !Task.isCancelled {
