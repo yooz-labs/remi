@@ -37,10 +37,14 @@ struct PhoneLiveRootView: View {
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
 
     var body: some View {
-        PhoneShell(state: $shell) {
-            shellContent
+        // Worked out once per pass and handed down: building them is the costly part of a
+        // store tick, and the drawer, the Inbox and the session all need them.
+        let sessions = allSessions
+        let machines = machineSummaries
+        return PhoneShell(state: $shell) {
+            shellContent(sessions: sessions, machines: machines)
         } drawer: {
-            drawerContent
+            drawerContent(sessions: sessions, machines: machines)
         }
         .sheet(item: $activeSheet) { sheet in
             sheetContent(sheet)
@@ -121,11 +125,11 @@ struct PhoneLiveRootView: View {
         }
     }
 
-    private var shellContent: some View {
+    private func shellContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
         // Built here, before the NavigationStack. Doing it this way made the Inbox refresh
         // live when a machine changes state; building it inside the stack's closure did
         // not. The mechanism is not verified (#1592).
-        let destination = destinationContent
+        let destination = destinationContent(sessions: sessions, machines: machines)
         return NavigationStack {
             destination
                 .toolbar {
@@ -150,20 +154,20 @@ struct PhoneLiveRootView: View {
     }
 
     @ViewBuilder
-    private var destinationContent: some View {
+    private func destinationContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
         switch shell.destination {
         case .inbox:
-            inboxContent
+            inboxContent(sessions: sessions, machines: machines)
         case .session(let route):
-            sessionContent(route)
+            sessionContent(route, sessions: sessions)
         }
     }
 
-    private var inboxContent: some View {
+    private func inboxContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
         InboxScreen(
             questions: allQuestions,
-            sessions: allSessions,
-            machines: machineSummaries,
+            sessions: sessions,
+            machines: machines,
             sessionMachines: store.machines,
             errorMessage: store.latestOperationError ?? store.latestError?.message,
             noticeMessage: store.latestOperationNotice ?? relayNotifications.notice ?? store.relayNotificationNotice,
@@ -180,10 +184,10 @@ struct PhoneLiveRootView: View {
         )
     }
 
-    private var drawerContent: some View {
+    private func drawerContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
         PhoneDrawerView(
-            sessions: allSessions,
-            machines: machineSummaries,
+            sessions: sessions,
+            machines: machines,
             filter: shell.drawerFilter,
             questionCount: store.machines.reduce(0) { $0 + $1.questions.count },
             destination: shell.destination,
@@ -637,9 +641,9 @@ struct PhoneLiveRootView: View {
     }
 
     @ViewBuilder
-    private func sessionContent(_ route: PhoneSessionRoute) -> some View {
+    private func sessionContent(_ route: PhoneSessionRoute, sessions: [RemiSessionSummary]) -> some View {
         if let machine = store.machine(withIdentifier: route.machineKey),
-           let session = allSessions.first(where: { $0.machineID == machine.id && $0.id == route.sessionID }) {
+           let session = sessions.first(where: { $0.machineID == machine.id && $0.id == route.sessionID }) {
             sessionScreen(session, route: route)
         } else if store.machine(withIdentifier: route.machineKey) == nil {
             // The machine was removed: nothing can bring this session back, so leave at

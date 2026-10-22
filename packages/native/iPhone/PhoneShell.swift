@@ -116,12 +116,11 @@ struct PhoneShell<Content: View, Drawer: View>: View {
     }
 
     var body: some View {
-        let drawerView = drawer()
         let contentView = content()
         GeometryReader { proxy in
             let width = drawerWidth(in: proxy.size.width)
             ZStack(alignment: .leading) {
-                drawerLayer(drawerView, width: width)
+                drawerLayer(width: width)
                 contentLayer(contentView, width: width)
                 dimLayer(width: width)
             }
@@ -147,9 +146,11 @@ struct PhoneShell<Content: View, Drawer: View>: View {
     }
 
     @ViewBuilder
-    private func drawerLayer(_ view: Drawer, width: CGFloat) -> some View {
+    private func drawerLayer(width: CGFloat) -> some View {
         if isActive {
-            view
+            // Built only while the drawer is mounted, so a store tick does not rebuild the
+            // session list for a drawer nobody can see.
+            drawer()
                 .frame(width: width)
                 .frame(maxHeight: .infinity)
                 .background { Rectangle().fill(.regularMaterial).ignoresSafeArea() }
