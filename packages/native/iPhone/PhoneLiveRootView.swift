@@ -45,6 +45,8 @@ struct PhoneLiveRootView: View {
         .onChange(of: store.pairingAttempts) { _, _ in
             guard let id = pairingAttemptID, let result = store.pairingAttempt(id: id),
                   case .admitted = result.phase else { return }
+            // A filter on another machine would hide the one just paired.
+            shell.clearFilter()
             pairingAttemptID = nil
         }
         .onChange(of: store.machines.map(\.id), initial: true) { _, ids in
@@ -521,6 +523,8 @@ struct PhoneLiveRootView: View {
             pairingAttemptID = id
             return id
         case .endpoint(let endpoint):
+            // Same reason as a paired machine: do not let a filter hide the new one.
+            shell.clearFilter()
             relayNotifications.machineWillChange(endpoint)
             store.addMachine(endpoint)
             MachineConfigurationStore.shared.saveProfiles(store.persistableProfiles)
