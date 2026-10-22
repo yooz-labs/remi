@@ -47,13 +47,25 @@ struct PairingScreen: View {
                 PairingStep(number: 1, title: "Start Remi", detail: "Start the hub after configuring daemon.bind to an address this phone can reach.", command: startCommand, copyLabel: "Copy remi start command", copiedLabel: "remi start command copied")
                 PairingStep(number: 2, title: "Create a pairing code", detail: "Keep the terminal open while Remi waits for fingerprint approval.", command: pairCommand, copyLabel: "Copy remi pair command", copiedLabel: "remi pair command copied")
 
+                // A compact capsule centered in its row, not a full-width slab; the label keeps
+                // the 44 pt tap target.
                 Button {
                     showingScanner = true
                 } label: {
-                    Label("Scan pairing code", systemImage: "qrcode.viewfinder")
-                        .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
+                    // An explicit icon and text share the button's own foreground; in a list row a
+                    // Label's icon takes the accent tint and disappears on the prominent capsule.
+                    HStack(spacing: RemiTheme.Spacing.xs) {
+                        Image(systemName: "qrcode.viewfinder")
+                            .accessibilityHidden(true)
+                        Text("Scan pairing code")
+                    }
+                    .padding(.horizontal, RemiTheme.Spacing.xs)
+                    .frame(minHeight: RemiTheme.Size.minimumTapTarget)
                 }
                 .buttonStyle(.glassProminent)
+                .frame(maxWidth: .infinity)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             } header: {
                 Text("Recommended")
             } footer: {
