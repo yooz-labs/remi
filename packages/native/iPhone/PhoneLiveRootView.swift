@@ -8,6 +8,9 @@ enum PhoneShellSheet: Identifiable {
     case pairing
     case preferences
     case machines
+    /// A relay notification question. One presentation with the others: two `.sheet`
+    /// modifiers on one host cannot both be up.
+    case relayNotification
 
     var id: String {
         switch self {
@@ -15,6 +18,7 @@ enum PhoneShellSheet: Identifiable {
         case .pairing: "pairing"
         case .preferences: "preferences"
         case .machines: "machines"
+        case .relayNotification: "relayNotification"
         }
     }
 }
@@ -55,8 +59,18 @@ struct PhoneLiveRootView: View {
             MachineConfigurationStore.shared.saveProfiles(profiles)
             relayNotifications.reconcileEndpoints()
         }
-        .sheet(isPresented: $relayNotifications.presentsRelayNotification, onDismiss: relayNotifications.closeNotification) {
-            RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification)
+        .onChange(of: relayNotifications.presentsRelayNotification, initial: true) { _, presents in
+            if presents {
+                activeSheet = .relayNotification
+            } else if case .relayNotification = activeSheet {
+                activeSheet = nil
+            }
+        }
+        .onChange(of: activeSheet?.id) { old, new in
+            // However the panel went away (swipe, Close, another sheet), tell the store.
+            if old == PhoneShellSheet.relayNotification.id, new != old {
+                relayNotifications.closeNotification()
+            }
         }
         .task { routePendingNotification() }
         .sensoryFeedback(.warning, trigger: questionFeedbackTrigger) { _, _ in
@@ -237,6 +251,8 @@ struct PhoneLiveRootView: View {
             pairingScreen { activeSheet = nil }
         case .preferences:
             PhonePreferencesSheet(publicIdentity: store.publicIdentity)
+        case .relayNotification:
+            RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification)
         case .machines:
             PhoneMachinesSheet(
                 machines: machineSummaries,
@@ -607,6 +623,8 @@ struct PhoneLiveRootView: View {
 
     private func routePendingNotification() {
         guard let destination = notificationRouter.destination else { return }
+        // A sheet would hide the session this notification opens.
+        activeSheet = nil
         shell.openFromNotification(
             route: PhoneSessionRoute(
                 machineKey: destination.machineID,
