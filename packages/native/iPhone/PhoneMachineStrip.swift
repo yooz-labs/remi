@@ -253,7 +253,7 @@ private struct PhoneMachineChip: View {
                         .accessibilityHidden(true)
                 }
             }
-            .foregroundStyle(isSelected ? AnyShapeStyle(.background) : AnyShapeStyle(.primary))
+            .foregroundStyle(.primary)
             .padding(.horizontal, RemiTheme.Spacing.s)
             .frame(minWidth: RemiTheme.Size.minimumTapTarget, minHeight: RemiTheme.Size.minimumTapTarget)
             .background { chipBackground }
@@ -268,7 +268,9 @@ private struct PhoneMachineChip: View {
     @ViewBuilder
     private var chipBackground: some View {
         if isSelected {
-            Capsule().fill(.primary)
+            Capsule()
+                .fill(.primary.opacity(0.12))
+                .overlay(Capsule().stroke(.primary.opacity(0.4), lineWidth: 1))
         } else {
             Capsule().stroke(RemiTheme.Color.hairline)
         }
