@@ -7,11 +7,13 @@ public enum RemiDrawerAction: Hashable, Sendable {
     case preferences
 }
 
-/// Which of the drawer's bottom actions sit inline and which move into a More menu, kept
-/// apart from the view so the rule can be tested. At standard sizes every action is
-/// inline. At accessibility sizes three stacked labeled buttons take about 40 percent of
-/// the screen, so only New session stays inline and the rest move into one menu, and the actions sit at the top of the scrolling column
-/// instead of the bottom, because a long list would otherwise put them out of reach.
+/// Which of the drawer's actions sit inline and which move into a More menu, kept apart
+/// from the view so the rule can be tested.
+/// At standard sizes every action is inline, pinned below the list.
+/// At accessibility sizes three stacked labeled buttons take a large share of the screen,
+/// so only New session stays inline and the rest move into one menu.
+/// There the actions sit at the top of the scrolling column instead of the bottom,
+/// because a long list would otherwise put them out of reach.
 public struct RemiDrawerActionsPresentation: Equatable, Sendable {
     /// Where the actions sit in the drawer.
     public enum Placement: Equatable, Sendable {

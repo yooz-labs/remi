@@ -29,7 +29,7 @@ import Testing
             let presentation = RemiDrawerActionsPresentation(isAccessibilitySize: accessibility)
             let all = presentation.inline + presentation.menu
             #expect(all.count == 3)
-            #expect(Set(all.map { "\($0)" }).count == 3)
+            #expect(Set(all).count == 3)
         }
     }
 
