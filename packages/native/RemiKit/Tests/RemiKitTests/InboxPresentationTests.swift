@@ -181,4 +181,26 @@ import Testing
         #expect(!RemiInboxPresentation.keepsExpanded(wasExpanded: true, cardCount: 0))
         #expect(!RemiInboxPresentation.keepsExpanded(wasExpanded: false, cardCount: 5))
     }
+
+    private func machine(_ id: String, _ reachability: RemiMachineReachability) -> RemiMachineSummary {
+        RemiMachineSummary(id: id, name: id, address: id, reachability: reachability, transport: .direct, sessionCount: 0)
+    }
+
+    private func session(_ id: String, machine: String, live: Bool = true) -> RemiSessionSummary {
+        RemiSessionSummary(id: id, machineID: machine, machineName: machine, name: id, harness: "h", project: "p", status: live ? .idle : .offline, isLive: live)
+    }
+
+    @Test func activeSessionsCountOnlyLiveSessionsOnConnectedMachines() {
+        let machines = [machine("a", .connected), machine("b", .unreachable)]
+        let sessions = [
+            session("1", machine: "a"), session("2", machine: "a", live: false),
+            session("3", machine: "b"), session("4", machine: "b"), session("5", machine: "b"),
+        ]
+        #expect(RemiInboxPresentation.activeSessionCount(sessions: sessions, machines: machines) == 1)
+    }
+
+    @Test func activeSessionsOnUnknownOrConnectingMachinesDoNotCount() {
+        let machines = [machine("a", .connecting)]
+        #expect(RemiInboxPresentation.activeSessionCount(sessions: [session("1", machine: "a"), session("2", machine: "zz")], machines: machines) == 0)
+    }
 }

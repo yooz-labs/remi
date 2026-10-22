@@ -27,6 +27,13 @@ public enum RemiInboxPresentation {
         }
     }
 
+    /// Live sessions on machines that are connected now. A machine that is not connected keeps
+    /// its sessions as last known; they are not known to be active, so they do not count.
+    public static func activeSessionCount(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> Int {
+        let connected = Set(machines.filter { $0.reachability == .connected }.map(\.id))
+        return sessions.count { $0.isLive && connected.contains($0.machineID) }
+    }
+
     /// A card waits when it is pending or sending. Every other state is a note. Input order
     /// is kept in both lists.
     public static func state(

@@ -133,7 +133,7 @@ struct InboxScreen: View {
             machineCount: machines.count,
             connectedMachineCount: machines.count { $0.reachability == .connected },
             questions: questions,
-            activeSessionCount: sessions.count(where: \.isLive)
+            activeSessionCount: RemiInboxPresentation.activeSessionCount(sessions: sessions, machines: machines)
         )
     }
 
