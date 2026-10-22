@@ -508,13 +508,16 @@ private struct PhoneDrawerActions: View {
     let onAddMachine: () -> Void
     let onPreferences: () -> Void
 
+    private var presentation: RemiDrawerActionsPresentation {
+        RemiDrawerActionsPresentation(isAccessibilitySize: dynamicTypeSize.isAccessibilitySize)
+    }
+
     var body: some View {
         Group {
-            if dynamicTypeSize.isAccessibilitySize {
+            if presentation.hasMenu {
                 VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
                     newSessionButton
-                    labeledButton("Add machine", systemImage: "desktopcomputer.and.arrow.down", action: onAddMachine)
-                    labeledButton("Preferences", systemImage: "gearshape", action: onPreferences)
+                    moreMenu
                 }
             } else {
                 HStack(spacing: RemiTheme.Spacing.xs) {
@@ -525,6 +528,39 @@ private struct PhoneDrawerActions: View {
             }
         }
         .padding(RemiTheme.Spacing.s)
+    }
+
+    /// At accessibility sizes: one labeled button that opens the actions that left the row.
+    private var moreMenu: some View {
+        Menu {
+            ForEach(presentation.menu, id: \.self) { action in
+                menuItem(action)
+            }
+        } label: {
+            HStack {
+                Label("More", systemImage: "ellipsis")
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.glass)
+    }
+
+    @ViewBuilder
+    private func menuItem(_ action: RemiDrawerAction) -> some View {
+        switch action {
+        case .addMachine:
+            Button("Add machine", systemImage: "desktopcomputer.and.arrow.down", action: onAddMachine)
+                .accessibilityHint("Opens pairing")
+        case .preferences:
+            Button("Preferences", systemImage: "gearshape", action: onPreferences)
+                .accessibilityHint("Opens preferences")
+        case .newSession:
+            EmptyView()
+        }
     }
 
     private var newSessionButton: some View {
@@ -553,19 +589,5 @@ private struct PhoneDrawerActions: View {
         .buttonBorderShape(.circle)
         .accessibilityLabel(title)
         .accessibilityHint(hint)
-    }
-
-    private func labeledButton(_ title: LocalizedStringKey, systemImage: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack {
-                Label(title, systemImage: systemImage)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-            }
-            .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
-            .contentShape(.rect)
-        }
-        .buttonStyle(.glass)
     }
 }
