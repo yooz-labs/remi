@@ -179,10 +179,6 @@ struct PhoneDrawerView: View {
         Set(machines.filter { $0.reachability == .connected }.map(\.id))
     }
 
-    private var isNarrowed: Bool {
-        filteredKey != nil || !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
     private var showsSearch: Bool { !sessions.isEmpty || !query.isEmpty }
 
     private func refresh(reordering: Bool = false) {
@@ -263,9 +259,29 @@ struct PhoneDrawerView: View {
             section("Needs you", groups.needsYou)
             section("Active", groups.active)
             section("Recent", groups.recent)
-            if groups.isEmpty && isNarrowed { noMatches }
+            if groups.isEmpty { emptyStateView }
         }
         .padding(.horizontal, RemiTheme.Spacing.xs)
+    }
+
+    private var emptyState: RemiDrawerEmptyState {
+        RemiDrawerEmptyState.resolve(
+            visibleSessionCount: displayed.flattened.count,
+            query: query,
+            isMachineFiltered: filteredKey != nil
+        )
+    }
+
+    @ViewBuilder
+    private var emptyStateView: some View {
+        switch emptyState {
+        case .content, .nothing:
+            EmptyView()
+        case .noMatch:
+            noMatches
+        case .machineEmpty:
+            machineEmpty
+        }
     }
 
     private var noMatches: some View {
@@ -279,6 +295,33 @@ struct PhoneDrawerView: View {
             Button("Clear search and filter") {
                 query = ""
                 if !blocksTaps { onSelectAllMachinesIfFiltered() }
+            }
+            .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+            .contentShape(.rect)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(RemiTheme.Spacing.m)
+        .accessibilityElement(children: .contain)
+    }
+
+    /// A filtered machine with no sessions yet. New session is offered only while that
+    /// machine is connected, because only a connected machine can start one.
+    private var machineEmpty: some View {
+        let key = filteredKey ?? ""
+        let name = machineLabels[key] ?? machines.first { $0.id == key }?.name ?? ""
+        return VStack(spacing: RemiTheme.Spacing.xs) {
+            Text("No sessions on \(name)")
+                .font(.headline)
+                .multilineTextAlignment(.center)
+            if connectedMachineIDs.contains(key) && canCreateSession {
+                Button("New session", systemImage: "plus.rectangle.on.folder") {
+                    if !blocksTaps { onNewSession() }
+                }
+                .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+                .contentShape(.rect)
+            }
+            Button("Show all machines") {
+                if !blocksTaps { onSelectAllMachines() }
             }
             .frame(minHeight: RemiTheme.Size.minimumTapTarget)
             .contentShape(.rect)
