@@ -193,7 +193,11 @@ private struct PhoneQuietInboxState: View {
 
     var body: some View {
         ContentUnavailableView {
-            Label("Nothing needs you", systemImage: "checkmark.circle")
+            Label {
+                Text("Nothing needs you")
+            } icon: {
+                Image(systemName: "checkmark.circle").accessibilityHidden(true)
+            }
         } description: {
             Text(detail)
         } actions: {

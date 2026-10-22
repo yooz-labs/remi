@@ -10,7 +10,11 @@ struct FirstRunScreen: View {
 
     var body: some View {
         ContentUnavailableView {
-            Label("Your agents, wherever you are", systemImage: "bubble.left.and.exclamationmark.bubble.right")
+            Label {
+                Text("Your agents, wherever you are")
+            } icon: {
+                Image(systemName: "bubble.left.and.exclamationmark.bubble.right").accessibilityHidden(true)
+            }
         } description: {
             Text("Add a machine to see its sessions and answer the moments that need you.")
         } actions: {
@@ -29,7 +33,11 @@ struct PhoneEmptyState: View {
 
     var body: some View {
         ContentUnavailableView {
-            Label(title, systemImage: systemImage)
+            Label {
+                Text(title)
+            } icon: {
+                Image(systemName: systemImage).accessibilityHidden(true)
+            }
         } description: {
             Text(message)
         }
