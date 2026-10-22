@@ -130,6 +130,8 @@ struct PhoneShell<Content: View, Drawer: View>: View {
         .onAppear { settledOpen = state.isDrawerOpen }
         .onChange(of: isOpen) { _, open in
             if open { Self.resignFirstResponder() }
+            // An external change ends a drag in flight; the drag must not settle afterwards.
+            if drag.isDragging { drag.update(nil) }
             beginSettling()
         }
         .onChange(of: isClosingDrag) { _, closing in
@@ -254,12 +256,8 @@ struct PhoneShell<Content: View, Drawer: View>: View {
             .onChanged { value in
                 guard isOpen, drag.owner != .edge,
                       !RemiDrawerGesture.startsInsideAny(of: horizontalRegions, at: value.startLocation),
-                      RemiDrawerGesture.shouldBegin(
-                    startX: value.startLocation.x,
-                    translation: value.translation,
-                    isOpen: true,
-                    isAtRoot: isAtRoot
-                ) else { return }
+                      RemiDrawerGesture.shouldBeginClosing(translation: value.translation)
+                else { return }
                 drag.update(RemiDrawerGesture.progress(
                     translationX: value.translation.width,
                     drawerWidth: width,
@@ -267,10 +265,18 @@ struct PhoneShell<Content: View, Drawer: View>: View {
                 ), owner: .close)
             }
             .onEnded { value in
-                // Any release after a real drag (the gesture has a 10 pt minimum) is not
-                // a tap, even when the drag did not begin as a drawer drag.
-                suppressTapsBriefly()
+                // A release after a drawer drag, or after any mostly horizontal drag, is not a
+                // tap. A vertical scroll of the list is neither, and must not drop the next tap.
+                if drag.owner == .close || RemiDrawerGesture.suppressesTaps(translation: value.translation) {
+                    suppressTapsBriefly()
+                }
                 guard drag.owner == .close else { return }
+                // The state changed under the drag (a notification closed the drawer and
+                // opened a session): settling would reopen it over that session.
+                guard isOpen else {
+                    resetUnfinishedDrag()
+                    return
+                }
                 let progress = RemiDrawerGesture.progress(
                     translationX: value.translation.width,
                     drawerWidth: width,

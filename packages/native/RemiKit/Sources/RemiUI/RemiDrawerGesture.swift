@@ -3,19 +3,22 @@ import CoreGraphics
 /// The decisions behind the phone drawer's drag, kept apart from the view so they can
 /// be tested. Reduce Motion is a view concern and is not an input here.
 public enum RemiDrawerGesture {
-    /// How far from the left edge a drag may start and still open the drawer.
-    public static let edgeWidth: CGFloat = 20
     /// The progress at which a slow release from closed settles open.
     public static let openProgressThreshold: CGFloat = 0.35
     /// A release faster than this (points per second) settles in its own direction.
     public static let velocityThreshold: CGFloat = 500
 
-    /// Closed: only at the root, from the edge, rightward and mostly horizontal.
-    /// Open: any mostly horizontal leftward drag, which closes it.
-    public static func shouldBegin(startX: CGFloat, translation: CGSize, isOpen: Bool, isAtRoot: Bool) -> Bool {
-        let horizontal = abs(translation.width) > abs(translation.height)
-        if isOpen { return horizontal && translation.width <= 0 }
-        return isAtRoot && startX <= edgeWidth && translation.width > 0 && horizontal
+    /// A leftward, mostly horizontal drag closes an open drawer. Opening is the system
+    /// edge-pan recognizer's job, so there is no rule for it here.
+    public static func shouldBeginClosing(translation: CGSize) -> Bool {
+        abs(translation.width) > abs(translation.height) && translation.width <= 0
+    }
+
+    /// Whether a finished drag should make the drawer ignore the taps that follow: only a
+    /// mostly horizontal one. A vertical scroll of the list is not a drawer drag, and
+    /// dropping the next tap after it would feel broken.
+    public static func suppressesTaps(translation: CGSize) -> Bool {
+        abs(translation.width) > abs(translation.height)
     }
 
     /// True when a drag that started at `start` began inside one of `regions`, such as a

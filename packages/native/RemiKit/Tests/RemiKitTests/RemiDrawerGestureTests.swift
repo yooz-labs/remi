@@ -3,30 +3,17 @@ import Testing
 @testable import RemiUI
 
 @Suite struct RemiDrawerGestureTests {
-    @Test func opensFromTheEdgeOnRoot() {
-        #expect(RemiDrawerGesture.shouldBegin(startX: 5, translation: CGSize(width: 30, height: 4), isOpen: false, isAtRoot: true))
-        #expect(RemiDrawerGesture.shouldBegin(startX: RemiDrawerGesture.edgeWidth, translation: CGSize(width: 10, height: 0), isOpen: false, isAtRoot: true))
-    }
-
-    @Test func refusesFromOutsideTheEdge() {
-        #expect(!RemiDrawerGesture.shouldBegin(startX: 21, translation: CGSize(width: 30, height: 0), isOpen: false, isAtRoot: true))
-    }
-
-    @Test func refusesWhenNotAtRoot() {
-        #expect(!RemiDrawerGesture.shouldBegin(startX: 5, translation: CGSize(width: 30, height: 0), isOpen: false, isAtRoot: false))
-    }
-
-    @Test func refusesVerticalOrLeftwardWhenClosed() {
-        #expect(!RemiDrawerGesture.shouldBegin(startX: 5, translation: CGSize(width: 10, height: 30), isOpen: false, isAtRoot: true))
-        #expect(!RemiDrawerGesture.shouldBegin(startX: 5, translation: CGSize(width: 10, height: 10), isOpen: false, isAtRoot: true))
-        #expect(!RemiDrawerGesture.shouldBegin(startX: 5, translation: CGSize(width: -30, height: 0), isOpen: false, isAtRoot: true))
-        #expect(!RemiDrawerGesture.shouldBegin(startX: 5, translation: CGSize(width: 0, height: 0), isOpen: false, isAtRoot: true))
-    }
-
     @Test func openDrawerClosesOnLeftwardHorizontalDrag() {
-        #expect(RemiDrawerGesture.shouldBegin(startX: 200, translation: CGSize(width: -30, height: 5), isOpen: true, isAtRoot: false))
-        #expect(!RemiDrawerGesture.shouldBegin(startX: 200, translation: CGSize(width: 30, height: 0), isOpen: true, isAtRoot: true))
-        #expect(!RemiDrawerGesture.shouldBegin(startX: 200, translation: CGSize(width: -5, height: 30), isOpen: true, isAtRoot: true))
+        #expect(RemiDrawerGesture.shouldBeginClosing(translation: CGSize(width: -30, height: 5)))
+        #expect(!RemiDrawerGesture.shouldBeginClosing(translation: CGSize(width: 30, height: 0)))
+        #expect(!RemiDrawerGesture.shouldBeginClosing(translation: CGSize(width: -5, height: 30)))
+    }
+
+    @Test func onlyHorizontalDominantDragsSuppressTaps() {
+        #expect(RemiDrawerGesture.suppressesTaps(translation: CGSize(width: 30, height: 4)))
+        #expect(RemiDrawerGesture.suppressesTaps(translation: CGSize(width: -30, height: 4)))
+        #expect(!RemiDrawerGesture.suppressesTaps(translation: CGSize(width: 4, height: 80)))
+        #expect(!RemiDrawerGesture.suppressesTaps(translation: CGSize(width: 20, height: 20)))
     }
 
     @Test func progressTracksDragAndClamps() {
@@ -59,11 +46,11 @@ import Testing
     }
 
     @Test func openDrawerRefusesAHorizontalVerticalTie() {
-        #expect(!RemiDrawerGesture.shouldBegin(startX: 200, translation: CGSize(width: -20, height: 20), isOpen: true, isAtRoot: true))
+        #expect(!RemiDrawerGesture.shouldBeginClosing(translation: CGSize(width: -20, height: 20)))
     }
 
     @Test func openDrawerRefusesAZeroLengthDrag() {
-        #expect(!RemiDrawerGesture.shouldBegin(startX: 200, translation: .zero, isOpen: true, isAtRoot: true))
+        #expect(!RemiDrawerGesture.shouldBeginClosing(translation: .zero))
     }
 
     @Test func openDrawerNeedsMoreThanTheVelocityThresholdToCloseFast() {
