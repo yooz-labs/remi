@@ -122,6 +122,7 @@ struct PhoneLiveRootView: View {
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) { menuButton }
                 }
+                .phoneNavigationBarAccessibilityHidden(shell.isDrawerOpen)
         }
     }
 
