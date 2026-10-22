@@ -4,7 +4,7 @@ import SwiftUI
 import UIKit
 
 /// The machines sheet: every machine with its connection controls, recovery and approval
-/// help. It takes the same inputs the inline Home section took.
+/// help. It takes plain values and closures and never reads the store.
 ///
 /// Add machine and Pair again present pairing on top of this sheet, so closing pairing
 /// returns here. `pairingContent` builds the pairing screen; its argument closes it.

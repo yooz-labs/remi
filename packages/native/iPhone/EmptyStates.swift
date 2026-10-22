@@ -26,23 +26,3 @@ struct FirstRunScreen: View {
         .padding(.vertical, RemiTheme.Spacing.xl)
     }
 }
-
-struct PhoneEmptyState: View {
-    let systemImage: String
-    let title: LocalizedStringKey
-    let message: LocalizedStringKey
-
-    var body: some View {
-        ContentUnavailableView {
-            Label {
-                Text(title)
-            } icon: {
-                Image(systemName: systemImage).accessibilityHidden(true)
-            }
-        } description: {
-            Text(message)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, RemiTheme.Spacing.l)
-    }
-}
