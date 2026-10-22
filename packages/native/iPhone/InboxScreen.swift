@@ -18,6 +18,7 @@ struct InboxScreen: View {
     let onResumeSession: (String, String) -> Void
     let onOpenSessionRoute: (RemiSessionSummary) -> Void
     let onNewSession: (String?, String?) -> Void
+    let onOpenQuestionSession: (RemiQuestionCardModel) -> Void
     let onPresentPairing: () -> Void
     let onPresentPreferences: () -> Void
     let onManageMachines: () -> Void
@@ -37,6 +38,7 @@ struct InboxScreen: View {
         onResumeSession: @escaping (String, String) -> Void = { _, _ in },
         onOpenSessionRoute: @escaping (RemiSessionSummary) -> Void = { _ in },
         onNewSession: @escaping (String?, String?) -> Void = { _, _ in },
+        onOpenQuestionSession: @escaping (RemiQuestionCardModel) -> Void = { _ in },
         onPresentPairing: @escaping () -> Void = {},
         onPresentPreferences: @escaping () -> Void = {},
         onManageMachines: @escaping () -> Void = {},
@@ -55,6 +57,7 @@ struct InboxScreen: View {
         self.onResumeSession = onResumeSession
         self.onOpenSessionRoute = onOpenSessionRoute
         self.onNewSession = onNewSession
+        self.onOpenQuestionSession = onOpenQuestionSession
         self.onPresentPairing = onPresentPairing
         self.onPresentPreferences = onPresentPreferences
         self.onManageMachines = onManageMachines
@@ -75,52 +78,11 @@ struct InboxScreen: View {
 
                 PhoneMachineProblemRows(machines: machines, onManage: onManageMachines)
 
-                if !sessions.isEmpty || !questions.isEmpty {
-                    CommandCenterScopePicker(
-                        scope: $activityScope,
-                        counts: snapshot.scopeCounts
-                    )
-                }
-
-                if !snapshot.sessions.isEmpty || !snapshot.questions.isEmpty {
-                    CommandCenterSummary(snapshot: snapshot)
-                }
-
-                if !snapshot.questions.isEmpty {
-                    NeedsYouSection(
-                        questions: snapshot.questions,
-                        onAnswer: onAnswer,
-                        onSubmit: onSubmit,
-                        onCancel: onCancel
-                    )
-                }
-
-                if lifecycleState == .firstRun {
-                    FirstRunScreen(onAddMachine: { onPresentPairing() })
-                } else if snapshot.sessions.isEmpty {
-                    PhoneNoSessionsState(
-                        message: emptySessionsMessage,
-                        canCreateSession: !availableSessionMachines.isEmpty,
-                        onNewSession: { presentNewSession() },
-                        onReset: hasActiveFilters ? { resetFilters() } : nil
-                    )
-                } else {
-                    SessionsSection(
-                        sessions: snapshot.sessions,
-                        scope: activityScope,
-                        query: searchText,
-                        onOpenSessionRoute: onOpenSessionRoute,
-                        onResumeSession: onResumeSession,
-                        onNewSessionHere: { machineID, repository in
-                            presentNewSession(machineID: machineID, repository: repository)
-                        }
-                    )
-                }
+                inboxContent
             }
             .padding(RemiTheme.Spacing.m)
         }
         .navigationTitle("Remi")
-        .searchable(text: $searchText, prompt: "Search Remi activity")
         .toolbar {
             if #available(iOS 27.0, *) {
                 ToolbarOverflowMenu {
@@ -173,6 +135,58 @@ struct InboxScreen: View {
                 }
             }
         }
+    }
+
+    private var inboxState: RemiInboxPresentation.State {
+        RemiInboxPresentation.state(
+            machineCount: machines.count,
+            questions: questions,
+            activeSessionCount: sessions.count(where: \.isLive)
+        )
+    }
+
+    @ViewBuilder private var inboxContent: some View {
+        switch inboxState {
+        case .firstRun:
+            FirstRunScreen(onAddMachine: { onPresentPairing() })
+        case .waiting(let cards, let notes):
+            waitingContent(cards: cards, notes: notes)
+        case .quiet(let activeSessionCount, let notes):
+            quietContent(activeSessionCount: activeSessionCount, notes: notes)
+        }
+    }
+
+    @ViewBuilder
+    private func waitingContent(
+        cards: [RemiQuestionCardModel],
+        notes: [RemiQuestionCardModel]
+    ) -> some View {
+        NeedsYouSection(
+            questions: cards,
+            canOpenConversation: canOpenConversation,
+            onAnswer: onAnswer,
+            onSubmit: onSubmit,
+            onCancel: onCancel,
+            onOpenConversation: onOpenQuestionSession
+        )
+        ResolvedNotesSection(notes: notes)
+    }
+
+    @ViewBuilder
+    private func quietContent(
+        activeSessionCount: Int,
+        notes: [RemiQuestionCardModel]
+    ) -> some View {
+        PhoneQuietInboxState(
+            activeSessionCount: activeSessionCount,
+            canCreateSession: !availableSessionMachines.isEmpty,
+            onNewSession: { presentNewSession() }
+        )
+        ResolvedNotesSection(notes: notes)
+    }
+
+    private func canOpenConversation(_ card: RemiQuestionCardModel) -> Bool {
+        RemiInboxPresentation.openTarget(for: card, sessions: sessions) != nil
     }
 
     private var availableSessionMachines: [MachineState] {
@@ -260,28 +274,48 @@ private struct CommandCenterSummary: View {
     }
 }
 
-private struct PhoneNoSessionsState: View {
-    let message: LocalizedStringKey
+private struct PhoneQuietInboxState: View {
+    let activeSessionCount: Int
     let canCreateSession: Bool
     let onNewSession: () -> Void
-    let onReset: (() -> Void)?
 
     var body: some View {
         ContentUnavailableView {
-            Label("No sessions", systemImage: "rectangle.stack")
+            Label("Nothing needs you", systemImage: "checkmark.circle")
         } description: {
-            Text(message)
+            Text(detail)
         } actions: {
             if canCreateSession {
                 Button("New session", systemImage: "plus.rectangle.on.folder", action: onNewSession)
                     .buttonStyle(.glassProminent)
             }
-            if let onReset {
-                Button("Show all activity", action: onReset)
-            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, RemiTheme.Spacing.l)
+    }
+
+    private var detail: String {
+        let count = switch activeSessionCount {
+        case 0: "No active sessions."
+        case 1: "1 active session."
+        default: "\(activeSessionCount) active sessions."
+        }
+        return "\(count) Open the menu to pick a session."
+    }
+}
+
+private struct ResolvedNotesSection: View {
+    let notes: [RemiQuestionCardModel]
+
+    var body: some View {
+        if !notes.isEmpty {
+            VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
+                Text("Resolved").font(.title2.weight(.bold))
+                ForEach(notes) { note in
+                    RemiQuestionCard(model: note, onAnswer: { _ in }, onSubmit: { _ in }, onCancel: {})
+                }
+            }
+        }
     }
 }
 
@@ -375,9 +409,11 @@ private struct CommandCenterScopePicker: View {
 
 private struct NeedsYouSection: View {
     let questions: [RemiQuestionCardModel]
+    let canOpenConversation: (RemiQuestionCardModel) -> Bool
     let onAnswer: (String, String, String) -> Void
     let onSubmit: (String, String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (String, String) -> Void
+    let onOpenConversation: (RemiQuestionCardModel) -> Void
     @State private var showsAllQuestions = false
 
     var body: some View {
@@ -390,6 +426,9 @@ private struct NeedsYouSection: View {
                     onSubmit: { onSubmit(question.sessionID, question.questionID, $0) },
                     onCancel: { onCancel(question.sessionID, question.questionID) }
                 )
+                if canOpenConversation(question) {
+                    OpenConversationButton(card: question) { onOpenConversation(question) }
+                }
             }
 
             if questions.count > displayedQuestions.count {
@@ -417,6 +456,24 @@ private struct NeedsYouSection: View {
 
     private var displayedQuestions: ArraySlice<RemiQuestionCardModel> {
         questions.prefix(showsAllQuestions ? questions.count : 2)
+    }
+}
+
+private struct OpenConversationButton: View {
+    let card: RemiQuestionCardModel
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label("Open conversation", systemImage: "bubble.left.and.text.bubble.right")
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget, alignment: .leading)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .accessibilityLabel("Open conversation \(card.sessionName) on \(card.machineName)")
+        .accessibilityHint("Opens the conversation. Does not answer the request.")
     }
 }
 

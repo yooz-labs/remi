@@ -160,6 +160,7 @@ struct PhoneLiveRootView: View {
             onResumeSession: resumeSession,
             onOpenSessionRoute: selectSession,
             onNewSession: { activeSheet = .newSession(machineID: $0, repository: $1) },
+            onOpenQuestionSession: openQuestionSession,
             onPresentPairing: { activeSheet = .pairing },
             onPresentPreferences: { activeSheet = .preferences },
             onManageMachines: { activeSheet = .machines },
@@ -205,6 +206,19 @@ struct PhoneLiveRootView: View {
     private func selectSession(_ session: RemiSessionSummary) {
         openSession(session.id)
         shell.select(.session(route(for: session)))
+    }
+
+    /// Navigates to the card's conversation and focuses its question. It never answers.
+    private func openQuestionSession(_ card: RemiQuestionCardModel) {
+        openSession(card.sessionID)
+        shell.openFromNotification(
+            route: PhoneSessionRoute(
+                machineKey: card.machineID,
+                sessionID: card.sessionID,
+                conversationID: card.agentID
+            ),
+            questionID: card.questionID
+        )
     }
 
     @ViewBuilder
