@@ -1224,6 +1224,7 @@ public final class MachineStore {
         if removedMachine?.pairingLifetime == pairingOriginLifetime { pairingCoordinator?.cancel() }
         let configuredRoutes = removedMachine?.routingRoutes ?? [endpoint]
         for route in configuredRoutes {
+            approvalPollTasks.removeValue(forKey: route)?.cancel()
             if let pin = route.relayPin, let room = try? RelayCrypto.room(RelayCrypto.unb64(pin.machinePublicKey)),
                verifiedRelayNotification?.machine.room == room { verifiedRelayNotification = nil }
             pushTrustIntents.remove(route)
