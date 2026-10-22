@@ -45,5 +45,8 @@
   },
   "dependencies": {
     "@capacitor/push-notifications": "^8.0.3"
+  },
+  "patchedDependencies": {
+    "@xterm/headless@6.0.0": "patches/@xterm%2Fheadless@6.0.0.patch"
   }
 }

@@ -2,6 +2,8 @@
 
 2026-10-22. Source baseline: `58024f069505ef7580147d0981b7dd78f21bfc0e`.
 The owner approved terminal-first execution of the [backend plan](../.context/issue-1595-backend-plan.md), merged through [#1607](https://github.com/yooz-labs/remi/pull/1607).
+This report preserves the original 256 KiB checkpoint; the later owner-approved
+1 MiB qualification is recorded in [the bounded-model continuation](terminal-screen-bounded-model.md).
 
 ## Result
 
@@ -147,7 +149,11 @@ Important source hashes:
 | `candidate/bun.lock` | `6be1e9ccaa43a796f12c6577e34dc105b252e26b12cf96c3ec2818938f61209f` |
 | `candidate/node_modules/@xterm/headless/lib-headless/xterm-headless.js` | `17a90b650cf6b77cce2b98c4063884d43545e4ce177a54b76ccfc906f1aacaed` |
 
-## Next gate
+## Next gate at the original checkpoint
+
+The owner subsequently approved the larger bounded-state qualification.
+The [continuation](terminal-screen-bounded-model.md) records that work;
+the failed original gate and the then-pending steps below remain historical evidence.
 
 Keep the original failed result and select no production dependency/capability.
 The pending policy choice is to qualify a larger bounded screen-state budget (proposed 1 MiB/session, at most 32 MiB/home) or retain 256 KiB and restrict supported geometry.

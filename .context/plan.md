@@ -13,7 +13,12 @@ The owner approved terminal-first execution after #1607. B1 (#1608) now has a
 [source/compiled Mac characterization](../docs/terminal-screen-characterization.md):
 the candidate passed bounded screen diagnostics but exceeded the original 256 KiB
 state budget with a 240 x 60 alternate screen. No runtime candidate or capability
-is selected; the report preserves the failed gate and the pending resource-policy choice.
+was selected by that report. The owner then approved qualification at 1 MiB per
+model / 32 MiB per home. The [bounded primitive](../docs/terminal-screen-bounded-model.md)
+now passes all six supported compiled executions under ADR0046 (#1608);
+domain wire, capability, transport and native caller adoption remain later gates.
+Transferred-media preview cleanup uses the owner-confirmed oldest-cache eviction
+when full, preserving explicit Save/export and host source files.
 
 Updated 2026-10-15.
 One page: where remi stands, what comes next and in what order, and how each step is tested.

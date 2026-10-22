@@ -8,7 +8,8 @@ This continuation preserves that approval.
 The owner selected a **read-only view of the existing agent terminal** in this session.
 The owner approved the proposed terminal architecture/limits and chose terminal first, then the existing media/profile uses.
 Exact runtime fields remain subject to screen qualification and the accepted ADR; this document registers no wire types or capabilities.
-The [B1 characterization report](../docs/terminal-screen-characterization.md) preserves the first candidate's failed original resource gate and remaining policy/qualification work (#1608).
+The [initial B1 report](../docs/terminal-screen-characterization.md) preserves the failed original resource gate.
+The [bounded-model continuation](../docs/terminal-screen-bounded-model.md) qualifies the approved 1 MiB primitive on all six supported compiled executions under [ADR0046](decisions/0046-bounded-read-only-terminal-screen.md) (#1608); strict wire and runtime adoption remain next.
 
 ## Context
 
@@ -84,6 +85,8 @@ No background prefetch or eager PDF-page rasterization; purge on session/profile
 Preview renders inert local content with external-resource/network loading disabled; document scripts, actions and embedded links cannot execute automatically.
 Qualification includes active-content and bidirectional-text fixtures plus actual network observation, following `docs/FILE-TUNNEL.md`.
 Save/export is a separate user action.
+Owner-confirmed cache cleanup: evict the oldest cached preview when capacity is needed, using the existing bounded LRU policy.
+This removes only app-owned temporary preview copies, never an explicit Save/export, the host's source file, or a staged image still owned by its draft lifetime.
 Other files remain inert downloads; generic file/PDF upload and directory listing need separate contracts and are not inferred from `file_download`.
 
 Codex images and relay image ingress cannot be enabled by broadening an existing capability's meaning silently.
@@ -128,7 +131,7 @@ Proposed bounds:
 - At most 240 columns and 60 rows; 32 KiB aggregate UTF-8 line text and 64 KiB encoded raw JSON per frame. An unsupported geometry/content model makes this view unavailable; never silently truncate a current screen or raise the connection limit.
 - At most two reads per second, one outstanding per view. Coalesce screen updates; a slow viewer receives the latest complete snapshot, not an unbounded output queue. Frames for stale view IDs are discarded.
 - One active view per connection, two per device, four per session, eight per Remi home. Shared metadata leases count child processes together and release only owned reservations.
-- At most 256 KiB screen-model state per eligible session and 32 such models per home (8 MiB). No terminal contents on disk, in replay history, push or logs. Qualification must include parser and pending-send allocations, not just visible text length.
+- Owner-approved revised budget: at most 1 MiB screen-model state per eligible session and 32 such models per home (32 MiB). The original 256 KiB failure stays recorded in #1609. No terminal contents on disk, in replay history, push or logs. Qualification includes parser and pending-send allocations, not just visible text length; it is not an OS/process memory ceiling.
 - A view expires after five monotonic minutes. A new explicit Open may create a new lease. Session exit, disconnect/detach, profile change, lost child ownership or changed grant/binding retires it at the next bounded authority check and before any further send.
 
 Refusal codes proposed: `malformed`, `unavailable`, `busy`, `expired`, `binding_changed`, `unsupported_screen`.
@@ -199,7 +202,7 @@ Each implementation item is an independently reviewable PR into `develop`, norma
 Update this phase list before splitting an item; do not silently expand one PR.
 
 Backend preparation comes first. Numbering orders work within each track; it does not put native UI ahead of missing backend contracts.
-The next backend checkpoint is B1: qualify the read-only screen model and finalize its proposed ADR/fixtures before a terminal runtime path.
+The bounded B1 primitive and ADR0046 are qualified; the next backend checkpoint is B2's strict wire/fixtures before a terminal runtime path.
 
 | Track/step | Deliverable | Main files and pass gate |
 |---|---|---|
@@ -247,14 +250,14 @@ This plan does not ask to repeat approval of the existing media/profile product 
 
 Zero subagents spawned for orientation or this plan.
 The plan PR used one read-only reviewer, as required by the repository's `.rules/code_review.md`.
-B1 uses one fresh documentation reviewer: maximum two unique subagents across orientation and this characterization, with no implementation team.
+B1 used one fresh documentation reviewer and now uses one focused code reviewer for the bounded primitive: maximum three unique subagents across orientation and B1, with no implementation team.
 Implementation can proceed sequentially; this is not an authorization for an implementation agent team.
 If later explicitly requested, use a bounded plan and at most two review rounds per PR.
 
 ## Open judgment calls
 
 - Resolved by the owner this session: view the existing agent terminal read-only; keep input in chat/approval controls.
-- Approved architecture: normalized current-screen snapshots over WSS/encrypted relay, with the original geometry/rate/lease bounds above. The original memory gate failed; its replacement resource policy is pending. Screen implementation and exact wire/ADR remain qualification gates, with no dependency chosen.
+- Approved architecture: normalized current-screen snapshots over WSS/encrypted relay, with the original geometry/rate/lease bounds above. The owner approved qualifying 1 MiB per session / 32 MiB per home after the original memory-gate failure. Screen implementation and exact wire/ADR remain qualification gates.
 - Proposed internal choice: preserve provider flags by using `--remi-profile`; one immutable profile selection per session; remote choices explicitly enabled in local config.
 - Approved sequencing: terminal first, then the existing media/profile uses. Reuse the existing file/image contracts when that follow-up begins.
 - Deliberately deferred: general shell/input, arbitrary file/PDF upload, directory browsing, empty/larger downloads, account usage polling and OS/container isolation. Each needs a separate scope/contract decision.
