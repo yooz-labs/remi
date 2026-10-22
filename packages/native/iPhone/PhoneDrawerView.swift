@@ -34,6 +34,7 @@ struct PhoneDrawerView: View {
     @State private var displayed: RemiSessionGrouping
     @State private var query = ""
     @AccessibilityFocusState private var headerFocused: Bool
+    @FocusState private var searchFocused: Bool
 
     init(
         sessions: [RemiSessionSummary],
@@ -107,18 +108,20 @@ struct PhoneDrawerView: View {
         .onAppear { if isOpen { headerFocused = true } }
     }
 
-    /// While the order is frozen, rows keep the position they had; once it is free the
-    /// list takes the live order and that becomes the next snapshot.
     /// Normal sizes: the strip, problems and search stay pinned, the list scrolls, and the
     /// actions are pinned below it.
     private var regularColumn: some View {
         VStack(spacing: 0) {
             strip
-            problemRows
+            // While the keyboard is up, keep the strip and search and give the list the room.
+            if !searchFocused { problemRows }
             if showsSearch { searchField }
             ScrollView { listContent }
-            Divider()
-            actions
+                .scrollDismissesKeyboard(.interactively)
+            if !searchFocused {
+                Divider()
+                actions
+            }
         }
     }
 
@@ -129,13 +132,16 @@ struct PhoneDrawerView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 strip
-                problemRows
+                if !searchFocused { problemRows }
                 if showsSearch { searchField }
                 listContent
-                Divider().padding(.vertical, RemiTheme.Spacing.xs)
-                actions
+                if !searchFocused {
+                    Divider().padding(.vertical, RemiTheme.Spacing.xs)
+                    actions
+                }
             }
         }
+        .scrollDismissesKeyboard(.interactively)
     }
 
     private var strip: some View {
@@ -167,20 +173,25 @@ struct PhoneDrawerView: View {
         return nil
     }
 
-    private var machineLabels: [String: String] {
-        RemiMachineStripPresentation.uniqueLabels(for: machines)
+    /// What each row needs to know about its machine, worked out once per list pass.
+    private struct RowContext {
+        let labels: [String: String]
+        let lastKnown: Set<String>
+        let connected: Set<String>
     }
 
-    private var lastKnownMachineIDs: Set<String> {
-        RemiMachineStripPresentation.lastKnownMachineIDs(in: machines)
-    }
-
-    private var connectedMachineIDs: Set<String> {
-        Set(machines.filter { $0.reachability == .connected }.map(\.id))
+    private var rowContext: RowContext {
+        RowContext(
+            labels: RemiMachineStripPresentation.uniqueLabels(for: machines),
+            lastKnown: RemiMachineStripPresentation.lastKnownMachineIDs(in: machines),
+            connected: Set(machines.filter { $0.reachability == .connected }.map(\.id))
+        )
     }
 
     private var showsSearch: Bool { !sessions.isEmpty || !query.isEmpty }
 
+    /// While the order is frozen, rows keep the position they had; once it is free the
+    /// list takes the live order and that becomes the next snapshot.
     private func refresh(reordering: Bool = false) {
         let live = RemiSessionGrouping(
             sessions: RemiSessionFilter.apply(to: sessions, query: query, machineKey: filteredKey)
@@ -228,6 +239,7 @@ struct PhoneDrawerView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
+                .focused($searchFocused)
             if !query.isEmpty {
                 Button {
                     query = ""
@@ -250,15 +262,16 @@ struct PhoneDrawerView: View {
 
     private var listContent: some View {
         let groups = displayed
+        let context = rowContext
         return LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
             PhoneDrawerInboxRow(
                 count: questionCount,
                 isSelected: destination == .inbox,
                 action: { if !blocksTaps { onSelectInbox() } }
             )
-            section("Needs you", groups.needsYou)
-            section("Active", groups.active)
-            section("Recent", groups.recent)
+            section("Needs you", groups.needsYou, context)
+            section("Active", groups.active, context)
+            section("Recent", groups.recent, context)
             if groups.isEmpty { emptyStateView }
         }
         .padding(.horizontal, RemiTheme.Spacing.xs)
@@ -308,12 +321,13 @@ struct PhoneDrawerView: View {
     /// machine is connected, because only a connected machine can start one.
     private var machineEmpty: some View {
         let key = filteredKey ?? ""
-        let name = machineLabels[key] ?? machines.first { $0.id == key }?.name ?? ""
+        let context = rowContext
+        let name = context.labels[key] ?? ""
         return VStack(spacing: RemiTheme.Spacing.xs) {
             Text("No sessions on \(name)")
                 .font(.headline)
                 .multilineTextAlignment(.center)
-            if connectedMachineIDs.contains(key) && canCreateSession {
+            if context.connected.contains(key) && canCreateSession {
                 Button("New session", systemImage: "plus.rectangle.on.folder") {
                     if !blocksTaps { onNewSession() }
                 }
@@ -336,7 +350,7 @@ struct PhoneDrawerView: View {
     }
 
     @ViewBuilder
-    private func section(_ title: LocalizedStringKey, _ rows: [RemiSessionSummary]) -> some View {
+    private func section(_ title: LocalizedStringKey, _ rows: [RemiSessionSummary], _ context: RowContext) -> some View {
         if !rows.isEmpty {
             Text(title)
                 .font(RemiTheme.Typography.eyebrow)
@@ -349,9 +363,9 @@ struct PhoneDrawerView: View {
                 PhoneDrawerSessionRow(
                     session: session,
                     isSelected: selectedKey == session.key,
-                    isLastKnown: lastKnownMachineIDs.contains(session.machineID),
-                    machineLabel: machineLabels[session.machineID],
-                    canRunOnMachine: connectedMachineIDs.contains(session.machineID),
+                    isLastKnown: context.lastKnown.contains(session.machineID),
+                    machineLabel: context.labels[session.machineID],
+                    canRunOnMachine: context.connected.contains(session.machineID),
                     action: { if !blocksTaps { onSelectSession(session) } },
                     onResume: { onResumeSession(session.machineID, session.id) },
                     onNewSessionHere: { onNewSessionHere(session.machineID, session.projectPath) }
@@ -402,10 +416,8 @@ private struct PhoneDrawerSessionRow: View {
         Button(action: action) {
             HStack(alignment: .center, spacing: RemiTheme.Spacing.s) {
                 texts
-                    .opacity(isLastKnown ? 0.6 : 1)
                 Spacer(minLength: RemiTheme.Spacing.xs)
                 indicator
-                    .opacity(isLastKnown ? 0.6 : 1)
             }
             .padding(.horizontal, RemiTheme.Spacing.s)
             .padding(.vertical, RemiTheme.Spacing.xs)
@@ -443,9 +455,12 @@ private struct PhoneDrawerSessionRow: View {
 
     private var texts: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
+            // Only the name is dimmed: the "Last known" caption and the attention badge
+            // keep full contrast.
             Text(session.name)
                 .font(.body)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                .opacity(isLastKnown ? 0.6 : 1)
             Text(presentation.subtitle)
                 .font(.caption)
                 .foregroundStyle(.secondary)
