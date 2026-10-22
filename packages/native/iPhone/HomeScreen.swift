@@ -183,6 +183,8 @@ struct HomeScreen: View {
         RemiCommandCenterSnapshot(
             sessions: sessions,
             questions: questions,
+            // The phone keeps no machine selection, so the Inbox spans every machine. The
+            // Mac still uses this parameter.
             selectedMachineID: "",
             query: searchText,
             scope: activityScope
@@ -208,6 +210,7 @@ struct HomeScreen: View {
             machineCount: machines.count,
             visibleSessionCount: snapshot.sessions.count,
             query: searchText,
+            // No machine selection on the phone; the parameter stays for the Mac.
             hasSelectedMachine: false
         )
     }
