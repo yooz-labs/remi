@@ -146,4 +146,29 @@ import Testing
         #expect(Strip.problemRows(in: Array(all.prefix(3))) == [.summary(count: 3)])
         #expect(Strip.problemRows(in: Array(all.prefix(2))).count == 2)
     }
+
+    @Test func equalNamesWithEqualAddressesAreNumberedInIDOrder() {
+        let all = [
+            named("c", "Studio", address: "127.0.0.1:1"),
+            named("a", "Studio", address: "127.0.0.1:1"),
+            named("b", "Studio", address: "127.0.0.1:1"),
+        ]
+        let expected = [
+            "a": "Studio (127.0.0.1:1) 1",
+            "b": "Studio (127.0.0.1:1) 2",
+            "c": "Studio (127.0.0.1:1) 3",
+        ]
+        #expect(Strip.uniqueLabels(for: all) == expected)
+        #expect(Strip.uniqueLabels(for: all.reversed()) == expected)
+    }
+
+    @Test func equalNamesWithDifferentAddressesAreNotNumbered() {
+        let all = [named("a", "Studio", address: "h:1"), named("b", "Studio", address: "h:2")]
+        #expect(Strip.uniqueLabels(for: all) == ["a": "Studio (h:1)", "b": "Studio (h:2)"])
+    }
+
+    @Test func namesAreComparedCaseSensitively() {
+        let all = [named("a", "Studio", address: "h:1"), named("b", "studio", address: "h:1")]
+        #expect(Strip.uniqueLabels(for: all) == ["a": "Studio", "b": "studio"])
+    }
 }

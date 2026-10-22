@@ -138,13 +138,23 @@ public enum RemiMachineStripPresentation {
 
     /// Machine id to the label to show. A name that is unique stays as it is; machines that
     /// share a name each get the address added, "Studio (127.0.0.1:18790)", because the
-    /// app has no way to rename a machine.
+    /// app has no way to rename a machine. If labels still collide (same name and same
+    /// address), each of those gets a number in machine id order, "Studio (127.0.0.1:1) 2".
+    /// Names are compared exactly, so "Studio" and "studio" are different names.
     public static func uniqueLabels(for machines: [RemiMachineSummary]) -> [String: String] {
-        let counts = Dictionary(machines.map { ($0.name, 1) }, uniquingKeysWith: +)
-        return Dictionary(machines.map { machine in
-            let collides = (counts[machine.name] ?? 0) > 1
-            return (machine.id, collides ? "\(machine.name) (\(machine.address))" : machine.name)
-        }, uniquingKeysWith: { first, _ in first })
+        let nameCounts = Dictionary(machines.map { ($0.name, 1) }, uniquingKeysWith: +)
+        var labels: [String: String] = [:]
+        for machine in machines {
+            let collides = (nameCounts[machine.name] ?? 0) > 1
+            labels[machine.id] = collides ? "\(machine.name) (\(machine.address))" : machine.name
+        }
+        let byLabel = Dictionary(grouping: labels.keys, by: { labels[$0] ?? "" })
+        for (label, ids) in byLabel where ids.count > 1 {
+            for (index, id) in ids.sorted().enumerated() {
+                labels[id] = "\(label) \(index + 1)"
+            }
+        }
+        return labels
     }
 
     /// "Studio Mac, connected, 2 waiting". `label` replaces the name when machines share one.
