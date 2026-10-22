@@ -51,6 +51,8 @@ public enum RemiInboxPresentation {
     public struct QuietCopy: Equatable, Sendable {
         public let title: String
         public let detail: String
+        /// A reassuring mark is only honest when a machine is connected to vouch for it.
+        public let symbolName: String
     }
 
     /// The words of the quiet state. Without a connected machine it must not claim that
@@ -59,24 +61,28 @@ public enum RemiInboxPresentation {
         guard hasConnectedMachine else {
             return QuietCopy(
                 title: "No machine is connected",
-                detail: "Remi cannot tell whether anything needs you. Check the machines above."
+                detail: "Remi cannot tell whether anything needs you. Check the machines above.",
+                symbolName: "desktopcomputer.trianglebadge.exclamationmark"
             )
         }
         switch activeSessionCount {
         case 0:
             return QuietCopy(
                 title: "Nothing needs you",
-                detail: "No active sessions. Open the menu to see recent sessions."
+                detail: "No active sessions. Open the menu to see recent sessions.",
+                symbolName: "checkmark.circle"
             )
         case 1:
             return QuietCopy(
                 title: "Nothing needs you",
-                detail: "1 active session. Open the menu to pick a session."
+                detail: "1 active session. Open the menu to pick a session.",
+                symbolName: "checkmark.circle"
             )
         default:
             return QuietCopy(
                 title: "Nothing needs you",
-                detail: "\(activeSessionCount) active sessions. Open the menu to pick a session."
+                detail: "\(activeSessionCount) active sessions. Open the menu to pick a session.",
+                symbolName: "checkmark.circle"
             )
         }
     }

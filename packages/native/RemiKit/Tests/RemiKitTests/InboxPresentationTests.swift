@@ -148,6 +148,14 @@ import Testing
         let copy = RemiInboxPresentation.quietCopy(activeSessionCount: 4, hasConnectedMachine: false)
         #expect(copy.title == "No machine is connected")
         #expect(copy.detail == "Remi cannot tell whether anything needs you. Check the machines above.")
+        #expect(copy.symbolName != "checkmark.circle")
+    }
+
+    @Test func reassuringMarkOnlyWhenAMachineIsConnected() {
+        for count in [0, 1, 3] {
+            let copy = RemiInboxPresentation.quietCopy(activeSessionCount: count, hasConnectedMachine: true)
+            #expect(copy.symbolName == "checkmark.circle")
+        }
     }
 
     @Test func expandedListCollapsesOnlyWhenTwoOrFewerRemain() {

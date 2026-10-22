@@ -205,7 +205,7 @@ private struct PhoneQuietInboxState: View {
             Label {
                 Text(copy.title)
             } icon: {
-                Image(systemName: "checkmark.circle").accessibilityHidden(true)
+                Image(systemName: copy.symbolName).accessibilityHidden(true)
             }
         } description: {
             Text(copy.detail)
