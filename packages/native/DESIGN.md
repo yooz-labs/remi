@@ -65,6 +65,12 @@ The person is busy elsewhere; the app's job is to tell them what needs them, let
   It opens at its latest message and has no back button; the drawer is the way out.
   A session has a pane, chat today, so files and a terminal can be added later once a hub capability backs them.
   No control is drawn for a pane that cannot work.
+- **In a session the navigation bar minimizes on scroll** on iOS 27 and later, for sighted people at standard text sizes, to give the transcript reading room.
+  It returns on a scroll up.
+  It stays visible with VoiceOver, Switch Control or accessibility text sizes, and on iOS 26, so the Menu button is always reachable.
+  The edge swipe always opens the drawer.
+- **The drawer's actions** are New session, Add machine and Preferences: New session plus two icon buttons.
+  At accessibility text sizes they collapse to New session and one More menu that holds Add machine and Preferences, because three stacked labeled buttons would take a large share of the screen.
 - **The drawer is a custom container** built on the system edge-pan recognizer and system materials, not web-style chrome (principle 4).
 - **Lock screen:** a notification's buttons follow the daemon's push categories (root AGENTS.md, "Notification channel"), which choose by meaning: Yes and No; Yes, "Yes, always" (an always-allow rule, which needs an unlocked device) and No; or the options of another card with two to four choices and no standing grant, a single-question, single-select AskUserQuestion included. Every other card has no buttons and opens the app: one with `detail`, a "for this session" mode grant, a plan approval, a terminal-only card.
 - **Pairing:** lead with scanning the short-lived code from `remi pair`, then show the endpoint, pinned daemon fingerprint, expiry and explicit terminal-approval requirement before connecting. Manual host/port and `remi authorize` remain the fallback. The scanner, confirmation and fallback states use one focused card with generous spacing and one primary action, not a dense setup form.
@@ -99,6 +105,7 @@ These are built once and used by both apps:
 - Spacing follows a compact 2, 4, 8, 12, 16, 24, 32, 48 point scale. Controls have a 44 point minimum tap target.
 - Colors come from semantic system colors where possible. The existing lime is retained only as the attention accent and uses a dark ink color for readable text.
 - One accent marks "needs you" and pending approval; every other status uses neutral tones.
+  There is one named exception: the composer's send action wears it when there is something to send, because it is the primary action of a session.
 - Liquid Glass is concentrated on interactive cards and controls. Repeated list rows use lightweight semantic surfaces to keep scrolling efficient.
 
 ## Accessibility

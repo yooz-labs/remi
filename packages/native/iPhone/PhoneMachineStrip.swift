@@ -172,12 +172,15 @@ struct PhoneMachineStrip: View {
                 Text(menuLabelTitle)
                     .font(.subheadline.weight(.semibold))
                     .multilineTextAlignment(.leading)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
                 Spacer(minLength: RemiTheme.Spacing.xs)
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.caption.weight(.semibold))
                     .accessibilityHidden(true)
             }
-            .padding(.horizontal, RemiTheme.Spacing.s)
+            .padding(.leading, RemiTheme.Spacing.s)
+            .padding(.trailing, RemiTheme.Spacing.m)
             .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget, alignment: .leading)
             .overlay(Capsule().stroke(RemiTheme.Color.hairline))
             .contentShape(.capsule)
@@ -225,6 +228,9 @@ struct PhoneMachineStrip: View {
 }
 
 private struct PhoneMachineChip: View {
+    /// The title's width cap grows with Dynamic Type, so a larger font keeps about the same
+    /// number of characters. At accessibility sizes the strip is a menu, not chips.
+    @ScaledMetric(relativeTo: .body) private var maxTitleWidth: CGFloat = 148
     let title: String
     let style: RemiMachineStripPresentation.DotStyle?
     let count: Int
@@ -244,7 +250,8 @@ private struct PhoneMachineChip: View {
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .frame(maxWidth: 240)
+                    // Capped so part of the next chip shows and the row reads as scrollable.
+                    .frame(maxWidth: maxTitleWidth)
                 PhoneMachineCountCapsule(count: count)
                 if showsClearGlyph {
                     Image(systemName: "xmark")
@@ -252,7 +259,7 @@ private struct PhoneMachineChip: View {
                         .accessibilityHidden(true)
                 }
             }
-            .foregroundStyle(isSelected ? AnyShapeStyle(.background) : AnyShapeStyle(.primary))
+            .foregroundStyle(.primary)
             .padding(.horizontal, RemiTheme.Spacing.s)
             .frame(minWidth: RemiTheme.Size.minimumTapTarget, minHeight: RemiTheme.Size.minimumTapTarget)
             .background { chipBackground }
@@ -267,7 +274,9 @@ private struct PhoneMachineChip: View {
     @ViewBuilder
     private var chipBackground: some View {
         if isSelected {
-            Capsule().fill(.primary)
+            Capsule()
+                .fill(.primary.opacity(0.12))
+                .overlay(Capsule().stroke(.primary.opacity(0.4), lineWidth: 1))
         } else {
             Capsule().stroke(RemiTheme.Color.hairline)
         }

@@ -90,6 +90,8 @@ struct PhoneDrawerView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+                .background(dynamicTypeSize.isAccessibilitySize ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(.clear))
+                .zIndex(1)
             if dynamicTypeSize.isAccessibilitySize {
                 accessibilityColumn
             } else {
@@ -118,27 +120,28 @@ struct PhoneDrawerView: View {
             if showsSearch { searchField }
             ScrollView { listContent }
                 .scrollDismissesKeyboard(.interactively)
-            if !searchFocused {
+            if !searchFocused, actionsPresentation.placement == .bottom {
                 Divider()
                 actions
             }
         }
     }
 
-    /// Accessibility sizes: the strip, problems, search, list and actions are one column
-    /// that scrolls together, so every row is reachable however large the text is and the
-    /// actions never overlap the list. Only the header is pinned.
+    /// Accessibility sizes: the actions, strip, problems, search and list are one column
+    /// that scrolls together, so every row is reachable however large the text is. The
+    /// actions come first, under the header, so a long list never pushes them out of
+    /// reach. Only the header is pinned, on a material.
     private var accessibilityColumn: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
+                if !searchFocused, actionsPresentation.placement == .top {
+                    actions
+                    Divider().padding(.bottom, RemiTheme.Spacing.xs)
+                }
                 strip
                 if !searchFocused { problemRows }
                 if showsSearch { searchField }
                 listContent
-                if !searchFocused {
-                    Divider().padding(.vertical, RemiTheme.Spacing.xs)
-                    actions
-                }
             }
         }
         .scrollDismissesKeyboard(.interactively)
@@ -159,8 +162,13 @@ struct PhoneDrawerView: View {
             .padding(.horizontal, RemiTheme.Spacing.m)
     }
 
+    private var actionsPresentation: RemiDrawerActionsPresentation {
+        RemiDrawerActionsPresentation(isAccessibilitySize: dynamicTypeSize.isAccessibilitySize)
+    }
+
     private var actions: some View {
         PhoneDrawerActions(
+            presentation: actionsPresentation,
             canCreateSession: canCreateSession,
             onNewSession: { if !blocksTaps { onNewSession() } },
             onAddMachine: { if !blocksTaps { onAddMachine() } },
@@ -208,6 +216,9 @@ struct PhoneDrawerView: View {
         HStack(spacing: RemiTheme.Spacing.xs) {
             Text("Remi")
                 .font(.title2.weight(.bold))
+                // Capped at accessibility1: the header is pinned, so at the largest sizes it
+                // would otherwise take a large part of the screen. The rest of the column keeps scaling.
+                .dynamicTypeSize(...DynamicTypeSize.accessibility1)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityAddTraits(.isHeader)
                 .accessibilitySortPriority(1)
@@ -238,7 +249,8 @@ struct PhoneDrawerView: View {
             TextField("Search sessions", text: $query)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-                .submitLabel(.search)
+                .submitLabel(.done)
+                .onSubmit { searchFocused = false }
                 .focused($searchFocused)
             if !query.isEmpty {
                 Button {
@@ -254,8 +266,9 @@ struct PhoneDrawerView: View {
             }
         }
         .padding(.leading, RemiTheme.Spacing.s)
+        .padding(.trailing, RemiTheme.Spacing.s)
         .frame(minHeight: RemiTheme.Size.minimumTapTarget)
-        .background(RemiTheme.Color.surface, in: .capsule)
+        .background(RemiTheme.Color.surface, in: .rect(cornerRadius: RemiTheme.Radius.control))
         .padding(.horizontal, RemiTheme.Spacing.m)
         .padding(.bottom, RemiTheme.Spacing.xxs)
     }
@@ -288,13 +301,26 @@ struct PhoneDrawerView: View {
     @ViewBuilder
     private var emptyStateView: some View {
         switch emptyState {
-        case .content, .nothing:
+        case .content:
             EmptyView()
+        case .nothing:
+            if machines.isEmpty { firstRunHint }
         case .noMatch:
             noMatches
         case .machineEmpty:
             machineEmpty
         }
+    }
+
+    /// Before any machine is added the list has nothing to show and New session is
+    /// disabled; say why and what to do.
+    private var firstRunHint: some View {
+        Text("Add a machine to see its sessions")
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .padding(RemiTheme.Spacing.m)
     }
 
     private var noMatches: some View {
@@ -402,6 +428,7 @@ private struct PhoneDrawerInboxRow: View {
 
 private struct PhoneDrawerSessionRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .body) private var statusDotSize = RemiTheme.Size.statusDot
     let session: RemiSessionSummary
     let isSelected: Bool
     let isLastKnown: Bool
@@ -460,7 +487,7 @@ private struct PhoneDrawerSessionRow: View {
             Text(session.name)
                 .font(.body)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-                .opacity(isLastKnown ? 0.6 : 1)
+                .opacity(isLastKnown ? 0.75 : 1)
             Text(presentation.subtitle)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -481,7 +508,7 @@ private struct PhoneDrawerSessionRow: View {
         } else {
             Circle()
                 .fill(Color.secondary.opacity(session.isLive ? 0.7 : 0.3))
-                .frame(width: RemiTheme.Size.statusDot, height: RemiTheme.Size.statusDot)
+                .frame(width: statusDotSize, height: statusDotSize)
                 .accessibilityHidden(true)
         }
     }
@@ -503,6 +530,7 @@ private struct PhoneDrawerCountBadge: View {
 
 private struct PhoneDrawerActions: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let presentation: RemiDrawerActionsPresentation
     let canCreateSession: Bool
     let onNewSession: () -> Void
     let onAddMachine: () -> Void
@@ -510,21 +538,68 @@ private struct PhoneDrawerActions: View {
 
     var body: some View {
         Group {
-            if dynamicTypeSize.isAccessibilitySize {
+            if presentation.hasMenu {
                 VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
-                    newSessionButton
-                    labeledButton("Add machine", systemImage: "desktopcomputer.and.arrow.down", action: onAddMachine)
-                    labeledButton("Preferences", systemImage: "gearshape", action: onPreferences)
+                    ForEach(presentation.inline, id: \.self) { action in
+                        inlineButton(action)
+                    }
+                    moreMenu
                 }
             } else {
                 HStack(spacing: RemiTheme.Spacing.xs) {
-                    newSessionButton
-                    iconButton("Add machine", systemImage: "desktopcomputer.and.arrow.down", hint: "Opens pairing", action: onAddMachine)
-                    iconButton("Preferences", systemImage: "gearshape", hint: "Opens preferences", action: onPreferences)
+                    ForEach(presentation.inline, id: \.self) { action in
+                        inlineButton(action)
+                    }
                 }
             }
         }
         .padding(RemiTheme.Spacing.s)
+    }
+
+    @ViewBuilder
+    private func inlineButton(_ action: RemiDrawerAction) -> some View {
+        switch action {
+        case .newSession:
+            newSessionButton
+        case .addMachine:
+            iconButton("Add machine", systemImage: "desktopcomputer.and.arrow.down", hint: "Opens pairing", action: onAddMachine)
+        case .preferences:
+            iconButton("Preferences", systemImage: "gearshape", hint: "Opens preferences", action: onPreferences)
+        }
+    }
+
+    /// At accessibility sizes: one labeled button that opens the actions that left the row.
+    private var moreMenu: some View {
+        Menu {
+            ForEach(presentation.menu, id: \.self) { action in
+                menuItem(action)
+            }
+        } label: {
+            HStack {
+                Label("More", systemImage: "ellipsis")
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.glass)
+        .accessibilityHint("Add machine and Preferences")
+    }
+
+    @ViewBuilder
+    private func menuItem(_ action: RemiDrawerAction) -> some View {
+        switch action {
+        case .addMachine:
+            Button("Add machine", systemImage: "desktopcomputer.and.arrow.down", action: onAddMachine)
+                .accessibilityHint("Opens pairing")
+        case .preferences:
+            Button("Preferences", systemImage: "gearshape", action: onPreferences)
+                .accessibilityHint("Opens preferences")
+        case .newSession:
+            EmptyView()
+        }
     }
 
     private var newSessionButton: some View {
@@ -532,6 +607,8 @@ private struct PhoneDrawerActions: View {
             HStack {
                 Label("New session", systemImage: "plus.rectangle.on.folder")
                     .multilineTextAlignment(.leading)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : nil)
+                    .minimumScaleFactor(0.8)
                     .fixedSize(horizontal: false, vertical: true)
                 if dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
             }
@@ -553,19 +630,5 @@ private struct PhoneDrawerActions: View {
         .buttonBorderShape(.circle)
         .accessibilityLabel(title)
         .accessibilityHint(hint)
-    }
-
-    private func labeledButton(_ title: LocalizedStringKey, systemImage: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack {
-                Label(title, systemImage: systemImage)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-            }
-            .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
-            .contentShape(.rect)
-        }
-        .buttonStyle(.glass)
     }
 }

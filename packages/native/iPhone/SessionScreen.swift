@@ -413,13 +413,27 @@ struct SessionScreen: View {
 }
 
 private struct SessionNavigationBarBehavior: ViewModifier {
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
+    @Environment(\.accessibilitySwitchControlEnabled) private var switchControl
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     @ViewBuilder
     func body(content: Content) -> some View {
         if #available(iOS 27.0, *) {
-            content.toolbarMinimizationBehavior(.onScrollDown, for: .navigationBar)
+            content.toolbarMinimizationBehavior(behavior, for: .navigationBar)
         } else {
             content
         }
+    }
+
+    @available(iOS 27.0, *)
+    private var behavior: ToolbarMinimizationBehavior {
+        let minimizes = RemiNavigationBarPolicy.minimizesOnScroll(
+            voiceOver: voiceOver,
+            switchControl: switchControl,
+            accessibilitySize: dynamicTypeSize.isAccessibilitySize
+        )
+        return minimizes ? .onScrollDown : .never
     }
 }
 

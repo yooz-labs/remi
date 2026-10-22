@@ -151,6 +151,22 @@ import Testing
         #expect(copy.symbolName != "checkmark.circle")
     }
 
+    @Test func quietCopyNamesMachinesThatAreNotConnected() {
+        let one = RemiInboxPresentation.quietCopy(activeSessionCount: 2, hasConnectedMachine: true, unconnectedMachineCount: 1)
+        #expect(one.title == "Nothing needs you")
+        #expect(one.detail == "2 active sessions. Open the menu to pick a session. 1\u{00A0}machine not connected: Remi cannot tell for them.")
+        let many = RemiInboxPresentation.quietCopy(activeSessionCount: 0, hasConnectedMachine: true, unconnectedMachineCount: 4)
+        #expect(many.detail == "No active sessions. Open the menu to see recent sessions. 4\u{00A0}machines not connected: Remi cannot tell for them.")
+    }
+
+    @Test func quietCopyIsUnchangedWithNoUnconnectedMachinesOrNoneConnected() {
+        let none = RemiInboxPresentation.quietCopy(activeSessionCount: 1, hasConnectedMachine: true, unconnectedMachineCount: 0)
+        #expect(none.detail == "1 active session. Open the menu to pick a session.")
+        let nothingConnected = RemiInboxPresentation.quietCopy(activeSessionCount: 1, hasConnectedMachine: false, unconnectedMachineCount: 3)
+        #expect(nothingConnected.title == "No machine is connected")
+        #expect(nothingConnected.detail == "Remi cannot tell whether anything needs you. Check the machines above.")
+    }
+
     @Test func reassuringMarkOnlyWhenAMachineIsConnected() {
         for count in [0, 1, 3] {
             let copy = RemiInboxPresentation.quietCopy(activeSessionCount: count, hasConnectedMachine: true)

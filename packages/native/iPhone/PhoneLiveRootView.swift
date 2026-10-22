@@ -230,6 +230,7 @@ struct PhoneLiveRootView: View {
             PhoneNewSessionSheet(
                 machines: availableSessionMachines,
                 recentRepositories: store.recentRepositoriesByMachine,
+                machineLabels: RemiMachineStripPresentation.uniqueLabels(for: machineSummaries),
                 preferredMachineID: machineID,
                 preferredRepository: repository,
                 onCreate: createSession
