@@ -20,7 +20,8 @@ public enum RemiDrawerGesture {
 
     /// True when a drag that started at `start` began inside one of `regions`, such as a
     /// horizontally scrolling strip, which keeps the drag for itself. Both are in the same
-    /// coordinate space. A region's edges count as inside.
+    /// coordinate space. A region's top and left edges are inside; its right and bottom edges
+    /// are outside (`CGRect.contains`), and an empty rect contains nothing.
     public static func startsInsideAny(of regions: [CGRect], at start: CGPoint) -> Bool {
         regions.contains { $0.contains(start) }
     }

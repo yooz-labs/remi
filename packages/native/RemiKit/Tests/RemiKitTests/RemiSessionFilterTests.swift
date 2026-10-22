@@ -80,4 +80,15 @@ import Testing
         #expect(RemiSessionFilter.apply(to: [session("a")], query: "zzz", machineKey: nil).isEmpty)
         #expect(RemiSessionFilter.apply(to: [], query: "a", machineKey: nil).isEmpty)
     }
+
+    @Test func whitespaceOnlyQueryWithAMachineKeyOnlyFiltersByMachine() {
+        let all = [session("a", machine: "m1"), session("b", machine: "m2")]
+        #expect(ids(RemiSessionFilter.apply(to: all, query: " \t\n ", machineKey: "m2")) == ["b"])
+    }
+
+    @Test func machineKeyAndQueryBothHaveToMatch() {
+        let all = [session("a", machine: "m1", name: "build"), session("b", machine: "m2", name: "build")]
+        #expect(ids(RemiSessionFilter.apply(to: all, query: "build", machineKey: "m2")) == ["b"])
+        #expect(RemiSessionFilter.apply(to: all, query: "deploy", machineKey: "m2").isEmpty)
+    }
 }

@@ -171,4 +171,16 @@ import Testing
         let all = [named("a", "Studio", address: "h:1"), named("b", "studio", address: "h:1")]
         #expect(Strip.uniqueLabels(for: all) == ["a": "Studio", "b": "studio"])
     }
+
+    @Test func fourMachinesAreChipsAndFiveScrollAtNormalSizes() {
+        #expect(Strip.layout(for: machines(4), isAccessibilitySize: false) == .chips)
+        #expect(Strip.layout(for: machines(5), isAccessibilitySize: false) == .scrollingChips)
+    }
+
+    @Test func exactlyOneProblemIsOneMachineRow() {
+        let bad = machine("b", reachability: .unreachable)
+        let rows = Strip.problemRows(in: [machine("a"), bad])
+        #expect(rows == [.machine(.unreachable(bad), label: "Mac b")])
+        #expect(rows[0].message == "Mac b is offline")
+    }
 }
