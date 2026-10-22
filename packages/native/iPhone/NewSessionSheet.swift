@@ -10,6 +10,8 @@ struct PhoneNewSessionSheet: View {
     /// Display labels by machine id, from `RemiMachineStripPresentation.uniqueLabels`, so two
     /// machines with the same name read differently. A machine missing here uses its own name.
     let machineLabels: [String: String]
+    /// The machine the person narrowed the drawer to, which may not be offered here.
+    let preferredMachineID: String?
     let onCreate: (MachineEndpoint, String, String, [String], WorkspaceRequest?) -> Void
 
     @State private var draft: NewSessionDraft
@@ -25,6 +27,7 @@ struct PhoneNewSessionSheet: View {
         self.machines = machines
         self.recentRepositories = recentRepositories
         self.machineLabels = machineLabels
+        self.preferredMachineID = preferredMachineID
         self.onCreate = onCreate
         _draft = State(initialValue: NewSessionDraft(
             machines: machines,
@@ -46,7 +49,10 @@ struct PhoneNewSessionSheet: View {
                 } header: {
                     Label("Machine", systemImage: "desktopcomputer")
                 } footer: {
-                    Text("The selected machine provides the available repositories, harnesses, and workspace features.")
+                    VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
+                        if let note = unavailableNote { Text(verbatim: note) }
+                        Text("The selected machine provides the available repositories, harnesses, and workspace features.")
+                    }
                 }
 
                 Section {
@@ -147,6 +153,14 @@ struct PhoneNewSessionSheet: View {
                 }
             }
         }
+    }
+
+    private var unavailableNote: String? {
+        RemiNewSessionPreference.unavailableNote(
+            preferredMachineID: preferredMachineID,
+            availableMachineIDs: machines.map(\.id),
+            labels: machineLabels
+        )
     }
 
     private func label(for machine: MachineState) -> String {
