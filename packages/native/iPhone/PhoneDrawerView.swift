@@ -120,7 +120,7 @@ struct PhoneDrawerView: View {
             if showsSearch { searchField }
             ScrollView { listContent }
                 .scrollDismissesKeyboard(.interactively)
-            if !searchFocused {
+            if !searchFocused, actionsPresentation.placement == .bottom {
                 Divider()
                 actions
             }
@@ -134,7 +134,7 @@ struct PhoneDrawerView: View {
     private var accessibilityColumn: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                if !searchFocused {
+                if !searchFocused, actionsPresentation.placement == .top {
                     actions
                     Divider().padding(.bottom, RemiTheme.Spacing.xs)
                 }
@@ -162,8 +162,13 @@ struct PhoneDrawerView: View {
             .padding(.horizontal, RemiTheme.Spacing.m)
     }
 
+    private var actionsPresentation: RemiDrawerActionsPresentation {
+        RemiDrawerActionsPresentation(isAccessibilitySize: dynamicTypeSize.isAccessibilitySize)
+    }
+
     private var actions: some View {
         PhoneDrawerActions(
+            presentation: actionsPresentation,
             canCreateSession: canCreateSession,
             onNewSession: { if !blocksTaps { onNewSession() } },
             onAddMachine: { if !blocksTaps { onAddMachine() } },
@@ -524,31 +529,42 @@ private struct PhoneDrawerCountBadge: View {
 
 private struct PhoneDrawerActions: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let presentation: RemiDrawerActionsPresentation
     let canCreateSession: Bool
     let onNewSession: () -> Void
     let onAddMachine: () -> Void
     let onPreferences: () -> Void
 
-    private var presentation: RemiDrawerActionsPresentation {
-        RemiDrawerActionsPresentation(isAccessibilitySize: dynamicTypeSize.isAccessibilitySize)
-    }
-
     var body: some View {
         Group {
             if presentation.hasMenu {
                 VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
-                    newSessionButton
+                    ForEach(presentation.inline, id: \.self) { action in
+                        inlineButton(action)
+                    }
                     moreMenu
                 }
             } else {
                 HStack(spacing: RemiTheme.Spacing.xs) {
-                    newSessionButton
-                    iconButton("Add machine", systemImage: "desktopcomputer.and.arrow.down", hint: "Opens pairing", action: onAddMachine)
-                    iconButton("Preferences", systemImage: "gearshape", hint: "Opens preferences", action: onPreferences)
+                    ForEach(presentation.inline, id: \.self) { action in
+                        inlineButton(action)
+                    }
                 }
             }
         }
         .padding(RemiTheme.Spacing.s)
+    }
+
+    @ViewBuilder
+    private func inlineButton(_ action: RemiDrawerAction) -> some View {
+        switch action {
+        case .newSession:
+            newSessionButton
+        case .addMachine:
+            iconButton("Add machine", systemImage: "desktopcomputer.and.arrow.down", hint: "Opens pairing", action: onAddMachine)
+        case .preferences:
+            iconButton("Preferences", systemImage: "gearshape", hint: "Opens preferences", action: onPreferences)
+        }
     }
 
     /// At accessibility sizes: one labeled button that opens the actions that left the row.
@@ -568,6 +584,7 @@ private struct PhoneDrawerActions: View {
             .contentShape(.rect)
         }
         .buttonStyle(.glass)
+        .accessibilityHint("Add machine and Preferences")
     }
 
     @ViewBuilder
