@@ -6,8 +6,14 @@ The current [backend capability plan](issue-1595-backend-plan.md) separates exis
 image/download contracts from native adoption, proposes the owner's read-only
 terminal view, and resumes the approved login/settings profiles under #1157.
 It records actual source callers, missing capabilities, limits, prerequisites and
-per-PR acceptance gates. New terminal wire policy remains proposed; existing
+per-PR acceptance gates. Exact terminal wire awaits qualification; existing
 media/profile approval is preserved. Historical snapshots below retain their dates.
+
+The owner approved terminal-first execution after #1607. B1 (#1608) now has a
+[source/compiled Mac characterization](../docs/terminal-screen-characterization.md):
+the candidate passed bounded screen diagnostics but exceeded the original 256 KiB
+state budget with a 240 x 60 alternate screen. No runtime candidate or capability
+is selected; the report preserves the failed gate and the pending resource-policy choice.
 
 Updated 2026-10-15.
 One page: where remi stands, what comes next and in what order, and how each step is tested.

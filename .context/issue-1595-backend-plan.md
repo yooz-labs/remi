@@ -1,12 +1,14 @@
 # Plan: backend session capabilities (#1595)
 
-Status: proposed implementation plan, 2026-10-22.
+Status: execution approved, terminal first, 2026-10-22; screen qualification remains a gate.
 Source baseline: `origin/develop` at `0c6d573bea71b1627e6e5c8dd3d3c1ec838b88f2`.
 
 The media/profile product plan was already approved in [#1313](https://github.com/yooz-labs/remi/issues/1313#issuecomment-6304800880).
 This continuation preserves that approval.
 The owner selected a **read-only view of the existing agent terminal** in this session.
-New terminal fields, limits and relay policy below remain proposals until accepted; this document registers no wire types or capabilities.
+The owner approved the proposed terminal architecture/limits and chose terminal first, then the existing media/profile uses.
+Exact runtime fields remain subject to screen qualification and the accepted ADR; this document registers no wire types or capabilities.
+The [B1 characterization report](../docs/terminal-screen-characterization.md) preserves the first candidate's failed original resource gate and remaining policy/qualification work (#1608).
 
 ## Context
 
@@ -244,16 +246,17 @@ This plan does not ask to repeat approval of the existing media/profile product 
 ## Agent budget
 
 Zero subagents spawned for orientation or this plan.
-The documentation PR uses one read-only reviewer, as required by the repository's `.rules/code_review.md`; maximum one subagent for this run.
+The plan PR used one read-only reviewer, as required by the repository's `.rules/code_review.md`.
+B1 uses one fresh documentation reviewer: maximum two unique subagents across orientation and this characterization, with no implementation team.
 Implementation can proceed sequentially; this is not an authorization for an implementation agent team.
 If later explicitly requested, use a bounded plan and at most two review rounds per PR.
 
 ## Open judgment calls
 
 - Resolved by the owner this session: view the existing agent terminal read-only; keep input in chat/approval controls.
-- Proposed for acceptance: normalized current-screen snapshots, WSS/encrypted relay only, and the terminal geometry/memory/rate/lease bounds above. Screen implementation selection remains a characterization gate, with no dependency chosen.
+- Approved architecture: normalized current-screen snapshots over WSS/encrypted relay, with the original geometry/rate/lease bounds above. The original memory gate failed; its replacement resource policy is pending. Screen implementation and exact wire/ADR remain qualification gates, with no dependency chosen.
 - Proposed internal choice: preserve provider flags by using `--remi-profile`; one immutable profile selection per session; remote choices explicitly enabled in local config.
-- Proposed sequencing: reuse existing file/image contracts first; keep independent terminal/profile backend preparation possible while native adoption proceeds.
+- Approved sequencing: terminal first, then the existing media/profile uses. Reuse the existing file/image contracts when that follow-up begins.
 - Deliberately deferred: general shell/input, arbitrary file/PDF upload, directory browsing, empty/larger downloads, account usage polling and OS/container isolation. Each needs a separate scope/contract decision.
 
 ## Verification
