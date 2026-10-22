@@ -1,4 +1,5 @@
 import Foundation
+import RemiPush
 
 public enum RemiQuestionState: Sendable, Equatable {
     case pending
@@ -144,13 +145,15 @@ public struct RemiQuestionCardModel: Identifiable, Sendable, Equatable {
         self.id = id
         self.questionID = questionID ?? id
         self.kind = kind
-        self.text = text
-        self.detail = detail
+        // Text another party chose is escaped here, once, where the display models are built
+        // (AGENTS.md, "Escape text another party chose"). Identifiers stay raw.
+        self.text = PushDisplayText.escape(text)
+        self.detail = detail.map(PushDisplayText.escape)
         self.machineID = machineID ?? machineName
         self.machineIdentityID = machineIdentityID
-        self.machineName = machineName
+        self.machineName = PushDisplayText.escape(machineName)
         self.sessionID = sessionID
-        self.sessionName = sessionName
+        self.sessionName = PushDisplayText.escape(sessionName)
         self.agentID = agentID
         self.options = options
         self.steps = steps
@@ -191,21 +194,23 @@ public struct RemiSessionSummary: Identifiable, Sendable, Equatable {
         self.id = id
         self.machineID = machineID ?? machineName
         self.machineIdentityID = machineIdentityID
-        self.machineName = machineName
-        self.name = name
-        self.harness = harness
-        self.project = project
+        // Escaped once, here; ids and `projectPath` (used to start a session and to copy)
+        // stay raw. See the question card model.
+        self.machineName = PushDisplayText.escape(machineName)
+        self.name = PushDisplayText.escape(name)
+        self.harness = PushDisplayText.escape(harness)
+        self.project = PushDisplayText.escape(project)
         self.projectPath = projectPath ?? project
         self.lastActivity = lastActivity
         self.status = status
-        self.lastMessage = lastMessage
+        self.lastMessage = lastMessage.map(PushDisplayText.escape)
         self.openQuestionCount = openQuestionCount
         self.isLive = isLive ?? (status != .offline)
         self.canTerminate = canTerminate
         self.canResume = canResume
         self.isResuming = isResuming
         self.resumeIdentity = resumeIdentity
-        self.resumeError = resumeError
+        self.resumeError = resumeError.map(PushDisplayText.escape)
     }
 }
 
@@ -235,8 +240,9 @@ public struct RemiMachineSummary: Identifiable, Sendable, Equatable {
     ) {
         self.id = id
         self.machineIdentityID = machineIdentityID
-        self.name = name
-        self.address = address
+        // Escaped once, here: a machine names itself.
+        self.name = PushDisplayText.escape(name)
+        self.address = PushDisplayText.escape(address)
         self.reachability = reachability
         self.transport = transport
         self.sessionCount = sessionCount

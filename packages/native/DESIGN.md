@@ -36,8 +36,42 @@ The person is busy elsewhere; the app's job is to tell them what needs them, let
 
 ## The iPhone app
 
-- **Home:** the sessions grouped by machine, with the cards that need the person on top.
+- **Home is an Inbox:** the cards that need the person, from all machines, with a short note for each one resolved elsewhere, a one-line row for each machine problem, and the first-run steps when nothing is connected yet.
+  It is not a list of sessions: browsing sessions is the drawer's job.
+  The app launches on the Inbox.
+- **Each card has an Open conversation link** under it, quieter than the answer controls, that opens the card's session (and its subagent conversation, when the card is from one) on its machine.
+  The link only navigates; it never answers.
+  A card whose session is gone has no link.
+- **When nothing needs the person** the Inbox says "Nothing needs you", gives the number of active sessions, and points to the menu to pick one; a New session button shows when a machine is connected.
+  Notes about requests resolved elsewhere can still show below.
+- **Sessions live in a left drawer,** reached by an edge swipe or a button at the top left.
+  The drawer groups them Needs you, Active and Recent, and each row names its project and its machine.
+  Search lives in the drawer; the Inbox has none.
+  The machine strip in the drawer is a temporary filter: it narrows the list of sessions and never the Inbox or notifications.
+  The Inbox has no persisted machine selection; it always spans every machine.
+- **The machine strip** depends on how many machines there are.
+  One machine is a single line with its name and state, no chips.
+  Two to four are an All chip and one chip each; five or more are the same chips in a horizontal scroll that a swipe on them scrolls without closing the drawer.
+  At accessibility text sizes two or more become a menu.
+  A chip shows a state symbol that differs by shape (never color alone), the name, and the count of open questions in the attention color, the only use of it here.
+  Machines that share a display name are told apart by their address.
+- **Machine problems** are one line each under the strip: a machine is offline, or waiting for approval.
+  Three or more collapse into one line, "3 machines need attention".
+  A line opens the Machines sheet.
+  The sessions of an offline machine stay in the list, dimmed and captioned "Last known", so the state is never color alone.
+- **The Machines sheet** is the home of machine management: connection layer, retry, approval help with the fingerprint and the authorize command, relay confirmation, pairing again and removal.
+  The drawer's Manage button and the problem lines open it.
 - **The session:** transcript and cards, with a composer.
+  It opens at its latest message and has no back button; the drawer is the way out.
+  A session has a pane, chat today, so files and a terminal can be added later once a hub capability backs them.
+  No control is drawn for a pane that cannot work.
+- **In a session the navigation bar minimizes on scroll** on iOS 27 and later, for sighted people at standard text sizes, to give the transcript reading room.
+  It returns on a scroll up.
+  It stays visible with VoiceOver, Switch Control or accessibility text sizes, and on iOS 26, so the Menu button is always reachable.
+  The edge swipe always opens the drawer.
+- **The drawer's actions** are New session, Add machine and Preferences: New session plus two icon buttons.
+  At accessibility text sizes they collapse to New session and one More menu that holds Add machine and Preferences, because three stacked labeled buttons would take a large share of the screen.
+- **The drawer is a custom container** built on the system edge-pan recognizer and system materials, not web-style chrome (principle 4).
 - **Lock screen:** a notification's buttons follow the daemon's push categories (root AGENTS.md, "Notification channel"), which choose by meaning: Yes and No; Yes, "Yes, always" (an always-allow rule, which needs an unlocked device) and No; or the options of another card with two to four choices and no standing grant, a single-question, single-select AskUserQuestion included. Every other card has no buttons and opens the app: one with `detail`, a "for this session" mode grant, a plan approval, a terminal-only card.
 - **Pairing:** lead with scanning the short-lived code from `remi pair`, then show the endpoint, pinned daemon fingerprint, expiry and explicit terminal-approval requirement before connecting. Manual host/port and `remi authorize` remain the fallback. The scanner, confirmation and fallback states use one focused card with generous spacing and one primary action, not a dense setup form.
 
@@ -71,6 +105,10 @@ These are built once and used by both apps:
 - Spacing follows a compact 2, 4, 8, 12, 16, 24, 32, 48 point scale. Controls have a 44 point minimum tap target.
 - Colors come from semantic system colors where possible. The existing lime is retained only as the attention accent and uses a dark ink color for readable text.
 - One accent marks "needs you" and pending approval; every other status uses neutral tones.
+  There is one named exception: the composer's send action wears it when there is something to send, because it is the primary action of a session.
+- The saturated lime stays on small marks: counts, badges, the needs-you bar, the send action.
+  Large surfaces, such as a message bubble, use a very pale wash of it (about 12 percent) with a faint outline and normal text color, because a big rich fill tires the eye.
+  Question cards that need the person may be stronger than that: needs-you is the one place the app should be loud.
 - Liquid Glass is concentrated on interactive cards and controls. Repeated list rows use lightweight semantic surfaces to keep scrolling efficient.
 
 ## Accessibility

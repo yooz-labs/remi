@@ -59,10 +59,17 @@ private struct TranscriptMessage: View {
                 .padding(.horizontal, role == .user ? RemiTheme.Spacing.s : 0)
                 .padding(.vertical, role == .user ? RemiTheme.Spacing.xs : 0)
                 .background(
-                    role == .user ? AnyShapeStyle(RemiTheme.Color.attention) : AnyShapeStyle(.clear),
+                    role == .user ? AnyShapeStyle(RemiTheme.Color.attentionWash) : AnyShapeStyle(.clear),
                     in: .rect(cornerRadius: RemiTheme.Radius.control)
                 )
-                .foregroundStyle(role == .user ? RemiTheme.Color.attentionInk : .primary)
+                .overlay {
+                    if role == .user {
+                        RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
+                            .stroke(RemiTheme.Color.attention.opacity(0.28), lineWidth: 1)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .foregroundStyle(.primary)
                 .frame(
                     maxWidth: dynamicTypeSize.isAccessibilitySize ? .infinity : messageMaximumWidth,
                     alignment: role == .user ? .trailing : .leading

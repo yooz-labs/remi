@@ -11,6 +11,9 @@ public enum RemiTheme {
             green: 235.0 / 255.0,
             blue: 74.0 / 255.0
         )
+        /// A very pale pastel wash of the attention color for large surfaces (a message bubble):
+        /// the saturated lime is for small marks only, because a big lime fill tires the eye.
+        public static let attentionWash = attention.opacity(0.12)
         public static let attentionInk = SwiftUI.Color(
             red: 26.0 / 255.0,
             green: 28.0 / 255.0,

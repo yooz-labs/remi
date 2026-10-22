@@ -32,7 +32,7 @@ deeper files, diffs, and terminal surfaces remain X5 work.
 
 ## X3/X4 caller evidence
 
-- iPhone first run: `RemiPhoneApp` creates `PhoneLiveRootView`, whose `HomeScreen`
+- iPhone first run: `RemiPhoneApp` creates `PhoneLiveRootView`, whose `InboxScreen`
   resolves zero persisted machines to `FirstRunScreen`; its Add machine action opens
   the same `PairingScreen` sheet whose callback reaches `MachineStore.addMachine`.
 - Mac first run: `RemiMacApp` creates `MacLiveRootView`, which presents

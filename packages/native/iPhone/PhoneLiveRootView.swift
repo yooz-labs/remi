@@ -2,72 +2,79 @@ import RemiKit
 import RemiUI
 import SwiftUI
 
+/// A sheet the shell presents over any destination.
+enum PhoneShellSheet: Identifiable {
+    case newSession(machineID: String?, repository: String?)
+    case pairing
+    case preferences
+    case machines
+    /// A relay notification question. One presentation with the others: two `.sheet`
+    /// modifiers on one host cannot both be up.
+    case relayNotification
+
+    var id: String {
+        switch self {
+        case .newSession: "newSession"
+        case .pairing: "pairing"
+        case .preferences: "preferences"
+        case .machines: "machines"
+        case .relayNotification: "relayNotification"
+        }
+    }
+}
+
 struct PhoneLiveRootView: View {
     let store: MachineStore
-    @AppStorage("selectedMachineID") private var selectedMachineID = ""
     @State private var knownQuestionIDs: Set<String> = []
     @State private var notificationBaselineEstablished = false
     @State private var questionFeedbackTrigger = 0
     @State private var answerFeedbackTrigger = 0
     @State private var notificationRouter = PhoneNotificationRouter.shared
-    @State private var notificationPath: [RemiNavigationDestination] = []
+    @State private var shell = PhoneShellState()
+    @State private var activeSheet: PhoneShellSheet?
     @State private var pairingAttemptID: UUID?
-    @State private var pendingResume: ResumeSessionKey?
     @State private var relayNotifications = NativeRelayNotifications.shared
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
 
     var body: some View {
-        NavigationStack(path: $notificationPath) {
-            HomeScreen(
-                questions: allQuestions,
-                sessions: allSessions,
-                machines: machineSummaries,
-                sessionMachines: store.machines,
-                recentRepositories: store.recentRepositoriesByMachine,
-                publicIdentity: store.publicIdentity,
-                selectedMachineID: $selectedMachineID,
-                errorMessage: store.latestOperationError ?? store.latestError?.message,
-                noticeMessage: store.latestOperationNotice ?? relayNotifications.notice ?? store.relayNotificationNotice,
-                transcriptForSession: transcript,
-                questionsForSession: questions,
-                viewsForSession: { store.sessionViewsBySession[$0] ?? [] },
-                viewsLoadedForSession: { store.sessionViewsBySession[$0] != nil },
-                onAnswer: answer,
-                onSubmit: submit,
-                onCancel: cancel,
-                onOpenSession: openSession,
-                onSend: sendChat,
-                onTerminateSession: store.terminateSession,
-                onResumeSession: resumeSession,
-                onCreateSession: createSession,
-                pairingAttempts: store.pairingAttempts,
-                onCancelPairing: store.cancelPairing,
-                onAddMachine: addMachine,
-                onRemoveMachine: removeMachine,
-                onRetryApproval: store.retryApproval,
-                onRetryConnection: store.retryConnection,
-                onSetConnectionPreference: { store.setConnectionPreference($1, for: $0) },
-                onEnableRelayNotifications: relayNotifications.enable,
-                enablingRelayNotifications: relayNotifications.enabling,
-                onDismissError: store.clearLatestError,
-                onDismissNotice: dismissNotice
-            )
-            .navigationDestination(for: RemiNavigationDestination.self) { destination in
-                notificationDestination(destination)
-            }
+        // Worked out once per pass and handed down: building them is the costly part of a
+        // store tick, and the drawer, the Inbox and the session all need them.
+        let sessions = allSessions
+        let machines = machineSummaries
+        return PhoneShell(state: $shell) {
+            shellContent(sessions: sessions, machines: machines)
+        } drawer: {
+            drawerContent(sessions: sessions, machines: machines)
+        }
+        .sheet(item: $activeSheet) { sheet in
+            sheetContent(sheet)
         }
         .onChange(of: store.pairingAttempts) { _, _ in
             guard let id = pairingAttemptID, let result = store.pairingAttempt(id: id),
-                  case .admitted(let profileID) = result.phase else { return }
-            selectedMachineID = profileID
+                  case .admitted = result.phase else { return }
+            // A filter on another machine would hide the one just paired.
+            shell.clearFilter()
             pairingAttemptID = nil
+        }
+        .onChange(of: store.machines.map(\.id), initial: true) { _, ids in
+            shell.machinesChanged(ids: ids)
         }
         .onChange(of: store.persistableProfiles) { _, profiles in
             MachineConfigurationStore.shared.saveProfiles(profiles)
             relayNotifications.reconcileEndpoints()
         }
-        .sheet(isPresented: $relayNotifications.presentsRelayNotification, onDismiss: relayNotifications.closeNotification) {
-            RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification)
+        .onChange(of: relayNotifications.presentsRelayNotification, initial: true) { _, presents in
+            if presents {
+                activeSheet = .relayNotification
+            } else if case .relayNotification = activeSheet {
+                activeSheet = nil
+            }
+        }
+        .onChange(of: activeSheet?.id) { old, new in
+            // However the panel went away (swipe, Close, another sheet), tell the store.
+            if old == PhoneShellSheet.relayNotification.id, new != old {
+                relayNotifications.closeNotification()
+            }
         }
         .task { routePendingNotification() }
         .sensoryFeedback(.warning, trigger: questionFeedbackTrigger) { _, _ in
@@ -107,20 +114,186 @@ struct PhoneLiveRootView: View {
             routePendingNotification()
         }
         .onChange(of: store.resumedSessionDestination) { _, destination in
-            guard let destination,
-                  pendingResume == ResumeSessionKey(
-                    machineID: destination.machineID,
-                    sessionID: destination.requestedSessionID
-                  )
-            else { return }
-            pendingResume = nil
-            selectedMachineID = destination.machineID
-            notificationPath = [RemiNavigationDestination(
-                machineID: destination.machineID,
-                sessionID: destination.sessionID
-            )]
+            guard let destination else { return }
+            // Lands only while this resume is still pending: any navigation the person made
+            // since clears it (PhoneShellState), and then the landing must not move them.
+            shell.landResume(
+                ResumeSessionKey(machineID: destination.machineID, sessionID: destination.requestedSessionID),
+                at: PhoneSessionRoute(machineKey: destination.machineID, sessionID: destination.sessionID)
+            )
             store.consumeResumedSessionDestination(id: destination.id)
         }
+    }
+
+    private func shellContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
+        // Built here, before the NavigationStack. Doing it this way made the Inbox refresh
+        // live when a machine changes state; building it inside the stack's closure did
+        // not. The mechanism is not verified (#1592).
+        let destination = destinationContent(sessions: sessions, machines: machines)
+        return NavigationStack {
+            destination
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) { menuButton }
+                }
+        }
+    }
+
+    // iOS 27 has `topBarPinnedTrailing` only; there is no pinned leading placement.
+    private var menuButton: some View {
+        Button {
+            shell.toggleDrawer()
+        } label: {
+            Label("Menu", systemImage: "line.3.horizontal")
+                .labelStyle(.iconOnly)
+                .frame(
+                    minWidth: RemiTheme.Size.minimumTapTarget,
+                    minHeight: RemiTheme.Size.minimumTapTarget
+                )
+                .contentShape(.rect)
+        }
+    }
+
+    @ViewBuilder
+    private func destinationContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
+        switch shell.destination {
+        case .inbox:
+            inboxContent(sessions: sessions, machines: machines)
+        case .session(let route):
+            sessionContent(route, sessions: sessions)
+        }
+    }
+
+    private func inboxContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
+        InboxScreen(
+            questions: allQuestions,
+            sessions: sessions,
+            machines: machines,
+            sessionMachines: store.machines,
+            errorMessage: store.latestOperationError ?? store.latestError?.message,
+            noticeMessage: store.latestOperationNotice ?? relayNotifications.notice ?? store.relayNotificationNotice,
+            onAnswer: answer,
+            onSubmit: submit,
+            onCancel: cancel,
+            onNewSession: { activeSheet = .newSession(machineID: nil, repository: nil) },
+            onOpenQuestionSession: openQuestionSession,
+            onPresentPairing: { activeSheet = .pairing },
+            onPresentPreferences: { activeSheet = .preferences },
+            onManageMachines: { activeSheet = .machines },
+            onDismissError: store.clearLatestError,
+            onDismissNotice: dismissNotice
+        )
+    }
+
+    private func drawerContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
+        PhoneDrawerView(
+            sessions: sessions,
+            machines: machines,
+            filter: shell.drawerFilter,
+            questionCount: store.machines.reduce(0) { $0 + $1.questions.count },
+            destination: shell.destination,
+            canCreateSession: !availableSessionMachines.isEmpty,
+            onClose: { shell.closeDrawer() },
+            onSelectAllMachines: { shell.clearFilter() },
+            onSelectMachine: { shell.selectMachineFilter($0) },
+            onManageMachines: { present(.machines) },
+            onResumeSession: resumeSession,
+            onNewSessionHere: { present(.newSession(machineID: $0, repository: $1)) },
+            onSelectInbox: { shell.select(.inbox) },
+            onSelectSession: selectSession,
+            onNewSession: { present(.newSession(machineID: shell.filteredMachineKey, repository: nil)) },
+            onAddMachine: { present(.pairing) },
+            onPreferences: { present(.preferences) }
+        )
+    }
+
+    private func present(_ sheet: PhoneShellSheet) {
+        shell.closeDrawer()
+        activeSheet = sheet
+    }
+
+    /// `machineKey` is the machine profile id (`MachineState.id`), the id the rest of this
+    /// view uses. Switching it to the authenticated machine identity id is a follow-up;
+    /// `store.machine(withIdentifier:)` already accepts either.
+    private func route(for session: RemiSessionSummary) -> PhoneSessionRoute {
+        PhoneSessionRoute(machineKey: session.machineID, sessionID: session.id)
+    }
+
+    private func selectSession(_ session: RemiSessionSummary) {
+        store.loadTranscript(sessionId: session.id)
+        shell.selectSession(machineKey: session.machineID, sessionID: session.id)
+    }
+
+    /// Navigates to the conversation of `target` and focuses its question. It never answers.
+    private func openQuestionSession(_ target: RemiInboxPresentation.OpenTarget, questionID: String) {
+        store.loadTranscript(sessionId: target.sessionID)
+        // Opening a subagent conversation of the session already on screen changes the
+        // route's conversation id on purpose (the screen must show that conversation); the
+        // same route is a no-op.
+        shell.openFromNotification(
+            route: PhoneSessionRoute(
+                machineKey: target.machineID,
+                sessionID: target.sessionID,
+                conversationID: target.conversationID
+            ),
+            questionID: questionID
+        )
+    }
+
+    @ViewBuilder
+    private func sheetContent(_ sheet: PhoneShellSheet) -> some View {
+        switch sheet {
+        case .newSession(let machineID, let repository):
+            PhoneNewSessionSheet(
+                machines: availableSessionMachines,
+                recentRepositories: store.recentRepositoriesByMachine,
+                machineLabels: RemiMachineStripPresentation.uniqueLabels(for: machineSummaries),
+                preferredMachineID: machineID,
+                preferredRepository: repository,
+                onCreate: createSession
+            )
+        case .pairing:
+            pairingScreen { activeSheet = nil }
+        case .preferences:
+            PhonePreferencesSheet(publicIdentity: store.publicIdentity)
+        case .relayNotification:
+            RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification)
+        case .machines:
+            PhoneMachinesSheet(
+                machines: machineSummaries,
+                states: store.machines,
+                publicIdentity: store.publicIdentity,
+                enablingRelayNotifications: relayNotifications.enabling,
+                onRemove: removeMachine,
+                onRetryApproval: store.retryApproval,
+                onRetryConnection: store.retryConnection,
+                onSetConnectionPreference: { store.setConnectionPreference($1, for: $0) },
+                onEnableRelayNotifications: relayNotifications.enable,
+                onDone: { activeSheet = nil },
+                pairingContent: { close in pairingScreen(onDone: close) }
+            )
+        }
+    }
+
+    /// The pairing screen, shared by the root sheet and the one the Machines sheet hosts.
+    private func pairingScreen(onDone: @escaping () -> Void) -> some View {
+        NavigationStack {
+            PairingScreen(
+                publicIdentity: store.publicIdentity,
+                machineStates: store.machines,
+                pairingAttempts: store.pairingAttempts,
+                onCancelPairing: store.cancelPairing,
+                onAddMachine: addMachine
+            )
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done", action: onDone)
+                }
+            }
+        }
+    }
+
+    private var availableSessionMachines: [MachineState] {
+        store.machines.filter { $0.status == .connected }
     }
 
     private func dismissNotice() {
@@ -390,6 +563,8 @@ struct PhoneLiveRootView: View {
             pairingAttemptID = id
             return id
         case .endpoint(let endpoint):
+            // Same reason as a paired machine: do not let a filter hide the new one.
+            shell.clearFilter()
             relayNotifications.machineWillChange(endpoint)
             store.addMachine(endpoint)
             MachineConfigurationStore.shared.saveProfiles(store.persistableProfiles)
@@ -420,14 +595,9 @@ struct PhoneLiveRootView: View {
         )
     }
 
-    private func openSession(_ sessionID: String) {
-        pendingResume = nil
-        store.loadTranscript(sessionId: sessionID)
-    }
-
     private func resumeSession(machineID: String, sessionID: String) {
         guard let machine = store.machine(withIdentifier: machineID) else { return }
-        pendingResume = ResumeSessionKey(machineID: machine.id, sessionID: sessionID)
+        shell.beginResume(ResumeSessionKey(machineID: machine.id, sessionID: sessionID))
         store.resumeSession(on: machine.endpoint, sessionId: sessionID)
     }
 
@@ -457,42 +627,77 @@ struct PhoneLiveRootView: View {
 
     private func routePendingNotification() {
         guard let destination = notificationRouter.destination else { return }
-        pendingResume = nil
-        selectedMachineID = destination.machineID
-        notificationPath = [destination]
+        // A sheet would hide the session this notification opens.
+        activeSheet = nil
+        shell.openFromNotification(
+            route: PhoneSessionRoute(
+                machineKey: destination.machineID,
+                sessionID: destination.sessionID,
+                conversationID: destination.agentID
+            ),
+            questionID: destination.questionID
+        )
         notificationRouter.destination = nil
     }
 
     @ViewBuilder
-    private func notificationDestination(_ destination: RemiNavigationDestination) -> some View {
-        if let session = allSessions.first(where: {
-            $0.id == destination.sessionID && $0.machineID == destination.machineID
-        }) {
-            SessionScreen(
-                session: session,
-                transcript: transcript(session.id),
-                questions: questions(session.id),
-                views: store.sessionViewsBySession[session.id] ?? [],
-                viewsLoaded: store.sessionViewsBySession[session.id] != nil,
-                initialConversationID: destination.agentID,
-                initialQuestionID: destination.questionID,
-                transcriptForView: transcript,
-                onSelectView: store.loadTranscript,
-                onAnswer: { answer(sessionId: session.id, questionId: $0, value: $1) },
-                onSubmit: { submit(sessionId: session.id, questionId: $0, values: $1) },
-                onCancel: { cancel(sessionId: session.id, questionId: $0) },
-                onSend: { await sendChat(sessionId: session.id, content: $0) },
-                onTerminate: { store.terminateSession(sessionId: session.id) }
-            )
-            .onAppear {
-                store.loadTranscript(sessionId: destination.agentID ?? session.id)
-            }
+    private func sessionContent(_ route: PhoneSessionRoute, sessions: [RemiSessionSummary]) -> some View {
+        if let machine = store.machine(withIdentifier: route.machineKey),
+           let session = sessions.first(where: { $0.machineID == machine.id && $0.id == route.sessionID }) {
+            sessionScreen(session, route: route)
+        } else if store.machine(withIdentifier: route.machineKey) == nil {
+            // The machine was removed: nothing can bring this session back, so leave at
+            // once. A known machine whose session is briefly missing keeps the grace period.
+            Color.clear.onAppear { shell.sessionVanished(route) }
         } else {
-            ContentUnavailableView(
-                "Conversation unavailable",
-                systemImage: "bubble.left.and.bubble.right",
-                description: Text("The session may have ended or the machine may be offline.")
-            )
+            reconnectingPlaceholder(route)
+        }
+    }
+
+    private func sessionScreen(_ session: RemiSessionSummary, route: PhoneSessionRoute) -> some View {
+        let focus = shell.focusQuestionID(for: route)
+        return SessionScreen(
+            session: session,
+            transcript: transcript(session.id),
+            questions: questions(session.id),
+            views: store.sessionViewsBySession[session.id] ?? [],
+            viewsLoaded: store.sessionViewsBySession[session.id] != nil,
+            initialConversationID: route.conversationID,
+            initialQuestionID: focus,
+            transcriptForView: transcript,
+            onSelectView: store.loadTranscript,
+            onAnswer: { answer(sessionId: session.id, questionId: $0, value: $1) },
+            onSubmit: { submit(sessionId: session.id, questionId: $0, values: $1) },
+            onCancel: { cancel(sessionId: session.id, questionId: $0) },
+            onSend: { await sendChat(sessionId: session.id, content: $0) },
+            onTerminate: { store.terminateSession(sessionId: session.id) },
+            onClose: { shell.select(.inbox) },
+            focusQuestionRequest: focus
+        )
+        .id(route)
+        .onAppear {
+            store.loadTranscript(sessionId: route.conversationID ?? session.id)
+        }
+        .onChange(of: shell.pendingFocus, initial: true) { _, _ in
+            guard shell.focusQuestionID(for: route) != nil else { return }
+            // Consume in a later transaction so SessionScreen's own onChange sees the
+            // request first.
+            Task { @MainActor in _ = shell.consumeFocus(for: route) }
+        }
+    }
+
+    private func reconnectingPlaceholder(_ route: PhoneSessionRoute) -> some View {
+        VStack(spacing: RemiTheme.Spacing.s) {
+            ProgressView()
+            Text("Reconnecting")
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+        .task(id: route) {
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+            shell.sessionVanished(route)
         }
     }
 

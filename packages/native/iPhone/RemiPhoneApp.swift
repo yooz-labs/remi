@@ -33,17 +33,4 @@ struct RemiPhoneApp: App {
             }
         }
     }
-
-}
-
-struct PhoneRootView: View {
-    var body: some View {
-        NavigationStack {
-            HomeScreen(
-                questions: [RemiPreviewData.binaryQuestion],
-                sessions: RemiPreviewData.sessions,
-                machines: RemiPreviewData.machines
-            )
-        }
-    }
 }

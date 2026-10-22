@@ -4,7 +4,6 @@ import SwiftUI
 import UIKit
 
 struct SessionScreen: View {
-    @Environment(\.dismiss) private var dismiss
     let session: RemiSessionSummary
     let transcript: [RemiTranscriptEntry]
     let questions: [RemiQuestionCardModel]
@@ -17,10 +16,12 @@ struct SessionScreen: View {
     let onCancel: (String) -> Void
     let onSend: (String) async -> Bool
     let onTerminate: () -> Void
+    let onClose: () -> Void
+    let focusQuestionRequest: String?
 
     @State private var draft = ""
     @State private var selectedViewID = ""
-    @State private var focusedQuestionID: String?
+    @State private var focusState: PhoneQuestionFocusState
     @State private var confirmingTermination = false
     @State private var isSearchPresented = false
     @State private var searchFocusRequest = 0
@@ -46,7 +47,9 @@ struct SessionScreen: View {
         onSubmit: @escaping (String, [RemiQuestionStepSelection]) -> Void = { _, _ in },
         onCancel: @escaping (String) -> Void = { _ in },
         onSend: @escaping (String) async -> Bool = { _ in true },
-        onTerminate: @escaping () -> Void = {}
+        onTerminate: @escaping () -> Void = {},
+        onClose: @escaping () -> Void = {},
+        focusQuestionRequest: String? = nil
     ) {
         self.session = session
         self.transcript = transcript
@@ -54,7 +57,10 @@ struct SessionScreen: View {
         self.views = views
         self.viewsLoaded = viewsLoaded
         _selectedViewID = State(initialValue: initialConversationID ?? "")
-        _focusedQuestionID = State(initialValue: initialQuestionID)
+        _focusState = State(initialValue: PhoneQuestionFocusState(
+            initial: initialQuestionID,
+            loaded: questions.map(\.questionID)
+        ))
         _reviewSessionID = State(initialValue: session.id)
         self.transcriptForView = transcriptForView
         self.onSelectView = onSelectView
@@ -63,6 +69,8 @@ struct SessionScreen: View {
         self.onCancel = onCancel
         self.onSend = onSend
         self.onTerminate = onTerminate
+        self.onClose = onClose
+        self.focusQuestionRequest = focusQuestionRequest
     }
 
     var body: some View {
@@ -138,13 +146,20 @@ struct SessionScreen: View {
                     .modifier(SessionNavigationBarBehavior())
                     .onAppear { focusQuestion(using: proxy) }
                     .onChange(of: questions.map(\.questionID)) { _, questionIDs in
-                        guard let focusedQuestionID else { return }
-                        if questionIDs.contains(focusedQuestionID) {
+                        focusState.questionsChanged(questionIDs)
+                        if focusedQuestionID != nil {
                             focusQuestion(using: proxy)
                         } else {
-                            self.focusedQuestionID = nil
                             accessibilityQuestionID = nil
                         }
+                    }
+                    .onChange(of: focusQuestionRequest) { _, request in
+                        guard let request else { return }
+                        focusState.request(request, loaded: questions.map(\.questionID))
+                        // Clear now and announce in a later transaction, so VoiceOver
+                        // announces the same question again when it is re-notified.
+                        accessibilityQuestionID = nil
+                        Task { @MainActor in focusQuestion(using: proxy) }
                     }
                     .onChange(of: reviewState.selectedEntryID) { _, entryID in
                         scrollToSearchResult(entryID, using: proxy)
@@ -203,14 +218,14 @@ struct SessionScreen: View {
         ) {
             Button("Exit session", role: .destructive) {
                 onTerminate()
-                dismiss()
+                onClose()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("The agent process and its Remi session will close. Its transcript remains available for later review.")
         }
         .onChange(of: selectedViewID) { oldValue, newValue in
-            focusedQuestionID = nil
+            focusState.clear()
             accessibilityQuestionID = nil
             guard reviewSessionID == session.id else {
                 reviewSessionID = session.id
@@ -277,7 +292,7 @@ struct SessionScreen: View {
 
     private var latestActivityButton: some View {
         Button("Jump to latest activity", systemImage: "arrow.down.to.line") {
-            focusedQuestionID = nil
+            focusState.clear()
             accessibilityQuestionID = nil
             resetReview()
             followsLatest = true
@@ -333,6 +348,8 @@ struct SessionScreen: View {
         .id(question.questionID)
         .accessibilityFocused($accessibilityQuestionID, equals: question.questionID)
     }
+
+    private var focusedQuestionID: String? { focusState.focused }
 
     private func focusQuestion(using proxy: ScrollViewProxy) {
         guard let focusedQuestionID,
@@ -396,13 +413,27 @@ struct SessionScreen: View {
 }
 
 private struct SessionNavigationBarBehavior: ViewModifier {
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
+    @Environment(\.accessibilitySwitchControlEnabled) private var switchControl
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     @ViewBuilder
     func body(content: Content) -> some View {
         if #available(iOS 27.0, *) {
-            content.toolbarMinimizationBehavior(.onScrollDown, for: .navigationBar)
+            content.toolbarMinimizationBehavior(behavior, for: .navigationBar)
         } else {
             content
         }
+    }
+
+    @available(iOS 27.0, *)
+    private var behavior: ToolbarMinimizationBehavior {
+        let minimizes = RemiNavigationBarPolicy.minimizesOnScroll(
+            voiceOver: voiceOver,
+            switchControl: switchControl,
+            accessibilitySize: dynamicTypeSize.isAccessibilitySize
+        )
+        return minimizes ? .onScrollDown : .never
     }
 }
 

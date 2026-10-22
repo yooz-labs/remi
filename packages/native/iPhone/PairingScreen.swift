@@ -47,13 +47,9 @@ struct PairingScreen: View {
                 PairingStep(number: 1, title: "Start Remi", detail: "Start the hub after configuring daemon.bind to an address this phone can reach.", command: startCommand, copyLabel: "Copy remi start command", copiedLabel: "remi start command copied")
                 PairingStep(number: 2, title: "Create a pairing code", detail: "Keep the terminal open while Remi waits for fingerprint approval.", command: pairCommand, copyLabel: "Copy remi pair command", copiedLabel: "remi pair command copied")
 
-                Button {
+                PairingCapsuleButton(title: "Scan pairing code", systemImage: "qrcode.viewfinder") {
                     showingScanner = true
-                } label: {
-                    Label("Scan pairing code", systemImage: "qrcode.viewfinder")
-                        .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget)
                 }
-                .buttonStyle(.glassProminent)
             } header: {
                 Text("Recommended")
             } footer: {
@@ -78,7 +74,7 @@ struct PairingScreen: View {
                         .autocorrectionDisabled()
                         .submitLabel(.go)
                         .onSubmit(addMachine)
-                    TextField("Port", value: $draft.port, format: .number)
+                    TextField("Port", value: $draft.port, format: .number.grouping(.never))
                         .keyboardType(.numberPad)
                 } else if draft.mode == .pairingCode {
                     TextField("remi://pair#…", text: $draft.pairingCode)
@@ -112,10 +108,11 @@ struct PairingScreen: View {
                 }
                 LabeledContent("Connection", value: draft.connectionSummary)
 
-                Button(added ? "Request submitted" : draft.mode == .relay ? "Pair over the relay" : "Add machine") {
-                    addMachine()
-                }
-                .buttonStyle(.glassProminent)
+                PairingCapsuleButton(
+                    title: added ? "Request submitted" : draft.mode == .relay ? "Pair over the relay" : "Add machine",
+                    systemImage: added ? "checkmark" : draft.mode == .relay ? "network" : "desktopcomputer.and.arrow.down",
+                    action: addMachine
+                )
                 .disabled(added || !draft.canSubmit)
                 .accessibilityHint("Adds the machine using the connection summary")
             } header: {
@@ -152,6 +149,15 @@ struct PairingScreen: View {
 
             Section("Machine authorization") {
                 PairingAccessNotice()
+            }
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                }
             }
         }
         .navigationTitle("Add a machine")
@@ -280,5 +286,35 @@ private struct PairingStep: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+/// A compact capsule centered in its list row, not a full-width slab. An explicit icon and
+/// text share the button's own foreground: in a list row a `Label`'s icon takes the accent
+/// tint and disappears on the prominent capsule. The large control size gives it its
+/// height; the capsule is the whole tap target.
+private struct PairingCapsuleButton: View {
+    let title: LocalizedStringKey
+    let systemImage: String
+    let action: () -> Void
+
+    var body: some View {
+        HStack {
+            Spacer(minLength: 0)
+            Button(action: action) {
+                HStack(spacing: RemiTheme.Spacing.xs) {
+                    Image(systemName: systemImage)
+                        .accessibilityHidden(true)
+                    Text(title)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.horizontal, RemiTheme.Spacing.xs)
+            }
+            .buttonStyle(.glassProminent)
+            .controlSize(.large)
+            Spacer(minLength: 0)
+        }
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
     }
 }

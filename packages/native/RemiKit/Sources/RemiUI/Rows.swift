@@ -83,7 +83,7 @@ public struct RemiSessionRow: View {
     }
 }
 
-private extension RemiSessionSummary {
+extension RemiSessionSummary {
     var lastActivityDate: Date? {
         guard let lastActivity else { return nil }
         return (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(lastActivity))
@@ -93,6 +93,9 @@ private extension RemiSessionSummary {
 
 public struct RemiMachineRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// The icon's frame grows with its font, so a large icon is not wider than its frame
+    /// and pushed past the row's leading edge.
+    @ScaledMetric(relativeTo: .title3) private var iconWidth: CGFloat = 28
     private let machine: RemiMachineSummary
 
     public init(machine: RemiMachineSummary) { self.machine = machine }
@@ -102,11 +105,18 @@ public struct RemiMachineRow: View {
             Image(systemName: icon)
                 .font(.title3)
                 .foregroundStyle(machine.reachability == .waitingForApproval ? Color.primary : .secondary)
-                .frame(width: 28)
+                .frame(width: iconWidth)
 
             VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
                 Text(machine.name).font(.headline)
-                Text(machine.address).font(RemiTheme.Typography.code).foregroundStyle(.secondary)
+                // One line at every size: an address broken mid-token reads as two numbers.
+                // The full text is in the accessibility label.
+                Text(machine.address)
+                    .font(RemiTheme.Typography.code)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .truncationMode(.middle)
                 Text(statusText).font(.caption).foregroundStyle(.secondary)
 
                 if dynamicTypeSize.isAccessibilitySize {
@@ -154,7 +164,7 @@ public struct RemiMachineRow: View {
 
     private var accessibilityLabel: String {
         var parts = [machine.name, machine.address, statusAccessibilityText]
-        parts.append(machine.sessionCount == 1 ? "1 session" : "\(machine.sessionCount) sessions")
+        parts.append(RemiMachineCountText.accessibilityLabel(activeSessions: machine.sessionCount))
         if machine.openQuestionCount > 0 {
             parts.append(
                 machine.openQuestionCount == 1
@@ -183,7 +193,7 @@ private struct MachineMetadata: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: RemiTheme.Spacing.xxs) {
             Text(transport.rawValue).font(.caption2.weight(.semibold)).textCase(.uppercase)
-            Text(sessionCount == 1 ? "1 session" : "\(sessionCount) sessions")
+            Text(RemiMachineCountText.visible(activeSessions: sessionCount))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if openQuestionCount > 0 {
@@ -199,5 +209,15 @@ private struct MachineMetadata: View {
 
     private var questionCountLabel: String {
         openQuestionCount == 1 ? "1 pending" : "\(openQuestionCount) pending"
+    }
+}
+
+/// Wording for a machine's session count. `RemiMachineSummary.sessionCount` counts live
+/// sessions only, so the text says "active" and never implies the machine has no others.
+enum RemiMachineCountText {
+    static func visible(activeSessions count: Int) -> String { "\(count) active" }
+
+    static func accessibilityLabel(activeSessions count: Int) -> String {
+        count == 1 ? "1 active session" : "\(count) active sessions"
     }
 }
