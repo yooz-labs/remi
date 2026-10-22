@@ -214,6 +214,7 @@ private struct PhoneQuietInboxState: View {
             if canCreateSession {
                 Button("New session", systemImage: "plus.rectangle.on.folder", action: onNewSession)
                     .buttonStyle(.glassProminent)
+                    .controlSize(.large)
             }
         }
         .frame(maxWidth: .infinity)

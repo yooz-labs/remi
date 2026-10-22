@@ -20,6 +20,7 @@ struct FirstRunScreen: View {
         } actions: {
             Button("Add a machine", systemImage: "desktopcomputer.and.arrow.down", action: onAddMachine)
             .buttonStyle(.glassProminent)
+            .controlSize(.large)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, RemiTheme.Spacing.xl)
