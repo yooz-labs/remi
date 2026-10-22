@@ -249,7 +249,8 @@ struct PhoneDrawerView: View {
             TextField("Search sessions", text: $query)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-                .submitLabel(.search)
+                .submitLabel(.done)
+                .onSubmit { searchFocused = false }
                 .focused($searchFocused)
             if !query.isEmpty {
                 Button {
