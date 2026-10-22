@@ -93,6 +93,9 @@ extension RemiSessionSummary {
 
 public struct RemiMachineRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// The icon's frame grows with its font, so a large icon is not wider than its frame
+    /// and pushed past the row's leading edge.
+    @ScaledMetric(relativeTo: .title3) private var iconWidth: CGFloat = 28
     private let machine: RemiMachineSummary
 
     public init(machine: RemiMachineSummary) { self.machine = machine }
@@ -102,11 +105,17 @@ public struct RemiMachineRow: View {
             Image(systemName: icon)
                 .font(.title3)
                 .foregroundStyle(machine.reachability == .waitingForApproval ? Color.primary : .secondary)
-                .frame(width: 28)
+                .frame(width: iconWidth)
 
             VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
                 Text(machine.name).font(.headline)
-                Text(machine.address).font(RemiTheme.Typography.code).foregroundStyle(.secondary)
+                // One line at every size: an address broken mid-token reads as two numbers.
+                // The full text is in the accessibility label.
+                Text(machine.address)
+                    .font(RemiTheme.Typography.code)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 Text(statusText).font(.caption).foregroundStyle(.secondary)
 
                 if dynamicTypeSize.isAccessibilitySize {
