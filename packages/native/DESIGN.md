@@ -37,9 +37,16 @@ The person is busy elsewhere; the app's job is to tell them what needs them, let
 ## The iPhone app
 
 - **Home is an Inbox:** the cards that need the person, from all machines, with a short note for each one resolved elsewhere, a one-line row for each machine problem, and the first-run steps when nothing is connected yet.
+  It is not a list of sessions: browsing sessions is the drawer's job.
   The app launches on the Inbox.
+- **Each card has an Open conversation link** under it, quieter than the answer controls, that opens the card's session (and its subagent conversation, when the card is from one) on its machine.
+  The link only navigates; it never answers.
+  A card whose session is gone has no link.
+- **When nothing needs the person** the Inbox says "Nothing needs you", gives the number of active sessions, and points to the menu to pick one; a New session button shows when a machine is connected.
+  Notes about requests resolved elsewhere can still show below.
 - **Sessions live in a left drawer,** reached by an edge swipe or a button at the top left.
   The drawer groups them Needs you, Active and Recent, and each row names its project and its machine.
+  Search lives in the drawer; the Inbox has none.
   The machine strip in the drawer is a temporary filter: it narrows the list of sessions and never the Inbox or notifications.
   The Inbox has no persisted machine selection; it always spans every machine.
 - **The machine strip** depends on how many machines there are.
