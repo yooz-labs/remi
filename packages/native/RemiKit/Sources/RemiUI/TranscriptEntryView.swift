@@ -65,7 +65,7 @@ private struct TranscriptMessage: View {
                 .overlay {
                     if role == .user {
                         RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
-                            .stroke(RemiTheme.Color.attention.opacity(0.45), lineWidth: 1)
+                            .stroke(RemiTheme.Color.attention.opacity(0.28), lineWidth: 1)
                             .allowsHitTesting(false)
                     }
                 }

@@ -106,6 +106,9 @@ These are built once and used by both apps:
 - Colors come from semantic system colors where possible. The existing lime is retained only as the attention accent and uses a dark ink color for readable text.
 - One accent marks "needs you" and pending approval; every other status uses neutral tones.
   There is one named exception: the composer's send action wears it when there is something to send, because it is the primary action of a session.
+- The saturated lime stays on small marks: counts, badges, the needs-you bar, the send action.
+  Large surfaces, such as a message bubble, use a very pale wash of it (about 12 percent) with a faint outline and normal text color, because a big rich fill tires the eye.
+  Question cards that need the person may be stronger than that: needs-you is the one place the app should be loud.
 - Liquid Glass is concentrated on interactive cards and controls. Repeated list rows use lightweight semantic surfaces to keep scrolling efficient.
 
 ## Accessibility
