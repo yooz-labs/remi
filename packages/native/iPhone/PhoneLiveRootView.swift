@@ -219,20 +219,7 @@ struct PhoneLiveRootView: View {
                 onCreate: createSession
             )
         case .pairing:
-            NavigationStack {
-                PairingScreen(
-                    publicIdentity: store.publicIdentity,
-                    machineStates: store.machines,
-                    pairingAttempts: store.pairingAttempts,
-                    onCancelPairing: store.cancelPairing,
-                    onAddMachine: addMachine
-                )
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Done") { activeSheet = nil }
-                    }
-                }
-            }
+            pairingScreen { activeSheet = nil }
         case .preferences:
             PhonePreferencesSheet(publicIdentity: store.publicIdentity)
         case .machines:
@@ -246,9 +233,27 @@ struct PhoneLiveRootView: View {
                 onRetryConnection: store.retryConnection,
                 onSetConnectionPreference: { store.setConnectionPreference($1, for: $0) },
                 onEnableRelayNotifications: relayNotifications.enable,
-                onAddMachine: { activeSheet = .pairing },
-                onDone: { activeSheet = nil }
+                onDone: { activeSheet = nil },
+                pairingContent: { close in pairingScreen(onDone: close) }
             )
+        }
+    }
+
+    /// The pairing screen, shared by the root sheet and the one the Machines sheet hosts.
+    private func pairingScreen(onDone: @escaping () -> Void) -> some View {
+        NavigationStack {
+            PairingScreen(
+                publicIdentity: store.publicIdentity,
+                machineStates: store.machines,
+                pairingAttempts: store.pairingAttempts,
+                onCancelPairing: store.cancelPairing,
+                onAddMachine: addMachine
+            )
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done", action: onDone)
+                }
+            }
         }
     }
 

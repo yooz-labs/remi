@@ -5,7 +5,10 @@ import UIKit
 
 /// The machines sheet: every machine with its connection controls, recovery and approval
 /// help. It takes the same inputs the inline Home section took.
-struct PhoneMachinesSheet: View {
+///
+/// Add machine and Pair again present pairing on top of this sheet, so closing pairing
+/// returns here. `pairingContent` builds the pairing screen; its argument closes it.
+struct PhoneMachinesSheet<PairingContent: View>: View {
     let machines: [RemiMachineSummary]
     let states: [MachineState]
     let publicIdentity: PublicClientIdentity?
@@ -15,8 +18,9 @@ struct PhoneMachinesSheet: View {
     let onRetryConnection: (MachineEndpoint) -> Void
     let onSetConnectionPreference: (MachineEndpoint, MachineConnectionPreference) -> Void
     let onEnableRelayNotifications: (MachineEndpoint) -> Void
-    let onAddMachine: () -> Void
     let onDone: () -> Void
+    @ViewBuilder let pairingContent: (_ close: @escaping () -> Void) -> PairingContent
+    @State private var showsPairing = false
 
     var body: some View {
         NavigationStack {
@@ -29,7 +33,7 @@ struct PhoneMachinesSheet: View {
                     onRetryApproval: onRetryApproval,
                     onRetryConnection: onRetryConnection,
                     onSetConnectionPreference: onSetConnectionPreference,
-                    onPairAgain: onAddMachine,
+                    onPairAgain: { showsPairing = true },
                     onEnableRelayNotifications: onEnableRelayNotifications,
                     enablingRelayNotifications: enablingRelayNotifications,
                     showsTitle: false
@@ -43,9 +47,12 @@ struct PhoneMachinesSheet: View {
                     Button("Done", action: onDone)
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Add machine", systemImage: "desktopcomputer.and.arrow.down", action: onAddMachine)
+                    Button("Add machine", systemImage: "desktopcomputer.and.arrow.down") { showsPairing = true }
                 }
             }
+        }
+        .sheet(isPresented: $showsPairing) {
+            pairingContent { showsPairing = false }
         }
     }
 }
