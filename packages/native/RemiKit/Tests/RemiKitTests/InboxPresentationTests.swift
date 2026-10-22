@@ -37,22 +37,22 @@ import Testing
 
     @Test func noMachinesIsFirstRunEvenWithCards() {
         let state = RemiInboxPresentation.state(
-            machineCount: 0, questions: [card("q1")], activeSessionCount: 0
+            machineCount: 0, connectedMachineCount: 0, questions: [card("q1")], activeSessionCount: 0
         )
         #expect(state == .firstRun)
     }
 
     @Test func machinesWithNothingWaitingIsQuiet() {
         let state = RemiInboxPresentation.state(
-            machineCount: 2, questions: [], activeSessionCount: 3
+            machineCount: 2, connectedMachineCount: 2, questions: [], activeSessionCount: 3
         )
-        #expect(state == .quiet(activeSessionCount: 3, notes: []))
+        #expect(state == .quiet(activeSessionCount: 3, hasConnectedMachine: true, notes: []))
     }
 
     @Test func oneWaitingCardIsWaiting() {
         let q1 = card("q1")
         let state = RemiInboxPresentation.state(
-            machineCount: 1, questions: [q1], activeSessionCount: 1
+            machineCount: 1, connectedMachineCount: 1, questions: [q1], activeSessionCount: 1
         )
         #expect(state == .waiting(cards: [q1], notes: []))
     }
@@ -60,7 +60,7 @@ import Testing
     @Test func manyCardsKeepTheirOrderAndSendingStillWaits() {
         let cards = [card("q1"), card("q2", state: .sending), card("q3"), card("q4")]
         let state = RemiInboxPresentation.state(
-            machineCount: 1, questions: cards, activeSessionCount: 4
+            machineCount: 1, connectedMachineCount: 1, questions: cards, activeSessionCount: 4
         )
         #expect(state == .waiting(cards: cards, notes: []))
     }
@@ -68,9 +68,9 @@ import Testing
     @Test func resolvedNotesAloneStayQuiet() {
         let note = card("q1", state: .resolvedElsewhere(nil))
         let state = RemiInboxPresentation.state(
-            machineCount: 1, questions: [note], activeSessionCount: 0
+            machineCount: 1, connectedMachineCount: 1, questions: [note], activeSessionCount: 0
         )
-        #expect(state == .quiet(activeSessionCount: 0, notes: [note]))
+        #expect(state == .quiet(activeSessionCount: 0, hasConnectedMachine: true, notes: [note]))
     }
 
     @Test func notesAreSeparatedFromWaitingCards() {
@@ -80,6 +80,7 @@ import Testing
         let stale = card("q4", state: .stale)
         let state = RemiInboxPresentation.state(
             machineCount: 1,
+            connectedMachineCount: 1,
             questions: [note, waiting, finished, stale],
             activeSessionCount: 1
         )
@@ -112,5 +113,48 @@ import Testing
             for: card("q1", machine: "m1"), sessions: [session("s1", machine: "m2")]
         )
         #expect(target == nil)
+    }
+
+    @Test func noConnectedMachineIsQuietButNotReassuring() {
+        let state = RemiInboxPresentation.state(
+            machineCount: 2, connectedMachineCount: 0, questions: [], activeSessionCount: 5
+        )
+        #expect(state == .quiet(activeSessionCount: 5, hasConnectedMachine: false, notes: []))
+    }
+
+    @Test func waitingCardsStillWaitWhenNoMachineIsConnected() {
+        let q1 = card("q1")
+        let state = RemiInboxPresentation.state(
+            machineCount: 1, connectedMachineCount: 0, questions: [q1], activeSessionCount: 0
+        )
+        #expect(state == .waiting(cards: [q1], notes: []))
+    }
+
+    @Test func quietCopyWithActiveSessionsKeepsCountAndPickHint() {
+        let copy = RemiInboxPresentation.quietCopy(activeSessionCount: 2, hasConnectedMachine: true)
+        #expect(copy.title == "Nothing needs you")
+        #expect(copy.detail == "2 active sessions. Open the menu to pick a session.")
+        let one = RemiInboxPresentation.quietCopy(activeSessionCount: 1, hasConnectedMachine: true)
+        #expect(one.detail == "1 active session. Open the menu to pick a session.")
+    }
+
+    @Test func quietCopyWithNoActiveSessionsPointsToRecentSessions() {
+        let copy = RemiInboxPresentation.quietCopy(activeSessionCount: 0, hasConnectedMachine: true)
+        #expect(copy.title == "Nothing needs you")
+        #expect(copy.detail == "No active sessions. Open the menu to see recent sessions.")
+    }
+
+    @Test func quietCopyWithoutConnectedMachineSaysItCannotTell() {
+        let copy = RemiInboxPresentation.quietCopy(activeSessionCount: 4, hasConnectedMachine: false)
+        #expect(copy.title == "No machine is connected")
+        #expect(copy.detail == "Remi cannot tell whether anything needs you. Check the machines above.")
+    }
+
+    @Test func expandedListCollapsesOnlyWhenTwoOrFewerRemain() {
+        #expect(RemiInboxPresentation.keepsExpanded(wasExpanded: true, cardCount: 3))
+        #expect(RemiInboxPresentation.keepsExpanded(wasExpanded: true, cardCount: 5))
+        #expect(!RemiInboxPresentation.keepsExpanded(wasExpanded: true, cardCount: 2))
+        #expect(!RemiInboxPresentation.keepsExpanded(wasExpanded: true, cardCount: 0))
+        #expect(!RemiInboxPresentation.keepsExpanded(wasExpanded: false, cardCount: 5))
     }
 }

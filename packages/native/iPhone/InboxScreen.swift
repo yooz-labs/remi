@@ -13,7 +13,7 @@ struct InboxScreen: View {
     let onSubmit: (String, String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (String, String) -> Void
     let onNewSession: () -> Void
-    let onOpenQuestionSession: (RemiQuestionCardModel) -> Void
+    let onOpenQuestionSession: (RemiInboxPresentation.OpenTarget, String) -> Void
     let onPresentPairing: () -> Void
     let onPresentPreferences: () -> Void
     let onManageMachines: () -> Void
@@ -31,7 +31,7 @@ struct InboxScreen: View {
         onSubmit: @escaping (String, String, [RemiQuestionStepSelection]) -> Void = { _, _, _ in },
         onCancel: @escaping (String, String) -> Void = { _, _ in },
         onNewSession: @escaping () -> Void = {},
-        onOpenQuestionSession: @escaping (RemiQuestionCardModel) -> Void = { _ in },
+        onOpenQuestionSession: @escaping (RemiInboxPresentation.OpenTarget, String) -> Void = { _, _ in },
         onPresentPairing: @escaping () -> Void = {},
         onPresentPreferences: @escaping () -> Void = {},
         onManageMachines: @escaping () -> Void = {},
@@ -131,6 +131,7 @@ struct InboxScreen: View {
     private var inboxState: RemiInboxPresentation.State {
         RemiInboxPresentation.state(
             machineCount: machines.count,
+            connectedMachineCount: machines.count { $0.reachability == .connected },
             questions: questions,
             activeSessionCount: sessions.count(where: \.isLive)
         )
@@ -142,8 +143,12 @@ struct InboxScreen: View {
             FirstRunScreen(onAddMachine: { onPresentPairing() })
         case .waiting(let cards, let notes):
             waitingContent(cards: cards, notes: notes)
-        case .quiet(let activeSessionCount, let notes):
-            quietContent(activeSessionCount: activeSessionCount, notes: notes)
+        case .quiet(let activeSessionCount, let hasConnectedMachine, let notes):
+            quietContent(
+                activeSessionCount: activeSessionCount,
+                hasConnectedMachine: hasConnectedMachine,
+                notes: notes
+            )
         }
     }
 
@@ -154,7 +159,7 @@ struct InboxScreen: View {
     ) -> some View {
         NeedsYouSection(
             questions: cards,
-            canOpenConversation: canOpenConversation,
+            openTarget: openTarget,
             onAnswer: onAnswer,
             onSubmit: onSubmit,
             onCancel: onCancel,
@@ -166,18 +171,22 @@ struct InboxScreen: View {
     @ViewBuilder
     private func quietContent(
         activeSessionCount: Int,
+        hasConnectedMachine: Bool,
         notes: [RemiQuestionCardModel]
     ) -> some View {
         PhoneQuietInboxState(
-            activeSessionCount: activeSessionCount,
+            copy: RemiInboxPresentation.quietCopy(
+                activeSessionCount: activeSessionCount,
+                hasConnectedMachine: hasConnectedMachine
+            ),
             canCreateSession: !availableSessionMachines.isEmpty,
             onNewSession: onNewSession
         )
         ResolvedNotesSection(notes: notes)
     }
 
-    private func canOpenConversation(_ card: RemiQuestionCardModel) -> Bool {
-        RemiInboxPresentation.openTarget(for: card, sessions: sessions) != nil
+    private func openTarget(_ card: RemiQuestionCardModel) -> RemiInboxPresentation.OpenTarget? {
+        RemiInboxPresentation.openTarget(for: card, sessions: sessions)
     }
 
     private var availableSessionMachines: [MachineState] {
@@ -187,19 +196,19 @@ struct InboxScreen: View {
 }
 
 private struct PhoneQuietInboxState: View {
-    let activeSessionCount: Int
+    let copy: RemiInboxPresentation.QuietCopy
     let canCreateSession: Bool
     let onNewSession: () -> Void
 
     var body: some View {
         ContentUnavailableView {
             Label {
-                Text("Nothing needs you")
+                Text(copy.title)
             } icon: {
                 Image(systemName: "checkmark.circle").accessibilityHidden(true)
             }
         } description: {
-            Text(detail)
+            Text(copy.detail)
         } actions: {
             if canCreateSession {
                 Button("New session", systemImage: "plus.rectangle.on.folder", action: onNewSession)
@@ -208,15 +217,6 @@ private struct PhoneQuietInboxState: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, RemiTheme.Spacing.l)
-    }
-
-    private var detail: String {
-        let count = switch activeSessionCount {
-        case 0: "No active sessions."
-        case 1: "1 active session."
-        default: "\(activeSessionCount) active sessions."
-        }
-        return "\(count) Open the menu to pick a session."
     }
 }
 
@@ -227,6 +227,7 @@ private struct ResolvedNotesSection: View {
         if !notes.isEmpty {
             VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
                 Text("Resolved").font(.title2.weight(.bold))
+                    .accessibilityAddTraits(.isHeader)
                 ForEach(notes) { note in
                     RemiQuestionCard(model: note, onAnswer: { _ in }, onSubmit: { _ in }, onCancel: {})
                 }
@@ -237,25 +238,31 @@ private struct ResolvedNotesSection: View {
 
 private struct NeedsYouSection: View {
     let questions: [RemiQuestionCardModel]
-    let canOpenConversation: (RemiQuestionCardModel) -> Bool
+    let openTarget: (RemiQuestionCardModel) -> RemiInboxPresentation.OpenTarget?
     let onAnswer: (String, String, String) -> Void
     let onSubmit: (String, String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (String, String) -> Void
-    let onOpenConversation: (RemiQuestionCardModel) -> Void
+    let onOpenConversation: (RemiInboxPresentation.OpenTarget, String) -> Void
     @State private var showsAllQuestions = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
             Text("Needs you").font(.title2.weight(.bold))
+                .accessibilityAddTraits(.isHeader)
             ForEach(displayedQuestions) { question in
-                RemiQuestionCard(
-                    model: question,
-                    onAnswer: { onAnswer(question.sessionID, question.questionID, $0) },
-                    onSubmit: { onSubmit(question.sessionID, question.questionID, $0) },
-                    onCancel: { onCancel(question.sessionID, question.questionID) }
-                )
-                if canOpenConversation(question) {
-                    OpenConversationButton(card: question) { onOpenConversation(question) }
+                // The link sits closer to its card than the cards sit to each other.
+                VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
+                    RemiQuestionCard(
+                        model: question,
+                        onAnswer: { onAnswer(question.sessionID, question.questionID, $0) },
+                        onSubmit: { onSubmit(question.sessionID, question.questionID, $0) },
+                        onCancel: { onCancel(question.sessionID, question.questionID) }
+                    )
+                    if let target = openTarget(question) {
+                        OpenConversationButton(card: question) {
+                            onOpenConversation(target, question.questionID)
+                        }
+                    }
                 }
             }
 
@@ -277,8 +284,11 @@ private struct NeedsYouSection: View {
                 .foregroundStyle(.secondary)
             }
         }
-        .onChange(of: questions.map(\.id)) { _, _ in
-            showsAllQuestions = false
+        .onChange(of: questions.count) { _, count in
+            showsAllQuestions = RemiInboxPresentation.keepsExpanded(
+                wasExpanded: showsAllQuestions,
+                cardCount: count
+            )
         }
     }
 

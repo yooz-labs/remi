@@ -8,8 +8,9 @@ public enum RemiInboxPresentation {
         /// At least one card waits for the person. `notes` are the cards that are no longer
         /// waiting (resolved elsewhere, answered, stale), shown below.
         case waiting(cards: [RemiQuestionCardModel], notes: [RemiQuestionCardModel])
-        /// Machines exist and nothing waits. `notes` may still show.
-        case quiet(activeSessionCount: Int, notes: [RemiQuestionCardModel])
+        /// Machines exist and nothing waits. `notes` may still show. With no connected
+        /// machine, nothing can be said about what needs the person.
+        case quiet(activeSessionCount: Int, hasConnectedMachine: Bool, notes: [RemiQuestionCardModel])
     }
 
     /// Where the "Open conversation" link goes. It only navigates; it never answers.
@@ -30,6 +31,7 @@ public enum RemiInboxPresentation {
     /// is kept in both lists.
     public static func state(
         machineCount: Int,
+        connectedMachineCount: Int,
         questions: [RemiQuestionCardModel],
         activeSessionCount: Int
     ) -> State {
@@ -37,9 +39,53 @@ public enum RemiInboxPresentation {
         let cards = questions.filter(\.isWaiting)
         let notes = questions.filter { !$0.isWaiting }
         if cards.isEmpty {
-            return .quiet(activeSessionCount: activeSessionCount, notes: notes)
+            return .quiet(
+                activeSessionCount: activeSessionCount,
+                hasConnectedMachine: connectedMachineCount > 0,
+                notes: notes
+            )
         }
         return .waiting(cards: cards, notes: notes)
+    }
+
+    public struct QuietCopy: Equatable, Sendable {
+        public let title: String
+        public let detail: String
+    }
+
+    /// The words of the quiet state. Without a connected machine it must not claim that
+    /// nothing needs the person, and it says nothing about sessions.
+    public static func quietCopy(activeSessionCount: Int, hasConnectedMachine: Bool) -> QuietCopy {
+        guard hasConnectedMachine else {
+            return QuietCopy(
+                title: "No machine is connected",
+                detail: "Remi cannot tell whether anything needs you. Check the machines above."
+            )
+        }
+        switch activeSessionCount {
+        case 0:
+            return QuietCopy(
+                title: "Nothing needs you",
+                detail: "No active sessions. Open the menu to see recent sessions."
+            )
+        case 1:
+            return QuietCopy(
+                title: "Nothing needs you",
+                detail: "1 active session. Open the menu to pick a session."
+            )
+        default:
+            return QuietCopy(
+                title: "Nothing needs you",
+                detail: "\(activeSessionCount) active sessions. Open the menu to pick a session."
+            )
+        }
+    }
+
+    /// Whether the expanded card list stays expanded after the card count changes: only
+    /// while more than the collapsed two remain, so answering the third card does not
+    /// collapse the list.
+    public static func keepsExpanded(wasExpanded: Bool, cardCount: Int) -> Bool {
+        wasExpanded && cardCount > 2
     }
 
     /// The target for `card`, or nil when its session is not in `sessions` for the card's

@@ -275,6 +275,14 @@ private let inboxThreeProblemMachines = drawerMachines(
 #Preview("Inbox · Quiet · No active sessions") {
     InboxPreview(questions: [], sessions: Array(RemiPreviewData.sessions.suffix(1)), machines: Array(RemiPreviewData.machines.prefix(1)), machineStates: [connectedStudioState])
 }
+#Preview("Inbox · Quiet · No machine connected") {
+    InboxPreview(
+        questions: [],
+        sessions: RemiPreviewData.sessions,
+        machines: [unavailableDirectSummary],
+        machineStates: [unavailableDirectState]
+    )
+}
 #Preview("Inbox · First run") {
     InboxPreview(questions: [], sessions: [], machines: [])
 }
