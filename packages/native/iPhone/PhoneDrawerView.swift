@@ -258,7 +258,7 @@ struct PhoneDrawerView: View {
         }
         .padding(.leading, RemiTheme.Spacing.s)
         .frame(minHeight: RemiTheme.Size.minimumTapTarget)
-        .background(RemiTheme.Color.surface, in: .capsule)
+        .background(RemiTheme.Color.surface, in: .rect(cornerRadius: RemiTheme.Radius.control))
         .padding(.horizontal, RemiTheme.Spacing.m)
         .padding(.bottom, RemiTheme.Spacing.xxs)
     }
@@ -291,13 +291,26 @@ struct PhoneDrawerView: View {
     @ViewBuilder
     private var emptyStateView: some View {
         switch emptyState {
-        case .content, .nothing:
+        case .content:
             EmptyView()
+        case .nothing:
+            if machines.isEmpty { firstRunHint }
         case .noMatch:
             noMatches
         case .machineEmpty:
             machineEmpty
         }
+    }
+
+    /// Before any machine is added the list has nothing to show and New session is
+    /// disabled; say why and what to do.
+    private var firstRunHint: some View {
+        Text("Add a machine to see its sessions")
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .padding(RemiTheme.Spacing.m)
     }
 
     private var noMatches: some View {
@@ -405,6 +418,7 @@ private struct PhoneDrawerInboxRow: View {
 
 private struct PhoneDrawerSessionRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .body) private var statusDotSize = RemiTheme.Size.statusDot
     let session: RemiSessionSummary
     let isSelected: Bool
     let isLastKnown: Bool
@@ -463,7 +477,7 @@ private struct PhoneDrawerSessionRow: View {
             Text(session.name)
                 .font(.body)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-                .opacity(isLastKnown ? 0.6 : 1)
+                .opacity(isLastKnown ? 0.75 : 1)
             Text(presentation.subtitle)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -484,7 +498,7 @@ private struct PhoneDrawerSessionRow: View {
         } else {
             Circle()
                 .fill(Color.secondary.opacity(session.isLive ? 0.7 : 0.3))
-                .frame(width: RemiTheme.Size.statusDot, height: RemiTheme.Size.statusDot)
+                .frame(width: statusDotSize, height: statusDotSize)
                 .accessibilityHidden(true)
         }
     }
