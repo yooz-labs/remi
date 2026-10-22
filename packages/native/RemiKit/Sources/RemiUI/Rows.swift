@@ -115,6 +115,7 @@ public struct RemiMachineRow: View {
                     .font(RemiTheme.Typography.code)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.7)
                     .truncationMode(.middle)
                 Text(statusText).font(.caption).foregroundStyle(.secondary)
 
