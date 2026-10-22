@@ -321,6 +321,8 @@ public final class MachineStore {
     var ownedSessionRoutes: [String: MachineEndpoint] { routeBySession }
     var ownedParentRoutes: [MachineEndpoint: MachineEndpoint] { parentByConnection }
     var ownedTerminalRootIDs: [String] { terminalRootStates.keys.map(\.id).sorted() }
+    var ownedApprovalPollCount: Int { approvalPollTasks.count }
+    func ownedStartApprovalPolling(_ endpoint: MachineEndpoint) { startApprovalPolling(for: endpoint) }
     #endif
     public private(set) var transcriptsBySession: [String: [TranscriptContentMessage]] = [:]
     public private(set) var sessionViewsBySession: [String: [SessionViewMeta]] = [:]
@@ -356,6 +358,10 @@ public final class MachineStore {
     @ObservationIgnored private let clientVersion: String
     @ObservationIgnored private let clientId: String
     @ObservationIgnored private var connections: [MachineEndpoint: RemiConnection] = [:]
+    /// Bounded retries for machines waiting for local approval (#1599); see ApprovalPollPolicy.
+    @ObservationIgnored private var approvalPollTasks: [MachineEndpoint: Task<Void, Never>] = [:]
+    /// Injectable so tests can use a short interval; production always uses the standard policy.
+    @ObservationIgnored var approvalPollPolicy = ApprovalPollPolicy.standard
     @ObservationIgnored private(set) var connectionGenerations: [MachineEndpoint: UUID] = [:]
     @ObservationIgnored private var relayPairingContexts: [MachineEndpoint: (Data, UInt64?)] = [:]
     @ObservationIgnored private var parentByConnection: [MachineEndpoint: MachineEndpoint] = [:]
@@ -956,6 +962,8 @@ public final class MachineStore {
         pairingCoordinator?.cancel()
         recoveryCoordinator?.stop()
         recoveryRequestedLifetimes.removeAll()
+        for task in approvalPollTasks.values { task.cancel() }
+        approvalPollTasks.removeAll()
         running = false
         registrationEpoch.replace()
         if invalidateAnswers { answerEpoch.replace() }
@@ -1220,6 +1228,7 @@ public final class MachineStore {
         if removedMachine?.pairingLifetime == pairingOriginLifetime { pairingCoordinator?.cancel() }
         let configuredRoutes = removedMachine?.routingRoutes ?? [endpoint]
         for route in configuredRoutes {
+            approvalPollTasks.removeValue(forKey: route)?.cancel()
             if let pin = route.relayPin, let room = try? RelayCrypto.room(RelayCrypto.unb64(pin.machinePublicKey)),
                verifiedRelayNotification?.machine.room == room { verifiedRelayNotification = nil }
             pushTrustIntents.remove(route)
@@ -1307,6 +1316,34 @@ public final class MachineStore {
         return true
     }
 
+    /// Retries a machine that is waiting for local approval a few seconds apart, for a bounded
+    /// window, so approving the key on the machine connects without another tap (#1599). The
+    /// loop ends when the machine leaves the waiting state, is removed, or the window closes.
+    private func startApprovalPolling(for endpoint: MachineEndpoint) {
+        guard approvalPollTasks[endpoint] == nil else { return }
+        let policy = approvalPollPolicy
+        approvalPollTasks[endpoint] = Task { [weak self] in
+            let start = ContinuousClock.now
+            while !Task.isCancelled {
+                try? await Task.sleep(for: policy.interval)
+                guard !Task.isCancelled, let self else { return }
+                guard self.isWaitingForApproval(endpoint),
+                      policy.shouldContinue(elapsed: ContinuousClock.now - start)
+                else {
+                    self.approvalPollTasks[endpoint] = nil
+                    return
+                }
+                self.retryApproval(for: endpoint)
+            }
+        }
+    }
+
+    private func isWaitingForApproval(_ endpoint: MachineEndpoint) -> Bool {
+        guard let index = machineIndex(containing: endpoint) else { return false }
+        if case .waitingForApproval = machines[index].status { return true }
+        return false
+    }
+
     public func retryApproval(for endpoint: MachineEndpoint) {
         guard let connection = connections[endpoint] else { return }
         Task { await connection.retryAfterApproval() }
@@ -1356,6 +1393,11 @@ public final class MachineStore {
     /// persisted notification/navigation destinations usable across the descriptor transition.
     public func machine(withIdentifier identifier: String) -> MachineState? {
         machines.first { $0.id == identifier || $0.machineID == identifier }
+    }
+
+    /// A shutdown notice from the hub is stale once a machine is back (#1599).
+    private func clearStaleShutdownNotice() {
+        if latestError?.code == "CLOSING" { latestError = nil }
     }
 
     public func clearLatestError() {
@@ -1896,7 +1938,12 @@ public final class MachineStore {
             if machines[index].recoveryProgress?.phase == .recovered { machines[index].recoveryProgress = nil }
             if machines[index].endpoint == endpoint {
                 if case .unavailable = machines[index].status { break }
-                machines[index].status = .connecting
+                // A quiet approval retry must not flash the row between waiting and connecting.
+                var quietApprovalRetry = false
+                if approvalPollTasks[endpoint] != nil, case .waitingForApproval = machines[index].status {
+                    quietApprovalRetry = true
+                }
+                if !quietApprovalRetry { machines[index].status = .connecting }
             }
             if case .retrying = state, machines[index].durableMachinePublicKey != nil {
                 recoveryRequestedLifetimes.insert(machines[index].pairingLifetime)
@@ -1905,9 +1952,11 @@ public final class MachineStore {
         case .connected:
             routeDidConnect(endpoint, machineIndex: index)
             machines[index].status = .connected
+            clearStaleShutdownNotice()
             if !machines[index].needsRouteRecovery { machines[index].recoveryProgress = nil }
         case .awaitingLocalApproval(let fingerprint):
             machines[index].status = .waitingForApproval(fingerprint: fingerprint)
+            startApprovalPolling(for: endpoint)
         case .awaitingRelayConfirmation(let fingerprint):
             machines[index].status = .waitingForRelayConfirmation(fingerprint: fingerprint)
         case .rejected(let reason):
@@ -1958,6 +2007,7 @@ public final class MachineStore {
             if endpoint == parent {
                 routeDidConnect(endpoint, machineIndex: index)
                 machines[index].status = .connected
+                clearStaleShutdownNotice()
             }
             if endpoint == parent && machines[index].endpoint.id == endpoint.id {
                 machines[index].capabilities = acknowledgment.capabilities ?? []
