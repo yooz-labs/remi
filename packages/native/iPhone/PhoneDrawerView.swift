@@ -90,6 +90,8 @@ struct PhoneDrawerView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+                .background(dynamicTypeSize.isAccessibilitySize ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(.clear))
+                .zIndex(1)
             if dynamicTypeSize.isAccessibilitySize {
                 accessibilityColumn
             } else {
@@ -125,20 +127,21 @@ struct PhoneDrawerView: View {
         }
     }
 
-    /// Accessibility sizes: the strip, problems, search, list and actions are one column
-    /// that scrolls together, so every row is reachable however large the text is and the
-    /// actions never overlap the list. Only the header is pinned.
+    /// Accessibility sizes: the actions, strip, problems, search and list are one column
+    /// that scrolls together, so every row is reachable however large the text is. The
+    /// actions come first, under the header, so a long list never pushes them out of
+    /// reach. Only the header is pinned, on a material.
     private var accessibilityColumn: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
+                if !searchFocused {
+                    actions
+                    Divider().padding(.bottom, RemiTheme.Spacing.xs)
+                }
                 strip
                 if !searchFocused { problemRows }
                 if showsSearch { searchField }
                 listContent
-                if !searchFocused {
-                    Divider().padding(.vertical, RemiTheme.Spacing.xs)
-                    actions
-                }
             }
         }
         .scrollDismissesKeyboard(.interactively)
@@ -568,6 +571,8 @@ private struct PhoneDrawerActions: View {
             HStack {
                 Label("New session", systemImage: "plus.rectangle.on.folder")
                     .multilineTextAlignment(.leading)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : nil)
+                    .minimumScaleFactor(0.8)
                     .fixedSize(horizontal: false, vertical: true)
                 if dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
             }

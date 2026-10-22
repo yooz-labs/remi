@@ -32,4 +32,9 @@ import Testing
             #expect(Set(all.map { "\($0)" }).count == 3)
         }
     }
+
+    @Test func actionsSitAtTheTopOnlyAtAccessibilitySizes() {
+        #expect(RemiDrawerActionsPresentation(isAccessibilitySize: false).placement == .bottom)
+        #expect(RemiDrawerActionsPresentation(isAccessibilitySize: true).placement == .top)
+    }
 }
