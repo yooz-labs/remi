@@ -137,7 +137,7 @@ receipt="$receipt_dir/acceptance-receipt.txt"
     echo "phone_app=$phone_app"
     echo "phone_bundle_sha256=$(find "$phone_app" -type f -exec shasum -a 256 {} + | LC_ALL=C sort | shasum -a 256 | awk '{print $1}')"
     echo "installed_phone=$installed_phone"
-    for source in Remi.xcodeproj/project.pbxproj Mac/MacLiveRootView.swift iPhone/HomeScreen.swift; do
+    for source in Remi.xcodeproj/project.pbxproj Mac/MacLiveRootView.swift iPhone/InboxScreen.swift; do
         echo "source_${source##*/}_sha256=$(shasum -a 256 "$native_dir/$source" | awk '{print $1}')"
     done
 } > "$receipt"

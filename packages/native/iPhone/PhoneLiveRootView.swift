@@ -147,7 +147,7 @@ struct PhoneLiveRootView: View {
     }
 
     private var inboxContent: some View {
-        HomeScreen(
+        InboxScreen(
             questions: allQuestions,
             sessions: allSessions,
             machines: machineSummaries,

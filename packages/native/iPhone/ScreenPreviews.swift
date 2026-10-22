@@ -11,7 +11,7 @@ private struct HomePreview: View {
 
     var body: some View {
         NavigationStack {
-            HomeScreen(
+            InboxScreen(
                 questions: questions,
                 sessions: sessions,
                 machines: machines,

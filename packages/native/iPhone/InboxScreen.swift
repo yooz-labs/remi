@@ -3,7 +3,7 @@ import RemiUI
 import SwiftUI
 import UIKit
 
-struct HomeScreen: View {
+struct InboxScreen: View {
     @State private var searchText = ""
     @State private var activityScope = RemiCommandCenterScope.overview
     let questions: [RemiQuestionCardModel]
