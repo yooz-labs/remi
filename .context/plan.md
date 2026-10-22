@@ -1,5 +1,14 @@
 # Plan: the roadmap
 
+## Backend session continuation (2026-10-22, #1595)
+
+The current [backend capability plan](issue-1595-backend-plan.md) separates existing
+image/download contracts from native adoption, proposes the owner's read-only
+terminal view, and resumes the approved login/settings profiles under #1157.
+It records actual source callers, missing capabilities, limits, prerequisites and
+per-PR acceptance gates. New terminal wire policy remains proposed; existing
+media/profile approval is preserved. Historical snapshots below retain their dates.
+
 Updated 2026-10-15.
 One page: where remi stands, what comes next and in what order, and how each step is tested.
 The work itself lives in GitHub milestones and issues; standing decisions live in [decisions/](decisions/) as ADRs; history lives in [archive/](archive/).
