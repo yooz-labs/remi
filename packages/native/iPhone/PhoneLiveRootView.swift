@@ -113,8 +113,14 @@ struct PhoneLiveRootView: View {
     }
 
     private var shellContent: some View {
-        NavigationStack {
-            destinationContent
+        // Built here, not inside the NavigationStack closure. `PhoneShell` calls this
+        // property in its body, so the store reads in `destinationContent` are tracked
+        // there, exactly as for the drawer. A read inside the stack's root closure is
+        // evaluated later by the stack and did not refresh the Inbox when a machine's
+        // status changed (#1592).
+        let destination = destinationContent
+        return NavigationStack {
+            destination
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) { menuButton }
                 }
