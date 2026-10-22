@@ -16,8 +16,6 @@ struct FirstRunScreen: View {
         } actions: {
             Button("Add a machine", systemImage: "desktopcomputer.and.arrow.down", action: onAddMachine)
             .buttonStyle(.glassProminent)
-            .tint(RemiTheme.Color.attention)
-            .foregroundStyle(RemiTheme.Color.attentionInk)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, RemiTheme.Spacing.xl)
