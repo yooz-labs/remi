@@ -33,6 +33,48 @@ struct RemiConnectionTests {
         #expect(!RemiConnection.isDirectReachabilityFailure(RemiConnectionError.malformedMessage))
     }
 
+    @Test func aSocketLostAfterAdmissionIsRetriedNotRejected() {
+        // A hub that closes gracefully or restarts ends an admitted socket with an error that is
+        // not on the reachability list (for example "Socket is not connected"). That is transport
+        // loss, not an authentication failure (#1599).
+        let closedByPeer = NSError(domain: NSPOSIXErrorDomain, code: Int(ENOTCONN))
+        #expect(RemiConnection.shouldRetryDirectFailure(
+            error: closedByPeer, deadlineUnreachable: false, wasAdmitted: true
+        ))
+    }
+
+    @Test func aLocalProtocolViolationAfterAdmissionStillFailsClosed() {
+        for error in [
+            RemiConnectionError.malformedMessage as any Error,
+            RemiConnectionError.nonTextFrame,
+            RemiConnectionError.authentication("INVALID_SIGNATURE"),
+            AuthenticationHandshakeError.invalidServerSignature,
+            RelayFailure.malformed,
+            DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "bad")),
+        ] {
+            #expect(!RemiConnection.shouldRetryDirectFailure(
+                error: error, deadlineUnreachable: false, wasAdmitted: true
+            ))
+        }
+    }
+
+    @Test func aFailureBeforeAdmissionStillFailsClosedUnlessUnreachable() {
+        let closedByPeer = NSError(domain: NSPOSIXErrorDomain, code: Int(ENOTCONN))
+        #expect(!RemiConnection.shouldRetryDirectFailure(
+            error: closedByPeer, deadlineUnreachable: false, wasAdmitted: false
+        ))
+        #expect(!RemiConnection.shouldRetryDirectFailure(
+            error: AuthenticationHandshakeError.invalidServerSignature,
+            deadlineUnreachable: false, wasAdmitted: false
+        ))
+        #expect(RemiConnection.shouldRetryDirectFailure(
+            error: closedByPeer, deadlineUnreachable: true, wasAdmitted: false
+        ))
+        #expect(RemiConnection.shouldRetryDirectFailure(
+            error: URLError(.cannotConnectToHost), deadlineUnreachable: false, wasAdmitted: false
+        ))
+    }
+
     @Test func authErrorsDoNotClaimEveryFailureIsPendingApproval() {
         #expect(RemiConnection.authenticationDescription("INVALID_SIGNATURE") ==
             "Signature verification failed.")

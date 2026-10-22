@@ -130,6 +130,46 @@ struct MachineStoreTests {
         #expect(store.machines.allSatisfy { !$0.hasLoadedSessions })
     }
 
+    #if DEBUG
+    @Test @MainActor func approvalPollingKeepsOnePollerPerMachine() {
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        let store = MachineStore(
+            endpoints: [endpoint], identity: ClientIdentity(), clientVersion: "test", clientId: "test"
+        )
+        store.approvalPollPolicy = ApprovalPollPolicy(interval: .seconds(60), window: .seconds(180))
+        store.ownedStartApprovalPolling(endpoint)
+        store.ownedStartApprovalPolling(endpoint)
+        #expect(store.ownedApprovalPollCount == 1)
+        store.stop()
+        #expect(store.ownedApprovalPollCount == 0)
+    }
+
+    @Test @MainActor func removingAMachineCancelsItsApprovalPoller() {
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        let store = MachineStore(
+            endpoints: [endpoint], identity: ClientIdentity(), clientVersion: "test", clientId: "test"
+        )
+        store.approvalPollPolicy = ApprovalPollPolicy(interval: .seconds(60), window: .seconds(180))
+        store.ownedStartApprovalPolling(endpoint)
+        #expect(store.ownedApprovalPollCount == 1)
+        #expect(store.removeMachine(endpoint))
+        #expect(store.ownedApprovalPollCount == 0)
+    }
+
+    @Test @MainActor func aPollerEndsWhenItsMachineIsNotWaitingForApproval() async throws {
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        let store = MachineStore(
+            endpoints: [endpoint], identity: ClientIdentity(), clientVersion: "test", clientId: "test"
+        )
+        store.approvalPollPolicy = ApprovalPollPolicy(interval: .milliseconds(20), window: .seconds(180))
+        store.ownedStartApprovalPolling(endpoint)
+        for _ in 0..<100 where store.ownedApprovalPollCount > 0 {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(store.ownedApprovalPollCount == 0)
+    }
+    #endif
+
     @Test @MainActor func removingMachineRemovesItsConfiguration() {
         let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
         let store = MachineStore(
