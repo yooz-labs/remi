@@ -3,7 +3,7 @@ import RemiKit
 import RemiUI
 import SwiftUI
 
-private struct HomePreview: View {
+private struct InboxPreview: View {
     let questions: [RemiQuestionCardModel]
     let sessions: [RemiSessionSummary]
     let machines: [RemiMachineSummary]
@@ -11,7 +11,7 @@ private struct HomePreview: View {
 
     var body: some View {
         NavigationStack {
-            HomeScreen(
+            InboxScreen(
                 questions: questions,
                 sessions: sessions,
                 machines: machines,
@@ -173,34 +173,128 @@ private struct FirstRunPreview: View {
     }
 }
 
-private struct EmptyHomePreview: View {
-    var body: some View {
-        HomePreview(questions: [], sessions: [], machines: RemiPreviewData.machines)
-    }
+/// A preview card moved onto a real preview session, so its Open conversation link shows.
+/// The preview data's cards name a session ("native-app") that no preview session has.
+private func inboxCard(
+    _ base: RemiQuestionCardModel,
+    session: RemiSessionSummary = RemiPreviewData.primarySession
+) -> RemiQuestionCardModel {
+    RemiQuestionCardModel(
+        id: RemiQuestionCardModel.identity(
+            machineID: session.machineID,
+            sessionID: session.id,
+            questionID: base.questionID
+        ),
+        questionID: base.questionID,
+        kind: base.kind,
+        text: base.text,
+        detail: base.detail,
+        machineID: session.machineID,
+        machineName: session.machineName,
+        sessionID: session.id,
+        sessionName: session.name,
+        agentID: base.agentID,
+        options: base.options,
+        steps: base.steps,
+        terminalOnly: base.terminalOnly,
+        answerPath: base.answerPath,
+        state: base.state
+    )
 }
 
-#Preview("Home · Light") { HomePreview(questions: [RemiPreviewData.binaryQuestion], sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines).preferredColorScheme(.light) }
-#Preview("Home · Dark") { HomePreview(questions: [RemiPreviewData.binaryQuestion], sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines).preferredColorScheme(.dark) }
-#Preview("Home · Accessibility") { HomePreview(questions: [RemiPreviewData.binaryQuestion], sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines).environment(\.dynamicTypeSize, .accessibility5) }
-#Preview("Home · Compact") { HomePreview(questions: RemiPreviewData.questionStates, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines).frame(width: 320) }
-#Preview("Home · Stored session") { HomePreview(questions: [], sessions: Array(RemiPreviewData.sessions.suffix(1)), machines: Array(RemiPreviewData.machines.prefix(1))).preferredColorScheme(.light) }
-#Preview("Home · Attention queue") { HomePreview(questions: RemiPreviewData.questionStates, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines).preferredColorScheme(.light) }
-#Preview("Home · Direct Recovery") {
-    HomePreview(
+private var connectedStudioState: MachineState {
+    var machine = MachineState(
+        endpoint: MachineEndpoint(host: "127.0.0.1", port: 18_765),
+        displayName: "Studio"
+    )
+    machine.status = .connected
+    return machine
+}
+
+private let inboxOneCard = [inboxCard(RemiPreviewData.binaryQuestion)]
+
+private let inboxSeveralCards = [
+    RemiPreviewData.binaryQuestion,
+    RemiPreviewData.standingGrantQuestion,
+    RemiPreviewData.planQuestion,
+    RemiPreviewData.askUserQuestion,
+].map { inboxCard($0) }
+
+private let inboxAttentionQueue = RemiPreviewData.questionStates.map { inboxCard($0) }
+
+private let inboxResolvedOnly = RemiPreviewData.questionStates
+    .filter { if case .resolvedElsewhere = $0.state { true } else { false } }
+    .map { inboxCard($0) }
+
+private let inboxThreeProblemMachines = drawerMachines(
+    3,
+    states: [0: .unreachable, 1: .unreachable, 2: .waitingForApproval]
+)
+
+#Preview("Inbox · One card · Light") {
+    InboxPreview(questions: inboxOneCard, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+    .preferredColorScheme(.light)
+}
+#Preview("Inbox · One card · Dark") {
+    InboxPreview(questions: inboxOneCard, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+    .preferredColorScheme(.dark)
+}
+#Preview("Inbox · One card · Accessibility") {
+    InboxPreview(questions: inboxOneCard, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+    .environment(\.dynamicTypeSize, .accessibility5)
+}
+#Preview("Inbox · Several cards") {
+    InboxPreview(questions: inboxSeveralCards, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+}
+#Preview("Inbox · Attention queue") {
+    InboxPreview(questions: inboxAttentionQueue, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+    .preferredColorScheme(.light)
+}
+#Preview("Inbox · Attention queue · Compact") {
+    InboxPreview(questions: inboxAttentionQueue, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+    .frame(width: 320)
+}
+#Preview("Inbox · Card without a session") {
+    InboxPreview(questions: [RemiPreviewData.binaryQuestion], sessions: [], machines: RemiPreviewData.machines)
+}
+#Preview("Inbox · Resolved elsewhere") {
+    InboxPreview(questions: inboxResolvedOnly, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+}
+#Preview("Inbox · Quiet · Light") {
+    InboxPreview(questions: [], sessions: RemiPreviewData.sessions, machines: Array(RemiPreviewData.machines.prefix(1)), machineStates: [connectedStudioState])
+    .preferredColorScheme(.light)
+}
+#Preview("Inbox · Quiet · Dark") {
+    InboxPreview(questions: [], sessions: RemiPreviewData.sessions, machines: Array(RemiPreviewData.machines.prefix(1)), machineStates: [connectedStudioState])
+    .preferredColorScheme(.dark)
+}
+#Preview("Inbox · Quiet · Accessibility") {
+    InboxPreview(questions: [], sessions: RemiPreviewData.sessions, machines: Array(RemiPreviewData.machines.prefix(1)), machineStates: [connectedStudioState])
+    .environment(\.dynamicTypeSize, .accessibility5)
+}
+#Preview("Inbox · Quiet · No active sessions") {
+    InboxPreview(questions: [], sessions: Array(RemiPreviewData.sessions.suffix(1)), machines: Array(RemiPreviewData.machines.prefix(1)), machineStates: [connectedStudioState])
+}
+#Preview("Inbox · Quiet · No machine connected") {
+    InboxPreview(
         questions: [],
-        sessions: [],
+        sessions: RemiPreviewData.sessions,
         machines: [unavailableDirectSummary],
         machineStates: [unavailableDirectState]
     )
 }
-#Preview("Home · Direct Recovery · Accessibility") {
-    HomePreview(
-        questions: [],
-        sessions: [],
-        machines: [unavailableDirectSummary],
-        machineStates: [unavailableDirectState]
-    )
+#Preview("Inbox · First run") {
+    InboxPreview(questions: [], sessions: [], machines: [])
+}
+#Preview("Inbox · One machine problem") {
+    InboxPreview(questions: [], sessions: [], machines: [unavailableDirectSummary], machineStates: [unavailableDirectState])
+}
+#Preview("Inbox · One machine problem · Accessibility") {
+    InboxPreview(questions: [], sessions: [], machines: [unavailableDirectSummary], machineStates: [unavailableDirectState])
     .environment(\.dynamicTypeSize, .accessibility5)
+}
+#Preview("Inbox · Three machine problems") {
+    InboxPreview(questions: inboxOneCard, sessions: RemiPreviewData.sessions, machines: inboxThreeProblemMachines)
 }
 
 #Preview("Session · Light") { SessionPreview().preferredColorScheme(.light) }
@@ -263,8 +357,4 @@ private struct EmptyHomePreview: View {
 #Preview("First Run · Light") { FirstRunPreview().preferredColorScheme(.light) }
 #Preview("First Run · Dark") { FirstRunPreview().preferredColorScheme(.dark) }
 #Preview("First Run · Accessibility") { FirstRunPreview().environment(\.dynamicTypeSize, .accessibility5) }
-
-#Preview("Empty · Light") { EmptyHomePreview().preferredColorScheme(.light) }
-#Preview("Empty · Dark") { EmptyHomePreview().preferredColorScheme(.dark) }
-#Preview("Empty · Accessibility") { EmptyHomePreview().environment(\.dynamicTypeSize, .accessibility5) }
 #endif

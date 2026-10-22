@@ -113,8 +113,12 @@ struct PhoneLiveRootView: View {
     }
 
     private var shellContent: some View {
-        NavigationStack {
-            destinationContent
+        // Built here, before the NavigationStack. Doing it this way made the Inbox refresh
+        // live when a machine changes state; building it inside the stack's closure did
+        // not. The mechanism is not verified (#1592).
+        let destination = destinationContent
+        return NavigationStack {
+            destination
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) { menuButton }
                 }
@@ -147,7 +151,7 @@ struct PhoneLiveRootView: View {
     }
 
     private var inboxContent: some View {
-        HomeScreen(
+        InboxScreen(
             questions: allQuestions,
             sessions: allSessions,
             machines: machineSummaries,
@@ -157,9 +161,8 @@ struct PhoneLiveRootView: View {
             onAnswer: answer,
             onSubmit: submit,
             onCancel: cancel,
-            onResumeSession: resumeSession,
-            onOpenSessionRoute: selectSession,
-            onNewSession: { activeSheet = .newSession(machineID: $0, repository: $1) },
+            onNewSession: { activeSheet = .newSession(machineID: nil, repository: nil) },
+            onOpenQuestionSession: openQuestionSession,
             onPresentPairing: { activeSheet = .pairing },
             onPresentPreferences: { activeSheet = .preferences },
             onManageMachines: { activeSheet = .machines },
@@ -205,6 +208,19 @@ struct PhoneLiveRootView: View {
     private func selectSession(_ session: RemiSessionSummary) {
         openSession(session.id)
         shell.select(.session(route(for: session)))
+    }
+
+    /// Navigates to the conversation of `target` and focuses its question. It never answers.
+    private func openQuestionSession(_ target: RemiInboxPresentation.OpenTarget, questionID: String) {
+        openSession(target.sessionID)
+        shell.openFromNotification(
+            route: PhoneSessionRoute(
+                machineKey: target.machineID,
+                sessionID: target.sessionID,
+                conversationID: target.conversationID
+            ),
+            questionID: questionID
+        )
     }
 
     @ViewBuilder
