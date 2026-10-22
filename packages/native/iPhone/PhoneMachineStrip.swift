@@ -244,7 +244,8 @@ private struct PhoneMachineChip: View {
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .frame(maxWidth: 240)
+                    // Capped so part of the next chip shows and the row reads as scrollable.
+                    .frame(maxWidth: 168)
                 PhoneMachineCountCapsule(count: count)
                 if showsClearGlyph {
                     Image(systemName: "xmark")
