@@ -100,8 +100,51 @@ import Testing
         #expect(presentation.accessibilityLabel.hasSuffix(", last known, machine offline"))
     }
 
-    @Test func aFutureActivityTimeIsShownAsNow() {
-        let presentation = PhoneDrawerSessionPresentation(session: active(hoursAgo: -3), now: now, locale: english)
-        #expect(!presentation.subtitle.contains("in 3"))
+    private func active(secondsAgo: Double, lastActivity: String? = nil, custom: Bool = false) -> RemiSessionSummary {
+        RemiSessionSummary(
+            id: "s",
+            machineName: "Studio",
+            name: "cli",
+            harness: "Claude",
+            project: "cli",
+            lastActivity: custom ? lastActivity : now.addingTimeInterval(-secondsAgo).formatted(.iso8601),
+            status: .idle
+        )
+    }
+
+    private func present(_ session: RemiSessionSummary, locale: Locale? = nil) -> PhoneDrawerSessionPresentation {
+        PhoneDrawerSessionPresentation(session: session, now: now, locale: locale ?? english)
+    }
+
+    @Test func aFutureOrJustNowActivityTimeReadsNow() {
+        for seconds in [-3.0, 0.0] {
+            let presentation = present(active(secondsAgo: seconds))
+            #expect(presentation.subtitle == "Studio · now")
+            #expect(presentation.accessibilityLabel == "cli, project cli, on Studio, last active now")
+        }
+    }
+
+    @Test func noActivityOrAnUnparseableOneAddsNothing() {
+        for session in [active(secondsAgo: 0, lastActivity: nil, custom: true),
+                        active(secondsAgo: 0, lastActivity: "not a date", custom: true)] {
+            let presentation = present(session)
+            #expect(presentation.subtitle == "Studio")
+            #expect(presentation.accessibilityLabel == "cli, project cli, on Studio")
+        }
+    }
+
+    @Test func secondsAndMinutesBoundaries() {
+        #expect(present(active(secondsAgo: 30)).subtitle == "Studio · 30s ago")
+        #expect(present(active(secondsAgo: 300)).subtitle == "Studio · 5m ago")
+        #expect(present(active(secondsAgo: 300)).accessibilityLabel == "cli, project cli, on Studio, last active 5 minutes ago")
+    }
+
+    @Test func aNonEnglishLocaleIsRespected() {
+        let presentation = present(active(hoursAgo: 2), locale: Locale(identifier: "fr_FR"))
+        #expect(presentation.subtitle != "Studio · 2h ago")
+        #expect(presentation.subtitle.hasPrefix("Studio · "))
+        // The system's abbreviated French reads "-2 h" (the .short style reads "il y a 2 h").
+        #expect(presentation.subtitle.contains("2 h"))
+        #expect(presentation.accessibilityLabel.contains("il y a 2 heures"))
     }
 }

@@ -52,6 +52,8 @@ public struct PhoneDrawerSessionPresentation: Equatable, Sendable {
     ) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = style
+        // Named, so a zero interval reads "now" and not "in 0s".
+        formatter.dateTimeStyle = .named
         formatter.locale = locale
         return formatter.localizedString(for: date, relativeTo: now)
     }
