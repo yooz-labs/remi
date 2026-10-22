@@ -22,9 +22,7 @@ struct PhoneMachineStrip: View {
 
     var body: some View {
         content
-            .padding(.horizontal, RemiTheme.Spacing.m)
             .padding(.vertical, RemiTheme.Spacing.xxs)
-            .phoneDrawerKeepsHorizontalDrag()
     }
 
     @ViewBuilder
@@ -34,24 +32,30 @@ struct PhoneMachineStrip: View {
             EmptyView()
         case .header(let machine):
             headerLine(machine)
+                .padding(.horizontal, RemiTheme.Spacing.m)
         case .menu:
             HStack(spacing: RemiTheme.Spacing.xs) {
                 machineMenu
                 manageButton
             }
+            .padding(.horizontal, RemiTheme.Spacing.m)
         case .chips:
+            // Chips scroll to the screen edge, so the strip has no outer horizontal
+            // padding here; the row and the scroll carry their own margins.
             HStack(spacing: RemiTheme.Spacing.xs) {
                 ViewThatFits(in: .horizontal) {
-                    chipRow
+                    chipRow.padding(.leading, RemiTheme.Spacing.m)
                     chipScroll
                 }
                 manageButton
             }
+            .padding(.trailing, RemiTheme.Spacing.m)
         case .scrollingChips:
             HStack(spacing: RemiTheme.Spacing.xs) {
                 chipScroll
                 manageButton
             }
+            .padding(.trailing, RemiTheme.Spacing.m)
         }
     }
 
@@ -96,10 +100,35 @@ struct PhoneMachineStrip: View {
 
     /// The chips in a horizontal scroll. Manage stays outside it as a fixed trailing
     /// control, and the trailing margin lets the last chip scroll fully clear of it.
+    ///
+    /// Only this scrolling row reserves its frame from the shell's close drag, so a swipe
+    /// that starts on it scrolls the chips; the header, the menu, Manage and a chip row
+    /// that fits without scrolling do not, and a leftward swipe there closes the drawer.
     private var chipScroll: some View {
-        ScrollView(.horizontal, showsIndicators: false) { chipRow }
-            .contentMargins(.trailing, RemiTheme.Spacing.m, for: .scrollContent)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) { chipRow }
+                .contentMargins(.horizontal, RemiTheme.Spacing.m, for: .scrollContent)
+                .phoneDrawerKeepsHorizontalDrag()
+                .onAppear { scrollToSelected(proxy, animated: false) }
+                .onChange(of: filter) { _, _ in scrollToSelected(proxy, animated: true) }
+        }
     }
+
+    private func scrollToSelected(_ proxy: ScrollViewProxy, animated: Bool) {
+        let id = selectedChipID
+        if animated {
+            withAnimation(RemiTheme.Motion.quick) { proxy.scrollTo(id, anchor: .center) }
+        } else {
+            proxy.scrollTo(id, anchor: .center)
+        }
+    }
+
+    private var selectedChipID: String {
+        if case .machine(let id) = filter { return id }
+        return Self.allChipID
+    }
+
+    private static let allChipID = "all-machines-chip"
 
     private var chipRow: some View {
         HStack(spacing: RemiTheme.Spacing.xs) {
@@ -113,6 +142,7 @@ struct PhoneMachineStrip: View {
                 showsClearGlyph: false,
                 action: onSelectAll
             )
+            .id(Self.allChipID)
             ForEach(machines) { machine in
                 PhoneMachineChip(
                     title: label(machine),
@@ -124,6 +154,7 @@ struct PhoneMachineStrip: View {
                     showsClearGlyph: filter == .machine(machine.id),
                     action: { onSelectMachine(machine.id) }
                 )
+                .id(machine.id)
             }
         }
     }
