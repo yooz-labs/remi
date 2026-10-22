@@ -65,8 +65,9 @@ The person is busy elsewhere; the app's job is to tell them what needs them, let
   It opens at its latest message and has no back button; the drawer is the way out.
   A session has a pane, chat today, so files and a terminal can be added later once a hub capability backs them.
   No control is drawn for a pane that cannot work.
-- **In a session the navigation bar minimizes on scroll** to give the transcript reading room.
-  The edge swipe always opens the drawer, whether or not the bar is showing.
+- **In a session the navigation bar minimizes on scroll** for sighted people at standard text sizes, to give the transcript reading room.
+  It stays visible with VoiceOver, Switch Control or accessibility text sizes, so the Menu button is always reachable.
+  The edge swipe always opens the drawer.
   The bar returns on a scroll up or a tap on the status bar.
 - **The drawer's actions** are New session, Add machine and Preferences: New session plus two icon buttons.
   At accessibility text sizes they collapse to New session and one More menu that holds Add machine and Preferences, because three stacked labeled buttons would take about 40 percent of the screen.
