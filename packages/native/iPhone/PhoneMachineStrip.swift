@@ -228,6 +228,9 @@ struct PhoneMachineStrip: View {
 }
 
 private struct PhoneMachineChip: View {
+    /// The title's width cap grows with Dynamic Type, so a larger font keeps about the same
+    /// number of characters. At accessibility sizes the strip is a menu, not chips.
+    @ScaledMetric(relativeTo: .body) private var maxTitleWidth: CGFloat = 148
     let title: String
     let style: RemiMachineStripPresentation.DotStyle?
     let count: Int
@@ -248,7 +251,7 @@ private struct PhoneMachineChip: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     // Capped so part of the next chip shows and the row reads as scrollable.
-                    .frame(maxWidth: 148)
+                    .frame(maxWidth: maxTitleWidth)
                 PhoneMachineCountCapsule(count: count)
                 if showsClearGlyph {
                     Image(systemName: "xmark")
