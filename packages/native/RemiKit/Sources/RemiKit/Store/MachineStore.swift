@@ -1390,6 +1390,11 @@ public final class MachineStore {
         machines.first { $0.id == identifier || $0.machineID == identifier }
     }
 
+    /// A shutdown notice from the hub is stale once a machine is back (#1599).
+    private func clearStaleShutdownNotice() {
+        if latestError?.code == "CLOSING" { latestError = nil }
+    }
+
     public func clearLatestError() {
         latestError = nil
         latestOperationError = nil
@@ -1942,6 +1947,7 @@ public final class MachineStore {
         case .connected:
             routeDidConnect(endpoint, machineIndex: index)
             machines[index].status = .connected
+            clearStaleShutdownNotice()
             if !machines[index].needsRouteRecovery { machines[index].recoveryProgress = nil }
         case .awaitingLocalApproval(let fingerprint):
             machines[index].status = .waitingForApproval(fingerprint: fingerprint)
@@ -1996,7 +2002,8 @@ public final class MachineStore {
             if endpoint == parent {
                 routeDidConnect(endpoint, machineIndex: index)
                 machines[index].status = .connected
-                }
+                clearStaleShutdownNotice()
+            }
             if endpoint == parent && machines[index].endpoint.id == endpoint.id {
                 machines[index].capabilities = acknowledgment.capabilities ?? []
                 machines[index].harnesses = acknowledgment.harnesses ?? ["claude"]
