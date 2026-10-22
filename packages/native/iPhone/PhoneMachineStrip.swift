@@ -229,29 +229,19 @@ private struct PhoneMachineChip: View {
     }
 }
 
-/// A neutral reachability dot. The shapes differ (solid, half ring, hollow, dashed) so
-/// state is not carried by color alone.
+/// A neutral reachability symbol, one distinct shape per state (see
+/// `DotStyle.symbolName`), sized with Dynamic Type. Meaning never rests on color.
 struct PhoneMachineDot: View {
+    @ScaledMetric(relativeTo: .caption) private var size: CGFloat = 12
     let style: RemiMachineStripPresentation.DotStyle
 
     var body: some View {
-        dot
-            .frame(width: RemiTheme.Size.statusDot + 2, height: RemiTheme.Size.statusDot + 2)
+        Image(systemName: style.symbolName)
+            .font(.system(size: size))
+            .imageScale(.small)
+            .foregroundStyle(.secondary)
+            .frame(width: size, height: size)
             .accessibilityHidden(true)
-    }
-
-    @ViewBuilder
-    private var dot: some View {
-        switch style {
-        case .filled:
-            Circle().fill(.secondary)
-        case .progress:
-            Circle().trim(from: 0, to: 0.65).stroke(.secondary, lineWidth: 1.5).rotationEffect(.degrees(-90))
-        case .hollow:
-            Circle().stroke(.secondary, lineWidth: 1.5)
-        case .dashed:
-            Circle().stroke(.secondary, style: StrokeStyle(lineWidth: 1.5, dash: [2, 1.5]))
-        }
     }
 }
 

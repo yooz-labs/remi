@@ -18,13 +18,25 @@ public enum RemiMachineStripPresentation {
         case scrollingChips
     }
 
-    /// A neutral dot shape for a machine's reachability. The shapes differ so state is
-    /// not carried by color alone; `accessibilityWord` says it in words.
+    /// A neutral symbol for a machine's reachability. The shapes differ so state is not
+    /// carried by color alone; `accessibilityWord` says it in words.
     public enum DotStyle: Equatable, Sendable {
         case filled
         case progress
         case hollow
         case dashed
+
+        /// An SF Symbol per state, each a different shape so state never rests on color:
+        /// a filled circle, a dotted circle, a Wi-Fi mark struck through, and a person
+        /// with a clock badge.
+        public var symbolName: String {
+            switch self {
+            case .filled: "circle.fill"
+            case .progress: "circle.dotted"
+            case .hollow: "wifi.slash"
+            case .dashed: "person.badge.clock"
+            }
+        }
 
         public var accessibilityWord: String {
             switch self {

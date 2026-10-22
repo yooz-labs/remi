@@ -183,4 +183,13 @@ import Testing
         #expect(rows == [.machine(.unreachable(bad), label: "Mac b")])
         #expect(rows[0].message == "Mac b is offline")
     }
+
+    @Test func everyStateHasItsOwnSymbol() {
+        let styles: [Strip.DotStyle] = [.filled, .progress, .hollow, .dashed]
+        #expect(Set(styles.map(\.symbolName)).count == 4)
+        #expect(Strip.dotStyle(for: .connected).symbolName == "circle.fill")
+        #expect(Strip.dotStyle(for: .connecting).symbolName == "circle.dotted")
+        #expect(Strip.dotStyle(for: .unreachable).symbolName == "wifi.slash")
+        #expect(Strip.dotStyle(for: .waitingForApproval).symbolName == "person.badge.clock")
+    }
 }
