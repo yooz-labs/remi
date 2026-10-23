@@ -76,7 +76,8 @@ public struct RemiSessionInteractionBar: View {
         }
         .padding(.horizontal, RemiTheme.Spacing.m)
         .padding(.vertical, RemiTheme.Spacing.xs)
-        .frame(maxWidth: .infinity)
+        // The bar's material spans the canvas; the controls stay in the readable column.
+        .remiReadableColumn()
         // Only the live composer floats: its glass controls carry their own surface. Plain text
         // (read-only notes, the send-failure caption) keeps the bar material so it stays legible
         // over transcript content scrolling underneath.
