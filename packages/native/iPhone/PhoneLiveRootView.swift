@@ -171,9 +171,9 @@ struct PhoneLiveRootView: View {
             sessionMachines: store.machines,
             errorMessage: store.latestOperationError ?? store.latestError?.message,
             noticeMessage: store.latestOperationNotice ?? relayNotifications.notice ?? store.relayNotificationNotice,
-            onAnswer: answer,
-            onSubmit: submit,
-            onCancel: cancel,
+            onAnswer: { answer(machineID: $0, sessionId: $1, questionId: $2, value: $3) },
+            onSubmit: { submit(machineID: $0, sessionId: $1, questionId: $2, values: $3) },
+            onCancel: { cancel(machineID: $0, sessionId: $1, questionId: $2) },
             onNewSession: { activeSheet = .newSession(machineID: nil, repository: nil) },
             onOpenQuestionSession: openQuestionSession,
             onPresentPairing: { activeSheet = .pairing },
@@ -219,13 +219,13 @@ struct PhoneLiveRootView: View {
     }
 
     private func selectSession(_ session: RemiSessionSummary) {
-        store.loadTranscript(sessionId: session.id)
+        store.loadTranscript(machineID: session.machineID, sessionId: session.id)
         shell.selectSession(machineKey: session.machineID, sessionID: session.id)
     }
 
     /// Navigates to the conversation of `target` and focuses its question. It never answers.
     private func openQuestionSession(_ target: RemiInboxPresentation.OpenTarget, questionID: String) {
-        store.loadTranscript(sessionId: target.sessionID)
+        store.loadTranscript(machineID: target.machineID, sessionId: target.sessionID)
         // Opening a subagent conversation of the session already on screen changes the
         // route's conversation id on purpose (the screen must show that conversation); the
         // same route is a no-op.
@@ -389,14 +389,13 @@ struct PhoneLiveRootView: View {
         })
     }
 
-    private func questions(_ sessionId: String) -> [RemiQuestionCardModel] {
-        let active = store.machines.flatMap { machine in
-            machine.questions.filter { $0.sessionId == sessionId }.map {
-                presentation($0, machine: machine)
-            }
+    private func questions(machineID: String, sessionID sessionId: String) -> [RemiQuestionCardModel] {
+        guard let owner = store.machine(withIdentifier: machineID) else { return [] }
+        let active = owner.questions.filter { $0.sessionId == sessionId }.map {
+            presentation($0, machine: owner)
         }
         let resolved: [RemiQuestionCardModel] = store.recentlyResolvedQuestions.compactMap { record in
-            guard record.message.sessionId == sessionId,
+            guard record.message.sessionId == sessionId, record.machineID == owner.id,
                   let machine = store.machine(withIdentifier: record.machineID)
             else { return nil }
             return presentation(
@@ -487,8 +486,8 @@ struct PhoneLiveRootView: View {
         }
     }
 
-    private func transcript(_ sessionId: String) -> [RemiTranscriptEntry] {
-        (store.transcriptsBySession[sessionId] ?? []).compactMap { message in
+    private func transcript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
+        (store.transcriptsBySession[store.sessionKey(machineID: machineID, sessionID: sessionID)] ?? []).compactMap { message in
             let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if !content.isEmpty {
                 return message.role == "user"
@@ -507,27 +506,30 @@ struct PhoneLiveRootView: View {
         }
     }
 
-    private func answer(sessionId: String, questionId: String, value: String) {
+    private func answer(machineID: String, sessionId: String, questionId: String, value: String) {
         answerFeedbackTrigger += 1
         store.answer(
+            machineID: machineID,
             sessionId: sessionId,
             questionId: questionId,
             answer: value,
-            claudeSessionId: rawQuestion(questionId)?.claudeSessionId
+            claudeSessionId: rawQuestion(machineID: machineID, questionId)?.claudeSessionId
         )
     }
 
     private func submit(
+        machineID: String,
         sessionId: String,
         questionId: String,
         values: [RemiQuestionStepSelection]
     ) {
         answerFeedbackTrigger += 1
         store.answer(
+            machineID: machineID,
             sessionId: sessionId,
             questionId: questionId,
             answer: "",
-            claudeSessionId: rawQuestion(questionId)?.claudeSessionId,
+            claudeSessionId: rawQuestion(machineID: machineID, questionId)?.claudeSessionId,
             selections: values.compactMap { value in
                 guard let questionIndex = Int(value.stepID) else { return nil }
                 return AnswerSelection(
@@ -539,21 +541,22 @@ struct PhoneLiveRootView: View {
         )
     }
 
-    private func cancel(sessionId: String, questionId: String) {
+    private func cancel(machineID: String, sessionId: String, questionId: String) {
         answerFeedbackTrigger += 1
         store.answer(
+            machineID: machineID,
             sessionId: sessionId,
             questionId: questionId,
             answer: "",
-            claudeSessionId: rawQuestion(questionId)?.claudeSessionId,
+            claudeSessionId: rawQuestion(machineID: machineID, questionId)?.claudeSessionId,
             cancel: true
         )
     }
 
-    private func sendChat(sessionId: String, content: String) async -> Bool {
-        let binding = store.machines.lazy.flatMap(\.sessions)
+    private func sendChat(machineID: String, sessionId: String, content: String) async -> Bool {
+        let binding = store.machine(withIdentifier: machineID)?.sessions
             .first { $0.sessionId == sessionId }?.claudeSessionId
-        return await store.sendChat(sessionId: sessionId, content: content, claudeSessionId: binding)
+        return await store.sendChat(machineID: machineID, sessionId: sessionId, content: content, claudeSessionId: binding)
     }
 
     private func addMachine(_ request: AddMachineRequest) -> UUID? {
@@ -601,8 +604,8 @@ struct PhoneLiveRootView: View {
         store.resumeSession(on: machine.endpoint, sessionId: sessionID)
     }
 
-    private func rawQuestion(_ id: String) -> QuestionMessage? {
-        store.machines.lazy.flatMap(\.questions).first { $0.question.id == id }
+    private func rawQuestion(machineID: String, _ id: String) -> QuestionMessage? {
+        store.machine(withIdentifier: machineID)?.questions.first { $0.question.id == id }
     }
 
     private func destination(forQuestionIdentity id: String) -> RemiNavigationDestination? {
@@ -656,27 +659,29 @@ struct PhoneLiveRootView: View {
 
     private func sessionScreen(_ session: RemiSessionSummary, route: PhoneSessionRoute) -> some View {
         let focus = shell.focusQuestionID(for: route)
+        let viewsKey = store.sessionKey(machineID: session.machineID, sessionID: session.id)
         return SessionScreen(
             session: session,
-            transcript: transcript(session.id),
-            questions: questions(session.id),
-            views: store.sessionViewsBySession[session.id] ?? [],
-            viewsLoaded: store.sessionViewsBySession[session.id] != nil,
+            transcript: transcript(machineID: session.machineID, sessionID: session.id),
+            questions: questions(machineID: session.machineID, sessionID: session.id),
+            views: store.sessionViewsBySession[viewsKey] ?? [],
+            viewsLoaded: store.sessionViewsBySession[viewsKey] != nil,
+            isLoadingTranscript: { store.isLoadingTranscript(machineID: session.machineID, sessionID: $0) },
             initialConversationID: route.conversationID,
             initialQuestionID: focus,
-            transcriptForView: transcript,
-            onSelectView: store.loadTranscript,
-            onAnswer: { answer(sessionId: session.id, questionId: $0, value: $1) },
-            onSubmit: { submit(sessionId: session.id, questionId: $0, values: $1) },
-            onCancel: { cancel(sessionId: session.id, questionId: $0) },
-            onSend: { await sendChat(sessionId: session.id, content: $0) },
-            onTerminate: { store.terminateSession(sessionId: session.id) },
+            transcriptForView: { transcript(machineID: session.machineID, sessionID: $0) },
+            onSelectView: { store.loadTranscript(machineID: session.machineID, sessionId: $0) },
+            onAnswer: { answer(machineID: session.machineID, sessionId: session.id, questionId: $0, value: $1) },
+            onSubmit: { submit(machineID: session.machineID, sessionId: session.id, questionId: $0, values: $1) },
+            onCancel: { cancel(machineID: session.machineID, sessionId: session.id, questionId: $0) },
+            onSend: { await sendChat(machineID: session.machineID, sessionId: session.id, content: $0) },
+            onTerminate: { store.terminateSession(machineID: session.machineID, sessionId: session.id) },
             onClose: { shell.select(.inbox) },
             focusQuestionRequest: focus
         )
         .id(route)
         .onAppear {
-            store.loadTranscript(sessionId: route.conversationID ?? session.id)
+            store.loadTranscript(machineID: session.machineID, sessionId: route.conversationID ?? session.id)
         }
         .onChange(of: shell.pendingFocus, initial: true) { _, _ in
             guard shell.focusQuestionID(for: route) != nil else { return }

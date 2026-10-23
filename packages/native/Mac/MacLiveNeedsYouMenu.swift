@@ -63,6 +63,7 @@ struct MacLiveNeedsYouMenu: View {
 
     private func answer(_ item: RemiPendingQuestionItem, value: String) {
         store.answer(
+            machineID: item.destination.machineID,
             sessionId: item.sessionID,
             questionId: item.questionID,
             answer: value,
@@ -72,6 +73,7 @@ struct MacLiveNeedsYouMenu: View {
 
     private func submit(_ item: RemiPendingQuestionItem, selections: [RemiQuestionStepSelection]) {
         store.answer(
+            machineID: item.destination.machineID,
             sessionId: item.sessionID,
             questionId: item.questionID,
             answer: "",
@@ -89,6 +91,7 @@ struct MacLiveNeedsYouMenu: View {
 
     private func cancel(_ item: RemiPendingQuestionItem) {
         store.answer(
+            machineID: item.destination.machineID,
             sessionId: item.sessionID,
             questionId: item.questionID,
             answer: "",

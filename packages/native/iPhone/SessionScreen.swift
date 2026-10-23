@@ -9,6 +9,8 @@ struct SessionScreen: View {
     let questions: [RemiQuestionCardModel]
     let views: [SessionViewMeta]
     let viewsLoaded: Bool
+    /// Whether the transcript of a conversation (the session id or a subagent id) is still arriving.
+    let isLoadingTranscript: (String) -> Bool
     let transcriptForView: (String) -> [RemiTranscriptEntry]
     let onSelectView: (String) -> Void
     let onAnswer: (String, String) -> Void
@@ -39,6 +41,7 @@ struct SessionScreen: View {
         questions: [RemiQuestionCardModel],
         views: [SessionViewMeta] = [],
         viewsLoaded: Bool = true,
+        isLoadingTranscript: @escaping (String) -> Bool = { _ in false },
         initialConversationID: String? = nil,
         initialQuestionID: String? = nil,
         transcriptForView: @escaping (String) -> [RemiTranscriptEntry] = { _ in [] },
@@ -56,6 +59,7 @@ struct SessionScreen: View {
         self.questions = questions
         self.views = views
         self.viewsLoaded = viewsLoaded
+        self.isLoadingTranscript = isLoadingTranscript
         _selectedViewID = State(initialValue: initialConversationID ?? "")
         _focusState = State(initialValue: PhoneQuestionFocusState(
             initial: initialQuestionID,
@@ -105,11 +109,22 @@ struct SessionScreen: View {
                                 )
                             }
 
-                            if visibleTranscript.isEmpty && visibleQuestions.isEmpty {
+                            switch conversationPlaceholder {
+                            case .loading:
+                                PhoneConversationLoadingState()
+                            case .empty:
                                 PhoneConversationEmptyState(
                                     isSubagent: !selectedViewID.isEmpty,
                                     isFinished: !session.isLive
                                 )
+                            case .loadingMore:
+                                ProgressView("Loading earlier messages")
+                                    .controlSize(.small)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity)
+                            case .none:
+                                EmptyView()
                             }
 
                             ForEach(focusedQuestions) { question in
@@ -183,14 +198,18 @@ struct SessionScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if #available(iOS 27.0, *) {
-                ToolbarItem(placement: .topBarTrailing) {
-                    latestActivityButton
+                // Jump and Search have nothing to act on in an empty conversation: show them
+                // once there are entries instead of as disabled noise.
+                if !visibleTranscript.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        latestActivityButton
+                    }
+                    .visibilityPriority(.high)
+                    ToolbarItem(placement: .topBarTrailing) {
+                        searchButton
+                    }
+                    .visibilityPriority(.high)
                 }
-                .visibilityPriority(.high)
-                ToolbarItem(placement: .topBarTrailing) {
-                    searchButton
-                }
-                .visibilityPriority(.high)
                 if session.canTerminate {
                     ToolbarItem(placement: .topBarTrailing) {
                         sessionActions
@@ -198,11 +217,13 @@ struct SessionScreen: View {
                     .visibilityPriority(.low)
                 }
             } else {
-                ToolbarItem(placement: .topBarTrailing) {
-                    latestActivityButton
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    searchButton
+                if !visibleTranscript.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        latestActivityButton
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        searchButton
+                    }
                 }
                 if session.canTerminate {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -266,6 +287,14 @@ struct SessionScreen: View {
             viewsLoaded: viewsLoaded
         )
         if resolved != selectedViewID { selectedViewID = resolved }
+    }
+
+    /// What stands in for the entries: loading, empty, or nothing. Open questions count as content.
+    private var conversationPlaceholder: RemiConversationPlaceholder {
+        RemiConversationPlaceholder.resolve(
+            isLoading: isLoadingTranscript(selectedViewID.isEmpty ? session.id : selectedViewID),
+            hasEntries: !visibleTranscript.isEmpty || !visibleQuestions.isEmpty
+        )
     }
 
     private var searchButton: some View {
@@ -473,6 +502,20 @@ private struct ConversationPicker: View {
             }
             .scrollIndicators(.hidden)
         }
+    }
+}
+
+private struct PhoneConversationLoadingState: View {
+    var body: some View {
+        VStack(spacing: RemiTheme.Spacing.s) {
+            ProgressView()
+            Text("Loading conversation")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, RemiTheme.Spacing.xl)
+        .accessibilityElement(children: .combine)
     }
 }
 

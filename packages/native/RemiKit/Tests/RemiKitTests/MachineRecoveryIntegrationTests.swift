@@ -54,7 +54,7 @@ struct MachineRecoveryIntegrationTests {
         store.receive(.hello(hello, authorityPublicKey: key), from: root, generation: oldGeneration)
         store.receive(.question(question), from: root, generation: oldGeneration)
         if relay {
-            store.answer(sessionId: question.sessionId, questionId: question.question.id, answer: "yes")
+            store.answer(machineID: store.machines[0].id, sessionId: question.sessionId, questionId: question.question.id, answer: "yes")
             #expect(store.ownedPendingAnswerCount == 1)
         } else {
             store.resumeSession(on: root, sessionId: "00000000-0000-4000-8000-000000000000")
@@ -284,7 +284,7 @@ struct MachineRecoveryIntegrationTests {
         #expect(store.ownedConnectionMachineIDs[child] == target.machineID)
         #expect(store.ownedParentRoutes[child] == pinned)
         let sessionID = try #require(list.sessions.first?.sessionId)
-        #expect(store.ownedSessionRoutes[sessionID] == child)
+        #expect(store.ownedSessionRoutes[MachineSessionKey(machineID: store.machines[0].id, sessionID: sessionID)] == child)
         store.setConnectionPreference(.relayOnly, for: pinned)
         #expect(store.connectionGenerations.isEmpty && store.ownedParentRoutes.isEmpty && store.ownedSessionRoutes.isEmpty)
         #expect(store.machines.first?.connectionPreference == .relayOnly)

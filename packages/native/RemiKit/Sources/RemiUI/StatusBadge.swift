@@ -25,7 +25,8 @@ public struct RemiStatusBadge: View {
         case .working: "Working"
         case .idle: "Idle"
         case .connecting: "Connecting"
-        case .offline: "Offline"
+        // A session whose process is not running (stored, finished): not a connection problem.
+        case .offline: "Finished"
         }
     }
 

@@ -83,7 +83,7 @@ struct MacLiveRootView: View {
                         onRetryConnection: store.retryConnection,
                         onNewSession: { presentNewSession() },
                         onNewSessionHere: { presentNewSession(repository: $0) },
-                        onTerminate: store.terminateSession
+                        onTerminate: { store.terminateSession(machineID: $0.machineID, sessionId: $0.id) }
                     )
                     .navigationSplitViewColumnWidth(min: 380, ideal: 480, max: 620)
                     .navigationTitle("Sessions")
@@ -115,18 +115,20 @@ struct MacLiveRootView: View {
                     }
                 } detail: {
                     if let session = visibleSessions.first(where: { $0.id == selectedSessionID }) {
+                        let viewsKey = store.sessionKey(machineID: session.machineID, sessionID: session.id)
                         MacSessionDetail(
                             session: session,
-                            transcript: transcript(for: session.id),
+                            transcript: transcript(machineID: session.machineID, sessionID: session.id),
                             questions: questions(for: session.id),
-                            views: store.sessionViewsBySession[session.id] ?? [],
-                            viewsLoaded: store.sessionViewsBySession[session.id] != nil,
+                            views: store.sessionViewsBySession[viewsKey] ?? [],
+                            viewsLoaded: store.sessionViewsBySession[viewsKey] != nil,
                             initialConversationID: notificationDestination?.agentID,
                             initialQuestionID: notificationDestination?.questionID,
-                            transcriptForView: transcript,
-                            onSelectView: store.loadTranscript,
+                            transcriptForView: { transcript(machineID: session.machineID, sessionID: $0) },
+                            onSelectView: { store.loadTranscript(machineID: session.machineID, sessionId: $0) },
                             onAnswer: { questionId, value in
                                 store.answer(
+                                    machineID: session.machineID,
                                     sessionId: session.id,
                                     questionId: questionId,
                                     answer: value,
@@ -135,6 +137,7 @@ struct MacLiveRootView: View {
                             },
                             onSubmit: { questionId, selections in
                                 store.answer(
+                                    machineID: session.machineID,
                                     sessionId: session.id,
                                     questionId: questionId,
                                     answer: "",
@@ -151,6 +154,7 @@ struct MacLiveRootView: View {
                             },
                             onCancel: { questionId in
                                 store.answer(
+                                    machineID: session.machineID,
                                     sessionId: session.id,
                                     questionId: questionId,
                                     answer: "",
@@ -162,19 +166,20 @@ struct MacLiveRootView: View {
                                 let binding = selectedMachine?.sessions
                                     .first { $0.sessionId == session.id }?.claudeSessionId
                                 return await store.sendChat(
+                                    machineID: session.machineID,
                                     sessionId: session.id,
                                     content: content,
                                     claudeSessionId: binding
                                 )
                             },
                             onResume: session.canResume ? { resume(session) } : nil,
-                            onTerminate: { store.terminateSession(sessionId: session.id) }
+                            onTerminate: { store.terminateSession(machineID: session.machineID, sessionId: session.id) }
                         )
                         .id(notificationDestination ?? RemiNavigationDestination(
                             machineID: session.machineID,
                             sessionID: session.id
                         ))
-                        .task(id: session.id) { store.loadTranscript(sessionId: session.id) }
+                        .task(id: session.id) { store.loadTranscript(machineID: session.machineID, sessionId: session.id) }
                     } else if notificationDestination != nil {
                         ContentUnavailableView(
                             "Conversation unavailable",
@@ -254,7 +259,7 @@ struct MacLiveRootView: View {
             selectedMachineID = destination.machineID
             selectedSessionID = destination.sessionID
             preferredCompactColumn = .detail
-            store.loadTranscript(sessionId: destination.agentID ?? destination.sessionID)
+            store.loadTranscript(machineID: destination.machineID, sessionId: destination.agentID ?? destination.sessionID)
             notificationRouter.destination = nil
         }
         .onChange(of: store.resumedSessionDestination) { _, destination in
@@ -628,8 +633,8 @@ struct MacLiveRootView: View {
             )
     }
 
-    private func transcript(for sessionId: String) -> [RemiTranscriptEntry] {
-        (store.transcriptsBySession[sessionId] ?? []).compactMap { message in
+    private func transcript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
+        (store.transcriptsBySession[store.sessionKey(machineID: machineID, sessionID: sessionID)] ?? []).compactMap { message in
             let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if !content.isEmpty {
                 return message.role == "user"
@@ -692,7 +697,7 @@ private struct MacSessionsColumn: View {
     let onRetryConnection: (MachineEndpoint) -> Void
     let onNewSession: () -> Void
     let onNewSessionHere: (String) -> Void
-    let onTerminate: (String) -> Void
+    let onTerminate: (RemiSessionSummary) -> Void
 
     var body: some View {
         Group {
@@ -733,7 +738,7 @@ private struct MacSessionList: View {
     @Binding var selection: String?
     let onResume: (RemiSessionSummary) -> Void
     let onNewSessionHere: (String) -> Void
-    let onTerminate: (String) -> Void
+    let onTerminate: (RemiSessionSummary) -> Void
     @State private var searchText = ""
     @State private var scope = RemiSessionScope.all
     @State private var showsRecent = false
@@ -829,7 +834,7 @@ private struct MacSessionList: View {
         ) {
             Button("Exit session", role: .destructive) {
                 guard let session = pendingTermination else { return }
-                onTerminate(session.id)
+                onTerminate(session)
                 pendingTermination = nil
             }
             Button("Cancel", role: .cancel) { pendingTermination = nil }
@@ -1294,7 +1299,7 @@ private struct MacCompactSessionRow: View {
         case .working: "Working"
         case .idle: "Idle"
         case .connecting: "Connecting"
-        case .offline: "Offline"
+        case .offline: "Finished"
         }
     }
 }

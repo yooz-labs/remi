@@ -27,7 +27,7 @@ struct ChildRouteOriginTests {
             from: FixtureConformanceTests.fixture("question"))
         store.receive(.question(question), from: child, generation: childGeneration)
 
-        #expect(store.transcriptsBySession[message.sessionId]?.count == 1)
+        #expect(store.transcriptsBySession[store.sessionKey(machineID: store.machines[0].id, sessionID: message.sessionId)]?.count == 1)
         #expect(store.machines.first?.questions.count == 1)
     }
 
@@ -95,7 +95,7 @@ struct ChildRouteOriginTests {
             from: FixtureConformanceTests.fixture("transcript_content"))
         store.receive(.transcript(message), from: child, generation: childGeneration)
 
-        #expect(store.transcriptsBySession[message.sessionId] == nil)
+        #expect(store.transcriptsBySession[store.sessionKey(machineID: store.machines[0].id, sessionID: message.sessionId)] == nil)
     }
 
     @Test func suspensionDoesNotPresentRetiredSocketsAsConnected() throws {

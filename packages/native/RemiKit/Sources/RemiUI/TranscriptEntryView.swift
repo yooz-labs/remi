@@ -19,8 +19,8 @@ public struct RemiTranscriptEntryView: View {
     public var body: some View {
         Group {
             switch entry {
-            case .user(_, let text): TranscriptMessage(text: text, role: .user)
-            case .agent(_, let text): TranscriptMessage(text: text, role: .agent)
+            case .user(_, let text): TranscriptMessage(text: text, role: .user, forceExpanded: isSearchMatch)
+            case .agent(_, let text): TranscriptMessage(text: text, role: .agent, forceExpanded: isSearchMatch)
             case .tool(_, let name, let summary): TranscriptToolEntry(name: name, summary: summary)
             case .error(_, let text): TranscriptErrorEntry(text: text)
             }
@@ -43,8 +43,21 @@ private struct TranscriptMessage: View {
     enum Role { case user, agent }
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var isExpanded = false
     let text: String
     let role: Role
+    /// A search match is never hidden inside a collapsed message.
+    let forceExpanded: Bool
+    private let collapse: RemiMessageCollapse
+
+    init(text: String, role: Role, forceExpanded: Bool = false) {
+        self.text = text
+        self.role = role
+        self.forceExpanded = forceExpanded
+        collapse = RemiMessageCollapse(text: text)
+    }
+
+    private var showsFullText: Bool { isExpanded || forceExpanded || !collapse.isCollapsible }
 
     var body: some View {
         VStack(alignment: role == .user ? .trailing : .leading, spacing: RemiTheme.Spacing.xs) {
@@ -53,7 +66,7 @@ private struct TranscriptMessage: View {
                     .font(RemiTheme.Typography.eyebrow)
                     .foregroundStyle(.secondary)
             }
-            Text(RemiTranscriptMarkup.attributed(text))
+            Text(RemiTranscriptMarkup.attributed(showsFullText ? text : collapse.preview + "…"))
                 .font(.body)
                 .textSelection(.enabled)
                 .padding(.horizontal, role == .user ? RemiTheme.Spacing.s : 0)
@@ -74,10 +87,27 @@ private struct TranscriptMessage: View {
                     maxWidth: dynamicTypeSize.isAccessibilitySize ? .infinity : messageMaximumWidth,
                     alignment: role == .user ? .trailing : .leading
                 )
+            if collapse.isCollapsible, !forceExpanded {
+                expandButton
+            }
         }
         .frame(maxWidth: .infinity, alignment: role == .user ? .trailing : .leading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(role == .user ? "Your message" : "Agent response")
+    }
+
+    private var expandButton: some View {
+        Button {
+            isExpanded.toggle()
+        } label: {
+            Text(isExpanded ? "Show less" : "Show more (\(collapse.hiddenCharacterCount.formatted()) more characters)")
+                .font(.subheadline.weight(.semibold))
+                .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .accessibilityHint(isExpanded ? "Collapses this long message" : "Shows the whole message")
     }
 
     private var messageMaximumWidth: CGFloat { role == .user ? 560 : 720 }
