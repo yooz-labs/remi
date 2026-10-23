@@ -77,15 +77,22 @@ The person is busy elsewhere; the app's job is to tell them what needs them, let
 
 ## Panes: terminal and files
 
+- **Status today: no pane is shown.**
+  No hub advertises `terminal_view` or `file_download` yet, and this app has no secure transport (a signed WSS connection, or the relay's encrypted child) that ADR 0045 and ADR 0047 require for these frames.
+  The panes are built and tested but hidden; they appear only when a hub advertises the capability and the app can reach it over a route that may carry the frames.
 - A session has panes beyond chat: a read-only terminal and a file download.
-  Each is offered, in the session actions menu and in a segmented switcher, only when the machine advertises `terminal_view` or `file_download` and the route can carry the frames.
-  With neither, no switcher and no menu entries are drawn, as before.
+  When offered, each is in the session actions menu and in a segmented switcher.
+  With none offered, no switcher and no menu entries are drawn, as before.
 - The terminal is a monochrome, monospaced grid of the screen the machine reports, with a block cursor, escaped text, and sideways scrolling at large text sizes.
   It is read only and says so; answering and typing stay in chat.
   A refused, expired or interrupted view says why in plain words and offers Try again.
+  After an interruption or expiry the last screen stays, dimmed, under the status line; leaving the pane, a refusal, and removing the machine clear it.
 - Files are downloaded by typing a path relative to the session workspace; there is no folder browser.
   The sheet shows the escaped name and size, progress, and "Verified" once every byte matched its checksum.
-  Save is an explicit action through the system file exporter; the file is never previewed or opened, and Cancel, a dropped connection or leaving discards the partial data.
+  The machine's offered name must equal the requested file's name, or the download stops.
+  Save is an explicit action through the system file exporter, with an escaped default name; the file is never previewed or opened.
+  Cancel, a dropped connection, leaving the pane, a finished Save or Discard, and removing the machine or exiting the session drop the partial or verified bytes held in memory.
+  Nothing is written to disk except by the person's Save.
 
 ## Shared components (RemiUI)
 
