@@ -6,41 +6,7 @@ import Testing
 /// (`packages/shared/tests/fixtures/terminal-view/vectors.json`). The corpus states no
 /// refusal reason, so each refusal vector is checked to be refused with a payload-free error.
 struct TerminalViewProtocolTests {
-    static let vectorsURL = FixtureConformanceTests.fixtures
-        .deletingLastPathComponent().appendingPathComponent("terminal-view/vectors.json")
-
-    struct Vectors {
-        let positive: [(name: String, raw: String, expected: WireJSON)]
-        let negative: [(name: String, raw: Data)]
-    }
-
-    static func vectors() throws -> Vectors {
-        let root = try #require(try WireJSON.parse(Data(contentsOf: vectorsURL), maxBytes: 1_000_000).objectValue)
-        guard case .array(let positive)? = root.value(for: "positive"),
-            case .array(let negative)? = root.value(for: "negative")
-        else { throw WireFrameError.invalid("vectors") }
-        func text(_ object: WireObject, _ key: String) throws -> String {
-            guard case .string(let value)? = object.value(for: key) else { throw WireFrameError.invalid(key) }
-            return value
-        }
-        return Vectors(
-            positive: try positive.map {
-                let o = try #require($0.objectValue)
-                return (try text(o, "name"), try text(o, "raw"), try #require(o.value(for: "expected")))
-            },
-            negative: try negative.map {
-                let o = try #require($0.objectValue)
-                if case .array(let bytes)? = o.value(for: "bytes") {
-                    // The one vector that is not text: invalid UTF-8 bytes.
-                    let data = try bytes.map { item -> UInt8 in
-                        guard case .number(let n) = item else { throw WireFrameError.invalid("bytes") }
-                        return UInt8(n)
-                    }
-                    return (try text(o, "name"), Data(data))
-                }
-                return (try text(o, "name"), Data(try text(o, "raw").utf8))
-            })
-    }
+    static func vectors() throws -> WireVectors { try WireVectors.load("terminal-view") }
 
     @Test func corpusIsTheExpectedSize() throws {
         let v = try Self.vectors()
@@ -51,7 +17,7 @@ struct TerminalViewProtocolTests {
     @Test func everyPositiveVectorDecodesToItsExpectedFrame() throws {
         for vector in try Self.vectors().positive {
             let message = try TerminalViewMessage.decode(vector.raw)
-            #expect(Self.sorted(message.json) == Self.sorted(vector.expected), "\(vector.name)")
+            #expect(WireVectors.sorted(message.json) == WireVectors.sorted(vector.expected), "\(vector.name)")
             // The encoder reproduces the vector byte for byte, as the TypeScript test requires.
             #expect(try message.encodedFrame() == vector.raw, "\(vector.name)")
             #expect(try TerminalViewMessage.decode(Data(vector.raw.utf8)) == message, "\(vector.name)")
@@ -60,7 +26,7 @@ struct TerminalViewProtocolTests {
 
     @Test func everyRefusalVectorIsRefused() throws {
         for vector in try Self.vectors().negative {
-            #expect(throws: WireFrameError.self, "\(vector.name)") { try TerminalViewMessage.decode(vector.raw) }
+            #expect(throws: WireFrameError.self, "\(vector.name)") { try TerminalViewMessage.decode(vector.input) }
         }
     }
 
@@ -229,15 +195,5 @@ struct TerminalViewProtocolTests {
             header: header, requestId: header.id, viewId: "AAECAwQFBgcICQoLDA0ODw", revision: 0, columns: 5, rows: 2,
             lines: ["only one"], cursor: nil)
         #expect(throws: WireFrameError.self) { try TerminalViewMessage.snapshot(bad).encodedFrame() }
-    }
-
-    /// Member order differs between the frame and the expected object, so compare sorted.
-    static func sorted(_ json: WireJSON) -> WireJSON {
-        switch json {
-        case .object(let object):
-            return .object(WireObject(members: object.members.sorted { $0.key < $1.key }.map { .init(key: $0.key, value: sorted($0.value)) }))
-        case .array(let items): return .array(items.map(sorted))
-        default: return json
-        }
     }
 }

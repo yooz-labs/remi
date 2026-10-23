@@ -19,15 +19,18 @@ public indirect enum WireJSON: Sendable, Equatable {
     /// The most bytes of one frame (ADR 0041, 0045, 0047).
     public static let maxFrameBytes = 65_536
     static let maxDepth = 8
-    static let maxNodes = 512
+    public static let maxNodes = 512
 
     /// Parses `data` as one JSON value, or throws a payload-free `WireFrameError`.
-    public static func parse(_ data: Data, maxBytes: Int = maxFrameBytes) throws -> WireJSON {
+    ///
+    /// `maxBytes` and `maxNodes` exist for reading large trusted files (the shared vector corpora)
+    /// with the same grammar; a frame uses the defaults.
+    public static func parse(_ data: Data, maxBytes: Int = maxFrameBytes, maxNodes: Int = maxNodes) throws -> WireJSON {
         guard data.count <= maxBytes else { throw WireFrameError.oversize }
         let bytes = [UInt8](data)
         // Invalid UTF-8 is refused before anything is read from it.
         guard String(validating: bytes, as: UTF8.self) != nil else { throw WireFrameError.malformedJSON }
-        var parser = Parser(bytes: bytes)
+        var parser = Parser(bytes: bytes, maxNodes: maxNodes)
         return try parser.parseDocument()
     }
 
@@ -101,8 +104,12 @@ public indirect enum WireJSON: Sendable, Equatable {
         let bytes: [UInt8]
         var at = 0
         var nodes = 0
+        let maxNodes: Int
 
-        init(bytes: [UInt8]) { self.bytes = bytes }
+        init(bytes: [UInt8], maxNodes: Int) {
+            self.bytes = bytes
+            self.maxNodes = maxNodes
+        }
 
         mutating func parseDocument() throws -> WireJSON {
             let value = try parseValue(depth: 0)
@@ -117,7 +124,7 @@ public indirect enum WireJSON: Sendable, Equatable {
 
         mutating func parseValue(depth: Int) throws -> WireJSON {
             nodes += 1
-            guard depth <= WireJSON.maxDepth, nodes <= WireJSON.maxNodes else { throw WireFrameError.malformedJSON }
+            guard depth <= WireJSON.maxDepth, nodes <= maxNodes else { throw WireFrameError.malformedJSON }
             skipWhitespace()
             guard at < bytes.count else { throw WireFrameError.malformedJSON }
             switch bytes[at] {
