@@ -20,9 +20,12 @@ struct SessionScreen: View {
     let onTerminate: () -> Void
     let onClose: () -> Void
     let focusQuestionRequest: String?
+    /// Reports the draft, pushed conversation and reading position, so the shell can hand
+    /// them back if it rebuilds this screen (a switch between compact and regular width).
+    let onViewStateChange: (RemiSessionViewState) -> Void
 
-    @State private var draft = ""
-    @State private var selectedViewID = ""
+    @State private var draft: String
+    @State private var selectedViewID: String
     @State private var focusState: PhoneQuestionFocusState
     @State private var confirmingTermination = false
     @State private var isSearchPresented = false
@@ -30,7 +33,7 @@ struct SessionScreen: View {
     @State private var reviewState = RemiTranscriptReviewState()
     @State private var reviewMemory = RemiConversationReviewMemory()
     @State private var visibleEntryID: String?
-    @State private var followsLatest = true
+    @State private var followsLatest: Bool
     @State private var latestScrollRequest = 0
     @State private var composerFocusRequest = 0
     @State private var reviewSessionID: String
@@ -53,7 +56,9 @@ struct SessionScreen: View {
         onSend: @escaping (String) async -> Bool = { _ in true },
         onTerminate: @escaping () -> Void = {},
         onClose: @escaping () -> Void = {},
-        focusQuestionRequest: String? = nil
+        focusQuestionRequest: String? = nil,
+        restoredState: RemiSessionViewState = RemiSessionViewState(),
+        onViewStateChange: @escaping (RemiSessionViewState) -> Void = { _ in }
     ) {
         self.session = session
         self.transcript = transcript
@@ -61,7 +66,11 @@ struct SessionScreen: View {
         self.views = views
         self.viewsLoaded = viewsLoaded
         self.isLoadingTranscript = isLoadingTranscript
-        _selectedViewID = State(initialValue: initialConversationID ?? "")
+        // A conversation the route names (a notification) wins over the one left open.
+        _selectedViewID = State(initialValue: initialConversationID ?? restoredState.selectedViewID)
+        _draft = State(initialValue: restoredState.draft)
+        _visibleEntryID = State(initialValue: restoredState.visibleEntryID)
+        _followsLatest = State(initialValue: restoredState.followsLatest)
         _focusState = State(initialValue: PhoneQuestionFocusState(
             initial: initialQuestionID,
             loaded: questions.map(\.questionID)
@@ -76,6 +85,16 @@ struct SessionScreen: View {
         self.onTerminate = onTerminate
         self.onClose = onClose
         self.focusQuestionRequest = focusQuestionRequest
+        self.onViewStateChange = onViewStateChange
+    }
+
+    private var viewState: RemiSessionViewState {
+        RemiSessionViewState(
+            draft: draft,
+            selectedViewID: selectedViewID,
+            visibleEntryID: visibleEntryID,
+            followsLatest: followsLatest
+        )
     }
 
     var body: some View {
@@ -282,6 +301,7 @@ struct SessionScreen: View {
                 selectedViewID = ""
             }
         }
+        .onChange(of: viewState) { _, state in onViewStateChange(state) }
         .onChange(of: viewsLoaded, initial: true) { _, loaded in
             guard loaded else { return }
             reconcileConversationSelection()

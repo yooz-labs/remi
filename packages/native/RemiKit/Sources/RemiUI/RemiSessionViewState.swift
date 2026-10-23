@@ -25,7 +25,8 @@ public struct RemiSessionViewState: Equatable, Sendable {
 }
 
 /// Per-session screen state, keyed by machine and session so the same session id on two
-/// machines never shares a draft.
+/// machines never shares a draft. Entries are small and are never pruned on a session list
+/// change: a machine that drops for a moment must not cost a person their draft.
 public struct RemiSessionViewStateStore: Equatable, Sendable {
     private var states: [RemiSessionKey: RemiSessionViewState] = [:]
 
@@ -42,12 +43,6 @@ public struct RemiSessionViewStateStore: Equatable, Sendable {
         states[key] = state == RemiSessionViewState() ? nil : state
     }
 
-    public mutating func remove(_ key: RemiSessionKey) { states[key] = nil }
-
-    /// Forgets sessions that are no longer in `keys`, so the store cannot grow without bound.
-    public mutating func prune(keeping keys: Set<RemiSessionKey>) {
-        states = states.filter { keys.contains($0.key) }
-    }
 }
 
 /// A reference holder for the store. Scrolling writes the reading position many times a
@@ -64,6 +59,4 @@ public final class RemiSessionViewStateHolder {
     public func update(_ key: RemiSessionKey, _ change: (inout RemiSessionViewState) -> Void) {
         store.update(key, change)
     }
-
-    public func prune(keeping keys: Set<RemiSessionKey>) { store.prune(keeping: keys) }
 }

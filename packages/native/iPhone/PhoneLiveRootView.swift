@@ -31,6 +31,10 @@ struct PhoneLiveRootView: View {
     @State private var answerFeedbackTrigger = 0
     @State private var notificationRouter = PhoneNotificationRouter.shared
     @State private var shell = PhoneShellState()
+    /// Above the compact/regular switch, so a rebuilt session screen gets its draft,
+    /// pushed conversation and reading position back. A reference type: scroll position
+    /// writes must not re-render this view.
+    @State private var sessionViewStates = RemiSessionViewStateHolder()
     @State private var activeSheet: PhoneShellSheet?
     @State private var pairingAttemptID: UUID?
     @State private var relayNotifications = NativeRelayNotifications.shared
@@ -769,7 +773,9 @@ struct PhoneLiveRootView: View {
             onSend: { await sendChat(machineID: session.machineID, sessionId: session.id, content: $0) },
             onTerminate: { store.terminateSession(machineID: session.machineID, sessionId: session.id) },
             onClose: { shell.select(.inbox) },
-            focusQuestionRequest: focus
+            focusQuestionRequest: focus,
+            restoredState: sessionViewStates.state(for: session.key),
+            onViewStateChange: { state in sessionViewStates.update(session.key) { $0 = state } }
         )
         .id(route)
         .onAppear {

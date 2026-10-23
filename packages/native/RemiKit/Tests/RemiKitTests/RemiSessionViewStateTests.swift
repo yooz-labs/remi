@@ -46,13 +46,4 @@ import Testing
         store.update(key()) { $0.draft = "" }
         #expect(store == RemiSessionViewStateStore())
     }
-
-    @Test func pruneForgetsGoneSessions() {
-        var store = RemiSessionViewStateStore()
-        store.update(key("keep")) { $0.draft = "a" }
-        store.update(key("gone")) { $0.draft = "b" }
-        store.prune(keeping: [key("keep")])
-        #expect(store.state(for: key("keep")).draft == "a")
-        #expect(store.state(for: key("gone")).draft == "")
-    }
 }
