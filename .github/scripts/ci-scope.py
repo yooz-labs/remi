@@ -133,6 +133,13 @@ ISOLATED_TEST_RUNNERS = {
     "packages/signaling/tests/e2e/test-entry.ts": "be546df77024a1e7e3a32023ac53e5175627f526",
     "tests/integration/relay-r7-portability.test.ts": "8a72829ad961a187d6af82d3976dd3cee8e9e2ef",
 }
+# The reviewed #1623 harness adds two execution inputs; historical harnesses do not import them.
+WORKER_LISTENER_HARNESS = "017d8cc3e0c8c947d0e713e5f05a1b85b2250ab1"
+WORKER_LISTENER_RUNNERS = {
+    "packages/signaling/tests/e2e/worker-listener.ts": "aefd222cac469a256a5d364d6c1946394b627af8",
+    "packages/signaling/tests/e2e/worker-listener-process.mjs": "5e068470685ab46ac092728219cd3b4805bb9779",
+}
+WORKER_LISTENER_RELAY = "7d7cc4af1333789734d022f097b47c61913f9a62"
 # Dormant codec ownership is exact; registering/exporting it restores R7 (#1170).
 STAGING_SOURCE = "packages/shared/src/image-staging.ts"
 STAGING_INPUTS = {
@@ -1187,11 +1194,16 @@ def hook_test_references_reviewed(base, head):
 
 
 def isolated_test_runner_matches(path, expected_blob, entry):
-    """Accept one reviewed cache-comment correction without changing historical pins."""
+    """Accept exact reviewed harness/listener and Node-setup updates; retain historical pins."""
     return entry == ("100644", expected_blob) or (
         path == "packages/signaling/tests/e2e/harness.ts" and
         expected_blob == "df152a92fd95d8dcfd5176e79c3110aa7b500628" and
-        entry == ("100644", "89cdbe0dc2eee5b924b692b3811ebe7b4c7f3cf1")
+        entry in {("100644", "89cdbe0dc2eee5b924b692b3811ebe7b4c7f3cf1"),
+                  ("100644", WORKER_LISTENER_HARNESS)}
+    ) or (
+        path == ".github/workflows/relay-r7.yml" and
+        expected_blob == "9fa98da60f588ba52b7af22f6e09db8003e60700" and
+        entry == ("100644", WORKER_LISTENER_RELAY)
     )
 
 
@@ -1234,6 +1246,8 @@ def isolated_test_inputs_reviewed(base, head, merge_base, paths, status_lookup=N
                 if tree.get(path, (None,))[0] != "100644":
                     return False
             pins = dict(ISOLATED_TEST_RUNNERS)
+            if tree.get("packages/signaling/tests/e2e/harness.ts") == ("100644", WORKER_LISTENER_HARNESS):
+                pins.update(WORKER_LISTENER_RUNNERS)
             for producer in producers:
                 pins.update(ISOLATED_TEST_HELPER_PINS.get(producer, {}))
                 pins.update({path: value[0] for path, value in ISOLATED_TEST_INPUTS.get(producer, {}).items()})
