@@ -111,9 +111,7 @@ public struct TerminalViewController: Sendable, Equatable {
         case .leave:
             return leave()
         case .disconnected:
-            pending = nil
-            abandonedOpenId = nil
-            if isActive { state = .interrupted }
+            interrupt()
             return []
         case .tick:
             return advance(now: now, date: date)
@@ -121,6 +119,13 @@ public struct TerminalViewController: Sendable, Equatable {
             if let actions = advanceIfDue(now: now, date: date) { return actions }
             return receive(message, now: now, date: date)
         }
+    }
+
+    /// The connection dropped or a frame could not be sent.
+    public mutating func interrupt() {
+        pending = nil
+        abandonedOpenId = nil
+        if isActive { state = .interrupted }
     }
 
     // MARK: Time
@@ -173,6 +178,7 @@ public struct TerminalViewController: Sendable, Equatable {
         defer {
             pending = nil
             expiresAt = nil
+            screen = nil  // nothing from the terminal lingers once the person has left
         }
         switch state {
         case .open(let viewId, _):
