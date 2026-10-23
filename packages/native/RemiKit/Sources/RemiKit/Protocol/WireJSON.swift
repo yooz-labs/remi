@@ -19,13 +19,16 @@ public indirect enum WireJSON: Sendable, Equatable {
     /// The most bytes of one frame (ADR 0041, 0045, 0047).
     public static let maxFrameBytes = 65_536
     static let maxDepth = 8
-    public static let maxNodes = 512
+    static let maxNodes = 512
 
-    /// Parses `data` as one JSON value, or throws a payload-free `WireFrameError`.
-    ///
-    /// `maxBytes` and `maxNodes` exist for reading large trusted files (the shared vector corpora)
-    /// with the same grammar; a frame uses the defaults.
-    public static func parse(_ data: Data, maxBytes: Int = maxFrameBytes, maxNodes: Int = maxNodes) throws -> WireJSON {
+    /// Parses `data` as one JSON value with the frame limits, or throws a payload-free `WireFrameError`.
+    public static func parse(_ data: Data) throws -> WireJSON {
+        try parse(data, maxBytes: maxFrameBytes, maxNodes: maxNodes)
+    }
+
+    /// The same grammar with larger limits, for reading large trusted files (the shared vector
+    /// corpora). Internal, so the public entry points are always strict.
+    static func parse(_ data: Data, maxBytes: Int, maxNodes: Int) throws -> WireJSON {
         guard data.count <= maxBytes else { throw WireFrameError.oversize }
         let bytes = [UInt8](data)
         // Invalid UTF-8 is refused before anything is read from it.
@@ -34,8 +37,8 @@ public indirect enum WireJSON: Sendable, Equatable {
         return try parser.parseDocument()
     }
 
-    public static func parse(_ text: String, maxBytes: Int = maxFrameBytes) throws -> WireJSON {
-        try parse(Data(text.utf8), maxBytes: maxBytes)
+    public static func parse(_ text: String) throws -> WireJSON {
+        try parse(Data(text.utf8))
     }
 
     /// Compact JSON text. Integral numbers within the safe range print without a fraction.

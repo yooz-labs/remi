@@ -43,6 +43,28 @@ struct WireJSONTests {
         #expect(throws: WireFrameError.malformedJSON) { try WireJSON.parse(wide) }
     }
 
+    @Test func valueCountBoundaryIs512Not513() throws {
+        // The array itself is one value, so 511 elements make 512 and 512 elements make 513.
+        let fits = "[" + Array(repeating: "0", count: 511).joined(separator: ",") + "]"
+        let over = "[" + Array(repeating: "0", count: 512).joined(separator: ",") + "]"
+        _ = try WireJSON.parse(fits)
+        #expect(throws: WireFrameError.malformedJSON) { try WireJSON.parse(over) }
+    }
+
+    @Test func depthBoundaryIs8Levels() throws {
+        // Depth counts from 0: nine nested arrays reach depth 8, ten reach 9.
+        _ = try WireJSON.parse(String(repeating: "[", count: 9) + String(repeating: "]", count: 9))
+        #expect(throws: WireFrameError.malformedJSON) {
+            try WireJSON.parse(String(repeating: "[", count: 10) + String(repeating: "]", count: 10))
+        }
+    }
+
+    @Test func largerLimitsAreOnlyOnTheInternalPath() throws {
+        let wide = "[" + Array(repeating: "0", count: 600).joined(separator: ",") + "]"
+        #expect(throws: WireFrameError.malformedJSON) { try WireJSON.parse(wide) }
+        _ = try WireJSON.parse(Data(wide.utf8), maxBytes: 100_000, maxNodes: 1_000)
+    }
+
     @Test func refusesGrammarJSONRefuses() {
         for text in ["", "{", "[1,]", #"{"a":1,}"#, "01", "1.", ".5", "+1", "NaN", "'a'", "\"a\nb\"", "{} x", "truee"] {
             #expect(throws: WireFrameError.self, "\(text)") { try WireJSON.parse(text) }
