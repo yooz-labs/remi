@@ -48,6 +48,21 @@ public struct RemiMacColumnLayout: Equatable, Sendable {
         }
     }
 
+    /// The layout with the navigation columns showing: a conversation-only layout returns to
+    /// the columns it was expanded from; any other layout is unchanged. Go to Inbox uses it,
+    /// because the Inbox lives in the middle column.
+    public func revealingNavigation() -> Self {
+        guard visibility == .detailOnly else { return self }
+        let target = expandedVisibility == .detailOnly ? NavigationSplitViewVisibility.all : expandedVisibility
+        return Self(visibility: target, expandedVisibility: target)
+    }
+
+    /// A conversation-only layout needs a conversation. When the selected session no longer
+    /// exists the navigation columns come back, so the window is never left on an empty detail.
+    public func validated(sessionExists: Bool) -> Self {
+        sessionExists ? self : revealingNavigation()
+    }
+
     public func togglingMachines() -> Self {
         switch visibility {
         case .all:

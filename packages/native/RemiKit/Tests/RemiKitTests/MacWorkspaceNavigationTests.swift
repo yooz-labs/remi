@@ -147,6 +147,25 @@ import RemiKit
         )
     }
 
+    @Test func revealingNavigationLeavesConversationOnlyLayout() {
+        let focused = RemiMacColumnLayout(visibility: .detailOnly, expandedVisibility: .doubleColumn)
+        #expect(focused.revealingNavigation() == RemiMacColumnLayout(
+            visibility: .doubleColumn, expandedVisibility: .doubleColumn
+        ))
+        let broken = RemiMacColumnLayout(visibility: .detailOnly, expandedVisibility: .detailOnly)
+        #expect(broken.revealingNavigation() == RemiMacColumnLayout(visibility: .all, expandedVisibility: .all))
+        let all = RemiMacColumnLayout(visibility: .all, expandedVisibility: .all)
+        #expect(all.revealingNavigation() == all)
+    }
+
+    @Test func conversationOnlyLayoutFallsBackWhenTheSessionIsGone() {
+        let focused = RemiMacColumnLayout(visibility: .detailOnly, expandedVisibility: .all)
+        #expect(focused.validated(sessionExists: true) == focused)
+        #expect(focused.validated(sessionExists: false).visibility == .all)
+        let columns = RemiMacColumnLayout(visibility: .doubleColumn, expandedVisibility: .doubleColumn)
+        #expect(columns.validated(sessionExists: false) == columns)
+    }
+
     @Test func columnLayoutRoundTripsThroughStorage() {
         let layouts = [
             RemiMacColumnLayout(visibility: .all, expandedVisibility: .all),
