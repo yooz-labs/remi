@@ -325,6 +325,8 @@ public final class MachineStore {
     func ownedStartApprovalPolling(_ endpoint: MachineEndpoint) { startApprovalPolling(for: endpoint) }
     #endif
     public private(set) var transcriptsBySession: [String: [TranscriptContentMessage]] = [:]
+    /// Sessions whose transcript has been requested and has not finished arriving (#1602).
+    public private(set) var transcriptsLoading: Set<String> = []
     public private(set) var sessionViewsBySession: [String: [SessionViewMeta]] = [:]
     public private(set) var recentRepositoriesByMachine: [String: [RecentRepository]] = [:]
     public private(set) var latestError: ErrorMessage?
@@ -1421,8 +1423,18 @@ public final class MachineStore {
             timestamp: Date().ISO8601Format(),
             sessionId: sessionId
         )
-        Task { try? await connection.send(request) }
+        transcriptsLoading.insert(sessionId)
+        Task { [weak self] in
+            do { try await connection.send(request) } catch { self?.transcriptsLoading.remove(sessionId) }
+        }
+        // The completion message is the normal end; this keeps a lost one from showing a spinner forever.
+        Task { [weak self] in
+            try? await Task.sleep(for: Self.transcriptLoadTimeout)
+            self?.transcriptsLoading.remove(sessionId)
+        }
     }
+
+    nonisolated static let transcriptLoadTimeout: Duration = .seconds(45)
 
     public func answer(
         sessionId: String,
@@ -2135,7 +2147,9 @@ public final class MachineStore {
                     finishResume(requestID: requestID, error: error.message)
                 }
             }
-        case .sessionUpdate, .transcriptComplete, .unsupported, .pushRegistration:
+        case .transcriptComplete(let complete):
+            transcriptsLoading.remove(complete.sessionId)
+        case .sessionUpdate, .unsupported, .pushRegistration:
             break
         }
     }

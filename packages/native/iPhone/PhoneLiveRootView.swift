@@ -662,6 +662,7 @@ struct PhoneLiveRootView: View {
             questions: questions(session.id),
             views: store.sessionViewsBySession[session.id] ?? [],
             viewsLoaded: store.sessionViewsBySession[session.id] != nil,
+            isLoadingTranscript: { store.transcriptsLoading.contains($0) },
             initialConversationID: route.conversationID,
             initialQuestionID: focus,
             transcriptForView: transcript,
