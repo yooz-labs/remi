@@ -277,7 +277,7 @@ public enum FileFetchMessage: Sendable, Equatable {
 
     /// Characters no path component or file name may hold: separators, backslash, colon,
     /// controls and misleading direction controls.
-    private static func isUnsafeComponentScalar(_ scalar: Unicode.Scalar) -> Bool {
+    static func isUnsafeComponentScalar(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.value {
         case 0x2F, 0x3A, 0x5C, 0x00...0x1F, 0x7F...0x9F, 0x061C, 0x200E, 0x200F, 0x202A...0x202E, 0x2066...0x2069:
             true

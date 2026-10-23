@@ -23,7 +23,10 @@ struct SessionScreen: View {
     /// Reports the draft, pushed conversation and reading position, so the shell can hand
     /// them back if it rebuilds this screen (a switch between compact and regular width).
     let onViewStateChange: (RemiSessionViewState) -> Void
+    /// The terminal and files panes a machine offers (#1639); chat only by default.
+    let panes: SessionPanes
 
+    @State private var pane: PhoneSessionPane
     @State private var draft: String
     @State private var selectedViewID: String
     @State private var focusState: PhoneQuestionFocusState
@@ -57,8 +60,12 @@ struct SessionScreen: View {
         onClose: @escaping () -> Void = {},
         focusQuestionRequest: String? = nil,
         restoredState: RemiSessionViewState = RemiSessionViewState(),
-        onViewStateChange: @escaping (RemiSessionViewState) -> Void = { _ in }
+        onViewStateChange: @escaping (RemiSessionViewState) -> Void = { _ in },
+        panes: SessionPanes = .chatOnly,
+        initialPane: PhoneSessionPane = .chat
     ) {
+        self.panes = panes
+        _pane = State(initialValue: panes.availability.state(for: initialPane).isAvailable ? initialPane : .chat)
         self.session = session
         self.transcript = transcript
         self.questions = questions
@@ -97,6 +104,54 @@ struct SessionScreen: View {
     }
 
     var body: some View {
+        switch pane {
+        case .chat:
+            chatBody
+        case .terminal:
+            paneBody { TerminalPane(panes: panes) }
+        case .files:
+            paneBody { FilesPane(panes: panes) }
+        }
+    }
+
+    /// The terminal and files panes: the identity header, the switcher, and the pane.
+    private func paneBody<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
+            SessionIdentityHeader(
+                machineName: session.machineName, project: session.project, harness: session.harness,
+                status: session.status
+            )
+            .padding(.horizontal, RemiTheme.Spacing.m)
+            .padding(.top, RemiTheme.Spacing.s)
+            PanePicker(offered: panes.availability.offeredPanes, selection: $pane)
+                .padding(.horizontal, RemiTheme.Spacing.m)
+            content()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .navigationTitle(session.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if session.canTerminate || panes.availability.hasAnyPane {
+                ToolbarItem(placement: .topBarTrailing) { sessionActions }
+            }
+        }
+        .confirmationDialog(
+            "Exit \(session.name)?", isPresented: $confirmingTermination, titleVisibility: .visible
+        ) {
+            Button("Exit session", role: .destructive) {
+                onTerminate()
+                onClose()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The agent process and its Remi session will close. Its transcript remains available for later review.")
+        }
+        .onChange(of: panes.availability) { _, availability in
+            if !availability.state(for: pane).isAvailable { pane = .chat }
+        }
+    }
+
+    private var chatBody: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 VStack(spacing: 0) {
@@ -120,6 +175,8 @@ struct SessionScreen: View {
                                 harness: session.harness,
                                 status: session.status
                             )
+
+                            PanePicker(offered: panes.availability.offeredPanes, selection: $pane)
 
                             if !views.isEmpty {
                                 ConversationPicker(
@@ -230,7 +287,7 @@ struct SessionScreen: View {
                     }
                     .visibilityPriority(.high)
                 }
-                if session.canTerminate {
+                if session.canTerminate || panes.availability.hasAnyPane {
                     ToolbarItem(placement: .topBarTrailing) {
                         sessionActions
                     }
@@ -245,7 +302,7 @@ struct SessionScreen: View {
                         searchButton
                     }
                 }
-                if session.canTerminate {
+                if session.canTerminate || panes.availability.hasAnyPane {
                     ToolbarItem(placement: .topBarTrailing) {
                         sessionActions
                     }
@@ -290,6 +347,9 @@ struct SessionScreen: View {
                 selectedViewID = ""
             }
         }
+        .onChange(of: panes.availability) { _, availability in
+            if !availability.state(for: pane).isAvailable { pane = .chat }
+        }
         .onChange(of: viewState) { _, state in onViewStateChange(state) }
         .onChange(of: viewsLoaded, initial: true) { _, loaded in
             guard loaded else { return }
@@ -329,8 +389,24 @@ struct SessionScreen: View {
 
     private var sessionActions: some View {
         Menu("Session actions", systemImage: "ellipsis.circle") {
-            Button("Exit session", systemImage: "xmark.circle", role: .destructive) {
-                confirmingTermination = true
+            // Offered only for a pane the machine can serve (RemiPaneAvailability).
+            let offered = panes.availability.offeredPanes
+            if offered.count > 1 {
+                Section("View") {
+                    ForEach(offered, id: \.self) { offeredPane in
+                        Button {
+                            pane = offeredPane
+                        } label: {
+                            Label(PanePicker.title(offeredPane), systemImage: PanePicker.systemImage(offeredPane))
+                        }
+                        .disabled(offeredPane == pane)
+                    }
+                }
+            }
+            if session.canTerminate {
+                Button("Exit session", systemImage: "xmark.circle", role: .destructive) {
+                    confirmingTermination = true
+                }
             }
         }
     }

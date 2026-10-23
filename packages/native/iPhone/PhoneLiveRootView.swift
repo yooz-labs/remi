@@ -815,7 +815,9 @@ struct PhoneLiveRootView: View {
             onClose: { shell.select(.inbox) },
             focusQuestionRequest: focus,
             restoredState: sessionViewStates.state(for: session.key),
-            onViewStateChange: { state in sessionViewStates.update(session.key) { $0 = state } }
+            onViewStateChange: { state in sessionViewStates.update(session.key) { $0 = state } },
+            panes: panes(for: session),
+            initialPane: route.pane
         )
         .id(route)
         .onAppear {
@@ -827,6 +829,26 @@ struct PhoneLiveRootView: View {
             // request first.
             Task { @MainActor in _ = shell.consumeFocus(for: route) }
         }
+    }
+
+    /// The terminal and files panes this session's machine can serve, from its `hello_ack` (#1639).
+    private func panes(for session: RemiSessionSummary) -> SessionPanes {
+        let machine = store.machine(withIdentifier: session.machineID)
+        let machineID = session.machineID
+        let sessionID = session.id
+        return SessionPanes(
+            availability: RemiPaneAvailability(
+                ack: machine?.helloAck,
+                isConnected: machine?.status == .connected,
+                transportBlock: machine.flatMap { PaneTransportPolicy.blockReason(for: $0.endpoint) }),
+            terminal: store.terminalView(machineID: machineID, sessionID: sessionID),
+            download: store.fileDownload(machineID: machineID, sessionID: sessionID),
+            openTerminal: { store.openTerminal(machineID: machineID, sessionID: sessionID) },
+            leaveTerminal: { store.leaveTerminal(machineID: machineID, sessionID: sessionID) },
+            tick: { store.tickPanes() },
+            beginDownload: { store.beginFileDownload(machineID: machineID, sessionID: sessionID, path: $0) },
+            cancelDownload: { store.cancelFileDownload(machineID: machineID, sessionID: sessionID) },
+            discardDownload: { store.discardFileDownload(machineID: machineID, sessionID: sessionID) })
     }
 
     private func reconnectingPlaceholder(_ route: PhoneSessionRoute) -> some View {
