@@ -50,11 +50,12 @@ test('a failed pre-start observation releases the owned audience listener', asyn
     }),
   ).rejects.toBe(failure);
   if (!audience) throw new Error('Owned audience was not observed');
+  const audiencePort = Number(new URL(audience).port);
   const probe = createServer();
   try {
     await new Promise<void>((resolve, reject) => {
       probe.once('error', reject);
-      probe.listen(Number(new URL(audience).port), '127.0.0.1', resolve);
+      probe.listen(audiencePort, '127.0.0.1', resolve);
     });
     expect(probe.listening).toBe(true);
   } finally {
