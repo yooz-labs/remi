@@ -155,13 +155,10 @@ struct PhoneLiveRootView: View {
     /// persistent sidebar beside the same destination content.
     @ViewBuilder
     private func rootLayout(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
-        if let sidebar = chrome.sidebarEnvironment {
+        if chrome.usesSidebar {
             NavigationSplitView(columnVisibility: columnVisibility) {
                 drawerContent(sessions: sessions, machines: machines)
-                    .environment(\.phoneDrawerBlocksTaps, sidebar.blocksTaps)
-                    .environment(\.phoneDrawerOrderFrozen, sidebar.orderFrozen)
-                    .environment(\.phoneDrawerIsOpen, sidebar.isOpen)
-                    .environment(\.phoneDrawerShowsCloseButton, chrome.showsDrawerCloseButton)
+                    .phoneSidebarEnvironment(chrome)
                     .toolbar(.hidden, for: .navigationBar)
                     .navigationSplitViewColumnWidth(RemiTheme.Size.sidebarWidth)
             } detail: {

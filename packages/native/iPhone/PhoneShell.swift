@@ -78,8 +78,10 @@ extension View {
 struct PhoneShell<Content: View, Drawer: View>: View {
     @Binding var state: PhoneShellState
     var isAtRoot = true
-    /// What the shell draws for the layout mode. Only the compact shell is built today,
-    /// because regular width hosts the drawer content in a sidebar instead.
+    /// What the shell draws for the layout mode. `PhoneLiveRootView` builds this shell
+    /// only in compact (regular width hosts the drawer content in a sidebar and never
+    /// builds it), so the default is what ships; the parameter keeps the dim layer and
+    /// edge pan on the one rule that `RemiShellChrome` tests.
     var chrome = RemiShellChrome.resolve(mode: .compact)
     @ViewBuilder var content: () -> Content
     @ViewBuilder var drawer: () -> Drawer
@@ -353,6 +355,23 @@ extension EnvironmentValues {
     @Entry var phoneDrawerIsOpen = false
     /// False when the drawer content is a persistent sidebar: there is nothing to close.
     @Entry var phoneDrawerShowsCloseButton = true
+}
+
+extension View {
+    /// The drawer content as a persistent sidebar: the environment values the drawer reads
+    /// while the shell is not around it, taken from `RemiShellChrome` (and nothing when the
+    /// chrome is the compact drawer's).
+    @ViewBuilder
+    func phoneSidebarEnvironment(_ chrome: RemiShellChrome) -> some View {
+        if let sidebar = chrome.sidebarEnvironment {
+            environment(\.phoneDrawerBlocksTaps, sidebar.blocksTaps)
+                .environment(\.phoneDrawerOrderFrozen, sidebar.orderFrozen)
+                .environment(\.phoneDrawerIsOpen, sidebar.isOpen)
+                .environment(\.phoneDrawerShowsCloseButton, chrome.showsDrawerCloseButton)
+        } else {
+            self
+        }
+    }
 }
 
 /// A `UIScreenEdgePanGestureRecognizer` for the left edge, driving the drawer open.

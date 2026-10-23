@@ -388,7 +388,7 @@ private struct RegularShellPreview: View {
                 onAddMachine: {},
                 onPreferences: {}
             )
-            .environment(\.phoneDrawerShowsCloseButton, false)
+            .phoneSidebarEnvironment(RemiShellChrome.resolve(mode: .regular))
             .toolbar(.hidden, for: .navigationBar)
             .navigationSplitViewColumnWidth(RemiTheme.Size.sidebarWidth)
         } detail: {
