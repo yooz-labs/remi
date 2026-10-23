@@ -307,6 +307,7 @@ export * from './image-staging.ts';
 export * from './image-insertion.ts';
 export {
   isFileDownloadCandidate,
+  isTerminalViewCandidate,
   isBrowserLinkCandidate,
   isImageStagingCandidate,
   isImageInsertionCandidate,
@@ -318,3 +319,27 @@ export * from './browser-links.ts';
 // Structural file-download vocabulary; host admission and HTTPS/WSS release gates remain required.
 export * from './file-download.ts';
 export * from './file-download-ingress.ts';
+
+// Structural terminal view contract; no capability or runtime availability implied.
+export type {
+  SessionTerminalOpen,
+  SessionTerminalOpened,
+  SessionTerminalRead,
+  SessionTerminalSnapshot,
+  SessionTerminalUnchanged,
+  SessionTerminalClose,
+  SessionTerminalClosed,
+  SessionTerminalRefused,
+  TerminalViewMessage,
+  TerminalViewRequest,
+  TerminalViewBinding,
+  TerminalViewOperation,
+  TerminalViewRefusalCode,
+} from './terminal-view.ts';
+export {
+  TERMINAL_VIEW_LIMITS,
+  TERMINAL_VIEW_OPERATIONS,
+  TERMINAL_VIEW_REFUSAL_CODES,
+  decodeTerminalViewFrame,
+  encodeTerminalViewFrame,
+} from './terminal-view.ts';

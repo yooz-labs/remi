@@ -17,6 +17,9 @@ was selected by that report. The owner then approved qualification at 1 MiB per
 model / 32 MiB per home. The [bounded primitive](../docs/terminal-screen-bounded-model.md)
 now passes all six supported compiled executions under ADR0046 (#1608);
 domain wire, capability, transport and native caller adoption remain later gates.
+B2 (#1612) adds the exact structural wire in ADR0047, shared goldens and
+explicit pre-activation relay refusals; host/authority/lease integration and
+capability advertisement remain B3/B4 gates.
 Transferred-media preview cleanup uses the owner-confirmed oldest-cache eviction
 when full, preserving explicit Save/export and host source files.
 
