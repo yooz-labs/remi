@@ -37,7 +37,8 @@ struct WireVectors {
             if case .array(let bytes)? = object.value(for: "bytes") {
                 return Data(try bytes.map { item -> UInt8 in
                     guard case .number(let n) = item else { throw WireFrameError.invalid("bytes") }
-                    return UInt8(n)
+                    guard let byte = UInt8(exactly: n) else { throw WireFrameError.invalid("bytes") }
+                    return byte
                 })
             }
             guard case .array(let units)? = object.value(for: "units") else { throw WireFrameError.invalid("input") }
@@ -45,7 +46,7 @@ struct WireVectors {
             var data = Data()
             for item in units {
                 guard case .number(let n) = item else { throw WireFrameError.invalid("units") }
-                let unit = UInt32(n)
+                guard let unit = UInt32(exactly: n), unit <= 0xFFFF else { throw WireFrameError.invalid("units") }
                 if unit < 0x80 {
                     data.append(UInt8(unit))
                 } else if unit < 0x800 {
@@ -81,5 +82,48 @@ struct WireVectors {
         case .array(let items): return .array(items.map(sorted))
         default: return json
         }
+    }
+}
+
+extension WireVectors {
+    /// Name fragments of refusals that are about the JSON text, not the frame's shape.
+    static let textLevelNames = [
+        "duplicate", "surrogate", "utf8", "utf-8", "oversize", "over-frame", "trailing", "partial", "bom",
+        "depth", "malformed:", "\\ud", "\\udf", "control-in-raw-json",
+    ]
+
+    static func isTextLevel(_ name: String) -> Bool { textLevelNames.contains { name.contains($0) } }
+
+    /// Every negative vector is refused; one that is well-formed JSON must be refused as a bad
+    /// shape (`.invalid`), never as `.malformedJSON` or `.oversize`, unless its name says the
+    /// text itself is the problem. Returns the names refused at text level, for the caller to pin.
+    func refusalKinds(_ decode: (Data) throws -> Void) -> [String] {
+        var textLevel: [String] = []
+        for vector in negative {
+            do {
+                try decode(vector.input)
+                Issue.record("\(vector.name) was accepted")
+            } catch WireFrameError.invalid {
+                continue
+            } catch {
+                textLevel.append(vector.name)
+            }
+        }
+        return textLevel
+    }
+}
+
+/// The body must be refused for its shape (`WireFrameError.invalid`), not as bad JSON text or
+/// an oversize frame, so a test of a field rule cannot pass on an unrelated parse failure.
+func expectShapeRefusal(
+    _ comment: Comment? = nil, sourceLocation: SourceLocation = #_sourceLocation, _ body: () throws -> Void
+) {
+    do {
+        try body()
+        Issue.record("accepted" as Comment, sourceLocation: sourceLocation)
+    } catch WireFrameError.invalid {
+        return
+    } catch {
+        Issue.record("refused as \(error), not as a shape error \(comment.map { "(\($0))" } ?? "")", sourceLocation: sourceLocation)
     }
 }

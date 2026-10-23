@@ -25,9 +25,13 @@ struct TerminalViewProtocolTests {
     }
 
     @Test func everyRefusalVectorIsRefused() throws {
-        for vector in try Self.vectors().negative {
-            #expect(throws: WireFrameError.self, "\(vector.name)") { try TerminalViewMessage.decode(vector.input) }
-        }
+        let textLevel = try Self.vectors().refusalKinds { _ = try TerminalViewMessage.decode($0) }
+        #expect(
+            textLevel == [
+                "duplicate-root-id", "escaped-duplicate-type", "duplicate-cursor-field", "lone-surrogate-row",
+                "malformed-utf8",
+            ])
+        // Every other refusal, the geometry, text and encoding rules, is a shape refusal.
     }
 
     @Test func goldenFixturesDecode() throws {
@@ -43,7 +47,7 @@ struct TerminalViewProtocolTests {
 
     @Test func terminalResizeIsNotATerminalViewFrame() throws {
         // The legacy raw-PTY resize stays outside this family (ADR 0047: no input or resize).
-        #expect(throws: WireFrameError.self) {
+        expectShapeRefusal {
             try TerminalViewMessage.decode(FixtureConformanceTests.fixture("terminal_resize"))
         }
     }
@@ -76,7 +80,7 @@ struct TerminalViewProtocolTests {
     @Test func geometryBoundsAreInclusive() throws {
         _ = try TerminalViewMessage.decode(Self.snapshot(columns: 2, rows: 1, lines: [""]))
         _ = try TerminalViewMessage.decode(Self.snapshot(columns: 240, rows: 60, lines: Array(repeating: "", count: 60)))
-        #expect(throws: WireFrameError.self) {
+        expectShapeRefusal {
             try TerminalViewMessage.decode(Self.snapshot(columns: 240, rows: 61, lines: Array(repeating: "", count: 61)))
         }
     }
@@ -84,11 +88,11 @@ struct TerminalViewProtocolTests {
     @Test func perRowStorageCeilingIsColumnsTimes64Bytes() throws {
         let full = String(repeating: "a", count: 128)
         _ = try TerminalViewMessage.decode(Self.snapshot(columns: 2, rows: 1, lines: [full]))
-        #expect(throws: WireFrameError.self) {
+        expectShapeRefusal {
             try TerminalViewMessage.decode(Self.snapshot(columns: 2, rows: 1, lines: [full + "a"]))
         }
         // Multibyte text counts as UTF-8 bytes: 43 three-byte scalars exceed 128 bytes.
-        #expect(throws: WireFrameError.self) {
+        expectShapeRefusal {
             try TerminalViewMessage.decode(
                 Self.snapshot(columns: 2, rows: 1, lines: [String(repeating: "界", count: 43)]))
         }
@@ -100,7 +104,7 @@ struct TerminalViewProtocolTests {
         _ = try TerminalViewMessage.decode(Self.snapshot(columns: 240, rows: 4, lines: four))
         let big = String(repeating: "a", count: 8_192)
         _ = try TerminalViewMessage.decode(Self.snapshot(columns: 240, rows: 4, lines: Array(repeating: big, count: 4)))
-        #expect(throws: WireFrameError.self) {
+        expectShapeRefusal {
             try TerminalViewMessage.decode(
                 Self.snapshot(columns: 240, rows: 5, lines: Array(repeating: big, count: 4) + ["a"]))
         }
@@ -110,7 +114,7 @@ struct TerminalViewProtocolTests {
         _ = try TerminalViewMessage.decode(
             Self.snapshot(columns: 3, rows: 2, lines: ["", ""], cursor: #"{"row":1,"column":2}"#))
         for cursor in [#"{"row":2,"column":0}"#, #"{"row":0,"column":3}"#, #"{"row":-1,"column":0}"#, #"{"row":0}"#] {
-            #expect(throws: WireFrameError.self, "\(cursor)") {
+            expectShapeRefusal("\(cursor)") {
                 try TerminalViewMessage.decode(Self.snapshot(columns: 3, rows: 2, lines: ["", ""], cursor: cursor))
             }
         }
@@ -118,7 +122,7 @@ struct TerminalViewProtocolTests {
 
     @Test func screenTextRefusesControlsBidiAndJoiner() {
         for scalar in ["\u{1B}", "\u{7F}", "\u{9F}", "\u{061C}", "\u{200E}", "\u{200F}", "\u{200D}", "\u{2028}", "\u{2029}", "\u{202A}", "\u{202E}", "\u{2066}", "\u{2069}"] {
-            #expect(throws: WireFrameError.self, "\(scalar.unicodeScalars.first!.value)") {
+            expectShapeRefusal("\(scalar.unicodeScalars.first!.value)") {
                 try TerminalViewMessage.decode(Self.snapshot(columns: 20, rows: 1, lines: ["a\(scalar)b"]))
             }
         }
@@ -141,13 +145,16 @@ struct TerminalViewProtocolTests {
             #"{"harness":"gemini","harnessSessionId":"a"}"#,
             #"{"harness":"codex"}"#,
             #"{"harness":"codex","harnessSessionId":"a","extra":1}"#,
-            #"{"harness":"codex","harnessSessionId":"a","harness":"claude"}"#,
         ] {
-            #expect(throws: WireFrameError.self, "\(binding)") { try TerminalViewMessage.decode(open(binding)) }
+            expectShapeRefusal("\(binding)") { try TerminalViewMessage.decode(open(binding)) }
+        }
+        // A duplicate member is a text-level refusal, before any shape rule.
+        #expect(throws: WireFrameError.malformedJSON) {
+            try TerminalViewMessage.decode(open(#"{"harness":"codex","harnessSessionId":"a","harness":"claude"}"#))
         }
         // 67 three-byte scalars are 201 bytes.
         let wide = String(repeating: "界", count: 67)
-        #expect(throws: WireFrameError.self) {
+        expectShapeRefusal {
             try TerminalViewMessage.decode(open(#"{"harness":"codex","harnessSessionId":"\#(wide)"}"#))
         }
     }
@@ -162,8 +169,8 @@ struct TerminalViewProtocolTests {
             }
         }
         #expect(TerminalViewRefusalCode.allCases.count == 6 && TerminalViewOperation.allCases.count == 3)
-        #expect(throws: WireFrameError.self) { try TerminalViewMessage.decode(refused("session_terminal_open", "Busy")) }
-        #expect(throws: WireFrameError.self) { try TerminalViewMessage.decode(refused("session_terminal_opened", "busy")) }
+        expectShapeRefusal { try TerminalViewMessage.decode(refused("session_terminal_open", "Busy")) }
+        expectShapeRefusal { try TerminalViewMessage.decode(refused("session_terminal_opened", "busy")) }
     }
 
     @Test func frameOverSixtyFourKiBIsRefusedAsOversize() {
@@ -181,7 +188,7 @@ struct TerminalViewProtocolTests {
             ("2026-10-22T00:00:00.000Z", "2026-10-22T00:00:00Z"),
             ("AAECAwQFBgcICQoLDA0ODw", "AAECAwQFBgcICQoLDA0O"),
         ] {
-            #expect(throws: WireFrameError.self, "\(new)") {
+            expectShapeRefusal("\(new)") {
                 try TerminalViewMessage.decode(frame.replacingOccurrences(of: old, with: new))
             }
         }
@@ -194,6 +201,6 @@ struct TerminalViewProtocolTests {
         let bad = SessionTerminalSnapshot(
             header: header, requestId: header.id, viewId: "AAECAwQFBgcICQoLDA0ODw", revision: 0, columns: 5, rows: 2,
             lines: ["only one"], cursor: nil)
-        #expect(throws: WireFrameError.self) { try TerminalViewMessage.snapshot(bad).encodedFrame() }
+        expectShapeRefusal { try TerminalViewMessage.snapshot(bad).encodedFrame() }
     }
 }

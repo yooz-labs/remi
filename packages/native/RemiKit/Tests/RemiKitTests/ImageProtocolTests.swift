@@ -43,9 +43,8 @@ struct ImageProtocolTests {
     @Test func stagingNegativeVectors() throws {
         let vectors = try WireVectors.load("image-staging")
         #expect(vectors.negative.count == 470)
-        for vector in vectors.negative {
-            #expect(throws: WireFrameError.self, "\(vector.name)") { try ImageUploadMessage.decode(vector.input) }
-        }
+        let textLevel = vectors.refusalKinds { _ = try ImageUploadMessage.decode($0) }
+        #expect(textLevel.allSatisfy(WireVectors.isTextLevel), "\(textLevel.filter { !WireVectors.isTextLevel($0) })")
     }
 
     @Test func insertionPositiveVectors() throws {
@@ -61,9 +60,8 @@ struct ImageProtocolTests {
     @Test func insertionNegativeVectors() throws {
         let vectors = try WireVectors.load("image-insertion")
         #expect(vectors.negative.count == 282)
-        for vector in vectors.negative {
-            #expect(throws: WireFrameError.self, "\(vector.name)") { try ImageInsertionMessage.decode(vector.input) }
-        }
+        let textLevel = vectors.refusalKinds { _ = try ImageInsertionMessage.decode($0) }
+        #expect(textLevel.allSatisfy(WireVectors.isTextLevel), "\(textLevel.filter { !WireVectors.isTextLevel($0) })")
     }
 
     @Test func insertionOutcomeCodePairsAreFixed() throws {
@@ -82,7 +80,7 @@ struct ImageProtocolTests {
             #expect(refused.outcome == .refused(code))
         }
         for (outcome, code) in [("inserted", "busy"), ("refused", "none"), ("refused", "delivery_unknown"), ("uncertain", "none"), ("inserted", "delivery_unknown")] {
-            #expect(throws: WireFrameError.self, "\(outcome) \(code)") { try ImageInsertionMessage.decode(result(outcome, code)) }
+            expectShapeRefusal("\(outcome) \(code)") { try ImageInsertionMessage.decode(result(outcome, code)) }
         }
     }
 
@@ -92,7 +90,7 @@ struct ImageProtocolTests {
             Issue.record("fixture no longer names claude")
             return
         }
-        #expect(throws: WireFrameError.self) {
+        expectShapeRefusal {
             try ImageUploadMessage.decode(begin.replacingOccurrences(of: "\"claude\"", with: "\"codex\""))
         }
     }
@@ -104,6 +102,6 @@ struct ImageProtocolTests {
             return
         }
         let same = result.replacingOccurrences(of: parsed.artifactId, with: parsed.transferId)
-        #expect(throws: WireFrameError.self) { try ImageUploadMessage.decode(same) }
+        expectShapeRefusal { try ImageUploadMessage.decode(same) }
     }
 }

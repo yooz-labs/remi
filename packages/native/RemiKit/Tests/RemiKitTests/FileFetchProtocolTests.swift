@@ -33,9 +33,8 @@ struct FileFetchProtocolTests {
     @Test func everyNegativeVectorIsRefused() throws {
         let vectors = try WireVectors.load("file-download")
         #expect(vectors.negative.count == 64)
-        for vector in vectors.negative {
-            #expect(throws: WireFrameError.self, "\(vector.name)") { try FileFetchMessage.decode(vector.input) }
-        }
+        let textLevel = vectors.refusalKinds { _ = try FileFetchMessage.decode($0) }
+        #expect(textLevel.allSatisfy(WireVectors.isTextLevel), "\(textLevel.filter { !WireVectors.isTextLevel($0) })")
     }
 
     @Test func goldenValuesAreTyped() throws {
@@ -79,7 +78,7 @@ struct FileFetchProtocolTests {
             "a/", "a\\b", "a:b", "a\u{0}b", "a\u{85}b", "a\u{202E}b", "a\u{2066}b", "a\u{061C}b",
             String(repeating: "界", count: 86),  // 258 bytes
         ] {
-            #expect(throws: WireFrameError.self, "\(path.unicodeScalars.count)") {
+            expectShapeRefusal("\(path.unicodeScalars.count)") {
                 try FileFetchMessage.decode(Self.begin(path: path))
             }
         }
@@ -87,7 +86,11 @@ struct FileFetchProtocolTests {
         let component = String(repeating: "a", count: 63)
         let long = Array(repeating: component, count: 64).joined(separator: "/")  // 4,095 bytes
         _ = try FileFetchMessage.decode(Self.begin(path: long))
-        #expect(throws: WireFrameError.self) { try FileFetchMessage.decode(Self.begin(path: long + "xx")) }
+        let exact = long + "x"  // exactly 4,096 bytes
+        #expect(exact.utf8.count == 4_096)
+        _ = try FileFetchMessage.decode(Self.begin(path: exact))
+        #expect(throws: WireFrameError.invalid("relativePath")) { try FileFetchMessage.decode(Self.begin(path: exact + "x")) }
+        #expect(throws: WireFrameError.invalid("relativePath")) { try FileFetchMessage.decode(Self.begin(path: long + "xx")) }
     }
 
     @Test func readBoundsAndShape() throws {
@@ -96,7 +99,7 @@ struct FileFetchProtocolTests {
         }
         _ = try FileFetchMessage.decode(read(seq: "319", received: "10485760"))
         for (seq, received) in [("320", "0"), ("-1", "0"), ("0", "10485761"), ("0.5", "0"), ("0", "\"0\""), ("null", "0")] {
-            #expect(throws: WireFrameError.self, "\(seq) \(received)") {
+            expectShapeRefusal("\(seq) \(received)") {
                 try FileFetchMessage.decode(read(seq: seq, received: received))
             }
         }
@@ -109,7 +112,7 @@ struct FileFetchProtocolTests {
         let full = GuardsSupport.base64URL(Data(repeating: 7, count: 32_768))
         _ = try FileFetchMessage.decode(chunk(full))
         for data in [GuardsSupport.base64URL(Data(repeating: 7, count: 32_769)), "", "AA==", "AB", "A", "AA+/"] {
-            #expect(throws: WireFrameError.self, "\(data.prefix(8))") { try FileFetchMessage.decode(chunk(data)) }
+            expectShapeRefusal("\(data.prefix(8))") { try FileFetchMessage.decode(chunk(data)) }
         }
         // A maximum chunk frame stays within the 64 KiB frame limit.
         #expect(chunk(full).utf8.count < WireJSON.maxFrameBytes)
@@ -121,7 +124,7 @@ struct FileFetchProtocolTests {
         }
         _ = try FileFetchMessage.decode(accepted(length: "1"))
         for frame in [accepted(length: "0"), accepted(length: "10485761"), accepted(length: "1", media: "text/plain")] {
-            #expect(throws: WireFrameError.self) { try FileFetchMessage.decode(frame) }
+            expectShapeRefusal { try FileFetchMessage.decode(frame) }
         }
     }
 
@@ -134,9 +137,9 @@ struct FileFetchProtocolTests {
         let golden = try String(decoding: FixtureConformanceTests.fixture("file_fetch_cancel"), as: UTF8.self)
         _ = try FileFetchMessage.decode(golden)
         let extra = golden.replacingOccurrences(of: "\"beginId\"", with: "\"x\":1,\"beginId\"")
-        #expect(throws: WireFrameError.self) { try FileFetchMessage.decode(extra) }
+        expectShapeRefusal { try FileFetchMessage.decode(extra) }
         let other = golden.replacingOccurrences(of: "file_fetch_cancel", with: "file_fetch_unknown")
-        #expect(throws: WireFrameError.self) { try FileFetchMessage.decode(other) }
+        expectShapeRefusal { try FileFetchMessage.decode(other) }
     }
 }
 
