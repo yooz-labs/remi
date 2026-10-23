@@ -36,6 +36,7 @@ struct PhoneLiveRootView: View {
     /// writes must not re-render this view.
     @State private var sessionViewStates = RemiSessionViewStateHolder()
     @State private var activeSheet: PhoneShellSheet?
+    @State private var composerFocusRequest = 0
     @State private var pairingAttemptID: UUID?
     @State private var relayNotifications = NativeRelayNotifications.shared
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
@@ -66,6 +67,7 @@ struct PhoneLiveRootView: View {
         let sessions = allSessions
         let machines = machineSummaries
         return rootLayout(sessions: sessions, machines: machines)
+        .environment(\.remiComposerFocusRequest, composerFocusRequest)
         .background { keyboardCommands }
         .onChange(of: layoutMode, initial: true) { _, mode in
             shell.layoutModeChanged(to: mode)
@@ -176,19 +178,31 @@ struct PhoneLiveRootView: View {
     }
 
     /// Hardware-keyboard commands, in step with the Mac app: Command-N new session,
-    /// Option-Command-Up and Down previous and next session, Control-Command-S the sidebar.
-    /// Command-L, focusing the message field, belongs to the session screen.
+    /// Option-Command-Up and Down previous and next session, Control-Command-S the sidebar,
+    /// Command-L the message field.
+    ///
+    /// These are invisible buttons, not scene-level `.commands`. Commands reach this view's
+    /// state only through focused values, and whether an iPhone-family app builds a main
+    /// menu from them on iOS 27 is not something this change could check. The cost of
+    /// buttons: the system's shortcut overlay does not list them, and each one must carry
+    /// its own guard (`keyboardGuard`) so it never acts behind a sheet or the open drawer.
     private var keyboardCommands: some View {
         Group {
             Button("New session") { present(.newSession(machineID: shell.filteredMachineKey, repository: nil)) }
                 .keyboardShortcut("n", modifiers: .command)
-                .disabled(availableSessionMachines.isEmpty)
+                .disabled(!keyboardGuard.allows(.newSession))
             Button("Previous session") { stepSession(by: -1) }
                 .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+                .disabled(!keyboardGuard.allows(.previousSession))
             Button("Next session") { stepSession(by: 1) }
                 .keyboardShortcut(.downArrow, modifiers: [.command, .option])
+                .disabled(!keyboardGuard.allows(.nextSession))
             Button("Toggle sidebar") { toggleSidebar() }
                 .keyboardShortcut("s", modifiers: [.command, .control])
+                .disabled(!keyboardGuard.allows(.toggleSidebar))
+            Button("Focus message field") { composerFocusRequest += 1 }
+                .keyboardShortcut("l", modifiers: .command)
+                .disabled(!keyboardGuard.allows(.focusComposer))
         }
         .opacity(0)
         .frame(width: 0, height: 0)
@@ -196,15 +210,22 @@ struct PhoneLiveRootView: View {
         .allowsHitTesting(false)
     }
 
+    private var keyboardGuard: RemiKeyboardCommandGuard {
+        RemiKeyboardCommandGuard(
+            sheetIsActive: activeSheet != nil,
+            drawerIsOpen: shell.isDrawerOpen,
+            hasSelectedSession: shell.selectedRoute != nil,
+            hasConnectedMachine: !availableSessionMachines.isEmpty
+        )
+    }
+
     private func stepSession(by offset: Int) {
-        guard activeSheet == nil,
-              let next = RemiSessionNavigation.shifted(
-                  from: shell.selectedSessionKey,
-                  in: allSessions,
-                  machineKey: shell.filteredMachineKey,
-                  offset: offset
-              )
-        else { return }
+        guard let next = RemiSessionNavigation.shifted(
+            from: shell.selectedSessionKey,
+            in: allSessions,
+            machineKey: shell.filteredMachineKey,
+            offset: offset
+        ) else { return }
         selectSession(next)
     }
 

@@ -35,7 +35,6 @@ struct SessionScreen: View {
     @State private var visibleEntryID: String?
     @State private var followsLatest: Bool
     @State private var latestScrollRequest = 0
-    @State private var composerFocusRequest = 0
     @State private var reviewSessionID: String
     @AccessibilityFocusState private var accessibilityQuestionID: String?
 
@@ -215,16 +214,6 @@ struct SessionScreen: View {
             onSend: onSend,
             onInterrupt: nil
         )
-        .environment(\.remiComposerFocusRequest, composerFocusRequest)
-        .background {
-            // A hardware-keyboard shortcut; there is nothing to see or touch.
-            Button("Focus message field") { composerFocusRequest += 1 }
-                .keyboardShortcut("l", modifiers: .command)
-                .opacity(0)
-                .frame(width: 0, height: 0)
-                .accessibilityHidden(true)
-                .allowsHitTesting(false)
-        }
         .navigationTitle(session.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
