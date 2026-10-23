@@ -35,16 +35,35 @@ struct PhoneLiveRootView: View {
     @State private var pairingAttemptID: UUID?
     @State private var relayNotifications = NativeRelayNotifications.shared
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// The sidebar's visibility at regular width; the Mac column helpers remember the
+    /// visible layout while it is hidden.
+    @State private var columnLayout = RemiMacColumnLayout(visibility: .all, expandedVisibility: .all)
+
+    private var layoutMode: RemiLayoutMode {
+        RemiLayoutMode.resolve(horizontalSizeClass: horizontalSizeClass)
+    }
+
+    private var chrome: RemiShellChrome { RemiShellChrome.resolve(mode: layoutMode) }
+
+    private var columnVisibility: Binding<NavigationSplitViewVisibility> {
+        Binding(
+            get: { columnLayout.visibility },
+            set: { visibility in
+                let expanded = visibility == .detailOnly ? columnLayout.expandedVisibility : visibility
+                columnLayout = RemiMacColumnLayout(visibility: visibility, expandedVisibility: expanded)
+            }
+        )
+    }
 
     var body: some View {
         // Worked out once per pass and handed down: building them is the costly part of a
         // store tick, and the drawer, the Inbox and the session all need them.
         let sessions = allSessions
         let machines = machineSummaries
-        return PhoneShell(state: $shell) {
-            shellContent(sessions: sessions, machines: machines)
-        } drawer: {
-            drawerContent(sessions: sessions, machines: machines)
+        return rootLayout(sessions: sessions, machines: machines)
+        .onChange(of: layoutMode, initial: true) { _, mode in
+            shell.layoutModeChanged(to: mode)
         }
         .sheet(item: $activeSheet) { sheet in
             sheetContent(sheet)
@@ -125,6 +144,32 @@ struct PhoneLiveRootView: View {
         }
     }
 
+    /// Compact: the drawer over the content. Regular: the same drawer content as a
+    /// persistent sidebar beside the same destination content.
+    @ViewBuilder
+    private func rootLayout(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
+        if let sidebar = chrome.sidebarEnvironment {
+            NavigationSplitView(columnVisibility: columnVisibility) {
+                drawerContent(sessions: sessions, machines: machines)
+                    .environment(\.phoneDrawerBlocksTaps, sidebar.blocksTaps)
+                    .environment(\.phoneDrawerOrderFrozen, sidebar.orderFrozen)
+                    .environment(\.phoneDrawerIsOpen, sidebar.isOpen)
+                    .environment(\.phoneDrawerShowsCloseButton, chrome.showsDrawerCloseButton)
+                    .toolbar(.hidden, for: .navigationBar)
+                    .navigationSplitViewColumnWidth(RemiTheme.Size.sidebarWidth)
+            } detail: {
+                shellContent(sessions: sessions, machines: machines)
+            }
+            .navigationSplitViewStyle(.balanced)
+        } else {
+            PhoneShell(state: $shell, chrome: chrome) {
+                shellContent(sessions: sessions, machines: machines)
+            } drawer: {
+                drawerContent(sessions: sessions, machines: machines)
+            }
+        }
+    }
+
     private func shellContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
         // Built here, before the NavigationStack. Doing it this way made the Inbox refresh
         // live when a machine changes state; building it inside the stack's closure did
@@ -133,7 +178,9 @@ struct PhoneLiveRootView: View {
         return NavigationStack {
             destination
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) { menuButton }
+                    if chrome.showsMenuButton {
+                        ToolbarItem(placement: .topBarLeading) { menuButton }
+                    }
                 }
         }
     }
