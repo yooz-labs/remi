@@ -1395,10 +1395,13 @@ public final class MachineStore {
         machines.first { $0.id == identifier || $0.machineID == identifier }
     }
 
-    /// A shutdown notice from the hub is stale once a machine is back (#1599).
-    private func clearStaleShutdownNotice() {
-        if latestError?.code == "CLOSING" { latestError = nil }
+    /// What the person sees when no permitted route reaches the machine.
+    nonisolated static func unreachableMessage(layer: String) -> String {
+        "Remi could not reach this machine over \(layer). Check that it is running and on the network, or choose another way to connect in the machine's settings."
     }
+
+    /// The hub sends CLOSING while it shuts down (a restart, an update).
+    nonisolated static func isExpectedClosure(_ error: ErrorMessage) -> Bool { error.code == "CLOSING" }
 
     public func clearLatestError() {
         latestError = nil
@@ -1853,8 +1856,7 @@ public final class MachineStore {
         }
         guard let relay = permitted.first(where: { $0.relayPin != nil }) else {
             let layer = machines[machineIndex].connectionPreference.title
-            machines[machineIndex].status = .unavailable(reason:
-                "\(layer) is unreachable. Check that network or choose another connection layer.")
+            machines[machineIndex].status = .unavailable(reason: Self.unreachableMessage(layer: layer))
             return
         }
         machines[machineIndex].activate(relay)
@@ -1952,7 +1954,6 @@ public final class MachineStore {
         case .connected:
             routeDidConnect(endpoint, machineIndex: index)
             machines[index].status = .connected
-            clearStaleShutdownNotice()
             if !machines[index].needsRouteRecovery { machines[index].recoveryProgress = nil }
         case .awaitingLocalApproval(let fingerprint):
             machines[index].status = .waitingForApproval(fingerprint: fingerprint)
@@ -2007,8 +2008,7 @@ public final class MachineStore {
             if endpoint == parent {
                 routeDidConnect(endpoint, machineIndex: index)
                 machines[index].status = .connected
-                clearStaleShutdownNotice()
-            }
+                }
             if endpoint == parent && machines[index].endpoint.id == endpoint.id {
                 machines[index].capabilities = acknowledgment.capabilities ?? []
                 machines[index].harnesses = acknowledgment.harnesses ?? ["claude"]
@@ -2124,7 +2124,9 @@ public final class MachineStore {
                 latestOperationError = "Could not exit session: \(response.error ?? "Unknown daemon error")"
             }
         case .error(let error):
-            latestError = error
+            // A hub announcing that it is closing is expected, not an error: the machine's own
+            // offline row says what the person needs to know (#1603).
+            if !Self.isExpectedClosure(error) { latestError = error }
             if error.code == "AUTH_REQUIRED" {
                 let requestIDs = resumeAttemptsByRequest.compactMap { requestID, attempt in
                     attempt.parent == endpoint ? requestID : nil
