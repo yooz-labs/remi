@@ -78,6 +78,9 @@ extension View {
 struct PhoneShell<Content: View, Drawer: View>: View {
     @Binding var state: PhoneShellState
     var isAtRoot = true
+    /// What the shell draws for the layout mode. Only the compact shell is built today,
+    /// because regular width hosts the drawer content in a sidebar instead.
+    var chrome = RemiShellChrome.resolve(mode: .compact)
     @ViewBuilder var content: () -> Content
     @ViewBuilder var drawer: () -> Drawer
 
@@ -204,7 +207,7 @@ struct PhoneShell<Content: View, Drawer: View>: View {
     /// touch; a leftward drag on it closes the drawer too.
     @ViewBuilder
     private func dimLayer(width: CGFloat) -> some View {
-        if isActive {
+        if isActive, chrome.showsDimLayer {
             Button(action: tapDim) {
                 Color.black
                     .modifier(PhoneShellFade(model: drag, open: isOpen, maximum: reduceMotion ? 0.25 : 0.12))
@@ -233,7 +236,7 @@ struct PhoneShell<Content: View, Drawer: View>: View {
 
     private func edgePan(width: CGFloat) -> PhoneDrawerEdgePan {
         PhoneDrawerEdgePan(
-            isEnabled: !isOpen && isAtRoot,
+            isEnabled: chrome.edgePanEnabled(isDrawerOpen: isOpen, isAtRoot: isAtRoot),
             onChange: { translationX in
                 guard drag.owner != .close else { return }
                 if !drag.isDragging { Self.resignFirstResponder() }
@@ -348,6 +351,8 @@ extension EnvironmentValues {
     @Entry var phoneDrawerOrderFrozen = false
     /// True only when the drawer is open and reachable, for VoiceOver focus.
     @Entry var phoneDrawerIsOpen = false
+    /// False when the drawer content is a persistent sidebar: there is nothing to close.
+    @Entry var phoneDrawerShowsCloseButton = true
 }
 
 /// A `UIScreenEdgePanGestureRecognizer` for the left edge, driving the drawer open.
