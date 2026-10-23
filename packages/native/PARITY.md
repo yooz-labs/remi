@@ -29,7 +29,9 @@ native targets now, not planned behavior.
 | Machine problem rows and recovery notes | No | Yes | Built, not run | Mac sidebar uses `RemiMachineStripPresentation` (problem rows, unique labels for same-named machines, accessibility labels) and `RemiMachineRecoveryState` copy. The recovery actions stay in the sessions column. |
 | Menu bar commands | N/A | N/A | Built, not run | Go menu (Inbox, Next and Previous Needs You, Previous and Next Session, Previous and Next Machine, Reconnect) and Find in Conversation. |
 | Window state restoration | No | Partial | Partial | Mac restores column layout and per-session unsent drafts per window with scene storage; machine and session selection already persisted. The Inbox view itself is not restored. |
-| Diff, files, terminal view | Web has terminal-era surfaces | No | No | Out of scope X5 (#1245). |
+| Read-only terminal view | Web has terminal-era surfaces | Built, unreachable | No | The iPhone has the pane, a strict view controller, and a monochrome screen view (#1639), shown only when the machine advertises `terminal_view` and the route can carry it. No daemon advertises it yet, and the app has no secure transport for it (ADR 0047), so it cannot be used. Mac wiring is not done. |
+| File download by path | Web has terminal-era surfaces | Built, unreachable | No | The iPhone has a download sheet driven by the strict state machine (#1639), shown only for `file_download` on a route that can carry it. The app has no signed direct HTTPS/WSS transport (ADR 0045), so it cannot be used. There is no directory browsing in the protocol. Mac wiring is not done. |
+| Diffs | Web has terminal-era surfaces | No | No | Out of scope X5 (#1245). |
 
 The Capacitor app should not be retired yet. Native relay and background-answer source
 paths ship, but #1242 still owns signed Mac, recovery, and remaining hardware acceptance;

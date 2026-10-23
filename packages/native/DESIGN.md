@@ -63,7 +63,7 @@ The person is busy elsewhere; the app's job is to tell them what needs them, let
   The drawer's Manage button and the problem lines open it.
 - **The session:** transcript and cards, with a composer.
   It opens at its latest message and has no back button; the drawer is the way out.
-  A session has a pane, chat today, so files and a terminal can be added later once a hub capability backs them.
+  A session has a pane: chat, and a terminal or files once a hub capability and route back them (see Panes).
   No control is drawn for a pane that cannot work.
 - **In a session the navigation bar minimizes on scroll** on iOS 27 and later, for sighted people at standard text sizes, to give the transcript reading room.
   It returns on a scroll up.
@@ -74,6 +74,18 @@ The person is busy elsewhere; the app's job is to tell them what needs them, let
 - **The drawer is a custom container** built on the system edge-pan recognizer and system materials, not web-style chrome (principle 4).
 - **Lock screen:** a notification's buttons follow the daemon's push categories (root AGENTS.md, "Notification channel"), which choose by meaning: Yes and No; Yes, "Yes, always" (an always-allow rule, which needs an unlocked device) and No; or the options of another card with two to four choices and no standing grant, a single-question, single-select AskUserQuestion included. Every other card has no buttons and opens the app: one with `detail`, a "for this session" mode grant, a plan approval, a terminal-only card.
 - **Pairing:** lead with scanning the short-lived code from `remi pair`, then show the endpoint, pinned daemon fingerprint, expiry and explicit terminal-approval requirement before connecting. Manual host/port and `remi authorize` remain the fallback. The scanner, confirmation and fallback states use one focused card with generous spacing and one primary action, not a dense setup form.
+
+## Panes: terminal and files
+
+- A session has panes beyond chat: a read-only terminal and a file download.
+  Each is offered, in the session actions menu and in a segmented switcher, only when the machine advertises `terminal_view` or `file_download` and the route can carry the frames.
+  With neither, no switcher and no menu entries are drawn, as before.
+- The terminal is a monochrome, monospaced grid of the screen the machine reports, with a block cursor, escaped text, and sideways scrolling at large text sizes.
+  It is read only and says so; answering and typing stay in chat.
+  A refused, expired or interrupted view says why in plain words and offers Try again.
+- Files are downloaded by typing a path relative to the session workspace; there is no folder browser.
+  The sheet shows the escaped name and size, progress, and "Verified" once every byte matched its checksum.
+  Save is an explicit action through the system file exporter; the file is never previewed or opened, and Cancel, a dropped connection or leaving discards the partial data.
 
 ## Shared components (RemiUI)
 
