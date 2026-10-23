@@ -55,6 +55,19 @@ import Testing
         #expect(Reconnect.resolve(recovery: .relayNeedsFreshPairing(reason: nil)) == nil)
     }
 
+    @Test func reconnectIsOffWhileTheInboxHidesTheMachine() {
+        let inbox = RemiMacCommandAvailability(
+            machineCount: 2, needsYouSessionCount: 0, sessionListCount: 0,
+            reconnect: .connection, showsInbox: true
+        )
+        #expect(inbox.reconnect == false)
+        let machine = RemiMacCommandAvailability(
+            machineCount: 2, needsYouSessionCount: 0, sessionListCount: 0,
+            reconnect: .connection, showsInbox: false
+        )
+        #expect(machine.reconnect)
+    }
+
     @Test func findNeedsAnOpenConversationWithEntries() {
         #expect(RemiMacCommandAvailability.canFind(hasOpenConversation: true, entryCount: 2))
         #expect(!RemiMacCommandAvailability.canFind(hasOpenConversation: true, entryCount: 0))

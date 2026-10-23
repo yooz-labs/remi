@@ -36,11 +36,14 @@ public struct RemiMacCommandAvailability: Equatable, Sendable {
     ///   - sessionListCount: Sessions in the list the person is looking at (zero while the
     ///     Inbox is shown).
     ///   - reconnect: What Reconnect would do for the selected machine.
+    ///   - showsInbox: The Inbox is shown, so the selected machine is not on screen and
+    ///     Reconnect would act on something the person cannot see.
     public init(
         machineCount: Int,
         needsYouSessionCount: Int,
         sessionListCount: Int,
-        reconnect: Reconnect?
+        reconnect: Reconnect?,
+        showsInbox: Bool = false
     ) {
         goToInbox = machineCount > 0
         nextNeedsYou = needsYouSessionCount > 0
@@ -48,7 +51,7 @@ public struct RemiMacCommandAvailability: Equatable, Sendable {
         nextSession = sessionListCount > 0
         previousMachine = machineCount > 1
         nextMachine = machineCount > 1
-        self.reconnect = reconnect != nil
+        self.reconnect = reconnect != nil && !showsInbox
     }
 
     /// Find in Conversation needs something to search: an entry in the open conversation.
