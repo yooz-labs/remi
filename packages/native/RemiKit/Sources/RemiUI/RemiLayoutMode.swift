@@ -25,14 +25,6 @@ public enum RemiLayoutMode: Equatable, Sendable {
     public var isRegular: Bool { self == .regular }
 }
 
-/// The readable column: content that would stretch across a wide canvas stays at a width
-/// a person can read, centered. Below the cap it changes nothing.
-public enum RemiReadableColumn {
-    public static func width(available: CGFloat) -> CGFloat {
-        max(0, min(available, RemiTheme.Size.readableContentWidth))
-    }
-}
-
 public extension View {
     /// Caps this view at `RemiTheme.Size.readableContentWidth` and centers it in the width
     /// it is offered. At compact widths the cap is not reached, so layout is unchanged; it

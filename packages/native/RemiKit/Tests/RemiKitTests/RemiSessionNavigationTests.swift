@@ -6,7 +6,8 @@ import Testing
         _ id: String,
         machine: String = "m1",
         activity: String,
-        live: Bool = true
+        live: Bool = true,
+        status: RemiSessionStatus = .idle
     ) -> RemiSessionSummary {
         RemiSessionSummary(
             id: id,
@@ -16,7 +17,7 @@ import Testing
             harness: "Claude",
             project: "remi",
             lastActivity: activity,
-            status: .idle,
+            status: status,
             isLive: live
         )
     }
@@ -60,5 +61,15 @@ import Testing
     @Test func noLiveSessionsGivesNothing() {
         let stored = [session("old", activity: "2026-10-20T09:00:00Z", live: false)]
         #expect(RemiSessionNavigation.shifted(from: nil, in: stored, machineKey: nil, offset: 1) == nil)
+    }
+
+    @Test func needsYouComesBeforeNewerActiveSessions() {
+        // "waiting" is the oldest, yet the drawer lists Needs you first, so the keyboard does too.
+        let mixed = [
+            session("waiting", activity: "2026-10-21T08:00:00Z", status: .needsYou),
+            session("newer", activity: "2026-10-21T12:00:00Z"),
+        ]
+        #expect(RemiSessionNavigation.shifted(from: nil, in: mixed, machineKey: nil, offset: 1)?.id == "waiting")
+        #expect(RemiSessionNavigation.shifted(from: key("waiting"), in: mixed, machineKey: nil, offset: 1)?.id == "newer")
     }
 }
