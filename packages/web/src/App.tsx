@@ -1873,6 +1873,14 @@ function App() {
 
       // Direct tunnel frames are strictly decoded by WebSocketClient and owned by
       // their connection controllers; they never become chat bubbles.
+      case 'session_terminal_open':
+      case 'session_terminal_opened':
+      case 'session_terminal_read':
+      case 'session_terminal_snapshot':
+      case 'session_terminal_unchanged':
+      case 'session_terminal_close':
+      case 'session_terminal_closed':
+      case 'session_terminal_refused':
       case 'file_fetch_begin':
       case 'file_fetch_read':
       case 'file_fetch_complete':

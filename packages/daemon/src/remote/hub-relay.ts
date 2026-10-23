@@ -26,6 +26,7 @@ import {
   fromBase64,
   generateId,
   isFileDownloadCandidate,
+  isTerminalViewCandidate,
   now,
   relayV2,
   serialize,
@@ -623,6 +624,8 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
               await this.closePeer(peer, true);
               return;
             }
+            // A registry addition alone must not enable a terminal relay route (#1612, B4 pending).
+            if (isTerminalViewCandidate(bytes)) throw new Error('RELAY_TERMINAL_VIEW_UNAVAILABLE');
             // Classify and decode original decrypted units before generic parse/ACK/ID tracking.
             const file = isFileDownloadCandidate(bytes) ? decodeFileDownloadIngress(bytes) : null;
             if (file?.kind === 'uncorrelatable') throw new Error('RELAY_INVALID_MESSAGE');
@@ -1346,7 +1349,13 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       peer.hubLists.get(message.requestId)?.(message);
       return false;
     }
-    if (!peer || !peer.channel || message.type === 'raw_pty_output') return false;
+    if (
+      !peer ||
+      !peer.channel ||
+      message.type === 'raw_pty_output' ||
+      message.type.startsWith('session_terminal_')
+    )
+      return false;
     if (!this.current(peer)) {
       void this.closePeer(peer, true);
       return false;
@@ -1365,7 +1374,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     return true;
   }
   broadcast(message: ProtocolMessage): void {
-    if (message.type === 'raw_pty_output') return;
+    if (message.type === 'raw_pty_output' || message.type.startsWith('session_terminal_')) return;
     for (const id of this.peers.keys()) this.sendRaw(id, message);
   }
   hasConnection(id: string): boolean {

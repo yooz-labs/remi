@@ -102,7 +102,7 @@ It is not a transcript, a shell, a historical recording or a way to answer a ter
 Use WSS direct or the enrolled encrypted relay for this new surface.
 The viewport can contain secrets that the agent or a tool printed; no general secret redaction is claimed.
 Opening the pane is an explicit request for that session's terminal contents.
-Keep the existing rejection of `raw_pty_output` and `terminal_resize` on relay paths.
+Keep the existing raw-PTY rejection at the registry, hub and child boundaries. The web relay also rejects inbound `terminal_resize`; that client check is not a claim that the generic legacy hub/child router forbids every crafted resize request. The new terminal-view route exposes no input or resize operation.
 The new route carries validated screen data only, through an explicitly accepted extension of the semantic child protocol.
 It does not add a Worker route or change relay cryptography, version or enrollment.
 
@@ -202,7 +202,7 @@ Each implementation item is an independently reviewable PR into `develop`, norma
 Update this phase list before splitting an item; do not silently expand one PR.
 
 Backend preparation comes first. Numbering orders work within each track; it does not put native UI ahead of missing backend contracts.
-The bounded B1 primitive and ADR0046 are qualified; the next backend checkpoint is B2's strict wire/fixtures before a terminal runtime path.
+The bounded B1 primitive and ADR0046 are qualified. B2's strict wire/fixtures are specified in ADR0047 (#1612), with explicit relay refusal until B4. Both PRs retain their source/hosted gates; the next runtime checkpoint is B3's host lifecycle/direct route.
 
 | Track/step | Deliverable | Main files and pass gate |
 |---|---|---|

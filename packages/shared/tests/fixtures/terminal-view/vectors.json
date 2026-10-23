@@ -1,0 +1,307 @@
+{
+  "schema": 1,
+  "scope": "structural codec only; no host, lease, transport or native acceptance",
+  "positive": [
+    {
+      "name": "open-claude",
+      "raw": "{\"type\":\"session_terminal_open\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"00000000-0000-4000-8000-000000000003\"}}",
+      "expected": {
+        "type": "session_terminal_open",
+        "id": "00000000-0000-4000-8000-000000000001",
+        "timestamp": "2026-10-22T00:00:00.000Z",
+        "sessionId": "00000000-0000-4000-8000-000000000003",
+        "binding": {
+          "harness": "claude",
+          "harnessSessionId": "00000000-0000-4000-8000-000000000003"
+        }
+      }
+    },
+    {
+      "name": "opened",
+      "raw": "{\"type\":\"session_terminal_opened\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"expiresAt\":\"2026-10-22T00:05:00.000Z\"}",
+      "expected": {
+        "type": "session_terminal_opened",
+        "id": "00000000-0000-4000-8000-000000000001",
+        "timestamp": "2026-10-22T00:00:00.000Z",
+        "sessionId": "00000000-0000-4000-8000-000000000003",
+        "requestId": "00000000-0000-4000-8000-000000000002",
+        "viewId": "AAECAwQFBgcICQoLDA0ODw",
+        "expiresAt": "2026-10-22T00:05:00.000Z"
+      }
+    },
+    {
+      "name": "first-read",
+      "raw": "{\"type\":\"session_terminal_read\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"afterRevision\":null}",
+      "expected": {
+        "type": "session_terminal_read",
+        "id": "00000000-0000-4000-8000-000000000001",
+        "timestamp": "2026-10-22T00:00:00.000Z",
+        "sessionId": "00000000-0000-4000-8000-000000000003",
+        "viewId": "AAECAwQFBgcICQoLDA0ODw",
+        "afterRevision": null
+      }
+    },
+    {
+      "name": "snapshot-wide-combining",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}",
+      "expected": {
+        "type": "session_terminal_snapshot",
+        "id": "00000000-0000-4000-8000-000000000001",
+        "timestamp": "2026-10-22T00:00:00.000Z",
+        "sessionId": "00000000-0000-4000-8000-000000000003",
+        "requestId": "00000000-0000-4000-8000-000000000002",
+        "viewId": "AAECAwQFBgcICQoLDA0ODw",
+        "revision": 0,
+        "columns": 20,
+        "rows": 4,
+        "lines": ["owned", "界é", "", ""],
+        "cursor": {
+          "row": 1,
+          "column": 3
+        }
+      }
+    },
+    {
+      "name": "unchanged",
+      "raw": "{\"type\":\"session_terminal_unchanged\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0}",
+      "expected": {
+        "type": "session_terminal_unchanged",
+        "id": "00000000-0000-4000-8000-000000000001",
+        "timestamp": "2026-10-22T00:00:00.000Z",
+        "sessionId": "00000000-0000-4000-8000-000000000003",
+        "requestId": "00000000-0000-4000-8000-000000000002",
+        "viewId": "AAECAwQFBgcICQoLDA0ODw",
+        "revision": 0
+      }
+    },
+    {
+      "name": "close",
+      "raw": "{\"type\":\"session_terminal_close\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\"}",
+      "expected": {
+        "type": "session_terminal_close",
+        "id": "00000000-0000-4000-8000-000000000001",
+        "timestamp": "2026-10-22T00:00:00.000Z",
+        "sessionId": "00000000-0000-4000-8000-000000000003",
+        "viewId": "AAECAwQFBgcICQoLDA0ODw"
+      }
+    },
+    {
+      "name": "closed",
+      "raw": "{\"type\":\"session_terminal_closed\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\"}",
+      "expected": {
+        "type": "session_terminal_closed",
+        "id": "00000000-0000-4000-8000-000000000001",
+        "timestamp": "2026-10-22T00:00:00.000Z",
+        "sessionId": "00000000-0000-4000-8000-000000000003",
+        "requestId": "00000000-0000-4000-8000-000000000002",
+        "viewId": "AAECAwQFBgcICQoLDA0ODw"
+      }
+    },
+    {
+      "name": "refused",
+      "raw": "{\"type\":\"session_terminal_refused\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"operation\":\"session_terminal_read\",\"code\":\"unavailable\"}",
+      "expected": {
+        "type": "session_terminal_refused",
+        "id": "00000000-0000-4000-8000-000000000001",
+        "timestamp": "2026-10-22T00:00:00.000Z",
+        "sessionId": "00000000-0000-4000-8000-000000000003",
+        "requestId": "00000000-0000-4000-8000-000000000002",
+        "operation": "session_terminal_read",
+        "code": "unavailable"
+      }
+    },
+    {
+      "name": "open-codex-opaque-binding",
+      "raw": "{\"type\":\"session_terminal_open\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"binding\":{\"harness\":\"codex\",\"harnessSessionId\":\"owned-thread:not-a-UUID\"}}",
+      "expected": {
+        "type": "session_terminal_open",
+        "id": "00000000-0000-4000-8000-000000000001",
+        "timestamp": "2026-10-22T00:00:00.000Z",
+        "sessionId": "00000000-0000-4000-8000-000000000003",
+        "binding": {
+          "harness": "codex",
+          "harnessSessionId": "owned-thread:not-a-UUID"
+        }
+      }
+    },
+    {
+      "name": "read-maximum-safe-revision",
+      "raw": "{\"type\":\"session_terminal_read\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"afterRevision\":9007199254740991}",
+      "expected": {
+        "type": "session_terminal_read",
+        "id": "00000000-0000-4000-8000-000000000001",
+        "timestamp": "2026-10-22T00:00:00.000Z",
+        "sessionId": "00000000-0000-4000-8000-000000000003",
+        "viewId": "AAECAwQFBgcICQoLDA0ODw",
+        "afterRevision": 9007199254740991
+      }
+    },
+    {
+      "name": "hidden-cursor",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":1,\"columns\":2,\"rows\":1,\"lines\":[\"ab\"],\"cursor\":null}",
+      "expected": {
+        "type": "session_terminal_snapshot",
+        "id": "00000000-0000-4000-8000-000000000001",
+        "timestamp": "2026-10-22T00:00:00.000Z",
+        "sessionId": "00000000-0000-4000-8000-000000000003",
+        "requestId": "00000000-0000-4000-8000-000000000002",
+        "viewId": "AAECAwQFBgcICQoLDA0ODw",
+        "revision": 1,
+        "columns": 2,
+        "rows": 1,
+        "lines": ["ab"],
+        "cursor": null
+      }
+    }
+  ],
+  "negative": [
+    {
+      "name": "one-column",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":1,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "too-many-columns",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":241,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "zero-rows",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":0,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "too-many-rows",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":61,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "missing-row",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"owned\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "extra-row",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"\",\"\",\"\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "non-text-row",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"\",false,\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "cursor-row",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":4,\"column\":0}}"
+    },
+    {
+      "name": "cursor-column",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":0,\"column\":20}}"
+    },
+    {
+      "name": "cursor-extra-key",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":0,\"column\":0,\"hidden\":false}}"
+    },
+    {
+      "name": "fractional-revision",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0.5,\"columns\":20,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "unsafe-revision",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":9007199254740992,\"columns\":20,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "negative-revision",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":-1,\"columns\":20,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "terminal-escape",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"\\u001b[2J\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "row-newline",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"a\\nb\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "row-tab",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"a\\tb\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "row-c1",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "row-bidi",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"‮owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "row-joiner",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"👩‍💻\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "row-separator",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"a b\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "id-v7",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"0199b0a0-0000-7000-8000-000000000000\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "uppercase-id",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-00000000000A\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "timestamp-offset",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000+00:00\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "invalid-date",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-02-30T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "empty-session",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "padded-view",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw==\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "noncanonical-view",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODx\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "unknown-field",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3},\"extra\":\"discarded\"}"
+    },
+    {
+      "name": "missing-required-cursor",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"]}"
+    },
+    {
+      "name": "duplicate-root-id",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "escaped-duplicate-type",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3},\"t\\u0079pe\":\"ping\"}"
+    },
+    {
+      "name": "duplicate-cursor-field",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"owned\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":0,\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "lone-surrogate-row",
+      "raw": "{\"type\":\"session_terminal_snapshot\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"viewId\":\"AAECAwQFBgcICQoLDA0ODw\",\"revision\":0,\"columns\":20,\"rows\":4,\"lines\":[\"\\ud800\",\"界é\",\"\",\"\"],\"cursor\":{\"row\":1,\"column\":3}}"
+    },
+    {
+      "name": "unknown-terminal-operation",
+      "raw": "{\"type\":\"session_terminal_input\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"binding\":{\"harness\":\"claude\",\"harnessSessionId\":\"00000000-0000-4000-8000-000000000003\"}}"
+    },
+    {
+      "name": "unknown-refusal-code",
+      "raw": "{\"type\":\"session_terminal_refused\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"operation\":\"session_terminal_read\",\"code\":\"private_error\"}"
+    },
+    {
+      "name": "response-as-operation",
+      "raw": "{\"type\":\"session_terminal_refused\",\"id\":\"00000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-10-22T00:00:00.000Z\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\",\"requestId\":\"00000000-0000-4000-8000-000000000002\",\"operation\":\"session_terminal_snapshot\",\"code\":\"unavailable\"}"
+    },
+    {
+      "name": "malformed-utf8",
+      "bytes": [123, 34, 120, 34, 58, 34, 255, 34, 125]
+    }
+  ]
+}
