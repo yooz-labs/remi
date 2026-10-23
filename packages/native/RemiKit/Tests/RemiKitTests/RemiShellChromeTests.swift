@@ -26,8 +26,8 @@ import Testing
         #expect(!chrome.edgePanEnabled(isDrawerOpen: false, isAtRoot: true))
     }
 
-    @Test func sidebarEnvironmentNeverBlocksFreezesOrClaimsFocus() {
-        let sidebar = RemiShellChrome.resolve(mode: .regular).sidebarEnvironment
+    @Test func sidebarEnvironmentNeverBlocksFreezesOrClaimsFocus() throws {
+        let sidebar = try #require(RemiShellChrome.resolve(mode: .regular).sidebarEnvironment)
         #expect(!sidebar.blocksTaps)
         #expect(!sidebar.orderFrozen)
         #expect(!sidebar.isOpen)
