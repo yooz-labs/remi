@@ -46,4 +46,34 @@ struct MessageCollapseTests {
         #expect(collapse.isCollapsible)
         #expect(collapse.preview.count == RemiMessageCollapse.characterLimit)
     }
+
+    @Test func aCRLFLineEndingIsAParagraphBreak() {
+        // No spaces, so only the line breaks offer a natural cut. "\r\n" is one Character.
+        let paragraph = String(repeating: "x", count: 400) + "\r\n"
+        let text = String(repeating: paragraph, count: 10)
+        let collapse = RemiMessageCollapse(text: text)
+        #expect(collapse.isCollapsible)
+        #expect(collapse.preview.count == 1_202)
+        #expect(collapse.preview.hasSuffix("x"))
+        #expect(text.hasPrefix(collapse.preview))
+    }
+
+    @Test func theCutNeverSplitsAGraphemeCluster() {
+        let unit = "e\u{301}" + "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"
+        let text = String(repeating: unit, count: 1_200)
+        let collapse = RemiMessageCollapse(text: text)
+        #expect(collapse.isCollapsible)
+        #expect(collapse.preview.count == RemiMessageCollapse.characterLimit)
+        #expect(collapse.preview.last == "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}")
+        #expect(text.hasPrefix(collapse.preview))
+    }
+
+    @Test func collapsesExactlyAtTheMinimumHidden() {
+        let atMinimum = String(repeating: "x", count: RemiMessageCollapse.characterLimit + RemiMessageCollapse.minimumHidden)
+        let collapsed = RemiMessageCollapse(text: atMinimum)
+        #expect(collapsed.isCollapsible)
+        #expect(collapsed.hiddenCharacterCount == RemiMessageCollapse.minimumHidden)
+        let belowMinimum = String(atMinimum.dropLast())
+        #expect(!RemiMessageCollapse(text: belowMinimum).isCollapsible)
+    }
 }

@@ -39,7 +39,7 @@ public struct RemiMessageCollapse: Equatable, Sendable {
 
     public init(text: String) {
         let count = text.count
-        guard count > Self.characterLimit + Self.minimumHidden else {
+        guard count >= Self.characterLimit + Self.minimumHidden else {
             preview = text
             hiddenCharacterCount = 0
             return
@@ -47,7 +47,7 @@ public struct RemiMessageCollapse: Equatable, Sendable {
         let head = text.prefix(Self.characterLimit)
         // Prefer a paragraph or word boundary in the last 30 percent of the preview.
         let region = head[head.index(head.startIndex, offsetBy: Self.characterLimit * 7 / 10)...]
-        let cut = region.lastIndex(of: "\n") ?? region.lastIndex(of: " ") ?? head.endIndex
+        let cut = region.lastIndex(where: \.isNewline) ?? region.lastIndex(of: " ") ?? head.endIndex
         var shown = String(head[..<cut])
         while let last = shown.last, last.isWhitespace || last.isNewline { shown.removeLast() }
         preview = shown
