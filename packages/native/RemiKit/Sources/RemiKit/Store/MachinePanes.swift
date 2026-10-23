@@ -64,11 +64,7 @@ extension MachineStore {
         return AttachedBinding(harness: harness, harnessSessionId: id)
     }
 
-    private static func stamp() -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.string(from: Date())
-    }
+    private static func stamp() -> String { WireTimestamp.string() }
 
     private static func newID() -> String { UUID().uuidString.lowercased() }
 

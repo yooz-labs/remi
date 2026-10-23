@@ -327,7 +327,16 @@ public actor RemiConnection {
 
     /// Sends a frame already encoded and validated by its strict codec (`encodedFrame()` of the
     /// terminal-view and file-fetch families), through the same path as `send`.
+    /// Refused with `PaneTransportBlocked` unless this connection's route may carry the family
+    /// (`PaneTransportPolicy.current`), so no caller can bypass the policy.
     public func sendEncodedFrame(_ frame: String) async throws {
+        try await sendEncodedFrame(frame, policy: .current)
+    }
+
+    func sendEncodedFrame(_ frame: String, policy: PaneTransportPolicy) async throws {
+        if let reason = policy.reason(viaRelay: configuration.relayPin != nil) {
+            throw PaneTransportBlocked(reason: reason)
+        }
         try await deliver(Data(frame.utf8), validateBeforeSend: nil)
     }
 

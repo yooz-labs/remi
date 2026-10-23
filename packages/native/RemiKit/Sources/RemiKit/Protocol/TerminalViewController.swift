@@ -16,6 +16,11 @@ import Foundation
 ///   read as `expired`, the controller reopens once; a second expiry, or the first one when the
 ///   reopen itself is refused, gives up as `.expired`. The person's own `open` starts afresh;
 /// - leaving closes the view. A view whose `opened` arrives after the person left is closed at once;
+/// - a live view is also closed, best effort, when the response timeout ends it, when the client
+///   clock ends its lease before a reopen, and on `interrupt()`. A dropped connection sends no
+///   close: the frame cannot go out, and the host retires a view with its connection (ADR 0047);
+///   the same holds when the store has no route to send on. A host `expired` refusal sends none
+///   either, because the host has already ended that view;
 /// - there is no operation for input or resize: a terminal view only reads (ADR 0046).
 ///
 /// The client's clock grants no authority: the host's `expired` refusal is the truth, and the
@@ -111,7 +116,10 @@ public struct TerminalViewController: Sendable, Equatable {
         case .leave:
             return leave()
         case .disconnected:
-            interrupt()
+            // The connection is gone, so no close can be sent; the host retires the view with it.
+            pending = nil
+            abandonedOpenId = nil
+            if isActive { state = .interrupted }
             return []
         case .tick:
             return advance(now: now, date: date)
@@ -121,11 +129,20 @@ public struct TerminalViewController: Sendable, Equatable {
         }
     }
 
-    /// The connection dropped or a frame could not be sent.
-    public mutating func interrupt() {
+    /// A frame could not be sent. Returns a best-effort close for a live view, which the caller
+    /// may try once; it is never retried, because the state is no longer open.
+    @discardableResult
+    public mutating func interrupt() -> [Action] {
+        let close = liveViewClose()
         pending = nil
         abandonedOpenId = nil
         if isActive { state = .interrupted }
+        return close
+    }
+
+    private mutating func liveViewClose() -> [Action] {
+        guard case .open(let viewId, _) = state else { return [] }
+        return [.close(requestId: makeRequestId(), viewId: viewId)]
     }
 
     // MARK: Time
@@ -139,23 +156,27 @@ public struct TerminalViewController: Sendable, Equatable {
     /// Ends the view if its lease or the wait for a response ran out; nil when neither did.
     private mutating func advanceIfDue(now: TimeInterval, date: Date) -> [Action]? {
         if let pending, now - pending.sentAt >= Self.responseTimeout {
+            let close = liveViewClose()
             self.pending = nil
             if isActive { state = .interrupted }
-            return []
+            return close
         }
-        if case .open = state, let expiresAt, date >= expiresAt { return leaseEnded(now: now) }
+        if case .open = state, let expiresAt, date >= expiresAt { return leaseEnded(now: now, closeFirst: true) }
         return nil
     }
 
-    private mutating func leaseEnded(now: TimeInterval) -> [Action] {
+    /// `closeFirst`: the client's clock ended the lease, so the host may still hold the view and is
+    /// told to drop it. After a host `expired` refusal it is already gone.
+    private mutating func leaseEnded(now: TimeInterval, closeFirst: Bool) -> [Action] {
+        let close = closeFirst ? liveViewClose() : []
         pending = nil
         expiresAt = nil
         guard reopensLeft > 0 else {
             state = .expired
-            return []
+            return close
         }
         reopensLeft -= 1
-        return beginOpen(now: now)
+        return close + beginOpen(now: now)
     }
 
     // MARK: Intents
@@ -206,7 +227,7 @@ public struct TerminalViewController: Sendable, Equatable {
             }
             guard state == .opening, answers(opened.requestId, .open) else { return [] }
             pending = nil
-            expiresAt = Self.parse(opened.expiresAt)
+            expiresAt = WireTimestamp.date(from: opened.expiresAt)
             state = .open(viewId: opened.viewId, revision: nil)
             return [sendRead(viewId: opened.viewId, after: nil, now: now)]
 
@@ -253,7 +274,7 @@ public struct TerminalViewController: Sendable, Equatable {
         expiresAt = nil
         switch (refused.operation, refused.code) {
         case (.read, .expired):
-            return leaseEnded(now: now)
+            return leaseEnded(now: now, closeFirst: false)
         case (.open, .expired):
             // A reopen that is refused as expired has nothing left to try.
             state = .expired
@@ -268,12 +289,6 @@ public struct TerminalViewController: Sendable, Equatable {
     private func answers(_ requestId: String, _ operation: TerminalViewOperation) -> Bool {
         guard let pending else { return false }
         return pending.operation == operation && WireGuards.same(pending.id, requestId)
-    }
-
-    private static func parse(_ text: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: text)
     }
 
     // MARK: Text for the person

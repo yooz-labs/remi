@@ -146,12 +146,14 @@ struct TerminalViewControllerTests {
     @Test func leaseExpiryReopensOnceThenGivesUp() throws {
         var c = try Self.opened()
         // Lease over: the next event reopens.
-        #expect(c.handle(.tick, now: 2, date: Self.leaseEnd) == [.open(requestId: Self.fixedRequest)])
+        #expect(
+            c.handle(.tick, now: 2, date: Self.leaseEnd)
+                == [.close(requestId: Self.fixedRequest, viewId: Self.view), .open(requestId: Self.fixedRequest)])
         #expect(c.state == .opening)
         _ = c.handle(.message(try Self.frame("session_terminal_opened")), now: 2, date: Self.beforeLease)
         _ = c.handle(.message(try Self.frame("session_terminal_snapshot")), now: 2, date: Self.beforeLease)
         // Expires again: no second reopen.
-        #expect(c.handle(.tick, now: 4, date: Self.leaseEnd).isEmpty)
+        #expect(c.handle(.tick, now: 4, date: Self.leaseEnd) == [.close(requestId: Self.fixedRequest, viewId: Self.view)])
         #expect(c.state == .expired)
         #expect(c.statusText == "The terminal view timed out and could not be reopened.")
         #expect(c.screen != nil)  // the last screen stays on view, labeled by the state
@@ -162,6 +164,7 @@ struct TerminalViewControllerTests {
         var c = try Self.opened()
         _ = c.handle(.tick, now: 1, date: Self.beforeLease)
         let expired = try Self.frame("session_terminal_refused", ["\"unavailable\"": "\"expired\""])
+        // The host already ended the view, so no close precedes the reopen.
         #expect(c.handle(.message(expired), now: 1, date: Self.beforeLease) == [.open(requestId: Self.fixedRequest)])
         _ = c.handle(.message(try Self.frame("session_terminal_opened")), now: 1, date: Self.beforeLease)
         _ = c.handle(.tick, now: 3, date: Self.beforeLease)
@@ -218,6 +221,32 @@ struct TerminalViewControllerTests {
         #expect(c.handle(.tick, now: 14, date: Self.beforeLease).isEmpty)
         #expect(c.state == .opening)
         _ = c.handle(.tick, now: 15, date: Self.beforeLease)
+        #expect(c.state == .interrupted)
+    }
+
+    @Test func interruptClosesALiveViewOnceAndOnlyOnce() throws {
+        var c = try Self.opened()
+        let close = c.interrupt()
+        #expect(close == [.close(requestId: Self.fixedRequest, viewId: Self.view)])
+        #expect(c.state == .interrupted)
+        #expect(c.interrupt().isEmpty)  // no loop when the close cannot go out either
+        var opening = Self.controller()
+        _ = opening.handle(.open, now: 0, date: Self.beforeLease)
+        #expect(opening.interrupt().isEmpty)  // nothing to close before a view exists
+    }
+
+    @Test func responseTimeoutOfAnOpenViewSendsABestEffortClose() throws {
+        var c = try Self.opened()
+        _ = c.handle(.tick, now: 1, date: Self.beforeLease)  // a read is now outstanding
+        #expect(c.handle(.tick, now: 15, date: Self.beforeLease).isEmpty)
+        let close = c.handle(.tick, now: 16, date: Self.beforeLease)
+        #expect(close == [.close(requestId: Self.fixedRequest, viewId: Self.view)])
+        #expect(c.state == .interrupted)
+    }
+
+    @Test func disconnectSendsNoCloseBecauseNothingCanBeSent() throws {
+        var c = try Self.opened()
+        #expect(c.handle(.disconnected, now: 1, date: Self.beforeLease).isEmpty)
         #expect(c.state == .interrupted)
     }
 

@@ -166,8 +166,8 @@ struct FileDownloadFlowTests {
 
 struct PaneTransportPolicyTests {
     @Test func noCurrentRouteCanCarryTheFamilies() throws {
-        #expect(PaneTransportPolicy.directSecureTransport == false)
-        #expect(PaneTransportPolicy.relaySemanticChild == false)
+        #expect(PaneTransportPolicy.current.directSecureTransport == false)
+        #expect(PaneTransportPolicy.current.relaySemanticChild == false)
         let direct = MachineEndpoint(host: "127.0.0.1", port: 28100)
         let reason = try #require(PaneTransportPolicy.blockReason(for: direct))
         #expect(reason.contains("secure connection"))
@@ -175,5 +175,21 @@ struct PaneTransportPolicyTests {
             relayURL: "wss://relay.example.test", machinePublicKey: RelayCrypto.b64(Data(repeating: 7, count: 32)))
         let relay = MachineEndpoint(host: "relay.example.test", port: 443, relayPin: pin)
         #expect(try #require(PaneTransportPolicy.blockReason(for: relay)).contains("relay"))
+    }
+
+    @Test func aTransportThatQualifiesUnblocksOnlyItsOwnRoute() throws {
+        let directOnly = PaneTransportPolicy(directSecureTransport: true, relaySemanticChild: false)
+        #expect(directOnly.reason(viaRelay: false) == nil)
+        #expect(directOnly.reason(viaRelay: true) != nil)
+    }
+
+    @Test func theConnectionItselfRefusesToSendWhenTheRouteIsBlocked() async throws {
+        let url = try #require(URL(string: "ws://127.0.0.1:28101/ws"))
+        let connection = RemiConnection(
+            configuration: RemiConnectionConfiguration(url: url, clientVersion: "test", clientId: "test"),
+            identity: ClientIdentity(), stateHandler: { _ in }, eventHandler: { _ in })
+        await #expect(throws: PaneTransportBlocked.self) {
+            try await connection.sendEncodedFrame("{}")
+        }
     }
 }
