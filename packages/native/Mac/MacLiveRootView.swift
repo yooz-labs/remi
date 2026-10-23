@@ -8,6 +8,7 @@ struct MacLiveRootView: View {
 
     @AppStorage("remi.mac.selected-machine") private var selectedMachineID = ""
     @AppStorage("remi.mac.selected-session") private var selectedSessionID = ""
+    @State private var showingInbox = false
     @State private var showingNewSession = false
     @State private var newSessionMachineID: String?
     @State private var newSessionRepository: String?
@@ -31,9 +32,11 @@ struct MacLiveRootView: View {
                     columnVisibility: $columnVisibility,
                     preferredCompactColumn: $preferredCompactColumn
                 ) {
-                    List(store.machines, selection: machineSelection) { machine in
+                    List(selection: sidebarSelection) {
+                        inboxRow
+                        ForEach(store.machines) { machine in
                         RemiMachineRow(machine: machinePresentation(machine))
-                            .tag(machine.id)
+                            .tag(RemiMacSidebarSelection.machine(machine.id))
                             .contextMenu {
                                 if machine.endpoint.relayPin != nil {
                                     Button("Enable relay notifications", systemImage: "bell.badge") {
@@ -45,6 +48,7 @@ struct MacLiveRootView: View {
                                     pendingMachineRemoval = machine
                                 }
                             }
+                        }
                     }
                     .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 300)
                     .navigationTitle("Remi")
@@ -73,20 +77,36 @@ struct MacLiveRootView: View {
                         }
                     }
                 } content: {
-                    MacSessionsColumn(
-                        machine: selectedMachine,
-                        sessions: visibleSessions,
-                        selection: sessionSelection,
-                        publicIdentity: store.publicIdentity,
-                        onResume: resume,
-                        onRetryApproval: store.retryApproval,
-                        onRetryConnection: store.retryConnection,
-                        onNewSession: { presentNewSession() },
-                        onNewSessionHere: { presentNewSession(repository: $0) },
-                        onTerminate: { store.terminateSession(machineID: $0.machineID, sessionId: $0.id) }
-                    )
+                    Group {
+                        if showingInbox {
+                            MacInboxColumn(
+                                questions: allQuestions,
+                                sessions: allSessions,
+                                machines: store.machines.map(machinePresentation),
+                                canCreateSession: !sessionCreationMachines.isEmpty,
+                                onAnswer: answerFromInbox,
+                                onSubmit: submitFromInbox,
+                                onCancel: cancelFromInbox,
+                                onOpen: openFromInbox,
+                                onNewSession: { presentNewSession() }
+                            )
+                        } else {
+                            MacSessionsColumn(
+                                machine: selectedMachine,
+                                sessions: visibleSessions,
+                                selection: sessionSelection,
+                                publicIdentity: store.publicIdentity,
+                                onResume: resume,
+                                onRetryApproval: store.retryApproval,
+                                onRetryConnection: store.retryConnection,
+                                onNewSession: { presentNewSession() },
+                                onNewSessionHere: { presentNewSession(repository: $0) },
+                                onTerminate: { store.terminateSession(machineID: $0.machineID, sessionId: $0.id) }
+                            )
+                        }
+                    }
                     .navigationSplitViewColumnWidth(min: 380, ideal: 480, max: 620)
-                    .navigationTitle("Sessions")
+                    .navigationTitle(showingInbox ? "Inbox" : "Sessions")
                     .toolbar {
                         if #available(macOS 26.1, *) {
                             ToolbarItem {
@@ -114,7 +134,13 @@ struct MacLiveRootView: View {
                         }
                     }
                 } detail: {
-                    if let session = visibleSessions.first(where: { $0.id == selectedSessionID }) {
+                    if showingInbox {
+                        ContentUnavailableView(
+                            "Inbox",
+                            systemImage: "tray",
+                            description: Text("Answer a request here, or open its conversation to read more.")
+                        )
+                    } else if let session = visibleSessions.first(where: { $0.id == selectedSessionID }) {
                         let viewsKey = store.sessionKey(machineID: session.machineID, sessionID: session.id)
                         MacSessionDetail(
                             session: session,
@@ -256,6 +282,7 @@ struct MacLiveRootView: View {
         .onChange(of: notificationRouter.destination, initial: true) { _, destination in
             guard let destination else { return }
             pendingResume = nil
+            showingInbox = false
             notificationDestination = destination
             selectedMachineID = destination.machineID
             selectedSessionID = destination.sessionID
@@ -281,6 +308,7 @@ struct MacLiveRootView: View {
         .onChange(of: store.pairingAttempts) { _, _ in
             guard let id = pairingAttemptID, let result = store.pairingAttempt(id: id),
                   case .admitted(let profileID) = result.phase else { return }
+            showingInbox = false
             selectedMachineID = profileID
             pairingAttemptID = nil
         }
@@ -368,6 +396,98 @@ struct MacLiveRootView: View {
         newSessionMachineID = selectedMachine?.id
         newSessionRepository = repository
         showingNewSession = true
+    }
+
+    private var inboxRow: some View {
+        let count = RemiInboxPresentation.waitingCount(questions: allQuestions)
+        return Label("Inbox", systemImage: "tray")
+            .badge(count)
+            .tag(RemiMacSidebarSelection.inbox)
+            .accessibilityLabel(RemiInboxPresentation.inboxAccessibilityLabel(waitingCount: count))
+    }
+
+    private var sidebarSelection: Binding<RemiMacSidebarSelection?> {
+        Binding(
+            get: { RemiMacSidebarSelection.resolve(showsInbox: showingInbox, machineID: selectedMachineID) },
+            set: { newValue in
+                if newValue == .inbox {
+                    showingInbox = true
+                    preferredCompactColumn = .content
+                    return
+                }
+                showingInbox = false
+                machineSelection.wrappedValue = newValue?.machineID
+            }
+        )
+    }
+
+    /// Opens a card's conversation: switches machine and session by their qualified key, and
+    /// focuses the card, the same way a notification tap does.
+    private func openFromInbox(_ target: RemiInboxPresentation.OpenTarget, questionID: String) {
+        showingInbox = false
+        pendingResume = nil
+        notificationDestination = RemiNavigationDestination(
+            machineID: target.machineID,
+            sessionID: target.sessionID,
+            questionID: questionID,
+            agentID: target.conversationID
+        )
+        selectedMachineID = target.machineID
+        selectedSessionID = target.sessionID
+        preferredCompactColumn = .detail
+        store.loadTranscript(
+            machineID: target.machineID,
+            sessionId: target.conversationID ?? target.sessionID
+        )
+    }
+
+    private func rawQuestion(machineID: String, sessionID: String, questionID: String) -> QuestionMessage? {
+        store.machine(withIdentifier: machineID)?.questions
+            .first { $0.sessionId == sessionID && $0.question.id == questionID }
+    }
+
+    private func answerFromInbox(machineID: String, sessionID: String, questionID: String, value: String) {
+        store.answer(
+            machineID: machineID,
+            sessionId: sessionID,
+            questionId: questionID,
+            answer: value,
+            claudeSessionId: rawQuestion(machineID: machineID, sessionID: sessionID, questionID: questionID)?.claudeSessionId
+        )
+    }
+
+    private func submitFromInbox(
+        machineID: String,
+        sessionID: String,
+        questionID: String,
+        selections: [RemiQuestionStepSelection]
+    ) {
+        store.answer(
+            machineID: machineID,
+            sessionId: sessionID,
+            questionId: questionID,
+            answer: "",
+            claudeSessionId: rawQuestion(machineID: machineID, sessionID: sessionID, questionID: questionID)?.claudeSessionId,
+            selections: selections.compactMap { selection in
+                guard let questionIndex = Int(selection.stepID) else { return nil }
+                return AnswerSelection(
+                    questionIndex: questionIndex,
+                    optionIndices: selection.optionIDs.compactMap(Int.init).sorted(),
+                    text: selection.text
+                )
+            }
+        )
+    }
+
+    private func cancelFromInbox(machineID: String, sessionID: String, questionID: String) {
+        store.answer(
+            machineID: machineID,
+            sessionId: sessionID,
+            questionId: questionID,
+            answer: "",
+            claudeSessionId: rawQuestion(machineID: machineID, sessionID: sessionID, questionID: questionID)?.claudeSessionId,
+            cancel: true
+        )
     }
 
     private var machineSelection: Binding<String?> {
@@ -513,7 +633,15 @@ struct MacLiveRootView: View {
 
     private var visibleSessions: [RemiSessionSummary] {
         guard let machine = selectedMachine else { return [] }
-        return machine.sessions.filter { $0.source == "daemon" || $0.canResume == true }.map { session in
+        return sessionSummaries(for: machine)
+    }
+
+    private var allSessions: [RemiSessionSummary] {
+        store.machines.flatMap(sessionSummaries(for:))
+    }
+
+    private func sessionSummaries(for machine: MachineState) -> [RemiSessionSummary] {
+        machine.sessions.filter { $0.source == "daemon" || $0.canResume == true }.map { session in
             let questionCount = machine.questions.count { $0.sessionId == session.sessionId }
             return RemiSessionSummary(
                 id: session.sessionId,
@@ -556,6 +684,21 @@ struct MacLiveRootView: View {
         store.resumeSession(on: machine.endpoint, sessionId: session.id)
     }
 
+    private var allQuestions: [RemiQuestionCardModel] {
+        let active = store.machines.flatMap { machine in
+            machine.questions.map { questionPresentation($0, machine: machine) }
+        }
+        let resolved: [RemiQuestionCardModel] = store.recentlyResolvedQuestions.compactMap { record in
+            guard let machine = store.machine(withIdentifier: record.machineID) else { return nil }
+            return questionPresentation(
+                record.message,
+                machine: machine,
+                state: .resolvedElsewhere(resolutionSource(record.resolvedBy))
+            )
+        }
+        return active + resolved
+    }
+
     private func questions(for sessionId: String) -> [RemiQuestionCardModel] {
         guard let machine = selectedMachine else { return [] }
         let active = machine.questions.filter { $0.sessionId == sessionId }.map { message in
@@ -595,7 +738,7 @@ struct MacLiveRootView: View {
                 machineIdentityID: machine.machineDescriptor?.id,
                 machineName: machine.displayName,
                 sessionID: message.sessionId,
-                sessionName: visibleSessions.first(where: { $0.id == message.sessionId })?.name
+                sessionName: sessionSummaries(for: machine).first(where: { $0.id == message.sessionId })?.name
                     ?? message.sessionId,
                 agentID: question.agentId,
                 options: question.options.map { option in
