@@ -229,7 +229,10 @@ struct MacSessionDetail: View {
         } message: {
             Text("The agent process and its Remi session will close. Its transcript remains available for later review.")
         }
-        .focusedSceneValue(
+        // A focused value, not a scene value: Find in Conversation only applies while focus is in
+        // the conversation, so the session list's own search field keeps Command-F when the
+        // list has focus. The toolbar's search button works regardless of focus.
+        .focusedValue(
             \.macFind,
             RemiMacCommandAvailability.canFind(
                 hasOpenConversation: true,

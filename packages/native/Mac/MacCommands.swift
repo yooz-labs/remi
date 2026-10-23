@@ -18,7 +18,7 @@ struct MacSessionNavigationActions {
     let move: (Int) -> Void
 }
 
-/// Opens the search bar of the open conversation. Published only while it has entries.
+/// Opens the search bar of the open conversation. Published only while it has entries and focus.
 struct MacFindActions {
     let find: () -> Void
 }
