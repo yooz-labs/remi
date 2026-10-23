@@ -56,11 +56,30 @@ import Testing
         #expect(drafts.draft(for: key("A", "s1")) == "")
     }
 
-    @Test func longTextIsCut() {
+    @Test func liveDraftIsExactAndOnlyTheStoredFormIsCut() {
         let long = String(repeating: "x", count: RemiSessionDrafts.maximumCharacters + 50)
         let drafts = RemiSessionDrafts().setting(long, for: key("A", "s"))
-        #expect(drafts.draft(for: key("A", "s")).count == RemiSessionDrafts.maximumCharacters)
-        let restored = RemiSessionDrafts(storageValue: RemiSessionDrafts().setting("y", for: key("A", "s")).storageValue)
-        #expect(restored.draft(for: key("A", "s")) == "y")
+        #expect(drafts.draft(for: key("A", "s")) == long)
+        let restored = RemiSessionDrafts(storageValue: drafts.storageValue)
+        #expect(restored.draft(for: key("A", "s")).count == RemiSessionDrafts.maximumCharacters)
+    }
+
+    @Test func pruneDropsGoneSessionsAndKeepsUnloadedMachines() {
+        let drafts = RemiSessionDrafts()
+            .setting("kept", for: key("A", "live"))
+            .setting("gone", for: key("A", "ended"))
+            .setting("unloaded", for: key("B", "x"))
+            .setting("removed", for: key("C", "y"))
+        let pruned = drafts.pruned(
+            savedMachineIDs: ["A", "B"],
+            loadedMachineIDs: ["A"],
+            sessionKeys: [key("A", "live")]
+        )
+        #expect(pruned.draft(for: key("A", "live")) == "kept")
+        #expect(pruned.draft(for: key("A", "ended")) == "")
+        #expect(pruned.draft(for: key("B", "x")) == "unloaded")
+        #expect(pruned.draft(for: key("C", "y")) == "")
+        #expect(pruned.pruned(savedMachineIDs: ["A", "B"], loadedMachineIDs: ["A"],
+                              sessionKeys: [key("A", "live")]) == pruned)
     }
 }
