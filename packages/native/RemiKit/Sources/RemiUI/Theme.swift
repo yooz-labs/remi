@@ -57,5 +57,9 @@ public enum RemiTheme {
     public enum Size {
         public static let minimumTapTarget: CGFloat = 44
         public static let statusDot: CGFloat = 7
+        /// The widest a column of reading or answering content grows on a wide canvas.
+        public static let readableContentWidth: CGFloat = 720
+        /// The width of the persistent sidebar at regular width.
+        public static let sidebarWidth: CGFloat = 340
     }
 }

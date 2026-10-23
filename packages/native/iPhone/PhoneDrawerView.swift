@@ -29,6 +29,7 @@ struct PhoneDrawerView: View {
     @Environment(\.phoneDrawerBlocksTaps) private var blocksTaps
     @Environment(\.phoneDrawerOrderFrozen) private var orderFrozen
     @Environment(\.phoneDrawerIsOpen) private var isOpen
+    @Environment(\.phoneDrawerShowsCloseButton) private var showsCloseButton
     /// The grouping as it was when the order last moved freely; `displayed` is what the
     /// list shows. Both are memoized here so a body pass does not regroup the sessions.
     @State private var snapshot: RemiSessionGrouping
@@ -224,18 +225,20 @@ struct PhoneDrawerView: View {
                 .accessibilityAddTraits(.isHeader)
                 .accessibilitySortPriority(1)
                 .accessibilityFocused($headerFocused)
-            Button {
-                if !blocksTaps { onClose() }
-            } label: {
-                Image(systemName: "xmark")
-                    .frame(
-                        width: RemiTheme.Size.minimumTapTarget,
-                        height: RemiTheme.Size.minimumTapTarget
-                    )
-                    .contentShape(.rect)
+            if showsCloseButton {
+                Button {
+                    if !blocksTaps { onClose() }
+                } label: {
+                    Image(systemName: "xmark")
+                        .frame(
+                            width: RemiTheme.Size.minimumTapTarget,
+                            height: RemiTheme.Size.minimumTapTarget
+                        )
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close menu")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Close menu")
         }
         .padding(.leading, RemiTheme.Spacing.m)
         .padding(.trailing, RemiTheme.Spacing.xs)
@@ -423,6 +426,8 @@ private struct PhoneDrawerInboxRow: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .contentShape(.hoverEffect, .rect(cornerRadius: RemiTheme.Radius.control))
+        .hoverEffect(.highlight)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
@@ -454,6 +459,8 @@ private struct PhoneDrawerSessionRow: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .contentShape(.hoverEffect, .rect(cornerRadius: RemiTheme.Radius.control))
+        .hoverEffect(.highlight)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(presentation.accessibilityLabel)
         .accessibilityAddTraits(isSelected ? .isSelected : [])

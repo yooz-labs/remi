@@ -357,4 +357,72 @@ private let inboxThreeProblemMachines = drawerMachines(
 #Preview("First Run · Light") { FirstRunPreview().preferredColorScheme(.light) }
 #Preview("First Run · Dark") { FirstRunPreview().preferredColorScheme(.dark) }
 #Preview("First Run · Accessibility") { FirstRunPreview().environment(\.dynamicTypeSize, .accessibility5) }
+
+// MARK: Wide, landscape and narrow canvases (#1629)
+
+/// The regular-width shell as `PhoneLiveRootView` builds it: the drawer content as a
+/// sidebar beside the session. A preview cannot change its window's real size class, so
+/// this one shows the sidebar only where the canvas is regular for real (an iPhone Max in
+/// landscape); elsewhere the system collapses the split view, as it does in the app.
+private struct RegularShellPreview: View {
+    @State private var state = PhoneShellState(destination: .session(PhoneSessionRoute(
+        machineKey: RemiPreviewData.primarySession.machineID,
+        sessionID: RemiPreviewData.primarySession.id
+    )))
+
+    var body: some View {
+        NavigationSplitView {
+            PhoneDrawerView(
+                sessions: RemiPreviewData.sessions,
+                machines: RemiPreviewData.machines,
+                filter: state.drawerFilter,
+                questionCount: 1,
+                destination: state.destination,
+                canCreateSession: true,
+                onClose: {},
+                onSelectAllMachines: { state.clearFilter() },
+                onSelectMachine: { state.selectMachineFilter($0) },
+                onSelectInbox: { state.select(.inbox) },
+                onSelectSession: { state.select(.session(PhoneSessionRoute(machineKey: $0.machineID, sessionID: $0.id))) },
+                onNewSession: {},
+                onAddMachine: {},
+                onPreferences: {}
+            )
+            .phoneSidebarEnvironment(RemiShellChrome.resolve(mode: .regular))
+            .toolbar(.hidden, for: .navigationBar)
+            .navigationSplitViewColumnWidth(RemiTheme.Size.sidebarWidth)
+        } detail: {
+            SessionPreview()
+        }
+        .navigationSplitViewStyle(.balanced)
+        .environment(\.horizontalSizeClass, .regular)
+    }
+}
+
+#Preview("Session · Wide 700") { SessionPreview().frame(width: 700) }
+#Preview("Session · Wide 1000") { SessionPreview().frame(width: 1_000) }
+#Preview("Session · Wide 1000 · Accessibility") {
+    SessionPreview().frame(width: 1_000).environment(\.dynamicTypeSize, .accessibility5)
+}
+#Preview("Session · Landscape", traits: .landscapeLeft) { SessionPreview() }
+#Preview("Session · 320") { SessionPreview().frame(width: 320) }
+#Preview("Inbox · Wide 700") {
+    InboxPreview(questions: inboxSeveralCards, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+        .frame(width: 700)
+}
+#Preview("Inbox · Wide 1000") {
+    InboxPreview(questions: inboxSeveralCards, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+        .frame(width: 1_000)
+}
+#Preview("Inbox · Landscape", traits: .landscapeLeft) {
+    InboxPreview(questions: inboxSeveralCards, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+}
+#Preview("Inbox · 320") {
+    InboxPreview(questions: inboxSeveralCards, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+        .frame(width: 320)
+}
+#Preview("Shell · Regular sidebar", traits: .landscapeLeft) { RegularShellPreview() }
+#Preview("Shell · Regular sidebar · Dark", traits: .landscapeLeft) {
+    RegularShellPreview().preferredColorScheme(.dark)
+}
 #endif
