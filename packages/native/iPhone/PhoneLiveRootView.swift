@@ -166,6 +166,7 @@ struct PhoneLiveRootView: View {
                     .navigationSplitViewColumnWidth(RemiTheme.Size.sidebarWidth)
             } detail: {
                 shellContent(sessions: sessions, machines: machines)
+                    .toolbar(removing: .sidebarToggle)
             }
             .navigationSplitViewStyle(.balanced)
         } else {
@@ -247,8 +248,29 @@ struct PhoneLiveRootView: View {
                 .toolbar {
                     if chrome.showsMenuButton {
                         ToolbarItem(placement: .topBarLeading) { menuButton }
+                    } else if chrome.usesSidebar {
+                        ToolbarItem(placement: .topBarLeading) { sidebarToggleButton }
                     }
                 }
+        }
+    }
+
+    /// The sidebar toggle, drawn here and not by the system. The detail holds its own
+    /// NavigationStack, and whether the system's toggle shows through that nesting on an
+    /// iPhone-family app was not checked at runtime, so the system's is removed in
+    /// `rootLayout` and this one is the only one, driven by the same column layout the
+    /// keyboard shortcut uses.
+    private var sidebarToggleButton: some View {
+        Button {
+            toggleSidebar()
+        } label: {
+            Label("Toggle sidebar", systemImage: "sidebar.leading")
+                .labelStyle(.iconOnly)
+                .frame(
+                    minWidth: RemiTheme.Size.minimumTapTarget,
+                    minHeight: RemiTheme.Size.minimumTapTarget
+                )
+                .contentShape(.rect)
         }
     }
 
