@@ -323,3 +323,62 @@ export async function runTerminalReservationProof(command: readonly string[]): P
     }
   }
 }
+
+/** Real death and 30 seconds of age do not authorize automatic lock deletion. */
+export async function runCrashedTerminalLockProof(command: readonly string[]): Promise<string> {
+  const home = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), 'remi-terminal-crash-')));
+  const state = TerminalReservations.open(home);
+  const prefix = join(home, 'holder');
+  const child = Bun.spawn([...command, '--terminal-reservation-child', 'lock', home, prefix], {
+    env: { HOME: home, TMPDIR: tmpdir(), PATH: '/usr/bin:/bin' },
+    stdin: 'ignore',
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const stdout = new Response(child.stdout).text();
+  const stderr = new Response(child.stderr).text();
+  let passed = false;
+  try {
+    await until(() => fs.existsSync(`${prefix}.ready`));
+    const lock = `${ledger(home)}.lock`;
+    const owner = JSON.parse(fs.readFileSync(lock, 'utf8')) as { pid: number; acquiredAt: number };
+    assert.equal(owner.pid, child.pid, 'actual lock owner PID');
+    const minimum = Math.max(owner.acquiredAt, fs.statSync(lock).mtimeMs) + 30000;
+    const started = performance.now();
+    child.kill('SIGKILL');
+    await child.exited;
+    assert.equal(child.signalCode, 'SIGKILL', 'lock owner killed inside transaction');
+    assert.equal(await stdout, '');
+    assert.equal(await stderr, '');
+    assert.throws(
+      () => process.kill(child.pid, 0),
+      (error) => (error as NodeJS.ErrnoException).code === 'ESRCH',
+    );
+    code(() => state.reserveModel(randomUUID()), 'busy', 'young dead lock remains charged');
+    while (Date.now() < minimum || performance.now() - started < 30000) await delay(25);
+    const recoveryStarted = performance.now();
+    code(
+      () => state.reserveModel(randomUUID()),
+      'busy',
+      'abandoned old lock requires explicit repair',
+    );
+    assert(performance.now() - recoveryStarted < 100, 'abandoned lock remains nonblocking');
+    assert(fs.existsSync(lock), 'abandoned lock is retained');
+    // The sole child owner is proved dead/reaped, no resources were admitted,
+    // and this controller owns the whole private fixture. Model quiescent operator repair.
+    const records = JSON.parse(fs.readFileSync(ledger(home), 'utf8')) as { records: unknown[] };
+    assert.equal(records.records.length, 0, 'no live resources during owned repair');
+    fs.unlinkSync(lock);
+    assert.doesNotThrow(
+      () => TerminalReservations.open(home).reserveModel(randomUUID()),
+      'quiescent explicit repair restores admission',
+    );
+    passed = true;
+    return 'real crashed owner requires explicit lock repair';
+  } finally {
+    if (child.exitCode === null) child.kill('SIGKILL');
+    await child.exited;
+    if (passed) fs.rmSync(home, { recursive: true, force: true });
+    else console.error('Owned crashed-lock evidence retained', home);
+  }
+}

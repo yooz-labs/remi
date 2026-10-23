@@ -25,13 +25,15 @@ Each instance has a fresh random owner token plus its PID and hostname.
 One instance cannot release another instance's model or view, even at the
 same PID. A model cannot be released while its view rows remain.
 The future host must dispose content/send slots before releasing their rows.
-Failed writes/releases retain charge; they can reduce availability until a
-successful retry or proved process death. An ambiguous write may charge a
-row whose ID was never returned, conservatively until process death.
+Atomic-write errors have uncertain completion: an admission may already have
+charged a row whose ID was never returned, and a failed release may already
+have committed its removal. Disposal-before-release keeps either outcome safe.
+Unreturned charged rows remain until confirmed owned cleanup or process death.
 
 Live owners do not expire by wall clock. The service must enforce monotonic
 five-minute view expiry and release only after retiring its resources.
-Rows are reclaimed only when a same-host PID returns ESRCH from signal 0.
+With an obtainable transaction lock, rows are reclaimed only when a same-host
+PID returns ESRCH from signal 0.
 Unknown hosts, other signal outcomes and PID reuse conservatively retain charge.
 The captured owner cannot be reused after a process fork.
 
@@ -53,7 +55,14 @@ repair after all owners have stopped. No repair command is implemented here.
 Initialization does not change the parent home's mode.
 
 Transactions reuse the existing nonblocking interprocess lock and restricted
-atomic writer. Directory, marker and ledger are checked again during each
+atomic writer. An abandoned lock is deliberately not reclaimed automatically,
+even after its owner is proved dead and the normal stale-age floor has elapsed.
+Stop all Remi resource owners before operator inspection/repair; there is no
+automated repair command in this phase. Reusing the older generic stale-recovery
+path was rejected because two stale reclaimers can move a replacement owner
+before detecting the mismatch. That pre-existing helper risk is tracked in
+[#1619](https://github.com/yooz-labs/remi/issues/1619).
+Directory, marker and ledger are checked again during each
 operation. A busy lock returns `busy`; unreadable or unprovable state returns
 payload-free `unavailable`. There is no filesystem lock or write on a PTY
 output callback in this standalone component.
@@ -69,13 +78,39 @@ The proof constructs this component against real private files and child
 processes. It covers quotas, cross-process device admission, four live owners
 competing for 32 slots, exact owned release, death/reaping, nonblocking lock
 contention and 18 corrupt/lost-state cases. Each child is reaped; failed owned
-fixture directories are preserved. No authority service is replaced by a mock.
+fixture directories are preserved. A separate killed-owner control waits a real
+30 seconds, verifies that both young and old abandoned locks stay nonblocking
+and unavailable, and models explicit repair only after its sole child owner is
+proved absent/reaped and no resources are admitted. No authority service is
+replaced by a mock.
 
 Run `bun test packages/daemon/tests/terminal/reservations.test.ts` or
 `bun run scripts/terminal-reservations-proof.ts`.
 Compiled qualification invokes the same entry point with `--compiled` so its
 children execute that exact compiled binary.
-Six-cell and mutation acceptance remains pending at this checkpoint.
+The final matrix passed all 30 groups on Mac ARM64, Linux ARM64 and Linux x64
+under both Bun 1.3.11 and 1.4.2 (180 group executions). Ten independent guard
+mutations failed their named assertion on both compiled Mac pins (20 negatives).
+The original 29-group/18-mutation pass remains a predecessor receipt.
+
+Private receipts are retained at
+`/Volumes/S1/yooz/remi/artifacts/terminal-reservations-20261023/`:
+`qualification-final-result.json` pins all daemon/shared runtime sources,
+proof inputs and accepted binary hashes; `qualification-final/` holds every
+compiled execution and mutation log. Source hashes were rechecked unchanged.
+The Docker image is pinned to
+`oven/bun@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7`,
+with UID 1000, no network, dropped capabilities, 512 MiB memory and 128 tasks.
+These are fixture containment limits, not product quotas.
+
+The first compiler metadata check compared a short CLI revision string to
+`Bun.revision`; the corrected driver queries the full revision directly.
+The original 64-task Linux Bun 1.4.2 ARM64 run aborted. An identical-binary
+control reproduced a cgroup limit event with a 64-task peak; at 128 tasks the
+same binary passed all groups with a 68-task peak and no limit event.
+The corrected six-cell matrix uses 128 tasks with all product quotas, the
+512 MiB cap, assertions and nonblocking bounds preserved. No JIT setting or
+shipping runtime behavior changed for that containment correction.
 
 The initial harness inherited conflicting color environment variables, which
 violated its empty-child-stderr oracle; children now use a minimal owned
@@ -89,3 +124,9 @@ B3c must validate original signed WSS grant/attachment/binding/runtime authority
 monotonic leases, rate/send bounds and held-hook responsiveness before sending.
 B4 qualifies the encrypted semantic route and a real caller before advertisement.
 Native rendering, signed hardware and deployed acceptance remain separate.
+
+The first crash control expected automatic dead-lock recovery and reproduced
+permanent busy after the real age floor. The explicit operator-repair policy
+above resolves that contract honestly; it does not relabel the failed automatic
+recovery control as a pass. Atomic release completion wording was corrected
+in the same review round.

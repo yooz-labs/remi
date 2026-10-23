@@ -1,4 +1,5 @@
 import {
+  runCrashedTerminalLockProof,
   runTerminalReservationChild,
   runTerminalReservationProof,
 } from '../packages/daemon/tests/helpers/terminal-reservations-proof.ts';
@@ -11,6 +12,7 @@ else {
       ? [process.execPath]
       : [process.execPath, '--no-env-file', import.meta.path];
   const groups = await runTerminalReservationProof(command);
+  groups.push(await runCrashedTerminalLockProof(command));
   console.info(
     JSON.stringify({
       status: 'passed',

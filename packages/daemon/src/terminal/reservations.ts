@@ -167,7 +167,8 @@ function provedDead(pid: number): boolean {
 /**
  * Reserve before constructing a model. Dispose content/send slots before release.
  * Live rows never expire by wall clock: the future service owns monotonic expiry.
- * Release failure leaves charge in place; retry or proved process death may retire it.
+ * Atomic-write errors have uncertain completion: admission may charge, release may commit.
+ * Dead rows require an obtainable lock; abandoned locks require quiescent operator repair.
  */
 export class TerminalReservations {
   private readonly identity: fs.BigIntStats;
