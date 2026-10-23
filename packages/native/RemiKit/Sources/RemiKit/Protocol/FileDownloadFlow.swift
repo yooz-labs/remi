@@ -40,13 +40,32 @@ public enum FileDownloadPath {
         return nil
     }
 
-    /// A name safe to offer the save panel: escaped, with path and volume separators replaced,
-    /// never empty, `.` or `..`. The wire already refuses those characters and the state machine
-    /// requires the name to match the request; this is the last line before the file system.
+    /// A name safe to offer the save panel: bidi and control scalars escaped, path and volume
+    /// separators replaced, surrounding whitespace and newlines trimmed, cut to 255 UTF-8 bytes
+    /// on a scalar boundary, and never empty, `.` or `..`. U+200B to U+200D stay as they are:
+    /// they are legitimate inside names (a family emoji is joined with U+200D). The wire already
+    /// refuses separators and controls and the state machine requires the name to match the
+    /// request; this is the last line before the file system.
     public static func saveName(for fileName: String) -> String {
-        var name = PushDisplayText.escape(fileName)
+        var name = ""
+        // Trim first: a newline would otherwise be escaped into visible text and survive the trim.
+        for scalar in fileName.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars {
+            if (0x200B...0x200D).contains(scalar.value) {
+                name.unicodeScalars.append(scalar)
+            } else {
+                name += PushDisplayText.escape(String(scalar))
+            }
+        }
         for separator in ["/", ":", "\\"] { name = name.replacingOccurrences(of: separator, with: "_") }
-        name = name.trimmingCharacters(in: .whitespaces)
+        name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        var cut = String.UnicodeScalarView()
+        var bytes = 0
+        for scalar in name.unicodeScalars {
+            bytes += String(scalar).utf8.count
+            if bytes > FileFetchLimits.fileNameBytes { break }
+            cut.append(scalar)
+        }
+        name = String(cut)
         return name.isEmpty || name == "." || name == ".." ? "download" : name
     }
 

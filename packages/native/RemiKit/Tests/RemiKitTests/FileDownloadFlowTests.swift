@@ -199,6 +199,30 @@ struct FileDownloadFlowTests {
         #expect(!escaped.unicodeScalars.contains { $0.value == 0x202E })
     }
 
+    @Test func saveNameKeepsLegitimateJoinersButEscapesBidiAndControls() {
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}.txt"
+        #expect(FileDownloadPath.saveName(for: family) == family)
+        #expect(FileDownloadPath.saveName(for: "a\u{200B}b\u{200C}c") == "a\u{200B}b\u{200C}c")
+        let hostile = FileDownloadPath.saveName(for: "x\u{202E}y\u{1B}z\u{200E}")
+        #expect(!hostile.unicodeScalars.contains { [0x202E, 0x1B, 0x200E].contains($0.value) })
+        #expect(hostile.contains("x") && hostile.contains("z"))
+    }
+
+    @Test func saveNameTrimsNewlinesAndCutsOnAScalarBoundary() {
+        #expect(FileDownloadPath.saveName(for: "\n report.txt \r\n") == "report.txt")
+        #expect(FileDownloadPath.saveName(for: "\n\n") == "download")
+        let near = String(repeating: "a", count: 254) + "\u{E9}"  // 256 bytes: the accent does not fit
+        let cut = FileDownloadPath.saveName(for: near)
+        #expect(cut == String(repeating: "a", count: 254))
+        #expect(cut.utf8.count <= FileFetchLimits.fileNameBytes)
+        let exact = String(repeating: "a", count: 253) + "\u{E9}"  // exactly 255 bytes
+        #expect(FileDownloadPath.saveName(for: exact) == exact)
+        let family = String(repeating: "\u{1F468}\u{200D}", count: 40)
+        let cutFamily = FileDownloadPath.saveName(for: family)
+        #expect(cutFamily.utf8.count <= FileFetchLimits.fileNameBytes)
+        #expect(String(decoding: Array(cutFamily.utf8), as: UTF8.self) == cutFamily)  // no split scalar
+    }
+
     @Test func hostRefusalAtBeginEndsTheDownload() throws {
         var flow = try Self.started()
         _ = flow.handle(.message(S.refused(.begin, .unavailable)), now: 0, makeID: { S.beginId }, timestamp: Self.stamp)
