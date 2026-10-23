@@ -6,7 +6,7 @@ The current [backend capability plan](issue-1595-backend-plan.md) separates exis
 image/download contracts from native adoption, proposes the owner's read-only
 terminal view, and resumes the approved login/settings profiles under #1157.
 It records actual source callers, missing capabilities, limits, prerequisites and
-per-PR acceptance gates. Exact terminal wire awaits qualification; existing
+per-PR acceptance gates. Terminal service/caller adoption awaits qualification; existing
 media/profile approval is preserved. Historical snapshots below retain their dates.
 
 The owner approved terminal-first execution after #1607. B1 (#1608) now has a
@@ -16,10 +16,14 @@ state budget with a 240 x 60 alternate screen. No runtime candidate or capabilit
 was selected by that report. The owner then approved qualification at 1 MiB per
 model / 32 MiB per home. The [bounded primitive](../docs/terminal-screen-bounded-model.md)
 now passes all six supported compiled executions under ADR0046 (#1608);
-domain wire, capability, transport and native caller adoption remain later gates.
+capability, transport and native caller adoption remain later gates.
 B2 (#1612) adds the exact structural wire in ADR0047, shared goldens and
 explicit pre-activation relay refusals; host/authority/lease integration and
 capability advertisement remain B3/B4 gates.
+B3a (#1617/#1618) supplies shared model/view reservations.
+B3b (#1620) adds [launch-time capture](../docs/terminal-capture.md) before either
+harness starts, with one bounded borrowed frame and disposal before quota release.
+It adds no terminal service, capability or pane; B3c/B4 remain required.
 Transferred-media preview cleanup uses the owner-confirmed oldest-cache eviction
 when full, preserving explicit Save/export and host source files.
 

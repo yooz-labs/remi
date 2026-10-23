@@ -9,7 +9,8 @@ The owner selected a **read-only view of the existing agent terminal** in this s
 The owner approved the proposed terminal architecture/limits and chose terminal first, then the existing media/profile uses.
 Exact runtime fields remain subject to screen qualification and the accepted ADR; this document registers no wire types or capabilities.
 The [initial B1 report](../docs/terminal-screen-characterization.md) preserves the failed original resource gate.
-The [bounded-model continuation](../docs/terminal-screen-bounded-model.md) qualifies the approved 1 MiB primitive on all six supported compiled executions under [ADR0046](decisions/0046-bounded-read-only-terminal-screen.md) (#1608); strict wire and runtime adoption remain next.
+The [bounded-model continuation](../docs/terminal-screen-bounded-model.md) qualifies the approved 1 MiB primitive on all six supported compiled executions under [ADR0046](decisions/0046-bounded-read-only-terminal-screen.md) (#1608).
+Strict wire and shared quotas landed in #1616/#1618; [launch capture](../docs/terminal-capture.md) is B3b (#1620), followed by the secure service and real caller.
 
 ## Context
 
@@ -210,7 +211,7 @@ The bounded B1 primitive and ADR0046 are qualified. B2's strict wire/fixtures ar
 | B1 | Terminal screen characterization and accepted ADR | Existing PTY output observer plus owned qualification harness; supported host/compiled packaging, accurate bounded screen snapshots and an accepted new ADR before runtime adoption |
 | B2 | Terminal strict wire | New `shared/src/terminal-view.ts`, registry/directions/capability documentation and shared positive/refusal goldens; no advertised capability yet |
 | B3a | Shared model/view reservations (#1617) | New `daemon/src/terminal/reservations.ts`; bounded private metadata, real concurrent child processes, approved model/view limits and exact owned release; standalone until host adoption |
-| B3b | Launch-time terminal capture | Existing raw PTY output plus local geometry/lifetime observation, before harness start; reserve before model construction, bounded disposal/release and held-answer qualification; no transport or capability |
+| B3b | Launch-time terminal capture (#1620) | Existing raw PTY output plus local geometry/lifetime observation, before harness start; reserve before model construction, bounded disposal/release and held-answer qualification; no transport or capability |
 | B3c | Signed direct terminal service | New `daemon/src/terminal/` authority/lease service and small `cli.ts` composition; real signed WSS client, original grant/attachment/binding/runtime checks, rate/send reservations and no input/resize effects |
 | B4 | Terminal encrypted relay route and first caller | Existing hub/child authority seams plus one real web or native read-only caller; only then advertise on the measured route; native controls/rendered QA are separate |
 | M1 | Codex image qualification/contract | Existing `harness/codex/`, `harness/types.ts`, shared contract/fixtures; installed API evidence before choosing an image input route; text-chat behavior preserved |

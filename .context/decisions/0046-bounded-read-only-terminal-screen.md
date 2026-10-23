@@ -1,6 +1,6 @@
 # ADR 0046: A bounded read-only model of the existing terminal
 
-**Status:** accepted for the screen primitive; wire and runtime integration pending
+**Status:** accepted for the screen primitive; structural wire in ADR0047 and launch capture in #1620; secure transport/caller pending
 **Date:** 2026-10-22
 **Owner:** Yahya
 
@@ -49,10 +49,14 @@ discriminating blocking control, without PTY input.
 ## Runtime boundary and consequences
 
 This decision selects a component, not a terminal transport or client feature.
-There is no CLI constructor/caller, registry addition, `terminal_view`
-advertisement, view lease, home quota or native pane in this phase.
-The host must later reserve per-home model/send capacity, capture from session
-launch and retire views on current grant/binding/runtime/connection changes.
+The original primitive phase added no CLI constructor/caller, registry addition,
+`terminal_view` advertisement, view lease, home quota or native pane.
+ADR0047 subsequently added the strict structural wire; #1617/#1618 added shared
+reservations; [#1620](../../docs/terminal-capture.md) composes reserved capture
+before harness start, with bounded native-fragment batching and borrowed disposal.
+These additions expose no terminal transport or capability.
+The secure service must still reserve send capacity and retire views on current
+grant/binding/runtime/connection changes.
 Predating or unsupported capture must report unavailable.
 
 New wire fields require the strict registry, shared refusal/positive vectors
