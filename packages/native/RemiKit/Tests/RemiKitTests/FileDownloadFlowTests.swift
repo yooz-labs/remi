@@ -7,7 +7,7 @@ struct FileDownloadFlowTests {
     static let binding = AttachedBinding(harness: .claude, harnessSessionId: "claude-1")
     static let stamp = "2026-10-14T03:00:00.000Z"
 
-    static func started(_ path: String = "src/main.swift") throws -> FileDownloadFlow {
+    static func started(_ path: String = "src/report.txt") throws -> FileDownloadFlow {
         let result = FileDownloadFlow.begin(
             path: path, binding: binding, sessionId: S.sessionId, requestId: S.beginId, timestamp: stamp, now: 0)
         return try result.get().flow
@@ -155,6 +155,48 @@ struct FileDownloadFlowTests {
         #expect(texts.allSatisfy { !$0.isEmpty && !$0.contains("_") && !$0.contains("—") })
         // sequence and integrity share one text on purpose; the rest are distinct.
         #expect(Set(texts).count == FileFetchRefusalCode.allCases.count - 1)
+    }
+
+    private func acceptedFlow(named name: String, path: String = "src/report.txt") throws -> (FileDownloadFlow, [FileFetchMessage]) {
+        var flow = try Self.started(path)
+        let data = S.payload(10)
+        let offer = FileFetchMessage.accepted(
+            FileFetchAccepted(
+                header: S.header(), requestId: S.beginId, transferId: S.transfer, fileName: name, byteLength: data.count,
+                digest: S.digest(data), expiresAt: "2026-10-14T03:05:00.000Z"))
+        let out = flow.handle(.message(offer), now: 0, makeID: { S.beginId }, timestamp: Self.stamp)
+        return (flow, out)
+    }
+
+    @Test func offerMustNameTheRequestedFile() throws {
+        let (ok, out) = try acceptedFlow(named: "report.txt")
+        #expect(out.count == 1)
+        #expect(ok.status == .receiving(received: 0, total: 10, fileName: "report.txt"))
+        for hostile in ["other.txt", "evil.sh", "..", ".", "REPORT.txt", "report.txt "] {
+            let (flow, sent) = try acceptedFlow(named: hostile)
+            #expect(flow.status == .failed(FileDownloadFlow.text(for: .protocolViolation)), "\(hostile)")
+            guard case .cancel? = sent.first else { Issue.record("no cancel for \(hostile)"); continue }
+        }
+    }
+
+    @Test func canonicallyEquivalentButDifferentScalarsAreRefused() throws {
+        // "é" as one scalar was requested; the host offers e plus a combining accent.
+        let (flow, _) = try acceptedFlow(named: "re\u{301}port.txt", path: "r\u{E9}port.txt")
+        #expect(flow.status == .failed(FileDownloadFlow.text(for: .protocolViolation)))
+    }
+
+    @Test func dotNamesAreRefusedEvenWhenRequested() throws {
+        let (flow, _) = try acceptedFlow(named: "..", path: "a/..")
+        #expect(flow.status == .failed(FileDownloadFlow.text(for: .protocolViolation)))
+    }
+
+    @Test func saveNameIsEscapedAndNeverASeparatorOrDotName() {
+        #expect(FileDownloadPath.saveName(for: "report.txt") == "report.txt")
+        #expect(FileDownloadPath.saveName(for: "a/b:c\\d") == "a_b_c_d")
+        #expect(FileDownloadPath.saveName(for: "..") == "download")
+        #expect(FileDownloadPath.saveName(for: "") == "download")
+        let escaped = FileDownloadPath.saveName(for: "x\u{202E}y")
+        #expect(!escaped.unicodeScalars.contains { $0.value == 0x202E })
     }
 
     @Test func hostRefusalAtBeginEndsTheDownload() throws {

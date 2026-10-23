@@ -1,4 +1,5 @@
 import Foundation
+import RemiPush
 
 /// Why a typed path cannot be sent, with the same rules as the wire (ADR 0045):
 /// 1 to 4,096 bytes, at most 64 components, each nonempty, at most 255 bytes, and none holding a
@@ -39,6 +40,16 @@ public enum FileDownloadPath {
         return nil
     }
 
+    /// A name safe to offer the save panel: escaped, with path and volume separators replaced,
+    /// never empty, `.` or `..`. The wire already refuses those characters and the state machine
+    /// requires the name to match the request; this is the last line before the file system.
+    public static func saveName(for fileName: String) -> String {
+        var name = PushDisplayText.escape(fileName)
+        for separator in ["/", ":", "\\"] { name = name.replacingOccurrences(of: separator, with: "_") }
+        name = name.trimmingCharacters(in: .whitespaces)
+        return name.isEmpty || name == "." || name == ".." ? "download" : name
+    }
+
     /// The last component, for the person to see before and after a download.
     public static func baseName(of path: String) -> String {
         path.split(separator: "/", omittingEmptySubsequences: true).last.map(String.init) ?? path
@@ -61,7 +72,8 @@ public struct FileDownloadFlow: Sendable, Equatable {
         if let issue = FileDownloadPath.issue(in: path) { return .failure(issue) }
         let header = WireHeader(id: requestId, timestamp: timestamp, sessionId: sessionId)
         let flow = FileDownloadFlow(
-            sessionId: sessionId, relativePath: path, machine: FileFetchStateMachine(beginId: requestId, now: now))
+            sessionId: sessionId, relativePath: path, machine: FileFetchStateMachine(
+                beginId: requestId, now: now, expectedFileName: FileDownloadPath.baseName(of: path)))
         return .success((flow, .begin(FileFetchBegin(header: header, binding: binding, relativePath: path))))
     }
 

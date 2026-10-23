@@ -75,7 +75,7 @@ public struct RemiFileDownloadView: View {
             isPresented: $exporting,
             document: flow?.verifiedFile.map { RemiDownloadedFile(data: $0.data) },
             contentType: .data,
-            defaultFilename: flow?.verifiedFile?.fileName
+            defaultFilename: flow?.verifiedFile.map { FileDownloadPath.saveName(for: $0.fileName) }
         ) { result in
             switch result {
             case .success:

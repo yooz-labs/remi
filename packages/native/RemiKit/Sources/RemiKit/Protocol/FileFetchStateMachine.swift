@@ -90,6 +90,7 @@ public struct FileFetchStateMachine: Sendable, Equatable {
     public private(set) var nextSequence = 0
     public private(set) var receivedBytes = 0
 
+    private let expectedFileName: String?
     private let startedAt: TimeInterval
     private var lastProgressAt: TimeInterval
     public private(set) var fileName = ""
@@ -97,8 +98,11 @@ public struct FileFetchStateMachine: Sendable, Equatable {
     private var digest = ""
     private var buffer = Data()
 
-    /// `beginId` is the begin request's `id`; `now` is when it was sent.
-    public init(beginId: String, now: TimeInterval) {
+    /// `beginId` is the begin request's `id`; `now` is when it was sent. `expectedFileName`, when
+    /// given, is the basename of the requested path: an offer for any other name (compared by
+    /// Unicode scalars) is a protocol violation, as is a name of `.` or `..`.
+    public init(beginId: String, now: TimeInterval, expectedFileName: String? = nil) {
+        self.expectedFileName = expectedFileName
         self.beginId = beginId
         self.startedAt = now
         self.lastProgressAt = now
@@ -137,6 +141,9 @@ public struct FileFetchStateMachine: Sendable, Equatable {
             guard WireGuards.decodeBase64URL(accepted.digest) != nil, (1...FileFetchLimits.fileBytes).contains(accepted.byteLength) else {
                 return fail(.protocolViolation, cancel: true)
             }
+            guard accepted.fileName != ".", accepted.fileName != "..",
+                expectedFileName.map({ WireGuards.same($0, accepted.fileName) }) ?? true
+            else { return fail(.protocolViolation, cancel: true) }
             transferId = accepted.transferId
             fileName = accepted.fileName
             byteLength = accepted.byteLength
