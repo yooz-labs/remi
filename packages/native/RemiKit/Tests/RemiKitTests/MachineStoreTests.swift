@@ -211,7 +211,7 @@ struct MachineStoreTests {
             clientId: "test-client"
         )
 
-        let sent = await store.sendChat(sessionId: "missing", content: "keep this draft")
+        let sent = await store.sendChat(machineID: "none", sessionId: "missing", content: "keep this draft")
 
         #expect(!sent)
         #expect(store.latestOperationError == "Cannot send message: this session is unavailable.")
