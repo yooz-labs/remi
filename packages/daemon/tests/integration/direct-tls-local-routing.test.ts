@@ -128,8 +128,25 @@ function endpoint(f: Fixture, port: number) {
   if (r.kind !== 'found') throw new Error(`owned endpoint ${r.kind}`);
   return r.endpoint;
 }
+function occupiedHubBase(): number {
+  // #1635: keep the OS-assigned port bound through hub startup and exercise reselection.
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const holder = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch: () => new Response('owned collision'),
+    });
+    const port = holder.port;
+    if (port !== undefined && port + 20 <= 65536) {
+      rawServers.push(holder);
+      return port;
+    }
+    holder.stop(true);
+  }
+  throw new Error('No owned hub base with room for twenty ports');
+}
 async function hub(f: Fixture, relay = false) {
-  const base = await reserveRange(20, 50, '127.0.0.1');
+  const base = occupiedHubBase();
   let config = f.config.replace('[daemon]\n', `[daemon]\nbase_port=${base}\n`);
   if (relay) {
     const worker = await startWorker();
@@ -143,20 +160,31 @@ async function hub(f: Fixture, relay = false) {
     'TLS hub readiness',
   );
   expect(p.proc.exitCode).toBeNull();
-  expect(p.log.text.includes(`wss://127.0.0.1:${base}/ws`)).toBe(true);
+  const advertised = /wss:\/\/127\.0\.0\.1:(\d+)\/ws/.exec(p.log.text);
+  const port = Number(advertised?.[1]);
+  expect(Number.isSafeInteger(port)).toBe(true);
+  expect(port).not.toBe(base);
+  expect(port).toBeGreaterThanOrEqual(base);
+  expect(port).toBeLessThan(base + 20);
+  expect(p.log.text.includes(`wss://127.0.0.1:${port}/ws`)).toBe(true);
   expect(p.log.text.includes('TLS is configured; secure discovery support is pending')).toBe(true);
   if (relay)
     await poll(() => p.log.text.includes('Relay control admitted'), 'local Worker admission');
-  endpoint(f, base);
+  expect(endpoint(f, port).pid).toBe(p.proc.pid);
   await poll(() => {
     try {
       const value = JSON.parse(fs.readFileSync(join(f.home, 'daemon-status.json'), 'utf8'));
-      return value.mode === 'hub' && value.pid === p.proc.pid && value.bind !== undefined;
+      return (
+        value.mode === 'hub' &&
+        value.pid === p.proc.pid &&
+        value.bind !== undefined &&
+        value.wsPort === port
+      );
     } catch {
       return false;
     }
   }, 'verified hub status snapshot');
-  return { p, port: base };
+  return { p, port };
 }
 async function publicPeer(f: Fixture, port: number) {
   const identity = await unlockIdentity(await createIdentity());
