@@ -1,6 +1,6 @@
 # Native app parity
 
-Verified against production callers on 2026-10-11. This describes what ships in the
+Verified against production callers on 2026-10-23. This describes what ships in the
 native targets now, not planned behavior.
 
 | Capability | Capacitor client | Native iPhone | Native Mac | Remaining work |
@@ -24,6 +24,11 @@ native targets now, not planned behavior.
 | Subagent conversation picker | Yes | Yes | Yes | Native apps expose active and finished subagents as read-only conversations. |
 | Haptics and notification preferences | Yes | Yes | N/A | iPhone preferences control local question alerts, sounds, and answer feedback. |
 | Relay connection | No shipped client path | Yes — hardware verified | Implemented — acceptance open | Native relay v2 pairing, authenticated channels, secure push registration, and signed answers ship. Deployed-provider and remaining recovery/polish gates stay tracked by #1242. |
+| Cross-machine Inbox | No | Yes | Built, not run | Mac sidebar Inbox entry with a count badge lists waiting cards from every machine; answers go through `MachineStore.answer(machineID:...)`; Open conversation selects the card's machine and then its session (the stored selection is a machine id plus a bare session id). |
+| Conversation loading state | No | Yes | Built, not run | Mac shows the shared `RemiConversationPlaceholder` (loading, loading more, empty) and hides transcript-only toolbar items until there is something to navigate. |
+| Machine problem rows and recovery notes | No | Yes | Built, not run | Mac sidebar uses `RemiMachineStripPresentation` (problem rows, unique labels for same-named machines, accessibility labels) and `RemiMachineRecoveryState` copy. The recovery actions stay in the sessions column. |
+| Menu bar commands | N/A | N/A | Built, not run | Go menu (Inbox, Next and Previous Needs You, Previous and Next Session, Previous and Next Machine, Reconnect) and Find in Conversation. |
+| Window state restoration | No | Partial | Partial | Mac restores column layout and per-session unsent drafts per window with scene storage; machine and session selection already persisted. The Inbox view itself is not restored. |
 | Diff, files, terminal view | Web has terminal-era surfaces | No | No | Out of scope X5 (#1245). |
 
 The Capacitor app should not be retired yet. Native relay and background-answer source
@@ -52,3 +57,52 @@ deeper files, diffs, and terminal surfaces remain X5 work.
 - Recovery: both live roots pass retry actions to `MachineStore.retryApproval` and
   `MachineStore.retryConnection`; relay states that require a fresh token do not offer
   a direct retry that would imply the expired pairing can recover itself.
+
+## Mac window parity (#1628)
+
+No window of the Mac app was launched for this change. The Mac target builds unsigned, and
+the `xcodebuild test` run could not start here (pseudo terminal setup error). What is
+verified is the build and the unit tests of the shared rules in `RemiUI`
+(`RemiMacCommandRulesTests`, `RemiSessionDraftsTests`, `MacWorkspaceNavigationTests`,
+`InboxPresentationTests`, `RemiMachineStripPresentationTests`, `MachineRecoveryStateTests`).
+The rows above for the Mac Inbox, loading state, problem rows, menu commands and restoration
+describe code that is wired and compiles, not behavior seen on screen.
+
+What the code does:
+
+- Loading: `MacSessionDetail` resolves `RemiConversationPlaceholder` from
+  `MachineStore.isLoadingTranscript(machineID:sessionID:)`, as `SessionScreen` does.
+- Inbox: an Inbox row sits above the machines (badge from
+  `RemiInboxPresentation.waitingCount`). Selecting it shows `MacInboxColumn` in the middle
+  column and gives the columns back if the window was conversation-only. Machine and session
+  selection are kept and return when a machine is chosen. Selection is stored as
+  `remi.mac.selected-machine` plus a bare `remi.mac.selected-session`, not as a qualified key;
+  the qualified key is used when jumping between sessions.
+- Sidebar: `MacMachineProblemRows` and `MacMachineSidebarRow` take copy and labels from
+  `RemiMachineStripPresentation` and `RemiMachineRecoveryState`. The machine switcher menu
+  announces the selected machine.
+- Commands: the Go menu and Find in Conversation (`MacCommands`). Enable rules are
+  `RemiMacCommandAvailability` and `RemiNeedsYouJump`. Next Needs You works across machines;
+  Previous and Next Session follow the filtered list the sidebar shows; Reconnect is off while
+  the Inbox is shown. Find in Conversation is a focused value: it is enabled only while focus
+  is inside the conversation, so the session list keeps Command-F for its own search; the
+  toolbar search button works regardless.
+- Restoration: `@SceneStorage` holds the column layout and unsent drafts. A restored
+  conversation-only layout is checked again once the machine's session list loads and falls
+  back to the expanded layout if the session is gone.
+
+Limitations found:
+
+- Drafts can contain secrets the person typed. Scene storage is not encrypted, so they are
+  stored unencrypted on this Mac. Live drafts are exact in memory; the stored copy is bounded
+  (16 drafts, 4,000 characters each), written after a one-second pause or when the window
+  leaves the foreground, and drafts of ended sessions or removed machines are pruned. A draft
+  longer than the bound is cut only when read back after a relaunch.
+- Because Find is focus-gated, it can be disabled until the person clicks into the composer
+  or conversation. This focus behavior has not been seen running.
+- A search text or filter in the session list can hide the session a Next Needs You jump
+  selects; the list then reselects its first visible session.
+- The Inbox view itself is not restored on relaunch.
+- Machine recovery actions (retry, approval commands) remain in the sessions column; the
+  sidebar only names the state.
+- The `remi pair` QR flow is still iPhone only.

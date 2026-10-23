@@ -109,6 +109,21 @@ public enum RemiInboxPresentation {
         wasExpanded && cardCount > 2
     }
 
+    /// How many cards wait for the person across every machine: pending or sending, never the
+    /// resolved notes. This is the Mac sidebar's Inbox badge.
+    public static func waitingCount(questions: [RemiQuestionCardModel]) -> Int {
+        questions.count(where: \.isWaiting)
+    }
+
+    /// The spoken form of the Inbox badge: "Inbox, 3 need you", or "Inbox, nothing needs you".
+    public static func inboxAccessibilityLabel(waitingCount: Int) -> String {
+        switch waitingCount {
+        case ..<1: "Inbox, nothing needs you"
+        case 1: "Inbox, 1 needs you"
+        default: "Inbox, \(waitingCount) need you"
+        }
+    }
+
     /// The target for `card`, or nil when its session is not in `sessions` for the card's
     /// machine (the session is gone, so no link is shown).
     public static func openTarget(

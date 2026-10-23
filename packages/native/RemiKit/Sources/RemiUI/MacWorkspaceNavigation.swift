@@ -12,6 +12,57 @@ public struct RemiMacColumnLayout: Equatable, Sendable {
         self.expandedVisibility = expandedVisibility
     }
 
+    /// A short string for scene storage: the two visibilities, so a relaunched window opens the
+    /// way it was left.
+    public var storageValue: String {
+        "\(Self.name(of: visibility)),\(Self.name(of: expandedVisibility))"
+    }
+
+    /// The layout `storageValue` wrote, or nil for an empty, unknown or malformed string, so a
+    /// bad value never changes the default.
+    public init?(storageValue: String) {
+        let parts = storageValue.split(separator: ",", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let visibility = Self.visibility(named: String(parts[0])),
+              let expanded = Self.visibility(named: String(parts[1]))
+        else { return nil }
+        self.init(visibility: visibility, expandedVisibility: expanded)
+    }
+
+    private static func name(of visibility: NavigationSplitViewVisibility) -> String {
+        switch visibility {
+        case .all: "all"
+        case .doubleColumn: "double"
+        case .detailOnly: "detail"
+        default: "automatic"
+        }
+    }
+
+    private static func visibility(named name: String) -> NavigationSplitViewVisibility? {
+        switch name {
+        case "all": .all
+        case "double": .doubleColumn
+        case "detail": .detailOnly
+        case "automatic": .automatic
+        default: nil
+        }
+    }
+
+    /// The layout with the navigation columns showing: a conversation-only layout returns to
+    /// the columns it was expanded from; any other layout is unchanged. Go to Inbox uses it,
+    /// because the Inbox lives in the middle column.
+    public func revealingNavigation() -> Self {
+        guard visibility == .detailOnly else { return self }
+        let target = expandedVisibility == .detailOnly ? NavigationSplitViewVisibility.all : expandedVisibility
+        return Self(visibility: target, expandedVisibility: target)
+    }
+
+    /// A conversation-only layout needs a conversation. When the selected session no longer
+    /// exists the navigation columns come back, so the window is never left on an empty detail.
+    public func validated(sessionExists: Bool) -> Self {
+        sessionExists ? self : revealingNavigation()
+    }
+
     public func togglingMachines() -> Self {
         switch visibility {
         case .all:
@@ -128,5 +179,24 @@ public enum RemiMacCompactDestination: Equatable, Sendable {
         case .sessions: .content
         case .conversation: .detail
         }
+    }
+}
+
+/// What the Mac sidebar has selected: the cross-machine Inbox or one machine. The Inbox is a
+/// view, not a place on a machine, so choosing it keeps the machine and session selection
+/// that restore when the person leaves it.
+public enum RemiMacSidebarSelection: Hashable, Sendable {
+    case inbox
+    case machine(String)
+
+    /// The row to highlight: the Inbox while it is shown, otherwise the selected machine, or
+    /// nothing when no machine is selected.
+    public static func resolve(showsInbox: Bool, machineID: String) -> Self? {
+        if showsInbox { return .inbox }
+        return machineID.isEmpty ? nil : .machine(machineID)
+    }
+
+    public var machineID: String? {
+        if case .machine(let id) = self { id } else { nil }
     }
 }
