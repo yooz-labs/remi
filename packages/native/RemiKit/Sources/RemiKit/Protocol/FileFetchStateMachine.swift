@@ -92,8 +92,8 @@ public struct FileFetchStateMachine: Sendable, Equatable {
 
     private let startedAt: TimeInterval
     private var lastProgressAt: TimeInterval
-    private var fileName = ""
-    private var byteLength = 0
+    public private(set) var fileName = ""
+    public private(set) var byteLength = 0
     private var digest = ""
     private var buffer = Data()
 
