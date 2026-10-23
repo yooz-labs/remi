@@ -6,6 +6,9 @@
 # checker mis-tokenizes (e.g. "ONL"). They are data, not prose.
 [files]
 extend-exclude = [
+  # Verbatim upstream engine sources/tests, pinned by content hashes (#1625).
+  # Preserve their original comments; our generator and README stay checked.
+  "scripts/terminal-engine/upstream/*.txt",
   "packages/daemon/tests/parser/fixtures/",
   # Captured AskUserQuestion TUI sessions (#627) — raw terminal bytes, not prose.
   "packages/daemon/tests/fixtures/auq/",
