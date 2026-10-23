@@ -22,13 +22,20 @@ public enum RemiPaneState: Sendable, Equatable {
 /// - files: `file_download` advertised.
 ///
 /// A machine that is not connected, or has not answered yet, offers neither: a stale ack is not
-/// evidence about a socket that is gone. A legacy ack (no capabilities) and a capability this
+/// evidence about a socket that is gone. Neither is offered while the route cannot carry the
+/// frames (`PaneTransportPolicy`): a control for something that cannot work is not drawn. A legacy ack (no capabilities) and a capability this
 /// app does not know are decided by `HubSupport.check`, so a legacy hub is told to update remi.
 public struct RemiPaneAvailability: Sendable, Equatable {
     public let terminal: RemiPaneState
     public let files: RemiPaneState
 
-    public init(ack: HubSupportAck?, isConnected: Bool) {
+    /// `transportBlock` is `PaneTransportPolicy.blockReason` for the machine's route, nil when it can carry them.
+    public init(ack: HubSupportAck?, isConnected: Bool, transportBlock: String? = nil) {
+        if let transportBlock {
+            terminal = .unavailable(reason: transportBlock)
+            files = .unavailable(reason: transportBlock)
+            return
+        }
         guard isConnected, let ack else {
             let reason = "Connect to this machine to see what its sessions can show."
             terminal = .unavailable(reason: reason)

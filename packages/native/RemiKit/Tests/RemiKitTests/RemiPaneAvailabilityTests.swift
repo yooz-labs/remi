@@ -70,6 +70,15 @@ struct RemiPaneAvailabilityTests {
         #expect(RemiPaneAvailability(ack: nil, isConnected: true).hasAnyPane == false)
     }
 
+    @Test func anAdvertisedCapabilityIsNotOfferedOnABlockedRoute() {
+        let reason = "Needs a secure connection."
+        let panes = RemiPaneAvailability(
+            ack: ack(["terminal_view", "file_download"]), isConnected: true, transportBlock: reason)
+        #expect(panes.hasAnyPane == false)
+        #expect(panes.terminal.reason == reason)
+        #expect(panes.offeredPanes == [.chat])
+    }
+
     @Test func chatIsAlwaysAvailable() {
         let panes = RemiPaneAvailability(ack: nil, isConnected: false)
         #expect(panes.state(for: .chat) == .available)
