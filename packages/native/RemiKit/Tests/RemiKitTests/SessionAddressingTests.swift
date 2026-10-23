@@ -149,4 +149,60 @@ struct SessionAddressingTests {
         store.loadTranscript(machineID: "unknown-machine", sessionId: sessionID)
         #expect(!store.isLoadingTranscript(machineID: "unknown-machine", sessionID: sessionID))
     }
+
+    private func errorMessage(details: [String: Any]) throws -> ErrorMessage {
+        var payload = try #require(try JSONSerialization.jsonObject(
+            with: FixtureConformanceTests.fixture("error")) as? [String: Any])
+        payload["details"] = details
+        return try JSONDecoder().decode(ErrorMessage.self, from: JSONSerialization.data(withJSONObject: payload))
+    }
+
+    @Test func repeatedLoadIsNotEndedByTheOlderTimer() async throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        store.transcriptLoadTimeoutOverride = .milliseconds(300)
+        store.ownedTranscriptSend = { _ in }
+        store.loadTranscript(machineID: fixture.ids.a, sessionId: sid)
+        try await Task.sleep(for: .milliseconds(200))
+        store.loadTranscript(machineID: fixture.ids.a, sessionId: sid)
+        // The first timer would have fired by now; the second load must still be running.
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(store.isLoadingTranscript(machineID: fixture.ids.a, sessionID: sid))
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(!store.isLoadingTranscript(machineID: fixture.ids.a, sessionID: sid))
+    }
+
+    @Test func anErrorNamingARequestOrSessionEndsOnlyThatLoad() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        let requestA = try #require(store.loadTranscript(machineID: fixture.ids.a, sessionId: sid))
+        store.loadTranscript(machineID: fixture.ids.b, sessionId: sid)
+        let generationA = try #require(store.connectionGenerations[fixture.routes[0]])
+        let generationB = try #require(store.connectionGenerations[fixture.routes[1]])
+
+        store.receive(.error(try errorMessage(details: ["requestId": "unrelated"])),
+            from: fixture.routes[0], generation: generationA)
+        #expect(store.isLoadingTranscript(machineID: fixture.ids.a, sessionID: sid))
+        store.receive(.error(try errorMessage(details: ["requestId": requestA])),
+            from: fixture.routes[0], generation: generationA)
+        #expect(!store.isLoadingTranscript(machineID: fixture.ids.a, sessionID: sid))
+        #expect(store.isLoadingTranscript(machineID: fixture.ids.b, sessionID: sid))
+
+        store.receive(.error(try errorMessage(details: ["sessionId": sid])),
+            from: fixture.routes[1], generation: generationB)
+        #expect(!store.isLoadingTranscript(machineID: fixture.ids.b, sessionID: sid))
+    }
+
+    @Test func removingAMachineEndsItsLoadAndKeepsTheOthers() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        store.loadTranscript(machineID: fixture.ids.a, sessionId: sid)
+        store.loadTranscript(machineID: fixture.ids.b, sessionId: sid)
+        #expect(store.removeMachine(fixture.routes[0]))
+        #expect(!store.isLoadingTranscript(machineID: fixture.ids.a, sessionID: sid))
+        #expect(store.isLoadingTranscript(machineID: fixture.ids.b, sessionID: sid))
+    }
 }

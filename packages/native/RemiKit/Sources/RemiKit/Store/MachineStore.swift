@@ -378,6 +378,12 @@ public final class MachineStore {
     @ObservationIgnored private var terminalRootStates: [MachineEndpoint: RemiConnectionState] = [:]
     @ObservationIgnored private var failedChildConnections: Set<MachineEndpoint> = []
     @ObservationIgnored private var routeBySession: [MachineSessionKey: MachineEndpoint] = [:]
+    /// One timer per loading key, so a repeat load replaces the older timer instead of being cut
+    /// short by it. The request id says which request the timer and a failure belong to.
+    @ObservationIgnored private var transcriptLoadTimers: [MachineSessionKey: (requestID: String, task: Task<Void, Never>)] = [:]
+    @ObservationIgnored private var transcriptKeyByRequest: [String: MachineSessionKey] = [:]
+    /// How long a load may run without a completion; tests shorten it.
+    @ObservationIgnored var transcriptLoadTimeoutOverride: Duration?
     @ObservationIgnored private var sessionByKillRequest: [String: MachineSessionKey] = [:]
     @ObservationIgnored private var resumeAttemptsByRequest: [String: ResumeAttempt] = [:]
     @ObservationIgnored private var resumeRequestByChild: [MachineEndpoint: String] = [:]
@@ -387,6 +393,8 @@ public final class MachineStore {
     @ObservationIgnored private var pendingAnswers: [String: PendingAnswer] = [:]
     @ObservationIgnored private var localNotificationAnswers: Set<RemiNavigationDestination> = []
     #if DEBUG
+    /// Replaces the wire send of a transcript request, so a timer test does not depend on a live hub.
+    @ObservationIgnored var ownedTranscriptSend: (@MainActor (TranscriptLoadRequestMessage) async throws -> Void)?
     @ObservationIgnored var ownedBeforeLocalAnswerSend: (@Sendable () async throws -> Void)?
     #endif
     @ObservationIgnored private var answerTimeoutTasks: [String: Task<Void, Never>] = [:]
@@ -1314,7 +1322,7 @@ public final class MachineStore {
         sessionByKillRequest = sessionByKillRequest.filter { !keyMachineIDs.contains($0.value.machineID) }
         transcriptsBySession = transcriptsBySession.filter { !keyMachineIDs.contains($0.key.machineID) }
         sessionViewsBySession = sessionViewsBySession.filter { !keyMachineIDs.contains($0.key.machineID) }
-        transcriptsLoading = transcriptsLoading.filter { !keyMachineIDs.contains($0.machineID) }
+        for key in transcriptsLoading where keyMachineIDs.contains(key.machineID) { finishTranscriptLoad(key) }
         for machineID in machineIDs { recentRepositoriesByMachine[machineID] = nil }
         return true
     }
@@ -1427,23 +1435,43 @@ public final class MachineStore {
         transcriptsLoading.contains(sessionKey(machineID: machineID, sessionID: sessionID))
     }
 
-    public func loadTranscript(machineID: String, sessionId: String) {
+    @discardableResult
+    public func loadTranscript(machineID: String, sessionId: String) -> String? {
         let key = sessionKey(machineID: machineID, sessionID: sessionId)
-        guard let connection = connection(for: key) else { return }
+        guard let connection = connection(for: key) else { return nil }
         let request = TranscriptLoadRequestMessage(
             id: UUID().uuidString.lowercased(),
             timestamp: Date().ISO8601Format(),
             sessionId: sessionId
         )
         transcriptsLoading.insert(key)
+        if let previous = transcriptLoadTimers[key] { transcriptKeyByRequest[previous.requestID] = nil }
+        transcriptLoadTimers[key]?.task.cancel()
+        transcriptKeyByRequest[request.id] = key
         Task { [weak self] in
-            do { try await connection.send(request) } catch { self?.transcriptsLoading.remove(key) }
+            do {
+                #if DEBUG
+                if let send = self?.ownedTranscriptSend { try await send(request); return }
+                #endif
+                try await connection.send(request)
+            } catch { self?.finishTranscriptLoad(key, requestID: request.id) }
         }
         // The completion message is the normal end; this keeps a lost one from showing a spinner forever.
-        Task { [weak self] in
-            try? await Task.sleep(for: Self.transcriptLoadTimeout)
-            self?.transcriptsLoading.remove(key)
-        }
+        let timeout = transcriptLoadTimeoutOverride ?? Self.transcriptLoadTimeout
+        transcriptLoadTimers[key] = (request.id, Task { [weak self] in
+            do { try await Task.sleep(for: timeout) } catch { return }
+            self?.finishTranscriptLoad(key, requestID: request.id)
+        })
+        return request.id
+    }
+
+    /// Ends a load. With a request id, only the load that request started: a stale timer or
+    /// failure from a replaced request must not end the newer one.
+    private func finishTranscriptLoad(_ key: MachineSessionKey, requestID: String? = nil) {
+        if let requestID, transcriptLoadTimers[key]?.requestID != requestID { return }
+        transcriptLoadTimers.removeValue(forKey: key)?.task.cancel()
+        transcriptKeyByRequest = transcriptKeyByRequest.filter { $0.value != key }
+        transcriptsLoading.remove(key)
     }
 
     nonisolated static let transcriptLoadTimeout: Duration = .seconds(45)
@@ -2155,6 +2183,7 @@ public final class MachineStore {
             // A hub announcing that it is closing is expected, not an error: the machine's own
             // offline row says what the person needs to know (#1603).
             if !Self.isExpectedClosure(error) { latestError = error }
+            finishTranscriptLoadFailed(by: error, machineID: machines[index].id)
             if error.code == "AUTH_REQUIRED" {
                 let requestIDs = resumeAttemptsByRequest.compactMap { requestID, attempt in
                     attempt.parent == endpoint ? requestID : nil
@@ -2164,9 +2193,22 @@ public final class MachineStore {
                 }
             }
         case .transcriptComplete(let complete):
-            transcriptsLoading.remove(MachineSessionKey(machineID: machines[index].id, sessionID: complete.sessionId))
+            finishTranscriptLoad(MachineSessionKey(machineID: machines[index].id, sessionID: complete.sessionId))
         case .sessionUpdate, .unsupported, .pushRegistration:
             break
+        }
+    }
+
+    /// An error that names a transcript request (`details.requestId`, as the relay's delivery
+    /// errors do) or a session (`details.sessionId`) ends that load, so a refused request does
+    /// not leave a spinner until the timeout. No other wire field is read.
+    private func finishTranscriptLoadFailed(by error: ErrorMessage, machineID: String) {
+        if case .string(let requestID)? = error.details?["requestId"],
+           let key = transcriptKeyByRequest[requestID], key.machineID == machineID {
+            finishTranscriptLoad(key, requestID: requestID)
+        }
+        if case .string(let sessionID)? = error.details?["sessionId"] {
+            finishTranscriptLoad(MachineSessionKey(machineID: machineID, sessionID: sessionID))
         }
     }
 
