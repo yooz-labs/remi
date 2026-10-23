@@ -33,21 +33,32 @@ struct MacLiveRootView: View {
                     preferredCompactColumn: $preferredCompactColumn
                 ) {
                     List(selection: sidebarSelection) {
+                        MacMachineProblemRows(
+                            machines: machineSummaries,
+                            onSelect: { sidebarSelection.wrappedValue = .machine($0) }
+                        )
                         inboxRow
                         ForEach(store.machines) { machine in
-                        RemiMachineRow(machine: machinePresentation(machine))
-                            .tag(RemiMacSidebarSelection.machine(machine.id))
-                            .contextMenu {
-                                if machine.endpoint.relayPin != nil {
-                                    Button("Enable relay notifications", systemImage: "bell.badge") {
-                                        relayNotifications.enable(on: machine.endpoint)
+                            MacMachineSidebarRow(
+                                machine: machinePresentation(machine),
+                                label: machineLabels[machine.id] ?? machine.displayName,
+                                recovery: RemiMachineRecoveryState.resolve(
+                                    status: machine.status,
+                                    isRelay: machine.endpoint.relayPin != nil
+                                )
+                            )
+                                .tag(RemiMacSidebarSelection.machine(machine.id))
+                                .contextMenu {
+                                    if machine.endpoint.relayPin != nil {
+                                        Button("Enable relay notifications", systemImage: "bell.badge") {
+                                            relayNotifications.enable(on: machine.endpoint)
+                                        }
+                                        .disabled(relayNotifications.enabling || !store.persistableEndpoints.contains(machine.endpoint))
                                     }
-                                    .disabled(relayNotifications.enabling || !store.persistableEndpoints.contains(machine.endpoint))
+                                    Button("Remove machine", systemImage: "trash", role: .destructive) {
+                                        pendingMachineRemoval = machine
+                                    }
                                 }
-                                Button("Remove machine", systemImage: "trash", role: .destructive) {
-                                    pendingMachineRemoval = machine
-                                }
-                            }
                         }
                     }
                     .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 300)
@@ -82,7 +93,7 @@ struct MacLiveRootView: View {
                             MacInboxColumn(
                                 questions: allQuestions,
                                 sessions: allSessions,
-                                machines: store.machines.map(machinePresentation),
+                                machines: machineSummaries,
                                 canCreateSession: !sessionCreationMachines.isEmpty,
                                 onAnswer: answerFromInbox,
                                 onSubmit: submitFromInbox,
@@ -223,7 +234,8 @@ struct MacLiveRootView: View {
                 .toolbar {
                     ToolbarItemGroup(placement: .navigation) {
                         MacMachineSwitcher(
-                            machines: store.machines.map(machinePresentation),
+                            machines: machineSummaries,
+                            labels: machineLabels,
                             selectedMachineID: selectedMachineID,
                             onSelect: selectMachine,
                             onMove: moveMachineSelection
@@ -559,6 +571,14 @@ struct MacLiveRootView: View {
 
     private var sessionCreationMachines: [MachineState] {
         store.machines.filter { $0.status == .connected }
+    }
+
+    private var machineSummaries: [RemiMachineSummary] {
+        store.machines.map(machinePresentation)
+    }
+
+    private var machineLabels: [String: String] {
+        RemiMachineStripPresentation.uniqueLabels(for: machineSummaries)
     }
 
     private func machinePresentation(_ machine: MachineState) -> RemiMachineSummary {
@@ -1164,6 +1184,7 @@ private struct MacSessionTriageBar: View {
 
 private struct MacMachineSwitcher: View {
     let machines: [RemiMachineSummary]
+    let labels: [String: String]
     let selectedMachineID: String
     let onSelect: (String) -> Void
     let onMove: (Int) -> Void
@@ -1185,15 +1206,27 @@ private struct MacMachineSwitcher: View {
                             onSelect(machine.id)
                         } label: {
                             Label(
-                                machine.name,
+                                labels[machine.id] ?? machine.name,
                                 systemImage: machine.id == selectedMachineID ? "checkmark" : "desktopcomputer"
                             )
                         }
+                        .accessibilityLabel(RemiMachineStripPresentation.accessibilityLabel(
+                            for: machine,
+                            label: labels[machine.id]
+                        ))
+                        .accessibilityAddTraits(machine.id == selectedMachine?.id ? .isSelected : [])
                     }
                 } label: {
-                    Label(selectedMachine?.name ?? "Machine", systemImage: "desktopcomputer")
+                    Label(
+                        selectedMachine.map { labels[$0.id] ?? $0.name } ?? "Machine",
+                        systemImage: "desktopcomputer"
+                    )
                 }
                 .fixedSize()
+                .accessibilityLabel(RemiMachineStripPresentation.menuAccessibilityLabel(
+                    selected: selectedMachine,
+                    label: selectedMachine.flatMap { labels[$0.id] }
+                ))
                 .help("Switch machine")
 
                 Button("Next machine", systemImage: "chevron.down") {
