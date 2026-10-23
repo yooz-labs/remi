@@ -1578,7 +1578,7 @@ def isolated_test_controls():
                 missing = tree(source_head, removals=(path,))
                 check(missing, tree(missing, updates), ("comment missing", path))
 
-            for path in module["ISOLATED_TEST_RUNNERS"]:
+            for path in (*module["ISOLATED_TEST_RUNNERS"], *module["WORKER_LISTENER_RUNNERS"]):
                 content = actual("show", f"{source_head}:{path}")
                 for mode, body in (("100644", content + b"\n// computed producer discovery\n"),
                                    ("100755", content), ("120000", content), ("160000", content)):
@@ -1880,14 +1880,22 @@ def dormant_codec_controls():
                     result["relay_soak"] is not skip), (label, result)
                 controls += 1
             policy_paths = (".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py", ".github/ci-scope.md",
-                            ".github/workflows/relay-r7.yml", ".github/scripts/workflow-scope.py",
+                            ".github/scripts/workflow-scope.py",
                             ".github/scripts/workflow-contracts.json")
+            runner_path = ".github/workflows/relay-r7.yml"
+            runner_blob = module["SOAK_CODEC_CORE"][runner_path][1]
+            runner_body = subprocess.check_output(["git", "cat-file", "blob", runner_blob], cwd=source)
             base = make(module["SOAK_CODEC_SOURCE_ROOT"],
-                        [(path, (source / path).read_bytes(), "100644") for path in policy_paths])
+                        [*( (path, (source / path).read_bytes(), "100644") for path in policy_paths),
+                         (runner_path, runner_body, "100644")])
             updates = [(path, body(module["SOAK_CODEC_CANDIDATE_ROOT"], path), "100644")
                        for path in module["SOAK_CODEC_TRANSITION"]]
             head = make(base, updates)
             check(base, head, "complete exact codec transition", True)
+            # Retain the historical exact runner for this exact historical transition.
+            # Today's Node setup remains a changed execution input, including when already on base.
+            runner_base = make(base, [(runner_path, (source / runner_path).read_bytes(), "100644")])
+            check(runner_base, make(runner_base, updates), "current Node runner restores the soak")
             check(base, make(base, [*updates, ("docs/owned-codec.md", "inert prose\n", "100644")]),
                   "codec plus inert docs", True)
             version = json.loads(body(base, "package.json"))["version"]
