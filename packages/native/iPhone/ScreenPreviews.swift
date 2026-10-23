@@ -41,9 +41,34 @@ private var unavailableDirectSummary: RemiMachineSummary {
     )
 }
 
+/// Panes as a machine that advertises both capabilities would offer them. The terminal is the
+/// real controller driven by the golden snapshot frame.
+private func previewPanes(terminalOpen: Bool = true, download: FileDownloadFlow? = nil) -> SessionPanes {
+    let snapshot = RemiPreviewData.fixtureTerminalSnapshot
+    var controller = TerminalViewController(sessionId: snapshot.header.sessionId, makeRequestId: { snapshot.requestId })
+    let now = Date(timeIntervalSince1970: 1_792_627_200)
+    _ = controller.handle(.open, now: 0, date: now)
+    if terminalOpen {
+        let opened = SessionTerminalOpened(
+            header: snapshot.header, requestId: snapshot.requestId, viewId: snapshot.viewId,
+            expiresAt: "2026-10-22T00:05:00.000Z")
+        _ = controller.handle(.message(.opened(opened)), now: 0, date: now)
+        _ = controller.handle(.message(.snapshot(snapshot)), now: 0, date: now)
+    }
+    var panes = SessionPanes()
+    panes.availability = RemiPaneAvailability(
+        ack: HubSupportAck(protocolVersion: .number(1), capabilities: ["terminal_view", "file_download"]),
+        isConnected: true)
+    panes.terminal = controller
+    panes.download = download
+    return panes
+}
+
 private struct SessionPreview: View {
     var initialConversationID: String? = nil
     var initialQuestionID: String? = nil
+    var panes: SessionPanes = .chatOnly
+    var initialPane: PhoneSessionPane = .chat
 
     var body: some View {
         NavigationStack {
@@ -57,7 +82,9 @@ private struct SessionPreview: View {
                 ],
                 initialConversationID: initialConversationID,
                 initialQuestionID: initialQuestionID,
-                transcriptForView: { _ in RemiPreviewData.transcript }
+                transcriptForView: { _ in RemiPreviewData.transcript },
+                panes: panes,
+                initialPane: initialPane
             )
         }
     }
@@ -300,6 +327,24 @@ private let inboxThreeProblemMachines = drawerMachines(
 #Preview("Session · Light") { SessionPreview().preferredColorScheme(.light) }
 #Preview("Session · Dark") { SessionPreview().preferredColorScheme(.dark) }
 #Preview("Session · Accessibility") { SessionPreview().environment(\.dynamicTypeSize, .accessibility5) }
+#Preview("Session · With panes offered") { SessionPreview(panes: previewPanes()) }
+#Preview("Session · Terminal pane") { SessionPreview(panes: previewPanes(), initialPane: .terminal) }
+#Preview("Session · Terminal pane · Opening") {
+    SessionPreview(panes: previewPanes(terminalOpen: false), initialPane: .terminal)
+}
+#Preview("Session · Terminal pane · Accessibility") {
+    SessionPreview(panes: previewPanes(), initialPane: .terminal).environment(\.dynamicTypeSize, .accessibility3)
+}
+#Preview("Session · Terminal not available") {
+    var panes = previewPanes()
+    panes.availability = RemiPaneAvailability(
+        ack: HubSupportAck(protocolVersion: .number(1), capabilities: ["file_download"]), isConnected: true)
+    return SessionPreview(panes: panes, initialPane: .terminal)
+}
+#Preview("Session · Files pane") { SessionPreview(panes: previewPanes(), initialPane: .files) }
+#Preview("Session · Files pane · Verified") {
+    SessionPreview(panes: previewPanes(download: RemiFileDownloadPreviewFlows.flow(upTo: 3)), initialPane: .files)
+}
 #Preview("Session · Notification focus") {
     SessionPreview(initialQuestionID: RemiPreviewData.binaryQuestion.questionID)
 }

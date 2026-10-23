@@ -179,6 +179,9 @@ public struct MachineState: Sendable, Equatable, Identifiable {
     public var hasLoadedSessions: Bool
     public var questions: [QuestionMessage]
     public var capabilities: [String]
+    /// The protocol version and capabilities of the latest `hello_ack` from this machine's active
+    /// route (#1639). Nil until one arrives; decide with `HubSupport.check`, never by daemon version.
+    public internal(set) var helloAck: HubSupportAck?
     public var harnesses: [String]
     public var activeSessions: [DiscoverableSession] { sessions.filter { $0.source == "daemon" } }
 
@@ -312,6 +315,14 @@ public struct ResolvedQuestionRecord: Sendable, Equatable, Identifiable {
 public final class MachineStore {
     public private(set) var machines: [MachineState]
     public private(set) var pairingAttempts: [PairingAttemptState] = []
+    /// One read-only terminal view per session while its pane is open (#1639).
+    public internal(set) var terminalViews: [MachineSessionKey: TerminalViewController] = [:]
+    /// One file download per session while its sheet is open (#1639).
+    public internal(set) var fileDownloads: [MachineSessionKey: FileDownloadFlow] = [:]
+    /// Which routes may carry pane frames. Tests inject another; the app always uses `current`.
+    @ObservationIgnored var paneTransportPolicy = PaneTransportPolicy.current
+    /// Receives each pane frame instead of the connection, so tests can read what would be sent.
+    @ObservationIgnored var paneFrameSender: (@MainActor (String) -> Void)?
     @ObservationIgnored private var pairingCoordinator: PairingAttemptCoordinator?
     @ObservationIgnored private var pairingOriginLifetime: UUID?
     @ObservationIgnored private var recoveryCoordinator: MachineRecoveryCoordinator?
@@ -365,7 +376,7 @@ public final class MachineStore {
     @ObservationIgnored private let identity: ClientIdentity
     @ObservationIgnored private let clientVersion: String
     @ObservationIgnored private let clientId: String
-    @ObservationIgnored private var connections: [MachineEndpoint: RemiConnection] = [:]
+    @ObservationIgnored var connections: [MachineEndpoint: RemiConnection] = [:]
     /// Bounded retries for machines waiting for local approval (#1599); see ApprovalPollPolicy.
     @ObservationIgnored private var approvalPollTasks: [MachineEndpoint: Task<Void, Never>] = [:]
     /// Injectable so tests can use a short interval; production always uses the standard policy.
@@ -377,14 +388,14 @@ public final class MachineStore {
     @ObservationIgnored private var failedDirectRoutes: Set<MachineEndpoint> = []
     @ObservationIgnored private var terminalRootStates: [MachineEndpoint: RemiConnectionState] = [:]
     @ObservationIgnored private var failedChildConnections: Set<MachineEndpoint> = []
-    @ObservationIgnored private var routeBySession: [MachineSessionKey: MachineEndpoint] = [:]
+    @ObservationIgnored var routeBySession: [MachineSessionKey: MachineEndpoint] = [:]
     /// One timer per loading key, so a repeat load replaces the older timer instead of being cut
     /// short by it. The request id says which request the timer and a failure belong to.
     @ObservationIgnored private var transcriptLoadTimers: [MachineSessionKey: (requestID: String, task: Task<Void, Never>)] = [:]
     @ObservationIgnored private var transcriptKeyByRequest: [String: MachineSessionKey] = [:]
     /// How long a load may run without a completion; tests shorten it.
     @ObservationIgnored var transcriptLoadTimeoutOverride: Duration?
-    @ObservationIgnored private var sessionByKillRequest: [String: MachineSessionKey] = [:]
+    @ObservationIgnored var sessionByKillRequest: [String: MachineSessionKey] = [:]
     @ObservationIgnored private var resumeAttemptsByRequest: [String: ResumeAttempt] = [:]
     @ObservationIgnored private var resumeRequestByChild: [MachineEndpoint: String] = [:]
     @ObservationIgnored private var resumeTimeoutTasks: [String: Task<Void, Never>] = [:]
@@ -1320,6 +1331,9 @@ public final class MachineStore {
         for route in configuredRoutes { pushEnabled.remove(route.id) }
         routeBySession = routeBySession.filter { _, route in !endpoints.contains(route) }
         sessionByKillRequest = sessionByKillRequest.filter { !keyMachineIDs.contains($0.value.machineID) }
+        // Terminal text and partial file bytes go with the machine.
+        terminalViews = terminalViews.filter { !keyMachineIDs.contains($0.key.machineID) }
+        fileDownloads = fileDownloads.filter { !keyMachineIDs.contains($0.key.machineID) }
         transcriptsBySession = transcriptsBySession.filter { !keyMachineIDs.contains($0.key.machineID) }
         sessionViewsBySession = sessionViewsBySession.filter { !keyMachineIDs.contains($0.key.machineID) }
         for key in transcriptsLoading where keyMachineIDs.contains(key.machineID) { finishTranscriptLoad(key) }
@@ -1947,6 +1961,7 @@ public final class MachineStore {
         guard connectionGenerations[endpoint] == generation, let parent = parentByConnection[endpoint],
               let index = machineIndex(containing: parent)
         else { return }
+        if case .connected = state {} else { panesConnectionLost(endpoint) }
 
         // Session sockets do not describe the machine route's reachability, but
         // terminal failures still need an explicit retry path (#1561).
@@ -2039,6 +2054,10 @@ public final class MachineStore {
         }
 
         switch event {
+        case .terminalView(let message):
+            receiveTerminalView(message, from: endpoint, machineIndex: index)
+        case .fileFetch(let message):
+            receiveFileFetch(message, from: endpoint, machineIndex: index)
         case .relayStreamEnded(let clean):
             if !clean { latestOperationError = "The relay closed without an authenticated ending. Check the session for uncertain delivery." }
         case .relayReady:
@@ -2065,6 +2084,7 @@ public final class MachineStore {
                 }
             if endpoint == parent && machines[index].endpoint.id == endpoint.id {
                 machines[index].capabilities = acknowledgment.capabilities ?? []
+                machines[index].helloAck = HubSupportAck(acknowledgment)
                 machines[index].harnesses = acknowledgment.harnesses ?? ["claude"]
                 if machines[index].capabilities.contains("workspaces") {
                     requestRecentRepositories(from: endpoint)
@@ -2175,6 +2195,8 @@ public final class MachineStore {
                 transcriptsBySession[killedKey] = nil
                 sessionViewsBySession[killedKey] = nil
                 routeBySession[killedKey] = nil
+                terminalViews[killedKey] = nil
+                fileDownloads[killedKey] = nil
                 requestSessions(from: parent)
             } else {
                 latestOperationError = "Could not exit session: \(response.error ?? "Unknown daemon error")"
@@ -2386,7 +2408,7 @@ public final class MachineStore {
 
     /// The connection that holds this session on this machine. There is deliberately no
     /// session-id-only lookup: two machines can hold the same id (#1601).
-    private func connection(for key: MachineSessionKey) -> RemiConnection? {
+    func connection(for key: MachineSessionKey) -> RemiConnection? {
         routeBySession[key].flatMap { connections[$0] }
     }
 

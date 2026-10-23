@@ -15,7 +15,7 @@ struct PreviewFixtureDriftTests {
         .deletingLastPathComponent() // packages
         .appendingPathComponent("shared/tests/fixtures/protocol")
 
-    @Test(arguments: ["question.json", "session_list_response.json"])
+    @Test(arguments: ["question.json", "session_list_response.json", "session_terminal_snapshot.json"])
     func previewFixtureMatchesProtocolOracle(name: String) throws {
         let preview = try Data(contentsOf: Self.previewFixtures.appendingPathComponent(name))
         let golden = try Data(contentsOf: Self.goldenFixtures.appendingPathComponent(name))
