@@ -282,9 +282,10 @@ public struct ResumedSessionDestination: Sendable, Equatable, Identifiable {
     public let sessionID: String
 }
 
-/// A session on a machine. A session id alone is not unique across machines (a resumed or
-/// forked session, an id collision), so every store call and table that addresses a session
-/// uses the machine profile id (`MachineState.id`) with it (#1601).
+/// A session on a machine: the machine profile id (`MachineState.id`) with the session id.
+/// A session id alone is not unique across machines (a resumed or forked session, an id
+/// collision). The store's routes, transcripts, session views, pending answers, kill requests
+/// and transcript loading are keyed by it, and its per-session calls take the machine id (#1601).
 public typealias MachineSessionKey = ResumeSessionKey
 
 public struct ResumeSessionKey: Sendable, Hashable {
@@ -329,10 +330,10 @@ public final class MachineStore {
     var ownedApprovalPollCount: Int { approvalPollTasks.count }
     func ownedStartApprovalPolling(_ endpoint: MachineEndpoint) { startApprovalPolling(for: endpoint) }
     #endif
-    public private(set) var transcriptsBySession: [String: [TranscriptContentMessage]] = [:]
+    public private(set) var transcriptsBySession: [MachineSessionKey: [TranscriptContentMessage]] = [:]
     /// Sessions whose transcript has been requested and has not finished arriving (#1602).
     public private(set) var transcriptsLoading: Set<MachineSessionKey> = []
-    public private(set) var sessionViewsBySession: [String: [SessionViewMeta]] = [:]
+    public private(set) var sessionViewsBySession: [MachineSessionKey: [SessionViewMeta]] = [:]
     public private(set) var recentRepositoriesByMachine: [String: [RecentRepository]] = [:]
     public private(set) var latestError: ErrorMessage?
     public private(set) var latestOperationError: String?
@@ -377,7 +378,7 @@ public final class MachineStore {
     @ObservationIgnored private var terminalRootStates: [MachineEndpoint: RemiConnectionState] = [:]
     @ObservationIgnored private var failedChildConnections: Set<MachineEndpoint> = []
     @ObservationIgnored private var routeBySession: [MachineSessionKey: MachineEndpoint] = [:]
-    @ObservationIgnored private var sessionByKillRequest: [String: String] = [:]
+    @ObservationIgnored private var sessionByKillRequest: [String: MachineSessionKey] = [:]
     @ObservationIgnored private var resumeAttemptsByRequest: [String: ResumeAttempt] = [:]
     @ObservationIgnored private var resumeRequestByChild: [MachineEndpoint: String] = [:]
     @ObservationIgnored private var resumeTimeoutTasks: [String: Task<Void, Never>] = [:]
@@ -1268,8 +1269,9 @@ public final class MachineStore {
         for id in resolvedIDs {
             resolvedQuestionRemovalTasks.removeValue(forKey: id)?.cancel()
         }
-        let sessionIDs = Set(removedMachine?.sessions.map(\.sessionId) ?? [])
-        let viewIDs = Set(sessionIDs.flatMap { sessionViewsBySession[$0]?.map(\.agentId) ?? [] })
+        // Per-session tables are keyed by the machine profile id (`MachineState.id`), the same id
+        // `sessionKey(machineID:sessionID:)` resolves to; the route and wire ids are covered too.
+        let keyMachineIDs = machineIDs.union([removedMachine?.id].compactMap { $0 })
         let endpoints = parentByConnection.compactMap { connection, parent in
             configuredRoutes.contains(where: { $0.id == parent.id }) ? connection : nil
         }
@@ -1309,16 +1311,10 @@ public final class MachineStore {
         machines.removeAll { state in state.routingRoutes.contains(where: { $0.id == endpoint.id }) }
         for route in configuredRoutes { pushEnabled.remove(route.id) }
         routeBySession = routeBySession.filter { _, route in !endpoints.contains(route) }
-        sessionByKillRequest = sessionByKillRequest.filter { _, sessionID in
-            !sessionIDs.contains(sessionID)
-        }
-        for sessionID in sessionIDs {
-            transcriptsBySession[sessionID] = nil
-            sessionViewsBySession[sessionID] = nil
-        }
-        for viewID in viewIDs {
-            transcriptsBySession[viewID] = nil
-        }
+        sessionByKillRequest = sessionByKillRequest.filter { !keyMachineIDs.contains($0.value.machineID) }
+        transcriptsBySession = transcriptsBySession.filter { !keyMachineIDs.contains($0.key.machineID) }
+        sessionViewsBySession = sessionViewsBySession.filter { !keyMachineIDs.contains($0.key.machineID) }
+        transcriptsLoading = transcriptsLoading.filter { !keyMachineIDs.contains($0.machineID) }
         for machineID in machineIDs { recentRepositoriesByMachine[machineID] = nil }
         return true
     }
@@ -1587,7 +1583,7 @@ public final class MachineStore {
             timestamp: Date().ISO8601Format(),
             sessionId: sessionId
         )
-        sessionByKillRequest[request.id] = sessionId
+        sessionByKillRequest[request.id] = sessionKey(machineID: machineID, sessionID: sessionId)
         Task {
             do {
                 try await connection.send(request)
@@ -2111,12 +2107,13 @@ public final class MachineStore {
                 liveQuestionIDs: Set(snapshot.questionIds)
             )
         case .transcript(let message):
-            var transcript = transcriptsBySession[message.sessionId, default: []]
+            let key = MachineSessionKey(machineID: machines[index].id, sessionID: message.sessionId)
+            var transcript = transcriptsBySession[key, default: []]
             transcript.removeAll { $0.entryUuid == message.entryUuid }
             transcript.append(message)
-            transcriptsBySession[message.sessionId] = transcript
+            transcriptsBySession[key] = transcript
         case .sessionViews(let message):
-            sessionViewsBySession[message.sessionId] = message.subagents.sorted {
+            sessionViewsBySession[MachineSessionKey(machineID: machines[index].id, sessionID: message.sessionId)] = message.subagents.sorted {
                 if $0.active != $1.active { return $0.active && !$1.active }
                 return $0.agentType.localizedCaseInsensitiveCompare($1.agentType) == .orderedAscending
             }
@@ -2140,15 +2137,16 @@ public final class MachineStore {
         case .resumeSessionResponse(let response):
             handleResumeResponse(response, from: endpoint, parent: parent)
         case .killSessionResponse(let response):
-            guard let sessionId = sessionByKillRequest.removeValue(forKey: response.requestId) else {
+            guard let killedKey = sessionByKillRequest.removeValue(forKey: response.requestId) else {
                 return
             }
             if response.success {
+                let sessionId = killedKey.sessionID
                 machines[index].sessions.removeAll { $0.sessionId == sessionId }
                 machines[index].questions.removeAll { $0.sessionId == sessionId }
-                transcriptsBySession[sessionId] = nil
-                sessionViewsBySession[sessionId] = nil
-                routeBySession[MachineSessionKey(machineID: machines[index].id, sessionID: sessionId)] = nil
+                transcriptsBySession[killedKey] = nil
+                sessionViewsBySession[killedKey] = nil
+                routeBySession[killedKey] = nil
                 requestSessions(from: parent)
             } else {
                 latestOperationError = "Could not exit session: \(response.error ?? "Unknown daemon error")"

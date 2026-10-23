@@ -28,6 +28,73 @@ struct SessionAddressingTests {
         return (descriptor, Int(UInt16(bigEndian: address.sin_port)))
     }
 
+    private struct TwoMachines {
+        let store: MachineStore
+        let routes: [MachineEndpoint]
+        let ids: (a: String, b: String)
+        let sessionID: String
+        let sockets: [Int32]
+    }
+
+    /// Two connected machines that both hold the fixture question's session id.
+    private func twoMachines() throws -> TwoMachines {
+        let first = try listener(), second = try listener()
+        let keys = [Curve25519.Signing.PrivateKey().publicKey.rawRepresentation,
+                    Curve25519.Signing.PrivateKey().publicKey.rawRepresentation]
+        let profiles = try zip(keys, [first.1, second.1]).map { key, port in
+            MachineRouteProfile(machineID: try MachineIdentityVerifier.machineID(forPublicKey: key),
+                routes: [MachineEndpoint(host: "127.0.0.1", port: port)], machinePublicKey: RelayCrypto.b64(key))
+        }
+        let store = MachineStore(profiles: profiles, identity: ClientIdentity(), clientVersion: "test", clientId: "test")
+        store.start()
+        let hello = try decode("hello_ack_legacy", as: HelloAckMessage.self)
+        let question = try decode("question", as: QuestionMessage.self)
+        var routes: [MachineEndpoint] = []
+        for (index, key) in keys.enumerated() {
+            let machine = store.machines[index]
+            let route = try #require(store.connectionGenerations.keys.first { machine.routingRoutes.contains($0) })
+            let generation = try #require(store.connectionGenerations[route])
+            store.receive(.hello(hello, authorityPublicKey: key), from: route, generation: generation)
+            store.receive(.question(question), from: route, generation: generation)
+            routes.append(route)
+        }
+        return TwoMachines(store: store, routes: routes, ids: (store.machines[0].id, store.machines[1].id),
+            sessionID: question.sessionId, sockets: [first.0, second.0])
+    }
+
+    private func transcriptContent(sessionID: String, text: String) throws -> TranscriptContentMessage {
+        var payload = try #require(try JSONSerialization.jsonObject(
+            with: FixtureConformanceTests.fixture("transcript_content")) as? [String: Any])
+        payload["sessionId"] = sessionID
+        payload["content"] = text
+        return try JSONDecoder().decode(TranscriptContentMessage.self,
+            from: JSONSerialization.data(withJSONObject: payload))
+    }
+
+    @Test func transcriptsAreKeptPerMachine() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        let keyA = MachineSessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let keyB = MachineSessionKey(machineID: fixture.ids.b, sessionID: sid)
+        let generationA = try #require(store.connectionGenerations[fixture.routes[0]])
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "from A")),
+            from: fixture.routes[0], generation: generationA)
+        #expect(store.transcriptsBySession[keyA]?.map(\.content) == ["from A"])
+        #expect(store.transcriptsBySession[keyB] == nil)
+
+        let generationB = try #require(store.connectionGenerations[fixture.routes[1]])
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "from B")),
+            from: fixture.routes[1], generation: generationB)
+        #expect(store.transcriptsBySession[keyB]?.map(\.content) == ["from B"])
+        #expect(store.transcriptsBySession[keyA]?.map(\.content) == ["from A"])
+
+        // Forgetting machine A leaves machine B's transcript alone.
+        #expect(store.removeMachine(fixture.routes[0]))
+        #expect(store.transcriptsBySession[keyA] == nil)
+        #expect(store.transcriptsBySession[keyB]?.map(\.content) == ["from B"])
+    }
+
     @Test func sameSessionIDOnTwoMachinesIsAddressedIndependently() async throws {
         let first = try listener(), second = try listener()
         defer { Darwin.close(first.0); Darwin.close(second.0) }

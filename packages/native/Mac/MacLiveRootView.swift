@@ -115,15 +115,16 @@ struct MacLiveRootView: View {
                     }
                 } detail: {
                     if let session = visibleSessions.first(where: { $0.id == selectedSessionID }) {
+                        let viewsKey = store.sessionKey(machineID: session.machineID, sessionID: session.id)
                         MacSessionDetail(
                             session: session,
-                            transcript: transcript(for: session.id),
+                            transcript: transcript(machineID: session.machineID, sessionID: session.id),
                             questions: questions(for: session.id),
-                            views: store.sessionViewsBySession[session.id] ?? [],
-                            viewsLoaded: store.sessionViewsBySession[session.id] != nil,
+                            views: store.sessionViewsBySession[viewsKey] ?? [],
+                            viewsLoaded: store.sessionViewsBySession[viewsKey] != nil,
                             initialConversationID: notificationDestination?.agentID,
                             initialQuestionID: notificationDestination?.questionID,
-                            transcriptForView: transcript,
+                            transcriptForView: { transcript(machineID: session.machineID, sessionID: $0) },
                             onSelectView: { store.loadTranscript(machineID: session.machineID, sessionId: $0) },
                             onAnswer: { questionId, value in
                                 store.answer(
@@ -632,8 +633,8 @@ struct MacLiveRootView: View {
             )
     }
 
-    private func transcript(for sessionId: String) -> [RemiTranscriptEntry] {
-        (store.transcriptsBySession[sessionId] ?? []).compactMap { message in
+    private func transcript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
+        (store.transcriptsBySession[store.sessionKey(machineID: machineID, sessionID: sessionID)] ?? []).compactMap { message in
             let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if !content.isEmpty {
                 return message.role == "user"
