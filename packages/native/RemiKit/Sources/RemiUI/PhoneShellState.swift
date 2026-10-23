@@ -1,10 +1,12 @@
 import Foundation
 import RemiKit
 
-/// What a session shows. Chat is the only pane today; files and a terminal are added
-/// only once a hub capability backs them.
+/// What a session shows. Chat always works; the terminal and files panes are offered only
+/// once the machine advertises the capability behind them (`RemiPaneAvailability`, #1639).
 public enum PhoneSessionPane: Hashable, Sendable {
     case chat
+    case terminal
+    case files
 }
 
 /// Where a session screen points.
