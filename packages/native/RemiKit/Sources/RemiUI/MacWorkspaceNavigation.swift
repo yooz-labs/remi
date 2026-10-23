@@ -12,6 +12,42 @@ public struct RemiMacColumnLayout: Equatable, Sendable {
         self.expandedVisibility = expandedVisibility
     }
 
+    /// A short string for scene storage: the two visibilities, so a relaunched window opens the
+    /// way it was left.
+    public var storageValue: String {
+        "\(Self.name(of: visibility)),\(Self.name(of: expandedVisibility))"
+    }
+
+    /// The layout `storageValue` wrote, or nil for an empty, unknown or malformed string, so a
+    /// bad value never changes the default.
+    public init?(storageValue: String) {
+        let parts = storageValue.split(separator: ",", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let visibility = Self.visibility(named: String(parts[0])),
+              let expanded = Self.visibility(named: String(parts[1]))
+        else { return nil }
+        self.init(visibility: visibility, expandedVisibility: expanded)
+    }
+
+    private static func name(of visibility: NavigationSplitViewVisibility) -> String {
+        switch visibility {
+        case .all: "all"
+        case .doubleColumn: "double"
+        case .detailOnly: "detail"
+        default: "automatic"
+        }
+    }
+
+    private static func visibility(named name: String) -> NavigationSplitViewVisibility? {
+        switch name {
+        case "all": .all
+        case "double": .doubleColumn
+        case "detail": .detailOnly
+        case "automatic": .automatic
+        default: nil
+        }
+    }
+
     public func togglingMachines() -> Self {
         switch visibility {
         case .all:

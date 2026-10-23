@@ -146,4 +146,21 @@ import RemiKit
             isLive: isLive
         )
     }
+
+    @Test func columnLayoutRoundTripsThroughStorage() {
+        let layouts = [
+            RemiMacColumnLayout(visibility: .all, expandedVisibility: .all),
+            RemiMacColumnLayout(visibility: .doubleColumn, expandedVisibility: .doubleColumn),
+            RemiMacColumnLayout(visibility: .detailOnly, expandedVisibility: .doubleColumn),
+        ]
+        for layout in layouts {
+            #expect(RemiMacColumnLayout(storageValue: layout.storageValue) == layout)
+        }
+    }
+
+    @Test func badColumnStorageIsIgnored() {
+        for value in ["", "all", "all,", "all,sideways", "a,b,c", ",all"] {
+            #expect(RemiMacColumnLayout(storageValue: value) == nil)
+        }
+    }
 }
