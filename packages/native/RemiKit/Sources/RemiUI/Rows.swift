@@ -111,12 +111,14 @@ public struct RemiMachineRow: View {
                 Text(machine.name).font(.headline)
                 // One line at every size: an address broken mid-token reads as two numbers.
                 // The full text is in the accessibility label.
-                Text(machine.address)
-                    .font(RemiTheme.Typography.code)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                    .truncationMode(.middle)
+                if let address = Self.subtitleAddress(name: machine.name, address: machine.address) {
+                    Text(address)
+                        .font(RemiTheme.Typography.code)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .truncationMode(.middle)
+                }
                 Text(statusText).font(.caption).foregroundStyle(.secondary)
 
                 if dynamicTypeSize.isAccessibilitySize {
@@ -142,6 +144,12 @@ public struct RemiMachineRow: View {
         .padding(.vertical, RemiTheme.Spacing.xs)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
+    }
+
+    /// The address line under the name, or nil when the machine has no name of its own and the
+    /// name already is the address (it would show the same text twice).
+    public static func subtitleAddress(name: String, address: String) -> String? {
+        name == address ? nil : address
     }
 
     private var icon: String {

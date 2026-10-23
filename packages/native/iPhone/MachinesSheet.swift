@@ -190,6 +190,7 @@ struct PhoneMachineRecoveryHelp: View {
                 .foregroundStyle(.secondary)
             if let actionTitle, let action {
                 Button(actionTitle, systemImage: systemImage, action: action)
+                    .buttonStyle(.glass)
                     .frame(minHeight: RemiTheme.Size.minimumTapTarget)
                     .contentShape(.rect)
             }
@@ -339,11 +340,11 @@ struct ApprovalHelp: View {
                 .contentShape(.rect)
             }
             Button("Retry connection", systemImage: "arrow.clockwise", action: onRetry)
-                .buttonStyle(.glassProminent)
+                .buttonStyle(.glass)
                 .frame(minHeight: RemiTheme.Size.minimumTapTarget)
                 .contentShape(.rect)
         }
         .padding(RemiTheme.Spacing.m)
-        .background(.orange.opacity(0.08), in: .rect(cornerRadius: RemiTheme.Radius.control))
+        .background(.quaternary.opacity(0.45), in: .rect(cornerRadius: RemiTheme.Radius.control))
     }
 }

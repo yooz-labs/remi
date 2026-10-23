@@ -1,5 +1,12 @@
 import SwiftUI
 
+public extension EnvironmentValues {
+    /// Bumped to ask the composer to take keyboard focus (a hardware-keyboard shortcut).
+    /// A composer that cannot take text right now, because a prompt is waiting or a
+    /// message is sending, ignores the request.
+    @Entry var remiComposerFocusRequest = 0
+}
+
 /// The message field and its action button.
 ///
 /// `LeadingAccessory` is the seam for future attach controls (images, files). It is empty
@@ -11,6 +18,8 @@ public struct RemiComposer<LeadingAccessory: View>: View {
     /// Height of the field and diameter of the action button; grows with Dynamic Type so the
     /// glyph never outgrows its circle.
     @ScaledMetric(relativeTo: .body) private var controlSize: CGFloat = RemiTheme.Size.minimumTapTarget
+    @Environment(\.remiComposerFocusRequest) private var focusRequest
+    @FocusState private var isFocused: Bool
     @Binding private var text: String
     private let promptWaiting: Bool
     private let isSending: Bool
@@ -51,6 +60,7 @@ public struct RemiComposer<LeadingAccessory: View>: View {
                     TextField("Message", text: $text, axis: .vertical)
                         .lineLimit(1...(dynamicTypeSize.isAccessibilitySize ? 3 : 5))
                         .textFieldStyle(.plain)
+                        .focused($isFocused)
                         .padding(.horizontal, RemiTheme.Spacing.m)
                         .padding(.vertical, RemiTheme.Spacing.xs)
                         .frame(minHeight: controlSize)
@@ -66,6 +76,9 @@ public struct RemiComposer<LeadingAccessory: View>: View {
                     }
                 }
             }
+        }
+        .onChange(of: focusRequest) { _, _ in
+            if !promptWaiting && !isSending { isFocused = true }
         }
     }
 

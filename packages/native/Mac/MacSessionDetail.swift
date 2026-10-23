@@ -10,6 +10,7 @@ struct MacSessionDetail: View {
     let views: [SessionViewMeta]
     let viewsLoaded: Bool
     let transcriptForView: (String) -> [RemiTranscriptEntry]
+    let isLoadingTranscript: (String) -> Bool
     let onSelectView: (String) -> Void
     let onAnswer: (String, String) -> Void
     let onSubmit: (String, [RemiQuestionStepSelection]) -> Void
@@ -17,8 +18,9 @@ struct MacSessionDetail: View {
     let onSend: (String) async -> Bool
     let onResume: (() -> Void)?
     let onTerminate: () -> Void
+    let onDraftChange: (String) -> Void
 
-    @State private var draft = ""
+    @State private var draft: String
     @State private var selectedViewID = ""
     @State private var focusedQuestionID: String?
     @State private var confirmingTermination = false
@@ -41,14 +43,19 @@ struct MacSessionDetail: View {
         initialConversationID: String? = nil,
         initialQuestionID: String? = nil,
         transcriptForView: @escaping (String) -> [RemiTranscriptEntry] = { _ in [] },
+        isLoadingTranscript: @escaping (String) -> Bool = { _ in false },
         onSelectView: @escaping (String) -> Void = { _ in },
         onAnswer: @escaping (String, String) -> Void = { _, _ in },
         onSubmit: @escaping (String, [RemiQuestionStepSelection]) -> Void = { _, _ in },
         onCancel: @escaping (String) -> Void = { _ in },
         onSend: @escaping (String) async -> Bool = { _ in true },
         onResume: (() -> Void)? = nil,
-        onTerminate: @escaping () -> Void = {}
+        onTerminate: @escaping () -> Void = {},
+        initialDraft: String = "",
+        onDraftChange: @escaping (String) -> Void = { _ in }
     ) {
+        _draft = State(initialValue: initialDraft)
+        self.onDraftChange = onDraftChange
         self.session = session
         self.transcript = transcript
         self.questions = questions
@@ -58,6 +65,7 @@ struct MacSessionDetail: View {
         _focusedQuestionID = State(initialValue: initialQuestionID)
         _reviewSessionID = State(initialValue: session.id)
         self.transcriptForView = transcriptForView
+        self.isLoadingTranscript = isLoadingTranscript
         self.onSelectView = onSelectView
         self.onAnswer = onAnswer
         self.onSubmit = onSubmit
@@ -99,11 +107,22 @@ struct MacSessionDetail: View {
 
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.m) {
-                            if visibleTranscript.isEmpty && visibleQuestions.isEmpty {
+                            switch conversationPlaceholder {
+                            case .loading:
+                                MacConversationLoadingState()
+                            case .empty:
                                 MacConversationEmptyState(
                                     isSubagent: !selectedViewID.isEmpty,
                                     isFinished: !session.isLive
                                 )
+                            case .loadingMore:
+                                ProgressView("Loading earlier messages")
+                                    .controlSize(.small)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity)
+                            case .none:
+                                EmptyView()
                             }
 
                             ForEach(focusedQuestions) { question in
@@ -166,6 +185,7 @@ struct MacSessionDetail: View {
                 onInterrupt: nil
             )
         }
+        .onChange(of: draft) { _, text in onDraftChange(text) }
         .onChange(of: selectedViewID) { oldValue, newValue in
             focusedQuestionID = nil
             accessibilityQuestionID = nil
@@ -209,22 +229,46 @@ struct MacSessionDetail: View {
         } message: {
             Text("The agent process and its Remi session will close. Its transcript remains available for later review.")
         }
+        // A focused value, not a scene value: Find in Conversation only applies while focus is in
+        // the conversation, so the session list's own search field keeps Command-F when the
+        // list has focus. The toolbar's search button works regardless of focus.
+        .focusedValue(
+            \.macFind,
+            RemiMacCommandAvailability.canFind(
+                hasOpenConversation: true,
+                entryCount: visibleTranscript.count
+            ) ? MacFindActions(find: openSearch) : nil
+        )
         .toolbar {
             if #available(macOS 26.1, *) {
                 ToolbarItemGroup {
-                    firstActivityButton
-                    latestActivityButton
-                    searchButton
+                    transcriptToolbarButtons
                 }
                 .visibilityPriority(.high)
             } else {
                 ToolbarItemGroup {
-                    firstActivityButton
-                    latestActivityButton
-                    searchButton
+                    transcriptToolbarButtons
                 }
             }
         }
+    }
+
+    /// Navigation and search only mean something once there is a conversation to move through.
+    @ViewBuilder
+    private var transcriptToolbarButtons: some View {
+        if !visibleTranscript.isEmpty || !visibleQuestions.isEmpty {
+            firstActivityButton
+            latestActivityButton
+            searchButton
+        }
+    }
+
+    /// What stands in for the entries: loading, empty, or nothing. Open questions count as content.
+    private var conversationPlaceholder: RemiConversationPlaceholder {
+        RemiConversationPlaceholder.resolve(
+            isLoading: isLoadingTranscript(selectedViewID.isEmpty ? session.id : selectedViewID),
+            hasEntries: !visibleTranscript.isEmpty || !visibleQuestions.isEmpty
+        )
     }
 
     private func reconcileConversationSelection() {
@@ -237,14 +281,16 @@ struct MacSessionDetail: View {
     }
 
     private var searchButton: some View {
-        Button("Search conversation", systemImage: "magnifyingglass") {
-            followsLatest = false
-            isSearchPresented = true
-            searchFocusRequest += 1
-        }
-        .keyboardShortcut("f", modifiers: .command)
+        Button("Search conversation", systemImage: "magnifyingglass", action: openSearch)
         .disabled(visibleTranscript.isEmpty)
         .help("Search conversation")
+    }
+
+    /// Also the Find in Conversation menu command; its shortcut lives there, not on the button.
+    private func openSearch() {
+        followsLatest = false
+        isSearchPresented = true
+        searchFocusRequest += 1
     }
 
     private var latestActivityButton: some View {
@@ -506,6 +552,20 @@ private struct MacConversationPicker: View {
             views: views,
             offset: offset
         )
+    }
+}
+
+private struct MacConversationLoadingState: View {
+    var body: some View {
+        VStack(spacing: RemiTheme.Spacing.s) {
+            ProgressView()
+            Text("Loading conversation")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, RemiTheme.Spacing.xl)
+        .accessibilityElement(children: .combine)
     }
 }
 

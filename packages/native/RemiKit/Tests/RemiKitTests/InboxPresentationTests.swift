@@ -203,4 +203,29 @@ import Testing
         let machines = [machine("a", .connecting)]
         #expect(RemiInboxPresentation.activeSessionCount(sessions: [session("1", machine: "a"), session("2", machine: "zz")], machines: machines) == 0)
     }
+
+    @Test func waitingCountSpansMachinesAndSkipsNotes() {
+        let cards = [
+            card("q1", machine: "m1"),
+            card("q2", machine: "m2", state: .sending),
+            card("q3", machine: "m2", state: .resolvedElsewhere(nil)),
+            card("q4", machine: "m1", state: .stale),
+        ]
+        #expect(RemiInboxPresentation.waitingCount(questions: cards) == 2)
+        #expect(RemiInboxPresentation.waitingCount(questions: []) == 0)
+    }
+
+    @Test func inboxAccessibilityLabelNamesTheCount() {
+        #expect(RemiInboxPresentation.inboxAccessibilityLabel(waitingCount: 0) == "Inbox, nothing needs you")
+        #expect(RemiInboxPresentation.inboxAccessibilityLabel(waitingCount: 1) == "Inbox, 1 needs you")
+        #expect(RemiInboxPresentation.inboxAccessibilityLabel(waitingCount: 3) == "Inbox, 3 need you")
+    }
+
+    @Test func sidebarSelectionPrefersTheInboxAndKeepsTheMachine() {
+        #expect(RemiMacSidebarSelection.resolve(showsInbox: true, machineID: "m1") == .inbox)
+        #expect(RemiMacSidebarSelection.resolve(showsInbox: false, machineID: "m1") == .machine("m1"))
+        #expect(RemiMacSidebarSelection.resolve(showsInbox: false, machineID: "") == nil)
+        #expect(RemiMacSidebarSelection.machine("m1").machineID == "m1")
+        #expect(RemiMacSidebarSelection.inbox.machineID == nil)
+    }
 }

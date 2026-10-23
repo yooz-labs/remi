@@ -99,6 +99,11 @@ public enum RemiMachineStripPresentation {
         }
 
         public var accessibilityLabel: String { message }
+
+        /// The machine to select when the row is chosen. A summary has none of its own.
+        public var machineID: String? {
+            if case .machine(let problem, _) = self { problem.machine.id } else { nil }
+        }
     }
 
     /// The most problem lines shown one by one; more than this collapse into one summary.
@@ -167,6 +172,19 @@ public enum RemiMachineStripPresentation {
             }
         }
         return labels
+    }
+
+    /// The machine a chosen problem row leads to: its own, or for the summary the first machine
+    /// that has a problem. Nil when no machine has one.
+    public static func machineID(for row: ProblemRow, in machines: [RemiMachineSummary]) -> String? {
+        row.machineID ?? problems(in: machines).first?.machine.id
+    }
+
+    /// What a machine menu announces: "Machine Studio, connected, 2 waiting, selected".
+    /// Nil `selected` reads as no machine chosen.
+    public static func menuAccessibilityLabel(selected: RemiMachineSummary?, label: String? = nil) -> String {
+        guard let selected else { return "Machine, none selected" }
+        return "Machine \(accessibilityLabel(for: selected, label: label)), selected"
     }
 
     /// "Studio Mac, connected, 2 waiting". `label` replaces the name when machines share one.

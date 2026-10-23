@@ -105,13 +105,14 @@ struct RelaySourceIntegrationTests {
                 try send(["kind": "question"], to: input)
                 let session = try #require(resumed.machines.first?.activeSessions.first)
                 // Joining is semantic through the hub, never a dial of the advertised child port.
-                resumed.loadTranscript(sessionId: session.sessionId)
+                let machineID = try #require(resumed.machines.first?.id)
+                resumed.loadTranscript(machineID: machineID, sessionId: session.sessionId)
                 try await until("actual held permission card") { !(resumed.machines.first?.questions.isEmpty ?? true) }
                 let card = try #require(resumed.machines.first?.questions.first)
                 #expect(card.sessionId == session.sessionId)
                 let negativeOption = card.question.options.first { $0.isNo }
                 let no = try #require(negativeOption)
-                resumed.answer(sessionId: card.sessionId, questionId: card.question.id,
+                resumed.answer(machineID: machineID, sessionId: card.sessionId, questionId: card.question.id,
                     answer: no.value, claudeSessionId: card.claudeSessionId)
                 let effect = try await next(from: output)
                 #expect(effect["kind"] as? String == "effect")

@@ -9,6 +9,8 @@ struct SessionScreen: View {
     let questions: [RemiQuestionCardModel]
     let views: [SessionViewMeta]
     let viewsLoaded: Bool
+    /// Whether the transcript of a conversation (the session id or a subagent id) is still arriving.
+    let isLoadingTranscript: (String) -> Bool
     let transcriptForView: (String) -> [RemiTranscriptEntry]
     let onSelectView: (String) -> Void
     let onAnswer: (String, String) -> Void
@@ -18,9 +20,12 @@ struct SessionScreen: View {
     let onTerminate: () -> Void
     let onClose: () -> Void
     let focusQuestionRequest: String?
+    /// Reports the draft, pushed conversation and reading position, so the shell can hand
+    /// them back if it rebuilds this screen (a switch between compact and regular width).
+    let onViewStateChange: (RemiSessionViewState) -> Void
 
-    @State private var draft = ""
-    @State private var selectedViewID = ""
+    @State private var draft: String
+    @State private var selectedViewID: String
     @State private var focusState: PhoneQuestionFocusState
     @State private var confirmingTermination = false
     @State private var isSearchPresented = false
@@ -28,7 +33,7 @@ struct SessionScreen: View {
     @State private var reviewState = RemiTranscriptReviewState()
     @State private var reviewMemory = RemiConversationReviewMemory()
     @State private var visibleEntryID: String?
-    @State private var followsLatest = true
+    @State private var followsLatest: Bool
     @State private var latestScrollRequest = 0
     @State private var reviewSessionID: String
     @AccessibilityFocusState private var accessibilityQuestionID: String?
@@ -39,6 +44,7 @@ struct SessionScreen: View {
         questions: [RemiQuestionCardModel],
         views: [SessionViewMeta] = [],
         viewsLoaded: Bool = true,
+        isLoadingTranscript: @escaping (String) -> Bool = { _ in false },
         initialConversationID: String? = nil,
         initialQuestionID: String? = nil,
         transcriptForView: @escaping (String) -> [RemiTranscriptEntry] = { _ in [] },
@@ -49,14 +55,21 @@ struct SessionScreen: View {
         onSend: @escaping (String) async -> Bool = { _ in true },
         onTerminate: @escaping () -> Void = {},
         onClose: @escaping () -> Void = {},
-        focusQuestionRequest: String? = nil
+        focusQuestionRequest: String? = nil,
+        restoredState: RemiSessionViewState = RemiSessionViewState(),
+        onViewStateChange: @escaping (RemiSessionViewState) -> Void = { _ in }
     ) {
         self.session = session
         self.transcript = transcript
         self.questions = questions
         self.views = views
         self.viewsLoaded = viewsLoaded
-        _selectedViewID = State(initialValue: initialConversationID ?? "")
+        self.isLoadingTranscript = isLoadingTranscript
+        // A conversation the route names (a notification) wins over the one left open.
+        _selectedViewID = State(initialValue: initialConversationID ?? restoredState.selectedViewID)
+        _draft = State(initialValue: restoredState.draft)
+        _visibleEntryID = State(initialValue: restoredState.visibleEntryID)
+        _followsLatest = State(initialValue: restoredState.followsLatest)
         _focusState = State(initialValue: PhoneQuestionFocusState(
             initial: initialQuestionID,
             loaded: questions.map(\.questionID)
@@ -71,6 +84,16 @@ struct SessionScreen: View {
         self.onTerminate = onTerminate
         self.onClose = onClose
         self.focusQuestionRequest = focusQuestionRequest
+        self.onViewStateChange = onViewStateChange
+    }
+
+    private var viewState: RemiSessionViewState {
+        RemiSessionViewState(
+            draft: draft,
+            selectedViewID: selectedViewID,
+            visibleEntryID: visibleEntryID,
+            followsLatest: followsLatest
+        )
     }
 
     var body: some View {
@@ -105,11 +128,22 @@ struct SessionScreen: View {
                                 )
                             }
 
-                            if visibleTranscript.isEmpty && visibleQuestions.isEmpty {
+                            switch conversationPlaceholder {
+                            case .loading:
+                                PhoneConversationLoadingState()
+                            case .empty:
                                 PhoneConversationEmptyState(
                                     isSubagent: !selectedViewID.isEmpty,
                                     isFinished: !session.isLive
                                 )
+                            case .loadingMore:
+                                ProgressView("Loading earlier messages")
+                                    .controlSize(.small)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity)
+                            case .none:
+                                EmptyView()
                             }
 
                             ForEach(focusedQuestions) { question in
@@ -137,6 +171,7 @@ struct SessionScreen: View {
                         }
                         .padding(RemiTheme.Spacing.m)
                         .scrollTargetLayout()
+                        .remiReadableColumn()
                         .id(RemiTranscriptScrollTarget.latest)
                     }
                     .modifier(RemiTranscriptScrollBehavior(followsLatest: $followsLatest,
@@ -183,14 +218,18 @@ struct SessionScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if #available(iOS 27.0, *) {
-                ToolbarItem(placement: .topBarTrailing) {
-                    latestActivityButton
+                // Jump and Search have nothing to act on in an empty conversation: show them
+                // once there are entries instead of as disabled noise.
+                if !visibleTranscript.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        latestActivityButton
+                    }
+                    .visibilityPriority(.high)
+                    ToolbarItem(placement: .topBarTrailing) {
+                        searchButton
+                    }
+                    .visibilityPriority(.high)
                 }
-                .visibilityPriority(.high)
-                ToolbarItem(placement: .topBarTrailing) {
-                    searchButton
-                }
-                .visibilityPriority(.high)
                 if session.canTerminate {
                     ToolbarItem(placement: .topBarTrailing) {
                         sessionActions
@@ -198,11 +237,13 @@ struct SessionScreen: View {
                     .visibilityPriority(.low)
                 }
             } else {
-                ToolbarItem(placement: .topBarTrailing) {
-                    latestActivityButton
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    searchButton
+                if !visibleTranscript.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        latestActivityButton
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        searchButton
+                    }
                 }
                 if session.canTerminate {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -249,6 +290,7 @@ struct SessionScreen: View {
                 selectedViewID = ""
             }
         }
+        .onChange(of: viewState) { _, state in onViewStateChange(state) }
         .onChange(of: viewsLoaded, initial: true) { _, loaded in
             guard loaded else { return }
             reconcileConversationSelection()
@@ -266,6 +308,14 @@ struct SessionScreen: View {
             viewsLoaded: viewsLoaded
         )
         if resolved != selectedViewID { selectedViewID = resolved }
+    }
+
+    /// What stands in for the entries: loading, empty, or nothing. Open questions count as content.
+    private var conversationPlaceholder: RemiConversationPlaceholder {
+        RemiConversationPlaceholder.resolve(
+            isLoading: isLoadingTranscript(selectedViewID.isEmpty ? session.id : selectedViewID),
+            hasEntries: !visibleTranscript.isEmpty || !visibleQuestions.isEmpty
+        )
     }
 
     private var searchButton: some View {
@@ -473,6 +523,20 @@ private struct ConversationPicker: View {
             }
             .scrollIndicators(.hidden)
         }
+    }
+}
+
+private struct PhoneConversationLoadingState: View {
+    var body: some View {
+        VStack(spacing: RemiTheme.Spacing.s) {
+            ProgressView()
+            Text("Loading conversation")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, RemiTheme.Spacing.xl)
+        .accessibilityElement(children: .combine)
     }
 }
 

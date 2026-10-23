@@ -9,9 +9,9 @@ struct InboxScreen: View {
     let sessionMachines: [MachineState]
     let errorMessage: String?
     let noticeMessage: String?
-    let onAnswer: (String, String, String) -> Void
-    let onSubmit: (String, String, [RemiQuestionStepSelection]) -> Void
-    let onCancel: (String, String) -> Void
+    let onAnswer: (String, String, String, String) -> Void
+    let onSubmit: (String, String, String, [RemiQuestionStepSelection]) -> Void
+    let onCancel: (String, String, String) -> Void
     let onNewSession: () -> Void
     let onOpenQuestionSession: (RemiInboxPresentation.OpenTarget, String) -> Void
     let onPresentPairing: () -> Void
@@ -27,9 +27,9 @@ struct InboxScreen: View {
         sessionMachines: [MachineState] = [],
         errorMessage: String? = nil,
         noticeMessage: String? = nil,
-        onAnswer: @escaping (String, String, String) -> Void = { _, _, _ in },
-        onSubmit: @escaping (String, String, [RemiQuestionStepSelection]) -> Void = { _, _, _ in },
-        onCancel: @escaping (String, String) -> Void = { _, _ in },
+        onAnswer: @escaping (String, String, String, String) -> Void = { _, _, _, _ in },
+        onSubmit: @escaping (String, String, String, [RemiQuestionStepSelection]) -> Void = { _, _, _, _ in },
+        onCancel: @escaping (String, String, String) -> Void = { _, _, _ in },
         onNewSession: @escaping () -> Void = {},
         onOpenQuestionSession: @escaping (RemiInboxPresentation.OpenTarget, String) -> Void = { _, _ in },
         onPresentPairing: @escaping () -> Void = {},
@@ -72,6 +72,7 @@ struct InboxScreen: View {
                 inboxContent
             }
             .padding(RemiTheme.Spacing.m)
+            .remiReadableColumn()
         }
         .navigationTitle("Remi")
         .toolbar {
@@ -241,9 +242,9 @@ private struct ResolvedNotesSection: View {
 private struct NeedsYouSection: View {
     let questions: [RemiQuestionCardModel]
     let openTarget: (RemiQuestionCardModel) -> RemiInboxPresentation.OpenTarget?
-    let onAnswer: (String, String, String) -> Void
-    let onSubmit: (String, String, [RemiQuestionStepSelection]) -> Void
-    let onCancel: (String, String) -> Void
+    let onAnswer: (String, String, String, String) -> Void
+    let onSubmit: (String, String, String, [RemiQuestionStepSelection]) -> Void
+    let onCancel: (String, String, String) -> Void
     let onOpenConversation: (RemiInboxPresentation.OpenTarget, String) -> Void
     @State private var showsAllQuestions = false
 
@@ -256,9 +257,9 @@ private struct NeedsYouSection: View {
                 VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
                     RemiQuestionCard(
                         model: question,
-                        onAnswer: { onAnswer(question.sessionID, question.questionID, $0) },
-                        onSubmit: { onSubmit(question.sessionID, question.questionID, $0) },
-                        onCancel: { onCancel(question.sessionID, question.questionID) }
+                        onAnswer: { onAnswer(question.machineID, question.sessionID, question.questionID, $0) },
+                        onSubmit: { onSubmit(question.machineID, question.sessionID, question.questionID, $0) },
+                        onCancel: { onCancel(question.machineID, question.sessionID, question.questionID) }
                     )
                     if let target = openTarget(question) {
                         OpenConversationButton(card: question) {

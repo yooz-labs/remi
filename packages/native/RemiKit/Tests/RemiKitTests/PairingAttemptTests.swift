@@ -124,7 +124,7 @@ import Testing
             store.receive(.hello(hello, authorityPublicKey: key), from: route, generation: generation)
             store.receive(.question(question), from: route, generation: generation)
             if isRelay {
-                store.answer(sessionId: question.sessionId, questionId: question.question.id, answer: "yes")
+                store.answer(machineID: store.machines[0].id, sessionId: question.sessionId, questionId: question.question.id, answer: "yes")
                 #expect(store.ownedPendingAnswerCount == 1)
             } else {
                 store.resumeSession(on: route, sessionId: "00000000-0000-4000-8000-000000000000")
