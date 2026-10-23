@@ -300,10 +300,12 @@ struct PhoneLiveRootView: View {
             )
         case .pairing:
             pairingScreen { activeSheet = nil }
+                .presentationSizing(.form)
         case .preferences:
             PhonePreferencesSheet(publicIdentity: store.publicIdentity)
         case .relayNotification:
             RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification)
+                .presentationSizing(.form)
         case .machines:
             PhoneMachinesSheet(
                 machines: machineSummaries,
@@ -318,6 +320,7 @@ struct PhoneLiveRootView: View {
                 onDone: { activeSheet = nil },
                 pairingContent: { close in pairingScreen(onDone: close) }
             )
+            .presentationSizing(.form)
         }
     }
 
