@@ -5,12 +5,18 @@ import SwiftUI
 ///
 /// - A monospaced grid of exactly `columns` by `rows`. The grid scrolls sideways (and up and
 ///   down) when Dynamic Type makes it wider than the space it has; it never wraps a row.
-/// - Text is escaped for display and selectable. A row with a wide character is drawn cell by
-///   cell so the columns after it stay aligned; such a row is not selectable, so the Copy
-///   action in the context menu always copies the whole screen.
+/// - Text is escaped for display. Selection is enabled on the grid, but a row with a wide
+///   character or the cursor is drawn cell by cell, so a selection there covers single cells
+///   and is not a reliable way to copy; "Copy screen" in the context menu always copies the
+///   whole screen as text.
 /// - The cursor is a filled block, so it never depends on color. There are no colors and no
 ///   input: the screen cannot be typed into.
-/// - VoiceOver reads a summary of the screen with a "read only" note; each row is reachable.
+/// - VoiceOver reads a summary of the screen with a "read only" note, then each row as one
+///   element; the cursor's row also says its column, so the cursor is reachable.
+/// - The view shows exactly the screen it is given. When the view behind it is interrupted or
+///   expired, the host keeps the last screen and dims it with a status line (iPhone
+///   `TerminalPane`), so stale text is never shown as live; the store clears it when the
+///   person leaves, on a refusal, and when the machine is removed.
 public struct RemiTerminalScreenView: View {
     let presentation: RemiTerminalScreenPresentation
 
@@ -30,7 +36,8 @@ public struct RemiTerminalScreenView: View {
                 ForEach(presentation.rows) { row in
                     rowView(row)
                         .frame(height: rowHeight, alignment: .leading)
-                        .accessibilityLabel(row.text.isEmpty ? "blank row" : row.text)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(row.accessibilityLabel)
                 }
             }
             .padding(RemiTheme.Spacing.s)
@@ -91,7 +98,6 @@ public struct RemiTerminalScreenView: View {
             .foregroundStyle(.background)
             .background(.primary)
             .frame(width: cellWidth * CGFloat(cell?.width ?? 1), alignment: .leading)
-            .accessibilityLabel("cursor")
     }
 
     private func copy(_ text: String) {

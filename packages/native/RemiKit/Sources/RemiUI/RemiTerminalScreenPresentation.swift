@@ -22,6 +22,13 @@ public struct RemiTerminalScreenPresentation: Sendable, Equatable {
 
         /// True when every cell is one column wide, so the row can be drawn as a single run of text.
         public var isUniformWidth: Bool { cells.allSatisfy { $0.width == 1 } }
+        /// What VoiceOver reads for the row: its text (or "blank row") and, on the cursor's row, where
+        /// the cursor is, so the cursor is reachable even though it is drawn as a block.
+        public var accessibilityLabel: String {
+            var label = text.isEmpty ? "blank row" : text
+            if let cursorColumn { label += ", cursor at column \(cursorColumn + 1)" }
+            return label
+        }
         /// The row's text, escaped, as it would be copied.
         public var text: String { cells.map(\.text).joined() }
         /// The columns the row uses.
@@ -98,7 +105,10 @@ public struct RemiTerminalScreenPresentation: Sendable, Equatable {
     }
 
     /// Columns a grapheme cluster covers. Basic East Asian wide, full-width and emoji blocks are 2;
-    /// the host measured the same subset (a Unicode 6 buffer), and anything else is 1.
+    /// anything else is 1. ADR 0046 and 0047 promise only that "basic wide/combining characters"
+    /// are preserved by a Unicode 6 buffer and publish no width table, so this table is the app's
+    /// own and is not extended on a guess. A host that counts differently misaligns the columns
+    /// after such a character; it never loses or reorders text.
     static func width(of character: Character) -> Int {
         guard let first = character.unicodeScalars.first else { return 1 }
         switch first.value {

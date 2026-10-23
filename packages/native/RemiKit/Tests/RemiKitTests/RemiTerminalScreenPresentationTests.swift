@@ -88,6 +88,14 @@ struct RemiTerminalScreenPresentationTests {
         #expect(!p.accessibilitySummary.contains(String(repeating: "x", count: 121)))
     }
 
+    @Test func theCursorRowTellsVoiceOverWhereTheCursorIs() {
+        let p = RemiTerminalScreenPresentation(Self.snapshot(["abc", ""], cursor: TerminalCursor(row: 0, column: 2)))
+        #expect(p.rows[0].accessibilityLabel == "abc, cursor at column 3")
+        #expect(p.rows[1].accessibilityLabel == "blank row")
+        let blank = RemiTerminalScreenPresentation(Self.snapshot(["", "x"], cursor: TerminalCursor(row: 0, column: 0)))
+        #expect(blank.rows[0].accessibilityLabel == "blank row, cursor at column 1")
+    }
+
     @Test func widePreviewIsAValidFullScreen() {
         let snap = RemiPreviewData.wideTerminalSnapshot
         #expect(snap.lines.count == 24 && snap.columns == 80)
