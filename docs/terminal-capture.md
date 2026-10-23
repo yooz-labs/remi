@@ -180,6 +180,9 @@ It is tracked in [#1624](https://github.com/yooz-labs/remi/issues/1624), with it
 original failure intact; neither a pass nor a diagnosed fix is claimed.
 The first R7 attempt separately failed Miniflare's owned-port bind before its
 soak ([#1623](https://github.com/yooz-labs/remi/issues/1623)).
+[PR #1633](https://github.com/yooz-labs/remi/pull/1633) now keeps that test listener
+owned across real Worker startup/restarts; it merged after all hosted gates and
+an actual 61-minute local relay soak. The original competing owner remains unknown.
 Every required hosted check on the corrected final head remains a merge gate;
 the #1611-only Mac exception does not waive these checks.
 
@@ -188,3 +191,26 @@ checks, monotonic leases and rate/send reservations before sending any frame.
 B4 must qualify the encrypted semantic route and a real caller before capability
 advertisement.
 Native rendering, signed hardware and deployed acceptance remain separate.
+
+## Develop integration qualification
+
+The reviewed Worker test fix and separately merged native work were integrated
+without conflicts. Capture, PTY, screen, parser and wire code are unchanged;
+only the CLI compiled-version literals changed in daemon/shared runtime.
+The driver verified this resolution without a third review.
+All 117 focused source tests pass on both Bun pins, with all five TypeScript
+configurations, notices, lint (zero errors and 68 unchanged warnings), spelling
+and diff checks passing.
+
+A fresh six-cell compiled matrix on the integrated sources passed all original
+viewport/stock-CLI/resource/held-No scenarios and all 18 named negatives.
+Maximum retained increment was 951446 bytes against 1,048,576; normal No was 0.664–27.086 ms and blocking controls 1247.959–1256.959 ms.
+The source/module hashes and 24 accepted binary hashes are in
+`qualification-port-integration-result.json` under the retained evidence root.
+The first compiler invocation could not find Docker on its restricted PATH;
+that setup failure is preserved. Resolving the existing Docker executable
+allowed the remaining cells to run, reusing the already accepted Mac cell only
+after checking its binary and unchanged frozen inputs. No failed native case
+was retried or threshold changed. Fresh exact-head hosted checks remain a gate.
+The separate full-suite quiet waits are tracked in #1626 without a causal-fix
+claim; neither those nor #1624 are waived by the earlier #1611-only exception.
