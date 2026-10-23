@@ -134,7 +134,7 @@ describe('protocol registry golden equality (#895)', () => {
   });
 
   /**
-   * Types the daemon's inbound switch has a REAL accepting case for.
+   * Types the daemon's inbound dispatch handles, including explicit refusals.
    *
    * Hand-transcribed from `packages/daemon/src/server/connection.ts`'s
    * `handleMessage` switch — deliberately not imported, for the same reason
@@ -150,6 +150,10 @@ describe('protocol registry golden equality (#895)', () => {
    * UNKNOWN_MESSAGE.
    */
   const INBOUND_ROUTED = [
+    // Registered syntax, deliberately unavailable until runtime adoption (#1612).
+    'session_terminal_open',
+    'session_terminal_read',
+    'session_terminal_close',
     'chat_submit_request',
     'image_insert_request',
     'image_upload_begin',

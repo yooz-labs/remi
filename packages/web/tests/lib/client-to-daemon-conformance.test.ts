@@ -21,7 +21,7 @@
  * NOT `d2c` -- packages/shared/src/protocol.ts), this sends the checked-in
  * golden fixture from the real client and asserts the daemon's real
  * `AdapterEvents` callback fires with the right connection id. `hello`,
- * `auth_response`, `ping`, `pong`, `ack`, relay device and secure push requests have no app-level event (by
+ * `auth_response`, `ping`, `pong`, `ack`, relay device, secure push and terminal-view requests have no app-level event (by
  * design -- see `connection.ts`'s handler map) and get dedicated tests
  * instead of a generic "some event fired" assertion.
  */
@@ -75,7 +75,7 @@ const C2D_TYPES = (Object.keys(MESSAGE_DIRECTION) as (keyof ProtocolMessageMap)[
 );
 
 /** Types with no app-level `AdapterEvents` callback by design (connection
- *  setup, liveness, or acknowledgment) -- covered by dedicated tests below
+ *  setup, liveness, acknowledgment or explicit refusal) -- covered by dedicated tests below
  *  instead of the generic per-type loop. */
 const NO_EVENT_TYPES = new Set([
   'native_answer',
@@ -88,6 +88,9 @@ const NO_EVENT_TYPES = new Set([
   'relay_device_revoke_request',
   'secure_push_register_request',
   'secure_push_unregister_request',
+  'session_terminal_open',
+  'session_terminal_read',
+  'session_terminal_close',
 ]);
 
 /** Maps each c2d type with a real handler to the `AdapterEvents` callback
@@ -194,7 +197,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     await adapter.stop();
   });
 
-  test('every ClientToDaemonType has a fixture, and the set is exactly the 35 INBOUND_ROUTED types', () => {
+  test('every ClientToDaemonType has a fixture, and the set is exactly 38 types', () => {
     for (const type of C2D_TYPES) {
       expect(() => loadFixture(type)).not.toThrow();
     }
@@ -202,7 +205,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     // hand-transcribed INBOUND_ROUTED list -- if this drifts, so should that
     // list, and a mismatch between the two is exactly the kind of silent
     // drift #899 exists to make loud.
-    expect(C2D_TYPES.length).toBe(35);
+    expect(C2D_TYPES.length).toBe(38);
   });
 
   test('native proofs receive correlated refusal on direct transport, including repeated ids', async () => {
@@ -313,7 +316,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     }
   });
 
-  // --- Dedicated tests for the 10 no-app-event types ---
+  // --- Dedicated tests for no-app-event types (terminal refusals use isolated connections below) ---
 
   test.each(['register', 'unregister'] as const)(
     'secure push %s from the real direct client returns a correlated UNSUPPORTED response and no application event',
@@ -472,3 +475,43 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     expect(err.code).toBe('UNKNOWN_MESSAGE');
   });
 });
+
+describe.each(['session_terminal_open', 'session_terminal_read', 'session_terminal_close'] as const)(
+  '%s direct refusal before terminal-view activation',
+  (type) => {
+    test('real web client is disconnected without input, resize or acknowledgment', async () => {
+      const port = await reserveRange(1);
+      let connected = false;
+      const disconnectReasons: string[] = [];
+      const effects: string[] = [];
+      const received: ProtocolMessage[] = [];
+      const adapter = new WebSocketAdapter({ port }, {
+        onConnect: () => { connected = true; },
+        onDisconnect: (_id, reason) => { disconnectReasons.push(reason); },
+        onUserInput: () => { effects.push('input'); },
+        onTerminalResize: () => { effects.push('resize'); },
+      });
+      const client = new WebSocketClient(
+        { url: `ws://localhost:${port}/ws`, autoReconnect: false, heartbeatInterval: 0, connectionTimeout: 2000 },
+        { onMessage: (message) => received.push(message) },
+      );
+      try {
+        await adapter.start();
+        client.connect();
+        await waitFor(() => client.isTransportOpen);
+        client.send(createHello(generateId(), '0.0.0-test'));
+        await waitFor(() => connected);
+        const fixture = loadFixture(type);
+        client.send(fixture);
+        await waitFor(() => disconnectReasons.length > 0 && !client.isTransportOpen);
+        expect(disconnectReasons).toEqual(['Terminal view unavailable']);
+        expect(effects).toEqual([]);
+        expect(received.some((message) => message.type === 'ack' && message.ack.messageId === fixture.id)).toBe(false);
+        expect(received.some((message) => message.type.startsWith('session_terminal_'))).toBe(false);
+      } finally {
+        client.disconnect();
+        await adapter.stop();
+      }
+    });
+  },
+);
