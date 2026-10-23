@@ -179,6 +179,9 @@ public struct MachineState: Sendable, Equatable, Identifiable {
     public var hasLoadedSessions: Bool
     public var questions: [QuestionMessage]
     public var capabilities: [String]
+    /// The protocol version and capabilities of the latest `hello_ack` from this machine's active
+    /// route (#1639). Nil until one arrives; decide with `HubSupport.check`, never by daemon version.
+    public internal(set) var helloAck: HubSupportAck?
     public var harnesses: [String]
     public var activeSessions: [DiscoverableSession] { sessions.filter { $0.source == "daemon" } }
 
@@ -2065,6 +2068,7 @@ public final class MachineStore {
                 }
             if endpoint == parent && machines[index].endpoint.id == endpoint.id {
                 machines[index].capabilities = acknowledgment.capabilities ?? []
+                machines[index].helloAck = HubSupportAck(acknowledgment)
                 machines[index].harnesses = acknowledgment.harnesses ?? ["claude"]
                 if machines[index].capabilities.contains("workspaces") {
                     requestRecentRepositories(from: endpoint)
