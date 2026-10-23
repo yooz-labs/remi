@@ -1294,7 +1294,7 @@ private struct MacCompactSessionRow: View {
         case .working: "Working"
         case .idle: "Idle"
         case .connecting: "Connecting"
-        case .offline: "Offline"
+        case .offline: "Finished"
         }
     }
 }
