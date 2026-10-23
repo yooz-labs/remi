@@ -125,6 +125,7 @@ struct MacLiveRootView: View {
                             initialConversationID: notificationDestination?.agentID,
                             initialQuestionID: notificationDestination?.questionID,
                             transcriptForView: { transcript(machineID: session.machineID, sessionID: $0) },
+                            isLoadingTranscript: { store.isLoadingTranscript(machineID: session.machineID, sessionID: $0) },
                             onSelectView: { store.loadTranscript(machineID: session.machineID, sessionId: $0) },
                             onAnswer: { questionId, value in
                                 store.answer(

@@ -10,6 +10,7 @@ struct MacSessionDetail: View {
     let views: [SessionViewMeta]
     let viewsLoaded: Bool
     let transcriptForView: (String) -> [RemiTranscriptEntry]
+    let isLoadingTranscript: (String) -> Bool
     let onSelectView: (String) -> Void
     let onAnswer: (String, String) -> Void
     let onSubmit: (String, [RemiQuestionStepSelection]) -> Void
@@ -41,6 +42,7 @@ struct MacSessionDetail: View {
         initialConversationID: String? = nil,
         initialQuestionID: String? = nil,
         transcriptForView: @escaping (String) -> [RemiTranscriptEntry] = { _ in [] },
+        isLoadingTranscript: @escaping (String) -> Bool = { _ in false },
         onSelectView: @escaping (String) -> Void = { _ in },
         onAnswer: @escaping (String, String) -> Void = { _, _ in },
         onSubmit: @escaping (String, [RemiQuestionStepSelection]) -> Void = { _, _ in },
@@ -58,6 +60,7 @@ struct MacSessionDetail: View {
         _focusedQuestionID = State(initialValue: initialQuestionID)
         _reviewSessionID = State(initialValue: session.id)
         self.transcriptForView = transcriptForView
+        self.isLoadingTranscript = isLoadingTranscript
         self.onSelectView = onSelectView
         self.onAnswer = onAnswer
         self.onSubmit = onSubmit
@@ -99,11 +102,22 @@ struct MacSessionDetail: View {
 
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.m) {
-                            if visibleTranscript.isEmpty && visibleQuestions.isEmpty {
+                            switch conversationPlaceholder {
+                            case .loading:
+                                MacConversationLoadingState()
+                            case .empty:
                                 MacConversationEmptyState(
                                     isSubagent: !selectedViewID.isEmpty,
                                     isFinished: !session.isLive
                                 )
+                            case .loadingMore:
+                                ProgressView("Loading earlier messages")
+                                    .controlSize(.small)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity)
+                            case .none:
+                                EmptyView()
                             }
 
                             ForEach(focusedQuestions) { question in
@@ -212,19 +226,33 @@ struct MacSessionDetail: View {
         .toolbar {
             if #available(macOS 26.1, *) {
                 ToolbarItemGroup {
-                    firstActivityButton
-                    latestActivityButton
-                    searchButton
+                    transcriptToolbarButtons
                 }
                 .visibilityPriority(.high)
             } else {
                 ToolbarItemGroup {
-                    firstActivityButton
-                    latestActivityButton
-                    searchButton
+                    transcriptToolbarButtons
                 }
             }
         }
+    }
+
+    /// Navigation and search only mean something once there is a conversation to move through.
+    @ViewBuilder
+    private var transcriptToolbarButtons: some View {
+        if !visibleTranscript.isEmpty || !visibleQuestions.isEmpty {
+            firstActivityButton
+            latestActivityButton
+            searchButton
+        }
+    }
+
+    /// What stands in for the entries: loading, empty, or nothing. Open questions count as content.
+    private var conversationPlaceholder: RemiConversationPlaceholder {
+        RemiConversationPlaceholder.resolve(
+            isLoading: isLoadingTranscript(selectedViewID.isEmpty ? session.id : selectedViewID),
+            hasEntries: !visibleTranscript.isEmpty || !visibleQuestions.isEmpty
+        )
     }
 
     private func reconcileConversationSelection() {
@@ -506,6 +534,20 @@ private struct MacConversationPicker: View {
             views: views,
             offset: offset
         )
+    }
+}
+
+private struct MacConversationLoadingState: View {
+    var body: some View {
+        VStack(spacing: RemiTheme.Spacing.s) {
+            ProgressView()
+            Text("Loading conversation")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, RemiTheme.Spacing.xl)
+        .accessibilityElement(children: .combine)
     }
 }
 
