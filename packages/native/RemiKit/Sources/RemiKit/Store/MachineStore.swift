@@ -315,6 +315,10 @@ public struct ResolvedQuestionRecord: Sendable, Equatable, Identifiable {
 public final class MachineStore {
     public private(set) var machines: [MachineState]
     public private(set) var pairingAttempts: [PairingAttemptState] = []
+    /// One read-only terminal view per session while its pane is open (#1639).
+    public internal(set) var terminalViews: [MachineSessionKey: TerminalViewController] = [:]
+    /// One file download per session while its sheet is open (#1639).
+    public internal(set) var fileDownloads: [MachineSessionKey: FileDownloadFlow] = [:]
     @ObservationIgnored private var pairingCoordinator: PairingAttemptCoordinator?
     @ObservationIgnored private var pairingOriginLifetime: UUID?
     @ObservationIgnored private var recoveryCoordinator: MachineRecoveryCoordinator?
@@ -368,7 +372,7 @@ public final class MachineStore {
     @ObservationIgnored private let identity: ClientIdentity
     @ObservationIgnored private let clientVersion: String
     @ObservationIgnored private let clientId: String
-    @ObservationIgnored private var connections: [MachineEndpoint: RemiConnection] = [:]
+    @ObservationIgnored var connections: [MachineEndpoint: RemiConnection] = [:]
     /// Bounded retries for machines waiting for local approval (#1599); see ApprovalPollPolicy.
     @ObservationIgnored private var approvalPollTasks: [MachineEndpoint: Task<Void, Never>] = [:]
     /// Injectable so tests can use a short interval; production always uses the standard policy.
@@ -380,7 +384,7 @@ public final class MachineStore {
     @ObservationIgnored private var failedDirectRoutes: Set<MachineEndpoint> = []
     @ObservationIgnored private var terminalRootStates: [MachineEndpoint: RemiConnectionState] = [:]
     @ObservationIgnored private var failedChildConnections: Set<MachineEndpoint> = []
-    @ObservationIgnored private var routeBySession: [MachineSessionKey: MachineEndpoint] = [:]
+    @ObservationIgnored var routeBySession: [MachineSessionKey: MachineEndpoint] = [:]
     /// One timer per loading key, so a repeat load replaces the older timer instead of being cut
     /// short by it. The request id says which request the timer and a failure belong to.
     @ObservationIgnored private var transcriptLoadTimers: [MachineSessionKey: (requestID: String, task: Task<Void, Never>)] = [:]
@@ -1950,6 +1954,7 @@ public final class MachineStore {
         guard connectionGenerations[endpoint] == generation, let parent = parentByConnection[endpoint],
               let index = machineIndex(containing: parent)
         else { return }
+        if case .connected = state {} else { panesConnectionLost(endpoint) }
 
         // Session sockets do not describe the machine route's reachability, but
         // terminal failures still need an explicit retry path (#1561).
@@ -2042,6 +2047,10 @@ public final class MachineStore {
         }
 
         switch event {
+        case .terminalView(let message):
+            receiveTerminalView(message, machineIndex: index)
+        case .fileFetch(let message):
+            receiveFileFetch(message, machineIndex: index)
         case .relayStreamEnded(let clean):
             if !clean { latestOperationError = "The relay closed without an authenticated ending. Check the session for uncertain delivery." }
         case .relayReady:
@@ -2390,7 +2399,7 @@ public final class MachineStore {
 
     /// The connection that holds this session on this machine. There is deliberately no
     /// session-id-only lookup: two machines can hold the same id (#1601).
-    private func connection(for key: MachineSessionKey) -> RemiConnection? {
+    func connection(for key: MachineSessionKey) -> RemiConnection? {
         routeBySession[key].flatMap { connections[$0] }
     }
 

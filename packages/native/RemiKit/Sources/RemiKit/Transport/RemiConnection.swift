@@ -100,6 +100,11 @@ public enum RemiInboundEvent: Sendable, Equatable {
     case answerResult(AnswerResultMessage)
     case pushRegistration(RelayPushResponse)
     case relayStreamEnded(clean: Bool)
+    /// A strictly decoded `session_terminal_*` answer (ADR 0047). Nothing sends the family until a
+    /// hub advertises `terminal_view`, so none arrives today.
+    case terminalView(TerminalViewMessage)
+    /// A strictly decoded `file_fetch_*` answer (ADR 0045), under the same condition as `terminalView`.
+    case fileFetch(FileFetchMessage)
     case unsupported(type: String)
 }
 
@@ -320,10 +325,19 @@ public actor RemiConnection {
         runTask = Task { await run() }
     }
 
+    /// Sends a frame already encoded and validated by its strict codec (`encodedFrame()` of the
+    /// terminal-view and file-fetch families), through the same path as `send`.
+    public func sendEncodedFrame(_ frame: String) async throws {
+        try await deliver(Data(frame.utf8), validateBeforeSend: nil)
+    }
+
     public func send<T: Encodable & Sendable>(_ message: T,
         validateBeforeSend: (@Sendable () throws -> Void)? = nil) async throws {
+        try await deliver(try encoder.encode(message), validateBeforeSend: validateBeforeSend)
+    }
+
+    private func deliver(_ data: Data, validateBeforeSend: (@Sendable () throws -> Void)?) async throws {
         guard let socket else { throw URLError(.notConnectedToInternet) }
-        let data = try encoder.encode(message)
         if configuration.relayPin != nil {
             guard relayChannel != nil, !relayClosing, pendingSends < 64 else { throw RelayFailure.closed }
             guard !data.isEmpty, data.count <= RelayCrypto.maxPlaintext else { throw RelayFailure.oversize }
@@ -659,6 +673,21 @@ public actor RemiConnection {
                 finishRPC(result.requestId, result: .success(.push(result)))
             }
             eventHandler(.pushRegistration(result))
+        case "session_terminal_opened", "session_terminal_snapshot", "session_terminal_unchanged",
+            "session_terminal_closed", "session_terminal_refused":
+            // The strict codec decides; a frame it refuses is as good as unknown.
+            if let message = try? TerminalViewMessage.decode(data) {
+                eventHandler(.terminalView(message))
+            } else {
+                eventHandler(.unsupported(type: envelope.type))
+            }
+        case "file_fetch_accepted", "file_fetch_chunk", "file_fetch_result", "file_fetch_cancel_result",
+            "file_fetch_refused":
+            if let message = try? FileFetchMessage.decode(data) {
+                eventHandler(.fileFetch(message))
+            } else {
+                eventHandler(.unsupported(type: envelope.type))
+            }
         default:
             eventHandler(.unsupported(type: envelope.type))
         }
