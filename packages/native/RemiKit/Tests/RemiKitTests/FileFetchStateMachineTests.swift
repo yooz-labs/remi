@@ -18,7 +18,7 @@ struct FileFetchStateMachineTests {
             sessionId: sessionId)
     }
 
-    /// A deterministic payload that is not all zeros, and not periodic in the chunk size, so a mis-ordered chunk changes the digest.
+    /// A deterministic payload that is not all zeros, and not periodic in the chunk size, so a reordered chunk changes the digest.
     static func payload(_ count: Int) -> Data { Data((0..<count).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ ($0 >> 8) &* 17 &+ 7) }) }
 
     static func digest(_ data: Data) -> String { WireGuards.encodeBase64URL(Data(SHA256.hash(data: data))) }

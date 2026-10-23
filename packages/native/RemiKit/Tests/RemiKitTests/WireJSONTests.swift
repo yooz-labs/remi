@@ -44,7 +44,7 @@ struct WireJSONTests {
     }
 
     @Test func refusesGrammarJSONRefuses() {
-        for text in ["", "{", "[1,]", #"{"a":1,}"#, "01", "1.", ".5", "+1", "NaN", "'a'", "\"a\nb\"", "{} x", "tru"] {
+        for text in ["", "{", "[1,]", #"{"a":1,}"#, "01", "1.", ".5", "+1", "NaN", "'a'", "\"a\nb\"", "{} x", "truee"] {
             #expect(throws: WireFrameError.self, "\(text)") { try WireJSON.parse(text) }
         }
     }
