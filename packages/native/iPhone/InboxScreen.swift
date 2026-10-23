@@ -72,6 +72,7 @@ struct InboxScreen: View {
                 inboxContent
             }
             .padding(RemiTheme.Spacing.m)
+            .remiReadableColumn()
         }
         .navigationTitle("Remi")
         .toolbar {

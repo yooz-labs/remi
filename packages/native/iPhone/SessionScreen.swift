@@ -150,8 +150,9 @@ struct SessionScreen: View {
                                 questionCard(question)
                             }
                         }
-                        .padding(RemiTheme.Spacing.m)
                         .scrollTargetLayout()
+                        .padding(RemiTheme.Spacing.m)
+                        .remiReadableColumn()
                         .id(RemiTranscriptScrollTarget.latest)
                     }
                     .modifier(RemiTranscriptScrollBehavior(followsLatest: $followsLatest,
