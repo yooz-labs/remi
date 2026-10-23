@@ -10,6 +10,9 @@ struct MacLiveRootView: View {
     @AppStorage("remi.mac.selected-session") private var selectedSessionID = ""
     @SceneStorage("remi.mac.column-layout") private var columnLayoutStorage = ""
     @SceneStorage("remi.mac.drafts") private var draftsStorage = ""
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var draftBox = MacDraftBox()
+    @State private var draftFlush: Task<Void, Never>?
     @State private var showingInbox = false
     @State private var showingNewSession = false
     @State private var newSessionMachineID: String?
@@ -216,11 +219,8 @@ struct MacLiveRootView: View {
                             },
                             onResume: session.canResume ? { resume(session) } : nil,
                             onTerminate: { store.terminateSession(machineID: session.machineID, sessionId: session.id) },
-                            initialDraft: RemiSessionDrafts(storageValue: draftsStorage).draft(for: session.key),
-                            onDraftChange: { text in
-                                draftsStorage = RemiSessionDrafts(storageValue: draftsStorage)
-                                    .setting(text, for: session.key).storageValue
-                            }
+                            initialDraft: liveDrafts.draft(for: session.key),
+                            onDraftChange: { draftChanged($0, for: session.key) }
                         )
                         .id(notificationDestination ?? RemiNavigationDestination(
                             machineID: session.machineID,
@@ -304,6 +304,11 @@ struct MacLiveRootView: View {
         }
         .onChange(of: navigationSnapshot, initial: true) { _, _ in
             reconcileNavigation()
+            validateColumnLayout()
+            pruneDrafts()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { flushDrafts() }
         }
         .onChange(of: notificationRouter.destination, initial: true) { _, destination in
             guard let destination else { return }
@@ -437,8 +442,7 @@ struct MacLiveRootView: View {
             get: { RemiMacSidebarSelection.resolve(showsInbox: showingInbox, machineID: selectedMachineID) },
             set: { newValue in
                 if newValue == .inbox {
-                    showingInbox = true
-                    preferredCompactColumn = .content
+                    showInbox()
                     return
                 }
                 showingInbox = false
@@ -641,17 +645,22 @@ struct MacLiveRootView: View {
             machineCount: store.machines.count,
             needsYouSessionCount: allSessions.count { $0.status == .needsYou },
             sessionListCount: showingInbox ? 0 : visibleSessions.count,
-            reconnect: RemiMacCommandAvailability.Reconnect.resolve(recovery: selectedRecovery)
+            reconnect: RemiMacCommandAvailability.Reconnect.resolve(recovery: selectedRecovery),
+            showsInbox: showingInbox
         )
+    }
+
+    /// The Inbox lives in the middle column, so a conversation-only layout gives the columns back.
+    private func showInbox() {
+        showingInbox = true
+        applyColumnLayout(currentColumnLayout.revealingNavigation())
+        preferredCompactColumn = .content
     }
 
     private var workspaceActions: MacWorkspaceActions {
         MacWorkspaceActions(
             availability: commandAvailability,
-            goToInbox: {
-                showingInbox = true
-                preferredCompactColumn = .content
-            },
+            goToInbox: showInbox,
             nextNeedsYou: { jumpToNeedsYou(offset: 1) },
             previousNeedsYou: { jumpToNeedsYou(offset: -1) },
             moveMachine: { moveMachineSelection(offset: $0) },
@@ -718,12 +727,71 @@ struct MacLiveRootView: View {
         )
     }
 
-    /// Reopens the columns the way this window left them. Focused-conversation layout needs a
-    /// session to focus, so without one the default stays.
+    /// The drafts as typed. They live in memory, exact; scene storage only mirrors them, after a
+    /// short pause, so typing does not rewrite the stored state on every keystroke and a
+    /// re-created conversation never reads back a shorter copy of what is on screen.
+    private var liveDrafts: RemiSessionDrafts {
+        if !draftBox.isLoaded {
+            draftBox.drafts = RemiSessionDrafts(storageValue: draftsStorage)
+            draftBox.isLoaded = true
+        }
+        return draftBox.drafts
+    }
+
+    private func draftChanged(_ text: String, for key: RemiSessionKey) {
+        let updated = liveDrafts.setting(text, for: key)
+        guard updated != draftBox.drafts else { return }
+        draftBox.drafts = updated
+        scheduleDraftFlush()
+    }
+
+    private func scheduleDraftFlush() {
+        draftFlush?.cancel()
+        draftFlush = Task {
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            flushDrafts()
+        }
+    }
+
+    private func flushDrafts() {
+        draftFlush?.cancel()
+        draftsStorage = draftBox.drafts.storageValue
+    }
+
+    /// Drops drafts of sessions that ended or machines that were removed. Only a connected
+    /// machine with a loaded list counts as knowing its sessions.
+    private func pruneDrafts() {
+        let pruned = liveDrafts.pruned(
+            savedMachineIDs: Set(store.machines.map(\.id)),
+            loadedMachineIDs: Set(store.machines.filter {
+                $0.hasLoadedSessions && $0.status == .connected
+            }.map(\.id)),
+            sessionKeys: Set(allSessions.map(\.key))
+        )
+        guard pruned != draftBox.drafts else { return }
+        draftBox.drafts = pruned
+        flushDrafts()
+    }
+
+    /// Reopens the columns the way this window left them, then checks they still make sense.
     private func restoreColumnLayout() {
         guard let layout = RemiMacColumnLayout(storageValue: columnLayoutStorage) else { return }
-        if layout.visibility == .detailOnly && selectedSessionID.isEmpty { return }
         applyColumnLayout(layout)
+        validateColumnLayout()
+    }
+
+    /// A conversation-only layout needs its session. Before the machine's list loads the
+    /// session is assumed to exist; once it loads, a missing session brings the columns back.
+    private func validateColumnLayout() {
+        let exists: Bool
+        if selectedMachine?.hasLoadedSessions == true {
+            exists = visibleSessions.contains { $0.id == selectedSessionID }
+        } else {
+            exists = !selectedSessionID.isEmpty
+        }
+        let validated = currentColumnLayout.validated(sessionExists: exists)
+        if validated != currentColumnLayout { applyColumnLayout(validated) }
     }
 
     private func applyColumnLayout(_ layout: RemiMacColumnLayout) {
@@ -931,6 +999,12 @@ struct MacLiveRootView: View {
 
 }
 
+/// Holds the live drafts outside view state: typing updates it without redrawing the window.
+private final class MacDraftBox {
+    var drafts = RemiSessionDrafts()
+    var isLoaded = false
+}
+
 private struct MacSessionsColumn: View {
     let machine: MachineState?
     let sessions: [RemiSessionSummary]
@@ -1052,7 +1126,7 @@ private struct MacSessionList: View {
         }
         .focusedSceneValue(
             \.macSessionNavigation,
-            sessions.isEmpty ? nil : MacSessionNavigationActions(move: { moveSelection(offsetBy: $0) })
+            filteredSessions.isEmpty ? nil : MacSessionNavigationActions(move: { moveSelection(offsetBy: $0) })
         )
         .onAppear { expandRelevantWorkspace() }
         .onChange(of: machineID) { _, _ in
@@ -1194,11 +1268,13 @@ private struct MacSessionList: View {
         }
         .labelStyle(.iconOnly)
         .help("\(title) (Option-Command-\(offset < 0 ? "↑" : "↓"))")
-        .disabled(sessions.isEmpty)
+        .disabled(filteredSessions.isEmpty)
     }
 
     private func moveSelection(offsetBy offset: Int) {
         let orderedIDs = workspaces.flatMap { $0.sessions.map(\.id) }
+        // No match must never deselect: with nothing visible the selection stays.
+        guard !orderedIDs.isEmpty else { return }
         selection = RemiOrderedSelection.shifted(
             selection: selection,
             orderedIDs: orderedIDs,
