@@ -85,6 +85,8 @@ complete result is `qualification-lazy-attributes-pathfix-result.json`.
 `ownership-final-validation-result.json` links source and compiled receipts.
 These and the original diagnostic graphs are retained under
 `/Volumes/S1/yooz/remi/artifacts/terminal-send-20261023/`.
+A compact [qualification receipt](terminal-view-ownership-qualification.json)
+records the exact input/binary hashes and per-cell values.
 Fresh hosted gates and the required review remain merge requirements.
 
 The original approved limits remain: 1 MiB/model, 32 models/32 MiB per home,
