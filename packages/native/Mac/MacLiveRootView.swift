@@ -310,6 +310,10 @@ struct MacLiveRootView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { flushDrafts() }
         }
+        // Command-Q may end the process without scenePhase leaving active.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            flushDrafts()
+        }
         .onChange(of: notificationRouter.destination, initial: true) { _, destination in
             guard let destination else { return }
             pendingResume = nil
