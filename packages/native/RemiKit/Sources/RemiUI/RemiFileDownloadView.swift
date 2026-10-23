@@ -110,13 +110,13 @@ public struct RemiFileDownloadView: View {
             if !isRunning, flow?.verifiedFile == nil {
                 Button("Download", systemImage: "arrow.down.circle", action: start)
                     .buttonStyle(.borderedProminent)
-                    .disabled(pathIssue != nil || startIssue != nil)
+                    .disabled(pathIssue != nil)
             }
         }
     }
 
     private func start() {
-        guard !isRunning, pathIssue == nil, startIssue == nil else { return }
+        guard !isRunning, pathIssue == nil else { return }
         savedName = nil
         onStart(path)
     }
@@ -210,7 +210,7 @@ public struct RemiFileDownloadView: View {
 import CryptoKit
 
 /// Flows at each stage, driven through the real state machine with real chunks and SHA-256.
-enum RemiFileDownloadPreviewFlows {
+public enum RemiFileDownloadPreviewFlows {
     static let session = "00000000-0000-4000-8000-000000000003"
     static let begin = "00000000-0000-4000-8000-000000000002"
     static let binding = AttachedBinding(harness: .claude, harnessSessionId: "preview-claude")
@@ -226,7 +226,7 @@ enum RemiFileDownloadPreviewFlows {
             .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
     }
 
-    static func flow(upTo stage: Int, path: String = "docs/notes.txt") -> FileDownloadFlow {
+    public static func flow(upTo stage: Int, path: String = "docs/notes.txt") -> FileDownloadFlow {
         let started = FileDownloadFlow.begin(
             path: path, binding: binding, sessionId: session, requestId: begin, timestamp: stamp, now: 0)
         guard case .success(let first) = started else { preconditionFailure("The preview path is not valid") }
@@ -254,7 +254,7 @@ enum RemiFileDownloadPreviewFlows {
         return flow
     }
 
-    static func refused() -> FileDownloadFlow {
+    public static func refused() -> FileDownloadFlow {
         var flow = flow(upTo: 0)
         _ = flow.handle(
             .message(.refused(FileFetchRefused(header: header(40), requestId: begin, operation: .begin, code: .unavailable))),
