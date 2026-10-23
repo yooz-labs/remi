@@ -87,23 +87,32 @@ TMPDIR=/tmp bun --no-env-file test packages/daemon/tests/terminal \
   packages/daemon/tests/integration/terminal-capture-cli.test.ts
 ```
 
-The focused lane passed 112 tests on both Bun 1.3.11 and 1.4.2.
+The original focused lane passed 112 tests on both Bun 1.3.11 and 1.4.2.
+After the package-resolution correction below, the expanded lane also pins
+the unchanged public relay surface: 117 tests pass on each pin.
 Root type checking, changed-file lint and spelling passed.
 All six compiled executions passed the nine viewport scenarios, stock compiled
 Claude lifetime/quota/refusal, conservative resource control and four held-No
 scenarios (54 viewport scenarios, six stock CLI lifetimes and 24 held controls).
 
-| Bun | Host | Conservative retained increment |
-|---|---|---:|
-| 1.3.11 | Mac ARM64 | 922,929 bytes |
-| 1.3.11 | Linux ARM64 | 906,784 bytes |
-| 1.3.11 | Linux x64 | 927,110 bytes |
-| 1.4.2 | Mac ARM64 | 954,650 bytes |
-| 1.4.2 | Linux ARM64 | 854,292 bytes |
-| 1.4.2 | Linux x64 | 945,156 bytes |
+| Bun | Host | Original retained increment | Export-fix retained increment |
+|---|---|---:|---:|
+| 1.3.11 | Mac ARM64 | 922,929 bytes | 322,800 bytes |
+| 1.3.11 | Linux ARM64 | 906,784 bytes | 920,828 bytes |
+| 1.3.11 | Linux x64 | 927,110 bytes | 922,199 bytes |
+| 1.4.2 | Mac ARM64 | 954,650 bytes | 954,915 bytes |
+| 1.4.2 | Linux ARM64 | 854,292 bytes | 852,228 bytes |
+| 1.4.2 | Linux x64 | 945,156 bytes | 943,257 bytes |
 
-The largest measured increment was 954,650 bytes against 1,048,576 allowed.
-Normal No latency was 0.535–16.488 ms; blocking controls were 1,248.960–1,262.513 ms.
+The largest measured increment across both matrices was 954,915 bytes against
+1,048,576 allowed.
+The lower second Mac 1.3.11 delta corresponds to a higher measured warmed
+baseline; the final loaded heap differs by only 5,413 bytes.
+This is not evidence of a memory reduction or an absolute allocator bound.
+Original normal No latency was 0.535–16.488 ms; blocking controls were
+1,248.960–1,262.513 ms.
+The export-fix matrix measured 0.539–20.349 ms normally and
+1,248.770–1,259.275 ms in blocking controls.
 All six runs delivered the real deny and measured zero child input bytes.
 Six independent guard removals failed their named assertion on both Mac pins:
 native-fragment coalescing, single borrowed slot, borrowed retirement accounting,
@@ -130,6 +139,8 @@ zero-input assertion at one byte versus zero.
 The corrected driver validated that receipt and the unchanged inputs, then ran
 only the remaining pin; it did not rerun accepted cells.
 `qualification-initial-result.json` and `qualify-initial.py` preserve the first run.
+The export-fix rerun is `qualification-import-fix-result.json` with the same
+six cells and 18 named negatives, now also freezing the package export map.
 Linux containment uses the same pinned image as the reservation proof, UID 1000,
 no network, dropped capabilities, 512 MiB and 128 tasks.
 This is a finite retained-state qualification, not an OS memory ceiling.
@@ -143,6 +154,34 @@ The corrected control sends supported cursor commands through the real writer.
 The failed harness receipt remains preserved.
 The child geometry oracle queries its actual TTY descriptor with `stty size`:
 Bun 1.3.11's `getWindowSize()` returns cached columns/rows and can race resize.
+
+## Copied CLI package resolution
+
+The first complete hosted suite passed 10,530 tests with 38 skips and three
+failures: copied CLI entries could not resolve the new reservation parser's
+unexported `@remi/shared/relay/strict-json.ts` subpath.
+Repository path aliases had hidden the package-boundary error in source and
+compiled controls.
+The shared package now explicitly exports `./relay/strict-json`, and the
+reservation module uses that canonical subpath without changing the parser.
+The unchanged copied-entry case reproduced the original launch failure on Mac.
+After the correction, both copied-hub controls pass on both Mac pins, and all
+three originally failing tests pass under actual Linux x64 Bun 1.3.11.
+The Linux control uses the retained tooling image
+`sha256:7ba28f480ea435f79d94459c6fd08493cfe1f75aed66e8beff9acb1788db9b40`
+with OpenSSL 3.5.7, no network, UID 1000 and the same 512 MiB/128-task containment.
+The bare runtime image lacks the certificate fixture's OpenSSL executable;
+that setup failure is preserved separately.
+
+The copied browser case then exposed a separate Mac cleanup failure after
+successful candidate delivery; unchanged-base `63fec917` reproduces that
+failure at the same exit-0 assertion.
+It is tracked in [#1624](https://github.com/yooz-labs/remi/issues/1624), with its
+original failure intact; neither a pass nor a diagnosed fix is claimed.
+The first R7 attempt separately failed Miniflare's owned-port bind before its
+soak ([#1623](https://github.com/yooz-labs/remi/issues/1623)).
+Every required hosted check on the corrected final head remains a merge gate;
+the #1611-only Mac exception does not waive these checks.
 
 B3c must add signed WSS authority, exact original grant/attachment/binding/runtime
 checks, monotonic leases and rate/send reservations before sending any frame.
