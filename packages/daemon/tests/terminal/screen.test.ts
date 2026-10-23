@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { bundledPackages } from '../../../../scripts/third-party-notices';
 import { BoundedScreen, SCREEN_LIMITS } from '../../src/terminal/screen';
@@ -154,8 +154,13 @@ describe('bounded read-only terminal screen (#1608)', () => {
     const packages = await bundledPackages('packages/daemon/src/terminal/screen.ts', root);
     const xterm = packages.find((entry) => entry.name === '@xterm/headless');
     expect(xterm?.version).toBe('6.0.0');
-    expect(xterm?.licenseText).toBe(
-      readFileSync(resolve(root, 'node_modules/@xterm/headless/LICENSE'), 'utf8').trim(),
-    );
+    expect(xterm?.license).toBe('MIT');
+    // Bun may install the patched package in the daemon workspace, not root.
+    // Pin the upstream notice itself rather than assuming a hoisting layout.
+    expect(
+      createHash('sha256')
+        .update(xterm?.licenseText ?? '')
+        .digest('hex'),
+    ).toBe('3474bccef5e42b233c8241e6b4fc2b78555f8a775a9e5a84d0d4b1cf724b20d9');
   });
 });
