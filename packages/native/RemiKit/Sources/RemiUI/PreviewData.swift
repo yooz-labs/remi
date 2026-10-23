@@ -180,6 +180,44 @@ public enum RemiPreviewData {
         .tool(id: "t1", name: "Build project", summary: "xcodebuild -scheme RemiPhone\n\nCompileSwift normal arm64\nLink RemiPhone\nBuild succeeded"),
     ]
 
+    /// The golden `session_terminal_snapshot` frame, decoded by the strict codec.
+    public static let fixtureTerminalSnapshot: SessionTerminalSnapshot = {
+        guard let url = Bundle.module.url(forResource: "session_terminal_snapshot", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              case .snapshot(let snapshot)? = try? TerminalViewMessage.decode(data)
+        else { preconditionFailure("Missing or invalid RemiUI preview fixture: session_terminal_snapshot.json") }
+        return snapshot
+    }()
+
+    /// A full 80 by 24 screen, built through the strict codec so it cannot claim a shape the wire lacks.
+    public static let wideTerminalSnapshot: SessionTerminalSnapshot = {
+        var lines = [
+            "~/remi $ bun test",
+            "bun test v1.3.0",
+            "",
+            "packages/shared/tests/terminal-view.test.ts:",
+            "(pass) strict frames > snapshot with wide characters 界é",
+            "(pass) strict frames > refuses controls",
+            "",
+            "  4 pass",
+            "  0 fail",
+            "Ran 4 tests across 1 file. [0.12s]",
+            "",
+            "~/remi $ ",
+        ]
+        while lines.count < 24 { lines.append("") }
+        let snapshot = SessionTerminalSnapshot(
+            header: WireHeader(
+                id: "00000000-0000-4000-8000-000000000001", timestamp: "2026-10-22T00:00:00.000Z",
+                sessionId: "00000000-0000-4000-8000-000000000003"),
+            requestId: "00000000-0000-4000-8000-000000000002", viewId: "AAECAwQFBgcICQoLDA0ODw", revision: 7,
+            columns: 80, rows: 24, lines: lines, cursor: TerminalCursor(row: 11, column: 9))
+        guard (try? TerminalViewMessage.snapshot(snapshot).encodedFrame()) != nil else {
+            preconditionFailure("The wide terminal preview is not a valid snapshot")
+        }
+        return snapshot
+    }()
+
     private static func decodeFixture<Value: Decodable>(_ name: String) -> Value {
         guard let url = Bundle.module.url(forResource: name, withExtension: "json") else {
             preconditionFailure("Missing RemiUI preview fixture: \(name).json")
