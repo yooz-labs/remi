@@ -214,3 +214,27 @@ after checking its binary and unchanged frozen inputs. No failed native case
 was retried or threshold changed. Fresh exact-head hosted checks remain a gate.
 The separate full-suite quiet waits are tracked in #1626 without a causal-fix
 claim; neither those nor #1624 are waived by the earlier #1611-only exception.
+
+## Refreshed qualification after hosted test fixes
+
+The reviewed TLS test port correction (#1636) and decoder-composite test lifetime
+correction (#1638), together with the independently merged native pane source,
+are now integrated at capture commit `17de9f75`.
+The integration assessment verifies unchanged capture, PTY, screen, parser, wire
+and dependency code; daemon/shared runtime differs only in compiled-version
+literals. Both permitted review rounds remain complete, with no third review.
+
+All 138 focused source tests pass on each Mac Bun pin (1,215 assertions on
+1.3.11 and 1,213 on 1.4.2). All five TypeScript configurations, notices, lint
+(zero errors and 68 unchanged warnings), spelling and diff checks pass.
+The refreshed compiled matrix passes all six cells and all 18 original named
+negative controls with unchanged limits and cleanup requirements.
+Maximum retained increment is 953,547 of 1,048,576 bytes; normal No is
+0.572–20.376 ms, and blocking controls are 1,247.302–1,264.223 ms.
+Owned child input remains zero.
+Receipts are `capture-testfix-validation-result.json`,
+`capture-testfix-integration-assessment.json` and
+`qualification-testfix-integration-result.json` in the retained evidence root.
+Original failures and earlier qualified results remain preserved.
+Fresh hosted checks and an actual 61-minute relay soak on the final PR head
+remain required before merge; no prior head's green check substitutes for them.
