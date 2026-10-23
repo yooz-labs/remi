@@ -327,8 +327,11 @@ public enum TerminalViewMessage: Sendable, Equatable {
         }
     }
 
-    /// The frame text, or `WireFrameError.invalid("frame")` when this value would not survive
-    /// the strict decoder (a field out of range, a snapshot with the wrong row count, and so on).
+    /// The frame text, or `WireFrameError.invalid("frame")` when this value would not survive the strict decoder.
+    ///
+    /// The round-trip check uses `==`, which compares `String` by canonical equivalence, so it
+    /// proves shape, not scalar identity: never use `==` on these models to compare identifiers
+    /// (use `WireGuards.same`, which compares UTF-8 bytes).
     public func encodedFrame() throws -> String {
         let text = json.serialized()
         guard let decoded = try? Self.decode(text), decoded == self else { throw WireFrameError.invalid("frame") }
