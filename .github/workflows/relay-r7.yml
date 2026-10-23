@@ -50,6 +50,10 @@ jobs:
         if: needs.scope.result == 'success' && needs.scope.outputs.relay != 'false'
         with:
           fetch-depth: 0
+      - uses: actions/setup-node@v4
+        if: needs.scope.result == 'success' && needs.scope.outputs.relay != 'false'
+        with:
+          node-version: '24'
       - uses: oven-sh/setup-bun@v2
         if: needs.scope.result == 'success' && needs.scope.outputs.relay != 'false'
         with:
