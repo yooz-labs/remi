@@ -8,6 +8,8 @@ struct MacLiveRootView: View {
 
     @AppStorage("remi.mac.selected-machine") private var selectedMachineID = ""
     @AppStorage("remi.mac.selected-session") private var selectedSessionID = ""
+    @SceneStorage("remi.mac.column-layout") private var columnLayoutStorage = ""
+    @SceneStorage("remi.mac.drafts") private var draftsStorage = ""
     @State private var showingInbox = false
     @State private var showingNewSession = false
     @State private var newSessionMachineID: String?
@@ -213,7 +215,12 @@ struct MacLiveRootView: View {
                                 )
                             },
                             onResume: session.canResume ? { resume(session) } : nil,
-                            onTerminate: { store.terminateSession(machineID: session.machineID, sessionId: session.id) }
+                            onTerminate: { store.terminateSession(machineID: session.machineID, sessionId: session.id) },
+                            initialDraft: RemiSessionDrafts(storageValue: draftsStorage).draft(for: session.key),
+                            onDraftChange: { text in
+                                draftsStorage = RemiSessionDrafts(storageValue: draftsStorage)
+                                    .setting(text, for: session.key).storageValue
+                            }
                         )
                         .id(notificationDestination ?? RemiNavigationDestination(
                             machineID: session.machineID,
@@ -285,7 +292,11 @@ struct MacLiveRootView: View {
         }
         .focusedSceneValue(\.macWorkspace, workspaceActions)
         .task {
+            restoreColumnLayout()
             reconcileNavigation()
+        }
+        .onChange(of: currentColumnLayout) { _, layout in
+            columnLayoutStorage = layout.storageValue
         }
         .onChange(of: store.persistableProfiles) { _, profiles in
             MachineConfigurationStore.shared.saveProfiles(profiles)
@@ -705,6 +716,14 @@ struct MacLiveRootView: View {
             visibility: columnVisibility,
             expandedVisibility: expandedColumnVisibility
         )
+    }
+
+    /// Reopens the columns the way this window left them. Focused-conversation layout needs a
+    /// session to focus, so without one the default stays.
+    private func restoreColumnLayout() {
+        guard let layout = RemiMacColumnLayout(storageValue: columnLayoutStorage) else { return }
+        if layout.visibility == .detailOnly && selectedSessionID.isEmpty { return }
+        applyColumnLayout(layout)
     }
 
     private func applyColumnLayout(_ layout: RemiMacColumnLayout) {

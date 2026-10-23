@@ -18,8 +18,9 @@ struct MacSessionDetail: View {
     let onSend: (String) async -> Bool
     let onResume: (() -> Void)?
     let onTerminate: () -> Void
+    let onDraftChange: (String) -> Void
 
-    @State private var draft = ""
+    @State private var draft: String
     @State private var selectedViewID = ""
     @State private var focusedQuestionID: String?
     @State private var confirmingTermination = false
@@ -49,8 +50,12 @@ struct MacSessionDetail: View {
         onCancel: @escaping (String) -> Void = { _ in },
         onSend: @escaping (String) async -> Bool = { _ in true },
         onResume: (() -> Void)? = nil,
-        onTerminate: @escaping () -> Void = {}
+        onTerminate: @escaping () -> Void = {},
+        initialDraft: String = "",
+        onDraftChange: @escaping (String) -> Void = { _ in }
     ) {
+        _draft = State(initialValue: initialDraft)
+        self.onDraftChange = onDraftChange
         self.session = session
         self.transcript = transcript
         self.questions = questions
@@ -180,6 +185,7 @@ struct MacSessionDetail: View {
                 onInterrupt: nil
             )
         }
+        .onChange(of: draft) { _, text in onDraftChange(text) }
         .onChange(of: selectedViewID) { oldValue, newValue in
             focusedQuestionID = nil
             accessibilityQuestionID = nil
