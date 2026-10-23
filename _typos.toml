@@ -9,6 +9,8 @@ extend-exclude = [
   # Verbatim upstream engine sources/tests, pinned by content hashes (#1625).
   # Preserve their original comments; our generator and README stay checked.
   "scripts/terminal-engine/upstream/*.txt",
+  # Generated dependency bundle/source map; the readable source patch stays checked.
+  "patches/@xterm%2Fheadless@6.0.0.patch",
   "packages/daemon/tests/parser/fixtures/",
   # Captured AskUserQuestion TUI sessions (#627) — raw terminal bytes, not prose.
   "packages/daemon/tests/fixtures/auq/",

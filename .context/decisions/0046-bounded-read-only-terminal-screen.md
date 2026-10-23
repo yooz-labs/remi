@@ -18,8 +18,18 @@ The original failure is preserved in [the initial report](../../docs/terminal-sc
 
 Use exact `@xterm/headless` 6.0.0 behind `BoundedScreen`, with no scrollback,
 only its pinned Unicode-6 buffer API and no PTY/process or external-action sink.
-The upstream JavaScript is unchanged; a Bun patch supplies the missing upstream
-MIT license file for bundle notices.
+The initial primitive used unchanged upstream JavaScript with a license-only
+Bun patch. Ownership phase #1625 extends that patch with a reproducible runtime
+derivative: dense content with lazy zero-default foreground/background planes.
+The published 6.0.0 JavaScript and source maps remain unchanged as controls,
+but the package entry selects the derived bundle.
+The original 49 upstream buffer cases were committed before modification and
+run against both classes; the actual published and installed engines are also
+compared after writes/resizes. See the readable patch, pinned source manifest
+and offline generator in `scripts/terminal-engine/`, and
+[ownership qualification](../../docs/terminal-view-ownership.md).
+MIT notices remain included. No parser, terminal filter, public buffer API,
+input boundary or memory limit is broadened.
 The proposed buffer API and exact dependency version remain explicit risks.
 
 The primitive accepts owned output and existing local geometry, and returns one

@@ -4,17 +4,19 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { applyLazyAttributes } from '../../../../scripts/terminal-engine/build';
 import {
   prepareOriginalEngine,
   writeOriginalBufferTests,
 } from '../../../../scripts/terminal-engine/source';
 
-test('pinned upstream buffer source passes its original 49 real buffer cases', async () => {
+async function originalBufferCases(patched: boolean): Promise<void> {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'remi-engine-source-')));
   let child: Bun.Subprocess<'ignore', 'pipe', 'pipe'> | undefined;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   try {
     prepareOriginalEngine(home);
+    if (patched) applyLazyAttributes(home);
     const file = writeOriginalBufferTests(home);
     child = Bun.spawn([process.execPath, '--no-env-file', 'test', file], {
       cwd: home,
@@ -47,4 +49,15 @@ test('pinned upstream buffer source passes its original 49 real buffer cases', a
     if (child) await child.exited;
     rmSync(home, { recursive: true, force: true });
   }
-}, 10000);
+}
+
+test(
+  'pinned upstream buffer source passes its original 49 real buffer cases',
+  () => originalBufferCases(false),
+  10000,
+);
+test(
+  'lazy attribute source preserves all 49 upstream buffer cases',
+  () => originalBufferCases(true),
+  10000,
+);
