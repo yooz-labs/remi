@@ -319,6 +319,10 @@ public final class MachineStore {
     public internal(set) var terminalViews: [MachineSessionKey: TerminalViewController] = [:]
     /// One file download per session while its sheet is open (#1639).
     public internal(set) var fileDownloads: [MachineSessionKey: FileDownloadFlow] = [:]
+    /// Which routes may carry pane frames. Tests inject another; the app always uses `current`.
+    @ObservationIgnored var paneTransportPolicy = PaneTransportPolicy.current
+    /// Receives each pane frame instead of the connection, so tests can read what would be sent.
+    @ObservationIgnored var paneFrameSender: (@MainActor (String) -> Void)?
     @ObservationIgnored private var pairingCoordinator: PairingAttemptCoordinator?
     @ObservationIgnored private var pairingOriginLifetime: UUID?
     @ObservationIgnored private var recoveryCoordinator: MachineRecoveryCoordinator?
@@ -391,7 +395,7 @@ public final class MachineStore {
     @ObservationIgnored private var transcriptKeyByRequest: [String: MachineSessionKey] = [:]
     /// How long a load may run without a completion; tests shorten it.
     @ObservationIgnored var transcriptLoadTimeoutOverride: Duration?
-    @ObservationIgnored private var sessionByKillRequest: [String: MachineSessionKey] = [:]
+    @ObservationIgnored var sessionByKillRequest: [String: MachineSessionKey] = [:]
     @ObservationIgnored private var resumeAttemptsByRequest: [String: ResumeAttempt] = [:]
     @ObservationIgnored private var resumeRequestByChild: [MachineEndpoint: String] = [:]
     @ObservationIgnored private var resumeTimeoutTasks: [String: Task<Void, Never>] = [:]
@@ -1327,6 +1331,9 @@ public final class MachineStore {
         for route in configuredRoutes { pushEnabled.remove(route.id) }
         routeBySession = routeBySession.filter { _, route in !endpoints.contains(route) }
         sessionByKillRequest = sessionByKillRequest.filter { !keyMachineIDs.contains($0.value.machineID) }
+        // Terminal text and partial file bytes go with the machine.
+        terminalViews = terminalViews.filter { !keyMachineIDs.contains($0.key.machineID) }
+        fileDownloads = fileDownloads.filter { !keyMachineIDs.contains($0.key.machineID) }
         transcriptsBySession = transcriptsBySession.filter { !keyMachineIDs.contains($0.key.machineID) }
         sessionViewsBySession = sessionViewsBySession.filter { !keyMachineIDs.contains($0.key.machineID) }
         for key in transcriptsLoading where keyMachineIDs.contains(key.machineID) { finishTranscriptLoad(key) }
@@ -2048,9 +2055,9 @@ public final class MachineStore {
 
         switch event {
         case .terminalView(let message):
-            receiveTerminalView(message, machineIndex: index)
+            receiveTerminalView(message, from: endpoint, machineIndex: index)
         case .fileFetch(let message):
-            receiveFileFetch(message, machineIndex: index)
+            receiveFileFetch(message, from: endpoint, machineIndex: index)
         case .relayStreamEnded(let clean):
             if !clean { latestOperationError = "The relay closed without an authenticated ending. Check the session for uncertain delivery." }
         case .relayReady:
@@ -2188,6 +2195,8 @@ public final class MachineStore {
                 transcriptsBySession[killedKey] = nil
                 sessionViewsBySession[killedKey] = nil
                 routeBySession[killedKey] = nil
+                terminalViews[killedKey] = nil
+                fileDownloads[killedKey] = nil
                 requestSessions(from: parent)
             } else {
                 latestOperationError = "Could not exit session: \(response.error ?? "Unknown daemon error")"

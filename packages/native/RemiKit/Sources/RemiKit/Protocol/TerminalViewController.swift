@@ -131,6 +131,9 @@ public struct TerminalViewController: Sendable, Equatable {
 
     /// A frame could not be sent. Returns a best-effort close for a live view, which the caller
     /// may try once; it is never retried, because the state is no longer open.
+    /// The connection is gone: no close is possible, and the host retires the view with it.
+    public mutating func markDisconnected() { _ = handle(.disconnected, now: 0, date: Date(timeIntervalSince1970: 0)) }
+
     @discardableResult
     public mutating func interrupt() -> [Action] {
         let close = liveViewClose()

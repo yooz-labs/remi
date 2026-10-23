@@ -47,7 +47,7 @@ extension MachineStore {
         guard let route = routeBySession[key], let connection = connections[route] else {
             return .blocked("This session is not connected.")
         }
-        if let reason = PaneTransportPolicy.blockReason(for: route) { return .blocked(reason) }
+        if let reason = paneTransportPolicy.reason(for: route) { return .blocked(reason) }
         guard let binding = attachedBinding(of: machine, sessionID: sessionID) else {
             return .blocked("This session has not reported its conversation yet. Try again in a moment.")
         }
@@ -99,7 +99,9 @@ extension MachineStore {
         guard !actions.isEmpty else { return }
         switch paneRoute(machineID: key.machineID, sessionID: key.sessionID, needs: .terminalView) {
         case .ready(let route): sendTerminal(actions, route: route)
-        case .blocked: terminalViews[key]?.interrupt()
+        case .blocked:
+            // No route can carry a close; the host retires a view with its connection (ADR 0047).
+            terminalViews[key]?.markDisconnected()
         }
     }
 
@@ -124,25 +126,32 @@ extension MachineStore {
                     SessionTerminalClose(header: WireHeader(id: id, timestamp: stamp, sessionId: sessionID), viewId: viewId))
             }
             guard let frame = try? message.encodedFrame() else {
-                terminalViews[route.key]?.interrupt()
+                _ = terminalViews[route.key]?.interrupt()
                 return
             }
             frames.append(frame)
         }
+        if let paneFrameSender {
+            for frame in frames { paneFrameSender(frame) }
+            return
+        }
+        let policy = paneTransportPolicy
         Task { [weak self] in
             for frame in frames {
-                do { try await route.connection.sendEncodedFrame(frame) } catch {
-                    await MainActor.run { self?.terminalViews[route.key]?.interrupt() }
+                do { try await route.connection.sendEncodedFrame(frame, policy: policy) } catch {
+                    // The close a failed send could return cannot go out on a channel that just failed.
+                    await MainActor.run { _ = self?.terminalViews[route.key]?.interrupt() }
                     return
                 }
             }
         }
     }
 
-    func receiveTerminalView(_ message: TerminalViewMessage, machineIndex: Int) {
+    func receiveTerminalView(_ message: TerminalViewMessage, from endpoint: MachineEndpoint, machineIndex: Int) {
         guard let sessionID = message.sessionId else { return }
         let key = MachineSessionKey(machineID: machines[machineIndex].id, sessionID: sessionID)
-        guard var controller = terminalViews[key] else { return }
+        // Only the connection a session's requests went out on may answer for it.
+        guard routeBySession[key] == endpoint, var controller = terminalViews[key] else { return }
         let actions = controller.handle(.message(message), now: Self.monotonicNow, date: Date())
         terminalViews[key] = controller
         sendTerminal(actions, key: key)
@@ -211,9 +220,14 @@ extension MachineStore {
             }
             frames.append(frame)
         }
+        if let paneFrameSender {
+            for frame in frames { paneFrameSender(frame) }
+            return
+        }
+        let policy = paneTransportPolicy
         Task { [weak self] in
             for frame in frames {
-                do { try await route.connection.sendEncodedFrame(frame) } catch {
+                do { try await route.connection.sendEncodedFrame(frame, policy: policy) } catch {
                     await MainActor.run { self?.fileDownloads[route.key]?.markDisconnected(now: Self.monotonicNow) }
                     return
                 }
@@ -221,9 +235,10 @@ extension MachineStore {
         }
     }
 
-    func receiveFileFetch(_ message: FileFetchMessage, machineIndex: Int) {
+    func receiveFileFetch(_ message: FileFetchMessage, from endpoint: MachineEndpoint, machineIndex: Int) {
         guard let sessionID = message.sessionId else { return }
         let key = MachineSessionKey(machineID: machines[machineIndex].id, sessionID: sessionID)
+        guard routeBySession[key] == endpoint else { return }
         applyFile(.message(message), key: key)
     }
 
@@ -247,7 +262,7 @@ extension MachineStore {
     /// A session connection went away: a view is interrupted and a download is discarded, never resumed.
     func panesConnectionLost(_ endpoint: MachineEndpoint) {
         for (key, route) in routeBySession where route == endpoint {
-            if terminalViews[key]?.isActive == true { terminalViews[key]?.interrupt() }
+            if terminalViews[key]?.isActive == true { terminalViews[key]?.markDisconnected() }
             if fileDownloads[key]?.isFinished == false { fileDownloads[key]?.markDisconnected(now: Self.monotonicNow) }
         }
     }
