@@ -134,7 +134,7 @@ public struct FileFetchStateMachine: Sendable, Equatable {
         switch (phase, message) {
         case (.awaitingAcceptance, .accepted(let accepted)):
             guard WireGuards.same(accepted.requestId, beginId) else { return [] }
-            guard WireGuards.decodeBase64URL(accepted.digest) != nil, accepted.byteLength >= 1 else {
+            guard WireGuards.decodeBase64URL(accepted.digest) != nil, (1...FileFetchLimits.fileBytes).contains(accepted.byteLength) else {
                 return fail(.protocolViolation, cancel: true)
             }
             transferId = accepted.transferId
@@ -151,7 +151,9 @@ public struct FileFetchStateMachine: Sendable, Equatable {
 
         case (.receiving, .chunk(let chunk)):
             guard let transferId, WireGuards.same(chunk.transferId, transferId) else { return [] }
-            guard chunk.seq == nextSequence else { return fail(.sequence, cancel: true) }
+            guard (0...FileFetchLimits.maxSequence).contains(chunk.seq), nextSequence <= FileFetchLimits.maxSequence,
+                chunk.seq == nextSequence
+            else { return fail(.sequence, cancel: true) }
             let expected = min(FileFetchLimits.chunkBytes, byteLength - receivedBytes)
             guard let bytes = chunk.bytes, bytes.count == expected else { return fail(.integrity, cancel: true) }
             buffer.append(bytes)

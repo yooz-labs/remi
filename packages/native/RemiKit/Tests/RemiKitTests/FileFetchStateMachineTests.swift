@@ -39,7 +39,7 @@ struct FileFetchStateMachineTests {
     static func chunkMessage(_ seq: Int, _ bytes: Data, transferId: String = transfer) -> FileFetchMessage {
         .chunk(
             FileFetchChunk(
-                header: header(10 + seq), requestId: header(100 + seq).id, transferId: transferId, seq: seq,
+                header: header(10 + abs(seq % 1000)), requestId: header(100 + abs(seq % 1000)).id, transferId: transferId, seq: seq,
                 data: WireGuards.encodeBase64URL(bytes)))
     }
 
@@ -188,6 +188,41 @@ struct FileFetchStateMachineTests {
         #expect(m.phase == .receiving)
         // A second acceptance does not restart the transfer.
         #expect(m.handle(.message(Self.accepted(data)), at: 2).isEmpty)
+    }
+
+    @Test func handBuiltOversizeOffersAreProtocolViolations() {
+        // The codec refuses these on the wire; a hand-built value must not slip past the machine.
+        for length in [0, -1, FileFetchLimits.fileBytes + 1, Int.max] {
+            var m = Self.machine()
+            let offer = FileFetchAccepted(
+                header: Self.header(), requestId: Self.beginId, transferId: Self.transfer, fileName: "a",
+                byteLength: length, digest: Self.digest(Data([1])), expiresAt: "2026-10-14T03:05:00.000Z")
+            #expect(m.handle(.message(.accepted(offer)), at: 1) == [.sendCancel(beginId: Self.beginId)], "\(length)")
+            #expect(m.outcome == .failed(.protocolViolation))
+        }
+        var edge = Self.machine()
+        let offer = FileFetchAccepted(
+            header: Self.header(), requestId: Self.beginId, transferId: Self.transfer, fileName: "a",
+            byteLength: FileFetchLimits.fileBytes, digest: Self.digest(Data([1])), expiresAt: "2026-10-14T03:05:00.000Z")
+        #expect(edge.handle(.message(.accepted(offer)), at: 1).count == 1)
+        // A digest that is not 32 canonical bytes is refused too.
+        var bad = Self.machine()
+        let noDigest = FileFetchAccepted(
+            header: Self.header(), requestId: Self.beginId, transferId: Self.transfer, fileName: "a", byteLength: 1,
+            digest: "not a digest", expiresAt: "2026-10-14T03:05:00.000Z")
+        _ = bad.handle(.message(.accepted(noDigest)), at: 1)
+        #expect(bad.outcome == .failed(.protocolViolation))
+    }
+
+    @Test func handBuiltOutOfRangeSequenceIsRefused() {
+        let data = Self.payload(Self.chunkSize * 2)
+        for seq in [-1, FileFetchLimits.maxSequence + 1, Int.max] {
+            var m = Self.accepting(data)
+            let bad = Self.chunkMessage(seq, Data(repeating: 1, count: Self.chunkSize))
+            #expect(m.handle(.message(bad), at: 1) == [.sendCancel(beginId: Self.beginId)], "\(seq)")
+            #expect(m.outcome == .failed(.sequence))
+            #expect(m.receivedBytes == 0)
+        }
     }
 
     // MARK: Cancel, disconnect, refusal
