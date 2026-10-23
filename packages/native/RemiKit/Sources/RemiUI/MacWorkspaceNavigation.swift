@@ -130,3 +130,22 @@ public enum RemiMacCompactDestination: Equatable, Sendable {
         }
     }
 }
+
+/// What the Mac sidebar has selected: the cross-machine Inbox or one machine. The Inbox is a
+/// view, not a place on a machine, so choosing it keeps the machine and session selection
+/// that restore when the person leaves it.
+public enum RemiMacSidebarSelection: Hashable, Sendable {
+    case inbox
+    case machine(String)
+
+    /// The row to highlight: the Inbox while it is shown, otherwise the selected machine, or
+    /// nothing when no machine is selected.
+    public static func resolve(showsInbox: Bool, machineID: String) -> Self? {
+        if showsInbox { return .inbox }
+        return machineID.isEmpty ? nil : .machine(machineID)
+    }
+
+    public var machineID: String? {
+        if case .machine(let id) = self { id } else { nil }
+    }
+}
