@@ -62,6 +62,7 @@ struct PhoneLiveRootView: View {
         let sessions = allSessions
         let machines = machineSummaries
         return rootLayout(sessions: sessions, machines: machines)
+        .background { keyboardCommands }
         .onChange(of: layoutMode, initial: true) { _, mode in
             shell.layoutModeChanged(to: mode)
         }
@@ -167,6 +168,47 @@ struct PhoneLiveRootView: View {
             } drawer: {
                 drawerContent(sessions: sessions, machines: machines)
             }
+        }
+    }
+
+    /// Hardware-keyboard commands, in step with the Mac app: Command-N new session,
+    /// Option-Command-Up and Down previous and next session, Control-Command-S the sidebar.
+    /// Command-L, focusing the message field, belongs to the session screen.
+    private var keyboardCommands: some View {
+        Group {
+            Button("New session") { present(.newSession(machineID: shell.filteredMachineKey, repository: nil)) }
+                .keyboardShortcut("n", modifiers: .command)
+                .disabled(availableSessionMachines.isEmpty)
+            Button("Previous session") { stepSession(by: -1) }
+                .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+            Button("Next session") { stepSession(by: 1) }
+                .keyboardShortcut(.downArrow, modifiers: [.command, .option])
+            Button("Toggle sidebar") { toggleSidebar() }
+                .keyboardShortcut("s", modifiers: [.command, .control])
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
+    }
+
+    private func stepSession(by offset: Int) {
+        guard activeSheet == nil,
+              let next = RemiSessionNavigation.shifted(
+                  from: shell.selectedSessionKey,
+                  in: allSessions,
+                  machineKey: shell.filteredMachineKey,
+                  offset: offset
+              )
+        else { return }
+        selectSession(next)
+    }
+
+    private func toggleSidebar() {
+        if chrome.usesSidebar {
+            columnLayout = columnLayout.togglingNavigation()
+        } else {
+            shell.toggleDrawer()
         }
     }
 

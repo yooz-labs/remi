@@ -426,6 +426,8 @@ private struct PhoneDrawerInboxRow: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .contentShape(.hoverEffect, .rect(cornerRadius: RemiTheme.Radius.control))
+        .hoverEffect(.highlight)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
@@ -457,6 +459,8 @@ private struct PhoneDrawerSessionRow: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .contentShape(.hoverEffect, .rect(cornerRadius: RemiTheme.Radius.control))
+        .hoverEffect(.highlight)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(presentation.accessibilityLabel)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
