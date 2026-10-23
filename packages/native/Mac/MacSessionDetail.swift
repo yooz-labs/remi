@@ -223,6 +223,13 @@ struct MacSessionDetail: View {
         } message: {
             Text("The agent process and its Remi session will close. Its transcript remains available for later review.")
         }
+        .focusedSceneValue(
+            \.macFind,
+            RemiMacCommandAvailability.canFind(
+                hasOpenConversation: true,
+                entryCount: visibleTranscript.count
+            ) ? MacFindActions(find: openSearch) : nil
+        )
         .toolbar {
             if #available(macOS 26.1, *) {
                 ToolbarItemGroup {
@@ -265,14 +272,16 @@ struct MacSessionDetail: View {
     }
 
     private var searchButton: some View {
-        Button("Search conversation", systemImage: "magnifyingglass") {
-            followsLatest = false
-            isSearchPresented = true
-            searchFocusRequest += 1
-        }
-        .keyboardShortcut("f", modifiers: .command)
+        Button("Search conversation", systemImage: "magnifyingglass", action: openSearch)
         .disabled(visibleTranscript.isEmpty)
         .help("Search conversation")
+    }
+
+    /// Also the Find in Conversation menu command; its shortcut lives there, not on the button.
+    private func openSearch() {
+        followsLatest = false
+        isSearchPresented = true
+        searchFocusRequest += 1
     }
 
     private var latestActivityButton: some View {

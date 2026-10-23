@@ -112,7 +112,9 @@ struct MacLiveRootView: View {
                                 onRetryConnection: store.retryConnection,
                                 onNewSession: { presentNewSession() },
                                 onNewSessionHere: { presentNewSession(repository: $0) },
-                                onTerminate: { store.terminateSession(machineID: $0.machineID, sessionId: $0.id) }
+                                onTerminate: { store.terminateSession(machineID: $0.machineID, sessionId: $0.id) },
+                                onNextNeedsYou: { jumpToNeedsYou(offset: 1) },
+                                canJumpToNeedsYou: commandAvailability.nextNeedsYou
                             )
                         }
                     }
@@ -281,6 +283,7 @@ struct MacLiveRootView: View {
             feedbackBanner
             mainContent
         }
+        .focusedSceneValue(\.macWorkspace, workspaceActions)
         .task {
             reconcileNavigation()
         }
@@ -613,7 +616,65 @@ struct MacLiveRootView: View {
     }
 
     private func selectMachine(_ machineID: String) {
+        showingInbox = false
         machineSelection.wrappedValue = machineID
+    }
+
+    private var selectedRecovery: RemiMachineRecoveryState {
+        guard let machine = selectedMachine else { return .none }
+        return .resolve(status: machine.status, isRelay: machine.endpoint.relayPin != nil)
+    }
+
+    private var commandAvailability: RemiMacCommandAvailability {
+        RemiMacCommandAvailability(
+            machineCount: store.machines.count,
+            needsYouSessionCount: allSessions.count { $0.status == .needsYou },
+            sessionListCount: showingInbox ? 0 : visibleSessions.count,
+            reconnect: RemiMacCommandAvailability.Reconnect.resolve(recovery: selectedRecovery)
+        )
+    }
+
+    private var workspaceActions: MacWorkspaceActions {
+        MacWorkspaceActions(
+            availability: commandAvailability,
+            goToInbox: {
+                showingInbox = true
+                preferredCompactColumn = .content
+            },
+            nextNeedsYou: { jumpToNeedsYou(offset: 1) },
+            previousNeedsYou: { jumpToNeedsYou(offset: -1) },
+            moveMachine: { moveMachineSelection(offset: $0) },
+            reconnect: reconnectSelectedMachine
+        )
+    }
+
+    /// Opens the next (or previous) session that needs the person on any machine, by its
+    /// machine-qualified key, so the same session id on two machines stays two targets.
+    private func jumpToNeedsYou(offset: Int) {
+        let current = showingInbox || selectedSessionID.isEmpty ? nil
+            : RemiSessionKey(machineID: selectedMachineID, sessionID: selectedSessionID)
+        guard let target = RemiNeedsYouJump.target(
+            from: current,
+            sessions: allSessions,
+            machineOrder: store.machines.map(\.id),
+            offset: offset
+        ) else { return }
+        showingInbox = false
+        pendingResume = nil
+        notificationDestination = nil
+        selectedMachineID = target.machineID
+        selectedSessionID = target.sessionID
+        preferredCompactColumn = .detail
+    }
+
+    private func reconnectSelectedMachine() {
+        guard let machine = selectedMachine,
+              let action = RemiMacCommandAvailability.Reconnect.resolve(recovery: selectedRecovery)
+        else { return }
+        switch action {
+        case .connection: store.retryConnection(for: machine.endpoint)
+        case .approval: store.retryApproval(for: machine.endpoint)
+        }
     }
 
     private func moveMachineSelection(offset: Int) {
@@ -862,6 +923,8 @@ private struct MacSessionsColumn: View {
     let onNewSession: () -> Void
     let onNewSessionHere: (String) -> Void
     let onTerminate: (RemiSessionSummary) -> Void
+    let onNextNeedsYou: () -> Void
+    let canJumpToNeedsYou: Bool
 
     var body: some View {
         Group {
@@ -875,7 +938,9 @@ private struct MacSessionsColumn: View {
                         selection: $selection,
                         onResume: onResume,
                         onNewSessionHere: onNewSessionHere,
-                        onTerminate: onTerminate
+                        onTerminate: onTerminate,
+                        onNextNeedsYou: onNextNeedsYou,
+                        canJumpToNeedsYou: canJumpToNeedsYou
                     )
                 }
             } else if let machine {
@@ -903,6 +968,8 @@ private struct MacSessionList: View {
     let onResume: (RemiSessionSummary) -> Void
     let onNewSessionHere: (String) -> Void
     let onTerminate: (RemiSessionSummary) -> Void
+    let onNextNeedsYou: () -> Void
+    let canJumpToNeedsYou: Bool
     @State private var searchText = ""
     @State private var scope = RemiSessionScope.all
     @State private var showsRecent = false
@@ -956,20 +1023,18 @@ private struct MacSessionList: View {
         .searchable(text: $searchText, prompt: "Search sessions")
         .toolbar {
             ToolbarItemGroup {
-                Button("Next session needing attention", systemImage: "questionmark.bubble") {
-                    selection = RemiSessionTriage.nextAttentionSessionID(
-                        selection: selection,
-                        sessions: filteredSessions
-                    )
-                }
+                Button("Next session needing attention", systemImage: "questionmark.bubble", action: onNextNeedsYou)
                 .labelStyle(.iconOnly)
-                .keyboardShortcut("j", modifiers: [.command, .option])
-                .help("Next session needing attention (Option-Command-J)")
-                .disabled(!filteredSessions.contains { $0.status == .needsYou })
+                .help("Next session needing attention on any machine (Option-Command-J)")
+                .disabled(!canJumpToNeedsYou)
                 navigationButton(title: "Previous session", systemImage: "chevron.up", offset: -1)
                 navigationButton(title: "Next session", systemImage: "chevron.down", offset: 1)
             }
         }
+        .focusedSceneValue(
+            \.macSessionNavigation,
+            sessions.isEmpty ? nil : MacSessionNavigationActions(move: { moveSelection(offsetBy: $0) })
+        )
         .onAppear { expandRelevantWorkspace() }
         .onChange(of: machineID) { _, _ in
             searchText = ""
@@ -1109,7 +1174,6 @@ private struct MacSessionList: View {
             Label(title, systemImage: systemImage)
         }
         .labelStyle(.iconOnly)
-        .keyboardShortcut(offset < 0 ? .upArrow : .downArrow, modifiers: [.command, .option])
         .help("\(title) (Option-Command-\(offset < 0 ? "↑" : "↓"))")
         .disabled(sessions.isEmpty)
     }
@@ -1197,7 +1261,6 @@ private struct MacMachineSwitcher: View {
                     onMove(-1)
                 }
                 .labelStyle(.iconOnly)
-                .keyboardShortcut(.upArrow, modifiers: [.control, .option])
                 .help("Previous machine (Control-Option-↑)")
 
                 Menu {
@@ -1233,7 +1296,6 @@ private struct MacMachineSwitcher: View {
                     onMove(1)
                 }
                 .labelStyle(.iconOnly)
-                .keyboardShortcut(.downArrow, modifiers: [.control, .option])
                 .help("Next machine (Control-Option-↓)")
             }
         }
@@ -2233,7 +2295,9 @@ private var workspacePreviewMachine: MachineState {
         selection: .constant("waiting"),
         onResume: { _ in },
         onNewSessionHere: { _ in },
-        onTerminate: { _ in }
+        onTerminate: { _ in },
+        onNextNeedsYou: {},
+        canJumpToNeedsYou: true
     )
     .frame(width: 460, height: 640)
     .preferredColorScheme(.dark)
@@ -2246,7 +2310,9 @@ private var workspacePreviewMachine: MachineState {
         selection: .constant("waiting"),
         onResume: { _ in },
         onNewSessionHere: { _ in },
-        onTerminate: { _ in }
+        onTerminate: { _ in },
+        onNextNeedsYou: {},
+        canJumpToNeedsYou: true
     )
     .frame(width: 620, height: 720)
     .environment(\.dynamicTypeSize, .accessibility5)

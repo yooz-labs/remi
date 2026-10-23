@@ -26,6 +26,7 @@ struct RemiMacApp: App {
         }
         .defaultSize(width: 1280, height: 800)
         .keyboardShortcut(nil)
+        .commands { MacCommands() }
 
         MenuBarExtra {
             if let store = notifications.store {
