@@ -25,7 +25,7 @@ One new explicit Open creates a collision-checked 16-byte opaque ID and five
 monotonic minutes. Wall time formats expiresAt. Reads are spaced by 500 monotonic
 ms and use current complete snapshots/revisions. No output history is retained.
 A short closed/expired/refused receipt consumes its existing view for one logical
-second. Logical expiry does not pretend that pending native bytes were disposed;
+second, starting at admission for a new control record. Logical expiry does not pretend that pending native bytes were disposed;
 uncertain ownership can keep fixed charge after the receipt becomes inaccessible.
 
 TLS ownership follows #1646: only an actual matching pong for a fresh native ping
@@ -57,17 +57,24 @@ capture loss retires the old view. No old incarnation follows a new grant.
 ## Source qualification and remaining gates
 
 The [source receipt](terminal-view-service-source-qualification.json) records
-259 passing cases on each Mac Bun pin (3,188/3,186 parent assertions), five
+260 passing cases on each Mac Bun pin (3,191/3,189 parent assertions), five
 TypeScript configurations, lint (zero errors/68 unchanged warnings), exact
 CItypos1.28.4, whitespace and bundle notices. Real private-CA signed WSS, identities,
 registry/binding, launch-captured zero-input PTYs and actual native packets cover
 both harness bindings, native/domain pong separation, native close after logical
 removal, one held intent and original grant/binding/runtime/attachment retirement.
-Three added actual packet controls verify Close precedence over both a held read
+Three actual packet controls verify Close precedence over both a held read
 and a queued native read, and preserve a second charged view during shared-model
 pressure. The original controls reproduced both defects before their fixes.
 Both refreshed source lease controls ran five actual monotonic minutes, then
 refused the old ID and admitted a new explicit Open without clock injection.
+
+The expanded staged test found an initial-Open race: maintenance could retire a
+new receipt with expiry zero before its queued native job ran. A real incoming
+request stalled275ms makes the existing250ms interval overdue before the0ms
+job is created. The named regression fails with old code, passes with admission's
+original one-second deadline, and fails with restored old behavior. Both real
+five-minute lease controls and the complete source checks pass after the fix.
 
 A test initially assumed service-map removal synchronously removed its ledger
 row. An actual unchanged cleanup probe observed a safe, settled, unborrowed row
@@ -81,6 +88,17 @@ long-root failure, valid-short-root pass and restored-long-root failure. The ful
 source suite now uses a private short canonical TMPDIR and fresh private HOME.
 The earlier Mac wrapper cleanup/reset failures remain preserved; their cause is
 not claimed fixed. No source gate is waived by the older B1-only exception.
+
+The first expanded resource matrix stopped at a failed gate. Mac ARM64 Bun1.3.11
+passed Latin-1 and UTF16/escaped profiles at806,976 and834,650 bytes; Linux ARM64
+Bun1.3.11 retained1,199,295 bytes against the unchanged1,048,576-byte limit.
+The actual path holds four signed-WSS views, four first-time waiting read
+intents, a native-pending frame and the full64KiB/eight-operation parser queue.
+All original native-copy, fixture-pressure, TLS-working, envelope and ingress
+allowances remain included. Two Mac causal controls reject overlapping parser
+work and actual PTY input. The other cells and combined two-model/held-No tests
+remain unaccepted. The failed matrix and separate allocation diagnostics stay
+recorded; no baseline, allowance, limit or application capability was broadened.
 
 These are source and lease controls. Expanded service/controller/native-pending/
 full-parser memory, actual held-No load, all six compiled host/Bun cells, the
