@@ -1,17 +1,17 @@
 {
   "status": "passed-source-and-actual-lease-only",
-  "implementationCommit": "6dc18f34",
+  "implementationCommit": "6001da93fdb740c30048b808e4b7156cf98db3c1",
   "integratedPrimitiveHead": "d7056ffa8956e06dadae27ab1ca8f7acbe07bf57",
-  "currentContentCommit": "60fe45794c4d8f34698f01a9bd692e090ce88bc4",
+  "currentContentCommit": "6001da93fdb740c30048b808e4b7156cf98db3c1",
   "scope": "passed actual signed directWSS source/lifecycle and real5minuteleases only; expandedservice memory failed; no adoption/held/all6compiled/caller/hardware acceptance",
   "sourceCounts": {
     "1311": {
-      "tests": 260,
-      "parentAssertions": 3191
+      "tests": 261,
+      "parentAssertions": 3197
     },
     "142": {
-      "tests": 260,
-      "parentAssertions": 3189
+      "tests": 261,
+      "parentAssertions": 3194
     }
   },
   "leases": {
@@ -19,7 +19,7 @@
       "status": "passed",
       "version": "1.3.11",
       "revision": "af24e281ebacd6ac77c0f14b4206599cf4ae1c9f",
-      "elapsedMonotonicMs": 300050.235959,
+      "elapsedMonotonicMs": 300050.770792,
       "oldViewOutcome": "expired",
       "explicitOpenCreatedFreshView": true,
       "scope": "real five-minute source signed-WSS lease; no compiled/service-resource or hardware acceptance"
@@ -28,7 +28,7 @@
       "status": "passed",
       "version": "1.4.2",
       "revision": "744846f844374847c902b5e7fd59b4342a51ef99",
-      "elapsedMonotonicMs": 300051.54925000004,
+      "elapsedMonotonicMs": 300051.413667,
       "oldViewOutcome": "expired",
       "explicitOpenCreatedFreshView": true,
       "scope": "real five-minute source signed-WSS lease; no compiled/service-resource or hardware acceptance"
@@ -36,51 +36,47 @@
   },
   "staticStages": [
     {
-      "name": "admission-deadline-source-1311",
+      "name": "reopen-rate-source-1311",
       "exitCode": 0
     },
     {
-      "name": "admission-deadline-source-142",
+      "name": "reopen-rate-source-142",
       "exitCode": 0
     },
     {
-      "name": "admission-deadline-types-root",
+      "name": "reopen-rate-types-root",
       "exitCode": 0
     },
     {
-      "name": "admission-deadline-types-web",
+      "name": "reopen-rate-types-web",
       "exitCode": 0
     },
     {
-      "name": "admission-deadline-types-web-tests",
+      "name": "reopen-rate-types-web-tests",
       "exitCode": 0
     },
     {
-      "name": "admission-deadline-types-signaling",
+      "name": "reopen-rate-types-signaling",
       "exitCode": 0
     },
     {
-      "name": "admission-deadline-types-integration",
+      "name": "reopen-rate-types-integration",
       "exitCode": 0
     },
     {
-      "name": "root-types",
+      "name": "reopen-rate-lint",
       "exitCode": 0
     },
     {
-      "name": "lint",
+      "name": "reopen-rate-spelling",
       "exitCode": 0
     },
     {
-      "name": "spelling",
+      "name": "reopen-rate-diff",
       "exitCode": 0
     },
     {
-      "name": "diff",
-      "exitCode": 0
-    },
-    {
-      "name": "notices",
+      "name": "reopen-rate-notices",
       "exitCode": 0
     }
   ],
@@ -122,7 +118,7 @@
     "repo/packages/daemon/src/terminal/reservations.ts": "6886855ab07df5b1d4329016d9ba6eb5248ea0f29ed74dc2c537d6b8b8e49379",
     "repo/packages/daemon/src/terminal/capture-host.ts": "230b42c760bab49628813cd01eeeeb7451260323d0bfab5bd09ba7d28f89a2d8",
     "repo/packages/daemon/src/terminal/ingress.ts": "dce0018944bbb87373c7cbdc07cb2098cb7de3c8f6371be1f50afdb293fd3992",
-    "repo/packages/daemon/src/terminal/view-service.ts": "98eda31b2dbdff3765e4b63295fda37ae0877ddff8c3b1ed72ca6ed59881c0bb",
+    "repo/packages/daemon/src/terminal/view-service.ts": "1f6443d1c8aee698f41cd56252cb4b2412a4e4b2ec85e1f84a0cbf508cf152c9",
     "repo/packages/daemon/src/terminal/send-slot.ts": "be1211b0c4db29d21526d2230ce3e48b2702b677a6535ea6191fc446a350454d",
     "repo/packages/daemon/src/terminal/screen.ts": "b15a3d016fd96a89b1dd650ec57ce269353b3d3fe74fa47f3fca5ebdb3aeea38",
     "repo/packages/daemon/src/server/answer-results.ts": "1ee085b1c297d894d6560a6cb8467bce1b00db51f78704f3e0366efe50208019",
@@ -412,7 +408,7 @@
     "repo/packages/daemon/tests/helpers/terminal-view-ownership-proof.ts": "a866b670754772e335a6d2c64b2bb732abb4ad86f96b2c228ca96dd2cc01dfed",
     "repo/packages/daemon/tests/helpers/terminal-service-resource-support.ts": "c26d230a2f6edddd865d6af34095c9548d56d24fe9da173a5acbb712f0f5efb8",
     "repo/packages/daemon/tests/helpers/terminal-raw-peer.ts": "91e59dab11d3c70f6f0f16e7e7c5b485083626646ce88ae6379a7a408214c135",
-    "repo/packages/daemon/tests/terminal/view-service.test.ts": "61180e9dfe8002b445e1fa2f7870a9a61d1a29c986192085b58ff6f28135a55b",
+    "repo/packages/daemon/tests/terminal/view-service.test.ts": "e5be51ed84f4f54881d4f74892748f2c035db10c845e9e7ff356985819a750a1",
     "repo/packages/daemon/tests/terminal/engine-distribution.test.ts": "5614d3e23b0acc4db1b0a141b0d23e4299e0dec27dc8c3cf006a75fa4f2e6f77",
     "repo/packages/daemon/tests/terminal/capture-host.test.ts": "d9aa7e6c04b4bef42e9e0626b6c769e77994e94e40b97b1f7d0f4cb978139241",
     "repo/packages/daemon/tests/terminal/engine-source.test.ts": "57a2c7e32aa347409a22bd57d7e2a6eed359512fb9b77c77e4ac99530174bde7",
@@ -454,7 +450,7 @@
     "finalheadhostedandactualrelaysoak",
     "B4encryptedrouteandrealshippingcaller beforecapability"
   ],
-  "priorSourcePoint": "bfb0f694c624718a73e85c82caee5d05dee6bf05 retained259cases andprioractualleases; initialOpen expiry race found in expanded staged qualification",
+  "priorSourcePoint": "60fe45794c4d8f34698f01a9bd692e090ce88bc4 retained260cases andactualleases before R1reopenratefix",
   "closeAndSharedPressure": {
     "before": "2actualcontrols fail with oldsource; realclosedviewreceivedsnapshot andsecondviewmapcountfell2to1",
     "after": "23focusedcases/89assertions bothpins pass, including actualClose before queuednativeentry, with realtwo-frameTLSbatch",
@@ -494,6 +490,40 @@
       "ingress": 16384
     },
     "remainingCells": "not accepted after failedgate",
-    "diagnostics": "separate heap snapshots/control variants are not qualification; no allowance or budget change"
+    "diagnostics": "separate heap snapshots/control variants are not qualification; no allowance or budget change",
+    "implementationPoint": "a3ac55826afb86091dc0686846d64462038f5f5a strictmatrixfailurebefore R1ratefix",
+    "subsequentCapacityCharacterization": {
+      "status": "diagnostic-only",
+      "sourcePoint": "6001da93 runtime/helper/testblobs",
+      "receipt": "capacity-characterization-recovery-result.json",
+      "profiles": 12,
+      "underBudgetProfiles": 11,
+      "overBudgetProfiles": 1,
+      "maximumDelta": 1198091,
+      "failedProfile": "ARM64/Bun1.3.11 Latin1",
+      "completedDeliveryVerifierForOverBudgetProfile": false,
+      "scope": "original1MiBassert stillthrows; no fullqualificationoradoption; retainedMacdiagnosticprofiles reusedonlyafterunchanged-inputDockerrecovery"
+    },
+    "rejectedRuntimeOptions": "parent-smol1192793 and bytecodepackaging1197965 remainedover1MiB; no configurationchangeadopted"
+  },
+  "review": {
+    "round": 1,
+    "head": "a3ac55826afb86091dc0686846d64462038f5f5a",
+    "panel": "contract/code/types;verification/tests/errors;maintainability/comments/simplify",
+    "acceptedFindings": 3,
+    "severity": "Moderate",
+    "fixedIn": "6001da93fdb740c30048b808e4b7156cf98db3c1",
+    "fixes": [
+      "preserve500msreadspacingacrosssamechargedviewOpen",
+      "scopeprivacyclaimtoviewhandlerandnameexistingoptinPTYcapture",
+      "scopeone-secondreceipttostatetransitions,nottransientrefusals"
+    ],
+    "fixOnlyR2": "reserveduntilfinalqualifiedfixdelta;notyetperformed;no third"
+  },
+  "reopenRate": {
+    "before": "actualOpen/Read/nativepong/Open/newID/nativepong/Read within500ms incorrectlyreturns snapshot",
+    "after": "actualsecondreadbusyandoriginalreservedviewlastRead unchanged",
+    "clock": "actualperformance.now, no injectedclock",
+    "receipt": "reopen-rate-original/fixed plusfresh261sourcecasesbothpins"
   }
 }

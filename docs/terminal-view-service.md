@@ -62,7 +62,7 @@ capture loss retires the old view. No old incarnation follows a new grant.
 ## Source qualification and remaining gates
 
 The [source receipt](terminal-view-service-source-qualification.json) records
-260 passing cases on each Mac Bun pin (3,191/3,189 parent assertions), five
+261 passing cases on each Mac Bun pin (3,197/3,194 parent assertions), five
 TypeScript configurations, lint (zero errors/68 unchanged warnings), exact
 CItypos1.28.4, whitespace and bundle notices. Real private-CA signed WSS, identities,
 registry/binding, launch-captured zero-input PTYs and actual native packets cover
@@ -80,6 +80,13 @@ request stalled275ms makes the existing250ms interval overdue before the0ms
 job is created. The named regression fails with old code, passes with admission's
 original one-second deadline, and fails with restored old behavior. Both real
 five-minute lease controls and the complete source checks pass after the fix.
+
+Full review also found that another Open reset the read timestamp while reusing
+the same charged connection view. A real packet regression reproduces a second
+snapshot inside500ms; preserving the timestamp now returns busy across that
+new lease ID. The complete261-case source and actual five-minute lease controls
+pass after the fix. Review clarified that transient refusals leave an open lease
+active and that the separate opt-in raw PTY diagnostic can persist output.
 
 A test initially assumed service-map removal synchronously removed its ledger
 row. An actual unchanged cleanup probe observed a safe, settled, unborrowed row
@@ -104,6 +111,15 @@ allowances remain included. Two Mac causal controls reject overlapping parser
 work and actual PTY input. The other cells and combined two-model/held-No tests
 remain unaccepted. The failed matrix and separate allocation diagnostics stay
 recorded; no baseline, allowance, limit or application capability was broadened.
+
+A later diagnostic comparison covered all twelve platform/text combinations on
+the review-fix source graph: eleven stayed below1MiB, while Linux ARM64
+Bun1.3.11 Latin-1 retained1,198,091 bytes. The original capacity assertion still
+throws, so that profile stops before the delivery verifier and qualifies no
+release. The Mac diagnostic results were retained only after verifying unchanged
+source/proof/engine/compiler/certificate inputs across a Docker restart. Runtime
+small-memory and bytecode experiments also exceeded the limit; neither is an
+adopted build or a budget change.
 
 These are source and lease controls. Expanded service/controller/native-pending/
 full-parser memory, actual held-No load, all six compiled host/Bun cells, the
