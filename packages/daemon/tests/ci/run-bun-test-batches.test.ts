@@ -13,9 +13,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import {
+  CONTROLLER_MS,
   TARGET,
   caseMultiset,
   discoverTests,
+  laneDeadlineMs,
   parseCases,
   partitionTests,
   prepareSuite,
@@ -118,6 +120,20 @@ test('partition includes target once and every other file exactly once', () => {
   expect(partitionTests(['other.test.ts', TARGET])).toEqual([[TARGET], ['other.test.ts']]);
   for (const files of [[], [TARGET], [TARGET, TARGET], ['other.test.ts']])
     expect(() => partitionTests(files)).toThrow();
+});
+
+test('lane budgets retain the controller ceiling and reserved cleanup at every boundary', () => {
+  expect(CONTROLLER_MS).toBe(22 * 60_000);
+  for (const elapsed of [0, 1000, 300_000, CONTROLLER_MS - 10_001]) {
+    expect(laneDeadlineMs(0, elapsed)).toBeLessThanOrEqual(300_000);
+    for (const index of [0, 1]) {
+      expect(laneDeadlineMs(index, elapsed)).toBeGreaterThan(0);
+      expect(elapsed + laneDeadlineMs(index, elapsed) + 10_000).toBeLessThanOrEqual(CONTROLLER_MS);
+    }
+  }
+  for (const elapsed of [-1, Number.NaN, Number.POSITIVE_INFINITY, CONTROLLER_MS - 10_000])
+    expect(() => laneDeadlineMs(1, elapsed)).toThrow();
+  expect(() => laneDeadlineMs(2, 0)).toThrow();
 });
 
 test('actual Bun reporter C0 titles retain reported bytes and separate hook assertion accounting', async () => {
@@ -369,6 +385,11 @@ test('actual two-process controller publishes ONLY a complete validated summary,
   expect(evidence.files).toBe(2);
   expect(evidence.cases).toHaveLength(2);
   expect(evidence.assertions).toBe(2);
+  const budget = JSON.parse(readFileSync(path.join(directory, 'rest/budget.json'), 'utf8'));
+  // The real target process completed quickly. Its unused controller allocation
+  // belongs to the same complete rest cohort, with the existing ceiling intact.
+  expect(budget.deadlineMs).toBeGreaterThan(20 * 60_000);
+  expect(budget.elapsedMs + budget.deadlineMs + budget.cleanupReserveMs).toBe(CONTROLLER_MS);
   await expect(runSuite(home, directory, summary)).rejects.toThrow();
 });
 

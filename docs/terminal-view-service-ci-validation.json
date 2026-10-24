@@ -1,0 +1,79 @@
+{
+  "status": "local-ci-budget-controls-passed-hosted-completion-pending",
+  "backendQualificationHead": "baf2357ddb4067fb967e14caa455482238c10323",
+  "failedHostedRun": 40118771573,
+  "observed": {
+    "passingCasesBeforeDeadline": 10472,
+    "failingCases": 0,
+    "unvisitedFiles": 25,
+    "summedTimedCaseSeconds": 1192.23,
+    "remainingFilesPriorMeasuredSeconds": 37.02
+  },
+  "bounds": {
+    "controllerMs": 1320000,
+    "cleanupReserveMs": 10000,
+    "targetCapMs": 300000,
+    "jobMinutes": 25,
+    "sharedCohort": "one unchanged Bun process and module cache",
+    "restDeadline": "remaining controller allocation after actual elapsed time and cleanup reserve"
+  },
+  "causalControl": {
+    "oldAllocationExit": 1,
+    "fixedBothPinsExit": 0,
+    "restoredOldExit": 1,
+    "oracle": "actual two-process controller receives unused target allocation while remaining under the unchanged controller ceiling"
+  },
+  "targetedChecks": {
+    "casesPerPin": 41,
+    "passesPerPin": 40,
+    "existingMacPlatformSkipsPerPin": 1,
+    "assertions": {
+      "1.3.11": 280,
+      "1.4.2": 286
+    }
+  },
+  "staticStages": [
+    {
+      "name": "root",
+      "exitCode": 0
+    },
+    {
+      "name": "web",
+      "exitCode": 0
+    },
+    {
+      "name": "web-tests",
+      "exitCode": 0
+    },
+    {
+      "name": "signaling",
+      "exitCode": 0
+    },
+    {
+      "name": "integration",
+      "exitCode": 0
+    },
+    {
+      "name": "lint",
+      "exitCode": 0
+    },
+    {
+      "name": "spelling",
+      "exitCode": 0
+    },
+    {
+      "name": "notices",
+      "exitCode": 0
+    }
+  ],
+  "backendEvidenceReuse": {
+    "compiledInputChanges": [],
+    "sourceInputChanges": ["packages/daemon/tests/ci/run-bun-test-batches.test.ts"],
+    "scope": "only an unrelated CI self-test changes in the conservative source manifest; backend runtime, all320 selected source cases and their dependency inputs, actual lease graph and all compiled qualification inputs are unchanged"
+  },
+  "inputHashes": {
+    "scripts/ci/run-bun-test-batches.ts": "02709f14af7850abc7d3795340e7bee5d7fe3192a6105f6149ea77a165dcea4b",
+    "packages/daemon/tests/ci/run-bun-test-batches.test.ts": "3fb3833b6a9277ca3abc3bd4751d643551a239e1a071be7f002ec0a4f469c4a4"
+  },
+  "remaining": "hosted complete suite, complete case/ownership manifest, union coverage >=60%, and all required checks must pass; no failing check waiver"
+}

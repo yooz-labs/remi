@@ -29,6 +29,16 @@ export const TARGET = 'packages/daemon/tests/cli/remote-new-client.test.ts';
 export const OWNER_PREFIX = '[ci-target-module-owner] ';
 export const CONTROLLER_MS = 22 * 60_000;
 const CLEANUP_MS = 10_000;
+export function laneDeadlineMs(index: number, elapsedMs: number): number {
+  requireValue(index === 0 || index === 1, 'Unknown test lane');
+  requireValue(Number.isFinite(elapsedMs) && elapsedMs >= 0, 'Invalid elapsed time');
+  const remaining = CONTROLLER_MS - elapsedMs - CLEANUP_MS;
+  // Keep the target's five-minute cap. The complete shared-cache cohort gets
+  // the remaining controller allocation, rather than losing unused target time.
+  const deadline = index === 0 ? Math.min(300_000, remaining) : remaining;
+  requireValue(deadline > 0, 'Controller deadline exhausted');
+  return deadline;
+}
 const EXTENSIONS = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.mts', '.cts']);
 const SUFFIX = /(?:\.test|_test|\.spec|_spec)$/;
 export type CaseRecord = {
@@ -474,11 +484,16 @@ export async function runSuite(
   let failed = false;
   try {
     for (const [index, lane] of lanes.entries()) {
-      const remaining = CONTROLLER_MS - (performance.now() - started) - CLEANUP_MS;
-      const deadline = Math.min(index === 0 ? 300_000 : 1_200_000, remaining);
-      requireValue(deadline > 0, 'Controller deadline exhausted');
+      const elapsedMs = performance.now() - started;
+      const deadline = laneDeadlineMs(index, elapsedMs);
       const laneOutput = path.join(output, index === 0 ? 'target' : 'rest');
       mkdirSync(laneOutput);
+      json(path.join(laneOutput, 'budget.json'), {
+        controllerMs: CONTROLLER_MS,
+        cleanupReserveMs: CLEANUP_MS,
+        elapsedMs,
+        deadlineMs: deadline,
+      });
       const reportFile = path.join(laneOutput, 'junit.xml');
       const argv = [
         process.execPath,

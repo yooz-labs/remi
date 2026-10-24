@@ -140,6 +140,25 @@ PR #1655 for current merge state. B4 encrypted routing and a qualified productio
 caller precede capability advertisement. Rendered native, signed hardware,
 deployed Worker and provider acceptance remain separate. #1595 stays open.
 
+## Hosted suite budget correction
+
+The final backend run passed the actual 61-minute relay gate, but its complete
+Test cohort reached the old 20-minute child cap with 10,472 passing cases, no
+failed cases and 25 unvisited files. Logged passing-case durations total
+1,192.23 seconds; those remaining files took 37.02 seconds in the prior passing
+run. This establishes active execution at the deadline, not a diagnosed hang.
+
+The [CI correction receipt](terminal-view-service-ci-validation.json) records
+allocation of the unused target-lane budget to the same complete shared-cache
+cohort. The 22-minute controller ceiling, ten-second cleanup reserve, five-minute
+target cap, 25-minute job bound, case/ownership checks and coverage threshold stay
+unchanged. A real two-process controller regression fails with the old allocation,
+passes with the correction and fails with restored old behavior. Both Bun pins
+pass the focused CI controls; only an existing platform-specific test is skipped.
+Backend runtime, all 320 selected source cases, actual lease dependencies and
+compiled model/service qualification inputs remain unchanged. The next hosted
+complete suite must finish and pass before merge; elapsed time alone is no waiver.
+
 ## Historical source qualification and failed 1 MiB gate
 
 The [source receipt](terminal-view-service-source-qualification.json) records
