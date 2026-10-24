@@ -367,8 +367,7 @@
           "nativeCalls": 1,
           "pingCalls": 1,
           "quarantined": 1,
-          "actualChildInputBytes": 0,
-          "retainedRoot": "/Volumes/S1/yooz/remi/artifacts/terminal-send-20261023/qualification-capture-integration/mac-runtime/baseline-1311-mac-tls-receipts-7lkze4gv/terminal-tls-model-FAP9cg"
+          "actualChildInputBytes": 0
         },
         {
           "version": "1.3.11",
@@ -390,8 +389,7 @@
           "nativeCalls": 1,
           "pingCalls": 1,
           "quarantined": 1,
-          "actualChildInputBytes": 0,
-          "retainedRoot": "/Volumes/S1/yooz/remi/artifacts/terminal-send-20261023/qualification-capture-integration/mac-runtime/baseline-1311-mac-tls-receipts-7lkze4gv/terminal-tls-model-EXW6OF"
+          "actualChildInputBytes": 0
         },
         {
           "version": "1.3.11",
@@ -413,8 +411,7 @@
           "nativeCalls": 1,
           "pingCalls": 1,
           "quarantined": 1,
-          "actualChildInputBytes": 0,
-          "retainedRoot": "/Volumes/S1/yooz/remi/artifacts/terminal-send-20261023/qualification-capture-integration/mac-runtime/baseline-1311-mac-tls-receipts-7lkze4gv/terminal-tls-model-KYoibd"
+          "actualChildInputBytes": 0
         },
         {
           "name": "missing-ping",
@@ -775,8 +772,7 @@
           "nativeCalls": 1,
           "pingCalls": 1,
           "quarantined": 1,
-          "actualChildInputBytes": 0,
-          "retainedRoot": "/tmp/terminal-tls-model-apkl5P"
+          "actualChildInputBytes": 0
         },
         {
           "version": "1.3.11",
@@ -798,8 +794,7 @@
           "nativeCalls": 1,
           "pingCalls": 1,
           "quarantined": 1,
-          "actualChildInputBytes": 0,
-          "retainedRoot": "/tmp/terminal-tls-model-kTi3F2"
+          "actualChildInputBytes": 0
         },
         {
           "version": "1.3.11",
@@ -821,8 +816,7 @@
           "nativeCalls": 1,
           "pingCalls": 1,
           "quarantined": 1,
-          "actualChildInputBytes": 0,
-          "retainedRoot": "/tmp/terminal-tls-model-sXZ0pK"
+          "actualChildInputBytes": 0
         },
         {
           "name": "missing-ping",
@@ -1183,8 +1177,7 @@
           "nativeCalls": 1,
           "pingCalls": 1,
           "quarantined": 1,
-          "actualChildInputBytes": 0,
-          "retainedRoot": "/tmp/terminal-tls-model-sDKwAX"
+          "actualChildInputBytes": 0
         },
         {
           "version": "1.3.11",
@@ -1206,8 +1199,7 @@
           "nativeCalls": 1,
           "pingCalls": 1,
           "quarantined": 1,
-          "actualChildInputBytes": 0,
-          "retainedRoot": "/tmp/terminal-tls-model-2nATuI"
+          "actualChildInputBytes": 0
         },
         {
           "version": "1.3.11",
@@ -1229,8 +1221,7 @@
           "nativeCalls": 1,
           "pingCalls": 1,
           "quarantined": 1,
-          "actualChildInputBytes": 0,
-          "retainedRoot": "/tmp/terminal-tls-model-sP5wgf"
+          "actualChildInputBytes": 0
         },
         {
           "name": "missing-ping",
@@ -1591,8 +1582,7 @@
           "nativeCalls": 1,
           "pingCalls": 1,
           "quarantined": 1,
-          "actualChildInputBytes": 0,
-          "retainedRoot": "/Volumes/S1/yooz/remi/artifacts/terminal-send-20261023/qualification-capture-integration/mac-runtime/baseline-142-mac-tls-receipts-1vrnye4a/terminal-tls-model-vF4VMa"
+          "actualChildInputBytes": 0
         },
         {
           "version": "1.4.2",
@@ -1614,8 +1604,7 @@
           "nativeCalls": 1,
           "pingCalls": 1,
           "quarantined": 1,
-          "actualChildInputBytes": 0,
-          "retainedRoot": "/Volumes/S1/yooz/remi/artifacts/terminal-send-20261023/qualification-capture-integration/mac-runtime/baseline-142-mac-tls-receipts-1vrnye4a/terminal-tls-model-PQJGDA"
+          "actualChildInputBytes": 0
         },
         {
           "version": "1.4.2",
@@ -1637,8 +1626,7 @@
           "nativeCalls": 1,
           "pingCalls": 1,
           "quarantined": 1,
-          "actualChildInputBytes": 0,
-          "retainedRoot": "/Volumes/S1/yooz/remi/artifacts/terminal-send-20261023/qualification-capture-integration/mac-runtime/baseline-142-mac-tls-receipts-1vrnye4a/terminal-tls-model-OD2sS3"
+          "actualChildInputBytes": 0
         },
         {
           "name": "missing-ping",
@@ -1999,8 +1987,7 @@
           "nativeCalls": 1,
           "pingCalls": 1,
           "quarantined": 1,
-          "actualChildInputBytes": 0,
-          "retainedRoot": "/tmp/terminal-tls-model-tkuWp7"
+          "actualChildInputBytes": 0
         },
         {
           "version": "1.4.2",
@@ -2022,8 +2009,7 @@
           "nativeCalls": 1,
           "pingCalls": 1,
           "quarantined": 1,
-          "actualChildInputBytes": 0,
-          "retainedRoot": "/tmp/terminal-tls-model-a6Qs73"
+          "actualChildInputBytes": 0
         },
         {
           "version": "1.4.2",
@@ -2045,8 +2031,7 @@
           "nativeCalls": 1,
           "pingCalls": 1,
           "quarantined": 1,
-          "actualChildInputBytes": 0,
-          "retainedRoot": "/tmp/terminal-tls-model-SYjJek"
+          "actualChildInputBytes": 0
         },
         {
           "name": "missing-ping",
@@ -2407,8 +2392,7 @@
           "nativeCalls": 1,
           "pingCalls": 1,
           "quarantined": 1,
-          "actualChildInputBytes": 0,
-          "retainedRoot": "/tmp/terminal-tls-model-M4c2Sf"
+          "actualChildInputBytes": 0
         },
         {
           "version": "1.4.2",
@@ -2430,8 +2414,7 @@
           "nativeCalls": 1,
           "pingCalls": 1,
           "quarantined": 1,
-          "actualChildInputBytes": 0,
-          "retainedRoot": "/tmp/terminal-tls-model-4eppu6"
+          "actualChildInputBytes": 0
         },
         {
           "version": "1.4.2",
@@ -2453,8 +2436,7 @@
           "nativeCalls": 1,
           "pingCalls": 1,
           "quarantined": 1,
-          "actualChildInputBytes": 0,
-          "retainedRoot": "/tmp/terminal-tls-model-KRXGCS"
+          "actualChildInputBytes": 0
         },
         {
           "name": "missing-ping",
@@ -2478,96 +2460,84 @@
       "pin": "1311",
       "namedAssertion": "lost view row permits no frame",
       "exitCode": 1,
-      "binaryHash": "3bface34d638a0e5fe4597ce3931a735a4fc1e439da996f46da1ae86914501f8",
-      "retainedRoot": "/private/tmp/terminal-guard-view_owns-_6779bre"
+      "binaryHash": "3bface34d638a0e5fe4597ce3931a735a4fc1e439da996f46da1ae86914501f8"
     },
     {
       "name": "borrowed_cleanup",
       "pin": "1311",
       "namedAssertion": "borrowed view prevents model release",
       "exitCode": 1,
-      "binaryHash": "49050b8e2832a5e58a735941e92987ea5b2ad65c1cc5e4cfcdf9960aa3de30b3",
-      "retainedRoot": "/private/tmp/terminal-guard-borrowed_cleanup-a9plakh2"
+      "binaryHash": "49050b8e2832a5e58a735941e92987ea5b2ad65c1cc5e4cfcdf9960aa3de30b3"
     },
     {
       "name": "view_quarantine",
       "pin": "1311",
       "namedAssertion": "quarantine preserves model and view accounting",
       "exitCode": 1,
-      "binaryHash": "2f27b15376773ff1a0258d8b7bd2a09043345ddf46919f900f7b90a4b3590fe4",
-      "retainedRoot": "/private/tmp/terminal-guard-view_quarantine-97kcbalk"
+      "binaryHash": "2f27b15376773ff1a0258d8b7bd2a09043345ddf46919f900f7b90a4b3590fe4"
     },
     {
       "name": "model_quarantine",
       "pin": "1311",
       "namedAssertion": "bare quarantine retains model accounting",
       "exitCode": 1,
-      "binaryHash": "93ba8a96e76dcdd4d8a02c4edeca16d242e9a85ec0294d918dc8125d30c0d615",
-      "retainedRoot": "/private/tmp/terminal-guard-model_quarantine-ixh8tasc"
+      "binaryHash": "93ba8a96e76dcdd4d8a02c4edeca16d242e9a85ec0294d918dc8125d30c0d615"
     },
     {
       "name": "scheduled_slot",
       "pin": "1311",
       "namedAssertion": "one scheduled operation slot",
       "exitCode": 1,
-      "binaryHash": "c11a5eeec22bc6397109bd8d084f619f1c778266ce4a04e329486a6689b9c5e3",
-      "retainedRoot": "/private/tmp/terminal-guard-scheduled_slot-_hoiod_r"
+      "binaryHash": "c11a5eeec22bc6397109bd8d084f619f1c778266ce4a04e329486a6689b9c5e3"
     },
     {
       "name": "native_slot",
       "pin": "1311",
       "namedAssertion": "pending native frame blocks another operation",
       "exitCode": 1,
-      "binaryHash": "0848c5a58461864d2784cca25772631fd563fda267ab66b4c0c85c7c3e4f3092",
-      "retainedRoot": "/private/tmp/terminal-guard-native_slot-m6tk6tdh"
+      "binaryHash": "0848c5a58461864d2784cca25772631fd563fda267ab66b4c0c85c7c3e4f3092"
     },
     {
       "name": "native_close",
       "pin": "1311",
       "namedAssertion": "uncertain native disposal quarantines exactly once",
       "exitCode": 1,
-      "binaryHash": "430216597568620be1413d3c0422157185af5c2c63248730e0963da08d75202f",
-      "retainedRoot": "/private/tmp/terminal-guard-native_close-1xhy77u2"
+      "binaryHash": "430216597568620be1413d3c0422157185af5c2c63248730e0963da08d75202f"
     },
     {
       "name": "reentrant_drain",
       "pin": "1311",
       "namedAssertion": "reentrant native drain retains entered projection",
       "exitCode": 1,
-      "binaryHash": "f9d07ee209a5b0bbdc0a85534dc6492807e1b67a3b22c33d4ab6e681f401e732",
-      "retainedRoot": "/private/tmp/terminal-guard-reentrant_drain-4t3ok837"
+      "binaryHash": "f9d07ee209a5b0bbdc0a85534dc6492807e1b67a3b22c33d4ab6e681f401e732"
     },
     {
       "name": "pressure_preflight",
       "pin": "1311",
       "namedAssertion": "preexisting native pressure permits no new frame",
       "exitCode": 1,
-      "binaryHash": "c662e4385fbd75d0e0596473c9315a39e21a8d337c2418229f9bd7f92fb94c50",
-      "retainedRoot": "/private/tmp/terminal-guard-pressure_preflight-hsgnhkn1"
+      "binaryHash": "c662e4385fbd75d0e0596473c9315a39e21a8d337c2418229f9bd7f92fb94c50"
     },
     {
       "name": "queue_limit",
       "pin": "1311",
       "namedAssertion": "oversized native queue is never accepted as a pending projection",
       "exitCode": 1,
-      "binaryHash": "67c942066c8bd5ee34f3d4214d7465d2a187d656f98e48bd66aec0483c2fa72d",
-      "retainedRoot": "/private/tmp/terminal-guard-queue_limit-h1x3pnzm"
+      "binaryHash": "67c942066c8bd5ee34f3d4214d7465d2a187d656f98e48bd66aec0483c2fa72d"
     },
     {
       "name": "active_operation",
       "pin": "1311",
       "namedAssertion": "escaped delivery never enters native send",
       "exitCode": 1,
-      "binaryHash": "32bbab5a33a17bba5af3c687ac1d9839524f89f19162e71743cd4da189a82808",
-      "retainedRoot": "/private/tmp/terminal-guard-active_operation-y2qcagx6"
+      "binaryHash": "32bbab5a33a17bba5af3c687ac1d9839524f89f19162e71743cd4da189a82808"
     },
     {
       "name": "aliased_owner",
       "pin": "1311",
       "namedAssertion": "duplicate delivery never releases aliased pending ownership",
       "exitCode": 1,
-      "binaryHash": "b630942d24da92c740764cda1ed56edecec9e6e4cf186ac21e9997e5a879ed8c",
-      "retainedRoot": "/private/tmp/terminal-guard-aliased_owner-q3r9oqwe"
+      "binaryHash": "b630942d24da92c740764cda1ed56edecec9e6e4cf186ac21e9997e5a879ed8c"
     },
     {
       "name": "wrong-write",
@@ -2650,96 +2620,84 @@
       "pin": "142",
       "namedAssertion": "lost view row permits no frame",
       "exitCode": 1,
-      "binaryHash": "07375a319ca819af5956126877f920ae11e35cec5efd19613c8dfe7c63fff728",
-      "retainedRoot": "/private/tmp/terminal-guard-view_owns-jsbpdd1d"
+      "binaryHash": "07375a319ca819af5956126877f920ae11e35cec5efd19613c8dfe7c63fff728"
     },
     {
       "name": "borrowed_cleanup",
       "pin": "142",
       "namedAssertion": "borrowed view prevents model release",
       "exitCode": 1,
-      "binaryHash": "732975a8e9fffb822bb9de344d7bed8b7fedab41a8b56535d572b1a7cd556d14",
-      "retainedRoot": "/private/tmp/terminal-guard-borrowed_cleanup-3lkt6g66"
+      "binaryHash": "732975a8e9fffb822bb9de344d7bed8b7fedab41a8b56535d572b1a7cd556d14"
     },
     {
       "name": "view_quarantine",
       "pin": "142",
       "namedAssertion": "quarantine preserves model and view accounting",
       "exitCode": 1,
-      "binaryHash": "1ddb5b8015794dffa8c3c071617baf799a7cef347d76badd91f21cff9524b0f3",
-      "retainedRoot": "/private/tmp/terminal-guard-view_quarantine-0360mjk2"
+      "binaryHash": "1ddb5b8015794dffa8c3c071617baf799a7cef347d76badd91f21cff9524b0f3"
     },
     {
       "name": "model_quarantine",
       "pin": "142",
       "namedAssertion": "bare quarantine retains model accounting",
       "exitCode": 1,
-      "binaryHash": "8a04129cbb8b7e683421da55e57171440fd8654e64b24ba5162bc44c602aa91c",
-      "retainedRoot": "/private/tmp/terminal-guard-model_quarantine-skgu27fw"
+      "binaryHash": "8a04129cbb8b7e683421da55e57171440fd8654e64b24ba5162bc44c602aa91c"
     },
     {
       "name": "scheduled_slot",
       "pin": "142",
       "namedAssertion": "one scheduled operation slot",
       "exitCode": 1,
-      "binaryHash": "885000285e46736c4891934fa32d4b08d9fd47b965debdd8f7004b0f6f996aaa",
-      "retainedRoot": "/private/tmp/terminal-guard-scheduled_slot-x784odch"
+      "binaryHash": "885000285e46736c4891934fa32d4b08d9fd47b965debdd8f7004b0f6f996aaa"
     },
     {
       "name": "native_slot",
       "pin": "142",
       "namedAssertion": "pending native frame blocks another operation",
       "exitCode": 1,
-      "binaryHash": "ace698ea7937427bf6225e3832af20558218dac2b49b37805dc4578ff2f569d0",
-      "retainedRoot": "/private/tmp/terminal-guard-native_slot-dawqqyb3"
+      "binaryHash": "ace698ea7937427bf6225e3832af20558218dac2b49b37805dc4578ff2f569d0"
     },
     {
       "name": "native_close",
       "pin": "142",
       "namedAssertion": "uncertain native disposal quarantines exactly once",
       "exitCode": 1,
-      "binaryHash": "0127b9c90d3730d7f0e83bcd328c2c46ba05ce35e644763f5fcaa03fe7712980",
-      "retainedRoot": "/private/tmp/terminal-guard-native_close-2tvsf12h"
+      "binaryHash": "0127b9c90d3730d7f0e83bcd328c2c46ba05ce35e644763f5fcaa03fe7712980"
     },
     {
       "name": "reentrant_drain",
       "pin": "142",
       "namedAssertion": "reentrant native drain retains entered projection",
       "exitCode": 1,
-      "binaryHash": "372b9e54d6ac9f2f9f88d64340c6889360fb2e60a434d56bd8051b7004e75455",
-      "retainedRoot": "/private/tmp/terminal-guard-reentrant_drain-s9eugk6q"
+      "binaryHash": "372b9e54d6ac9f2f9f88d64340c6889360fb2e60a434d56bd8051b7004e75455"
     },
     {
       "name": "pressure_preflight",
       "pin": "142",
       "namedAssertion": "preexisting native pressure permits no new frame",
       "exitCode": 1,
-      "binaryHash": "29224f17ebabe9a6e62c0c4a92ed5f7fb0737be3ac778090ed470bf4ec56b9c7",
-      "retainedRoot": "/private/tmp/terminal-guard-pressure_preflight-3o1jcy9f"
+      "binaryHash": "29224f17ebabe9a6e62c0c4a92ed5f7fb0737be3ac778090ed470bf4ec56b9c7"
     },
     {
       "name": "queue_limit",
       "pin": "142",
       "namedAssertion": "oversized native queue is never accepted as a pending projection",
       "exitCode": 1,
-      "binaryHash": "4a8d71e226b8d9bac3532b5f56abb84950c636a5d433f1b043a0c8a18e92a908",
-      "retainedRoot": "/private/tmp/terminal-guard-queue_limit-sg3sb1j5"
+      "binaryHash": "4a8d71e226b8d9bac3532b5f56abb84950c636a5d433f1b043a0c8a18e92a908"
     },
     {
       "name": "active_operation",
       "pin": "142",
       "namedAssertion": "escaped delivery never enters native send",
       "exitCode": 1,
-      "binaryHash": "df9bebea9b2adba973194c011434e6f9baafc009dab3465006611fefcda03553",
-      "retainedRoot": "/private/tmp/terminal-guard-active_operation-air8_uu5"
+      "binaryHash": "df9bebea9b2adba973194c011434e6f9baafc009dab3465006611fefcda03553"
     },
     {
       "name": "aliased_owner",
       "pin": "142",
       "namedAssertion": "duplicate delivery never releases aliased pending ownership",
       "exitCode": 1,
-      "binaryHash": "5ead8c6232564df61ed971f63562f649ecbccf58c78f1601b24818281f3a00af",
-      "retainedRoot": "/private/tmp/terminal-guard-aliased_owner-5nxmr5x0"
+      "binaryHash": "5ead8c6232564df61ed971f63562f649ecbccf58c78f1601b24818281f3a00af"
     },
     {
       "name": "wrong-write",
