@@ -29,7 +29,8 @@
     "packages/*/tests/**/*",
     "scripts/terminal-view-*-proof.ts",
     "scripts/terminal-service-*.ts",
-    "scripts/terminal-engine/**/*.ts"
+    "scripts/terminal-engine/**/*.ts",
+    "scripts/terminal-relay-*-proof.ts"
   ],
   "exclude": ["node_modules", "dist", "packages/signaling/**/*", "packages/web/**/*"]
 }
