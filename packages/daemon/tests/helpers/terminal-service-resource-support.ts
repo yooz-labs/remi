@@ -159,6 +159,7 @@ interface PeerState {
   requests: string[];
   pendingRead: string | null;
   reads: number;
+  polls: number;
   snapshots: number;
   refusals: number;
   frames: { type: string; requestId: string; bytes: number; digest: string }[];
@@ -205,6 +206,7 @@ export async function runTerminalResourcePeers(specPath: string, prefix: string)
       requests: [],
       pendingRead: null,
       reads: 0,
+      polls: 0,
       snapshots: 0,
       refusals: 0,
       frames: [],
@@ -386,6 +388,7 @@ export async function runTerminalResourcePeers(specPath: string, prefix: string)
         nextRead = performance.now() + 500;
         for (let index = 0; index < states.length; index++) {
           const state = states[index];
+          if (state?.viewId) state.polls++;
           if (state?.viewId && state.pendingRead === null) send(index, 'read');
         }
         report();

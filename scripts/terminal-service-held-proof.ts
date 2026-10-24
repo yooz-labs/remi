@@ -393,7 +393,30 @@ for (const scenario of args.includes('--scenario')
           ).find((item: { id: string }) => item.id === state.states[index]?.requests[0]);
           return observed !== undefined && !observed.admitted;
         }, 'actual service view admitted or proved absent');
-        if (read(`${prefix}.state`).states[index]?.viewId) break;
+        if (read(`${prefix}.state`).states[index]?.viewId) {
+          const peers = read(`${fastPrefix}.state`).states as { viewId: string }[];
+          const rootOwner = slowPeer || index < 3;
+          const expected = rootOwner
+            ? 1 + peers.slice(0, 3).filter((row) => row.viewId).length
+            : peers.slice(3).filter((row) => row.viewId).length;
+          await until(() => {
+            if (rootOwner)
+              return (
+                records(root).size === expected &&
+                [...records(root).values()].every(
+                  (record) => !record.slot.busy && record.intent === null,
+                )
+              );
+            const observed = read(`${childPrefix}.state`).records as {
+              busy: boolean;
+              intent: boolean;
+            }[];
+            return (
+              observed.length === expected && observed.every((row) => !row.busy && !row.intent)
+            );
+          }, 'each setup Open native receipt settled before the next view');
+          break;
+        }
         assert(attempt < 9, 'bounded fresh setup Open after actual non-admission');
         await Bun.sleep(5);
       }
@@ -610,7 +633,11 @@ for (const scenario of args.includes('--scenario')
           progress >= 131072 &&
           performance.now() - loadStart >= 2000 &&
           fastState.states.every((row: { reads: number }) => row.reads >= 1) &&
-          fastState.states.slice(3).every((row: { reads: number }) => row.reads >= 4)
+          fastState.states
+            .slice(3)
+            .every(
+              (row: { polls: number; snapshots: number }) => row.polls >= 4 && row.snapshots >= 1,
+            )
         );
       }, 'actual two Hz eligible fast reads under two-model load');
     } catch (error) {
@@ -692,9 +719,21 @@ for (const scenario of args.includes('--scenario')
     if (load) await load;
     if (loadFailure) throw loadFailure;
     fastControl('stop-poll');
+    await untilSetup(
+      () => read(`${fastPrefix}.sent`).sequence === fastSequence,
+      'actual polling stopped',
+    );
+    await untilSetup(
+      () =>
+        read(`${childPrefix}.state`).records.every(
+          (row: { busy: boolean; intent: boolean }) => !row.busy && !row.intent,
+        ),
+      'secondary native slots and intents settled before disposal',
+    );
     const counts = read(`${fastPrefix}.state`).states.map(
-      (row: { reads: number; snapshots: number; refusals: number }) => ({
+      (row: { reads: number; polls: number; snapshots: number; refusals: number }) => ({
         reads: row.reads,
+        polls: row.polls,
         snapshots: row.snapshots,
         refusals: row.refusals,
       }),

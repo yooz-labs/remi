@@ -14,14 +14,15 @@ Strict wire and shared quotas landed in #1616/#1618; [launch capture](../docs/te
 
 ## Current complete-stack budget decision
 
-The owner selected4MiB/model after the signed service failed the original1MiB
-gate in one supported runtime/profile. Keep the32MiB home cap: at most eight
-captured models, with1/2/4/8 view quotas and all other frame/text/geometry/parser,
-lease/rate/native allowances unchanged. ADR0048 records version2 policy and
-conservative old/new writer compatibility. Primitive1MiB evidence is unchanged;
-no failed service profile is retroactively qualified. Fresh all-six service,
-combined two-owner/eight-view and held-No controls precede adoption. C1 PR1642
-landed; C2 PR1655 stays draft. B4 and media/profile phases remain as planned.
+The owner selected 4 MiB/model after the signed service failed the original
+1 MiB gate in one supported runtime/profile. Keep the 32 MiB home cap: at most
+eight captured models, with 1/2/4/8 view quotas and all other frame, text,
+geometry, parser, lease, rate and native allowances unchanged. ADR0048 records
+version 2 policy and conservative old/new writer compatibility. Primitive 1 MiB
+evidence is unchanged; no failed service profile is retroactively qualified.
+Fresh service qualification on all six compiled executions, combined two-owner,
+eight-view accounting and held-No controls precede adoption. C1 PR #1642 landed;
+C2 PR #1655 stays draft. B4 and media/profile phases remain as planned.
 
 ## Context
 

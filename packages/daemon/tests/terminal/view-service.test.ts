@@ -143,6 +143,43 @@ async function grantLock(
   }
 }
 
+test('another Open waits for an explicit new request after the shared native owner settles', async () => {
+  const f = await fixture();
+  const first = await f.client(false, true);
+  const second = await f.client(true, true);
+  assert(first.packet && second.packet);
+  const opened = await first.submit(first.open());
+  expect(opened.type).toBe('session_terminal_opened');
+  await until(first.packet.hasPendingPong, 'first actual Open receipt remains owned');
+  const pressured = second.open();
+  second.ws.send(encodeTerminalViewFrame(pressured));
+  const ping = createPing();
+  second.ws.send(serialize(ping));
+  await until(
+    () => second.received.some((m) => m.type === 'pong' && m['pingId'] === ping.id),
+    'second actual Open processed under shared native pressure',
+  );
+  const record = records(f).get(second.connection() as object) as {
+    viewId: string;
+    slot: { busy: boolean };
+    intent: unknown;
+  };
+  expect(record.viewId).toBe('');
+  expect(record.slot.busy).toBe(false);
+  expect(record.intent).toBeNull();
+  expect(second.frames).toEqual([]);
+  first.packet.confirmPong();
+  await until(
+    () => [...records(f).values()].every((r) => !(r as { slot: { busy: boolean } }).slot.busy),
+    'prior actual Open receipt settled',
+  );
+  await Bun.sleep(30);
+  expect(second.frames).toEqual([]);
+  const fresh = second.open();
+  expect(fresh.id).not.toBe(pressured.id);
+  expect((await second.submit(fresh)).type).toBe('session_terminal_opened');
+});
+
 test('a pending reader gets the next native turn before a just-served reader repeats', async () => {
   const f = await fixture();
   const peers = [await f.client(false, true), await f.client(true, true)];
