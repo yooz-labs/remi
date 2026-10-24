@@ -628,7 +628,7 @@ private struct MacSessionToolbarHeader: View {
 
     private var sessionIdentity: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
-            Text(verbatim: session.name)
+            Text(verbatim: session.displayTitle)
                 .font(.headline)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
 

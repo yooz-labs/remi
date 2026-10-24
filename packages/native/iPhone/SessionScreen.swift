@@ -128,7 +128,7 @@ struct SessionScreen: View {
             content()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .navigationTitle(session.name)
+        .navigationTitle(session.displayTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if session.canTerminate || panes.availability.hasAnyPane {
@@ -271,7 +271,7 @@ struct SessionScreen: View {
             onSend: onSend,
             onInterrupt: nil
         )
-        .navigationTitle(session.name)
+        .navigationTitle(session.displayTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if #available(iOS 27.0, *) {

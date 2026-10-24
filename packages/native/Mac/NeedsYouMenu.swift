@@ -12,7 +12,7 @@ struct NeedsYouMenu: View {
             } else {
                 ForEach(questions) { question in
                     VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
-                        Text(question.sessionName).font(.subheadline.weight(.semibold))
+                        Text(RemiSessionTitle.short(name: question.sessionName, machineName: question.machineName)).font(.subheadline.weight(.semibold))
                         Text(question.text).font(.caption).lineLimit(2)
                         Text(question.machineName)
                             .font(.caption2)

@@ -1545,13 +1545,13 @@ private struct MacCompactSessionRow: View {
             VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
                 if dynamicTypeSize.isAccessibilitySize {
                     VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
-                        Text(session.name)
+                        Text(session.displayTitle)
                             .font(.body.weight(.semibold))
                         RemiStatusBadge(status: session.status)
                     }
                 } else {
                     HStack(spacing: RemiTheme.Spacing.xs) {
-                        Text(session.name)
+                        Text(session.displayTitle)
                             .font(.body.weight(.semibold))
                             .lineLimit(1)
                         Spacer(minLength: RemiTheme.Spacing.xs)
