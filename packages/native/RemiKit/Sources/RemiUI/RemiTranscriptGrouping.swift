@@ -144,6 +144,19 @@ public enum RemiTranscriptGrouping {
         return nil
     }
 
+    /// The row id for a saved scroll position, as the screen would group `entries` now.
+    /// Nil stays nil; an entry no row holds is returned unchanged.
+    public static func restoredRowID(
+        _ entryID: String?,
+        entries: [RemiTranscriptEntry],
+        pinnedEntryIDs: Set<String> = [],
+        expanded expandedEntryIDs: Set<String> = []
+    ) -> String? {
+        guard let entryID else { return nil }
+        let rows = rows(for: entries, pinnedEntryIDs: pinnedEntryIDs)
+        return rowID(for: entryID, in: rows, expanded: expandedEntryIDs) ?? entryID
+    }
+
     public static func title(count: Int) -> String { "\(count) tool calls" }
 
     public static func accessibilityLabel(count: Int, isExpanded: Bool) -> String {

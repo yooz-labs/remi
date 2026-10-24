@@ -77,7 +77,12 @@ struct SessionScreen: View {
         // A conversation the route names (a notification) wins over the one left open.
         _selectedViewID = State(initialValue: initialConversationID ?? restoredState.selectedViewID)
         _draft = State(initialValue: restoredState.draft)
-        _visibleEntryID = State(initialValue: restoredState.visibleEntryID)
+        // A saved position inside a tool run that starts collapsed points at its group.
+        let openViewID = initialConversationID ?? restoredState.selectedViewID
+        _visibleEntryID = State(initialValue: RemiTranscriptGrouping.restoredRowID(
+            restoredState.visibleEntryID,
+            entries: openViewID.isEmpty ? transcript : transcriptForView(openViewID)
+        ))
         _followsLatest = State(initialValue: restoredState.followsLatest)
         _focusState = State(initialValue: PhoneQuestionFocusState(
             initial: initialQuestionID,

@@ -181,6 +181,16 @@ import Testing
         #expect(RemiTranscriptGrouping.isExpanded(appended, in: open))
     }
 
+    @Test func aRestoredPositionInsideACollapsedRunMapsToItsGroup() {
+        let entries = [message] + tools(6) + [message]
+        #expect(RemiTranscriptGrouping.restoredRowID("t4", entries: entries) == "tool-group:t1")
+        #expect(RemiTranscriptGrouping.restoredRowID("t4", entries: entries, expanded: ["t2"]) == "t4")
+        #expect(RemiTranscriptGrouping.restoredRowID("t4", entries: entries, pinnedEntryIDs: ["t4"]) == "t4")
+        #expect(RemiTranscriptGrouping.restoredRowID("a", entries: entries) == "a")
+        #expect(RemiTranscriptGrouping.restoredRowID("gone", entries: entries) == "gone")
+        #expect(RemiTranscriptGrouping.restoredRowID(nil, entries: entries) == nil)
+    }
+
     @Test func aDifferentGroupStaysClosed() throws {
         let entries = tools(4, prefix: "p") + [message] + tools(4, prefix: "q") + [message]
         let groups = RemiTranscriptGrouping.rows(for: entries).compactMap { row -> RemiToolGroup? in
