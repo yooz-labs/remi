@@ -1,12 +1,14 @@
 import { afterEach, expect, test } from 'bun:test';
+import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createPing, encodeTerminalViewFrame, serialize } from '@remi/shared';
 import {
   InterprocessFileLockError,
   withInterprocessFileLockNonblocking,
 } from '../../src/storage/interprocess-file-lock.ts';
+import type { TerminalSendSlot } from '../../src/terminal/send-slot.ts';
 import {
   type TerminalServiceFixture,
   terminalServiceFixture,
@@ -90,6 +92,349 @@ test('an actual reopen preserves read spacing for the same reserved connection v
   expect(second).toMatchObject({ type: 'session_terminal_refused', code: 'busy' });
   expect(recordForPeer().lastRead).toBe(previousRead);
   await settle();
+});
+
+async function grantLock(
+  f: TerminalServiceFixture,
+  run: () => Promise<void>,
+  storePath: unknown = Reflect.get(f.trust, 'authorizedKeysPath'),
+) {
+  const prefix = join(f.files.home, `held-grant-${randomUUID()}`);
+  const path = storePath;
+  if (typeof path !== 'string') throw new Error('Expected actual grant store path');
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      '--no-env-file',
+      resolve(import.meta.dir, '../helpers/terminal-store-lock-holder.ts'),
+      path,
+      prefix,
+    ],
+    {
+      cwd: f.files.directory,
+      env: f.files.env,
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    },
+  );
+  const stdout = new Response(child.stdout).text();
+  const stderr = new Response(child.stderr).text();
+  try {
+    await until(
+      () => fs.existsSync(`${prefix}.ready`) || child.exitCode !== null,
+      'actual external grant owner',
+    );
+    expect(child.exitCode).toBeNull();
+    expect(JSON.parse(fs.readFileSync(`${prefix}.ready`, 'utf8')).pid).toBe(child.pid);
+    await run();
+  } finally {
+    fs.writeFileSync(`${prefix}.go`, 'release');
+    const timeout = setTimeout(() => child.kill('SIGTERM'), 3000);
+    try {
+      await child.exited;
+    } finally {
+      clearTimeout(timeout);
+    }
+    expect(child.exitCode, await stderr).toBe(0);
+    expect(await stdout).toBe('');
+    expect(await stderr).toBe('');
+    assert.throws(() => process.kill(child.pid, 0), { code: 'ESRCH' });
+  }
+}
+
+test('a pending reader gets the next native turn before a just-served reader repeats', async () => {
+  const f = await fixture();
+  const peers = [await f.client(false, true), await f.client(true, true)];
+  const leases: string[] = [];
+  for (const peer of peers) {
+    const opened = await peer.submit(peer.open());
+    assert(opened.type === 'session_terminal_opened' && peer.packet);
+    leases.push(opened.viewId);
+    await until(peer.packet.hasPendingPong, 'actual fair-reader Open receipt');
+    peer.packet.confirmPong();
+    await until(
+      () => [...records(f).values()].every((r) => !(r as { slot: { busy: boolean } }).slot.busy),
+      'actual fair-reader Open settled',
+    );
+  }
+  const [first, second] = peers;
+  assert(first?.packet && second?.packet && leases[0] && leases[1]);
+  const initial = await first.submit(first.read(leases[0]));
+  assert(initial.type === 'session_terminal_snapshot');
+  await until(first.packet.hasPendingPong, 'actual fair-reader projection held');
+  const repeat = first.read(leases[0]);
+  const waiting = second.read(leases[1]);
+  first.ws.send(encodeTerminalViewFrame(repeat));
+  second.ws.send(encodeTerminalViewFrame(waiting));
+  await until(
+    () => [...records(f).values()].every((r) => !!Reflect.get(r as object, 'intent')),
+    'both real reads await shared model disposal',
+  );
+  const nativeOrder: string[] = [];
+  const originals = peers.map((peer) => {
+    const native = Reflect.get(peer.connection() as object, 'ws') as { send(text: string): number };
+    const send = native.send;
+    native.send = (text) => {
+      const frame = JSON.parse(text);
+      if (typeof frame.requestId === 'string') nativeOrder.push(frame.requestId);
+      return send.call(native, text);
+    };
+    return { native, send };
+  });
+  try {
+    first.packet.confirmPong();
+    await until(() => nativeOrder.length > 0, 'next actual native response entered');
+    expect(nativeOrder[0]).toBe(waiting.id);
+  } finally {
+    for (const { native, send } of originals) native.send = send;
+  }
+});
+
+test('actual grant contention during maintenance retains an admitted view without data', async () => {
+  const f = await fixture();
+  const peer = await f.client();
+  const opened = await peer.submit(peer.open());
+  if (opened.type !== 'session_terminal_opened') throw new Error('Expected owned view');
+  await until(
+    () => [...records(f).values()].every((r) => !(r as { slot: { busy: boolean } }).slot.busy),
+    'actual Open receipt settled',
+  );
+  const maintain = Reflect.get(f.service, 'maintain') as () => void;
+  let observed = 0;
+  Reflect.set(f.service, 'maintain', () => {
+    const result = maintain.call(f.service);
+    observed++;
+    return result;
+  });
+  try {
+    await grantLock(f, async () => {
+      const before = observed;
+      await until(() => observed > before, 'actual maintenance runs while grant is held');
+      expect(records(f).size).toBe(1);
+    });
+    expect((await peer.submit(peer.read(opened.viewId))).type).toBe('session_terminal_snapshot');
+  } finally {
+    Reflect.set(f.service, 'maintain', maintain);
+  }
+});
+
+test('actual grant contention preserves one first-time read before its protected effect', async () => {
+  const f = await fixture();
+  const peer = await f.client();
+  const opened = await peer.submit(peer.open());
+  if (opened.type !== 'session_terminal_opened') throw new Error('Expected owned view');
+  await until(
+    () => [...records(f).values()].every((r) => !(r as { slot: { busy: boolean } }).slot.busy),
+    'actual Open receipt settled',
+  );
+  const read = peer.read(opened.viewId);
+  const actual = f.service.handle;
+  let received = false;
+  f.service.handle = (id, ingress) => {
+    const value = actual.call(f.service, id, ingress);
+    if (ingress.kind === 'request' && ingress.request.id === read.id) received = true;
+    return value;
+  };
+  try {
+    await grantLock(f, async () => {
+      peer.ws.send(encodeTerminalViewFrame(read));
+      await until(() => received, 'actual read reaches held original grant');
+      expect(records(f).size).toBe(1);
+      expect(peer.frames.some((frame) => 'requestId' in frame && frame.requestId === read.id)).toBe(
+        false,
+      );
+    });
+    await until(
+      () =>
+        peer.frames.some(
+          (frame) => frame.type === 'session_terminal_snapshot' && frame.requestId === read.id,
+        ),
+      'first-time read enters only after actual lock release',
+    );
+    expect(
+      peer.frames.filter((frame) => 'requestId' in frame && frame.requestId === read.id),
+    ).toHaveLength(1);
+  } finally {
+    f.service.handle = actual;
+  }
+});
+
+test('actual grant contention before a scheduled callback retains its unentered read once', async () => {
+  const f = await fixture();
+  const peer = await f.client();
+  const opened = await peer.submit(peer.open());
+  if (opened.type !== 'session_terminal_opened') throw new Error('Expected owned view');
+  const record = records(f).get(peer.connection() as object) as { slot: TerminalSendSlot };
+  await until(() => !record.slot.busy, 'actual Open native receipt settled');
+  const schedule = record.slot.schedule;
+  let first = true;
+  record.slot.schedule = (operation) =>
+    schedule.call(record.slot, (deliver) => {
+      if (first) {
+        first = false;
+        return withInterprocessFileLockNonblocking(
+          Reflect.get(f.trust, 'authorizedKeysPath') as string,
+          () => operation(deliver),
+        );
+      }
+      return operation(deliver);
+    });
+  try {
+    const read = peer.read(opened.viewId);
+    const response = await peer.submit(read);
+    expect(first).toBe(false);
+    expect(response.type).toBe('session_terminal_snapshot');
+    expect(
+      peer.frames.filter((frame) => 'requestId' in frame && frame.requestId === read.id),
+    ).toHaveLength(1);
+  } finally {
+    record.slot.schedule = schedule;
+  }
+});
+
+test('an actual Close during grant contention cancels a held read before any later data', async () => {
+  const f = await fixture();
+  const peer = await f.client(false, true);
+  const packet = peer.packet;
+  if (!packet) throw new Error('Expected actual native packet peer');
+  const opened = await peer.submit(peer.open());
+  if (opened.type !== 'session_terminal_opened') throw new Error('Expected owned view');
+  await until(packet.hasPendingPong, 'actual Open native receipt held');
+  const read = peer.read(opened.viewId);
+  peer.ws.send(encodeTerminalViewFrame(read));
+  await until(
+    () => [...records(f).values()].some((r) => !!Reflect.get(r as object, 'intent')),
+    'actual first read held',
+  );
+  const close = peer.finish(opened.viewId);
+  const actual = f.service.handle;
+  let received = false;
+  f.service.handle = (id, ingress) => {
+    const result = actual.call(f.service, id, ingress);
+    if (ingress.kind === 'request' && ingress.request.id === close.id) received = true;
+    return result;
+  };
+  try {
+    await grantLock(f, async () => {
+      peer.ws.send(encodeTerminalViewFrame(close));
+      await until(() => received, 'actual Close reaches held original grant');
+    });
+    packet.confirmPong();
+    await until(() => records(f).size === 0, 'actual Close retires held read');
+    expect(
+      peer.frames.some(
+        (frame) => frame.type === 'session_terminal_snapshot' && frame.requestId === read.id,
+      ),
+    ).toBe(false);
+  } finally {
+    f.service.handle = actual;
+  }
+});
+
+test('actual quota contention holds a read while its same capture remains current', async () => {
+  const f = await fixture();
+  const peer = await f.client();
+  const opened = await peer.submit(peer.open());
+  if (opened.type !== 'session_terminal_opened') throw new Error('Expected owned view');
+  const record = records(f).get(peer.connection() as object) as {
+    slot: TerminalSendSlot;
+    intent: unknown;
+  };
+  await until(() => !record.slot.busy, 'actual Open receipt settled');
+  const read = peer.read(opened.viewId);
+  await grantLock(
+    f,
+    async () => {
+      peer.ws.send(encodeTerminalViewFrame(read));
+      await until(
+        () => records(f).size === 0 || record.intent !== null,
+        'actual quota lookup meets held file lock',
+      );
+      expect(f.capture.contextFor(f.sessionId)?.available).toBe(true);
+      expect(records(f).size).toBe(1);
+      expect(peer.frames.some((frame) => 'requestId' in frame && frame.requestId === read.id)).toBe(
+        false,
+      );
+    },
+    join(f.files.home, 'terminal-view', 'reservations.json'),
+  );
+  await until(
+    () =>
+      peer.frames.some(
+        (frame) => frame.type === 'session_terminal_snapshot' && frame.requestId === read.id,
+      ),
+    'same original view sends after actual quota lock release',
+  );
+  expect(
+    peer.frames.filter((frame) => 'requestId' in frame && frame.requestId === read.id),
+  ).toHaveLength(1);
+});
+
+test('a real retryable lock failure after the guarded callback never replays its entered read', async () => {
+  const f = await fixture();
+  const peer = await f.client(false, true);
+  const packet = peer.packet;
+  if (!packet) throw new Error('Expected actual packet peer');
+  const opened = await peer.submit(peer.open());
+  if (opened.type !== 'session_terminal_opened') throw new Error('Expected owned view');
+  await until(packet.hasPendingPong, 'actual Open ping');
+  packet.confirmPong();
+  const record = records(f).get(peer.connection() as object) as {
+    slot: TerminalSendSlot;
+    intent: unknown;
+    state: string;
+  };
+  await until(() => !record.slot.busy, 'actual Open receipt settled');
+  const originalGrant = f.trust.withAuthorizationEpochNonblocking;
+  const grant = originalGrant.bind(f.trust);
+  const schedule = record.slot.schedule;
+  let insideFuture = false;
+  f.trust.withAuthorizationEpochNonblocking = <T>(
+    key: string,
+    operation: (epoch: string | null) => T,
+    migrate = false,
+  ): T =>
+    grant(
+      key,
+      (epoch) => {
+        const result = operation(epoch);
+        if (insideFuture)
+          withInterprocessFileLockNonblocking(
+            Reflect.get(f.trust, 'authorizedKeysPath') as string,
+            () => {},
+          );
+        return result;
+      },
+      migrate,
+    );
+  record.slot.schedule = (operation) =>
+    schedule.call(record.slot, (deliver) => {
+      insideFuture = true;
+      try {
+        return operation(deliver);
+      } finally {
+        insideFuture = false;
+      }
+    });
+  try {
+    const read = peer.read(opened.viewId);
+    expect((await peer.submit(read)).type).toBe('session_terminal_snapshot');
+    expect(record.state).toBe('retired');
+    expect(record.intent).toBeNull();
+    await until(packet.hasPendingPong, 'actual entered snapshot ping');
+    packet.confirmPong();
+    await until(
+      () => records(f).size === 0,
+      'entered operation retires after actual native disposal',
+    );
+    expect(
+      peer.frames.filter((frame) => 'requestId' in frame && frame.requestId === read.id),
+    ).toHaveLength(1);
+  } finally {
+    f.trust.withAuthorizationEpochNonblocking = originalGrant;
+    record.slot.schedule = schedule;
+  }
 });
 
 test('an actual Close cancels a held first read before native export', async () => {

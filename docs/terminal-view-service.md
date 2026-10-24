@@ -21,6 +21,17 @@ parallel reply queue exists. If eligible capture/view/native capacity or current
 authority is unavailable, optional silence leaves the caller's bounded timeout
 to report it. The shared chat/approval connection stays available.
 
+The home ledger reserves 4 MiB per complete stack, at most eight models and
+32 MiB per home under [ADR0048](../.context/decisions/0048-terminal-stack-budget-and-policy.md).
+The primitive's independent 1 MiB oracle and every other bound remain.
+A known original-grant lock conflict before the protected callback may retain
+one first-time read intent; an entered or uncertain operation is never replayed.
+Maintenance skips a known busy grant tick without sending data. Close cancels
+held reads even under grant pressure. A temporary unavailable borrow retains
+an intent only while its original capture context remains current.
+After a view borrows the model, its next turn follows already waiting views.
+This reuses the existing admitted-record order and creates no extra queue.
+
 One new explicit Open creates a collision-checked 16-byte opaque ID and five
 monotonic minutes. Wall time formats expiresAt. Reads are spaced by 500 monotonic
 ms per reserved connection view, including across a new Open, and use current
@@ -59,7 +70,7 @@ bodies, or add them to replay or push. The separate existing opt-in
 this service does not disable that diagnostic. Current grant/binding/runtime/attachment or
 capture loss retires the old view. No old incarnation follows a new grant.
 
-## Source qualification and remaining gates
+## Prior source qualification and remaining gates
 
 The [source receipt](terminal-view-service-source-qualification.json) records
 261 passing cases on each Mac Bun pin (3,197/3,194 parent assertions), five
@@ -123,8 +134,19 @@ adopted build or a budget change.
 
 These are source and lease controls. Expanded service/controller/native-pending/
 full-parser memory, actual held-No load, all six compiled host/Bun cells, the
-single full C2 review and final-head hosted/actual-soak gates remain before
+reserved fix-only C2 review and final-head hosted/actual-soak gates remain before
 adoption. All existing model/frame/queue/view/latency/container bounds and native/
 TLS allowances remain unchanged. Finite retained state is not an OS/RSS ceiling.
 Native rendering, signed hardware, deployed Worker and provider acceptance remain
 separate. #1595 stays open.
+
+The owner subsequently approved 4 MiB for the complete stack with the same
+32 MiB home cap, reducing model admission to eight. No failed 1 MiB profile is
+regraded. Fresh qualification is in progress. Actual grant/quota contention
+controls reproduced premature retirement or lost reads and now preserve only
+unentered bounded intents. A real two-peer native-pong regression reproduced
+repeated-reader precedence: old/fixed/restored-old fails/passes/fails; the waiting
+reader now receives the next native response. The unchanged compiled Mac
+1.3.11 held-No preflight passes all four scenarios, including actual blocked
+cleanup and the deliberately slow control. These preflights do not replace
+the fresh source, actual leases, all-six resource/No matrix or final checks.

@@ -15,6 +15,7 @@ import {
 import type { Connection } from '../server/connection.ts';
 import type { SessionBindingStore } from '../session/session-binding-store.ts';
 import type { ManagedSession, SessionRegistry } from '../session/session-registry.ts';
+import { InterprocessFileLockError } from '../storage/interprocess-file-lock.ts';
 import type {
   TerminalCaptureContext,
   TerminalCaptureHost,
@@ -58,6 +59,8 @@ interface Record {
   reason: TerminalViewRefusalCode | 'closed';
 }
 type Response = Exclude<TerminalViewMessage, TerminalViewRequest>;
+const grantWasBusy = (error: unknown, entered: boolean): boolean =>
+  !entered && error instanceof InterprocessFileLockError && error.retryable;
 const sameBinding = (a: TerminalViewBinding, b: TerminalViewBinding) =>
   a.harness === b.harness && a.harnessSessionId === b.harnessSessionId;
 const sameActor = (a: Authority, b: Authority) =>
@@ -104,7 +107,8 @@ export class TerminalViewService {
 
   private grant<T>(key: string, effect: (epoch: string | null) => T, migrate = false): T {
     if (this.grantHeld) throw new Error('Terminal authority unavailable');
-    // Optional work fails immediately on contention; neither acquisition nor effects retry.
+    // Every attempt is nonblocking. Only a known refusal before the guarded callback
+    // may leave one first-time intent; an entered operation is never replayed.
     return this.host.identityStore.withAuthorizationEpochNonblocking(
       key,
       (epoch) => {
@@ -221,10 +225,12 @@ export class TerminalViewService {
     const key = connection && connectionDeviceKey(connection);
     if (!connection || !key || this.closed) return;
     let record = this.records.get(connection);
+    let grantEntered = false;
     try {
       this.grant(
         key,
         (epoch) => {
+          grantEntered = true;
           const authority = this.actor(connection, request.sessionId, epoch);
           if (!authority) {
             if (record) this.retire(record);
@@ -255,7 +261,20 @@ export class TerminalViewService {
         },
         true,
       );
-    } catch {
+    } catch (error) {
+      if (grantWasBusy(error, grantEntered)) {
+        if (record) {
+          if (
+            ingress.kind === 'request' &&
+            ingress.request.type === 'session_terminal_close' &&
+            ingress.request.viewId === record.viewId &&
+            record.viewId !== ''
+          )
+            this.retire(record); // Closing cannot leave a held read waiting for later authority.
+          else this.hold(record, ingress);
+        }
+        return; // No admitted view means no pre-admission queue or optional reply.
+      }
       if (record) this.retire(record);
       // No view/native capacity means no optional reply, ACK, generic queue or connection close.
     }
@@ -263,6 +282,7 @@ export class TerminalViewService {
 
   private hold(record: Record, ingress: TerminalIngress): void {
     if (
+      record.state !== 'retired' &&
       record.intent === null &&
       ingress.kind === 'request' &&
       ingress.request.type !== 'session_terminal_open' &&
@@ -286,8 +306,10 @@ export class TerminalViewService {
   private schedule(owned: Record, ingress: TerminalIngress): void {
     // Only bounded request metadata survives until this first scheduling attempt.
     owned.slot.schedule((deliver) => {
+      let grantEntered = false;
       try {
         this.grant(owned.authority.publicKey, (currentEpoch) => {
+          grantEntered = true;
           const fault = this.current(owned, currentEpoch);
           if (owned.state === 'retired' || fault === 'unavailable') {
             this.retire(owned);
@@ -295,11 +317,19 @@ export class TerminalViewService {
           }
           const frame = owned.view.borrow();
           if (!frame) {
-            if (owned.view.available) this.hold(owned, ingress);
+            // Lost quota ownership retires the capture; a live original context with
+            // no frame is temporary parser/model/ledger pressure, not a new authority.
+            if (owned.authority.context.available) this.hold(owned, ingress);
             else this.retire(owned);
             return;
           }
           owned.borrowing = true;
+          // The model has one frame owner. Put this served view behind readers
+          // already waiting so a repeated read cannot monopolize native turns.
+          if (this.records.get(owned.authority.connection) === owned) {
+            this.records.delete(owned.authority.connection);
+            this.records.set(owned.authority.connection, owned);
+          }
           let finished = false;
           const finish = (uncertain: boolean) => {
             if (finished) return;
@@ -322,8 +352,9 @@ export class TerminalViewService {
             if (!entered) finish(false);
           }
         });
-      } catch {
-        this.retire(owned); // No retry after callback/native entry or uncertain lock release.
+      } catch (error) {
+        if (grantWasBusy(error, grantEntered)) this.hold(owned, ingress);
+        else this.retire(owned); // Never replay after callback entry or uncertain lock release.
       }
       return undefined;
     });
@@ -443,11 +474,13 @@ export class TerminalViewService {
 
   private maintain(): void {
     for (const record of this.records.values()) {
+      let grantEntered = false;
       try {
         if (record.state !== 'retired') {
-          const fault = this.grant(record.authority.publicKey, (epoch) =>
-            this.current(record, epoch),
-          );
+          const fault = this.grant(record.authority.publicKey, (epoch) => {
+            grantEntered = true;
+            return this.current(record, epoch);
+          });
           if (fault) {
             this.retire(record);
             continue;
@@ -457,7 +490,8 @@ export class TerminalViewService {
             else this.retire(record);
           }
         }
-      } catch {
+      } catch (error) {
+        if (grantWasBusy(error, grantEntered)) continue;
         this.retire(record);
       }
       this.advance(record);
