@@ -10,7 +10,7 @@ native targets now, not planned behavior.
 | Ed25519 identity and local approval | Yes | Yes | Yes | Real-hub approval integration test passes. |
 | `remi pair` QR onboarding | No | Yes | No | iPhone scans in-app, validates every shared ADR 0037 vector, pins the full daemon key, and sends the nonce in the signed challenge response; terminal approval remains mandatory. |
 | Multiple machines and session daemons | Yes | Yes | Yes | Native apps persist machine/session scope. Machine identity remains `host:port` until protocol #1234. |
-| Session list and transcript history | Yes | Yes | Yes | Native renders text and tool-only transcript entries. |
+| Session list and transcript history | Yes | Yes | Yes | Native renders text and tool-only transcript entries; a run of 3 or more consecutive tool entries is one expandable row, and a session named `<machine>:<name>` shows `<name>` (#1647). |
 | Pending cards and cross-client dismissal | Yes | Yes | Yes | Native decodes the frozen decision object, renders unknown kinds generically, removes resolved notifications immediately, and briefly names a known resolution source. |
 | Binary and standing-option answers | Yes | Yes | Yes | Answers use wire values; session grants are labeled. |
 | AskUserQuestion structured selections | Yes | Yes | Yes | Native supports option and validated free-text answers for single-select subquestions. |

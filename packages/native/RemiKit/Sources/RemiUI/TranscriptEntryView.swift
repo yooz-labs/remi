@@ -189,3 +189,97 @@ enum RemiTranscriptMarkup {
 
     private static let allowedLinkSchemes: Set<String> = ["http", "https", "mailto"]
 }
+
+/// The collapsed or expanded header of a run of tool calls (#1647). The screen owns
+/// `isExpanded`, so it survives the lazy list recycling rows, and shows the group's
+/// entries under the header when it is open.
+public struct RemiToolGroupHeader: View {
+    private let group: RemiToolGroup
+    private let isExpanded: Bool
+    private let action: () -> Void
+
+    public init(group: RemiToolGroup, isExpanded: Bool, action: @escaping () -> Void) {
+        self.group = group
+        self.isExpanded = isExpanded
+        self.action = action
+    }
+
+    public var body: some View {
+        Button(action: action) {
+            HStack(spacing: RemiTheme.Spacing.xs) {
+                Image(systemName: "wrench.and.screwdriver")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
+                    Text(group.title).font(.subheadline.weight(.semibold))
+                    Text(group.subtitle)
+                        .font(RemiTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                }
+                Spacer(minLength: RemiTheme.Spacing.xs)
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .accessibilityHidden(true)
+            }
+            .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+            .padding(.horizontal, RemiTheme.Spacing.s)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RemiTheme.Color.surface, in: .rect(cornerRadius: RemiTheme.Radius.control))
+            .contentShape(.rect(cornerRadius: RemiTheme.Radius.control))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(RemiTranscriptGrouping.accessibilityLabel(count: group.count, isExpanded: isExpanded))
+        .accessibilityValue(group.subtitle)
+        .accessibilityHint(RemiTranscriptGrouping.accessibilityHint(isExpanded: isExpanded))
+    }
+}
+
+/// The transcript rows for both apps: entries, and each tool run as a header that opens
+/// in place. `expandedGroupIDs` lives in the screen so it survives new entries and the
+/// lazy list recycling rows. `entry` builds one entry's row, with the screen's own
+/// identity, search highlight and context menu.
+public struct RemiTranscriptRowsView<EntryContent: View>: View {
+    private let rows: [RemiTranscriptRow]
+    @Binding private var expandedGroupIDs: Set<String>
+    private let entry: (RemiTranscriptEntry) -> EntryContent
+
+    public init(
+        rows: [RemiTranscriptRow],
+        expandedGroupIDs: Binding<Set<String>>,
+        @ViewBuilder entry: @escaping (RemiTranscriptEntry) -> EntryContent
+    ) {
+        self.rows = rows
+        _expandedGroupIDs = expandedGroupIDs
+        self.entry = entry
+    }
+
+    public var body: some View {
+        ForEach(rows) { row in
+            switch row {
+            case .entry(let transcriptEntry):
+                entry(transcriptEntry)
+            case .toolGroup(let group):
+                let isExpanded = expandedGroupIDs.contains(group.id)
+                RemiToolGroupHeader(group: group, isExpanded: isExpanded) {
+                    withAnimation(RemiTheme.Motion.standard) {
+                        if isExpanded {
+                            expandedGroupIDs.remove(group.id)
+                        } else {
+                            expandedGroupIDs.insert(group.id)
+                        }
+                    }
+                }
+                .id(group.id)
+                if isExpanded {
+                    ForEach(group.entries) { grouped in
+                        entry(grouped).padding(.leading, RemiTheme.Spacing.m)
+                    }
+                }
+            }
+        }
+    }
+}

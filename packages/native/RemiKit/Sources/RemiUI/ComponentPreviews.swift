@@ -149,6 +149,32 @@ private struct SessionInteractionGallery: View {
     }
 }
 
+private struct ToolRunGallery: View {
+    @State private var expanded: Set<String> = []
+    var startsExpanded = false
+
+    var body: some View {
+        let rows = RemiTranscriptGrouping.rows(for: RemiPreviewData.toolRunTranscript)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.m) {
+                RemiSessionRow(session: RemiPreviewData.hubNamedSession)
+                RemiTranscriptRowsView(rows: rows, expandedGroupIDs: $expanded) { entry in
+                    RemiTranscriptEntryView(entry: entry)
+                }
+            }
+            .padding(RemiTheme.Spacing.m)
+        }
+        .onAppear {
+            if startsExpanded { expanded = Set(rows.map(\.id)) }
+        }
+    }
+}
+
+#Preview("Tool runs · Light") { ToolRunGallery().preferredColorScheme(.light) }
+#Preview("Tool runs · Dark") { ToolRunGallery().preferredColorScheme(.dark) }
+#Preview("Tool runs · Expanded") { ToolRunGallery(startsExpanded: true) }
+#Preview("Tool runs · Accessibility") { ToolRunGallery().environment(\.dynamicTypeSize, .accessibility5) }
+
 #Preview("Question Cards · Light") {
     QuestionCardGallery().preferredColorScheme(.light)
 }

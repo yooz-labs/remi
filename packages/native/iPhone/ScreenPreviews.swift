@@ -65,6 +65,8 @@ private func previewPanes(terminalOpen: Bool = true, download: FileDownloadFlow?
 }
 
 private struct SessionPreview: View {
+    var session: RemiSessionSummary = RemiPreviewData.primarySession
+    var transcript: [RemiTranscriptEntry] = RemiPreviewData.transcript
     var initialConversationID: String? = nil
     var initialQuestionID: String? = nil
     var panes: SessionPanes = .chatOnly
@@ -73,8 +75,8 @@ private struct SessionPreview: View {
     var body: some View {
         NavigationStack {
             SessionScreen(
-                session: RemiPreviewData.primarySession,
-                transcript: RemiPreviewData.transcript,
+                session: session,
+                transcript: transcript,
                 questions: [RemiPreviewData.binaryQuestion],
                 views: [
                     SessionViewMeta(agentId: "explore", agentType: "Explore", active: true),
@@ -82,7 +84,7 @@ private struct SessionPreview: View {
                 ],
                 initialConversationID: initialConversationID,
                 initialQuestionID: initialQuestionID,
-                transcriptForView: { _ in RemiPreviewData.transcript },
+                transcriptForView: { _ in transcript },
                 panes: panes,
                 initialPane: initialPane
             )
@@ -324,6 +326,13 @@ private let inboxThreeProblemMachines = drawerMachines(
     InboxPreview(questions: inboxOneCard, sessions: RemiPreviewData.sessions, machines: inboxThreeProblemMachines)
 }
 
+#Preview("Session · Hub name and tool runs") {
+    SessionPreview(session: RemiPreviewData.hubNamedSession, transcript: RemiPreviewData.toolRunTranscript)
+}
+#Preview("Session · Hub name and tool runs · Accessibility") {
+    SessionPreview(session: RemiPreviewData.hubNamedSession, transcript: RemiPreviewData.toolRunTranscript)
+        .environment(\.dynamicTypeSize, .accessibility5)
+}
 #Preview("Session · Light") { SessionPreview().preferredColorScheme(.light) }
 #Preview("Session · Dark") { SessionPreview().preferredColorScheme(.dark) }
 #Preview("Session · Accessibility") { SessionPreview().environment(\.dynamicTypeSize, .accessibility5) }

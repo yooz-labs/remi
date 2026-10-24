@@ -36,6 +36,7 @@ struct SessionScreen: View {
     @State private var reviewState = RemiTranscriptReviewState()
     @State private var reviewMemory = RemiConversationReviewMemory()
     @State private var visibleEntryID: String?
+    @State private var expandedToolGroupIDs: Set<String> = []
     @State private var followsLatest: Bool
     @State private var latestScrollRequest = 0
     @State private var reviewSessionID: String
@@ -208,7 +209,13 @@ struct SessionScreen: View {
                             }
 
                             let matchingEntryIDs = Set(reviewState.matchingEntryIDs)
-                            ForEach(visibleTranscript) { entry in
+                            RemiTranscriptRowsView(
+                                rows: RemiTranscriptGrouping.rows(
+                                    for: visibleTranscript,
+                                    pinnedEntryIDs: matchingEntryIDs
+                                ),
+                                expandedGroupIDs: $expandedToolGroupIDs
+                            ) { entry in
                                 RemiTranscriptEntryView(
                                     entry: entry,
                                     isSearchMatch: matchingEntryIDs.contains(entry.id),
