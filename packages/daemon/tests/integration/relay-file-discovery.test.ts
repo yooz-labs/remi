@@ -22,12 +22,13 @@ interface Observation {
   absent?: boolean;
   released?: boolean;
   stderrBytes?: number;
+  delegateTimedOut?: boolean;
   result?: boolean;
   proxy?: boolean;
   entered?: boolean;
   retryable?: boolean;
 }
-function scripts(directory: string, holdMs: number) {
+function scripts(directory: string, holdMs: number, participants: number) {
   fs.writeFileSync(
     join(directory, 'holder.ts'),
     `import * as fs from 'node:fs';
@@ -35,7 +36,9 @@ import {withInterprocessFileLock} from ${JSON.stringify(resolve(import.meta.dir,
 const [file, acquired, go, released] = process.argv.slice(2);
 if(!file || !acquired || !go || !released) throw Error('Owned admission inputs absent');
 withInterprocessFileLock(file, () => {
-  fs.writeFileSync(acquired, String(process.pid), {mode:0o600});
+  const ready = acquired + '.next';
+  fs.writeFileSync(ready, String(process.pid), {mode:0o600});
+  fs.renameSync(ready, acquired);
   const end=performance.now()+1000;
   while(!fs.existsSync(go)){if(performance.now()>=end)throw Error('Owned admission delegate absent');Bun.sleepSync(1)}
   Bun.sleepSync(${holdMs});
@@ -58,16 +61,27 @@ const original=descriptor.value;let fired=false;
 Object.defineProperty(BrowserLinkSessionHost.prototype,'waitForConnection',{...descriptor,value:async function(...args){
   const [id,adapter,identity]=args;const connection=adapter.getDirectConnection(id);
   if(!fired && connection?.structuredChatProxyAuthority){
-    fired=true;const prefix=join(directory,String(process.pid));
-    const acquired=prefix+'.acquired',go=prefix+'.go',released=prefix+'.released';
+    fired=true;const prefix=join(directory,'shared');
+    const acquired=prefix+'.acquired',go=prefix+'.go',released=prefix+'.released',scope=prefix+'.scope';
     const file=Reflect.get(identity,'authorizedKeysPath');
-    const holder=Bun.spawn([process.execPath,'--no-env-file',join(directory,'holder.ts'),file,acquired,go,released],{env:{HOME:directory,TMPDIR:directory,PATH:'/usr/bin:/bin'},stdin:'ignore',stdout:'ignore',stderr:'pipe'});
-    record({kind:'holder-started',holderPid:holder.pid});const stderr=new Response(holder.stderr).text();
-    void holder.exited.then(async exitCode=>{let absent=false;try{process.kill(holder.pid,0)}catch(error){absent=error.code==='ESRCH'}record({kind:'holder-reaped',holderPid:holder.pid,exitCode,signal:holder.signalCode,absent,released:fs.existsSync(released),stderrBytes:(await stderr).length})});
+    let owner=false;try{const fd=fs.openSync(prefix+'.claim','wx',0o600);fs.closeSync(fd);owner=true}catch(error){if(error.code!=='EEXIST')throw error}
+    let holder;
+    if(owner){
+      fs.writeFileSync(scope+'.next',file,{mode:0o600});fs.renameSync(scope+'.next',scope);
+      holder=Bun.spawn([process.execPath,'--no-env-file',join(directory,'holder.ts'),file,acquired,go,released],{env:{HOME:directory,TMPDIR:directory,PATH:'/usr/bin:/bin'},stdin:'ignore',stdout:'ignore',stderr:'pipe'});
+      record({kind:'holder-started',holderPid:holder.pid});const stderr=new Response(holder.stderr).text();
+      void holder.exited.then(async exitCode=>{let absent=false;try{process.kill(holder.pid,0)}catch(error){absent=error.code==='ESRCH'}const text=await stderr;if(text)fs.writeFileSync(prefix+'.holder.stderr',text,{mode:0o600});record({kind:'holder-reaped',holderPid:holder.pid,exitCode,signal:holder.signalCode,absent,released:fs.existsSync(released),stderrBytes:text.length,delegateTimedOut:text.includes('Owned admission delegate absent')})});
+    }
     const end=performance.now()+1000;
-    while(!fs.existsSync(acquired)){if(performance.now()>=end){holder.kill('SIGTERM');throw Error('Owned admission holder not acquired')}Bun.sleepSync(1)}
-    if(Number(fs.readFileSync(acquired,'utf8'))!==holder.pid)throw Error('Owned admission holder PID mismatch');
-    record({kind:'holder-acquired',holderPid:holder.pid});fs.writeFileSync(go,'delegate',{mode:0o600});
+    while(!fs.existsSync(acquired)){if(performance.now()>=end){holder?.kill('SIGTERM');throw Error('Owned admission holder not acquired')}Bun.sleepSync(1)}
+    const holderPid=Number(fs.readFileSync(acquired,'utf8'));
+    if(!Number.isInteger(holderPid)||holderPid<=0||(holder&&holderPid!==holder.pid))throw Error('Owned admission holder PID mismatch');
+    if(fs.readFileSync(scope,'utf8')!==file)throw Error('Owned shared authority scope mismatch');
+    record({kind:'holder-acquired',holderPid});fs.writeFileSync(prefix+'.'+process.pid+'.participant','ready',{mode:0o600});
+    if(owner){
+      while(fs.readdirSync(directory).filter(name=>name.endsWith('.participant')).length<${participants}){if(performance.now()>=end)throw Error('Owned admission participants absent');Bun.sleepSync(1)}
+      fs.writeFileSync(go,'delegate',{mode:0o600});
+    }else while(!fs.existsSync(go)){if(performance.now()>=end)throw Error('Owned admission start absent');Bun.sleepSync(1)}
   }
   const result=await Reflect.apply(original,this,args);record({kind:'admission-result',proxy:!!connection?.structuredChatProxyAuthority,result});return result;
 }});
@@ -109,7 +123,7 @@ async function actualChildren(
   effect: (primary: Primary, expectedIds: string[], directory: string) => Promise<void>,
 ) {
   const directory = fs.mkdtempSync(join(tmpdir(), 'remi-relay-discovery-'));
-  const observer = scripts(directory, holdMs);
+  const observer = scripts(directory, holdMs, two ? 2 : 1);
   const command = [
     process.execPath,
     '--no-env-file',
@@ -210,7 +224,7 @@ async function actualChildren(
   if (failures.length) throw new AggregateError(failures, 'Owned relay discovery failed');
 }
 
-test('actual two source CLI children remain discoverable across real20ms original-authority writers', async () => {
+test('actual two source CLI children remain discoverable across one shared real20ms authority writer', async () => {
   await actualChildren(20, true, async (f, expectedIds, directory) => {
     const peer = await f.connect();
     const request = createSessionListRequest(false);
@@ -231,7 +245,16 @@ test('actual two source CLI children remain discoverable across real20ms origina
       expect(hello.capabilities).toContain('file_download');
     }
     const rows = observations(directory);
-    expect(rows.filter((row) => row.kind === 'holder-acquired')).toHaveLength(2);
+    const acquired = rows.filter((row) => row.kind === 'holder-acquired');
+    expect(acquired).toHaveLength(2);
+    expect(new Set(acquired.map((row) => row.holderPid)).size).toBe(1);
+    for (const owner of acquired)
+      expect(
+        rows.some(
+          (row) =>
+            row.pid === owner.pid && row.kind === 'grant-error' && !row.entered && row.retryable,
+        ),
+      ).toBe(true);
     expect(rows.some((row) => row.kind === 'grant-error' && !row.entered && row.retryable)).toBe(
       true,
     );
