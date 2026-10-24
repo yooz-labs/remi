@@ -156,7 +156,9 @@ async function hub(f: Fixture, relay = false) {
   fs.writeFileSync(f.configPath, config);
   const p = spawn(f, ['serve', '--no-telegram']);
   await poll(
-    () => p.log.text.includes('Remi hub ready!') || p.proc.exitCode !== null,
+    () =>
+      (p.log.text.includes('Remi hub ready!') && /wss:\/\/127\.0\.0\.1:\d+\/ws/.test(p.log.text)) ||
+      p.proc.exitCode !== null,
     'TLS hub readiness',
   );
   expect(p.proc.exitCode).toBeNull();
