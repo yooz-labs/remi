@@ -146,5 +146,6 @@ The version-2 4 MiB/eight-model policy adds five actual migration groups, includ
 live legacy charges, a reaped legacy process, the empty transition, old-writer
 refusal and unknown-policy refusal. The [service progress receipt](terminal-view-service-progress.json)
 records all 30 reservation and five migration groups passing on all six compiled
-cells under version 2. The full service held-No gate remains blocked separately;
-the version-1 receipts above remain historical.
+cells under version 2. The [expanded receipt](terminal-view-service-expanded-qualification.json) also records
+passing current held-No and causal controls. Final-head hosted checks still gate
+merge; the version-1 receipts above remain historical.

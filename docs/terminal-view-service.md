@@ -70,52 +70,75 @@ bodies, or add them to replay or push. The separate existing opt-in
 this service does not disable that diagnostic. Current grant/binding/runtime/attachment or
 capture loss retires the old view. No old incarnation follows a new grant.
 
-## Current qualification checkpoint
+## Current expanded qualification
 
-The [progress receipt](terminal-view-service-progress.json) records 272 passing
-source cases on each Mac Bun pin (3,252/3,249 parent assertions), all five TypeScript
-configurations, lint (zero errors/68 baseline warnings), exact CI spelling,
-whitespace and bundle notices. Both actual five-minute signed-WSS lease controls
-remain valid for the unchanged runtime and expiry-fixture graph. The subsequent
-changes affect only standalone proof setup/diagnostics, with fresh static checks.
-Both Mac pins also pass the original/restored source guards; removing the runtime
-or original-grant-effect guard fails its named real component control.
+The [expanded receipt](terminal-view-service-expanded-qualification.json) records
+320 passing source cases on each Mac Bun pin (3,509/3,504 parent
+assertions), all five TypeScript configurations, lint (zero errors/68 baseline
+warnings), exact CI spelling, whitespace and bundle notices. Both actual five-minute
+signed-WSS lease controls retain validity through the unchanged runtime and expiry
+fixture graph; the subsequent changes are functional tests and standalone proof
+coordination, with no production/runtime change.
 
 All six compiled Mac ARM64/Linux ARM64/Linux x64 executions on Bun 1.3.11 and
-1.4.2 pass four one-model resource profiles, two combined two-owner/eight-view
-profiles, 30 reservation groups and five policy-migration groups per cell.
-Maximum one-model increment is 1,480,660/4,194,304 bytes;
-maximum two-model sum is 3,066,909/8,388,608 bytes.
-Strict profiles retain actual 64 KiB raw JSON/AST ingress alongside pending native
-output and the full parser queue, including the maximum-node refusal path.
-All original allowances and Linux containment limits remain unchanged. Exact
-source/engine/compiler/certificate/binary hashes retain unchanged completed
-resource/quota measurements; missing Linux Bun 1.4.2 cells were run separately.
+1.4.2 pass four one-model profiles, two combined two-owner/eight-view profiles,
+30 reservation groups and five version-2 migration groups per cell. Maximum
+one-model increment is 1,480,660/4,194,304 bytes; maximum
+two-model sum is 3,066,909/8,388,608 bytes. Strict
+profiles retain actual 64 KiB raw JSON/AST ingress alongside pending native output
+and the full parser queue, including maximum-node refusal. All original allowances
+and Linux containment limits remain unchanged. Exact unchanged dependency/binary
+hashes retain the completed resource/quota measurements.
 
-The full compiled held-No campaign is **blocked**. Its latest Linux ARM64/Bun
-1.3.11 run read a secondary-process state path that had disappeared during the
-fixture lifecycle. The missing path differs from the retained current scenario's
-directory, suggesting crossed scenario lifetime; the precise cause is unconfirmed.
-All retained current-scenario children exited normally, and the independent No
-child parsed deny promptly, but those observations do not qualify a failed cell.
-Further whole-matrix retries stopped. The next step is a bounded lifecycle trace
-that identifies the late state observer before changing cleanup behavior.
+All six current held binaries pass four adjacent scenarios each in the same
+process. Normal held-hook No latency is 0.569–16.104 ms against
+1,000 ms; the deliberately blocked control is 1250.193–1274.728 ms
+and crosses that same limit. All 18 compiled parser-overlap/actual-input negatives
+fail their named oracle; two additional actual wrong-owner controls reject the
+real parent PID in place of the real secondary producer. On both Mac pins,
+removing the runtime or original-grant-effect guard fails its named component
+control; original/restored source passes. Actual PTY input stays zero.
 
-Earlier fixture failures remain failed: polling opportunities were confused with
-wire throughput; setup assumed admission guaranteed an Open response; a one-shot
-lock holder could fail under valid contention; tiny receiver windows delayed
-post-measurement disposal. Actual controls support the narrow corrections.
-Setup now permits bounded fresh Opens only after proving no view/effect and awaits
-only pre-effect fixture lock acquisition. Receive capacity is restored only after
-all resource/No observations. Product limits, authority and no-replay behavior
-remain unchanged. Failed-run child diagnostics are retained.
+Each scenario now owns its awaited function lifetime; secondary state reads check
+the actual spawned PID. Initial setup obtains both real grant/quota locks before
+pausing the secondary actor, constructs the distinct native frame and waiting
+intent, then resumes the actor before any measured load/No. A real contention
+control proves that two reads arriving under a busy grant correctly occupy only
+one intent; a batch alone cannot guarantee the two initial states. All eight
+views and both owners remain charged, and the resumed actor must produce actual
+snapshots during the original maximum load. No product queue/retry, workload,
+deadline or allowance was expanded. Per-scenario metadata survives owned cleanup.
 
-R1 findings are fixed; the single R2 has no Critical/Important findings. This is a
-partial checkpoint, not full service qualification. All six current held-No cells,
-remaining compiled negatives, final-head hosted checks and the required relay soak
-still gate merge. PR #1655 stays draft. B4 encrypted routing and a qualified
-production caller precede capability advertisement. Rendered native, signed
-hardware, deployed Worker and provider acceptance remain separate. #1595 stays open.
+The old missing-state-path failure remains preserved and its precise cause is
+unconfirmed: broad/narrow traces and the exact restored old binary passed. Current
+qualification follows the explicit fixture ownership and setup changes; it does
+not establish a runtime/JIT diagnosis. The [earlier checkpoint](terminal-view-service-progress.json)
+remains a historical partial receipt, and no failed campaign is regraded.
+
+The hosted checkpoint exposed five obsolete pre-service close assertions. Real
+web conformance now checks ordered pong/liveness without terminal input, resize,
+ACK or reply when no service is installed. Source CLI coverage checks unadvertised
+capture and signed Open/Read/Close when its harness binding is resolved, while an
+unresolved binding sends no screen and keeps the connection available. The five
+old expectations fail on current source; the updated 47-case lane passes on both
+pins. Full final-head hosted checks remain required; the old overall CI child
+deadline failure is not diagnosed by those assertion fixes.
+
+A separate wrapper test confused published TLS/health with installed shutdown
+handling. Actual before-ready/ready/restored-before-ready controls fail/pass/fail
+on both current and pre-service source. The test now observes real handler
+installation before asking for graceful teardown, keeping the same deadlines and
+endpoint-removal checks. This does not close [#1615](https://github.com/yooz-labs/remi/issues/1615)
+or diagnose all its older failures. A local runner's noncanonical `/tmp` alias also
+correctly failed descriptor/path guards; same-root alias/canonical/restored-alias
+controls fail/pass/fail. The accepted source lane uses short canonical roots.
+
+R1 findings are fixed; the single R2 has no Critical/Important findings. Later
+fixture/test changes were driver verified, with no third review. Merge requires
+all seven final-head hosted checks and the actual required relay soak; consult
+PR #1655 for current merge state. B4 encrypted routing and a qualified production
+caller precede capability advertisement. Rendered native, signed hardware,
+deployed Worker and provider acceptance remain separate. #1595 stays open.
 
 ## Historical source qualification and failed 1 MiB gate
 
@@ -185,6 +208,6 @@ regraded. Actual grant/quota contention controls reproduced premature retirement
 or lost reads and now preserve only unentered bounded intents. A real two-peer
 native-pong regression reproduced repeated-reader precedence:
 old/fixed/restored-old fails/passes/fails. The waiting reader now receives the
-next native response. Current partial results are recorded above; the older
+next native response. Current expanded results are recorded above; the older
 261-case receipt and failed campaigns remain historical evidence.
 Finite retained state is not an OS/RSS ceiling.

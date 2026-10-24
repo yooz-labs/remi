@@ -1,6 +1,6 @@
 # ADR 0048: Versioned accounting for the complete terminal stack
 
-**Status:** accepted budget; source/lease/resource/quota controls pass; held service gate blocked
+**Status:** accepted budget; source, lease and compiled qualification recorded; merge gates in PR #1655
 **Date:** 2026-10-23
 **Owner:** Yahya
 
@@ -42,13 +42,13 @@ approvals must keep working. An old live reservation can delay new terminal
 admission until it releases or its owner is proved dead. Old reader/writer
 compatibility is tested with the actual archived component and real processes.
 
-The [progress receipt](../../docs/terminal-view-service-progress.json) records
-passing source/static/real-lease and six compiled resource/quota cells, including
-maximum ingress/refusal, parser/native state and two-owner/eight-view accounting.
-The compiled held-No campaign is blocked by a fixture state-file lifecycle failure;
-no complete service qualification is claimed. The fixed-delta review is complete
-without Critical/Important findings. Current all-six held-No controls, remaining
-compiled negatives and final-head hosted checks/actual relay soak still gate merge. B4 encrypted routing and a qualified
+The [expanded receipt](../../docs/terminal-view-service-expanded-qualification.json)
+records passing source/static/real-lease controls and six compiled resource/quota
+and held-No cells, including maximum ingress/refusal, parser/native state,
+two-owner/eight-view accounting and causal negatives. Original failed campaigns
+remain preserved, including an intermittent fixture failure whose precise cause
+is unconfirmed. The fixed-delta review is complete without Critical/Important
+findings. Final-head hosted checks and the actual required relay soak gate merge. B4 encrypted routing and a qualified
 real caller precede capability advertisement. Rendered/signed/deployed/provider
 acceptance remains separate. Finite retained state is not an OS/RSS ceiling.
 

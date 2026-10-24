@@ -20,12 +20,13 @@ eight captured models, with 1/2/4/8 view quotas and all other frame, text,
 geometry, parser, lease, rate and native allowances unchanged. ADR0048 records
 version 2 policy and conservative old/new writer compatibility. Primitive 1 MiB
 evidence is unchanged; no failed service profile is retroactively qualified.
-Source/lease and all six resource/quota cells now pass, including two-owner/eight-view
-accounting; see the [progress receipt](../docs/terminal-view-service-progress.json).
-The held-No fixture has an unresolved state-file lifecycle failure. The fixed-delta
-review is complete; C2 PR #1655 stays draft pending the full compiled held/negative
-gates and final-head hosted checks/relay soak. C1 PR #1642 landed. B4 and the
-media/profile phases remain as planned.
+The [expanded receipt](../docs/terminal-view-service-expanded-qualification.json)
+records 320 passing source cases per pin, actual leases, all six resource/quota
+and held-No cells, combined two-owner/eight-view accounting and causal controls.
+The fixed-delta review is complete. C2 PR #1655 requires final-head hosted checks
+and the actual relay soak before merge; C1 PR #1642 landed. B4 and the media/profile
+phases remain as planned. Earlier failed campaigns remain historical evidence.
+
 
 ## Context
 
