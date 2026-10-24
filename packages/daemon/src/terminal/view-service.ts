@@ -53,6 +53,7 @@ interface Record {
   expiresAt: string;
   lastRead: number;
   intent: TerminalIngress | null;
+  borrowing: boolean;
   state: 'open' | 'receipt' | 'retired';
   reason: TerminalViewRefusalCode | 'closed';
 }
@@ -184,17 +185,18 @@ export class TerminalViewService {
       expiresAt: '',
       lastRead: Number.NEGATIVE_INFINITY,
       intent: null,
+      borrowing: false,
       state: 'receipt',
       reason: 'unavailable',
     };
     const unsubscribe = authority.connection.observeNativeSocket({
       drain: () => {
         record.slot.nativeDrained();
-        this.advance(record);
+        this.wake(record.authority.context);
       },
       pong: (data) => {
         record.slot.nativePong(data);
-        this.advance(record);
+        this.wake(record.authority.context);
       },
       closed: () => {
         record.slot.nativeClosed();
@@ -232,17 +234,19 @@ export class TerminalViewService {
           }
           if (!record) record = this.admit(authority) ?? undefined;
           if (!record) return;
-          if (record.slot.busy || record.intent !== null) {
-            // A client can receive the response before its ordered native receipt arrives.
-            // Retain one first-time strict read/close intent, never a second content frame.
-            if (
-              record.intent === null &&
-              ingress.kind === 'request' &&
-              ingress.request.type !== 'session_terminal_open' &&
-              ingress.request.viewId === record.viewId &&
-              record.viewId !== ''
-            )
-              record.intent = ingress;
+          if (
+            ingress.kind === 'request' &&
+            ingress.request.type === 'session_terminal_close' &&
+            ingress.request.viewId === record.viewId &&
+            record.viewId !== ''
+          ) {
+            // Closing cancels a held read even when its reply cannot yet be sent.
+            // An already scheduled read also sees this state before any native effect.
+            record.intent = null;
+            if (record.state === 'open') this.receipt(record, 'closed');
+          }
+          if (record.slot.busy || record.intent !== null || this.modelBorrowed(record)) {
+            this.hold(record, ingress);
             return;
           }
           this.schedule(record, ingress);
@@ -253,6 +257,28 @@ export class TerminalViewService {
       if (record) this.retire(record);
       // No view/native capacity means no optional reply, ACK, generic queue or connection close.
     }
+  }
+
+  private hold(record: Record, ingress: TerminalIngress): void {
+    if (
+      record.intent === null &&
+      ingress.kind === 'request' &&
+      ingress.request.type !== 'session_terminal_open' &&
+      ingress.request.viewId === record.viewId &&
+      record.viewId !== ''
+    )
+      record.intent = ingress;
+  }
+
+  private modelBorrowed(record: Record): boolean {
+    for (const other of this.records.values())
+      if (other.authority.context === record.authority.context && other.borrowing) return true;
+    return false;
+  }
+
+  private wake(context: TerminalCaptureContext): void {
+    for (const record of this.records.values())
+      if (record.authority.context === context) this.advance(record);
   }
 
   private schedule(owned: Record, ingress: TerminalIngress): void {
@@ -267,20 +293,31 @@ export class TerminalViewService {
           }
           const frame = owned.view.borrow();
           if (!frame) {
-            this.retire(owned);
+            if (owned.view.available) this.hold(owned, ingress);
+            else this.retire(owned);
             return;
           }
+          owned.borrowing = true;
+          let finished = false;
+          const finish = (uncertain: boolean) => {
+            if (finished) return;
+            finished = true;
+            owned.borrowing = false;
+            if (uncertain) frame.quarantine();
+            else frame.release();
+            this.wake(owned.authority.context);
+          };
           let entered = false;
           try {
             const response = this.response(owned, ingress, frame.revision, frame.snapshot, fault);
             entered = true;
             deliver({
               message: response,
-              release: () => frame.release(),
-              quarantine: () => frame.quarantine(),
+              release: () => finish(false),
+              quarantine: () => finish(true),
             });
           } finally {
-            if (!entered) frame.release();
+            if (!entered) finish(false);
           }
         });
       } catch {
@@ -292,7 +329,13 @@ export class TerminalViewService {
 
   private advance(record: Record): void {
     this.cleanup(record);
-    if (record.state === 'retired' || record.slot.busy || !record.intent) return;
+    if (
+      record.state === 'retired' ||
+      record.slot.busy ||
+      !record.intent ||
+      this.modelBorrowed(record)
+    )
+      return;
     const intent = record.intent;
     record.intent = null;
     this.schedule(record, intent);

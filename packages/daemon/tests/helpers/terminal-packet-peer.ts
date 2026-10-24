@@ -15,7 +15,7 @@ export function terminalPacketPeer(port: number, ca: string) {
     .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
     .digest('base64');
   const socket = connect({ host: '127.0.0.1', port, ca, rejectUnauthorized: true });
-  const write = (opcode: number, body: Uint8Array) => {
+  const write = (opcode: number, body: Uint8Array, queued?: Buffer[]) => {
     assert(upgraded && state === WebSocket.OPEN, 'actual packet peer is open');
     assert(body.byteLength <= 65536, 'bounded actual client frame');
     const prefix = body.byteLength < 126 ? 2 : body.byteLength <= 65535 ? 4 : 10;
@@ -28,6 +28,10 @@ export function terminalPacketPeer(port: number, ca: string) {
     mask.copy(frame, prefix);
     for (let i = 0; i < body.byteLength; i++)
       frame[prefix + 4 + i] = (body[i] ?? 0) ^ (mask[i & 3] ?? 0);
+    if (queued) {
+      queued.push(frame);
+      return;
+    }
     socket.write(frame);
     assert(socket.writableLength <= 65550, 'bounded actual client native queue');
   };
@@ -127,6 +131,15 @@ export function terminalPacketPeer(port: number, ca: string) {
     },
     send(value: string | Uint8Array) {
       write(typeof value === 'string' ? 1 : 2, Buffer.from(value));
+    },
+    sendBatch(values: readonly string[]) {
+      assert(values.length > 0 && values.length <= 2, 'at most two actual client frames');
+      const frames: Buffer[] = [];
+      for (const value of values) write(1, Buffer.from(value), frames);
+      const bytes = Buffer.concat(frames);
+      assert(bytes.byteLength <= 65550, 'bounded actual batched client frames');
+      socket.write(bytes);
+      assert(socket.writableLength <= 65550, 'bounded actual client native queue');
     },
     hasPendingPong: () => pendingPong !== null,
     confirmPong() {

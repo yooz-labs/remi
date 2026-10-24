@@ -31,6 +31,146 @@ const views = (f: TerminalServiceFixture) =>
       .records as { kind: string }[]
   ).filter((row) => row.kind === 'view');
 
+test('an actual Close cancels a held first read before native export', async () => {
+  const f = await fixture();
+  const peer = await f.client(false, true);
+  const packet = peer.packet;
+  if (!packet) throw new Error('Expected actual packet TLS peer');
+  const opened = await peer.submit(peer.open());
+  if (opened.type !== 'session_terminal_opened') throw new Error('Expected owned view');
+  await until(packet.hasPendingPong, 'actual Open receipt is held');
+  const read = peer.read(opened.viewId);
+  const close = peer.finish(opened.viewId);
+  peer.ws.send(encodeTerminalViewFrame(read));
+  peer.ws.send(encodeTerminalViewFrame(close));
+  const ping = createPing();
+  peer.ws.send(serialize(ping));
+  await until(
+    () => peer.received.some((message) => message.type === 'pong' && message['pingId'] === ping.id),
+    'actual Close ingress precedes native progress',
+  );
+  packet.confirmPong();
+  await until(
+    () =>
+      peer.frames.some(
+        (frame) =>
+          'requestId' in frame && (frame.requestId === read.id || frame.requestId === close.id),
+      ),
+    'actual held operation after native progress',
+  );
+  expect(
+    peer.frames.some(
+      (frame) => frame.type === 'session_terminal_snapshot' && frame.requestId === read.id,
+    ),
+  ).toBe(false);
+  expect(
+    peer.frames.some(
+      (frame) => frame.type === 'session_terminal_closed' && frame.requestId === close.id,
+    ),
+  ).toBe(true);
+  await until(packet.hasPendingPong, 'actual Close reply receipt');
+  packet.confirmPong();
+});
+
+test('an actual Close precedes a queued native read and prevents its snapshot', async () => {
+  const f = await fixture();
+  const peer = await f.client(false, true);
+  const packet = peer.packet;
+  if (!packet) throw new Error('Expected actual packet TLS peer');
+  const opened = await peer.submit(peer.open());
+  if (opened.type !== 'session_terminal_opened') throw new Error('Expected owned view');
+  await until(packet.hasPendingPong, 'actual Open ping');
+  packet.confirmPong();
+  const record = records(f).get(peer.connection() as object) as { slot: { busy: boolean } };
+  await until(() => !record.slot.busy, 'actual Open native ownership settled');
+  const read = peer.read(opened.viewId);
+  const close = peer.finish(opened.viewId);
+  const actual = f.service.handle;
+  let closeBeforeNativeEntry = false;
+  // Observe two real frames in one TLS write; every ingress still reaches the real handler.
+  f.service.handle = (id, ingress) => {
+    if (ingress.kind === 'request' && ingress.request.id === close.id)
+      closeBeforeNativeEntry = Reflect.get(record.slot, 'operationPending') === true;
+    return actual.call(f.service, id, ingress);
+  };
+  try {
+    packet.sendBatch([encodeTerminalViewFrame(read), encodeTerminalViewFrame(close)]);
+    await until(() => {
+      if (packet.hasPendingPong()) packet.confirmPong();
+      return peer.frames.some(
+        (frame) =>
+          (frame.type === 'session_terminal_snapshot' && frame.requestId === read.id) ||
+          (frame.type === 'session_terminal_closed' && frame.requestId === close.id),
+      );
+    }, 'actual result after Close precedes native entry');
+    expect(closeBeforeNativeEntry).toBe(true);
+    expect(
+      peer.frames.some(
+        (frame) => frame.type === 'session_terminal_snapshot' && frame.requestId === read.id,
+      ),
+    ).toBe(false);
+    expect(
+      peer.frames.some(
+        (frame) => frame.type === 'session_terminal_closed' && frame.requestId === close.id,
+      ),
+    ).toBe(true);
+    await until(() => {
+      if (packet.hasPendingPong()) packet.confirmPong();
+      return !record.slot.busy;
+    }, 'actual control-only native ownership settled');
+  } finally {
+    f.service.handle = actual;
+  }
+});
+
+test('a pending model frame keeps another admitted view and its first read', async () => {
+  const f = await fixture();
+  const first = await f.client(false, true);
+  const second = await f.client(false, true);
+  if (!first.packet || !second.packet) throw new Error('Expected actual packet TLS peers');
+  const openedFirst = await first.submit(first.open());
+  if (openedFirst.type !== 'session_terminal_opened') throw new Error('Expected first view');
+  await until(first.packet.hasPendingPong, 'first actual Open ping');
+  first.packet.confirmPong();
+  const firstRecord = records(f).get(first.connection() as object) as { slot: { busy: boolean } };
+  await until(() => !firstRecord.slot.busy, 'first Open native ownership settled');
+  const openedSecond = await second.submit(second.open());
+  if (openedSecond.type !== 'session_terminal_opened') throw new Error('Expected second view');
+  await until(second.packet.hasPendingPong, 'second actual Open ping');
+  second.packet.confirmPong();
+  const secondRecord = records(f).get(second.connection() as object) as { slot: { busy: boolean } };
+  await until(() => !secondRecord.slot.busy, 'second Open native ownership settled');
+  expect((await first.submit(first.read(openedFirst.viewId))).type).toBe(
+    'session_terminal_snapshot',
+  );
+  await until(first.packet.hasPendingPong, 'first actual snapshot keeps the shared model borrowed');
+  const read = second.read(openedSecond.viewId);
+  second.ws.send(encodeTerminalViewFrame(read));
+  const ping = createPing();
+  second.ws.send(serialize(ping));
+  await until(
+    () =>
+      second.received.some((message) => message.type === 'pong' && message['pingId'] === ping.id),
+    'second actual read reached its owner',
+  );
+  await until(
+    () => !Reflect.get(secondRecord.slot, 'operationPending'),
+    'second first-time scheduling attempt returned',
+  );
+  expect(records(f).size).toBe(2);
+  first.packet.confirmPong();
+  await until(
+    () =>
+      second.frames.some(
+        (frame) => frame.type === 'session_terminal_snapshot' && frame.requestId === read.id,
+      ),
+    'second admitted view completes its first read after genuine shared disposal',
+  );
+  await until(second.packet.hasPendingPong, 'second actual snapshot ping');
+  second.packet.confirmPong();
+  expect(second.connection()?.isConnected).toBe(true);
+});
+
 test('one actual next read waits for the native TLS receipt without retaining a second frame', async () => {
   const f = await fixture();
   const peer = await f.client(false, true);
