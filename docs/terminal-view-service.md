@@ -38,10 +38,15 @@ approval connection or replaying an operation.
 
 A client can receive a response before its native receipt reaches the host.
 Retain at most one first-time strict same-view read/close metadata intent while
-that preceding frame is pending. It contains no screen, encoded response or raw
-body. Clear it before its first schedule and on retirement; the scheduled effect
-rechecks all original authority, lease and rate conditions. Additional pressure
-is omitted. This is not a retry of an entered effect.
+that preceding frame or another view of the same model is pending. It contains
+no screen, encoded response or raw body. Genuine disposal wakes eligible intents;
+existing bounded maintenance handles parser readiness. Clear an intent before its
+first attempt and on retirement; each effect rechecks all original authority,
+lease and rate conditions. No operation that entered native send is replayed.
+Additional pressure is omitted. A current owner Close replaces a held read and
+marks the logical view closed before any future native effect; an already
+scheduled read can emit no new snapshot after that Close. Already entered native
+bytes cannot be retracted and retain their disposal accounting.
 
 Original UTF8/JSON units reach strict ingress before generic ACK/deduplication.
 The raw byte limit precedes decoding; malformed correlation retains only bounded
@@ -52,13 +57,16 @@ capture loss retires the old view. No old incarnation follows a new grant.
 ## Source qualification and remaining gates
 
 The [source receipt](terminal-view-service-source-qualification.json) records
-256 passing cases on each Mac Bun pin (3,181/3,179 parent assertions), five
+259 passing cases on each Mac Bun pin (3,188/3,186 parent assertions), five
 TypeScript configurations, lint (zero errors/68 unchanged warnings), exact
 CItypos1.28.4, whitespace and bundle notices. Real private-CA signed WSS, identities,
 registry/binding, launch-captured zero-input PTYs and actual native packets cover
 both harness bindings, native/domain pong separation, native close after logical
 removal, one held intent and original grant/binding/runtime/attachment retirement.
-Both independent source lease controls ran five actual monotonic minutes, then
+Three added actual packet controls verify Close precedence over both a held read
+and a queued native read, and preserve a second charged view during shared-model
+pressure. The original controls reproduced both defects before their fixes.
+Both refreshed source lease controls ran five actual monotonic minutes, then
 refused the old ID and admitted a new explicit Open without clock injection.
 
 A test initially assumed service-map removal synchronously removed its ledger
