@@ -1,4 +1,5 @@
 /** Standalone bounded native lifetime (#1625); no authority, route or automatic retry. */
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   TERMINAL_VIEW_LIMITS,
   type TerminalViewMessage,
@@ -10,6 +11,7 @@ export interface NativeTerminalTransport {
   readonly readyState: number;
   getBufferedAmount(): number;
   send(text: string): unknown;
+  ping?(nonce: Uint8Array): unknown;
 }
 export interface OwnedTerminalSend {
   readonly message: Exclude<TerminalViewMessage, TerminalViewRequest>;
@@ -25,8 +27,14 @@ export class TerminalSendSlot {
   private frame: OwnedTerminalSend | null = null;
   private retired = false;
   private sending = false;
+  private receipt: Buffer | null = null;
+  private receiptConfirmed = false;
 
-  constructor(private readonly transport: NativeTerminalTransport) {}
+  /** Trusted listener provenance, never a client claim. TLS plaintext zero is not disposal (#1646). */
+  constructor(
+    private readonly transport: NativeTerminalTransport,
+    private readonly completion: 'plain-ws' | 'tls-receipt',
+  ) {}
 
   get busy(): boolean {
     return this.operationPending || this.frame !== null;
@@ -34,6 +42,11 @@ export class TerminalSendSlot {
 
   /** Content-free job only. The caller's synchronous original-grant guard must enclose deliver. */
   schedule(operation: (deliver: Deliver) => undefined): boolean {
+    if (
+      (this.completion !== 'plain-ws' && this.completion !== 'tls-receipt') ||
+      (this.completion === 'tls-receipt' && typeof this.transport.ping !== 'function')
+    )
+      return false;
     if (this.retired || this.busy) return false;
     this.operationPending = true;
     // Native message callbacks are automatically corked. Construct/send in a later turn.
@@ -67,6 +80,7 @@ export class TerminalSendSlot {
 
   private deliver(frame: OwnedTerminalSend): TerminalSendOutcome {
     let text: string;
+    let receipt: Buffer | null = null;
     try {
       if (
         this.transport.readyState !== WebSocket.OPEN ||
@@ -76,15 +90,41 @@ export class TerminalSendSlot {
         return 'unavailable';
       }
       text = encodeTerminalViewFrame(frame.message);
+      if (this.completion === 'tls-receipt') {
+        // A 16-byte server ping adds two framing bytes. Keep both frames inside
+        // the existing native capacity rather than adding a second content slot.
+        if (Buffer.byteLength(text) > TERMINAL_VIEW_LIMITS.frameBytes - 18) {
+          frame.release();
+          return 'unavailable';
+        }
+        receipt = randomBytes(16);
+      }
     } catch {
       frame.release(); // Encoding/preflight failure has made no native call.
       return 'unavailable';
     }
     this.frame = frame;
+    this.receipt = receipt;
+    this.receiptConfirmed = false;
     let status: unknown;
     this.sending = true;
     try {
       status = this.transport.send(text);
+      if (
+        receipt &&
+        this.frame === frame &&
+        typeof status === 'number' &&
+        (status > 0 || status === -1)
+      ) {
+        const ping = this.transport.ping;
+        if (!ping) throw new Error('Terminal native receipt unavailable');
+        // The original grant effect encloses both ordered native writes.
+        const pingStatus = ping.call(this.transport, receipt);
+        if (typeof pingStatus !== 'number' || (pingStatus <= 0 && pingStatus !== -1)) {
+          this.nativeClosed();
+          return 'unavailable';
+        }
+      }
     } catch {
       this.nativeClosed();
       return 'unavailable';
@@ -100,15 +140,14 @@ export class TerminalSendSlot {
       const buffered = this.transport.getBufferedAmount();
       if (typeof status === 'number' && (status > 0 || status === -1)) {
         if (buffered === 0) {
-          this.frame = null;
-          frame.release();
+          if (receipt) return 'pending'; // TLS may still own ciphertext despite plaintext zero.
+          this.releaseFrame();
           return 'sent'; // Native acceptance only, never application receipt.
         }
         // Server frames add at most a ten-byte unmasked WebSocket header.
         if (buffered > 0 && buffered <= TERMINAL_VIEW_LIMITS.frameBytes + 10) return 'pending';
       } else if (status === 0 && buffered === 0) {
-        this.frame = null;
-        frame.release();
+        this.releaseFrame();
         return 'unavailable';
       }
     } catch {
@@ -131,9 +170,31 @@ export class TerminalSendSlot {
       this.nativeClosed();
       return;
     }
+    if (this.receipt && !this.receiptConfirmed) return;
+    this.releaseFrame();
+  }
+
+  /** Only the actual native pong callback: no domain ACK, timer or logical disconnect. */
+  nativePong(data: Uint8Array): void {
+    if (
+      this.sending ||
+      !this.frame ||
+      !this.receipt ||
+      !(data instanceof Uint8Array) ||
+      data.byteLength !== 16 ||
+      !timingSafeEqual(data, this.receipt)
+    )
+      return;
+    this.receiptConfirmed = true;
+    this.nativeDrained();
+  }
+
+  private releaseFrame(): void {
     const frame = this.frame;
     this.frame = null;
-    frame.release();
+    this.receipt = null;
+    this.receiptConfirmed = false;
+    frame?.release();
   }
 
   /** Closed wrappers can still flush bytes. Drop JS content and keep the fixed charge. */
@@ -141,6 +202,8 @@ export class TerminalSendSlot {
     this.retire();
     const frame = this.frame;
     this.frame = null;
+    this.receipt = null;
+    this.receiptConfirmed = false;
     frame?.quarantine();
   }
 

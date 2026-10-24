@@ -16,12 +16,19 @@ import {
 } from '../packages/daemon/src/terminal/send-slot.ts';
 import { runTerminalNetworkPeer } from '../packages/daemon/tests/helpers/terminal-native-pair.ts';
 import { runOwnedTerminalOutputChild } from '../packages/daemon/tests/helpers/terminal-output-child.ts';
+import {
+  createNativeTlsTerminalPair,
+  runNativeTlsNetworkPeer,
+} from '../packages/daemon/tests/helpers/terminal-tls-pair.ts';
 import { createNativeTerminalPair } from '../packages/daemon/tests/helpers/terminal-view-ownership-proof.ts';
 import {
   type SessionTerminalSnapshot,
   encodeTerminalViewFrame,
 } from '../packages/shared/src/terminal-view.ts';
 const args = process.argv.slice(2);
+const tlsMode = args.includes('--terminal-tls-root');
+const networkPair = () =>
+  tlsMode ? createNativeTlsTerminalPair() : createNativeTerminalPair(process.platform === 'linux');
 function requiredArgument(index: number): string {
   const value = args[index];
   assert(value, 'owned proof argument present');
@@ -57,6 +64,10 @@ if (args[0] === '--external-calibration') {
   process.exit(0);
 }
 
+if (args[0] === '--terminal-tls-peer') {
+  await runNativeTlsNetworkPeer(requiredArgument(1), requiredArgument(2));
+  process.exit(0);
+}
 if (args[0] === '--terminal-peer') {
   await runTerminalNetworkPeer(
     requiredArgument(1),
@@ -176,7 +187,7 @@ async function closePty(f: ReturnType<typeof create>) {
 }
 for (let i = 0; i < 3; i++) {
   const f = create();
-  const pair = await createNativeTerminalPair(process.platform === 'linux');
+  const pair = await networkPair();
   try {
     const views = await start(f);
     let released = false;
@@ -237,16 +248,17 @@ for (let i = 0; i < 3; i++) {
   await Bun.sleep(0);
 }
 // Fixed server/peer setup precedes the baseline; fresh slot and all view state follow it.
-const pair = await createNativeTerminalPair(process.platform === 'linux');
+const pair = await networkPair();
 const f = create();
 let passed = false;
 try {
   const before = memory();
   const nativeCopyAllowance = new Uint8Array(65536 + 10);
   const pressureAllowance = new Uint8Array(16384 + 1034);
+  const tlsWorkingAllowance = new Uint8Array(tlsMode ? 198666 : 0);
   const envelopeAllowance = new Uint8Array(1024);
   const ingressHandoffAllowance = new Uint8Array(16384);
-  const slot = new TerminalSendSlot(pair.ws);
+  const slot = new TerminalSendSlot(pair.ws, tlsMode ? 'tls-receipt' : 'plain-ws');
   pair.replaceSlot(slot);
   const views = await start(f);
   const m = model(f);
@@ -315,10 +327,34 @@ try {
   await m.whenIdle();
   assert(m.available, m.reason);
   const drained = memory();
+  const tlsPair = pair as Awaited<ReturnType<typeof createNativeTlsTerminalPair>>;
+  const pendingState = {
+    busy: slot.busy,
+    released,
+    quarantined,
+    frameOwned: !!Reflect.get(slot, 'frame'),
+    receiptBytes: (Reflect.get(slot, 'receipt') as Uint8Array | null)?.byteLength ?? 0,
+    receiptConfirmed: Reflect.get(slot, 'receiptConfirmed'),
+    ready: pair.ws.readyState === WebSocket.OPEN,
+    rawNative: pair.ws.getBufferedAmount(),
+    peerStopped: tlsMode ? tlsPair.receiverStopped() : true,
+    peerDecodedFrame: tlsMode ? tlsPair.receivedAnyFrame() : false,
+  };
   assert(
-    slot.busy && released === 0 && quarantined === 0 && pair.ws.getBufferedAmount() > 0,
-    'actual native projection stays pending through all resource measurements',
+    pendingState.busy &&
+      released === 0 &&
+      quarantined === 0 &&
+      (tlsMode
+        ? pendingState.frameOwned &&
+          pendingState.receiptBytes === 16 &&
+          pendingState.receiptConfirmed === false &&
+          pendingState.ready &&
+          pendingState.peerStopped &&
+          !pendingState.peerDecodedFrame
+        : pendingState.rawNative > 0),
+    `actual projection ownership persists through resource measurements: ${JSON.stringify(pendingState)}`,
   );
+
   const evidence = {
     before,
     handoffBefore,
@@ -339,8 +375,11 @@ try {
     budget: 1048576,
     projectedBytes,
     actualNativeBuffered: pair.ws.getBufferedAmount(),
+    pendingState,
     calibration,
     nativeCopyAllowanceBytes: nativeCopyAllowance.byteLength,
+    tlsWorkingAllowanceBytes: tlsWorkingAllowance.byteLength,
+    transport: tlsMode ? 'wss-native-receipt' : 'plain-ws',
     fixturePressureAllowanceBytes: pressureAllowance.byteLength,
     viewCount: views.length,
     envelopeAllowanceBytes: envelopeAllowance.byteLength,
@@ -359,7 +398,8 @@ try {
       pressureAllowance.length &&
       envelopeAllowance.length &&
       ingressHandoffAllowance.length &&
-      calibration.bytes,
+      calibration.bytes &&
+      tlsWorkingAllowance.byteLength === (tlsMode ? 198666 : 0),
     'all retained allowances survive every measurement',
   );
   const actualPendingOwner = Reflect.get(slot, 'frame') as OwnedTerminalSend | null;
