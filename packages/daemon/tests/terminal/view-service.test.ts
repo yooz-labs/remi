@@ -59,6 +59,39 @@ test('overdue actual maintenance preserves a new Open until its first native res
   }
 });
 
+test('an actual reopen preserves read spacing for the same reserved connection view', async () => {
+  const f = await fixture();
+  const peer = await f.client(false, true);
+  const packet = peer.packet;
+  if (!packet) throw new Error('Expected actual packet TLS peer');
+  const recordForPeer = () =>
+    records(f).get(peer.connection() as object) as {
+      lastRead: number;
+      slot: { busy: boolean };
+    };
+  const settle = async () => {
+    await until(packet.hasPendingPong, 'actual reopen-rate native receipt');
+    packet.confirmPong();
+    await until(() => !recordForPeer().slot.busy, 'actual reopen-rate receipt settled');
+  };
+  const first = await peer.submit(peer.open());
+  if (first.type !== 'session_terminal_opened') throw new Error('Expected first owned view');
+  await settle();
+  const read = await peer.submit(peer.read(first.viewId));
+  expect(read.type).toBe('session_terminal_snapshot');
+  const previousRead = recordForPeer().lastRead;
+  await settle();
+  const reopened = await peer.submit(peer.open());
+  if (reopened.type !== 'session_terminal_opened') throw new Error('Expected new owned view');
+  expect(reopened.viewId).not.toBe(first.viewId);
+  await settle();
+  expect(performance.now() - previousRead).toBeLessThan(500);
+  const second = await peer.submit(peer.read(reopened.viewId));
+  expect(second).toMatchObject({ type: 'session_terminal_refused', code: 'busy' });
+  expect(recordForPeer().lastRead).toBe(previousRead);
+  await settle();
+});
+
 test('an actual Close cancels a held first read before native export', async () => {
   const f = await fixture();
   const peer = await f.client(false, true);

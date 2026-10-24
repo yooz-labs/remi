@@ -385,7 +385,7 @@ export class TerminalViewService {
       record.viewId = id;
       record.until = time + 300000;
       record.expiresAt = new Date(Date.now() + 300000).toISOString();
-      record.lastRead = Number.NEGATIVE_INFINITY;
+      // A new lease ID reuses this charged connection view and its read throttle.
       record.state = 'open';
       return {
         ...header,

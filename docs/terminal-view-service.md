@@ -23,9 +23,12 @@ to report it. The shared chat/approval connection stays available.
 
 One new explicit Open creates a collision-checked 16-byte opaque ID and five
 monotonic minutes. Wall time formats expiresAt. Reads are spaced by 500 monotonic
-ms and use current complete snapshots/revisions. No output history is retained.
-A short closed/expired/refused receipt consumes its existing view for one logical
-second, starting at admission for a new control record. Logical expiry does not pretend that pending native bytes were disposed;
+ms per reserved connection view, including across a new Open, and use current
+complete snapshots/revisions. No output history is retained.
+A transition into closed/expired/refused receipt state consumes its existing view
+for one logical second, starting at admission for an initial control record.
+Transient busy, wrong-view and future-revision refusals leave an open lease
+active. Logical expiry does not pretend that pending native bytes were disposed;
 uncertain ownership can keep fixed charge after the receipt becomes inaccessible.
 
 TLS ownership follows #1646: only an actual matching pong for a fresh native ping
@@ -50,8 +53,10 @@ bytes cannot be retracted and retain their disposal accounting.
 
 Original UTF8/JSON units reach strict ingress before generic ACK/deduplication.
 The raw byte limit precedes decoding; malformed correlation retains only bounded
-IDs/operation. No terminal text, body, file path, key or account detail enters
-logs, replay, push or scratch files. Current grant/binding/runtime/attachment or
+IDs/operation. This terminal-view service does not log or persist request/response
+bodies, or add them to replay or push. The separate existing opt-in
+`REMI_PTY_CAPTURE` diagnostic can write raw PTY output to its configured file;
+this service does not disable that diagnostic. Current grant/binding/runtime/attachment or
 capture loss retires the old view. No old incarnation follows a new grant.
 
 ## Source qualification and remaining gates
