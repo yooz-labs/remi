@@ -70,7 +70,54 @@ bodies, or add them to replay or push. The separate existing opt-in
 this service does not disable that diagnostic. Current grant/binding/runtime/attachment or
 capture loss retires the old view. No old incarnation follows a new grant.
 
-## Prior source qualification and remaining gates
+## Current qualification checkpoint
+
+The [progress receipt](terminal-view-service-progress.json) records 272 passing
+source cases on each Mac Bun pin (3,252/3,249 parent assertions), all five TypeScript
+configurations, lint (zero errors/68 baseline warnings), exact CI spelling,
+whitespace and bundle notices. Both actual five-minute signed-WSS lease controls
+remain valid for the unchanged runtime and expiry-fixture graph. The subsequent
+changes affect only standalone proof setup/diagnostics, with fresh static checks.
+Both Mac pins also pass the original/restored source guards; removing the runtime
+or original-grant-effect guard fails its named real component control.
+
+All six compiled Mac ARM64/Linux ARM64/Linux x64 executions on Bun 1.3.11 and
+1.4.2 pass four one-model resource profiles, two combined two-owner/eight-view
+profiles, 30 reservation groups and five policy-migration groups per cell.
+Maximum one-model increment is 1,480,660/4,194,304 bytes;
+maximum two-model sum is 3,066,909/8,388,608 bytes.
+Strict profiles retain actual 64 KiB raw JSON/AST ingress alongside pending native
+output and the full parser queue, including the maximum-node refusal path.
+All original allowances and Linux containment limits remain unchanged. Exact
+source/engine/compiler/certificate/binary hashes retain unchanged completed
+resource/quota measurements; missing Linux Bun 1.4.2 cells were run separately.
+
+The full compiled held-No campaign is **blocked**. Its latest Linux ARM64/Bun
+1.3.11 run read a secondary-process state path that had disappeared during the
+fixture lifecycle. The missing path differs from the retained current scenario's
+directory, suggesting crossed scenario lifetime; the precise cause is unconfirmed.
+All retained current-scenario children exited normally, and the independent No
+child parsed deny promptly, but those observations do not qualify a failed cell.
+Further whole-matrix retries stopped. The next step is a bounded lifecycle trace
+that identifies the late state observer before changing cleanup behavior.
+
+Earlier fixture failures remain failed: polling opportunities were confused with
+wire throughput; setup assumed admission guaranteed an Open response; a one-shot
+lock holder could fail under valid contention; tiny receiver windows delayed
+post-measurement disposal. Actual controls support the narrow corrections.
+Setup now permits bounded fresh Opens only after proving no view/effect and awaits
+only pre-effect fixture lock acquisition. Receive capacity is restored only after
+all resource/No observations. Product limits, authority and no-replay behavior
+remain unchanged. Failed-run child diagnostics are retained.
+
+R1 findings are fixed; the single R2 has no Critical/Important findings. This is a
+partial checkpoint, not full service qualification. All six current held-No cells,
+remaining compiled negatives, final-head hosted checks and the required relay soak
+still gate merge. PR #1655 stays draft. B4 encrypted routing and a qualified
+production caller precede capability advertisement. Rendered native, signed
+hardware, deployed Worker and provider acceptance remain separate. #1595 stays open.
+
+## Historical source qualification and failed 1 MiB gate
 
 The [source receipt](terminal-view-service-source-qualification.json) records
 261 passing cases on each Mac Bun pin (3,197/3,194 parent assertions), five
@@ -132,21 +179,12 @@ source/proof/engine/compiler/certificate inputs across a Docker restart. Runtime
 small-memory and bytecode experiments also exceeded the limit; neither is an
 adopted build or a budget change.
 
-These are source and lease controls. Expanded service/controller/native-pending/
-full-parser memory, actual held-No load, all six compiled host/Bun cells, the
-reserved fix-only C2 review and final-head hosted/actual-soak gates remain before
-adoption. All existing model/frame/queue/view/latency/container bounds and native/
-TLS allowances remain unchanged. Finite retained state is not an OS/RSS ceiling.
-Native rendering, signed hardware, deployed Worker and provider acceptance remain
-separate. #1595 stays open.
-
 The owner subsequently approved 4 MiB for the complete stack with the same
 32 MiB home cap, reducing model admission to eight. No failed 1 MiB profile is
-regraded. Fresh qualification is in progress. Actual grant/quota contention
-controls reproduced premature retirement or lost reads and now preserve only
-unentered bounded intents. A real two-peer native-pong regression reproduced
-repeated-reader precedence: old/fixed/restored-old fails/passes/fails; the waiting
-reader now receives the next native response. The unchanged compiled Mac
-1.3.11 held-No preflight passes all four scenarios, including actual blocked
-cleanup and the deliberately slow control. These preflights do not replace
-the fresh source, actual leases, all-six resource/No matrix or final checks.
+regraded. Actual grant/quota contention controls reproduced premature retirement
+or lost reads and now preserve only unentered bounded intents. A real two-peer
+native-pong regression reproduced repeated-reader precedence:
+old/fixed/restored-old fails/passes/fails. The waiting reader now receives the
+next native response. Current partial results are recorded above; the older
+261-case receipt and failed campaigns remain historical evidence.
+Finite retained state is not an OS/RSS ceiling.

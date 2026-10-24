@@ -4,7 +4,8 @@ This standalone B3a component implements the home quotas from the approved
 [#1595 plan](../.context/issue-1595-backend-plan.md) and ADR0046/0047 and [ADR0048](../.context/decisions/0048-terminal-stack-budget-and-policy.md).
 The original standalone phase added no production constructor or capture observer.
 [B3b (#1620)](terminal-capture.md) now composes model reservations with launch-time
-capture; secure terminal handlers, advertised capability and a pane remain pending.
+capture; the [signed service](terminal-view-service.md) implements direct WSS handlers.
+Capability advertisement and qualified pane integration remain pending.
 
 ## Counted resources
 
@@ -143,5 +144,7 @@ in the same review round.
 
 The version-2 4 MiB/eight-model policy adds five actual migration groups, including
 live legacy charges, a reaped legacy process, the empty transition, old-writer
-refusal and unknown-policy refusal. Fresh source and all-six compiled controls
-remain required for this revision; the version-1 receipts above are historical.
+refusal and unknown-policy refusal. The [service progress receipt](terminal-view-service-progress.json)
+records all 30 reservation and five migration groups passing on all six compiled
+cells under version 2. The full service held-No gate remains blocked separately;
+the version-1 receipts above remain historical.

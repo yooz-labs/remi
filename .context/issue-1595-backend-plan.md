@@ -20,9 +20,12 @@ eight captured models, with 1/2/4/8 view quotas and all other frame, text,
 geometry, parser, lease, rate and native allowances unchanged. ADR0048 records
 version 2 policy and conservative old/new writer compatibility. Primitive 1 MiB
 evidence is unchanged; no failed service profile is retroactively qualified.
-Fresh service qualification on all six compiled executions, combined two-owner,
-eight-view accounting and held-No controls precede adoption. C1 PR #1642 landed;
-C2 PR #1655 stays draft. B4 and media/profile phases remain as planned.
+Source/lease and all six resource/quota cells now pass, including two-owner/eight-view
+accounting; see the [progress receipt](../docs/terminal-view-service-progress.json).
+The held-No fixture has an unresolved state-file lifecycle failure. The fixed-delta
+review is complete; C2 PR #1655 stays draft pending the full compiled held/negative
+gates and final-head hosted checks/relay soak. C1 PR #1642 landed. B4 and the
+media/profile phases remain as planned.
 
 ## Context
 
@@ -144,7 +147,7 @@ Proposed bounds:
 - At most 240 columns and 60 rows; 32 KiB aggregate UTF-8 line text and 64 KiB encoded raw JSON per frame. An unsupported geometry/content model makes this view unavailable; never silently truncate a current screen or raise the connection limit.
 - At most two reads per second, one outstanding per view. Coalesce screen updates; a slow viewer receives the latest complete snapshot, not an unbounded output queue. Frames for stale view IDs are discarded.
 - One active view per connection, two per device, four per session, eight per Remi home. Shared metadata leases count child processes together and release only owned reservations.
-- Owner-approved revised budget: at most 1 MiB screen-model state per eligible session and 32 such models per home (32 MiB). The original 256 KiB failure stays recorded in #1609. No terminal contents on disk, in replay history, push or logs. Qualification includes parser and pending-send allocations, not just visible text length; it is not an OS/process memory ceiling.
+- Owner-approved complete-stack budget under ADR0048: 4 MiB per eligible session and eight captured models per home (32 MiB). The primitive retains its independent 1 MiB qualification. The original 256 KiB failure stays recorded in #1609. No terminal contents on disk, in replay history, push or logs. Qualification includes parser and pending-send allocations, not just visible text length; it is not an OS/process memory ceiling.
 - A view expires after five monotonic minutes. A new explicit Open may create a new lease. Session exit, disconnect/detach, profile change, lost child ownership or changed grant/binding retires it at the next bounded authority check and before any further send.
 
 Refusal codes proposed: `malformed`, `unavailable`, `busy`, `expired`, `binding_changed`, `unsupported_screen`.

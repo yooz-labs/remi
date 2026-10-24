@@ -29,8 +29,11 @@ per model while retaining32MiB/home, hence eight captured models. ADR0048 record
 version2 accounting and conservative compatibility with old reservations. The
 primitive keeps its independently qualified1MiB bound. C1ownership PR1642 and
 admission fixture1653 landed after hosted/actual61minute gates; signed service
-PR1655 remains draft while the new accounting, full service resource/held-No and
-caller gates are qualified. Original1MiB service failures remain recorded.
+PR1655 has passing source/lease and six compiled resource/quota cells; its full
+held-No fixture campaign is blocked by a state-file lifecycle failure. The fixed-delta
+review is complete. Current held/negative controls and final-head hosted checks/relay
+soak still gate merge; B4 encrypted routing and the qualified caller precede
+capability advertisement. Original1MiB failures remain recorded.
 Transferred-media preview cleanup uses the owner-confirmed oldest-cache eviction
 when full, preserving explicit Save/export and host source files.
 
