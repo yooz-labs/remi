@@ -192,7 +192,7 @@ export async function createNativeTerminalPair(stable = false) {
     websocket: {
       open(value) {
         ws = value;
-        slot = new TerminalSendSlot(value);
+        slot = new TerminalSendSlot(value, 'plain-ws');
       },
       message() {
         stopPeer();

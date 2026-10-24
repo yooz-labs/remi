@@ -24,11 +24,25 @@ import {
   createNativeTerminalPair,
   runTerminalNetworkPeer,
 } from '../packages/daemon/tests/helpers/terminal-native-pair.ts';
+import {
+  createInProcessNativeTlsTerminalPair,
+  createNativeTlsTerminalPair,
+  runNativeTlsNetworkPeer,
+} from '../packages/daemon/tests/helpers/terminal-tls-pair.ts';
 import { createInProcessNativeTerminalPair } from '../packages/daemon/tests/helpers/terminal-view-ownership-proof.ts';
+const tlsMode = process.argv.includes('--terminal-tls-root');
 function requiredArgument(index: number): string {
   const value = process.argv[index];
   assert(value, 'owned proof argument present');
   return value;
+}
+const tlsPeerMode = process.argv.indexOf('--terminal-tls-peer');
+if (tlsPeerMode !== -1) {
+  await runNativeTlsNetworkPeer(
+    requiredArgument(tlsPeerMode + 1),
+    requiredArgument(tlsPeerMode + 2),
+  );
+  process.exit(0);
 }
 const peerMode = process.argv.indexOf('--terminal-peer');
 if (peerMode !== -1) {
@@ -135,6 +149,7 @@ for (const scenario of process.argv.includes('--scenario')
   let progress = 0;
   let load: Promise<void> | undefined;
   const fast: Awaited<ReturnType<typeof createInProcessNativeTerminalPair>>[] = [];
+  const fastTls: Awaited<ReturnType<typeof createInProcessNativeTlsTerminalPair>>[] = [];
   let slow: Awaited<ReturnType<typeof createNativeTerminalPair>> | undefined;
   const handles: {
     view: NonNullable<
@@ -150,6 +165,23 @@ for (const scenario of process.argv.includes('--scenario')
   let slowOutcome: string | undefined;
   let slowReleased = 0;
   let slowQuarantined = 0;
+  const slowOwnershipHeld = () => {
+    const pair = slow;
+    if (!pair) return false;
+    const receipt = Reflect.get(pair.slot, 'receipt') as Uint8Array | null;
+    return (
+      pair.slot.busy &&
+      slowReleased === 0 &&
+      slowQuarantined === 0 &&
+      (tlsMode
+        ? !!Reflect.get(pair.slot, 'frame') &&
+          receipt?.byteLength === 16 &&
+          Reflect.get(pair.slot, 'receiptConfirmed') === false &&
+          pair.ws.readyState === WebSocket.OPEN
+        : pair.ws.getBufferedAmount() > 0)
+    );
+  };
+  let loadFailure: unknown;
   let nextRead = performance.now();
   const scheduleReads = () => {
     if (performance.now() < nextRead) return;
@@ -381,17 +413,24 @@ for (const scenario of process.argv.includes('--scenario')
       await Bun.sleep(1);
     }
     const boundedSocketPeer = process.platform === 'linux';
-    slow = await createNativeTerminalPair(boundedSocketPeer);
+    slow = tlsMode
+      ? await createNativeTlsTerminalPair()
+      : await createNativeTerminalPair(boundedSocketPeer);
     assert(
       !boundedSocketPeer || (slow.senderCapacity !== undefined && slow.senderCapacity <= 8192),
       'Linux held fixture bounds its exact native sender',
     );
     for (let i = 0; i < 7; i++) {
-      const pair = await createInProcessNativeTerminalPair();
-      pair.peer.resume();
-      fast.push(pair);
+      if (tlsMode) {
+        const pair = await createInProcessNativeTlsTerminalPair();
+        fastTls.push(pair);
+      } else {
+        const pair = await createInProcessNativeTerminalPair();
+        pair.peer.resume();
+        fast.push(pair);
+      }
     }
-    const pairs = [slow, ...fast];
+    const pairs = [slow, ...fast, ...fastTls];
     const diagnosticScreen = (
       Reflect.get(capture, 'captures') as Map<
         string,
@@ -472,13 +511,7 @@ for (const scenario of process.argv.includes('--scenario')
           await Bun.sleep(0);
         }
         scheduleReads();
-        assert(
-          slow?.slot.busy &&
-            slow?.ws.getBufferedAmount() > 0 &&
-            slowReleased === 0 &&
-            slowQuarantined === 0,
-          'real slow native projection remains held',
-        );
+        assert(slowOwnershipHeld(), 'real slow projection ownership remains held');
         assert(
           capture.contextFor(sessionId),
           `accepted output keeps capture available: ${JSON.stringify({
@@ -491,13 +524,16 @@ for (const scenario of process.argv.includes('--scenario')
         progress += Buffer.byteLength(text);
       }
     })();
-    void load.catch(() => {});
+    void load.catch((error) => {
+      loadFailure = error;
+    });
     const loadStart = performance.now();
     while (
       (progress < 131072 || performance.now() - loadStart < 2000) &&
       performance.now() < deadline
     )
       await Bun.sleep(1);
+    if (loadFailure !== undefined) throw loadFailure;
     assert(
       counters.every((c) => c.reads >= 4),
       'all eight views attempted repeated bounded reads',
@@ -578,19 +614,26 @@ for (const scenario of process.argv.includes('--scenario')
     }
     running = false;
     if (load) await load;
-    assert(
-      slow.slot.busy &&
-        slow.ws.getBufferedAmount() > 0 &&
-        slowReleased === 0 &&
-        slowQuarantined === 0,
-      'No completed while one actual native projection is pending',
-    );
+    assert(slowOwnershipHeld(), 'No completed while actual projection ownership is pending');
+    if (tlsMode) {
+      const pair = slow as Awaited<ReturnType<typeof createNativeTlsTerminalPair>>;
+      assert(
+        pair.receiverStopped() && !pair.receivedAnyFrame(),
+        'No completed while independent TLS peer remains stopped',
+      );
+    }
     slow.resumePeer();
     const drainDeadline = performance.now() + 10000;
     const releasedSlowFrame = (): number => slowReleased;
     while (releasedSlowFrame() !== 1) {
       assert(performance.now() < drainDeadline, 'actual pending send drained');
       await Bun.sleep(1);
+    }
+    for (const pair of fastTls) {
+      while (pair.slot.busy) {
+        assert(performance.now() < drainDeadline, 'active TLS native receipts settled');
+        await Bun.sleep(1);
+      }
     }
     for (const h of handles) {
       h.pair.slot.retire();
@@ -629,6 +672,7 @@ for (const scenario of process.argv.includes('--scenario')
       denyParsed: true,
       clientPid: client.pid,
       views: handles.length,
+      tlsViews: tlsMode ? handles.length : 0,
       slowPeerMode: boundedSocketPeer ? 'bounded pre-connect raw TCP' : 'native paused Node TCP',
       readAttempts: counters.map((c) => c.reads),
       sent: counters.map((c) => c.sent),
@@ -652,7 +696,7 @@ for (const scenario of process.argv.includes('--scenario')
       h.view.retire();
     }
     await cleanup(() => slow?.close());
-    for (const pair of fast) await cleanup(() => pair.close());
+    for (const pair of [...fast, ...fastTls]) await cleanup(() => pair.close());
     await cleanup(() => capture.closeAll());
     await cleanup(async () => {
       if (client?.exitCode === null) client.kill('SIGKILL');
