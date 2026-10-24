@@ -180,6 +180,55 @@ test('another Open waits for an explicit new request after the shared native own
   expect((await second.submit(fresh)).type).toBe('session_terminal_opened');
 });
 
+test('a scheduled Open omitted by actual grant contention requires a fresh explicit request', async () => {
+  const f = await fixture();
+  const peer = await f.client(false, true);
+  assert(peer.packet);
+  const service = f.service as unknown as {
+    admit: (...args: unknown[]) => { slot: TerminalSendSlot } | null;
+  };
+  const admit = service.admit;
+  let blocked = false;
+  service.admit = (...args) => {
+    const record = admit.apply(service, args);
+    if (!record) return record;
+    const schedule = record.slot.schedule;
+    record.slot.schedule = (operation) =>
+      schedule.call(record.slot, (deliver) => {
+        if (!blocked) {
+          blocked = true;
+          return withInterprocessFileLockNonblocking(
+            Reflect.get(f.trust, 'authorizedKeysPath') as string,
+            () => operation(deliver),
+          );
+        }
+        return operation(deliver);
+      });
+    return record;
+  };
+  try {
+    const pressured = peer.open();
+    peer.ws.send(encodeTerminalViewFrame(pressured));
+    await until(() => blocked, 'actual scheduled Open enters held original grant');
+    const record = records(f).get(peer.connection() as object) as {
+      viewId: string;
+      slot: TerminalSendSlot;
+      intent: unknown;
+    };
+    expect(record.viewId).toBe('');
+    expect(record.slot.busy).toBe(false);
+    expect(record.intent).toBeNull();
+    expect(peer.frames).toEqual([]);
+    await Bun.sleep(30);
+    expect(peer.frames).toEqual([]);
+    const fresh = peer.open();
+    expect(fresh.id).not.toBe(pressured.id);
+    expect((await peer.submit(fresh)).type).toBe('session_terminal_opened');
+  } finally {
+    service.admit = admit;
+  }
+});
+
 test('a pending reader gets the next native turn before a just-served reader repeats', async () => {
   const f = await fixture();
   const peers = [await f.client(false, true), await f.client(true, true)];

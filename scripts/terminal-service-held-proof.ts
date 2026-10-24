@@ -63,7 +63,7 @@ if (args.includes('--store-holder')) {
 const records = (f: TerminalServiceFixture) =>
   Reflect.get(f.service, 'records') as Map<
     object,
-    { slot: TerminalSendSlot; intent: unknown; borrowing: boolean }
+    { slot: TerminalSendSlot; intent: unknown; borrowing: boolean; viewId: string }
   >;
 const read = (path: string) => JSON.parse(fs.readFileSync(path, 'utf8'));
 const env = (home: string) => ({
@@ -106,7 +106,7 @@ if (args.includes('--secondary-owner')) {
       outputBytes += Buffer.byteLength(data);
     },
   });
-  const admissions: { id: string; admitted: boolean }[] = [];
+  const admissions: { id: string; admitted: boolean; connectionId: string }[] = [];
   const actual = f.service.handle;
   f.service.handle = (id, ingress) => {
     const result = actual.call(f.service, id, ingress);
@@ -114,6 +114,7 @@ if (args.includes('--secondary-owner')) {
       const connection = f.adapter.getDirectConnection(id);
       admissions.push({
         id: ingress.request.id,
+        connectionId: id,
         admitted: !!connection && records(f).has(connection),
       });
       if (admissions.length > 16) admissions.shift();
@@ -128,7 +129,19 @@ if (args.includes('--secondary-owner')) {
       available: !!f.capture.contextFor(f.sessionId),
       pending: state?.screen.pending.operations ?? 0,
       ingress: state?.ingress?.used ?? 0,
-      admissions,
+      admissions: admissions.map((row) => {
+        const connection = f.adapter.getDirectConnection(row.connectionId);
+        const record = connection && records(f).get(connection);
+        return {
+          ...row,
+          settledWithoutView:
+            !!record &&
+            record.viewId === '' &&
+            !record.slot.busy &&
+            record.intent === null &&
+            !record.borrowing,
+        };
+      }),
       records: [...records(f).values()].map((r) => ({
         state: Reflect.get(r, 'state'),
         busy: r.slot.busy,
@@ -341,7 +354,7 @@ for (const scenario of args.includes('--scenario')
       'seven actual mixed-session peers',
     );
     assert.equal(fast.process.exitCode, null);
-    const admissions: { id: string; admitted: boolean }[] = [];
+    const admissions: { id: string; admitted: boolean; connectionId: string }[] = [];
     const actualHandle = root.service.handle;
     let stopRead = false;
     root.service.handle = (id, ingress) => {
@@ -372,6 +385,7 @@ for (const scenario of args.includes('--scenario')
         const connection = root.adapter.getDirectConnection(id);
         admissions.push({
           id: ingress.request.id,
+          connectionId: id,
           admitted: !!connection && records(root).has(connection),
         });
         if (admissions.length > 16) admissions.shift();
@@ -390,9 +404,29 @@ for (const scenario of args.includes('--scenario')
           if (state.sequence !== sequence) return false;
           const observed = (
             slowPeer || index < 3 ? admissions : read(`${childPrefix}.state`).admissions
-          ).find((item: { id: string }) => item.id === state.states[index]?.requests[0]);
-          return observed !== undefined && !observed.admitted;
-        }, 'actual service view admitted or proved absent');
+          ).find(
+            (item: {
+              id: string;
+              admitted: boolean;
+              connectionId: string;
+              settledWithoutView?: boolean;
+            }) => item.id === state.states[index]?.requests[0],
+          );
+          if (!observed) return false;
+          if (!observed.admitted) return true;
+          if (!slowPeer && index >= 3) return observed.settledWithoutView === true;
+          const connection = root.adapter.getDirectConnection(observed.connectionId);
+          const record = connection && records(root).get(connection);
+          // Admission precedes a separate nonblocking grant attempt. Only a settled
+          // record with no minted ID/effect permits another explicit setup Open.
+          return (
+            !!record &&
+            record.viewId === '' &&
+            !record.slot.busy &&
+            record.intent === null &&
+            !record.borrowing
+          );
+        }, 'actual service view opened or settled without a view');
         if (read(`${prefix}.state`).states[index]?.viewId) {
           const peers = read(`${fastPrefix}.state`).states as { viewId: string }[];
           const rootOwner = slowPeer || index < 3;
@@ -417,7 +451,7 @@ for (const scenario of args.includes('--scenario')
           }, 'each setup Open native receipt settled before the next view');
           break;
         }
-        assert(attempt < 9, 'bounded fresh setup Open after actual non-admission');
+        assert(attempt < 9, 'bounded fresh setup Open after proved no view/effect');
         await Bun.sleep(5);
       }
     };
