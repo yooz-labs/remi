@@ -49,6 +49,21 @@ public enum RemiTranscriptRow: Identifiable, Equatable, Sendable {
     }
 }
 
+/// What `RemiTranscriptGrouping.rows` depends on, so a screen regroups only when it changes.
+public struct RemiTranscriptGroupingInput: Equatable, Sendable {
+    public let entries: [RemiTranscriptEntry]
+    public let pinnedEntryIDs: Set<String>
+
+    public init(entries: [RemiTranscriptEntry], pinnedEntryIDs: Set<String>) {
+        self.entries = entries
+        self.pinnedEntryIDs = pinnedEntryIDs
+    }
+
+    public var rows: [RemiTranscriptRow] {
+        RemiTranscriptGrouping.rows(for: entries, pinnedEntryIDs: pinnedEntryIDs)
+    }
+}
+
 public enum RemiTranscriptGrouping {
     /// A run shorter than this stays as individual rows.
     public static let minimumRun = 3

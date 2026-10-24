@@ -29,7 +29,8 @@ struct MacSessionDetail: View {
     @State private var reviewState = RemiTranscriptReviewState()
     @State private var reviewMemory = RemiConversationReviewMemory()
     @State private var visibleEntryID: String?
-    @State private var expandedToolGroupIDs: Set<String> = []
+    @State private var expandedEntryIDs: Set<String> = []
+    @State private var transcriptRows: [RemiTranscriptRow] = []
     @State private var followsLatest = true
     @State private var latestScrollRequest = 0
     @State private var reviewSessionID: String
@@ -132,11 +133,8 @@ struct MacSessionDetail: View {
 
                             let matchingEntryIDs = Set(reviewState.matchingEntryIDs)
                             RemiTranscriptRowsView(
-                                rows: RemiTranscriptGrouping.rows(
-                                    for: visibleTranscript,
-                                    pinnedEntryIDs: matchingEntryIDs
-                                ),
-                                expandedGroupIDs: $expandedToolGroupIDs
+                                rows: transcriptRows,
+                                expandedEntryIDs: $expandedEntryIDs
                             ) { entry in
                                 RemiTranscriptEntryView(
                                     entry: entry,
@@ -184,6 +182,9 @@ struct MacSessionDetail: View {
                         if previous.last?.id != entries.last?.id { scrollToLatest(using: proxy) }
                     }
                     .onChange(of: latestScrollRequest) { _, _ in scrollToLatest(using: proxy) }
+                    .onChange(of: groupingInput, initial: true) { _, input in
+                        transcriptRows = input.rows
+                    }
                 }
             }
             .remiSessionInteractionBar(
@@ -228,6 +229,8 @@ struct MacSessionDetail: View {
             reconcileConversationSelection()
         }
         .confirmationDialog(
+            // The full name: this confirms a destructive action, so it names the session exactly as the
+            // hub does and does not shorten it by the machine prefix (#1647).
             "Exit \(session.name)?",
             isPresented: $confirmingTermination,
             titleVisibility: .visible
@@ -320,13 +323,26 @@ struct MacSessionDetail: View {
             guard let firstActivityID else { return }
             followsLatest = false
             withAnimation(.easeInOut(duration: 0.2)) {
-                visibleEntryID = firstActivityID
+                visibleEntryID = displayRowID(firstActivityID)
             }
         }
         .labelStyle(.iconOnly)
         .keyboardShortcut(.upArrow, modifiers: .command)
-        .disabled(firstActivityID == nil || visibleEntryID == firstActivityID)
+        .disabled(firstActivityID == nil || firstActivityID.map(displayRowID) == visibleEntryID)
         .help("Jump to first activity (Command-↑)")
+    }
+
+    /// The entries the transcript groups and the ones it must keep visible (search matches).
+    private var groupingInput: RemiTranscriptGroupingInput {
+        RemiTranscriptGroupingInput(
+            entries: visibleTranscript,
+            pinnedEntryIDs: Set(reviewState.matchingEntryIDs)
+        )
+    }
+
+    /// The id of the row showing `entryID`: the entry, or the collapsed tool group hiding it.
+    private func displayRowID(_ entryID: String) -> String {
+        RemiTranscriptGrouping.rowID(for: entryID, in: transcriptRows, expanded: expandedEntryIDs) ?? entryID
     }
 
     private var visibleTranscript: [RemiTranscriptEntry] {
@@ -406,7 +422,7 @@ struct MacSessionDetail: View {
         guard let entryID else { return }
         followsLatest = false
         withAnimation(.easeInOut(duration: 0.2)) {
-            proxy.scrollTo(entryID, anchor: .center)
+            proxy.scrollTo(displayRowID(entryID), anchor: .center)
         }
     }
 
@@ -444,7 +460,15 @@ struct MacSessionDetail: View {
     private func restoreReview(for conversationID: String) {
         let snapshot = reviewMemory.snapshot(for: conversationID)
         reviewState = snapshot.reviewState
-        visibleEntryID = snapshot.visibleEntryID
+        // Map through the new conversation's own rows: a saved position inside a tool run
+        // that is collapsed now points at its group.
+        let restoredRows = RemiTranscriptGroupingInput(
+            entries: visibleTranscript,
+            pinnedEntryIDs: Set(snapshot.reviewState.matchingEntryIDs)
+        ).rows
+        visibleEntryID = snapshot.visibleEntryID.map {
+            RemiTranscriptGrouping.rowID(for: $0, in: restoredRows, expanded: expandedEntryIDs) ?? $0
+        }
         isSearchPresented = snapshot.isSearchPresented
         followsLatest = snapshot.visibleEntryID == nil && !snapshot.isSearchPresented
         if followsLatest { latestScrollRequest += 1 }
