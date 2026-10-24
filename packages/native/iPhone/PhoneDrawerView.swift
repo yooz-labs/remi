@@ -500,7 +500,7 @@ private struct PhoneDrawerSessionRow: View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
             // Only the name is dimmed: the "Last known" caption and the attention badge
             // keep full contrast.
-            Text(session.name)
+            Text(presentation.title)
                 .font(.body)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 .opacity(isLastKnown ? 0.75 : 1)
