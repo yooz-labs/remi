@@ -12,6 +12,7 @@ import {
 import { __resetLoggerForTests, configureLogger } from '../packages/daemon/src/cli/logger.ts';
 import { createMessageApiForSession } from '../packages/daemon/src/cli/session-phases/message-api-setup.ts';
 import { HookServer } from '../packages/daemon/src/hooks/hook-server.ts';
+import { InterprocessFileLockError } from '../packages/daemon/src/storage/interprocess-file-lock.ts';
 import type { TerminalSendSlot } from '../packages/daemon/src/terminal/send-slot.ts';
 import { runOwnedTerminalOutputChild } from '../packages/daemon/tests/helpers/terminal-output-child.ts';
 import {
@@ -57,7 +58,28 @@ if (args.includes('--approval-client')) {
   process.exit(0);
 }
 if (args.includes('--store-holder')) {
-  runTerminalStoreLockHolder([argument('--store-holder'), argument('--store-holder', 2)]);
+  const prefix = argument('--store-holder', 2);
+  const end = performance.now() + 2000;
+  let busyAttempts = 0;
+  for (;;) {
+    try {
+      runTerminalStoreLockHolder([argument('--store-holder'), prefix]);
+      break;
+    } catch (error) {
+      // Fixture setup competes with real quota users. Only a known nonblocking
+      // conflict before the holder's ready/effect may await a fresh acquisition.
+      if (
+        !(error instanceof InterprocessFileLockError) ||
+        !error.retryable ||
+        fs.existsSync(`${prefix}.ready`)
+      )
+        throw error;
+      assert(performance.now() < end, 'owned fixture lock acquisition deadline');
+      busyAttempts++;
+      Bun.sleepSync(5);
+    }
+  }
+  publishResourceReceipt(`${prefix}.acquisition`, { busyAttempts });
   process.exit(0);
 }
 const records = (f: TerminalServiceFixture) =>
@@ -697,7 +719,10 @@ for (const scenario of args.includes('--scenario')
         common.directory,
       );
       children.push(holder);
-      await untilSetup(() => fs.existsSync(`${holderPrefix}.ready`), 'actual quota holder ready');
+      await untilSetup(() => {
+        assert(holder?.process.exitCode === null, 'actual quota holder stays alive during setup');
+        return fs.existsSync(`${holderPrefix}.ready`);
+      }, 'actual quota holder ready');
       assert.equal(read(`${holderPrefix}.ready`).pid, holder.process.pid);
       publishResourceReceipt(`${root.prefix}.command`, {
         sequence: ++sequence,
@@ -882,6 +907,15 @@ for (const scenario of args.includes('--scenario')
           clearTimeout(watch);
         }
       }
+    if (!passed) {
+      for (const [index, child] of children.entries())
+        publishResourceReceipt(join(common.directory, `child-${index}-failure.json`), {
+          pid: child.process.pid,
+          exitCode: child.process.exitCode,
+          stdout: await child.stdout,
+          stderr: await child.stderr,
+        });
+    }
     __resetLoggerForTests();
     if (passed) common.cleanup();
     else console.error('Owned signed-service held evidence retained', common.directory);
