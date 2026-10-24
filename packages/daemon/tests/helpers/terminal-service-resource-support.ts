@@ -136,6 +136,12 @@ export function boundResourceSocket(fd: number, direction: 'send' | 'receive'): 
   }
 }
 
+export interface TerminalResourcePeerTarget {
+  readonly port: number;
+  readonly sessionId: string;
+  readonly binding: TerminalViewBinding;
+  readonly identity: RemiIdentity;
+}
 export interface TerminalResourcePeerSpec {
   readonly port: number;
   readonly ca: string;
@@ -143,6 +149,7 @@ export interface TerminalResourcePeerSpec {
   readonly sessionId: string;
   readonly binding: TerminalViewBinding;
   readonly identities: readonly RemiIdentity[];
+  readonly targets?: readonly TerminalResourcePeerTarget[];
 }
 interface PeerState {
   ready: boolean;
@@ -150,18 +157,34 @@ interface PeerState {
   receiverCapacity: number;
   viewId: string;
   requests: string[];
+  pendingRead: string | null;
+  reads: number;
+  snapshots: number;
+  refusals: number;
   frames: { type: string; requestId: string; bytes: number; digest: string }[];
 }
 
 export async function runTerminalResourcePeers(specPath: string, prefix: string): Promise<never> {
   const spec = JSON.parse(fs.readFileSync(specPath, 'utf8')) as TerminalResourcePeerSpec;
-  assert(spec.identities.length > 0 && spec.identities.length <= 4);
+  const targets =
+    spec.targets ??
+    spec.identities.map((identity) => ({
+      port: spec.port,
+      sessionId: spec.sessionId,
+      binding: spec.binding,
+      identity,
+    }));
+  assert(targets.length > 0 && targets.length <= 8);
   const peers: ReturnType<typeof terminalPacketPeer>[] = [];
   const states: PeerState[] = [];
   let failure: unknown;
   let sequence = 0;
   let exiting = false;
-  const report = () => publishResourceReceipt(`${prefix}.state`, { pid: process.pid, states });
+  let polling = false;
+  let holdPongs = false;
+  let nextRead = 0;
+  const report = () =>
+    publishResourceReceipt(`${prefix}.state`, { pid: process.pid, sequence, states });
   const until = async (check: () => boolean) => {
     const end = performance.now() + 10000;
     while (!check()) {
@@ -170,16 +193,20 @@ export async function runTerminalResourcePeers(specPath: string, prefix: string)
       await Bun.sleep(1);
     }
   };
-  for (const stored of spec.identities) {
-    const identity = await unlockIdentity(stored);
-    const previous = new Set(resourceSocketTuples(spec.port, 'client').map((row) => row.local));
-    const peer = terminalPacketPeer(spec.port, spec.ca);
+  for (const target of targets) {
+    const identity = await unlockIdentity(target.identity);
+    const previous = new Set(resourceSocketTuples(target.port, 'client').map((row) => row.local));
+    const peer = terminalPacketPeer(target.port, spec.ca);
     const state: PeerState = {
       ready: false,
       localPort: 0,
       receiverCapacity: 0,
       viewId: '',
       requests: [],
+      pendingRead: null,
+      reads: 0,
+      snapshots: 0,
+      refusals: 0,
       frames: [],
     };
     peers.push(peer);
@@ -215,6 +242,9 @@ export async function runTerminalResourcePeers(specPath: string, prefix: string)
         const terminal = decodeTerminalViewFrame(data);
         if (terminal && 'requestId' in terminal) {
           if (terminal.type === 'session_terminal_opened') state.viewId = terminal.viewId;
+          if (terminal.requestId === state.pendingRead) state.pendingRead = null;
+          if (terminal.type === 'session_terminal_snapshot') state.snapshots++;
+          if (terminal.type === 'session_terminal_refused') state.refusals++;
           state.frames.push({
             type: terminal.type,
             requestId: terminal.requestId,
@@ -229,7 +259,7 @@ export async function runTerminalResourcePeers(specPath: string, prefix: string)
       }
     };
     await until(() => state.ready);
-    const fresh = resourceSocketTuples(spec.port, 'client').filter(
+    const fresh = resourceSocketTuples(target.port, 'client').filter(
       (row) => !previous.has(row.local),
     );
     assert.equal(fresh.length, 1, 'one actual newly authenticated TLS descriptor');
@@ -241,15 +271,62 @@ export async function runTerminalResourcePeers(specPath: string, prefix: string)
   }
   report();
   publishResourceReceipt(`${prefix}.ready`, { pid: process.pid, peers: states.length });
+  const send = (
+    index: number,
+    action: 'open' | 'read' | 'close',
+    twice = false,
+    afterRevision: number | null = null,
+  ) => {
+    const peer = peers[index];
+    const state = states[index];
+    const target = targets[index];
+    assert(peer && state && target);
+    const request = (): TerminalViewRequest => {
+      const header = {
+        id: randomUUID(),
+        timestamp: new Date().toISOString(),
+        sessionId: target.sessionId,
+      };
+      if (action === 'open')
+        return { ...header, type: 'session_terminal_open', binding: target.binding };
+      assert(state.viewId, 'resource peer owns an actual opaque view');
+      return action === 'close'
+        ? { ...header, type: 'session_terminal_close', viewId: state.viewId }
+        : { ...header, type: 'session_terminal_read', viewId: state.viewId, afterRevision };
+    };
+    const values = Array.from({ length: twice ? 2 : 1 }, request);
+    state.requests = values.map((value) => value.id);
+    if (action === 'read') {
+      state.reads += values.length;
+      state.pendingRead = values.at(-1)?.id ?? null;
+    }
+    if (values.length === 2) peer.sendBatch(values.map(encodeTerminalViewFrame));
+    else {
+      const value = values[0];
+      assert(value);
+      peer.send(encodeTerminalViewFrame(value));
+    }
+  };
   const timer = setInterval(() => {
     try {
       if (failure) throw failure;
-      for (const peer of peers) if (peer.hasPendingPong()) peer.confirmPong();
+      for (const peer of peers) if (!holdPongs && peer.hasPendingPong()) peer.confirmPong();
       const path = `${prefix}.command`;
       if (fs.existsSync(path)) {
         const command = JSON.parse(fs.readFileSync(path, 'utf8')) as {
           sequence: number;
-          action: 'open' | 'read' | 'read-all' | 'close' | 'exit';
+          action:
+            | 'open'
+            | 'read'
+            | 'read-all'
+            | 'close'
+            | 'exit'
+            | 'start-poll'
+            | 'stop-poll'
+            | 'hold-pongs'
+            | 'release-pongs'
+            | 'malformed';
+          ingressProfile?: 'utf16' | 'nodes';
           index?: number;
           twice?: boolean;
           afterRevision?: number | null;
@@ -258,47 +335,60 @@ export async function runTerminalResourcePeers(specPath: string, prefix: string)
           sequence = command.sequence;
           if (command.action === 'exit') {
             exiting = true;
+            polling = false;
             for (const peer of peers) peer.close();
-          } else {
+          } else if (command.action === 'hold-pongs') holdPongs = true;
+          else if (command.action === 'release-pongs') holdPongs = false;
+          else if (command.action === 'malformed') {
+            const index = command.index ?? 0;
+            const target = targets[index];
+            const state = states[index];
+            const peer = peers[index];
+            assert(target && state?.viewId && peer);
+            const value = {
+              type: 'session_terminal_read',
+              id: randomUUID(),
+              timestamp: new Date().toISOString(),
+              sessionId: target.sessionId,
+              viewId: state.viewId,
+              afterRevision: null,
+              padding: command.ingressProfile === 'utf16' ? '\u{1d11e}' : '',
+              ...(command.ingressProfile === 'nodes' && { nodes: Array(503).fill(0) }),
+            };
+            const remaining = 65536 - Buffer.byteLength(JSON.stringify(value));
+            assert(remaining > 0);
+            value.padding += 'x'.repeat(remaining);
+            const raw = JSON.stringify(value);
+            assert.equal(Buffer.byteLength(raw), 65536);
+            peer.send(raw);
+          } else if (command.action === 'start-poll') {
+            polling = true;
+            nextRead = 0;
+          } else if (command.action === 'stop-poll') polling = false;
+          else {
             const indices =
               command.action === 'read-all'
                 ? states.map((_, index) => index)
                 : [command.index ?? 0];
-            for (const index of indices) {
-              const peer = peers[index];
-              const state = states[index];
-              assert(peer && state);
-              const request = (): TerminalViewRequest => {
-                const header = {
-                  id: randomUUID(),
-                  timestamp: new Date().toISOString(),
-                  sessionId: spec.sessionId,
-                };
-                if (command.action === 'open')
-                  return { ...header, type: 'session_terminal_open', binding: spec.binding };
-                assert(state.viewId, 'resource peer owns an actual opaque view');
-                return command.action === 'close'
-                  ? { ...header, type: 'session_terminal_close', viewId: state.viewId }
-                  : {
-                      ...header,
-                      type: 'session_terminal_read',
-                      viewId: state.viewId,
-                      afterRevision: command.afterRevision ?? null,
-                    };
-              };
-              const values = Array.from({ length: command.twice ? 2 : 1 }, request);
-              state.requests = values.map((value) => value.id);
-              if (values.length === 2) peer.sendBatch(values.map(encodeTerminalViewFrame));
-              else {
-                const value = values[0];
-                assert(value);
-                peer.send(encodeTerminalViewFrame(value));
-              }
-            }
-            publishResourceReceipt(`${prefix}.sent`, { sequence });
-            report();
+            for (const index of indices)
+              send(
+                index,
+                command.action === 'read-all' ? 'read' : command.action,
+                command.twice,
+                command.afterRevision,
+              );
           }
+          publishResourceReceipt(`${prefix}.sent`, { sequence });
+          report();
         }
+      }
+      if (polling && performance.now() >= nextRead) {
+        nextRead = performance.now() + 500;
+        for (let index = 0; index < states.length; index++) {
+          const state = states[index];
+          if (state?.viewId && state.pendingRead === null) send(index, 'read');
+        }
+        report();
       }
       if (exiting && peers.every((peer) => peer.readyState === WebSocket.CLOSED)) {
         clearInterval(timer);

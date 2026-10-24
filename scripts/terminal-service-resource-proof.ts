@@ -6,6 +6,7 @@ import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createIdentity, encodeTerminalViewFrame } from '@remi/shared';
+import { TERMINAL_RESERVATION_LIMITS } from '../packages/daemon/src/terminal/reservations.ts';
 import { type BoundedScreen, SCREEN_LIMITS } from '../packages/daemon/src/terminal/screen.ts';
 import type {
   OwnedTerminalSend,
@@ -26,6 +27,11 @@ import {
 } from '../packages/daemon/tests/helpers/terminal-service-resource-support.ts';
 
 const args = process.argv.slice(2);
+const strictIngress = args.includes('--strict-ingress-utf16')
+  ? 'utf16'
+  : args.includes('--strict-ingress-refusal-nodes')
+    ? 'nodes'
+    : null;
 const argument = (name: string, offset = 1) => {
   const index = args.indexOf(name);
   const value = args[index + offset];
@@ -95,12 +101,31 @@ async function runProfile(measured: boolean) {
     ? argument('--terminal-resource-evidence')
     : null;
   const certificateRoot = argument('--terminal-tls-root');
-  const files = ownedTerminalResourceFiles(certificateRoot);
+  const coordination =
+    measured && args.includes('--terminal-service-coordination')
+      ? {
+          prefix: argument('--terminal-service-coordination'),
+          owner: argument('--terminal-service-owner'),
+        }
+      : null;
+  if (coordination) assert(coordination.owner === '0' || coordination.owner === '1');
+  const sharedHome = coordination ? argument('--terminal-shared-home') : undefined;
+  const files = ownedTerminalResourceFiles(certificateRoot, sharedHome);
+  const phase = (name: string) => `${coordination?.prefix}.${coordination?.owner}.${name}`;
+  const waitPhase = async (name: string) => {
+    assert(coordination);
+    const end = performance.now() + 60000;
+    while (!fs.existsSync(phase(name))) {
+      assert(performance.now() < end, `owned cross-process setup barrier: ${name}`);
+      await Bun.sleep(5);
+    }
+  };
   const fixture = await terminalServiceFixture({
     files,
     deferredCapture: true,
     size: { cols: 240, rows: 60 },
     initialOutput: '',
+    ...(coordination && { childPrefix: join(files.directory, 'terminal-child') }),
   });
   const prefix = join(files.directory, 'peer');
   const identities = await Promise.all(Array.from({ length: 4 }, () => createIdentity()));
@@ -134,6 +159,7 @@ async function runProfile(measured: boolean) {
   const state = () =>
     JSON.parse(fs.readFileSync(`${prefix}.state`, 'utf8')) as {
       pid: number;
+      sequence: number;
       states: {
         ready: boolean;
         localPort: number;
@@ -144,7 +170,15 @@ async function runProfile(measured: boolean) {
       }[];
     };
   const control = (action: string, index = 0, twice = false) =>
-    publishResourceReceipt(`${prefix}.command`, { sequence: ++sequence, action, index, twice });
+    publishResourceReceipt(`${prefix}.command`, {
+      sequence: ++sequence,
+      action,
+      index,
+      twice,
+      ...(strictIngress && { ingressProfile: strictIngress }),
+      ...(strictIngress === 'nodes' &&
+        action === 'read-all' && { afterRevision: Number.MAX_SAFE_INTEGER }),
+    });
   const isStopped = () => {
     assert(peer && peer.exitCode === null);
     return process.platform === 'linux'
@@ -157,6 +191,7 @@ async function runProfile(measured: boolean) {
   const resume = () => {
     if (peer?.exitCode === null) process.kill(peer.pid, 'SIGCONT');
   };
+  const admissions = new Map<string, { id: string; admitted: boolean }>();
   const originalHandle = fixture.service.handle;
   let stopNextRead = false;
   fixture.service.handle = (id, ingress) => {
@@ -182,7 +217,19 @@ async function runProfile(measured: boolean) {
         Bun.sleepSync(1);
       }
     }
-    return originalHandle.call(fixture.service, id, ingress);
+    const result = originalHandle.call(fixture.service, id, ingress);
+    if (
+      coordination &&
+      ingress.kind === 'request' &&
+      ingress.request.type === 'session_terminal_open'
+    ) {
+      const actorConnection = fixture.adapter.getDirectConnection(id);
+      admissions.set(id, {
+        id: ingress.request.id,
+        admitted: !!actorConnection && records.has(actorConnection),
+      });
+    }
+    return result;
   };
   try {
     const child = Bun.spawn([...command, '--terminal-resource-peer', specPath, prefix], {
@@ -229,7 +276,22 @@ async function runProfile(measured: boolean) {
       assert(tuple);
       boundResourceSocket(tuple.fd, 'send');
     }
+    if (coordination) {
+      publishResourceReceipt(phase('network'), {
+        pid: process.pid,
+        sessionId: fixture.sessionId,
+        peers: 4,
+      });
+      await waitPhase('baseline-go');
+    }
     const before = memory();
+    if (coordination) {
+      publishResourceReceipt(phase('baseline'), {
+        before,
+        modelAbsent: fixture.capture.contextFor(fixture.sessionId) === null,
+      });
+      await waitPhase('admit-go');
+    }
     const nativeCopyAllowance = new Uint8Array(65546);
     const pressureAllowance = new Uint8Array(17418);
     const tlsWorkingAllowance = new Uint8Array(198666);
@@ -239,14 +301,41 @@ async function runProfile(measured: boolean) {
     const source = JSON.parse(fs.readFileSync(`${fixture.prefix}.ready`, 'utf8'));
     assert.deepEqual(source.size, [240, 60]);
     for (let index = 0; index < 4; index++) {
-      control('open', index);
-      await until(() => !!state().states[index]?.viewId, 'actual resource view opened');
+      for (let attempt = 0; ; attempt++) {
+        control('open', index);
+        await until(() => {
+          const current = state();
+          if (current.states[index]?.viewId) return true;
+          if (!coordination || current.sequence !== sequence) return false;
+          const observed = admissions.get(fixture.connectionIds[index] ?? '');
+          return (
+            observed !== undefined &&
+            observed.id === current.states[index]?.requests[0] &&
+            !observed.admitted
+          );
+        }, 'actual resource view opened or proved not admitted');
+        if (state().states[index]?.viewId) break;
+        assert(coordination && attempt < 9, 'bounded fresh Open after proved non-admission');
+        assert(fixture.capture.contextFor(fixture.sessionId)?.available);
+        assert(
+          fixture.adapter.getDirectConnection(fixture.connectionIds[index] ?? '')?.isConnected,
+        );
+        await Bun.sleep(5);
+      }
       await until(
         () => [...records.values()].every((record) => !record.slot.busy),
         'actual Open native receipts settled',
       );
     }
     assert.equal(records.size, 4);
+    if (strictIngress) {
+      control('hold-pongs');
+      await until(() => state().sequence === sequence, 'actual resource peer holds later pongs');
+    }
+    if (coordination) {
+      publishResourceReceipt(phase('opened'), { views: records.size });
+      await waitPhase('measure-go');
+    }
     const capture = (
       Reflect.get(fixture.capture, 'captures') as Map<string, { screen: BoundedScreen }>
     ).get(fixture.sessionId);
@@ -256,35 +345,49 @@ async function runProfile(measured: boolean) {
       await capture.screen.whenIdle();
       assert(capture.screen.available, capture.screen.reason);
     }
-    const connection = fixture.adapter.getDirectConnection(fixture.connectionIds[0] ?? '');
-    assert(connection);
-    const native = Reflect.get(connection, 'ws') as {
-      send(text: string): number;
-      getBufferedAmount(): number;
-    };
-    const originalSend = native.send;
+    type Native = { send(text: string): number; getBufferedAmount(): number };
+    const targets = fixture.connectionIds.map((id) => {
+      const connection = fixture.adapter.getDirectConnection(id);
+      assert(connection);
+      const native = Reflect.get(connection, 'ws') as Native;
+      return { native, send: native.send };
+    });
+    let measuredNative: Native | undefined;
     let handoffBefore: ReturnType<typeof memory> | undefined;
     let handoffAfter: ReturnType<typeof memory> | undefined;
     let handoffStartPending: { bytes: number; operations: number } | undefined;
     let handoffEndPending: { bytes: number; operations: number } | undefined;
     let projectedBytes = 0;
-    native.send = (text) => {
-      native.send = originalSend;
-      const deadline = performance.now() + 1000;
-      while (native.getBufferedAmount() < 16384) {
-        assert(performance.now() < deadline, 'actual bounded native pressure established');
-        originalSend.call(native, 'x'.repeat(1024));
-      }
-      assert(native.getBufferedAmount() <= 17418);
-      projectedBytes = Buffer.byteLength(text);
-      if (args.includes('--negative-overlap')) assert(capture.screen.observe(parserInput));
-      handoffStartPending = { ...capture.screen.pending };
-      handoffBefore = memory();
-      const result = originalSend.call(native, text);
-      handoffAfter = memory();
-      handoffEndPending = { ...capture.screen.pending };
-      return result;
-    };
+    for (const target of targets)
+      target.native.send = (text) => {
+        for (const restore of targets) restore.native.send = restore.send;
+        const native = target.native;
+        measuredNative = native;
+        assert(
+          [...records.values()].some(
+            (record) =>
+              (Reflect.get(record.slot, 'frame') as OwnedTerminalSend | null)?.message.type ===
+              (strictIngress === 'nodes'
+                ? 'session_terminal_refused'
+                : 'session_terminal_snapshot'),
+          ),
+          'actual measured service response has the registered type',
+        );
+        const deadline = performance.now() + 1000;
+        while (native.getBufferedAmount() < 16384) {
+          assert(performance.now() < deadline, 'actual bounded native pressure established');
+          target.send.call(native, 'x'.repeat(1024));
+        }
+        assert(native.getBufferedAmount() <= 17418);
+        projectedBytes = Buffer.byteLength(text);
+        if (args.includes('--negative-overlap')) assert(capture.screen.observe(parserInput));
+        handoffStartPending = { ...capture.screen.pending };
+        handoffBefore = memory();
+        const result = target.send.call(native, text);
+        handoffAfter = memory();
+        handoffEndPending = { ...capture.screen.pending };
+        return result;
+      };
     stopNextRead = true;
     control('read-all', 0, true);
     await until(
@@ -313,7 +416,13 @@ async function runProfile(measured: boolean) {
       { bytes: 0, operations: 0 },
       'synchronous service handoff ends before parser ingress',
     );
-    assert(handoffBefore && handoffAfter && projectedBytes > 0 && projectedBytes <= 65536);
+    assert(
+      handoffBefore &&
+        handoffAfter &&
+        measuredNative &&
+        projectedBytes > 0 &&
+        projectedBytes <= 65536,
+    );
     const settled = memory();
     for (let index = 0; index < 8; index++) assert(capture.screen.observe(parserInput));
     assert.deepEqual(capture.screen.pending, { bytes: 65536, operations: 8 });
@@ -323,6 +432,52 @@ async function runProfile(measured: boolean) {
     const drained = memory();
     assert(isStopped() && pending.borrowing && pending.slot.busy);
     assert([...records.values()].every((record) => record.intent !== null));
+    const ingressSamples: ReturnType<typeof memory>[] = [];
+    if (strictIngress) {
+      // The actual frame/nonce remains owned; only the independent receiver resumes.
+      resume();
+      const originalParse = JSON.parse;
+      let injected = false;
+      JSON.parse = (
+        text: string,
+        reviver?: (this: unknown, key: string, value: unknown) => unknown,
+      ) => {
+        const value = originalParse(text, reviver);
+        if (
+          text.length > 64000 &&
+          Buffer.byteLength(text) === 65536 &&
+          value?.type === 'session_terminal_read' &&
+          value?.sessionId === fixture.sessionId &&
+          typeof value.padding === 'string'
+        ) {
+          assert(pending.borrowing && pending.slot.busy);
+          assert.equal((Reflect.get(pending.slot, 'receipt') as Buffer).byteLength, 16);
+          assert.equal(Reflect.get(pending.slot, 'receiptConfirmed'), false);
+          assert.equal(records.size, 4);
+          assert([...records.values()].every((record) => record.intent !== null));
+          if (strictIngress === 'utf16') assert.equal(value.padding.codePointAt(0), 0x1d11e);
+          else assert.equal(value.nodes.length, 503); // Root+eight property values+503 leaves=512.
+          if (!injected) {
+            for (let index = 0; index < 8; index++) assert(capture.screen.observe(parserInput));
+            injected = true;
+          }
+          assert.deepEqual(capture.screen.pending, { bytes: 65536, operations: 8 });
+          const sample = memory();
+          assert.equal(Buffer.byteLength(text), 65536);
+          assert(value.padding.length > 64000, 'actual parsed wide/raw backing stays live');
+          ingressSamples.push(sample);
+        }
+        return value;
+      };
+      try {
+        control('malformed');
+        await until(() => ingressSamples.length >= 2, 'both actual strict decoder parses observed');
+      } finally {
+        JSON.parse = originalParse;
+      }
+      await capture.screen.whenIdle();
+      assert(capture.screen.available && pending.borrowing && pending.slot.busy);
+    }
     const evidence = {
       before,
       handoffBefore,
@@ -337,10 +492,13 @@ async function runProfile(measured: boolean) {
           settled.charge,
           queued.charge,
           drained.charge,
+          ...ingressSamples.map((sample) => sample.charge),
         ) - before.charge,
-      budget: 1048576,
+      ingressProfile: strictIngress,
+      ingressSamples,
+      budget: TERMINAL_RESERVATION_LIMITS.modelBytes,
       projectedBytes,
-      actualNativeBuffered: native.getBufferedAmount(),
+      actualNativeBuffered: measuredNative.getBufferedAmount(),
       actualViews: records.size,
       actualFirstTimeIntents: [...records.values()].filter((record) => record.intent !== null)
         .length,
@@ -351,14 +509,14 @@ async function runProfile(measured: boolean) {
       ingressHandoffAllowanceBytes: ingressHandoffAllowance.byteLength,
       profile: args.includes('--utf16-escaped') ? 'utf16-escaped' : 'latin1',
       scope:
-        'one actual signedWSS service/capture model;4views,4firsttimeintents,actual encode/native-pending and full64KiB/8parserops;preexistingnetwork/auth/registry/unstartedPTY/globalemptyservice precede fixed baseline; internal capacity is not viewport fidelity or OS ceiling; two-model combined/heldNo/strictrefusal controls still separate',
+        'one actual signedWSS service/capture model;4views,4firsttimeintents,actual encode/native-pending and full64KiB/8parserops;preexistingnetwork/auth/registry/unstartedPTY/globalemptyservice precede fixed baseline; strict ingress samples when selected include actual raw/AST with same pending nonce and full parser queue; internal capacity is not viewport fidelity or OS ceiling; combined and heldNo remain separate',
     };
     if (measured && args.includes('--terminal-resource-evidence'))
       publishResourceReceipt(argument('--terminal-resource-evidence'), evidence);
     if (measured)
       assert(
-        evidence.conservativePeakDelta <= 1048576,
-        `one MiB expanded actual service gate: ${JSON.stringify(evidence)}`,
+        evidence.conservativePeakDelta <= TERMINAL_RESERVATION_LIMITS.modelBytes,
+        `approved complete service state budget: ${JSON.stringify(evidence)}`,
       );
     assert(
       nativeCopyAllowance.length &&
@@ -368,13 +526,35 @@ async function runProfile(measured: boolean) {
         ingressHandoffAllowance.length,
     );
 
+    if (coordination) {
+      publishResourceReceipt(phase('measured'), evidence);
+      await waitPhase('audit-go');
+      assert.equal(records.size, 4, 'all four actual owner views survive combined pressure');
+      assert(
+        [...records.values()].every(
+          (record) => record.intent !== null && Reflect.get(record, 'state') === 'open',
+        ),
+      );
+      assert(
+        isStopped() && pending.borrowing && pending.slot.busy && Reflect.get(pending.slot, 'frame'),
+      );
+      publishResourceReceipt(phase('held'), {
+        views: records.size,
+        intents: 4,
+        frames: 1,
+        stopped: true,
+      });
+      await waitPhase('finish-go');
+    }
     const owned = Reflect.get(pending.slot, 'frame') as OwnedTerminalSend;
     const expectedDigest = createHash('sha256')
       .update(encodeTerminalViewFrame(owned.message))
       .digest('hex');
     resume();
+    if (strictIngress) control('release-pongs');
     await until(
-      () => state().states[0]?.frames.some((frame) => frame.digest === expectedDigest) === true,
+      () =>
+        state().states.some((row) => row.frames.some((frame) => frame.digest === expectedDigest)),
       'actual peer receives complete service snapshot',
     );
     await until(

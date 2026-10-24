@@ -43,6 +43,8 @@ export async function terminalServiceFixture(
     size?: { cols: number; rows: number };
     initialOutput?: string;
     childPrefix?: string;
+    onOutput?: (data: string) => void;
+    messageApiFactory?: (registry: SessionRegistry, sessionId: string) => MessageAPI;
   } = {},
 ) {
   const files = options.files ?? directTlsFixture();
@@ -77,6 +79,7 @@ export async function terminalServiceFixture(
       size: options.size ?? { cols: 40, rows: 4 },
     },
     {
+      ...(options.onOutput && { onData: options.onOutput }),
       onExit: () => {
         exited = true;
       },
@@ -166,7 +169,9 @@ export async function terminalServiceFixture(
       identityStore: trust,
     });
     if (!options.deferredCapture) await launch();
-    registry.registerSession(sessionId, files.work, pty, new MessageAPI({ sessionId }), true);
+    const messageApi =
+      options.messageApiFactory?.(registry, sessionId) ?? new MessageAPI({ sessionId });
+    registry.registerSession(sessionId, files.work, pty, messageApi, true);
     assign();
     if (!options.deferredCapture) await waitForSnapshot();
     const connectionIds: string[] = [];
