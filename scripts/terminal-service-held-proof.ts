@@ -12,7 +12,10 @@ import {
 import { __resetLoggerForTests, configureLogger } from '../packages/daemon/src/cli/logger.ts';
 import { createMessageApiForSession } from '../packages/daemon/src/cli/session-phases/message-api-setup.ts';
 import { HookServer } from '../packages/daemon/src/hooks/hook-server.ts';
-import { InterprocessFileLockError } from '../packages/daemon/src/storage/interprocess-file-lock.ts';
+import {
+  InterprocessFileLockError,
+  withInterprocessFileLockNonblocking,
+} from '../packages/daemon/src/storage/interprocess-file-lock.ts';
 import type { TerminalSendSlot } from '../packages/daemon/src/terminal/send-slot.ts';
 import { runOwnedTerminalOutputChild } from '../packages/daemon/tests/helpers/terminal-output-child.ts';
 import {
@@ -561,15 +564,52 @@ async function runHeldScenario(scenario: string): Promise<void> {
       assert(native.getBufferedAmount() <= 17418);
       return nativeSend.call(native, text);
     };
-    stopRead = true;
-    slowControl('read', true);
-    await until(
-      () =>
-        [...records(root).values()].some(
-          (record) => !!Reflect.get(record.slot, 'frame') && !!record.intent,
-        ),
-      'actual stopped slow service projection and intent',
-    );
+    // Construct the two distinct occupied slots before starting measured load.
+    // A concurrent owner can otherwise make both batch reads arrive while the
+    // original grant is busy; the service correctly keeps just one intent.
+    // Stop that owned actor only after both real locks prove it owns neither.
+    // It resumes before any load/No observation and must serve actual snapshots.
+    const grantPath = Reflect.get(root.trust, 'authorizedKeysPath');
+    assert.equal(typeof grantPath, 'string');
+    let setupPaused = false;
+    try {
+      const acquireUntil = performance.now() + 2000;
+      for (;;) {
+        try {
+          withInterprocessFileLockNonblocking(grantPath as string, () =>
+            withInterprocessFileLockNonblocking(
+              join(common.home, 'terminal-view/reservations.json'),
+              () => {
+                process.kill(secondary.process.pid, 'SIGSTOP');
+                setupPaused = true;
+                const stopUntil = performance.now() + 1000;
+                while (!isStopped(secondary)) {
+                  assert(performance.now() < stopUntil, 'owned setup actor stopped');
+                  Bun.sleepSync(1);
+                }
+              },
+            ),
+          );
+          break;
+        } catch (error) {
+          if (setupPaused || !(error instanceof InterprocessFileLockError) || !error.retryable)
+            throw error;
+          assert(performance.now() < acquireUntil, 'owned setup locks obtainable before pause');
+          await Bun.sleep(5);
+        }
+      }
+      stopRead = true;
+      slowControl('read', true);
+      await until(
+        () =>
+          [...records(root).values()].some(
+            (record) => !!Reflect.get(record.slot, 'frame') && !!record.intent,
+          ),
+        'actual stopped slow service projection and intent',
+      );
+    } finally {
+      if (setupPaused) process.kill(secondary.process.pid, 'SIGCONT');
+    }
     const slowRecord = [...records(root).values()].find(
       (record) => !!Reflect.get(record.slot, 'frame'),
     );

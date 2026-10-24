@@ -346,6 +346,47 @@ test('actual grant contention preserves one first-time read before its protected
   }
 });
 
+test('two actual reads under a held grant occupy only one unentered intent', async () => {
+  const f = await fixture();
+  const peer = await f.client(false, true);
+  assert(peer.packet);
+  const opened = await peer.submit(peer.open());
+  assert(opened.type === 'session_terminal_opened');
+  await until(peer.packet.hasPendingPong, 'actual burst Open native receipt');
+  peer.packet.confirmPong();
+  const record = records(f).get(peer.connection() as object) as {
+    intent: { request: { id: string } } | null;
+    slot: TerminalSendSlot;
+  };
+  await until(() => !record.slot.busy, 'actual burst Open settled');
+  const first = peer.read(opened.viewId);
+  const second = peer.read(opened.viewId);
+  await grantLock(f, async () => {
+    assert(peer.packet);
+    peer.packet.sendBatch([encodeTerminalViewFrame(first), encodeTerminalViewFrame(second)]);
+    const ping = createPing();
+    peer.ws.send(serialize(ping));
+    await until(
+      () =>
+        peer.received.some((message) => message.type === 'pong' && message['pingId'] === ping.id),
+      'both actual reads processed while the original grant stays held',
+    );
+    expect(record.intent?.request.id).toBe(first.id);
+    expect(record.slot.busy).toBe(false);
+    expect(peer.frames.some((frame) => frame.type === 'session_terminal_snapshot')).toBe(false);
+  });
+  await until(
+    () => peer.frames.some((frame) => 'requestId' in frame && frame.requestId === first.id),
+    'first actual read enters after grant release',
+  );
+  await until(peer.packet.hasPendingPong, 'first actual read owns its native receipt');
+  expect(record.intent).toBeNull();
+  expect(peer.frames.some((frame) => 'requestId' in frame && frame.requestId === second.id)).toBe(
+    false,
+  );
+  peer.packet.confirmPong();
+});
+
 test('actual grant contention before a scheduled callback retains its unentered read once', async () => {
   const f = await fixture();
   const peer = await f.client();

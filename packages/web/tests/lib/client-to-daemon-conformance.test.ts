@@ -36,6 +36,7 @@ import {
   createAuqAnswer,
   createCreateSessionRequest,
   createHello,
+  createPing,
   deserialize,
   generateId,
 } from '@remi/shared/protocol.ts';
@@ -477,9 +478,9 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
 });
 
 describe.each(['session_terminal_open', 'session_terminal_read', 'session_terminal_close'] as const)(
-  '%s direct refusal before terminal-view activation',
+  '%s optional direct pressure without an installed terminal service',
   (type) => {
-    test('real web client is disconnected without input, resize or acknowledgment', async () => {
+    test('real web client stays available without terminal input, resize or acknowledgment', async () => {
       const port = await reserveRange(1);
       let connected = false;
       const disconnectReasons: string[] = [];
@@ -503,8 +504,14 @@ describe.each(['session_terminal_open', 'session_terminal_read', 'session_termin
         await waitFor(() => connected);
         const fixture = loadFixture(type);
         client.send(fixture);
-        await waitFor(() => disconnectReasons.length > 0 && !client.isTransportOpen);
-        expect(disconnectReasons).toEqual(['Terminal view unavailable']);
+        // #1643 reserves terminal ingress before generic ACK/dispatch. Missing
+        // optional capacity preserves the shared connection; an ordered real
+        // ping proves this request was processed without an arbitrary sleep.
+        const ping = createPing();
+        client.send(ping);
+        await waitFor(() => received.some((message) => message.type === 'pong' && message.pingId === ping.id));
+        expect(client.isTransportOpen).toBe(true);
+        expect(disconnectReasons).toEqual([]);
         expect(effects).toEqual([]);
         expect(received.some((message) => message.type === 'ack' && message.ack.messageId === fixture.id)).toBe(false);
         expect(received.some((message) => message.type.startsWith('session_terminal_'))).toBe(false);
