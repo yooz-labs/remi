@@ -24,6 +24,7 @@ import {
 /** Hand-transcribed, verbatim, from the pre-#900 `ConnectionEvents` /
  *  `ServerEvents` / `AdapterEvents` per-message field names. */
 const GOLDEN_KEYS = [
+  'onTerminalView',
   'onFileDownload',
   'onBrowserLinkReceiver',
   'onStructuredChat',
@@ -93,9 +94,9 @@ test('the file download semantic event crosses the actual generic pick/bind forw
 });
 
 describe('CLIENT_MESSAGE_EVENT_KEYS', () => {
-  test('has exactly 20 entries with no duplicates', () => {
-    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(20);
-    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(20);
+  test('has exactly 21 entries with no duplicates', () => {
+    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(21);
+    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(21);
   });
 
   test('is exactly the golden key set, no more, no fewer', () => {

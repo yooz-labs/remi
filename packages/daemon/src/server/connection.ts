@@ -34,6 +34,7 @@ import {
   isImageInsertionCandidate,
   isImageStagingCandidate,
   isStructuredChatCandidate,
+  isTerminalViewCandidate,
   now,
   serialize,
 } from '@remi/shared';
@@ -78,6 +79,8 @@ import {
 } from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
 import type { SecurePushAuthority } from '../notifications/secure-push-store';
+import { terminalIngress } from '../terminal/ingress.ts';
+import type { NativeTerminalTransport } from '../terminal/send-slot.ts';
 import { AnswerResults } from './answer-results.ts';
 import { type ClientMessageEvents, createSessionExtra } from './client-message-events.ts';
 import { type ClientMessageHandlers, routeClientMessage } from './route-client-message.ts';
@@ -87,11 +90,19 @@ export type ConnectionListenerTransport = 'public-tls' | 'public-plain' | 'priva
 
 /** Connection state */
 export type ConnectionState = 'connecting' | 'authenticating' | 'connected' | 'disconnected';
+/** Optional resource owner, installed only after its own bounded admission (#1643). */
+export interface NativeSocketObserver {
+  drain(): void;
+  pong(data: Uint8Array): void;
+  closed(): void;
+  retire(): void;
+}
 export interface ConnectionTransport {
   readonly readyState: number;
   send(data: string): unknown;
   close(): void;
   getBufferedAmount?(): number;
+  ping?(data: Uint8Array): unknown;
 }
 
 /**
@@ -196,6 +207,8 @@ export class Connection {
   private readonly answerResults = new AnswerResults();
 
   private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private nativeObserver: NativeSocketObserver | undefined;
+  private nativeEnded = false;
   private connectionTimer: ReturnType<typeof setTimeout> | null = null;
   /** Ping ticks since the last pong was received (#662); reset to 0 on pong. */
   private missedPongs = 0;
@@ -308,6 +321,10 @@ export class Connection {
    * Should be called by the WebSocket server's message handler.
    */
   handleMessage(data: string): void {
+    if (isTerminalViewCandidate(data)) {
+      this.handleTerminalViewFrame(data);
+      return;
+    }
     if (isFileDownloadCandidate(data)) {
       this.handleFileDownloadFrame(data);
       return;
@@ -498,6 +515,79 @@ export class Connection {
       if (pending) void pending.catch(() => this.close('File download unavailable'));
     } catch {
       this.close('File download unavailable');
+    }
+  }
+
+  /** No generic ACK/error or approval-connection close for optional terminal pressure. */
+  handleTerminalViewFrame(raw: string | Uint8Array): void {
+    if (!this.checkAuthorization() || !this.isConnected || !this.events.onTerminalView) return;
+    const ingress = terminalIngress(raw);
+    if (!ingress) return;
+    this.missedPongs = 0;
+    try {
+      this.events.onTerminalView(ingress);
+    } catch {
+      // The domain owner retains any entered native ownership; never retry here.
+    }
+  }
+
+  /** The service admits a real view before creating this narrow native adapter. */
+  terminalTransport(): NativeTerminalTransport | null {
+    const ws = this.ws;
+    const buffered = ws.getBufferedAmount;
+    const ping = ws.ping;
+    if (
+      !this.isConnected ||
+      this.connectionListenerTransport !== 'public-tls' ||
+      !buffered ||
+      !ping
+    )
+      return null;
+    return {
+      get readyState() {
+        return ws.readyState;
+      },
+      getBufferedAmount: () => buffered.call(ws),
+      send: (text) => ws.send(text),
+      ping: (nonce) => ping.call(ws, nonce),
+    };
+  }
+
+  observeNativeSocket(observer: NativeSocketObserver): (() => void) | null {
+    if (this.nativeEnded || this.nativeObserver || !this.isConnected) return null;
+    this.nativeObserver = observer;
+    return () => {
+      if (this.nativeObserver === observer) this.nativeObserver = undefined;
+    };
+  }
+
+  nativeSocketDrained(): void {
+    const observer = this.nativeObserver;
+    try {
+      observer?.drain();
+    } catch {
+      this.nativeSocketClosed();
+    }
+  }
+
+  /** Only the actual native callback; never a domain pong or a trust decision. */
+  nativeSocketPong(data: Uint8Array): void {
+    const observer = this.nativeObserver;
+    try {
+      observer?.pong(data);
+    } catch {
+      this.nativeSocketClosed();
+    }
+  }
+
+  nativeSocketClosed(): void {
+    this.nativeEnded = true;
+    const observer = this.nativeObserver;
+    this.nativeObserver = undefined;
+    try {
+      observer?.closed();
+    } catch {
+      /* Unknown ownership remains charged. */
     }
   }
 
@@ -1050,6 +1140,11 @@ export class Connection {
     this.config.authenticator?.removePendingChallenge(this.id);
 
     this.state = 'disconnected';
+    try {
+      this.nativeObserver?.retire();
+    } catch {
+      this.nativeSocketClosed();
+    }
     this.events.onDisconnect?.(reason);
   }
 }

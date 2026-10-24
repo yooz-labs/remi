@@ -306,6 +306,8 @@ import { findAvailableTcpPort } from './session/port-utils.ts';
 import { traceQuestionEvent } from './session/question-trace.ts';
 import { InterprocessFileLockError } from './storage/interprocess-file-lock.ts';
 import { TerminalCaptureHost } from './terminal/capture-host.ts';
+import type { TerminalIngress } from './terminal/ingress.ts';
+import { TerminalViewService } from './terminal/view-service.ts';
 import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
 import { BrowserLinkService } from './tunnel/browser-link-service.ts';
 import { BrowserLinkSessionHost } from './tunnel/browser-link-session-host.ts';
@@ -1186,6 +1188,7 @@ let imageStagingService: ImageStagingService | undefined;
 let imageInsertionCoordinator: ImageInsertionCoordinator | undefined;
 let structuredChatService: StructuredChatService | undefined;
 let browserLinkService: BrowserLinkService | undefined;
+const terminalViewService: { current?: TerminalViewService } = {};
 let browserSessionHost: BrowserLinkSessionHost | undefined;
 let fileDownloadSessionHost: FileDownloadSessionHost | undefined;
 const terminalCaptureHost = new TerminalCaptureHost(REMI_DIR);
@@ -1295,6 +1298,7 @@ const bindingStore = new SessionBindingStore(
         beforeWrite: (id) => {
           browserSessionHost?.beforeBindingWrite(id);
           fileDownloadSessionHost?.beforeBindingWrite(id);
+          terminalViewService.current?.forgetSession(id);
         },
         afterCommit: (id, expected, mirrorVerified) => {
           browserSessionHost?.afterBindingCommit(id, expected, mirrorVerified);
@@ -1356,6 +1360,7 @@ const sessionRegistry = new SessionRegistry(
       retireSecurePushRuntime(sessionId);
       browserSessionHost?.retireSession(sessionId, reason !== 'pty_exit');
       fileDownloadSessionHost?.retireSession(sessionId);
+      terminalViewService.current?.forgetSession(sessionId);
       terminalCaptureHost.retireSession(sessionId);
       void fileDownloadSessionHost?.closeSession(sessionId);
       void imageStagingService?.invalidateSession(sessionId);
@@ -1939,6 +1944,7 @@ async function createNewSession(
     try {
       await terminalCaptureHost.prepare(sessionId, ptySession);
     } catch {
+      terminalViewService.current?.forgetSession(sessionId);
       terminalCaptureHost.retireSession(sessionId);
       logError('[Terminal] Optional launch capture unavailable');
     }
@@ -2010,6 +2016,7 @@ async function createNewSession(
     return ptySession;
   } catch (error) {
     fileDownloadSessionHost?.retireSession(sessionId);
+    terminalViewService.current?.forgetSession(sessionId);
     terminalCaptureHost.retireSession(sessionId);
     browserSessionHost?.finishStartup(false);
     try {
@@ -2647,6 +2654,7 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   onConnectionClosed: (id) => {
     fileDownloadSessionHost?.invalidateConnection(id);
     browserLinkService?.forgetConnection(id);
+    terminalViewService.current?.forgetConnection(id);
     structuredChatService?.forgetConnection(id);
     forgetConnectionToken(id);
     void imageStagingService?.invalidateConnection(id);
@@ -2662,6 +2670,8 @@ const recentRepositoriesHandlers = createRecentRepositoriesHandlers({
 });
 
 let sharedEvents = {
+  onTerminalView: (id: string, ingress: TerminalIngress) =>
+    terminalViewService.current?.handle(id, ingress),
   ...(fileDownloadSessionHost && {
     onFileDownload: async (
       id: UUID,
@@ -2965,6 +2975,17 @@ if (
   sharedEvents = ordinaryEvents;
   console.error('File downloads are unavailable on this host.');
 }
+terminalViewService.current = new TerminalViewService({
+  identityStore: relayTrust,
+  sessions: sessionRegistry,
+  bindings: bindingStore,
+  capture: terminalCaptureHost,
+  directAdapter: () => {
+    const adapter = registry.getAdapter('websocket');
+    return adapter instanceof WebSocketAdapter ? adapter : undefined;
+  },
+  runtimeFor: (id) => harnessSessions.get(id),
+});
 const wsAdapter = new WebSocketAdapter(websocketConfigFor(PORT), sharedEvents);
 registry.register(wsAdapter);
 
@@ -3099,6 +3120,7 @@ async function performCleanup(): Promise<void> {
   fileDownloadSessionHost?.cancelAll();
   browserSessionHost?.cancelAll();
   browserLinkService?.close();
+  terminalViewService.current?.close();
   imageInsertionCoordinator?.close();
   structuredChatService?.close();
   if (imageStagingService && !(await imageStagingService.close()))

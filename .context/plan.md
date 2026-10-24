@@ -24,6 +24,16 @@ B3a (#1617/#1618) supplies shared model/view reservations.
 B3b (#1620) adds [launch-time capture](../docs/terminal-capture.md) before either
 harness starts, with one bounded borrowed frame and disposal before quota release.
 It adds no terminal service, capability or pane; B3c/B4 remain required.
+Current owner decision(2026-10-23): qualify the complete terminal stack at4MiB
+per model while retaining32MiB/home, hence eight captured models. ADR0048 records
+version2 accounting and conservative compatibility with old reservations. The
+primitive keeps its independently qualified1MiB bound. C1ownership PR1642 and
+admission fixture1653 landed after hosted/actual61minute gates; signed service
+PR1655 has passing source/lease and six compiled resource/quota cells; its full
+held-No fixture campaign is blocked by a state-file lifecycle failure. The fixed-delta
+review is complete. Current held/negative controls and final-head hosted checks/relay
+soak still gate merge; B4 encrypted routing and the qualified caller precede
+capability advertisement. Original1MiB failures remain recorded.
 Transferred-media preview cleanup uses the owner-confirmed oldest-cache eviction
 when full, preserving explicit Save/export and host source files.
 
