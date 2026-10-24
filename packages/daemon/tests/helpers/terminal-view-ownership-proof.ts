@@ -162,7 +162,7 @@ export async function createInProcessNativeTerminalPair() {
     websocket: {
       open(value) {
         ws = value;
-        slot = new TerminalSendSlot(value);
+        slot = new TerminalSendSlot(value, 'plain-ws');
       },
       message() {
         insideMessage = true;
