@@ -13,35 +13,50 @@ export interface BorrowedTerminalFrame {
   readonly snapshot: ScreenSnapshot;
   /** Drop the frame/projection before releasing its accounting slot. */
   release(): void;
+  /** Drop JS content but retain its accounting when native disposal is unprovable. */
+  quarantine(): void;
+}
+export interface TerminalCaptureView {
+  readonly available: boolean;
+  borrow(): BorrowedTerminalFrame | null;
+  retire(): void;
 }
 export interface TerminalCaptureContext {
   readonly revision: number;
   readonly available: boolean;
   borrow(): BorrowedTerminalFrame | null;
+  /** Accounting only; the service must establish original device/session authority. */
+  reserveView(device: string, connection: string): TerminalCaptureView;
 }
-interface Capture {
-  readonly sessionId: string;
+interface Charge {
   readonly reservation: string;
   readonly ledger: TerminalReservations;
-  context: TerminalCaptureContext | null;
-  observation: PTYObservation | null;
-  screen: BoundedScreen | null;
-  ingress: { readonly bytes: Uint8Array; used: number } | null;
-  revision: number;
   retired: boolean;
   borrowed: boolean;
-  monitoring: boolean;
   settled: boolean;
   safeToRelease: boolean;
   queued: boolean;
   idle: Promise<void>;
 }
+interface View extends Charge {
+  readonly capture: Capture;
+}
+interface Capture extends Charge {
+  readonly sessionId: string;
+  readonly views: Set<View>;
+  context: TerminalCaptureContext | null;
+  observation: PTYObservation | null;
+  screen: BoundedScreen | null;
+  ingress: { readonly bytes: Uint8Array; used: number } | null;
+  revision: number;
+  monitoring: boolean;
+}
 
 export class TerminalCaptureHost {
   private ledger: TerminalReservations | undefined;
   private readonly captures = new Map<string, Capture>();
-  private readonly retiring = new Set<Capture>();
-  private readonly cleanup: Capture[] = [];
+  private readonly retiring = new Set<Charge>();
+  private readonly cleanup: Charge[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
   private closing = false;
 
@@ -79,6 +94,7 @@ export class TerminalCaptureHost {
       sessionId,
       reservation,
       ledger,
+      views: new Set(),
       context: null,
       observation: null,
       screen: null,
@@ -101,6 +117,8 @@ export class TerminalCaptureHost {
         return host.available(capture);
       },
       borrow: () => host.borrow(capture),
+      reserveView: (device: string, connection: string) =>
+        host.reserveView(capture, device, connection),
     });
     this.captures.set(sessionId, capture);
     capture.observation = pty.observeFromLaunch({
@@ -206,6 +224,84 @@ export class TerminalCaptureHost {
     return capture && this.available(capture) ? capture.context : null;
   }
 
+  private reserveView(capture: Capture, device: string, connection: string): TerminalCaptureView {
+    if (!this.available(capture)) throw new TerminalReservationError('unavailable');
+    let reservation: string;
+    try {
+      reservation = capture.ledger.reserveView(capture.reservation, device, connection);
+    } catch (error) {
+      if (!(error instanceof TerminalReservationError) || error.code !== 'busy')
+        this.retire(capture);
+      throw error;
+    }
+    const view: View = {
+      capture,
+      ledger: capture.ledger,
+      reservation,
+      retired: false,
+      borrowed: false,
+      settled: true,
+      safeToRelease: true,
+      queued: false,
+      idle: Promise.resolve(),
+    };
+    capture.views.add(view);
+    const host = this;
+    return Object.freeze({
+      get available() {
+        return host.viewAvailable(view);
+      },
+      borrow: () => host.borrowView(view),
+      retire: () => host.retireView(view),
+    });
+  }
+
+  private viewAvailable(view: View): boolean {
+    if (view.retired || !this.available(view.capture)) return false;
+    try {
+      // The strict ledger also validates this row's same-owner model reference.
+      if (view.ledger.owns(view.reservation)) return true;
+    } catch (error) {
+      if (error instanceof TerminalReservationError && error.code === 'busy') return false;
+    }
+    this.retire(view.capture);
+    return false;
+  }
+
+  private borrowView(view: View): BorrowedTerminalFrame | null {
+    if (!this.viewAvailable(view)) return null;
+    const frame = this.borrow(view.capture);
+    if (!frame) return null;
+    view.borrowed = true;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      view.borrowed = false;
+      this.queueCleanup(view);
+      frame.release();
+    };
+    return Object.freeze({
+      revision: frame.revision,
+      snapshot: frame.snapshot,
+      release,
+      quarantine: () => {
+        if (released) return;
+        view.safeToRelease = false;
+        frame.quarantine();
+        release();
+      },
+    });
+  }
+
+  private retireView(view: View): void {
+    if (view.retired) return;
+    view.retired = true;
+    view.capture.views.delete(view);
+    this.retiring.add(view);
+    this.queueCleanup(view);
+  }
+
   private borrow(capture: Capture): BorrowedTerminalFrame | null {
     if (
       !this.available(capture) ||
@@ -231,14 +327,21 @@ export class TerminalCaptureHost {
     }
     capture.borrowed = true;
     let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      capture.borrowed = false;
+      this.queueCleanup(capture);
+    };
     return Object.freeze({
       revision: capture.revision,
       snapshot,
-      release: () => {
+      release,
+      quarantine: () => {
         if (released) return;
-        released = true;
-        capture.borrowed = false;
-        this.queueCleanup(capture);
+        capture.safeToRelease = false;
+        this.retire(capture);
+        release();
       },
     });
   }
@@ -251,6 +354,7 @@ export class TerminalCaptureHost {
   private retire(capture: Capture): void {
     if (capture.retired) return;
     capture.retired = true;
+    for (const view of capture.views) this.retireView(view);
     if (this.captures.get(capture.sessionId) === capture) this.captures.delete(capture.sessionId);
     capture.observation?.dispose();
     capture.observation = null;
@@ -270,7 +374,7 @@ export class TerminalCaptureHost {
     });
   }
 
-  private queueCleanup(capture: Capture): void {
+  private queueCleanup(capture: Charge): void {
     if (
       !capture.retired ||
       !capture.settled ||
