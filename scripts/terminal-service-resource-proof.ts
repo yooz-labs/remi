@@ -164,6 +164,7 @@ async function runProfile(measured: boolean) {
         ready: boolean;
         localPort: number;
         receiverCapacity: number;
+        drainCapacity: number;
         viewId: string;
         requests: string[];
         frames: { type: string; requestId: string; bytes: number; digest: string }[];
@@ -258,7 +259,11 @@ async function runProfile(measured: boolean) {
     assert.equal(fixture.connectionIds.length, 4);
     assert(
       state().states.every(
-        (row) => row.ready && row.receiverCapacity > 0 && row.receiverCapacity <= 8192,
+        (row) =>
+          row.ready &&
+          row.receiverCapacity > 0 &&
+          row.receiverCapacity <= 8192 &&
+          row.drainCapacity === 0,
       ),
     );
     assert.equal(fixture.pty.sessionState, 'created');
@@ -550,7 +555,17 @@ async function runProfile(measured: boolean) {
     const expectedDigest = createHash('sha256')
       .update(encodeTerminalViewFrame(owned.message))
       .digest('hex');
+    assert(
+      state().states.every((row) => row.drainCapacity === 0),
+      'receiver windows stayed bounded throughout measurements',
+    );
+    control('restore-receivers');
     resume();
+    await until(
+      () =>
+        state().sequence === sequence && state().states.every((row) => row.drainCapacity >= 65536),
+      'post-measurement receiver windows restored for disposal',
+    );
     if (strictIngress) control('release-pongs');
     await until(
       () =>

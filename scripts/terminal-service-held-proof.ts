@@ -703,6 +703,16 @@ for (const scenario of args.includes('--scenario')
       'actual signed-service held No latency gate',
     );
     assert(slowHeld(), 'No completes while actual slow native ownership remains pending');
+    assert(
+      read(`${slowPrefix}.state`).states.every(
+        (row: { drainCapacity: number }) => row.drainCapacity === 0,
+      ),
+    );
+    assert(
+      read(`${fastPrefix}.state`).states.every(
+        (row: { drainCapacity: number }) => row.drainCapacity === 0,
+      ),
+    );
     publishResourceReceipt(join(common.directory, 'no-result-before-cleanup.json'), {
       scenario,
       latencyMs: outcome.latencyMs,
@@ -723,6 +733,15 @@ for (const scenario of args.includes('--scenario')
       () => read(`${fastPrefix}.sent`).sequence === fastSequence,
       'actual polling stopped',
     );
+    fastControl('restore-receivers');
+    await untilSetup(
+      () =>
+        read(`${fastPrefix}.state`).sequence === fastSequence &&
+        read(`${fastPrefix}.state`).states.every(
+          (row: { drainCapacity: number }) => row.drainCapacity >= 65536,
+        ),
+      'post-No fast receiver windows restored for disposal',
+    );
     await untilSetup(
       () =>
         read(`${childPrefix}.state`).records.every(
@@ -738,7 +757,16 @@ for (const scenario of args.includes('--scenario')
         refusals: row.refusals,
       }),
     );
+    slowControl('restore-receivers');
     process.kill(slow.process.pid, 'SIGCONT');
+    await untilSetup(
+      () =>
+        read(`${slowPrefix}.state`).sequence === slowSequence &&
+        read(`${slowPrefix}.state`).states.every(
+          (row: { drainCapacity: number }) => row.drainCapacity >= 65536,
+        ),
+      'post-No slow receiver window restored for disposal',
+    );
     await untilSetup(
       () => !slowRecord.slot.busy,
       'actual stopped projection disposed by matching pong',

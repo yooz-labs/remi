@@ -106,7 +106,7 @@ export function resourceSocketTuples(port: number, side: 'server' | 'client') {
   }
 }
 
-export function boundResourceSocket(fd: number, direction: 'send' | 'receive'): number {
+function resourceSocketCapacity(fd: number, direction: 'send' | 'receive', bytes: number): number {
   const darwin = process.platform === 'darwin';
   const library = dlopen(darwin ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6', {
     setsockopt: {
@@ -120,7 +120,7 @@ export function boundResourceSocket(fd: number, direction: 'send' | 'receive'): 
   });
   const option = darwin ? (direction === 'send' ? 0x1001 : 0x1002) : direction === 'send' ? 7 : 8;
   try {
-    const wanted = new Int32Array([4096]);
+    const wanted = new Int32Array([bytes]);
     const actual = new Int32Array(1);
     const length = new Uint32Array([4]);
     assert.equal(library.symbols.setsockopt(fd, darwin ? 0xffff : 1, option, ptr(wanted), 4), 0);
@@ -129,11 +129,24 @@ export function boundResourceSocket(fd: number, direction: 'send' | 'receive'): 
       0,
     );
     const capacity = actual[0];
-    assert(capacity !== undefined && capacity > 0 && capacity <= 8192);
+    assert(capacity !== undefined && capacity > 0);
     return capacity;
   } finally {
     library.close();
   }
+}
+
+export function boundResourceSocket(fd: number, direction: 'send' | 'receive'): number {
+  const capacity = resourceSocketCapacity(fd, direction, 4096);
+  assert(capacity <= 8192);
+  return capacity;
+}
+
+/** Disposal only, after every pressure/resource/No observation; mirrors native TLS proof. */
+function restoreResourceReceiver(fd: number): number {
+  const capacity = resourceSocketCapacity(fd, 'receive', 1024 * 1024);
+  assert(capacity >= 65536);
+  return capacity;
 }
 
 export interface TerminalResourcePeerTarget {
@@ -155,6 +168,7 @@ interface PeerState {
   ready: boolean;
   localPort: number;
   receiverCapacity: number;
+  drainCapacity: number;
   viewId: string;
   requests: string[];
   pendingRead: string | null;
@@ -178,6 +192,7 @@ export async function runTerminalResourcePeers(specPath: string, prefix: string)
   assert(targets.length > 0 && targets.length <= 8);
   const peers: ReturnType<typeof terminalPacketPeer>[] = [];
   const states: PeerState[] = [];
+  const descriptors: number[] = [];
   let failure: unknown;
   let sequence = 0;
   let exiting = false;
@@ -202,6 +217,7 @@ export async function runTerminalResourcePeers(specPath: string, prefix: string)
       ready: false,
       localPort: 0,
       receiverCapacity: 0,
+      drainCapacity: 0,
       viewId: '',
       requests: [],
       pendingRead: null,
@@ -267,6 +283,7 @@ export async function runTerminalResourcePeers(specPath: string, prefix: string)
     assert.equal(fresh.length, 1, 'one actual newly authenticated TLS descriptor');
     const tuple = fresh[0];
     assert(tuple);
+    descriptors.push(tuple.fd);
     state.localPort = tuple.local;
     state.receiverCapacity = boundResourceSocket(tuple.fd, 'receive');
     report();
@@ -327,7 +344,8 @@ export async function runTerminalResourcePeers(specPath: string, prefix: string)
             | 'stop-poll'
             | 'hold-pongs'
             | 'release-pongs'
-            | 'malformed';
+            | 'malformed'
+            | 'restore-receivers';
           ingressProfile?: 'utf16' | 'nodes';
           index?: number;
           twice?: boolean;
@@ -339,6 +357,12 @@ export async function runTerminalResourcePeers(specPath: string, prefix: string)
             exiting = true;
             polling = false;
             for (const peer of peers) peer.close();
+          } else if (command.action === 'restore-receivers') {
+            for (const [index, fd] of descriptors.entries()) {
+              const state = states[index];
+              assert(state && state.drainCapacity === 0);
+              state.drainCapacity = restoreResourceReceiver(fd);
+            }
           } else if (command.action === 'hold-pongs') holdPongs = true;
           else if (command.action === 'release-pongs') holdPongs = false;
           else if (command.action === 'malformed') {
