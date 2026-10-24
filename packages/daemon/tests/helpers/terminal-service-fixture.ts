@@ -35,10 +35,18 @@ import { terminalPacketPeer } from './terminal-packet-peer.ts';
 
 export { until };
 export async function terminalServiceFixture(
-  options: { harness?: 'claude' | 'codex'; tls?: boolean } = {},
+  options: {
+    harness?: 'claude' | 'codex';
+    tls?: boolean;
+    files?: ReturnType<typeof directTlsFixture>;
+    deferredCapture?: boolean;
+    size?: { cols: number; rows: number };
+    initialOutput?: string;
+    childPrefix?: string;
+  } = {},
 ) {
-  const files = directTlsFixture();
-  const prefix = join(files.home, 'terminal-child');
+  const files = options.files ?? directTlsFixture();
+  const prefix = options.childPrefix ?? join(files.home, 'terminal-child');
   const sessionId = randomUUID();
   const sockets: { close(): void }[] = [];
   const packetPeers: ReturnType<typeof terminalPacketPeer>[] = [];
@@ -57,15 +65,16 @@ export async function terminalServiceFixture(
     {
       command: process.execPath,
       args: [
-        '--no-env-file',
-        resolve(import.meta.dir, 'terminal-output-child.ts'),
+        ...(Bun.main.startsWith('/$bunfs/')
+          ? []
+          : ['--no-env-file', resolve(import.meta.dir, 'terminal-output-child.ts')]),
         '--owned-output-child',
         prefix,
-        'FIRST\x1b[6n',
+        options.initialOutput ?? 'FIRST\x1b[6n',
       ],
       cwd: files.work,
       env: files.env,
-      size: { cols: 40, rows: 4 },
+      size: options.size ?? { cols: 40, rows: 4 },
     },
     {
       onExit: () => {
@@ -86,6 +95,19 @@ export async function terminalServiceFixture(
       exitedAt: null,
       exitCode: null,
     });
+  async function launch() {
+    assert.equal(pty.sessionState, 'created', 'owned fixture starts its actual PTY once');
+    assert(await capture.prepare(sessionId, pty));
+    await pty.start();
+    await until(() => fs.existsSync(`${prefix}.ready`), 'actual output child ready');
+  }
+  async function waitForSnapshot() {
+    await until(() => {
+      const frame = capture.contextFor(sessionId)?.borrow();
+      frame?.release();
+      return !!frame;
+    }, 'actual launch snapshot ready');
+  }
   async function close() {
     const errors: unknown[] = [];
     service?.close();
@@ -138,21 +160,15 @@ export async function terminalServiceFixture(
   }
   try {
     const trust = new IdentityStore(join(files.home, 'auth'));
-    await trust.generate();
+    if (!trust.load()) await trust.generate();
     const authenticator = new Authenticator({
       identity: await trust.unlock(),
       identityStore: trust,
     });
-    assert(await capture.prepare(sessionId, pty));
-    await pty.start();
-    await until(() => fs.existsSync(`${prefix}.ready`), 'actual output child ready');
+    if (!options.deferredCapture) await launch();
     registry.registerSession(sessionId, files.work, pty, new MessageAPI({ sessionId }), true);
     assign();
-    await until(() => {
-      const frame = capture.contextFor(sessionId)?.borrow();
-      frame?.release();
-      return !!frame;
-    }, 'actual launch snapshot ready');
+    if (!options.deferredCapture) await waitForSnapshot();
     const connectionIds: string[] = [];
     const actualAdapter = new WebSocketAdapter(
       {
@@ -309,7 +325,12 @@ export async function terminalServiceFixture(
       server,
       service: core,
       sessionId,
+      connectionIds,
       client,
+      async startCapture() {
+        await launch();
+        await waitForSnapshot();
+      },
       binding: () => binding,
       rotateBinding() {
         binding = { ...binding, harnessSessionId: randomUUID() };
