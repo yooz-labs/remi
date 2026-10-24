@@ -12,6 +12,17 @@ The [initial B1 report](../docs/terminal-screen-characterization.md) preserves t
 The [bounded-model continuation](../docs/terminal-screen-bounded-model.md) qualifies the approved 1 MiB primitive on all six supported compiled executions under [ADR0046](decisions/0046-bounded-read-only-terminal-screen.md) (#1608).
 Strict wire and shared quotas landed in #1616/#1618; [launch capture](../docs/terminal-capture.md) is B3b (#1620), followed by the secure service and real caller.
 
+## Current complete-stack budget decision
+
+The owner selected4MiB/model after the signed service failed the original1MiB
+gate in one supported runtime/profile. Keep the32MiB home cap: at most eight
+captured models, with1/2/4/8 view quotas and all other frame/text/geometry/parser,
+lease/rate/native allowances unchanged. ADR0048 records version2 policy and
+conservative old/new writer compatibility. Primitive1MiB evidence is unchanged;
+no failed service profile is retroactively qualified. Fresh all-six service,
+combined two-owner/eight-view and held-No controls precede adoption. C1 PR1642
+landed; C2 PR1655 stays draft. B4 and media/profile phases remain as planned.
+
 ## Context
 
 The iPhone drawer epic #1588 left navigation and composer seams for #1595.
@@ -261,7 +272,7 @@ If later explicitly requested, use a bounded plan and at most two review rounds 
 ## Open judgment calls
 
 - Resolved by the owner this session: view the existing agent terminal read-only; keep input in chat/approval controls.
-- Approved architecture: normalized current-screen snapshots over WSS/encrypted relay, with the original geometry/rate/lease bounds above. The owner approved qualifying 1 MiB per session / 32 MiB per home after the original memory-gate failure. Screen implementation and exact wire/ADR remain qualification gates.
+- Approved architecture: normalized current-screen snapshots over WSS/encrypted relay, with the original geometry/rate/lease bounds above. The owner initially approved qualifying the 1 MiB primitive / 32 MiB home. ADR0048 subsequently approves 4 MiB per complete stack and eight models under that same home cap. Screen implementation and exact wire/ADR remain qualification gates.
 - Proposed internal choice: preserve provider flags by using `--remi-profile`; one immutable profile selection per session; remote choices explicitly enabled in local config.
 - Approved sequencing: terminal first, then the existing media/profile uses. Reuse the existing file/image contracts when that follow-up begins.
 - Deliberately deferred: general shell/input, arbitrary file/PDF upload, directory browsing, empty/larger downloads, account usage polling and OS/container isolation. Each needs a separate scope/contract decision.

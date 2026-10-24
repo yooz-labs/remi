@@ -24,6 +24,13 @@ B3a (#1617/#1618) supplies shared model/view reservations.
 B3b (#1620) adds [launch-time capture](../docs/terminal-capture.md) before either
 harness starts, with one bounded borrowed frame and disposal before quota release.
 It adds no terminal service, capability or pane; B3c/B4 remain required.
+Current owner decision(2026-10-23): qualify the complete terminal stack at4MiB
+per model while retaining32MiB/home, hence eight captured models. ADR0048 records
+version2 accounting and conservative compatibility with old reservations. The
+primitive keeps its independently qualified1MiB bound. C1ownership PR1642 and
+admission fixture1653 landed after hosted/actual61minute gates; signed service
+PR1655 remains draft while the new accounting, full service resource/held-No and
+caller gates are qualified. Original1MiB service failures remain recorded.
 Transferred-media preview cleanup uses the owner-confirmed oldest-cache eviction
 when full, preserving explicit Save/export and host source files.
 
