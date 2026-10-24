@@ -181,7 +181,9 @@ export class TerminalViewService {
       slot: new TerminalSendSlot(transport, 'tls-receipt'),
       unsubscribe: () => {},
       viewId: '',
-      until: 0,
+      // Admission already owns a control record while its first native job is queued.
+      // Maintenance may run before that job; the original one-second lifetime starts here.
+      until: performance.now() + 1000,
       expiresAt: '',
       lastRead: Number.NEGATIVE_INFINITY,
       intent: null,
@@ -419,8 +421,7 @@ export class TerminalViewService {
 
   private receipt(record: Record, reason: Record['reason']): void {
     if (record.state !== 'receipt') record.until = performance.now() + 1000;
-    // Newly admitted control-only records also have an honestly charged one-second lifetime.
-    if (record.until === 0) record.until = performance.now() + 1000;
+    // An initial control-only record keeps its original admission deadline.
     record.state = 'receipt';
     record.reason = reason;
   }

@@ -31,6 +31,34 @@ const views = (f: TerminalServiceFixture) =>
       .records as { kind: string }[]
   ).filter((row) => row.kind === 'view');
 
+test('overdue actual maintenance preserves a new Open until its first native response', async () => {
+  const f = await fixture();
+  const peer = await f.client();
+  const original = f.service.handle;
+  let delayed = false;
+  // Make the existing250ms interval overdue before Open creates its later0ms job.
+  // Both callbacks and the incoming signedWSS request remain real.
+  f.service.handle = (id, ingress) => {
+    if (
+      !delayed &&
+      ingress.kind === 'request' &&
+      ingress.request.type === 'session_terminal_open'
+    ) {
+      delayed = true;
+      Bun.sleepSync(275);
+    }
+    return original.call(f.service, id, ingress);
+  };
+  try {
+    const opened = await peer.submit(peer.open());
+    expect(delayed).toBe(true);
+    expect(opened.type).toBe('session_terminal_opened');
+    expect(records(f).size).toBe(1);
+  } finally {
+    f.service.handle = original;
+  }
+});
+
 test('an actual Close cancels a held first read before native export', async () => {
   const f = await fixture();
   const peer = await f.client(false, true);
