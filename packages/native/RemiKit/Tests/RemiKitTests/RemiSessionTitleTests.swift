@@ -81,4 +81,34 @@ import Testing
         #expect(presentation.title == "transit/dev")
         #expect(presentation.accessibilityLabel.hasPrefix("yahyas-mcm:transit/dev, project"))
     }
+
+    @Test func machineNamesWithColonsAndRegexCharactersMatchLiterally() {
+        #expect(RemiSessionTitle.short(name: "a:b:c/dev", machineName: "a:b") == "c/dev")
+        #expect(RemiSessionTitle.short(name: "a:b:c/dev", machineName: "a") == "b:c/dev")
+        #expect(RemiSessionTitle.short(name: "m.*+?(x):app", machineName: "m.*+?(x)") == "app")
+        #expect(RemiSessionTitle.short(name: "mxx:app", machineName: "m.*") == "mxx:app")
+        #expect(RemiSessionTitle.short(name: "[a]:app", machineName: "[a]") == "app")
+    }
+
+    @Test func controlAndBidiCharactersInTheMachineNameAreComparedAsEscaped() {
+        let summary = session(name: "ev\u{202E}il:app/dev", machineName: "ev\u{202E}il")
+        #expect(summary.displayTitle == "app/dev")
+        #expect(!summary.machineName.contains("\u{202E}"))
+        #expect(!summary.displayTitle.contains("\u{202E}"))
+    }
+
+    @Test func whitespaceAfterThePrefixIsTrimmed() {
+        #expect(RemiSessionTitle.short(name: "m:  app/dev", machineName: "m") == "app/dev")
+        #expect(RemiSessionTitle.short(name: "m:\n\tapp", machineName: "m") == "app")
+    }
+
+    @Test func drawerSubtitleDropsTheProjectWhenTheShortTitleEqualsItIgnoringCase() {
+        let summary = RemiSessionSummary(
+            id: "s", machineID: "m", machineName: "yahyas-mcm", name: "yahyas-mcm:Transit",
+            harness: "Claude", project: "transit", status: .idle
+        )
+        let presentation = PhoneDrawerSessionPresentation(session: summary)
+        #expect(presentation.title == "Transit")
+        #expect(presentation.subtitle == "yahyas-mcm")
+    }
 }
