@@ -119,4 +119,74 @@ import Testing
     @Test func emptyInputGivesNoRows() {
         #expect(RemiTranscriptGrouping.rows(for: []).isEmpty)
     }
+
+    private func firstGroup(_ rows: [RemiTranscriptRow]) -> RemiToolGroup? {
+        for row in rows {
+            if case .toolGroup(let group) = row { return group }
+        }
+        return nil
+    }
+
+    @Test func rowIDMapsAHiddenEntryToItsCollapsedGroup() {
+        let rows = RemiTranscriptGrouping.rows(for: [message] + tools(5) + [message])
+        let groupID = "tool-group:t1"
+        #expect(RemiTranscriptGrouping.rowID(for: "t3", in: rows, expanded: []) == groupID)
+        #expect(RemiTranscriptGrouping.rowID(for: "t1", in: rows, expanded: []) == groupID)
+        #expect(RemiTranscriptGrouping.rowID(for: "a", in: rows, expanded: []) == "a")
+        #expect(RemiTranscriptGrouping.rowID(for: "missing", in: rows, expanded: []) == nil)
+    }
+
+    @Test func rowIDIsTheEntryItselfOnceTheGroupIsOpen() {
+        let rows = RemiTranscriptGrouping.rows(for: [message] + tools(5) + [message])
+        #expect(RemiTranscriptGrouping.rowID(for: "t3", in: rows, expanded: ["t2"]) == "t3")
+    }
+
+    @Test func togglingOpensAndClosesAGroup() throws {
+        let rows = RemiTranscriptGrouping.rows(for: tools(5) + [message])
+        let group = try #require(firstGroup(rows))
+        let opened = RemiTranscriptGrouping.toggled(group, in: [])
+        #expect(RemiTranscriptGrouping.isExpanded(group, in: opened))
+        let closed = RemiTranscriptGrouping.toggled(group, in: opened)
+        #expect(closed.isEmpty)
+        #expect(!RemiTranscriptGrouping.isExpanded(group, in: closed))
+    }
+
+    @Test func expansionSurvivesAPinAtTheStartOfTheRun() throws {
+        let entries = tools(6) + [message]
+        let open = RemiTranscriptGrouping.toggled(try #require(firstGroup(RemiTranscriptGrouping.rows(for: entries))), in: [])
+        let pinned = RemiTranscriptGrouping.rows(for: entries, pinnedEntryIDs: ["t1"])
+        let group = try #require(firstGroup(pinned))
+        #expect(group.id == "tool-group:t2")
+        #expect(RemiTranscriptGrouping.isExpanded(group, in: open))
+    }
+
+    @Test func expansionSurvivesAPinInTheMiddleOfTheRun() throws {
+        let entries = tools(9) + [message]
+        let open = RemiTranscriptGrouping.toggled(try #require(firstGroup(RemiTranscriptGrouping.rows(for: entries))), in: [])
+        let groups = RemiTranscriptGrouping.rows(for: entries, pinnedEntryIDs: ["t5"]).compactMap { row -> RemiToolGroup? in
+            if case .toolGroup(let group) = row { group } else { nil }
+        }
+        #expect(groups.count == 2)
+        #expect(groups.allSatisfy { RemiTranscriptGrouping.isExpanded($0, in: open) })
+    }
+
+    @Test func expansionSurvivesPrependedHistoryAndAppendedEntries() throws {
+        let entries = tools(5) + [message]
+        let open = RemiTranscriptGrouping.toggled(try #require(firstGroup(RemiTranscriptGrouping.rows(for: entries))), in: [])
+        let older = RemiTranscriptGrouping.rows(for: tools(3, prefix: "old") + entries)
+        let grown = try #require(firstGroup(older))
+        #expect(grown.id == "tool-group:old1")
+        #expect(RemiTranscriptGrouping.isExpanded(grown, in: open))
+        let appended = try #require(firstGroup(RemiTranscriptGrouping.rows(for: tools(5) + [tool("t6"), message])))
+        #expect(RemiTranscriptGrouping.isExpanded(appended, in: open))
+    }
+
+    @Test func aDifferentGroupStaysClosed() throws {
+        let entries = tools(4, prefix: "p") + [message] + tools(4, prefix: "q") + [message]
+        let groups = RemiTranscriptGrouping.rows(for: entries).compactMap { row -> RemiToolGroup? in
+            if case .toolGroup(let group) = row { group } else { nil }
+        }
+        let open = RemiTranscriptGrouping.toggled(groups[0], in: [])
+        #expect(!RemiTranscriptGrouping.isExpanded(groups[1], in: open))
+    }
 }

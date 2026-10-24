@@ -194,6 +194,7 @@ enum RemiTranscriptMarkup {
 /// `isExpanded`, so it survives the lazy list recycling rows, and shows the group's
 /// entries under the header when it is open.
 public struct RemiToolGroupHeader: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     private let group: RemiToolGroup
     private let isExpanded: Bool
     private let action: () -> Void
@@ -215,7 +216,7 @@ public struct RemiToolGroupHeader: View {
                     Text(group.subtitle)
                         .font(RemiTheme.Typography.metadata)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                         .truncationMode(.tail)
                 }
                 Spacer(minLength: RemiTheme.Spacing.xs)
@@ -223,6 +224,7 @@ public struct RemiToolGroupHeader: View {
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .flipsForRightToLeftLayoutDirection(true)
                     .accessibilityHidden(true)
             }
             .frame(minHeight: RemiTheme.Size.minimumTapTarget)
@@ -239,21 +241,22 @@ public struct RemiToolGroupHeader: View {
 }
 
 /// The transcript rows for both apps: entries, and each tool run as a header that opens
-/// in place. `expandedGroupIDs` lives in the screen so it survives new entries and the
+/// in place. `expandedEntryIDs` (the entry ids of the groups the person opened) lives in the screen so it survives new entries and the
 /// lazy list recycling rows. `entry` builds one entry's row, with the screen's own
 /// identity, search highlight and context menu.
 public struct RemiTranscriptRowsView<EntryContent: View>: View {
     private let rows: [RemiTranscriptRow]
-    @Binding private var expandedGroupIDs: Set<String>
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding private var expandedEntryIDs: Set<String>
     private let entry: (RemiTranscriptEntry) -> EntryContent
 
     public init(
         rows: [RemiTranscriptRow],
-        expandedGroupIDs: Binding<Set<String>>,
+        expandedEntryIDs: Binding<Set<String>>,
         @ViewBuilder entry: @escaping (RemiTranscriptEntry) -> EntryContent
     ) {
         self.rows = rows
-        _expandedGroupIDs = expandedGroupIDs
+        _expandedEntryIDs = expandedEntryIDs
         self.entry = entry
     }
 
@@ -263,15 +266,10 @@ public struct RemiTranscriptRowsView<EntryContent: View>: View {
             case .entry(let transcriptEntry):
                 entry(transcriptEntry)
             case .toolGroup(let group):
-                let isExpanded = expandedGroupIDs.contains(group.id)
+                let isExpanded = RemiTranscriptGrouping.isExpanded(group, in: expandedEntryIDs)
                 RemiToolGroupHeader(group: group, isExpanded: isExpanded) {
-                    withAnimation(RemiTheme.Motion.standard) {
-                        if isExpanded {
-                            expandedGroupIDs.remove(group.id)
-                        } else {
-                            expandedGroupIDs.insert(group.id)
-                        }
-                    }
+                    let toggle = { expandedEntryIDs = RemiTranscriptGrouping.toggled(group, in: expandedEntryIDs) }
+                    if reduceMotion { toggle() } else { withAnimation(RemiTheme.Motion.standard, toggle) }
                 }
                 .id(group.id)
                 if isExpanded {

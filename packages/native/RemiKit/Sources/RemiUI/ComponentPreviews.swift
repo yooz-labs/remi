@@ -158,14 +158,14 @@ private struct ToolRunGallery: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.m) {
                 RemiSessionRow(session: RemiPreviewData.hubNamedSession)
-                RemiTranscriptRowsView(rows: rows, expandedGroupIDs: $expanded) { entry in
+                RemiTranscriptRowsView(rows: rows, expandedEntryIDs: $expanded) { entry in
                     RemiTranscriptEntryView(entry: entry)
                 }
             }
             .padding(RemiTheme.Spacing.m)
         }
         .onAppear {
-            if startsExpanded { expanded = Set(rows.map(\.id)) }
+            if startsExpanded { expanded = Set(RemiPreviewData.toolRunTranscript.map(\.id)) }
         }
     }
 }
