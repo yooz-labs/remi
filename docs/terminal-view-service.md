@@ -230,3 +230,12 @@ old/fixed/restored-old fails/passes/fails. The waiting reader now receives the
 next native response. Current expanded results are recorded above; the older
 261-case receipt and failed campaigns remain historical evidence.
 Finite retained state is not an OS/RSS ceiling.
+
+The next hosted run completed the full remaining cohort in 1,249.40 seconds
+with 10,581 passes, 38 skips and one failure in a diagnostic fixture. Its fixed
+sleeps allowed output to arrive during an asynchronous process sample; the
+resulting `quietMs: 0` was valid. The fixture now advances after observing two
+actual quiet samples before its header and one afterward. The logger, 40 ms
+thresholds, 2,000 ms child timeout and stream/topology assertions are unchanged.
+Both pinned Bun versions must pass the CI controls; full hosted checks remain
+required before merge. This does not change the backend qualification.
