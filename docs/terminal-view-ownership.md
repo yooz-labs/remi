@@ -94,3 +94,34 @@ The original approved limits remain: 1 MiB/model, 32 models/32 MiB per home,
 Five-minute monotonic leases, read-rate enforcement, signed original authority
 and encrypted relay/caller integration remain service/caller work.
 #1595 stays open.
+
+## Capture and native-receipt integration
+
+The accepted TLS fix (#1651) completed its single fix-only R2 with no Critical
+or Important findings. The reviewed capture integration at `dd1ed951` is now
+included without conflicts. The driver verified exact accepted capture/sender/
+engine/proof source blobs and the reviewed fixture corrections. Runtime changed
+only in the two compiled CLI version literals; package metadata advances to
+0.8.2-dev.18. Dependency code and all resource/latency limits remain unchanged.
+No third full review is needed or performed.
+
+The fresh combined source cohort passes 262 cases on both Mac Bun pins
+(1,588 parent assertions on 1.3.11 and 1,585 on 1.4.2). All five TypeScript
+configurations, lint (zero errors/68 unchanged warnings), spelling, whitespace,
+both pinned offline engine reproductions and 20-package bundle notices pass.
+A wholly fresh six-cell compiled run passes all eight profiles per cell,
+including actual WSS pending ownership, four held-No scenarios per transport,
+nine native-receipt groups and all 46 named causal negatives. No profiles were
+reused. Maximum retained increment is 903,406/1,048,576 bytes with all
+original allowances and the pre-registered TLS working allowance. Normal No is
+0.611–85.142 ms; the unchanged 1,250 ms injected busy loop
+observes 1247.040–1254.016 ms, all above the original 1,000 ms
+failure threshold. Every actual child input count is zero.
+
+The [integrated qualification receipt](terminal-view-integration-qualification.json)
+contains exact source/binary hashes and per-cell controls. Original failed gates
+and older accepted receipts stay preserved. Capture #1622 and readiness #1650
+must land before this dependent phase merges, and all required final-head hosted
+checks plus an actual 61-minute relay soak remain gates. This is internal native
+ownership; signed service, encrypted route/real caller, native rendering, signed
+hardware, deployed/provider and installed-release acceptance remain separate.

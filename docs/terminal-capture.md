@@ -238,3 +238,28 @@ Receipts are `capture-testfix-validation-result.json`,
 Original failures and earlier qualified results remain preserved.
 Fresh hosted checks and an actual 61-minute relay soak on the final PR head
 remain required before merge; no prior head's green check substitutes for them.
+
+## Registry and complete-banner integration
+
+The reviewed registry fixture correction (#1645) and complete actual TLS banner
+predicate (#1650) are now integrated locally. No capture, PTY, parser, screen,
+wire or dependency behavior changed. The daemon/shared integration retains only
+the audited compiled-version literal update. The driver checked the exact
+reviewed test blobs; both permitted capture reviews remain complete.
+
+All 196 source cases pass on each Mac Bun pin (1,317 parent assertions on
+1.3.11 and 1,315 on 1.4.2), with all five TypeScript configurations, notices,
+lint (zero errors/68 unchanged warnings), spelling and whitespace checks.
+A fresh six-cell compiled run passes every original viewport/stock-CLI/resource/
+held-No scenario and all 18 named negatives. Maximum retained increment is
+951,478/1,048,576 bytes; normal No is 0.687–15.570 ms;
+the 1,250 ms injected blocking controls observe 1247.312–1258.526 ms
+and all cross the original 1,000 ms failure threshold. Actual PTY input remains zero.
+The [integration receipt](terminal-capture-integration-qualification.json)
+records source/binary hashes and per-cell observations. The previous failed
+hosted registry setup and split-banner source failure stay preserved; these
+controls do not claim to resolve unrelated Mac wrapper/reset/quiet-wait issues.
+
+The complete-banner patch must land before this dependent phase merges.
+Fresh exact-head hosted checks and an actual 61-minute relay soak remain gates;
+no previous head's green check or the B1-only Mac exception substitutes for them.

@@ -80,7 +80,8 @@ disposal, not the exact cause of that earlier grouped failure.
 
 The [compact qualification receipt](terminal-native-receipt-qualification.json)
 records exact source/binary hashes, per-cell values and causal negatives.
-The fix-only R2 and parent final-head hosted gates remain required before adoption.
+The single fix-only R2 completed without Critical or Important findings. Parent
+integration and final-head hosted gates remain required before adoption.
 Raw evidence is retained under
 `/Volumes/S1/yooz/remi/artifacts/terminal-native-receipt-20261023/`;
 the original counterexample and pinned primary source hashes remain under

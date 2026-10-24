@@ -1,0 +1,1409 @@
+{
+  "status": "passed",
+  "scope": "launch capture and local observations only; no terminal transport/capability/caller",
+  "integrationCommit": "70f46ceb6e5125c1959d37fad3397eea843ffef2",
+  "reviewedFixtureHeads": [
+    "7081841745b2633b914242013b510dd514cea202",
+    "a3cd3cc91b2c37a179388c38f4f0d4b919f11c50"
+  ],
+  "sourceTestsPerPin": 196,
+  "parentAssertions": {
+    "1311": 1317,
+    "142": 1315
+  },
+  "summary": {
+    "maximumRetainedBytes": 951478,
+    "budgetBytes": 1048576,
+    "normalNoMs": [0.6870829999999728, 15.569665999999984],
+    "blockingNoMs": [1247.3115420000001, 1258.525625]
+  },
+  "sourceValidation": "capture-readiness-validation-result.json",
+  "compiledQualification": "qualification-readiness-integration-result.json",
+  "cells": [
+    {
+      "pin": "1311",
+      "target": "bun-darwin-arm64",
+      "stockBinarySha256": "1605c59b5ec264cbd3db14f322c1bbeb26c5465470e1a0a6fbad2cf02cda2d62",
+      "viewport": {
+        "receipt": {
+          "status": "passed",
+          "version": "1.3.11",
+          "revision": "af24e281ebacd6ac77c0f14b4206599cf4ae1c9f",
+          "platform": "darwin",
+          "architecture": "arm64",
+          "observations": [
+            {
+              "name": "launch/current/alternate/Unicode/local geometry",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "predating refusal",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "unsupported startup cannot become an ANSI suffix",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "unsupported screen retires only the observer",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "observer failure is isolated",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "lost metadata refuses a frame and retains uncertain debt",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "shutdown retains borrowed charge and does not stop the agent",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "one lifetime observer includes disposed preparations",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "buffered output precedes local resize",
+              "passed": true,
+              "actualChildInputBytes": 0
+            }
+          ],
+          "stockCompiledClaude": true,
+          "scope": "actual capture fidelity and stock compiled Claude lifetime/quota; no enabled terminal transport, Codex-provider, native or installed-release acceptance"
+        },
+        "binaryHash": "14cea219428834133bd558c4fd95717218796e263729b56b40fbfe3b3308a9bc"
+      },
+      "resource": {
+        "receipt": {
+          "version": "1.3.11",
+          "revision": "af24e281ebacd6ac77c0f14b4206599cf4ae1c9f",
+          "platform": "darwin",
+          "architecture": "arm64",
+          "status": "passed",
+          "evidence": {
+            "before": {
+              "heap": 12524073,
+              "extra": 10555273,
+              "charge": 12524073
+            },
+            "settled": {
+              "heap": 13379704,
+              "extra": 10728648,
+              "charge": 13379704
+            },
+            "pending": {
+              "heap": 13454040,
+              "extra": 10801128,
+              "charge": 13454040
+            },
+            "drained": {
+              "heap": 13453891,
+              "extra": 10819171,
+              "charge": 13453891
+            },
+            "conservativePeakDelta": 929967,
+            "budget": 1048576,
+            "projectedBytes": 29315,
+            "scope": "whole incremental host prepare/PTY spawn/model state with one borrowed snapshot and strict send projection; internal capacity input is not a fidelity claim"
+          }
+        },
+        "binaryHash": "20be23d0e6b20979037ed39e8af2af718a5cf10b40ed0a9390796de657151bf2"
+      },
+      "held": {
+        "receipt": {
+          "status": "passed",
+          "version": "1.3.11",
+          "revision": "af24e281ebacd6ac77c0f14b4206599cf4ae1c9f",
+          "runtime": "1.3.11",
+          "platform": "darwin",
+          "architecture": "arm64",
+          "results": [
+            {
+              "scenario": "max-text-native-load",
+              "latencyMs": 2.0705000000000098,
+              "bytesBeforeNo": 131084,
+              "bytesAfterNo": 229397,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 229397,
+              "denyParsed": true,
+              "clientPid": 95117
+            },
+            {
+              "scenario": "clear-native-load",
+              "latencyMs": 1.0799159999999972,
+              "bytesBeforeNo": 131072,
+              "bytesAfterNo": 204800,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 204800,
+              "denyParsed": true,
+              "clientPid": 95133
+            },
+            {
+              "scenario": "retirement-lock-contention",
+              "latencyMs": 0.7435839999999985,
+              "bytesBeforeNo": 163855,
+              "bytesAfterNo": 163855,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 163871,
+              "denyParsed": true,
+              "clientPid": 95162
+            },
+            {
+              "scenario": "blocking-control",
+              "latencyMs": 1251.312833,
+              "bytesBeforeNo": 131084,
+              "bytesAfterNo": 229397,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 229397,
+              "denyParsed": true,
+              "clientPid": 95176
+            }
+          ],
+          "scope": "actual native PTY capture, maximum-text projection and real held HookServer/gate/answer handler including blocked cleanup; not signed terminal transport/provider acceptance"
+        },
+        "binaryHash": "7e9b865e20d7fe721ee453c527ea7e688500f2d64e9234b79450faa16c5bd9b4"
+      }
+    },
+    {
+      "pin": "1311",
+      "target": "bun-linux-arm64",
+      "stockBinarySha256": "f2530192c73c2d7c3a2730bba28cca571236b414831487fc146bfb7ebe318cd4",
+      "viewport": {
+        "receipt": {
+          "status": "passed",
+          "version": "1.3.11",
+          "revision": "af24e281ebacd6ac77c0f14b4206599cf4ae1c9f",
+          "platform": "linux",
+          "architecture": "arm64",
+          "observations": [
+            {
+              "name": "launch/current/alternate/Unicode/local geometry",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "predating refusal",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "unsupported startup cannot become an ANSI suffix",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "unsupported screen retires only the observer",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "observer failure is isolated",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "lost metadata refuses a frame and retains uncertain debt",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "shutdown retains borrowed charge and does not stop the agent",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "one lifetime observer includes disposed preparations",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "buffered output precedes local resize",
+              "passed": true,
+              "actualChildInputBytes": 0
+            }
+          ],
+          "stockCompiledClaude": true,
+          "scope": "actual capture fidelity and stock compiled Claude lifetime/quota; no enabled terminal transport, Codex-provider, native or installed-release acceptance"
+        },
+        "binaryHash": "73d604d01156c185dad6b897f96a776ced9dd68e8809efffa7e7fc734dac9851"
+      },
+      "resource": {
+        "receipt": {
+          "version": "1.3.11",
+          "revision": "af24e281ebacd6ac77c0f14b4206599cf4ae1c9f",
+          "platform": "linux",
+          "architecture": "arm64",
+          "status": "passed",
+          "evidence": {
+            "before": {
+              "heap": 12538526,
+              "extra": 10558126,
+              "charge": 12538526
+            },
+            "settled": {
+              "heap": 13380323,
+              "extra": 10722739,
+              "charge": 13380323
+            },
+            "pending": {
+              "heap": 13453405,
+              "extra": 10793965,
+              "charge": 13453405
+            },
+            "drained": {
+              "heap": 13460868,
+              "extra": 10819556,
+              "charge": 13460868
+            },
+            "conservativePeakDelta": 922342,
+            "budget": 1048576,
+            "projectedBytes": 29315,
+            "scope": "whole incremental host prepare/PTY spawn/model state with one borrowed snapshot and strict send projection; internal capacity input is not a fidelity claim"
+          }
+        },
+        "binaryHash": "77688969280cc7c857d25f6cbcac9cfa484431d564cb811f9847051113487cbb"
+      },
+      "held": {
+        "receipt": {
+          "status": "passed",
+          "version": "1.3.11",
+          "revision": "af24e281ebacd6ac77c0f14b4206599cf4ae1c9f",
+          "runtime": "1.3.11",
+          "platform": "linux",
+          "architecture": "arm64",
+          "results": [
+            {
+              "scenario": "max-text-native-load",
+              "latencyMs": 4.390124999999983,
+              "bytesBeforeNo": 131084,
+              "bytesAfterNo": 229397,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 229397,
+              "denyParsed": true,
+              "clientPid": 34
+            },
+            {
+              "scenario": "clear-native-load",
+              "latencyMs": 0.7376250000000084,
+              "bytesBeforeNo": 131072,
+              "bytesAfterNo": 204800,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 204800,
+              "denyParsed": true,
+              "clientPid": 68
+            },
+            {
+              "scenario": "retirement-lock-contention",
+              "latencyMs": 1.093416999999988,
+              "bytesBeforeNo": 163855,
+              "bytesAfterNo": 163855,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 163871,
+              "denyParsed": true,
+              "clientPid": 120
+            },
+            {
+              "scenario": "blocking-control",
+              "latencyMs": 1253.682792,
+              "bytesBeforeNo": 131084,
+              "bytesAfterNo": 229397,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 229397,
+              "denyParsed": true,
+              "clientPid": 164
+            }
+          ],
+          "scope": "actual native PTY capture, maximum-text projection and real held HookServer/gate/answer handler including blocked cleanup; not signed terminal transport/provider acceptance"
+        },
+        "binaryHash": "c8d4bce04bc1e85bebd45409a7e05bd206b59eff70810a5bdfab9b0d07174d9b"
+      }
+    },
+    {
+      "pin": "1311",
+      "target": "bun-linux-x64",
+      "stockBinarySha256": "b0bac6f7bb21c96dfb03128f235b3b04f367c0ba82b8b597ae035c04acf48b2f",
+      "viewport": {
+        "receipt": {
+          "status": "passed",
+          "version": "1.3.11",
+          "revision": "af24e281ebacd6ac77c0f14b4206599cf4ae1c9f",
+          "platform": "linux",
+          "architecture": "x64",
+          "observations": [
+            {
+              "name": "launch/current/alternate/Unicode/local geometry",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "predating refusal",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "unsupported startup cannot become an ANSI suffix",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "unsupported screen retires only the observer",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "observer failure is isolated",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "lost metadata refuses a frame and retains uncertain debt",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "shutdown retains borrowed charge and does not stop the agent",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "one lifetime observer includes disposed preparations",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "buffered output precedes local resize",
+              "passed": true,
+              "actualChildInputBytes": 0
+            }
+          ],
+          "stockCompiledClaude": true,
+          "scope": "actual capture fidelity and stock compiled Claude lifetime/quota; no enabled terminal transport, Codex-provider, native or installed-release acceptance"
+        },
+        "binaryHash": "285ffa6e9d9f86cc58a684eb5239997c3a4d45bbf3848c355fc9dcb33c3ca776"
+      },
+      "resource": {
+        "receipt": {
+          "version": "1.3.11",
+          "revision": "af24e281ebacd6ac77c0f14b4206599cf4ae1c9f",
+          "platform": "linux",
+          "architecture": "x64",
+          "status": "passed",
+          "evidence": {
+            "before": {
+              "heap": 12585840,
+              "extra": 10609648,
+              "charge": 12585840
+            },
+            "settled": {
+              "heap": 13433433,
+              "extra": 10775721,
+              "charge": 13433433
+            },
+            "pending": {
+              "heap": 13504383,
+              "extra": 10844799,
+              "charge": 13504383
+            },
+            "drained": {
+              "heap": 13507245,
+              "extra": 10868413,
+              "charge": 13507245
+            },
+            "conservativePeakDelta": 921405,
+            "budget": 1048576,
+            "projectedBytes": 29315,
+            "scope": "whole incremental host prepare/PTY spawn/model state with one borrowed snapshot and strict send projection; internal capacity input is not a fidelity claim"
+          }
+        },
+        "binaryHash": "6648cc0191c759eb343559d9dd6e6a376104be4f18d1dc825ed1604137136b94"
+      },
+      "held": {
+        "receipt": {
+          "status": "passed",
+          "version": "1.3.11",
+          "revision": "af24e281ebacd6ac77c0f14b4206599cf4ae1c9f",
+          "runtime": "1.3.11",
+          "platform": "linux",
+          "architecture": "x64",
+          "results": [
+            {
+              "scenario": "max-text-native-load",
+              "latencyMs": 15.569665999999984,
+              "bytesBeforeNo": 131084,
+              "bytesAfterNo": 196626,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 196626,
+              "denyParsed": true,
+              "clientPid": 35
+            },
+            {
+              "scenario": "clear-native-load",
+              "latencyMs": 8.00087499999995,
+              "bytesBeforeNo": 131072,
+              "bytesAfterNo": 172032,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 172032,
+              "denyParsed": true,
+              "clientPid": 68
+            },
+            {
+              "scenario": "retirement-lock-contention",
+              "latencyMs": 4.545624999999973,
+              "bytesBeforeNo": 163855,
+              "bytesAfterNo": 163855,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 163871,
+              "denyParsed": true,
+              "clientPid": 116
+            },
+            {
+              "scenario": "blocking-control",
+              "latencyMs": 1258.525625,
+              "bytesBeforeNo": 131084,
+              "bytesAfterNo": 229397,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 229397,
+              "denyParsed": true,
+              "clientPid": 161
+            }
+          ],
+          "scope": "actual native PTY capture, maximum-text projection and real held HookServer/gate/answer handler including blocked cleanup; not signed terminal transport/provider acceptance"
+        },
+        "binaryHash": "985f655bf578360c18098117a55e8165b39d420889bda287edd7622273a01df5"
+      }
+    },
+    {
+      "pin": "142",
+      "target": "bun-darwin-arm64",
+      "stockBinarySha256": "7cbf55cb7a36c80002155f8f404cb8118f3b3a655357bc79aa0a7c477cc25762",
+      "viewport": {
+        "receipt": {
+          "status": "passed",
+          "version": "1.4.2",
+          "revision": "744846f844374847c902b5e7fd59b4342a51ef99",
+          "platform": "darwin",
+          "architecture": "arm64",
+          "observations": [
+            {
+              "name": "launch/current/alternate/Unicode/local geometry",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "predating refusal",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "unsupported startup cannot become an ANSI suffix",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "unsupported screen retires only the observer",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "observer failure is isolated",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "lost metadata refuses a frame and retains uncertain debt",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "shutdown retains borrowed charge and does not stop the agent",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "one lifetime observer includes disposed preparations",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "buffered output precedes local resize",
+              "passed": true,
+              "actualChildInputBytes": 0
+            }
+          ],
+          "stockCompiledClaude": true,
+          "scope": "actual capture fidelity and stock compiled Claude lifetime/quota; no enabled terminal transport, Codex-provider, native or installed-release acceptance"
+        },
+        "binaryHash": "483526e5bba3cfc8f9bb5b0ba1fa84972a8ee211404cf3e64e9de1b5e70facd3"
+      },
+      "resource": {
+        "receipt": {
+          "version": "1.4.2",
+          "revision": "744846f844374847c902b5e7fd59b4342a51ef99",
+          "platform": "darwin",
+          "architecture": "arm64",
+          "status": "passed",
+          "evidence": {
+            "before": {
+              "heap": 11859483,
+              "extra": 10243995,
+              "charge": 11859483
+            },
+            "settled": {
+              "heap": 12737999,
+              "extra": 10448351,
+              "charge": 12737999
+            },
+            "pending": {
+              "heap": 12810961,
+              "extra": 10520433,
+              "charge": 12810961
+            },
+            "drained": {
+              "heap": 12797710,
+              "extra": 10520798,
+              "charge": 12797710
+            },
+            "conservativePeakDelta": 951478,
+            "budget": 1048576,
+            "projectedBytes": 29315,
+            "scope": "whole incremental host prepare/PTY spawn/model state with one borrowed snapshot and strict send projection; internal capacity input is not a fidelity claim"
+          }
+        },
+        "binaryHash": "e7671ce5d35a0190012abf88b5098aab3120d683d3ead1e8c7c3a958dd164c98"
+      },
+      "held": {
+        "receipt": {
+          "status": "passed",
+          "version": "1.4.2",
+          "revision": "744846f844374847c902b5e7fd59b4342a51ef99",
+          "runtime": "1.4.2",
+          "platform": "darwin",
+          "architecture": "arm64",
+          "results": [
+            {
+              "scenario": "max-text-native-load",
+              "latencyMs": 1.9957080000000076,
+              "bytesBeforeNo": 131084,
+              "bytesAfterNo": 229397,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 229397,
+              "denyParsed": true,
+              "clientPid": 96430
+            },
+            {
+              "scenario": "clear-native-load",
+              "latencyMs": 0.7268750000000068,
+              "bytesBeforeNo": 131072,
+              "bytesAfterNo": 196608,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 196608,
+              "denyParsed": true,
+              "clientPid": 96441
+            },
+            {
+              "scenario": "retirement-lock-contention",
+              "latencyMs": 0.6970410000000129,
+              "bytesBeforeNo": 163855,
+              "bytesAfterNo": 163855,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 163871,
+              "denyParsed": true,
+              "clientPid": 96476
+            },
+            {
+              "scenario": "blocking-control",
+              "latencyMs": 1247.784541,
+              "bytesBeforeNo": 131084,
+              "bytesAfterNo": 229397,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 229397,
+              "denyParsed": true,
+              "clientPid": 96492
+            }
+          ],
+          "scope": "actual native PTY capture, maximum-text projection and real held HookServer/gate/answer handler including blocked cleanup; not signed terminal transport/provider acceptance"
+        },
+        "binaryHash": "2e28b5424dde642456cce54b78bb27b4693a0747bc3b5a9c2ab0a87d2cbe3f9f"
+      }
+    },
+    {
+      "pin": "142",
+      "target": "bun-linux-arm64",
+      "stockBinarySha256": "d37df122cf93920534320fb279b89fe0087136afd6386018b5be1afd7ec8e5eb",
+      "viewport": {
+        "receipt": {
+          "status": "passed",
+          "version": "1.4.2",
+          "revision": "744846f844374847c902b5e7fd59b4342a51ef99",
+          "platform": "linux",
+          "architecture": "arm64",
+          "observations": [
+            {
+              "name": "launch/current/alternate/Unicode/local geometry",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "predating refusal",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "unsupported startup cannot become an ANSI suffix",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "unsupported screen retires only the observer",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "observer failure is isolated",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "lost metadata refuses a frame and retains uncertain debt",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "shutdown retains borrowed charge and does not stop the agent",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "one lifetime observer includes disposed preparations",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "buffered output precedes local resize",
+              "passed": true,
+              "actualChildInputBytes": 0
+            }
+          ],
+          "stockCompiledClaude": true,
+          "scope": "actual capture fidelity and stock compiled Claude lifetime/quota; no enabled terminal transport, Codex-provider, native or installed-release acceptance"
+        },
+        "binaryHash": "32e5fe06ffaa0710226e2f4510f9b19e58bf1ff4ea4410236779e698b37bcfc2"
+      },
+      "resource": {
+        "receipt": {
+          "version": "1.4.2",
+          "revision": "744846f844374847c902b5e7fd59b4342a51ef99",
+          "platform": "linux",
+          "architecture": "arm64",
+          "status": "passed",
+          "evidence": {
+            "before": {
+              "heap": 11848895,
+              "extra": 10240463,
+              "charge": 11848895
+            },
+            "settled": {
+              "heap": 12629232,
+              "extra": 10417872,
+              "charge": 12629232
+            },
+            "pending": {
+              "heap": 12698852,
+              "extra": 10485620,
+              "charge": 12698852
+            },
+            "drained": {
+              "heap": 12705992,
+              "extra": 10508904,
+              "charge": 12705992
+            },
+            "conservativePeakDelta": 857097,
+            "budget": 1048576,
+            "projectedBytes": 29315,
+            "scope": "whole incremental host prepare/PTY spawn/model state with one borrowed snapshot and strict send projection; internal capacity input is not a fidelity claim"
+          }
+        },
+        "binaryHash": "e652235584c57268ad7d567a22ecc8beba87120628b085c13cd2b2ff4f9943c5"
+      },
+      "held": {
+        "receipt": {
+          "status": "passed",
+          "version": "1.4.2",
+          "revision": "744846f844374847c902b5e7fd59b4342a51ef99",
+          "runtime": "1.4.2",
+          "platform": "linux",
+          "architecture": "arm64",
+          "results": [
+            {
+              "scenario": "max-text-native-load",
+              "latencyMs": 1.8331249999999955,
+              "bytesBeforeNo": 131084,
+              "bytesAfterNo": 229397,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 229397,
+              "denyParsed": true,
+              "clientPid": 31
+            },
+            {
+              "scenario": "clear-native-load",
+              "latencyMs": 0.6870829999999728,
+              "bytesBeforeNo": 131072,
+              "bytesAfterNo": 204800,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 204800,
+              "denyParsed": true,
+              "clientPid": 55
+            },
+            {
+              "scenario": "retirement-lock-contention",
+              "latencyMs": 1.4473749999999654,
+              "bytesBeforeNo": 163855,
+              "bytesAfterNo": 163855,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 163871,
+              "denyParsed": true,
+              "clientPid": 96
+            },
+            {
+              "scenario": "blocking-control",
+              "latencyMs": 1247.3115420000001,
+              "bytesBeforeNo": 131084,
+              "bytesAfterNo": 229397,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 229397,
+              "denyParsed": true,
+              "clientPid": 126
+            }
+          ],
+          "scope": "actual native PTY capture, maximum-text projection and real held HookServer/gate/answer handler including blocked cleanup; not signed terminal transport/provider acceptance"
+        },
+        "binaryHash": "1f3dcc023d198c2829643c7f485b78d9c7c1e2470f40e027fa2a7c62b969f369"
+      }
+    },
+    {
+      "pin": "142",
+      "target": "bun-linux-x64",
+      "stockBinarySha256": "45d9f24947a5f41288582bae21688481fb638594cda8070e445d3ad8cc38a2fd",
+      "viewport": {
+        "receipt": {
+          "status": "passed",
+          "version": "1.4.2",
+          "revision": "744846f844374847c902b5e7fd59b4342a51ef99",
+          "platform": "linux",
+          "architecture": "x64",
+          "observations": [
+            {
+              "name": "launch/current/alternate/Unicode/local geometry",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "predating refusal",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "unsupported startup cannot become an ANSI suffix",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "unsupported screen retires only the observer",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "observer failure is isolated",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "lost metadata refuses a frame and retains uncertain debt",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "shutdown retains borrowed charge and does not stop the agent",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "one lifetime observer includes disposed preparations",
+              "passed": true,
+              "actualChildInputBytes": 0
+            },
+            {
+              "name": "buffered output precedes local resize",
+              "passed": true,
+              "actualChildInputBytes": 0
+            }
+          ],
+          "stockCompiledClaude": true,
+          "scope": "actual capture fidelity and stock compiled Claude lifetime/quota; no enabled terminal transport, Codex-provider, native or installed-release acceptance"
+        },
+        "binaryHash": "7ab1a6a7708abe715168a0ee947f712205bd0e0cf1a1c29dbda6df8d041af043"
+      },
+      "resource": {
+        "receipt": {
+          "version": "1.4.2",
+          "revision": "744846f844374847c902b5e7fd59b4342a51ef99",
+          "platform": "linux",
+          "architecture": "x64",
+          "status": "passed",
+          "evidence": {
+            "before": {
+              "heap": 11901421,
+              "extra": 10292541,
+              "charge": 11901421
+            },
+            "settled": {
+              "heap": 12750671,
+              "extra": 10464447,
+              "charge": 12750671
+            },
+            "pending": {
+              "heap": 12824230,
+              "extra": 10536806,
+              "charge": 12824230
+            },
+            "drained": {
+              "heap": 12842523,
+              "extra": 10570379,
+              "charge": 12842523
+            },
+            "conservativePeakDelta": 941102,
+            "budget": 1048576,
+            "projectedBytes": 29315,
+            "scope": "whole incremental host prepare/PTY spawn/model state with one borrowed snapshot and strict send projection; internal capacity input is not a fidelity claim"
+          }
+        },
+        "binaryHash": "004af15912c4daf8a306ef86e2dd26f6dd667641bb09bf1a3c6722265545db40"
+      },
+      "held": {
+        "receipt": {
+          "status": "passed",
+          "version": "1.4.2",
+          "revision": "744846f844374847c902b5e7fd59b4342a51ef99",
+          "runtime": "1.4.2",
+          "platform": "linux",
+          "architecture": "x64",
+          "results": [
+            {
+              "scenario": "max-text-native-load",
+              "latencyMs": 14.419541999999979,
+              "bytesBeforeNo": 131084,
+              "bytesAfterNo": 196626,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 196626,
+              "denyParsed": true,
+              "clientPid": 33
+            },
+            {
+              "scenario": "clear-native-load",
+              "latencyMs": 6.071916999999985,
+              "bytesBeforeNo": 131072,
+              "bytesAfterNo": 163840,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 163840,
+              "denyParsed": true,
+              "clientPid": 64
+            },
+            {
+              "scenario": "retirement-lock-contention",
+              "latencyMs": 6.214291000000003,
+              "bytesBeforeNo": 163855,
+              "bytesAfterNo": 163855,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 163871,
+              "denyParsed": true,
+              "clientPid": 109
+            },
+            {
+              "scenario": "blocking-control",
+              "latencyMs": 1254.798792,
+              "bytesBeforeNo": 131084,
+              "bytesAfterNo": 196626,
+              "actualChildInputBytes": 0,
+              "actualOutputBytes": 196626,
+              "denyParsed": true,
+              "clientPid": 146
+            }
+          ],
+          "scope": "actual native PTY capture, maximum-text projection and real held HookServer/gate/answer handler including blocked cleanup; not signed terminal transport/provider acceptance"
+        },
+        "binaryHash": "26ebb7831bf2304ff9b84fff4a8b3812856538752858492debd230ce985594d8"
+      }
+    }
+  ],
+  "negatives": [
+    {
+      "name": "fragmentation",
+      "pin": "1311",
+      "namedAssertion": "accepted native output retains capture",
+      "exitCode": 1,
+      "binaryHash": "db4bc5450de039c942362f9c11e98f616b6ad60b2bd71d88ebfa42c9dc05bf30"
+    },
+    {
+      "name": "borrow",
+      "pin": "1311",
+      "namedAssertion": "one borrowed projection slot",
+      "exitCode": 1,
+      "binaryHash": "d1e2336520d13c51dbf74a96f8c8482034b431647b36c3ac23e76fe01a700249"
+    },
+    {
+      "name": "cleanup_borrow",
+      "pin": "1311",
+      "namedAssertion": "shutdown retains borrowed model charge",
+      "exitCode": 1,
+      "binaryHash": "b8aa821ba2ea2ea1852faaf6bae4a8d603130d6cdd704b7f67c5944b7567d08c"
+    },
+    {
+      "name": "owns",
+      "pin": "1311",
+      "namedAssertion": "lost quota permits no frame",
+      "exitCode": 1,
+      "binaryHash": "06131d2eb6df58cad4f2e163a95b5735857f63e1466fab651eb3992eacbc753e"
+    },
+    {
+      "name": "one_lifetime",
+      "pin": "1311",
+      "namedAssertion": "disposed launch observer cannot be replaced",
+      "exitCode": 1,
+      "binaryHash": "1c57febb56e945939182042b37146dc6612b5b6d3279ed738a2a4539242e6e35"
+    },
+    {
+      "name": "resize_order",
+      "pin": "1311",
+      "namedAssertion": "raw byte/local resize order",
+      "exitCode": 1,
+      "binaryHash": "d775c7d59424e1af7716754b2a7f6bc527c87d6a715c6c17b12c716d49778c27"
+    },
+    {
+      "name": "wrong-write",
+      "profile": "viewport",
+      "pin": "1311",
+      "namedAssertion": "capture actual child input is zero",
+      "exitCode": 1
+    },
+    {
+      "name": "wrong-write",
+      "profile": "resource",
+      "pin": "1311",
+      "namedAssertion": "capture actual child input is zero",
+      "exitCode": 1
+    },
+    {
+      "name": "wrong-write",
+      "profile": "held",
+      "pin": "1311",
+      "namedAssertion": "actual held No wrote zero child input bytes",
+      "exitCode": 1
+    },
+    {
+      "name": "fragmentation",
+      "pin": "142",
+      "namedAssertion": "accepted native output retains capture",
+      "exitCode": 1,
+      "binaryHash": "20365ea3609b9323be5e8bd537607596cbb522402913d50c00bbcedc45eba995"
+    },
+    {
+      "name": "borrow",
+      "pin": "142",
+      "namedAssertion": "one borrowed projection slot",
+      "exitCode": 1,
+      "binaryHash": "ab8ebac9f0a4f32df700a344b92104f3b9df97bb2e3a2ad207f01c914b6010c4"
+    },
+    {
+      "name": "cleanup_borrow",
+      "pin": "142",
+      "namedAssertion": "shutdown retains borrowed model charge",
+      "exitCode": 1,
+      "binaryHash": "1134bc7bc9c815b7aed9d8e719d4a3315c3e6404f8df95b78641f41729fde798"
+    },
+    {
+      "name": "owns",
+      "pin": "142",
+      "namedAssertion": "lost quota permits no frame",
+      "exitCode": 1,
+      "binaryHash": "d9def5206a7fbbdd6541b0526fa6e1b327583d65391cf8bc57866308e996559f"
+    },
+    {
+      "name": "one_lifetime",
+      "pin": "142",
+      "namedAssertion": "disposed launch observer cannot be replaced",
+      "exitCode": 1,
+      "binaryHash": "3fe341b80581fed83963d5f8d9dbf41ee8479e061d3841c4d298b3335bb01b42"
+    },
+    {
+      "name": "resize_order",
+      "pin": "142",
+      "namedAssertion": "raw byte/local resize order",
+      "exitCode": 1,
+      "binaryHash": "1776f640b67bfe7ea36228fa8aa71907a96756ed40aadc0b2c596d7218d800cc"
+    },
+    {
+      "name": "wrong-write",
+      "profile": "viewport",
+      "pin": "142",
+      "namedAssertion": "capture actual child input is zero",
+      "exitCode": 1
+    },
+    {
+      "name": "wrong-write",
+      "profile": "resource",
+      "pin": "142",
+      "namedAssertion": "capture actual child input is zero",
+      "exitCode": 1
+    },
+    {
+      "name": "wrong-write",
+      "profile": "held",
+      "pin": "142",
+      "namedAssertion": "actual held No wrote zero child input bytes",
+      "exitCode": 1
+    }
+  ],
+  "sourceSha256": {
+    "repo/packages/daemon/src/entry.ts": "e9956d7fbf76237099dbe6fa9dbd0ff7d337fcda494c5978d51a19e41b8cfee7",
+    "repo/packages/daemon/src/cli.ts": "d3e4a6562b9bb1973ca8e0c0ae3e7f6f1a96dd1be55d92eea5ec31f9910651f7",
+    "repo/packages/daemon/src/index.ts": "6985e9364c02c48b549bebc95643a8848f08184bd7d3dc9cd33348cd54b923dd",
+    "repo/packages/daemon/src/auto-approve/multichoice.ts": "066f6ea60a3c62adc47f72d88572fc2bdce0f6d6cc9528ad8d296753f7b4e9b2",
+    "repo/packages/daemon/src/auto-approve/tool-input-key.ts": "4cb0ffd4247b18b3a74fb9a34670c22c711566dc7df5f736c2d24ef0dbeb8e1c",
+    "repo/packages/daemon/src/auto-approve/auto-approve-gate.ts": "2372a9caeb02fbe886be3feb5a872607079eae96d236cd97e4b4d12f2de4b427",
+    "repo/packages/daemon/src/auto-approve/subagent-alert.ts": "9b18e9b9c7b82b20d0d90e6a7c114dd3f75936b6d5751ff01b685538bc946e08",
+    "repo/packages/daemon/src/auto-approve/index.ts": "ababe2884624a47ee9bb7e06e14e2bff98dba970147f050957f7a1383a88160f",
+    "repo/packages/daemon/src/pty/pty-session.ts": "4d3c89d7026aa056cb1030ac438e5f5c439354d87e7b0c5031e5c7d9b32b7831",
+    "repo/packages/daemon/src/pty/pty-capture.ts": "9ab94b554caebb8678452d60073b083609c238b195d84ef936104abe578e6cda",
+    "repo/packages/daemon/src/pty/index.ts": "cc55174f7828e1ce2a4ac55350c06743125e3c2caf1b16f5e1fff56db800e94e",
+    "repo/packages/daemon/src/pty/pty-manager.ts": "aee0234f98f789d48914f023665abb10d23918a8a9fda2d4666323d606a86e2b",
+    "repo/packages/daemon/src/pty/child-env.ts": "86a404242c1cdf9b4a4ad8f6079e323e70d6f1c8a169334191e1491caa412afd",
+    "repo/packages/daemon/src/config/remi-home.ts": "f8a042ad9104592bf03b10d9739ede3d1604cad8aa8295da6be4ca90d2b92ccb",
+    "repo/packages/daemon/src/config/daemon-tls.ts": "fb2a6bbd8baa677ac7fb913c7a2823961c69509a0e30ab85b62c83a90afca06c",
+    "repo/packages/daemon/src/config/index.ts": "a26c8a431490638738e8e593b74586b7c9e1d438ec843b08aebd9a10202e8acf",
+    "repo/packages/daemon/src/config/config.ts": "1611d3f02a92774f6fdba9d32ef6830c65bd24e141c3a106c1ee029068a8140c",
+    "repo/packages/daemon/src/auth/capability-token.ts": "840d26a7abc4dd909f69224613711681f33771d87a9de799b610ad6e1e98360d",
+    "repo/packages/daemon/src/auth/identity-store.ts": "7b331c3b484dfbfe206fc0d59031e8ea9aafe32d530b073d0d39848666e0dd6f",
+    "repo/packages/daemon/src/auth/relay-chat-authority.ts": "deabb1127d178fef44cd70c2fdb177846eb7c03cf17934c7f400e203c91329f8",
+    "repo/packages/daemon/src/auth/authenticator.ts": "c0df668f8f8a5251ee13bea9a40918e78988ea787d26db77832002552b7bdcec",
+    "repo/packages/daemon/src/transcript/transcript-binder.ts": "386aa7e77f4ea6781a31472aa869705662c6130c96aa66598e7df9a7d870c599",
+    "repo/packages/daemon/src/transcript/transcript-message-bridge.ts": "9c58fc9d28d7eba308fe66bf1b700ffaf9f267c32d5aa5f44b56b55b4b495313",
+    "repo/packages/daemon/src/transcript/types.ts": "bef77edc6f91f8fd9b88e6296087d0ec9dc751fc9741afb6095b154958ffce71",
+    "repo/packages/daemon/src/transcript/transcript-owner.ts": "ca9af9c4e0d02bed45fa6dec88d173eeb26057399f97868e1bfa8816a80d311f",
+    "repo/packages/daemon/src/transcript/user-entry-provenance.ts": "003c09178e76856813e3e50518049c181cb0f595ee208cf6524bdbe94ef4e797",
+    "repo/packages/daemon/src/transcript/transcript-watcher.ts": "e0bf2877f424d37e1479921dc19d5178e9ce39ca2d0889a4a22b5ea084dd08ba",
+    "repo/packages/daemon/src/transcript/index.ts": "37c61687c36738884552f3766e2fe1e5b8ecfb82236b6a754087f28a7b6ea21b",
+    "repo/packages/daemon/src/transcript/transcript-discovery.ts": "bf75de0e1db415c82e56c0118174b84a1d56df5678d5b81c07bebb4567f9aeb3",
+    "repo/packages/daemon/src/workspace/recent-store.ts": "023f264b80035974971c404f5c1524b06849ea9c524af9348fe70fbd132952da",
+    "repo/packages/daemon/src/workspace/worktree.ts": "6011e4a2ef3260e066bd10d4c238ab5966201a30b574efb4836612756aee3d75",
+    "repo/packages/daemon/src/workspace/recent.ts": "dace584d8d59d03a109b98817a30a193b97ddceba6db30a1756010a07c8fc77d",
+    "repo/packages/daemon/src/workspace/git.ts": "89a433d84bdacf1f54476343ff65412f3f56d89f43946f2a627f504dd7010547",
+    "repo/packages/daemon/src/workspace/describe.ts": "266f2498cd4308e1f262cbd6f86a35bd5407c16d3308b867f56f061134627457",
+    "repo/packages/daemon/src/terminal/reservations.ts": "6886855ab07df5b1d4329016d9ba6eb5248ea0f29ed74dc2c537d6b8b8e49379",
+    "repo/packages/daemon/src/terminal/capture-host.ts": "9fe409c8bfdcfa1d36beab3e9340fe0ce26fec9e95f8b8c004008e81e283b74b",
+    "repo/packages/daemon/src/terminal/screen.ts": "b15a3d016fd96a89b1dd650ec57ce269353b3d3fe74fa47f3fca5ebdb3aeea38",
+    "repo/packages/daemon/src/server/answer-results.ts": "1ee085b1c297d894d6560a6cb8467bce1b00db51f78704f3e0366efe50208019",
+    "repo/packages/daemon/src/server/client-message-events.ts": "01077fd73bdd1724e9456260849683e10e801aaaaa4124cb987a94d0d877cc04",
+    "repo/packages/daemon/src/server/connection.ts": "ca4eb7e57e1924e90fc4a3e3ec9f7334c648655d7c6dd421d5db5fb028291238",
+    "repo/packages/daemon/src/server/websocket-server.ts": "bc1f21a546d294c60fd0c8a77488b1f65fd6125aae69dd527c5cef2f6ca60b5d",
+    "repo/packages/daemon/src/server/index.ts": "0f00dbb7c7861236ecafc87bb4226edb250fa38861f6ffb25c0a7b55df0e417c",
+    "repo/packages/daemon/src/server/route-client-message.ts": "815537ac42888627b55f0ee0324d9ca86718b013a30056bd1f5a840414e9a944",
+    "repo/packages/daemon/src/server/origin-policy.ts": "6e068a37e9d8e6b7ef1ccc3d1130b2da9e9bfb482a731537f745ca3388085d52",
+    "repo/packages/daemon/src/server/peer-helpers.ts": "fdad74d18e081212fe751983b352c5fc7207f900397729797625e6c406ec46ef",
+    "repo/packages/daemon/src/cli/cmd-migrate-permissions.ts": "50a320aaa218eafd318c43227fb2a77986d3fef0e6d409096ad004c8b84018fa",
+    "repo/packages/daemon/src/cli/remote-new-client.ts": "61e1eafc479bc1d1a91943f6f1ddfc7cd3acb6c6e2b203c98844f1d54634c6ff",
+    "repo/packages/daemon/src/cli/cmd-detach.ts": "f42e860a8ed9908c6d35d6e1d9a1135da15723526b99897e95623fcb3a0a4437",
+    "repo/packages/daemon/src/cli/cmd-pair.ts": "9976e397eb8bf11d019ff8ea26f627f1ba9d6134f1d97a304f4646164d7819cc",
+    "repo/packages/daemon/src/cli/log-file.ts": "9b113cde4982fa074ee919a784ba61bf5d9eb7aa40a1ef7ddb781a2117285cd8",
+    "repo/packages/daemon/src/cli/session-resolver.ts": "ae1471622a55d37166dc77fc73f616d972e6f14863c5718046c2b34382816a7f",
+    "repo/packages/daemon/src/cli/cmd-attach.ts": "af74e0b4527c39ca7e5366422671e727a4e23b37a02a9ce6e015a42cb11ad70b",
+    "repo/packages/daemon/src/cli/auth-helper.ts": "8466c17ae11664c1e7d945eecf31a23cd9cd34496025816bd6a60c12ecb41294",
+    "repo/packages/daemon/src/cli/cmd-unstick.ts": "c0b591cc7e4abc6aa8e099a563510b77bedef4b41f889b48e674e7b043a46c4c",
+    "repo/packages/daemon/src/cli/status-writer.ts": "5c50d02e4788dbd3ffea5e2dcfdd491874249694cb296935807042c115c9a7ca",
+    "repo/packages/daemon/src/cli/suspend-handler.ts": "aa72d0c218ebaeb80e3956a027dc28b1bed3fe8e23c9ef2c9467cb232ad58fa5",
+    "repo/packages/daemon/src/cli/key-import.ts": "b07f32c4cc991a66aa5f38002d367399e01b29f0180289c656d51d681d1ad0d7",
+    "repo/packages/daemon/src/cli/update-watcher.ts": "f673d86280795715b56729493ac665f285f8bb058259d958f326cecea4a8e140",
+    "repo/packages/daemon/src/cli/help.ts": "c7cd6bcc78884ddaba57f7c3771645368badc11575dfb38428e311998c45c139",
+    "repo/packages/daemon/src/cli/autostart-state.ts": "5b6ac611af2f746f1289d1b52fe9f5a46895d018f4ecddd9c7d9217eb08a15b3",
+    "repo/packages/daemon/src/cli/cmd-ls.ts": "0499c4a32a277e7460dae7b41ae0ee7e720019e280faf35723d358a6d4d7b227",
+    "repo/packages/daemon/src/cli/hub-question-census.ts": "3e73ceb2edecbaf39eb38c80db71fac0c3585952c5ef9115453799217554b2ca",
+    "repo/packages/daemon/src/cli/shell-path.ts": "2f609a26d1930f50823ef93fc04ce1f2ba38f43ec528bf9412aed9815bee3574",
+    "repo/packages/daemon/src/cli/keygen.ts": "5f8975f4846572e79d54941b0acdaef0ccee451889120cf22632ab37ca33c9c2",
+    "repo/packages/daemon/src/cli/capability-client.ts": "91f509138f039c379e452e45837a2408be75c0b19f5740707c003653af6b8caf",
+    "repo/packages/daemon/src/cli/arg-parser.ts": "ab97db444e2eb1d3ace14df588b6fb31dc32849e2e37a8d7ac46bb9e719673ce",
+    "repo/packages/daemon/src/cli/session-state.ts": "4dacf73e8905993c0ba98a78456ff8392545064bc7ce5fd7d7d6bd71f8a987ae",
+    "repo/packages/daemon/src/cli/target-resolver.ts": "223e3cf6c6836bf3d7e15d37351d59925c055646193b4622f250a7f7528ab07a",
+    "repo/packages/daemon/src/cli/wrapper-state.ts": "9fd0babdc313079e75ec498a0076f2a8591ba9a89ae24c962337217925468e9d",
+    "repo/packages/daemon/src/cli/cmd-relay.ts": "6711de27f4f34df415eac1cc693ca41d2471d6554f6878ac4756c23b03626d00",
+    "repo/packages/daemon/src/cli/cmd-config.ts": "2ffd79523b39f7920e9f96f9f96bb2b2f6ef9d23daa5591aa2812bd6a60741bd",
+    "repo/packages/daemon/src/cli/status-bar.ts": "8ad121f37054e26eb0910b14d4f9c9463fc7f3e599376a8d5b518083262a70e0",
+    "repo/packages/daemon/src/cli/question-resolution.ts": "7f791f37e5b8e0c5289a86d2bc3fc6f2fef281600cde18aa3c4487e53a4b56df",
+    "repo/packages/daemon/src/cli/cmd-reload.ts": "21d0cefa912408a0a65fa943dfa63643440d8597d80ad9546294f54e0805d1a8",
+    "repo/packages/daemon/src/cli/daemon-target.ts": "e83f56bf354ae3845342c71339507cc5d3db81b8b9afbdaff58414b93eaac424",
+    "repo/packages/daemon/src/cli/hub-client-tracker.ts": "6c72ac0473704d186bdb5e81724b84cc1135160f770d215b3f5f8615c6fd084b",
+    "repo/packages/daemon/src/cli/capabilities.ts": "7ed6dbc66269bc188d6cb8a4aaa038dda250ddd72c9afbe995430763f59c4edd",
+    "repo/packages/daemon/src/cli/key-export.ts": "ccb2e270eb6ece1e129075b3ea286e9ad5d79277b2f444b548c28b15af6d9d35",
+    "repo/packages/daemon/src/cli/transcript-watcher-setup.ts": "88d8b478f407612bafef32d047359ba782c2794b26249ec79b241f039cb748cf",
+    "repo/packages/daemon/src/cli/service-templates.ts": "f80ca2588bcb34ab78522bd2df13145fd001c8f1de028ec279eee8fdb2ae6ff7",
+    "repo/packages/daemon/src/cli/cmd-kill.ts": "b324704119783b9fb3d5a882de0e5b6b36a0aae0a328b4108d0575803a9d9dd1",
+    "repo/packages/daemon/src/cli/resolve-local-session.ts": "6342c42e88c4d8741f45bc6d9f6556c7afb29268eebabcb080054ad94e6cd720",
+    "repo/packages/daemon/src/cli/machine.ts": "ae2e2952bdb363a38b49d9ccd31cd5ad9db9ff945c9ac25b29be02dadddeb854",
+    "repo/packages/daemon/src/cli/current-session.ts": "6c73a04a5b2691a0291be57913930f707b411777bb16f9514bae9328b7951ecc",
+    "repo/packages/daemon/src/cli/cmd-keys.ts": "011ec541c709270b237df8e5162cb43be2721d28dae6ed0942cde8f1a912eb53",
+    "repo/packages/daemon/src/cli/recent-client.ts": "755246ef644abeb4e89428062a30f8fdd7f4eb37466656cff30699715e7af612",
+    "repo/packages/daemon/src/cli/prompt-passphrase.ts": "2bdf68f035566f03e75d7399d38370c8267f35b8c721fd2be5065a73107ee692",
+    "repo/packages/daemon/src/cli/logger.ts": "bfebac9d3f9089aad97fd0e9ea35888a6f2bd8581f5fb8f1cf858133c214d94a",
+    "repo/packages/daemon/src/cli/kill-client.ts": "63a47f5ab4a1f133f875a027922f9b33c5f1e2dd0456b372cc6592016d8fb16c",
+    "repo/packages/daemon/src/cli/ls-client.ts": "306d4fe4dbf801cd6a5d534f5a51671506d6a0932f65d1bed640cfa211843ae0",
+    "repo/packages/daemon/src/cli/cmd-daemon.ts": "5f5a19ee2258e80f66ba3485f04f4db6fec2030209e463326812a2642cfea4c3",
+    "repo/packages/daemon/src/cli/log-rotation.ts": "3ef0bc7bf683026ef21db8884d03f5764ff063e357610ab2d1356e426e65a4a2",
+    "repo/packages/daemon/src/cli/statusline-installer.ts": "c56f4cdd01dc803f60de6f0f9d6748bc37597fbd74aae0bd3a1f58aece0d01f3",
+    "repo/packages/daemon/src/cli/process-guards.ts": "62e5965731b8bca07d42951f4498801f275f66278ea2939e6cfbc5a2239cb116",
+    "repo/packages/daemon/src/cli/session-close.ts": "5f166ba2ff3cd413cbd0e1da9e9f24d0cd89b9833205042e3e607c682ac65294",
+    "repo/packages/daemon/src/cli/transcript-fallback.ts": "e2cbcd55a4ed7bfec2b3f1ad1aa0459419fe0d866a31f1d6e86b4290b30ab1ae",
+    "repo/packages/daemon/src/cli/version-drift.ts": "f9ba6f7941286cd7488281f41949f8ae485cd9e711f51c783252529acd27eb59",
+    "repo/packages/daemon/src/cli/authorize.ts": "fa57351a6a5839b0e51cb17e20b283564c825f9f74f488e150bb72bc3a69c55f",
+    "repo/packages/daemon/src/cli/detach-client.ts": "9746f991a9aca927dcd8418ecb9ac1124a65f951f57628a3cce8ab99d0729d02",
+    "repo/packages/daemon/src/cli/claude-binding.ts": "023ceedd435cfcf0ecc40645d02fe0be507881b681a9b1ea3b8ade8d32ae3916",
+    "repo/packages/daemon/src/cli/pty-quiescence-gate.ts": "6508c7cca2f2a2d04fd5dbd754b093f10ea62f7c44679925de64d3aaa7e2241c",
+    "repo/packages/daemon/src/cli/auto-approve-removal.ts": "071d3a32f1de7d8f04f26fab26394173b8bfa3d76323a1392397450830def2eb",
+    "repo/packages/daemon/src/cli/hold-policy.ts": "c37f6acf2c0ab87786f2dc106e7ceb3f82f6312bf3fefda48e57924071dc35d2",
+    "repo/packages/daemon/src/cli/daemon-manager.ts": "ff0f19f1b971b830e3ec19bf18ca936c5dc3f1896392ac024a91386c819d4bc7",
+    "repo/packages/daemon/src/cli/cmd-recent.ts": "fc43366c83013225c247a1ded53575dafdcbd99e015906b534189cb2d325411a",
+    "repo/packages/daemon/src/cli/path-resolver.ts": "3966c6ecacf9e1181ef646699d74766dc0067d57f105aa305a8115033bbc9dec",
+    "repo/packages/daemon/src/cli/launch-harness.ts": "61e7d16ba9f87da425bff0d180e3ee9e4aa6e3b32caac5b1c6d6a9d297d74c80",
+    "repo/packages/daemon/src/cli/attach-client.ts": "dd0e585e744dd23cf83ad05ed6f4c42f55e20b01371c03b4e5673431d0266614",
+    "repo/packages/daemon/src/cli/directory-picker.ts": "da08daadb0c40f3d390f85523e276bd09dfe521d6196006677ce63e833bf264c",
+    "repo/packages/daemon/src/cli/detach-scanner.ts": "ec36c5053416c4026becc5451605810460c5c092d0c62ae8fd25f9bb56d30898",
+    "repo/packages/daemon/src/cli/qrcode.d.ts": "abda5018083c6289c339267e3ed5574f0f4bb6f5c613b3f0660e9fb9a71fac87",
+    "repo/packages/daemon/src/cli/startup-env.ts": "6c826b7ef053403d163e26a6247be90bfef8affdfe328a14d4f87b0c31d01cf4",
+    "repo/packages/daemon/src/cli/live-sessions-watcher.ts": "8591665922003b112994ce29dc2e103702e61bd5f43d169696f67dcbc477fa77",
+    "repo/packages/daemon/src/parser/output-processor.ts": "dc861672bc9438a41aa63ec87ef0ad429e0f45148338f3230493c69ab3dce50f",
+    "repo/packages/daemon/src/parser/status-parser.ts": "f401b4e6fa1cf52743b10e92996752f714d985d7c70aaa2fe162d9ea15ea8b46",
+    "repo/packages/daemon/src/parser/ansi.ts": "1b8584e830d3a6bdd2a5a8e3341fcb66c7649a74d9e4e367529f6bb6b388e0ca",
+    "repo/packages/daemon/src/parser/bullet-engine.ts": "c606c493482380d948bdd3bf1f8fcfed6a7db2b309e036c0f886c4ac8a6d174f",
+    "repo/packages/daemon/src/parser/question-parser.ts": "df1e3d33af75a6120bdfe33131e5903db5f641312c8a9727a32c9f91cd8cebaa",
+    "repo/packages/daemon/src/parser/index.ts": "229a58da94879ea94850dc94957144e800b0798ce55b411ca07f969a3410d02d",
+    "repo/packages/daemon/src/mdns/advertise-decision.ts": "44badf4e5bee677c7f27202a3aeab04808829c0a80c68b025019154b37a4cc86",
+    "repo/packages/daemon/src/mdns/mdns-publisher.ts": "19eb259b02cab3809d3d5090cabec9b269bb6be3f74b9a34e8c541c2306f6577",
+    "repo/packages/daemon/src/mdns/mdns-browser.ts": "ac9fa80a086cb07fc6406fb4c4186fcaebe229cc0792c9ee3d328dc0da9184ca",
+    "repo/packages/daemon/src/mdns/vpn-discovery.ts": "c905caa717e5ac98835d64228b1819cdffd17ca695f3e6c689ad2a78660385e5",
+    "repo/packages/daemon/src/mdns/constants.ts": "d31749d014647faea4773c71b9d21c7ee8e6814716a4c10a71f66aa785a73cf0",
+    "repo/packages/daemon/src/mdns/index.ts": "df34be2478c1eda228db9d77a99c288a6d26918b704915ec663c151aabcce8c7",
+    "repo/packages/daemon/src/storage/restricted-json.ts": "c9856a78683a956447ad18909d8d980bbf7a4c105191878b7a2140e3e6c7de5f",
+    "repo/packages/daemon/src/storage/secure-push-activation.ts": "527b6590943552a128f2f83113c0cacb73d1a14451f78bdec98f628874ec821d",
+    "repo/packages/daemon/src/storage/authority-epoch.ts": "8ce4f36b199be289b93d180aa6fffa52f020ecd8f7a84eb62ee3f576bae79b0e",
+    "repo/packages/daemon/src/storage/secure-push-subscriptions.ts": "5403fa93acc60be004c5ff087f34cb72553d7b27c0dbb0cf54ecc34ba3da76a9",
+    "repo/packages/daemon/src/storage/local-daemon-endpoints.ts": "dbaa2b2a2f698cf13ec78ed6be60545b070b9fc4baf5984c73d97359b823e3db",
+    "repo/packages/daemon/src/storage/interprocess-file-lock.ts": "19b444b862f33a4cd703f4a2d0fff56ac946470c51d42fae46b6a67c49ba0ab3",
+    "repo/packages/daemon/src/storage/relay-enrollments.ts": "2d21957fcb53787e3288253b7f4eae618060da9fa62e769c2fe40944c840b413",
+    "repo/packages/daemon/src/tunnel/reservations.ts": "44023351b33bfb89238ba6c3361fd7136296c461a62c3509db5e4b87a34cdc83",
+    "repo/packages/daemon/src/tunnel/managed-tunnel-storage.ts": "5041ac37ef9e31a3cc0616f759bfef5050e56d7c0f3fcf91e5e01d41325b35ed",
+    "repo/packages/daemon/src/tunnel/admitted-read.ts": "dc85362ba48eb3c0ed1401d85c2d4f81a8348eaabd7f521da51a68b66955e9ac",
+    "repo/packages/daemon/src/tunnel/image-decode.ts": "30fd449ad41e3d9c19b142109c3b047b74555047e2c05530e3506a04ff20ed60",
+    "repo/packages/daemon/src/tunnel/admission.ts": "d55ba9a00852f2c66874c37c51b688eeef03c46e4c3007d665674f3af3d1ff6d",
+    "repo/packages/daemon/src/tunnel/image-worker-command.ts": "34067b54e046b3e7a11568e9e17d601688e21a68adaf85623581d3d9ffa4ddd9",
+    "repo/packages/daemon/src/tunnel/native-assets.d.ts": "cb3902dc5d3d152f9e7e861550c59b182f08dedb8c454a7633179f97bfb51907",
+    "repo/packages/daemon/src/tunnel/browser-link-session-host.ts": "31ed39519a82d78f11cd8fa071093d6b7c922c3bf0c42d98c8a2c9d2deb02448",
+    "repo/packages/daemon/src/tunnel/download-preparation.ts": "7ba4f789bb651d2749278155ff63f089cddd3d9fa18e8d37a9b2735a17e6fcc7",
+    "repo/packages/daemon/src/tunnel/browser-link-producer.ts": "a56a7a006ca4f1b7d697b67e144761e1432a582a9a3219b3a6370dc6a333450b",
+    "repo/packages/daemon/src/tunnel/file-download-session-host.ts": "0a185cc1f0d6e73520014751fbd7c397b0ae82f723592fd70f71a6017e8917aa",
+    "repo/packages/daemon/src/tunnel/image-insertion-coordinator.ts": "5d087ca28874e86423fe0a53e101892bf29435a05b9520839efca4e980d7d022",
+    "repo/packages/daemon/src/tunnel/journal-settlement.ts": "b37be42a41f8dfe9ebb60918de2f258cd949ac84a0006447df2b1ed50ccdb4ba",
+    "repo/packages/daemon/src/tunnel/image-staging-service.ts": "0df856a727f4071280febf1b30234ffeda4584ec56abadf618228289c1f75f56",
+    "repo/packages/daemon/src/tunnel/browser-link-service.ts": "465f07acea063cdaa107568cb9547d563e0e5a9dc3251a713ce747ac1fb21edb",
+    "repo/packages/daemon/src/tunnel/file-download-service.ts": "68368e41cda79bb0ed81686206c3c9fef0ed50d9355ca9858a19a5f41bad2859",
+    "repo/packages/daemon/src/tunnel/image-admission.ts": "7488a7be5fc8b126e930118fd8d6cdc1fd7f25851e51ccbe7f03c79cf2a8d429",
+    "repo/packages/daemon/src/tunnel/journal-schema.ts": "1f964a3131b4b777fa71f58abde671af8f16bf8725e413b14cb3e735b0f0d245",
+    "repo/packages/daemon/src/tunnel/recovery-error.ts": "54a34fee68e468f0ee204ebcc1e8974475935974cfbd2730a4c4d3ff41f73260",
+    "repo/packages/daemon/src/tunnel/browser-link-command.ts": "9e8c96201535e548595db0876378a6909c24b6a48f530cd629a093213195d56c",
+    "repo/packages/daemon/src/tunnel/recovery-native.ts": "bfdca7a2b84082c35c917002952fa0fdb12e004b3dfd18c91a2da9c03a123a48",
+    "repo/packages/daemon/src/tunnel/image-insertion-lease.ts": "e90ffc586b6276e6078cac37443db127a8f699bafbc305ef3f20aba3129ada6a",
+    "repo/packages/daemon/src/tunnel/private-ops.ts": "bc73f3ce510e06c0ba24e1ca13f490338e94ce647d0b3e7bb8c620c24971bf6f",
+    "repo/packages/daemon/src/tunnel/recovery.ts": "9d13d870ca914c26f2db402435ea2bc001b2a7ae72de56fff5f98e7d6295d068",
+    "repo/packages/daemon/src/tunnel/recovery-native.c": "e926ec1e6227feec3d06ee42f195df3ed6b0ef2f80e29098091b53936b4b298a",
+    "repo/packages/daemon/src/tunnel/image-worker.ts": "a0e6413ec1fff437207bad5dbd710def1d8152f282b1a5f5340c38c30c0c1517",
+    "repo/packages/daemon/src/tunnel/image-process.ts": "6ec38ac0a3bf26362abe0087cba24d709ab900bbbc5ae71b66055bcd380b8562",
+    "repo/packages/daemon/src/tunnel/image-codecs.d.ts": "89e928a1c3232043dc763fc8c642afb8387337ce5ce4b6606705491ac1d00baa",
+    "repo/packages/daemon/src/adapters/telegram-adapter.ts": "f468774ae7182036866d7bc43d9e04008f7a5a7873b153fcc1574620c19d66ff",
+    "repo/packages/daemon/src/adapters/adapter-registry.ts": "519312d9cc0d38df8249dbbc751af2687bfddc290fc9f422e466ada1677b721c",
+    "repo/packages/daemon/src/adapters/websocket-adapter.ts": "5318c91a1d148aa00438e1ff10d0beb39ccb22ac6faba7d7dd4b47b0c12d852a",
+    "repo/packages/daemon/src/adapters/index.ts": "689e0768c8df42affea98b238684277fae4e4532ae2f07fa8bb91df630838dc4",
+    "repo/packages/daemon/src/adapters/telegram-ui.ts": "162a2882084ecb263cf1d51196a7abf0e96cb94fc30b44ec478db48b6b012b9f",
+    "repo/packages/daemon/src/adapters/connection-adapter.ts": "487fd5a94547639e124abecd13e4ae127814a4c638c8a250a64f644ebae2d5f4",
+    "repo/packages/daemon/src/harness/claude-session.ts": "53561534ffc8126703e831da05869235564b04d75699a901824d75d81b41eed2",
+    "repo/packages/daemon/src/harness/submission-sequence.ts": "6706e05abb4d68fe13d77ca747ea3ba4a8e9094811b05ae6a714dbb4d26dc6a1",
+    "repo/packages/daemon/src/harness/types.ts": "9c4de3a88859a761cd67d826da77acaa7226a5b4201027fcc902be54747b2ccb",
+    "repo/packages/daemon/src/harness/decision.ts": "6f0f6c544d165d88c12d6ae61ccbe2d4c1ce9e3f5e1460a5885a8c58d5c75544",
+    "repo/packages/daemon/src/harness/claude-args.ts": "54a9fa892c186658770a30a3034dda057b65eb657855a704b9c68432c8fc5ee2",
+    "repo/packages/daemon/src/harness/claude-transcript-path.ts": "c4b729f234db15c19e4ad1e89d40c59367853804d32ae72903653f907953f084",
+    "repo/packages/daemon/src/harness/registry.ts": "143b9d11a69d1c3145a23221e74aa4000e24716f5f7b46a2a4a98f8699164145",
+    "repo/packages/daemon/src/harness/claude.ts": "1afc376687caa879b8b48648d0df428124fbd3b29f4bca73333f18a778a3b34f",
+    "repo/packages/daemon/src/harness/index.ts": "4e6c8be32fd3847663d513dd1c61f15f22a021483ce7991a18cdc1f2f9c41442",
+    "repo/packages/daemon/src/hooks/hook-types.ts": "067d080effce9e148574e1317e30fd345fe1329b73be74fa3821963dcd67807b",
+    "repo/packages/daemon/src/hooks/foreign-session-escalator.ts": "5f666527dadf8acfa59bf734c50d1490c49b30f270c67101160aff1ba87135e7",
+    "repo/packages/daemon/src/hooks/tool-display-summary.ts": "a2870f72940f62386162c9eccc3ad42a94a0e96c88c77cbc1d35c3819b84a5aa",
+    "repo/packages/daemon/src/hooks/session-lock-classifier.ts": "0bedab6ec0f3410bf99ebb160bf35af306c897aab36799fab4a0ec7141a656bf",
+    "repo/packages/daemon/src/hooks/tool-question.ts": "2a3f321b416ebe806c5cb84a833a33ca439940016407d12b5fa80249dfc923dc",
+    "repo/packages/daemon/src/hooks/structured-answers.ts": "411ecfeb0e454cdafdee648f653484a5d7f68a99ad96a02d2f974c2b3737eceb",
+    "repo/packages/daemon/src/hooks/hook-config-manager.ts": "b98fef48de013e6dbf1a2b0746cf0aeb5856b83e4b2a4ceb1a7faeee719b853a",
+    "repo/packages/daemon/src/hooks/subagent-context-tracker.ts": "135dabe3250c933cc19179db4df6b559d5899948780308e22429297af4816f19",
+    "repo/packages/daemon/src/hooks/tool-summary.ts": "3dff13191709b9b06a353947ee96e73e2bc97fa383be70951f688737c9ec8609",
+    "repo/packages/daemon/src/hooks/hook-event-bridge.ts": "b4b212144afdf79c8f00150b659617704290e3ec0c6d621fa75ee0ee656977e5",
+    "repo/packages/daemon/src/hooks/hook-server.ts": "331ac3f209fabd1c6e6617588fe39c5b207394890ca4535beff85af56a98c9ee",
+    "repo/packages/daemon/src/hooks/index.ts": "54977996b334160693a36d3cdca8151a687fc17e30c0cb3a60039fbeb6ec34c8",
+    "repo/packages/daemon/src/api/subagent-view-registry.ts": "1b14bf31a913b904ce05bb10b833bd99631cb8adbc4c25521c7f664d16679eeb",
+    "repo/packages/daemon/src/api/question-dedup.ts": "5cf7ab1b9b5ee6e8bde91104c23f1340efe854ca673fc887c7d1fec7e19917a5",
+    "repo/packages/daemon/src/api/live-questions.ts": "1dde166140ff37afb08fd788b0356c56d5502ed9ae6b9671e362d713b25b4445",
+    "repo/packages/daemon/src/api/message-api.ts": "62923eab2009df45c785a953b578329606645be401552e2fa53f63064aa79638",
+    "repo/packages/daemon/src/api/bullet-content-registry.ts": "213112c0d8b4974de6647b2564d19113ca143940ffc7fc5ce1b628fb5da4385f",
+    "repo/packages/daemon/src/api/question-presence-tracker.ts": "8e04b302ed17aac1dc1441d9b16421487126a831966737535862b58dc8928bf0",
+    "repo/packages/daemon/src/api/index.ts": "8824dd166cf3c47e4271f133a46fb3b6efc42d07370b6a7cfc1c215213761234",
+    "repo/packages/daemon/src/notifications/secure-push-store.ts": "0898dedd4b68328f94376f2a518417d787ccbc3852e141488e6595dcf06f3b4a",
+    "repo/packages/daemon/src/notifications/secure-push-service.ts": "304b71d41d780ac3f0c37e39a3cd6e52ce5c0a3e2b3eeb5a22bc7c8cdcf98963",
+    "repo/packages/daemon/src/notifications/push-client.ts": "676740b0c6a4ad0e7aac1c5632da00bc4ee80077a58bfee6fd310764b6ef13ec",
+    "repo/packages/daemon/src/notifications/device-token-store.ts": "1077b054ea103c9f61c0da6ef2b07bb12d71ec334b1f1f07831c6aaf027e0b23",
+    "repo/packages/daemon/src/notifications/harness-denied.ts": "79d4fe630c2a9cd332452bada7c05d700a0ed0bb49d95b572318fa6f8cb5786b",
+    "repo/packages/daemon/src/notifications/secure-push-transport.ts": "c3220bcb26f6f1ca283f3af6670bede6261b6e54a9b15406e970ebafe6e3ac78",
+    "repo/packages/daemon/src/notifications/turn-events.ts": "10c7219b9d68f9fa0ae33f692a2dbb04756ab71f7accf540f4b5a59ec1c1fd9f",
+    "repo/packages/daemon/src/notifications/push-dedup.ts": "49be79eabe686c4aea62b14aa161a9875f322e114a023775ba7208aed5fcd562",
+    "repo/packages/daemon/src/notifications/notification-dispatcher.ts": "3b90a44ec40ea479b5bd0d334a9cc8a1892020767c06d2ca19650c0ec1b2005a",
+    "repo/packages/daemon/src/notifications/claude-turn-stop.ts": "133074e43bda626329609a501874548044e59b8c7072ffcbc5ecc31de057bcc3",
+    "repo/packages/daemon/src/notifications/push-preferences.ts": "ea08d8448b531104da6717a108eaf08f14aa151654acca735ed2609a34e3001e",
+    "repo/packages/daemon/src/notifications/secure-push-contexts.ts": "6016f11626ed94bd861e9e358dfb6ad80a86ac4b2e74d58520f7e51a22026748",
+    "repo/packages/daemon/src/notifications/legacy-push-policy.ts": "0a85766f22434a8f19d76b4faa9d65e47310990130a069ab937668f15160ef90",
+    "repo/packages/daemon/src/notifications/turn-timer.ts": "b158a0c1f45eca0c6f04ed4a7b060a7f23d939f98e70db356b5609ecf33cd8fa",
+    "repo/packages/daemon/src/notifications/turn-failed.ts": "87fa2c7b0e8cbb5dc67875079a717a3c39d5d8a4ac93264a934789dab1d5973f",
+    "repo/packages/daemon/src/debug/provenance.ts": "bd37a40a13a44df34248a8dfabf4d0d076eaf7d3cd8bd89ea8090bc0ccce186f",
+    "repo/packages/daemon/src/remote/relay-device-store.ts": "011a61c886684bd8cf79ba876825ca73b405563b5ab13100b85cd98bb1f052a0",
+    "repo/packages/daemon/src/remote/worker-control.ts": "50b37ac8e9bc33efc2942c1800ec8d1e9ce380178bc7aa5c2b27ba1b5f434a3b",
+    "repo/packages/daemon/src/remote/native-answer-ledger.ts": "11213a1dbd31634a933dab289d51c81da2c63dd1d8a58d3f2314460533b01ba6",
+    "repo/packages/daemon/src/remote/relay-url.ts": "fc6bd7c0359e97290baf1901c37aa2cfbcc1a6a0aabe00d4b0320ab34d96a0f7",
+    "repo/packages/daemon/src/remote/hub-relay.ts": "2c8474259930453bf7e1cc0a9fecb593548879af3cfd9425cbe3062e01f78023",
+    "repo/packages/daemon/src/remote/child-proxy.ts": "2813545da836f5d6122100fa063b04ac516a5fa4ca20b20a8fc004e54529b332",
+    "repo/packages/daemon/src/session/pending-question-created-at-tracker.ts": "724bb2c390b973fe66f5b91b695ea1fb13d7c4190d274737fc83fdb657d393a7",
+    "repo/packages/daemon/src/session/legacy-writers.ts": "9d638d1302bfd5bb259a83c4efdb19066acb1ab5f70dd3422841537fa2c5f8b1",
+    "repo/packages/daemon/src/session/session-registry-file.ts": "3b332c6ba0db937700ccaeb03dee7d9861ba3cf4602930170f05d6143031d2c3",
+    "repo/packages/daemon/src/session/process-alive.ts": "0d96aea53385d4ba57205995ea28d5c396d81d79a472ccd65aede3733779a269",
+    "repo/packages/daemon/src/session/shell-quote.ts": "100d08d2ac1f7dddc8c378a0055c441a50399c455595c15fc9e5b59ef72bec94",
+    "repo/packages/daemon/src/session/question-trace.ts": "a79696715e6c5b3eb5a96a1a170a6f852423cfc970a3d77ff09d241b457d192e",
+    "repo/packages/daemon/src/session/question-store.ts": "f1dacac11542c4445957e4a06178235c3b91ec6c243de8289d43757cf8eb6641",
+    "repo/packages/daemon/src/session/session-store.ts": "09be5d7fd76a382315df11f20d9ef63c2180a8dd5817928a34dcc0d1a81f779b",
+    "repo/packages/daemon/src/session/session-name.ts": "45ada3efa08a449af3bea2972a2cd1212ccf0bf4b59560a95724a89d33f07fe8",
+    "repo/packages/daemon/src/session/pending-question-label.ts": "186dae31f8bac6e9f420a64e916aef89d10bf8009ff5ab5edd6162710ad56fd2",
+    "repo/packages/daemon/src/session/index.ts": "ab45f6ec6743123c905f2170d54ca04e60e2e9a8488196289d3c6556b2b894d9",
+    "repo/packages/daemon/src/session/transcript-index.ts": "8aa80e9c2f410afff8c7262fabcab92e467f58e6b40371aad2ee7420b25b9aa8",
+    "repo/packages/daemon/src/session/port-utils.ts": "cc15c15ae5f1c0741e8430496eaf015770ccf1dbf2e55a26f8f159f95ec0ee15",
+    "repo/packages/daemon/src/session/session-registry.ts": "846241f9f3c3b8fac8e4143e0e17a9b12c140f207f831df6ad649c204bbd70ab",
+    "repo/packages/daemon/src/session/session-binding-store.ts": "487dfee139242bbb60f758c7253744acd0dd4059b7c27085d01f10561bb24dad",
+    "repo/packages/daemon/src/harness/codex/codex-socket.ts": "278915e9c338f6735664d5177a0a0e4b6099d62cb490835d6e36ad42549275b7",
+    "repo/packages/daemon/src/harness/codex/approval-cards.ts": "c32c649c3ac46490a0fe7970e211d54b111e5240856c6d693cccacedd0eba637",
+    "repo/packages/daemon/src/harness/codex/app-server-protocol.ts": "a7978c7df14b0b30841727193fb5290b535bdf09047683e0821fe5f8f6fc1a13",
+    "repo/packages/daemon/src/harness/codex/safe-text.ts": "0e23768c6b967c0f9b9a78e70ab0d19f92499374c245c9fbe2afdc897debb83c",
+    "repo/packages/daemon/src/harness/codex/codex-session.ts": "43355aab271e943724dceda45a97c5141ef5875793c8319994d1d58b3f8b0eb5",
+    "repo/packages/daemon/src/harness/codex/terminal-words.ts": "8a38baa3d217f7d41c65a1bf16d606cbcf9bf566ea113467bc98078d157a2bc1",
+    "repo/packages/daemon/src/harness/codex/ws-frames.ts": "31bd73949cf9bbc6c2f8658b7fb8f7ec707efa14528977e552dd38bac821082a",
+    "repo/packages/daemon/src/harness/codex/thread-tracker.ts": "98d05e08c40d8c39fc4c5d2a876205704df0e99e1d10b98c719eefe865a0ceb7",
+    "repo/packages/daemon/src/harness/codex/app-server-client.ts": "f0c7f9312bd3e0d039b428d251fdd76e4718f9c8713940d3fbd4f49d63cc282f",
+    "repo/packages/daemon/src/harness/codex/codex-args.ts": "c1b6ea50741837a53bbfb708b7b774fae3aed066f43dc621c41a305bbd471819",
+    "repo/packages/daemon/src/harness/codex/thread-protocol.ts": "a4556885ad85d6248e9aecd15e66fde543475eb7e084cf02453c11b5cf57cd91",
+    "repo/packages/daemon/src/harness/codex/codex-chat.ts": "6ea1feb14cbcb61cc37685611982b5dda06deb410801fe5dad51b40ba556428b",
+    "repo/packages/daemon/src/harness/codex/unix-ws.ts": "1e8969532bb681276b23add1ca160c27a94b4cad19272cf3d7af1503509f8488",
+    "repo/packages/daemon/src/harness/codex/codex.ts": "401d818865ffef5119c1d302860c8e94bbd97b85d540d3e6aedb4a23c8d468b1",
+    "repo/packages/daemon/src/harness/codex/codex-decisions.ts": "1f7fa43a0c031d069aecdd1010a8114d5d55a3d5d211dde857630c654e29224e",
+    "repo/packages/daemon/src/harness/codex/startup-output.ts": "7c660f3d9b0f85c0d2b04b7c502f9fee172268f53700506cce97194d03dac9ce",
+    "repo/packages/daemon/src/harness/codex/codex-text-writer.ts": "44f1019aa52698f12a7b64082b449b2bc65002172dec1fef6aab601200d7db92",
+    "repo/packages/daemon/src/harness/codex/codex-turns.ts": "561e195fd864514d50c4c5663b8347bf5573ee2de767b7be663f417f0628c14c",
+    "repo/packages/daemon/src/harness/codex/describe-error.ts": "abae1e9d553660c68ffe218750ffa4a30d6daa80cbd85468caa95cebf4a6c6f4",
+    "repo/packages/daemon/src/harness/codex/attach-hint.ts": "23bd73b4affbedf58a927fda340f159bf171a4152d23f46019cd34e95671949d",
+    "repo/packages/daemon/src/harness/codex/thread-id.ts": "4a8bfed8f030bf6c27afb75db11f4449baaf7351c060f52a1a6404088bc66d52",
+    "repo/packages/daemon/src/cli/session-phases/message-api-setup.ts": "86c1b7925c663a90e59fd6e41b9fd284d4f5b5c32d5502e68635f9855213bf5c",
+    "repo/packages/daemon/src/cli/session-phases/pty-session-setup.ts": "fa9d5ace3c18f6f46566436c53febc3dee7d7e910946c63b4cbbecb9d4cc6923",
+    "repo/packages/daemon/src/cli/session-phases/hook-bridge-setup.ts": "8111d1ca349ca56ad2a975875bacb2f513904e13b54a0c1d696d239704510a12",
+    "repo/packages/daemon/src/cli/handlers/connection-events.ts": "4551c454e138f04ec32d3a3c1d0e00db209db33801b3652e1dee1f780827b643",
+    "repo/packages/daemon/src/cli/handlers/recent-repositories-events.ts": "e5b22b60dcbd9b5bc64fbd0579bf183ddeca09098ec9d608a223d57096899810",
+    "repo/packages/daemon/src/cli/handlers/image-insertion-events.ts": "66a7821d05b1778b2bec673d5f5d90a9e8751aab2e3714a51708b9acd9d67251",
+    "repo/packages/daemon/src/cli/handlers/structured-chat-events.ts": "80b8646352bbe8e8eb8c7a7f9ba8b0cc66207212d45dd339f34f24c2da2b51a7",
+    "repo/packages/daemon/src/cli/handlers/pty-message-fanout.ts": "521b23e19f80a95467d7add0364383c868875b5e28db7e7f9d64c29105c4a461",
+    "repo/packages/daemon/src/cli/handlers/session-list-entries.ts": "0a9f3f3761ed9bb048a9c95d8fb56f968bebafb12a2d818fe5fe4853e7f6f977",
+    "repo/packages/daemon/src/cli/handlers/trivial-events.ts": "460195f09fd33fe36db59c2b6df97eb96dcc4fcd4045b67c303a56ef5076c24b",
+    "repo/packages/daemon/src/cli/handlers/prompt-up.ts": "723db858fa039a6c4dbc48fd603bc8b71e4365a91a1185d9e9dd3121c92048f0",
+    "repo/packages/daemon/src/cli/handlers/input-events.ts": "03b7a3a2ed751c16560960e8490027baca2c1d4d46809edc662d7efc17f9d7fc",
+    "repo/packages/daemon/src/cli/handlers/session-events.ts": "c9aabf1c13deec0fd3ca4ef9b41ae5032f521a1bf175bb770415e89966373b87",
+    "repo/packages/daemon/src/cli/handlers/screen-menu.ts": "74644c23024063c58977bfb3dd349d324cfcb735668da2e5c87fab3913fe33cf",
+    "repo/packages/daemon/src/cli/handlers/pending-question-resend.ts": "10921d43cca9fc2a623d81bc1bb4dddb06ca5a1dd4253d6ca521495f2c10a03c",
+    "repo/packages/daemon/src/cli/handlers/transcript-events.ts": "0900ad1d99c4bcb3e42e525115df7c1491d46f704da0dd018741746aacedcb5e",
+    "repo/packages/daemon/src/cli/handlers/resume-session-events.ts": "cfee26bc54735ca4af5cb3dd82973d8875f4009eb8429e9c4f6ee85f39dfd017",
+    "repo/packages/daemon/src/cli/handlers/create-session-events.ts": "4dfd82b812b5dba5648d45734cc104973d912d91c81c3e1744a232a51dfc0eff",
+    "repo/packages/daemon/src/cli/handlers/resolved-answer-cache.ts": "2560988e01f8b9090f952bc627edb95f393d0a2eca984d6e59a7426ec1ddccb7",
+    "repo/packages/shared/src/identity.ts": "5330989cff7565d890d287d3f9d42a393bedfa0dce36792a62925981c9fbc21d",
+    "repo/packages/shared/src/pairing.ts": "a831f9a5e7c5781beeda014534f51ce99f225f462da17b5b30f81ef635167a27",
+    "repo/packages/shared/src/error-utils.ts": "9ace185dac65f212d6d3d04faa5372220f9d36e0eb59b4fe9d8472ddd7082946",
+    "repo/packages/shared/src/async-utils.ts": "841cabd9ea75bb166a21b31192842c77f235bd7e8d9a73172bb8b817d9f660b6",
+    "repo/packages/shared/src/daemon-ports.ts": "44bb76e6680d825a7768e0305ebf2abd82c916cb8e45d95b8d36d3786bc5906f",
+    "repo/packages/shared/src/structured-chat.ts": "bbeaa847fd5a11aedf6040ffd7b40479fa2d691c454c8741a9333df841988a6f",
+    "repo/packages/shared/src/terminal-view.ts": "7c373cd23d6ffbeaf071f60e8af84076c3e7b75e49f7aabe7f153f3765f1a5f8",
+    "repo/packages/shared/src/crypto.ts": "6a45be8370a8f66795384d9f79e85a4d25fa64799c637e9230e8dc0fa381d991",
+    "repo/packages/shared/src/issue-closing.ts": "2f79e56efd37bb05bb103bc4a0465a4ac49bb93c0ced00d509b4afc07a181287",
+    "repo/packages/shared/src/file-download.ts": "7171fe7e6851855d8e30093756504e827505354aa71c3023962c3c7e62886f68",
+    "repo/packages/shared/src/display-text.ts": "021117a793093652275a62930ab3e3e542f363aec9234b6655706b648834b401",
+    "repo/packages/shared/src/types.ts": "06fb99ab51a4d0e353f9de67342b4139d76d9f6bf2a4c969bade0ea8aa0103d3",
+    "repo/packages/shared/src/relay-messages.ts": "02f7056ed046e656d8f31f0090ea1336dea570c4782bcb1819094bd8de4e9d71",
+    "repo/packages/shared/src/native-bridge.ts": "e922dfe8ed4ae0de29e159208122d566cda653da406de750dcfa36da4922cb58",
+    "repo/packages/shared/src/secure-push-messages.ts": "6ed923196dc600a2883e8aa9e6cc6de77fb3779ae928e2677f43c604f9c596e2",
+    "repo/packages/shared/src/protocol.ts": "1db740d75629742a886bda92e6696ff3a916412a4a7210881a72b893c71c5fa1",
+    "repo/packages/shared/src/image-staging.ts": "d78f821d1bde36b25c4c42d33deb1e1d01021635a4d259b19b4465982428a01e",
+    "repo/packages/shared/src/dispatch.ts": "e6b4b453b363f4f6852e5553b95157d13bc43e64dfd11cd56bd0dd5461a0de75",
+    "repo/packages/shared/src/browser-links.ts": "fa0b86a525ea3d931c517e4321b84fa09a516bc97759afe27ebda4f38bfb064b",
+    "repo/packages/shared/src/ed25519-public-key.ts": "9511c79845d3121524f13b25e601df1b0b80c17d47390dc56d769c2681d3eefd",
+    "repo/packages/shared/src/index.ts": "d2e3c3b0e8e0b545b3541537567f00007fdb15848ee04a3ea127e552b2fb9b8e",
+    "repo/packages/shared/src/file-download-ingress.ts": "38131c10e1ac6919372e8ef053d468b50662b116ebe5834f257fa1e55e6767ec",
+    "repo/packages/shared/src/image-staging-ingress.ts": "4e0e34a1bffd75643a75a47c829eaf714c92a4da50bd3278f7144d8f4a307522",
+    "repo/packages/shared/src/protocol-version.ts": "cf41b9c8a7659153ba80c5f6a8b0ccc57e1271051447b846287e468796821dbd",
+    "repo/packages/shared/src/harness.ts": "c4e549ea89143aa937da7d915a11c7520aeb145f10ad0352ec1f1aaf25d78651",
+    "repo/packages/shared/src/permission-defaults.ts": "ae733fef5b5dab0a21617ba1b7bab7f3239d07a6119ed82d120601fcec7cca00",
+    "repo/packages/shared/src/image-wire.ts": "84473a25c2534801260c1997877ed21b58132d9957e8cfa5663762fcfa952685",
+    "repo/packages/shared/src/image-insertion.ts": "a45547d27449ca6e88655f9aa2dfc1a1875e3a80697a15caa5b7939e0bc8ec34",
+    "repo/packages/shared/src/relay/push.ts": "d220f5d67b27b28ece6db1c79df9bc366f1079f3f1d530565aa3f5857b5e5fc1",
+    "repo/packages/shared/src/relay/envelope.ts": "785945ce7aa77c68994a1018e2866953428d0afe70444ff1b50ba4d40111d189",
+    "repo/packages/shared/src/relay/pairing.ts": "b4378d2f9174f58ba29e5f96ec152214affe3466e5512e6935723d0dfca77364",
+    "repo/packages/shared/src/relay/bytes.ts": "395588c0eb77196f5f802070bb48b86cb2db5c0dac51b096a2f082dd47761a1d",
+    "repo/packages/shared/src/relay/errors.ts": "5e19039e70d8aa6c07f55736e0644490ce03315dfe961472e2c10e52380b52c9",
+    "repo/packages/shared/src/relay/strict-json.ts": "cf840447c631c83969efe9a513c3fde749fa00a7608253cd0409a2a5fff97fde",
+    "repo/packages/shared/src/relay/constants.ts": "1046b8440e29abdce56f8c11f78d9962637f59c3e588a703fc5b9c14e8017fc1",
+    "repo/packages/shared/src/relay/channel.ts": "dc9bd08c3693e4d5c84b974d20f40c2008463630eb78ecfc808f181bac7d2134",
+    "repo/packages/shared/src/relay/primitives.ts": "fb60352192bcf7b601cb17c3e9fb869f765150a6caef71a6097a53cc88670ed6",
+    "repo/packages/shared/src/relay/seal.ts": "b1336fb42cb2e08fc03cd4418bc29079f63cf71e464f3a215ecf73b1b62106e3",
+    "repo/packages/shared/src/relay/deterministic.ts": "c548df3dec203c21a4cb5732b8ec6c179bfbe156a936c23afed6cc1d5651ae09",
+    "repo/packages/shared/src/relay/index.ts": "5c891161e7bb5f65bf2b27a21f685d08284b99b75a043de003ed293fc4a6c82c",
+    "repo/packages/shared/src/relay/small-order.ts": "5d37eacebdf4924d1dda588d7c0c50081b6ddc2dedb68b3fc9bf0a96386f0fe2",
+    "repo/packages/shared/src/relay/native-answer.ts": "d467fb10c48ac5f7470e7e8131ad6de0fe459750c2f18bba23e05a8fe8100963",
+    "repo/packages/shared/src/relay/internal.ts": "905d0a0e536a466e2ad9382aeff1d2958e233f02c58c533868b985ab61a2cc74",
+    "repo/packages/shared/src/relay/worker-wire.ts": "48020cc697345999ecaffdfe8c9e1f562c82cd9ed466779094f07b41cf76c3c2",
+    "repo/packages/shared/src/relay/handshake.ts": "356f6f94b97e05cf35e34338bfb7a928307b957c6bcb30d1dc3ce3ce21289be4",
+    "local-proof/viewport.ts": "cbe16c3f8c44a1cb2e10126e43ab1e1ef7d369fadb9b7d4f7111260231cddd64",
+    "local-proof/resource.ts": "5f86e0488271857066d43ce722a5a336f235b55915272f3533dcef1802c1db21",
+    "local-proof/held.ts": "48bd39886d870ce3fc048c517010ab2f6c89aada1abe96839a69adbb3f8e7078",
+    "repo/packages/daemon/tests/helpers/terminal-output-child.ts": "ec5804cc62a387940c7a21f6dd3450839446c89e024b669fd04a0540ebacbeba",
+    "repo/packages/shared/package.json": "e76d3a31e2f5675426f9651a7b0bf586cf535dfe56653bb516c393afa787a302",
+    "repo/bun.lock": "06ed6b996ebcaae1d9a1a577ea280ac68d6db45540ad484f8c04f4c59dd5b595",
+    "repo/package.json": "c147123da3256f0557b8591bfdcae702cf5ce6c92bdf50b6b5c3446e95345472",
+    "repo/patches/@xterm%2Fheadless@6.0.0.patch": "843cb13e92a284c7435154e00a9e0e1f8b3690bceef721324fd7219e02596695",
+    "local-proof/qualify-capture-readiness.py": "00d5153f7b3b8a09e578e7cfc32cbc79f7cc5e9b6324a34be7adabe876e446c2",
+    "repo/node_modules/.bun/@xterm+headless@6.0.0/node_modules/@xterm/headless/package.json": "6c39530ee759998113bd8bcc306d1b725c0b1d5b0cdc04e071f6945a5f5edf1a",
+    "repo/node_modules/.bun/@xterm+headless@6.0.0/node_modules/@xterm/headless/LICENSE": "b569f629d00f2626a8100df2a1798210535621e42164dfd426a6fe5aac7b0ccd",
+    "repo/node_modules/.bun/@xterm+headless@6.0.0/node_modules/@xterm/headless/lib-headless/xterm-headless.js": "17a90b650cf6b77cce2b98c4063884d43545e4ce177a54b76ccfc906f1aacaed",
+    "repo/node_modules/.bun/@xterm+headless@6.0.0/node_modules/@xterm/headless/lib-headless/xterm-headless.js.map": "780e782badc8189491a469c9277b783e01911882ea84417b31e71294ea927d98",
+    "repo/node_modules/.bun/@xterm+headless@6.0.0/node_modules/@xterm/headless/lib-headless/xterm-headless.mjs": "b27576b6bef6610be97e55a959319baa8a6b1a4fae629d49926971a536428c7a",
+    "repo/node_modules/.bun/@xterm+headless@6.0.0/node_modules/@xterm/headless/lib-headless/xterm-headless.mjs.map": "aa22417fd3552189dd764ad1f99251aeb6d3c30d9b9c578a022a2aba2c1c0827"
+  }
+}
