@@ -16,12 +16,12 @@ public struct RemiSessionRow: View {
             VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
                 if dynamicTypeSize.isAccessibilitySize {
                     VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
-                        Text(session.name).font(.headline)
+                        Text(session.displayTitle).font(.headline)
                         RemiStatusBadge(status: session.status)
                     }
                 } else {
                     HStack {
-                        Text(session.name).font(.headline).lineLimit(1)
+                        Text(session.displayTitle).font(.headline).lineLimit(1)
                         Spacer(minLength: RemiTheme.Spacing.xs)
                         RemiStatusBadge(status: session.status)
                     }

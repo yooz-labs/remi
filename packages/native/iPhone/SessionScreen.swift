@@ -36,6 +36,8 @@ struct SessionScreen: View {
     @State private var reviewState = RemiTranscriptReviewState()
     @State private var reviewMemory = RemiConversationReviewMemory()
     @State private var visibleEntryID: String?
+    @State private var expandedEntryIDs: Set<String> = []
+    @State private var transcriptRows: [RemiTranscriptRow] = []
     @State private var followsLatest: Bool
     @State private var latestScrollRequest = 0
     @State private var reviewSessionID: String
@@ -75,7 +77,12 @@ struct SessionScreen: View {
         // A conversation the route names (a notification) wins over the one left open.
         _selectedViewID = State(initialValue: initialConversationID ?? restoredState.selectedViewID)
         _draft = State(initialValue: restoredState.draft)
-        _visibleEntryID = State(initialValue: restoredState.visibleEntryID)
+        // A saved position inside a tool run that starts collapsed points at its group.
+        let openViewID = initialConversationID ?? restoredState.selectedViewID
+        _visibleEntryID = State(initialValue: RemiTranscriptGrouping.restoredRowID(
+            restoredState.visibleEntryID,
+            entries: openViewID.isEmpty ? transcript : transcriptForView(openViewID)
+        ))
         _followsLatest = State(initialValue: restoredState.followsLatest)
         _focusState = State(initialValue: PhoneQuestionFocusState(
             initial: initialQuestionID,
@@ -128,7 +135,7 @@ struct SessionScreen: View {
             content()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .navigationTitle(session.name)
+        .navigationTitle(session.displayTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if session.canTerminate || panes.availability.hasAnyPane {
@@ -136,6 +143,8 @@ struct SessionScreen: View {
             }
         }
         .confirmationDialog(
+            // The full name: this confirms a destructive action, so it names the session exactly as the
+            // hub does and does not shorten it by the machine prefix (#1647).
             "Exit \(session.name)?", isPresented: $confirmingTermination, titleVisibility: .visible
         ) {
             Button("Exit session", role: .destructive) {
@@ -208,7 +217,10 @@ struct SessionScreen: View {
                             }
 
                             let matchingEntryIDs = Set(reviewState.matchingEntryIDs)
-                            ForEach(visibleTranscript) { entry in
+                            RemiTranscriptRowsView(
+                                rows: transcriptRows,
+                                expandedEntryIDs: $expandedEntryIDs
+                            ) { entry in
                                 RemiTranscriptEntryView(
                                     entry: entry,
                                     isSearchMatch: matchingEntryIDs.contains(entry.id),
@@ -261,6 +273,9 @@ struct SessionScreen: View {
                         if previous.last?.id != entries.last?.id { scrollToLatest(using: proxy) }
                     }
                     .onChange(of: latestScrollRequest) { _, _ in scrollToLatest(using: proxy) }
+                    .onChange(of: groupingInput, initial: true) { _, input in
+                        transcriptRows = input.rows
+                    }
                 }
             }
 
@@ -271,7 +286,7 @@ struct SessionScreen: View {
             onSend: onSend,
             onInterrupt: nil
         )
-        .navigationTitle(session.name)
+        .navigationTitle(session.displayTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if #available(iOS 27.0, *) {
@@ -310,6 +325,8 @@ struct SessionScreen: View {
             }
         }
         .confirmationDialog(
+            // The full name: this confirms a destructive action, so it names the session exactly as the
+            // hub does and does not shorten it by the machine prefix (#1647).
             "Exit \(session.name)?",
             isPresented: $confirmingTermination,
             titleVisibility: .visible
@@ -427,6 +444,19 @@ struct SessionScreen: View {
         .disabled(latestActivityID == nil || followsLatest)
     }
 
+    /// The entries the transcript groups and the ones it must keep visible (search matches).
+    private var groupingInput: RemiTranscriptGroupingInput {
+        RemiTranscriptGroupingInput(
+            entries: visibleTranscript,
+            pinnedEntryIDs: Set(reviewState.matchingEntryIDs)
+        )
+    }
+
+    /// The id of the row showing `entryID`: the entry, or the collapsed tool group hiding it.
+    private func displayRowID(_ entryID: String) -> String {
+        RemiTranscriptGrouping.rowID(for: entryID, in: transcriptRows, expanded: expandedEntryIDs) ?? entryID
+    }
+
     private var visibleTranscript: [RemiTranscriptEntry] {
         selectedViewID.isEmpty ? transcript : transcriptForView(selectedViewID)
     }
@@ -492,7 +522,7 @@ struct SessionScreen: View {
         guard let entryID else { return }
         followsLatest = false
         withAnimation(.easeInOut(duration: 0.2)) {
-            proxy.scrollTo(entryID, anchor: .center)
+            proxy.scrollTo(displayRowID(entryID), anchor: .center)
         }
     }
 
@@ -525,7 +555,15 @@ struct SessionScreen: View {
     private func restoreReview(for conversationID: String) {
         let snapshot = reviewMemory.snapshot(for: conversationID)
         reviewState = snapshot.reviewState
-        visibleEntryID = snapshot.visibleEntryID
+        // Map through the new conversation's own rows: a saved position inside a tool run
+        // that is collapsed now points at its group.
+        let restoredRows = RemiTranscriptGroupingInput(
+            entries: visibleTranscript,
+            pinnedEntryIDs: Set(snapshot.reviewState.matchingEntryIDs)
+        ).rows
+        visibleEntryID = snapshot.visibleEntryID.map {
+            RemiTranscriptGrouping.rowID(for: $0, in: restoredRows, expanded: expandedEntryIDs) ?? $0
+        }
         isSearchPresented = snapshot.isSearchPresented
         followsLatest = snapshot.visibleEntryID == nil && !snapshot.isSearchPresented
         if followsLatest { latestScrollRequest += 1 }

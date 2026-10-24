@@ -96,14 +96,14 @@ private struct QuestionCardHeader: View {
             HStack(spacing: RemiTheme.Spacing.xs) {
                 requestLabel
                 Spacer(minLength: RemiTheme.Spacing.xs)
-                Text("\(machineName) · \(sessionName)")
+                Text("\(machineName) · \(RemiSessionTitle.short(name: sessionName, machineName: machineName))")
                     .font(RemiTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
                 requestLabel
-                Text("\(machineName) · \(sessionName)")
+                Text("\(machineName) · \(RemiSessionTitle.short(name: sessionName, machineName: machineName))")
                     .font(RemiTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
                     .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)

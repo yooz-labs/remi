@@ -124,6 +124,8 @@ struct PhoneLiveRootView: View {
                 Task {
                     await PhoneNotificationCoordinator.notify(
                         id: id,
+                        // The full session name: a notification shows no machine beside it,
+                        // so the machine prefix is what says where the session runs (#1647).
                         title: "\(question.sessionName) needs you",
                         body: question.text,
                         destination: destination

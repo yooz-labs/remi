@@ -2,6 +2,8 @@ import Foundation
 
 /// The text a drawer session row shows, kept apart from the view so it can be tested.
 public struct PhoneDrawerSessionPresentation: Equatable, Sendable {
+    /// The session name without a repeated machine prefix (#1647).
+    public let title: String
     /// "project · machine", or only the machine when the project name repeats the
     /// session name.
     public let subtitle: String
@@ -24,7 +26,9 @@ public struct PhoneDrawerSessionPresentation: Equatable, Sendable {
         self.isLastKnown = isLastKnown
         let trimmedName = session.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedProject = session.project.trimmingCharacters(in: .whitespacesAndNewlines)
+        title = session.displayTitle
         let repeatsName = trimmedName.caseInsensitiveCompare(trimmedProject) == .orderedSame
+            || title.caseInsensitiveCompare(trimmedProject) == .orderedSame
         var subtitle = repeatsName ? machineName : "\(session.project) · \(machineName)"
         let activity = session.lastActivityDate.map { min($0, now) }
         if let activity {

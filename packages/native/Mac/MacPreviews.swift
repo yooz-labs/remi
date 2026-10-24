@@ -30,6 +30,8 @@ private struct MenuPreview: View {
 #Preview("Window · Unreachable") { MacWindowPreview(machines: MacPreviewData.unreachableMachines, sessions: RemiPreviewData.sessions) }
 #Preview("Window · Waiting Approval") { MacWindowPreview(machines: MacPreviewData.machines, sessions: RemiPreviewData.sessions) }
 
+#Preview("Window · Hub session names") { MacWindowPreview(machines: MacPreviewData.machines, sessions: RemiPreviewData.sessions + [RemiPreviewData.hubNamedSession]) }
+
 #Preview("New Session · Light") { NewSessionPreview().preferredColorScheme(.light) }
 #Preview("New Session · Dark") { NewSessionPreview().preferredColorScheme(.dark) }
 #Preview("New Session · Accessibility") { NewSessionPreview().environment(\.dynamicTypeSize, .accessibility5) }

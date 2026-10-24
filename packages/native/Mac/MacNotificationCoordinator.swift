@@ -324,6 +324,8 @@ private struct MacQuestionNotificationMonitor: View {
                     Task {
                         await MacNotificationCoordinator.notify(
                             id: id,
+                            // The full session name: a notification shows no machine beside it,
+                            // so the machine prefix is what says where the session runs (#1647).
                             title: "\(sessionName) needs you",
                             body: item.message.question.text,
                             destination: destination,
