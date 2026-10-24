@@ -55,9 +55,16 @@ owned client, source PTY and Worker joins cleanup. The initial probe omitted the
 Worker's existing client `open` notice and failed; that attempt remains failed.
 The correction consumes that existing notice without modifying Worker behavior.
 
-Before the test-only phase PR, record the exact four-run receipt, add its source
+Before the test-only phase PR, record the exact source receipt, add its source
 file to the TypeScript scope, and verify all changed inputs. Use one fresh single
 reviewer for this small probe PR, per `.rules/code_review.md`; worst case is two
 unique B4q agents including the retired architect, with no implementation team.
 This is a new PR review, not a third review of #1655. One delta round is allowed
 only for substantial fixes, and no third round.
+
+The single fresh R1 found one Moderate cleanup issue and no Critical/Important
+findings. Its accepted fix bounds socket close and child exit; real stopped,
+TERM-ignoring child controls on both pins prove timeout, KILL/join, result
+publication and continued source/Worker cleanup. The current six-run receipt
+retains two positives and four intentional failures. No second full review or
+third review is authorized. The driver qualified this narrow cleanup correction.

@@ -33,6 +33,19 @@ const publish = (file: string, value: unknown) => {
 const read = (file: string) => JSON.parse(fs.readFileSync(file, 'utf8'));
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const bytes = (value: object) => new TextEncoder().encode(serialize(value as never));
+async function within<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Owned probe deadline: ${label}`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 const directory = process.argv[3];
 if (process.argv[2] === '--client') {
   assert(directory);
@@ -118,10 +131,14 @@ if (process.argv[2] === '--client') {
     );
     if (failure) throw failure;
     await chain;
+    if (descriptor.stallShutdown) {
+      process.on('SIGTERM', () => {});
+      process.kill(process.pid, 'SIGSTOP');
+    }
   } finally {
     channel?.close();
     socket.close();
-    await socket.closed;
+    await within(socket.closed, 1000, 'client socket close');
   }
 } else {
   assert.equal(process.argv[2], '--run');
@@ -134,7 +151,6 @@ if (process.argv[2] === '--client') {
     premature: process.argv.includes('--premature'),
   };
   const worker = await startWorker();
-  const machine = await newMachine();
   let host: FakeHost | undefined;
   let pipe: Socket | undefined;
   let channel: relayV2.Channel | undefined;
@@ -153,6 +169,7 @@ if (process.argv[2] === '--client') {
   const genericPing = createPing();
   const wireLengths: number[] = [];
   try {
+    const machine = await newMachine();
     fixture = await terminalServiceFixture();
     const peer = await fixture.client(false, true);
     assert(peer.packet);
@@ -216,6 +233,7 @@ if (process.argv[2] === '--client') {
       rid: relayV2.b64u(machine.rid),
       machinePublicKey: relayV2.b64u(machine.publicKey),
       hash: digest(unit),
+      stallShutdown: process.argv.includes('--stall-shutdown'),
     });
     pipe = await host.openPipe(await host.nextConnection());
     const activePipe = pipe;
@@ -306,7 +324,11 @@ if (process.argv[2] === '--client') {
     assert(next, 'actual model can be borrowed after matching progress and native disposal');
     next.release();
     publish(join(ipc, 'stop'), {});
-    assert.equal(await child.exited, 0, 'owned client exited successfully');
+    assert.equal(
+      await within(child.exited, 2000, 'owned client exit'),
+      0,
+      'owned client exited successfully',
+    );
     assert.throws(() => process.kill(child?.pid as number, 0), { code: 'ESRCH' });
     result['status'] = 'passed-transport-prefix-only';
     result['wireLengths'] = wireLengths;
@@ -323,7 +345,19 @@ if (process.argv[2] === '--client') {
       publish(join(ipc, 'release'), {});
       publish(join(ipc, 'stop'), {});
       child.kill('SIGTERM');
-      await child.exited;
+      try {
+        await within(child.exited, 1000, 'client termination');
+      } catch {
+        // A stopped owned process may not service TERM. Escalate only this
+        // still-unreaped child, then record uncertainty if it cannot be joined.
+        child.kill('SIGKILL');
+        result['clientRequiredKill'] = true;
+        try {
+          await within(child.exited, 1000, 'client kill and join');
+        } catch (error) {
+          errors.push(error);
+        }
+      }
     }
     if (slot?.busy && !released) slot.nativeClosed();
     channel?.close();

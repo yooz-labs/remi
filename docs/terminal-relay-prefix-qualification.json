@@ -1,7 +1,7 @@
 {
-  "status": "passed-necessary-only-prefix-and-premature-negative-controls",
-  "startedAt": 1792874275.151424,
-  "probeHash": "f614e99fe18647917300ef0878e0e897f7908425877fdc177954631ae6d9870d",
+  "status": "passed-necessary-only-prefix-premature-and-shutdown-controls",
+  "startedAt": 1792874723.909066,
+  "probeHash": "6e09f89ba869ab29784d45b05a0c0f309ddad74d6e00567175ce9742dd2da571",
   "runs": [
     {
       "pin": "1311",
@@ -13,9 +13,9 @@
         "premature": false,
         "wireLengths": [65561, 123, 123],
         "plaintextBytes": 65536,
-        "hash": "d766f40671e08f45370c10c4604c772717b9a07f26d817aa34d61b45a970d22c",
+        "hash": "6845df33f6c21dfdf90f545c2f8d57b324d64fff9934620a3cae8c798142e742",
         "ownedCleanupJoined": true,
-        "finishedAt": "2026-10-24T20:37:55.653Z"
+        "finishedAt": "2026-10-24T20:45:24.405Z"
       }
     },
     {
@@ -28,7 +28,21 @@
         "premature": true,
         "error": "AssertionError [ERR_ASSERTION]: projection remains borrowed after send completion before encrypted progress",
         "ownedCleanupJoined": true,
-        "finishedAt": "2026-10-24T20:37:57.174Z"
+        "finishedAt": "2026-10-24T20:45:25.943Z"
+      }
+    },
+    {
+      "pin": "1311",
+      "mode": "stalled",
+      "exitCode": 1,
+      "receipt": {
+        "status": "failed",
+        "scope": "necessary-only local encrypted transport",
+        "premature": false,
+        "error": "Error: Owned probe deadline: owned client exit",
+        "clientRequiredKill": true,
+        "ownedCleanupJoined": true,
+        "finishedAt": "2026-10-24T20:45:29.453Z"
       }
     },
     {
@@ -41,9 +55,9 @@
         "premature": false,
         "wireLengths": [65561, 123, 123],
         "plaintextBytes": 65536,
-        "hash": "68cb6c8d8c504309540e19a819ca958880f8d70f0537d598d584c21cfa123566",
+        "hash": "795f38222082e9b4143164898b0a961b4e39b61ed452da6795f0bb9828aad432",
         "ownedCleanupJoined": true,
-        "finishedAt": "2026-10-24T20:37:57.675Z"
+        "finishedAt": "2026-10-24T20:45:29.905Z"
       }
     },
     {
@@ -56,11 +70,25 @@
         "premature": true,
         "error": "AssertionError [ERR_ASSERTION]: projection remains borrowed after send completion before encrypted progress",
         "ownedCleanupJoined": true,
-        "finishedAt": "2026-10-24T20:37:59.131Z"
+        "finishedAt": "2026-10-24T20:45:31.415Z"
+      }
+    },
+    {
+      "pin": "142",
+      "mode": "stalled",
+      "exitCode": 1,
+      "receipt": {
+        "status": "failed",
+        "scope": "necessary-only local encrypted transport",
+        "premature": false,
+        "error": "Error: Owned probe deadline: owned client exit",
+        "clientRequiredKill": true,
+        "ownedCleanupJoined": true,
+        "finishedAt": "2026-10-24T20:45:34.870Z"
       }
     }
   ],
-  "finishedAt": 1792874279.1346262,
+  "finishedAt": 1792874734.875886,
   "baseHead": "c4dc5d90184f69997b36f6f6b02d80370f7c5d42",
   "productionChanges": [],
   "limitations": [
@@ -69,5 +97,13 @@
     "Ordered encrypted pong is a necessary transport-prefix witness, not UI delivery or complete native TLS disposal qualification.",
     "No combined child/hub retained-memory or six-cell compiled relay qualification is claimed.",
     "No production route, capability, public shape, Worker behavior or private child ABI is changed."
-  ]
+  ],
+  "review": {
+    "round": 1,
+    "criticalFindings": 0,
+    "importantFindings": 0,
+    "moderateFindings": 1,
+    "resolved": "Bounded socket-close and child-exit waits; stopped TERM-ignoring client proves KILL/join and result publication on both pins.",
+    "secondRound": "Not needed for this narrow cleanup correction; driver validated the changed behavior."
+  }
 }

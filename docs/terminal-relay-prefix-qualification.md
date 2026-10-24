@@ -3,7 +3,7 @@
 This test-only phase of #1595 establishes a necessary ownership control before
 production relay integration. It does not enable terminal relay support.
 The [receipt](terminal-relay-prefix-qualification.json) records the exact probe
-hash and four source runs on Mac Bun 1.3.11 and 1.4.2.
+hash and six source runs on Mac Bun 1.3.11 and 1.4.2.
 
 The probe constructs the real signed direct terminal service, actual output PTY,
 model, ledger view and native TLS receipt peer. It forwards a real normalized
@@ -35,7 +35,15 @@ borrow succeeds. No replacement release callback is used.
 
 Both positive runs pass. Deliberately confirming the source native receipt at
 Channel.send completion fails the same borrowed-model assertion on both pins.
-All four runs join the owned client, source PTY and local Worker. The fixture
+The first review found unbounded probe shutdown waits. The corrected probe bounds
+client socket close at one second, normal client exit at two seconds, then TERM
+and KILL/join at one second each. On both pins a real stopped client that ignores
+TERM fails at the intended normal-exit deadline, is killed and joined, and still
+publishes its failure receipt after source/Worker cleanup. This is a cleanup
+negative, not a successful transport run. No second review was needed for this
+narrow correction; the driver qualified it.
+
+All six runs join the owned client, source PTY and local Worker. The fixture
 asserts zero actual PTY input and actual PTY process exit. The initial probe
 omitted the Worker's existing client `open` notice; that attempt failed and is
 retained separately. Consuming that existing notice fixed the probe sequencing;
@@ -49,7 +57,7 @@ E2E_BUNDLER=esbuild bun --no-env-file scripts/terminal-relay-progress-proof.ts \
   --run /private/tmp/remi-terminal-relay-positive
 ```
 
-Add `--premature` with a separate result directory for the expected nonzero
+Add `--premature` or `--stall-shutdown` with a separate result directory for the expected nonzero
 negative control. Inspect `result.json`; a nonzero exit alone does not establish
 that the intended assertion failed. This manual probe is outside automatic Bun
 test discovery and is included in the root TypeScript check.
