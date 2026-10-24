@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import { hostname } from 'node:os';
 import * as path from 'node:path';
-import { parseStrictJson } from '@remi/shared/relay/strict-json.ts';
+import { parseStrictJson } from '@remi/shared/relay/strict-json';
 import {
   InterprocessFileLockError,
   withInterprocessFileLockNonblocking,

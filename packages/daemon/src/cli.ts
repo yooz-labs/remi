@@ -305,6 +305,7 @@ import { findLegacyWriters, readStatusFiles } from './session/legacy-writers.ts'
 import { findAvailableTcpPort } from './session/port-utils.ts';
 import { traceQuestionEvent } from './session/question-trace.ts';
 import { InterprocessFileLockError } from './storage/interprocess-file-lock.ts';
+import { TerminalCaptureHost } from './terminal/capture-host.ts';
 import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
 import { BrowserLinkService } from './tunnel/browser-link-service.ts';
 import { BrowserLinkSessionHost } from './tunnel/browser-link-session-host.ts';
@@ -1187,6 +1188,7 @@ let structuredChatService: StructuredChatService | undefined;
 let browserLinkService: BrowserLinkService | undefined;
 let browserSessionHost: BrowserLinkSessionHost | undefined;
 let fileDownloadSessionHost: FileDownloadSessionHost | undefined;
+const terminalCaptureHost = new TerminalCaptureHost(REMI_DIR);
 const capabilitiesForConnection = (id: UUID): readonly string[] => [
   ...DAEMON_CAPABILITIES,
   ...(fileDownloadSessionHost?.service?.isAvailable(id) ? ['file_download'] : []),
@@ -1354,6 +1356,7 @@ const sessionRegistry = new SessionRegistry(
       retireSecurePushRuntime(sessionId);
       browserSessionHost?.retireSession(sessionId, reason !== 'pty_exit');
       fileDownloadSessionHost?.retireSession(sessionId);
+      terminalCaptureHost.retireSession(sessionId);
       void fileDownloadSessionHost?.closeSession(sessionId);
       void imageStagingService?.invalidateSession(sessionId);
       log(`Session closed: ${sessionId} (reason: ${reason})`);
@@ -1933,6 +1936,12 @@ async function createNewSession(
     harnessSessions.set(sessionId, session);
     fileDownloadSessionHost?.bindSession(sessionId, session);
     const ptySession = session.pty;
+    try {
+      await terminalCaptureHost.prepare(sessionId, ptySession);
+    } catch {
+      terminalCaptureHost.retireSession(sessionId);
+      logError('[Terminal] Optional launch capture unavailable');
+    }
 
     const locallyOwned = passThrough; // wrapper-mode sessions are locally owned
     // Persist non-wrapper (daemon-spawned/remote) sessions across disconnects by
@@ -2001,6 +2010,7 @@ async function createNewSession(
     return ptySession;
   } catch (error) {
     fileDownloadSessionHost?.retireSession(sessionId);
+    terminalCaptureHost.retireSession(sessionId);
     browserSessionHost?.finishStartup(false);
     try {
       sessionStore.markExited(sessionId, null);
@@ -3174,6 +3184,10 @@ async function performCleanup(): Promise<void> {
     () => registry.stopAll(),
     () => draining,
     () => sessionRegistry.shutdown(),
+    async () => {
+      if (!(await terminalCaptureHost.closeAll()))
+        logError('[Terminal] Capture quota cleanup is unconfirmed');
+    },
     () => browserSessionHost?.closeAll(),
     async () => {
       if (fileDownloadSessionHost && !(await fileDownloadSessionHost.closeAll()))

@@ -2,8 +2,9 @@
 
 This standalone B3a component implements the home quotas from the approved
 [#1595 plan](../.context/issue-1595-backend-plan.md) and ADR0046/0047.
-There is no production constructor, capture observer, secure terminal handler,
-advertised capability or pane in this phase.
+The original standalone phase added no production constructor or capture observer.
+[B3b (#1620)](terminal-capture.md) now composes model reservations with launch-time
+capture; secure terminal handlers, advertised capability and a pane remain pending.
 
 ## Counted resources
 
