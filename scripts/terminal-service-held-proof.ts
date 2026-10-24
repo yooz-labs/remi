@@ -230,14 +230,8 @@ const isStopped = (child: Child) =>
         .trim()
         .startsWith('T');
 const results: unknown[] = [];
-for (const scenario of args.includes('--scenario')
-  ? [argument('--scenario')]
-  : [
-      'max-text-service-load',
-      'clear-service-load',
-      'retirement-lock-contention',
-      'blocking-control',
-    ]) {
+// Each awaited call owns its files, children and callbacks through disposal.
+async function runHeldScenario(scenario: string): Promise<void> {
   const common = ownedTerminalResourceFiles(argument('--terminal-tls-root'));
   const childPrefix = join(common.directory, 'secondary');
   const children: Child[] = [];
@@ -319,6 +313,11 @@ for (const scenario of args.includes('--scenario')
     );
     const info = read(`${childPrefix}.ready`);
     assert.equal(info.pid, secondary.process.pid);
+    const secondaryState = () => {
+      const state = read(`${childPrefix}.state`);
+      assert.equal(state.pid, secondary.process.pid, 'state belongs to the actual scenario child');
+      return state;
+    };
     const identities = await Promise.all(Array.from({ length: 8 }, () => createIdentity()));
     for (const [index, identity] of identities.entries())
       await root.trust.addAuthorizedKey(identity.publicKey, `owned service load peer ${index}`);
@@ -424,9 +423,7 @@ for (const scenario of args.includes('--scenario')
           const state = read(`${prefix}.state`);
           if (state.states[index]?.viewId) return true;
           if (state.sequence !== sequence) return false;
-          const observed = (
-            slowPeer || index < 3 ? admissions : read(`${childPrefix}.state`).admissions
-          ).find(
+          const observed = (slowPeer || index < 3 ? admissions : secondaryState().admissions).find(
             (item: {
               id: string;
               admitted: boolean;
@@ -463,7 +460,7 @@ for (const scenario of args.includes('--scenario')
                   (record) => !record.slot.busy && record.intent === null,
                 )
               );
-            const observed = read(`${childPrefix}.state`).records as {
+            const observed = secondaryState().records as {
               busy: boolean;
               intent: boolean;
             }[];
@@ -508,7 +505,7 @@ for (const scenario of args.includes('--scenario')
               fs.existsSync(`${prefix}.ack`) && read(`${prefix}.ack`).sequence === sequence,
           ) &&
           outputBytes >= (expected[0] ?? 0) &&
-          read(`${childPrefix}.state`).outputBytes >= (expected[1] ?? 0),
+          secondaryState().outputBytes >= (expected[1] ?? 0),
         'both actual PTY outputs delivered',
       );
       if (!allowRetired) {
@@ -516,7 +513,7 @@ for (const scenario of args.includes('--scenario')
         assert(state);
         await state.screen.whenIdle();
         await untilSetup(() => {
-          const other = read(`${childPrefix}.state`);
+          const other = secondaryState();
           return (
             !!root.capture.contextFor(root.sessionId) &&
             state.screen.pending.operations === 0 &&
@@ -702,7 +699,7 @@ for (const scenario of args.includes('--scenario')
         outputBytes,
         elapsed: performance.now() - loadStart,
         fast: read(`${fastPrefix}.state`),
-        secondary: read(`${childPrefix}.state`),
+        secondary: secondaryState(),
       });
       throw error;
     }
@@ -803,7 +800,7 @@ for (const scenario of args.includes('--scenario')
     );
     await untilSetup(
       () =>
-        read(`${childPrefix}.state`).records.every(
+        secondaryState().records.every(
           (row: { busy: boolean; intent: boolean }) => !row.busy && !row.intent,
         ),
       'secondary native slots and intents settled before disposal',
@@ -876,6 +873,14 @@ for (const scenario of args.includes('--scenario')
       scope:
         'actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance',
     });
+    if (args.includes('--terminal-held-evidence'))
+      publishResourceReceipt(argument('--terminal-held-evidence'), {
+        version: Bun.version,
+        revision: Bun.revision,
+        platform: process.platform,
+        architecture: process.arch,
+        completedScenarios: results,
+      });
   } finally {
     running = false;
     if (load) await load.catch(() => {});
@@ -920,6 +925,16 @@ for (const scenario of args.includes('--scenario')
     if (passed) common.cleanup();
     else console.error('Owned signed-service held evidence retained', common.directory);
   }
+}
+for (const scenario of args.includes('--scenario')
+  ? [argument('--scenario')]
+  : [
+      'max-text-service-load',
+      'clear-service-load',
+      'retirement-lock-contention',
+      'blocking-control',
+    ]) {
+  await runHeldScenario(scenario);
 }
 console.log(
   JSON.stringify({
