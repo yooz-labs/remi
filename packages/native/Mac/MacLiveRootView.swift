@@ -1148,12 +1148,12 @@ private struct MacSessionList: View {
         } label: {
             MacWorkspaceGroupLabel(workspace: workspace, isExpanded: isExpanded.wrappedValue)
                 .contentShape(.rect)
-                // A project is a heading, not a destination: a click opens or closes it and never
-                // selects it, so no row of the list is highlighted except the open session.
-                .onTapGesture { isExpanded.wrappedValue.toggle() }
+                // A click opens a closed project and shows its latest session (the most urgent,
+                // then the most recent), or closes an open one. The project row itself is never
+                // highlighted: the highlight is the open session.
+                .onTapGesture { toggle(workspace) }
                 .selectionDisabled()
         }
-        .selectionDisabled()
         .contextMenu { workspaceActions(workspace) }
     }
 
@@ -1232,6 +1232,19 @@ private struct MacSessionList: View {
                     }
                 }
             }
+    }
+
+    private func toggle(_ workspace: MacSessionWorkspace) {
+        guard !expandedWorkspaces.contains(workspace.id) else {
+            expandedWorkspaces.remove(workspace.id)
+            return
+        }
+        // Expand first and select on the next turn. Selecting a session in the same update that
+        // reveals it asked the outline list to highlight a row that did not exist yet, and it
+        // drew the highlight over the wrong row.
+        expandedWorkspaces.insert(workspace.id)
+        guard let latest = workspace.sessions.first else { return }
+        Task { @MainActor in selection = latest.id }
     }
 
     private func workspaceExpansionBinding(_ workspace: MacSessionWorkspace) -> Binding<Bool> {
