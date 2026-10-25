@@ -15,15 +15,50 @@ public enum RemiPushPresentation {
         case information
     }
 
-    /// The most the thread identifier carries of a session id, so a long or hostile id cannot
-    /// make an oversized grouping key.
-    static let maximumSessionComponentLength = 128
+    /// The most bytes the thread identifier carries of a session id, so a long or hostile id
+    /// cannot make an oversized grouping key.
+    static let maximumSessionComponentBytes = 128
+
+    /// The iPhone's "Notification sounds" setting, shared with the notification service
+    /// extension (a separate process) through the app group.
+    public static let soundsPreferenceKey = "remi.phone.notification-sounds"
+    public static let sharedDefaultsSuite = "group.live.yooz.remi"
+
+    /// Whether the person wants notification sounds. On unless they turned them off.
+    public static func soundsEnabled(in defaults: UserDefaults?) -> Bool {
+        defaults?.object(forKey: soundsPreferenceKey) as? Bool ?? true
+    }
+
+    /// Makes the person's choice visible to the extension.
+    public static func shareSoundsPreference(_ enabled: Bool, with defaults: UserDefaults?) {
+        defaults?.set(enabled, forKey: soundsPreferenceKey)
+    }
+
+    /// The sound setting the extension should follow. The Mac has no such setting.
+    public static func extensionSoundsEnabled() -> Bool {
+        #if os(iOS)
+        soundsEnabled(in: UserDefaults(suiteName: sharedDefaultsSuite))
+        #else
+        true
+        #endif
+    }
+
+    /// How a verified push is delivered, or nil for one that is not shown (a dismissal).
+    public static func importance(for kind: VerifiedPushNotification.Kind) -> Importance? {
+        switch kind {
+        case .question: .question
+        case .information: .information
+        case .dismiss: nil
+        }
+    }
 
     /// The group a session's notifications stack under, or nil when the session is unknown (they
     /// then group by app).
     public static func threadIdentifier(sessionID: String?) -> String? {
         guard let sessionID, !sessionID.isEmpty else { return nil }
-        return "remi.session.\(sessionID.prefix(maximumSessionComponentLength))"
+        // Bytes, not characters: a run of combining marks is one character but many bytes.
+        let bounded = String(decoding: sessionID.utf8.prefix(maximumSessionComponentBytes), as: UTF8.self)
+        return "remi.session.\(bounded)"
     }
 
     /// Sets the sound, interruption level, relevance and grouping of `content`.

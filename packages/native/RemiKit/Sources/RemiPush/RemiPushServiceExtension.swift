@@ -20,6 +20,10 @@ open class RemiPushServiceExtension: UNNotificationServiceExtension, @unchecked 
         fallback.title = "Remi needs your attention"
         fallback.body = "Open Remi to view this notification."
         fallback.categoryIdentifier = ""
+        // The kind is unknown here, so it is not Time Sensitive; it is still audible, because the
+        // push's own sound does not survive replacement content.
+        let sound = RemiPushPresentation.extensionSoundsEnabled()
+        RemiPushPresentation.apply(.information, sessionID: nil, sound: sound, to: fallback)
         let carrier = request.content.userInfo["remiPush"]
         if let carrier { fallback.userInfo = ["remiPush": carrier] }
         let bytes = carrier.flatMap { try? JSONSerialization.data(withJSONObject: $0) }
@@ -43,11 +47,13 @@ open class RemiPushServiceExtension: UNNotificationServiceExtension, @unchecked 
                         content.userInfo = ["remiPush": try JSONSerialization.jsonObject(with: opened.originalCarrier)]
                         if opened.kind != .dismiss {
                             content.title = opened.title; content.body = opened.body
-                            // A new content object carries none of the push's own sound or
-                            // grouping, so they are set here, from the verified kind.
+                        }
+                        // A new content object carries none of the push's own sound or
+                        // grouping, so they are set here, from the verified kind.
+                        if let importance = RemiPushPresentation.importance(for: opened.kind) {
                             RemiPushPresentation.apply(
-                                opened.kind == .question ? .question : .information,
-                                sessionID: opened.sessionID, to: content)
+                                importance, sessionID: opened.sessionID,
+                                sound: RemiPushPresentation.extensionSoundsEnabled(), to: content)
                         }
                         self.complete(id, content: content)
                     } catch { self.complete(id, content: nil) }

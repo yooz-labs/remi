@@ -98,6 +98,14 @@ private final class PhoneBackgroundFetchCompletion {
 }
 
 enum PhoneNotificationCoordinator {
+    /// Hands the sounds setting to the notification service extension, which cannot read the
+    /// app's own defaults. Called at launch, so a setting made before the extension read it still
+    /// reaches it.
+    static func shareSoundsPreference() {
+        RemiPushPresentation.shareSoundsPreference(
+            soundsEnabled, with: UserDefaults(suiteName: RemiPushPresentation.sharedDefaultsSuite))
+    }
+
     static func requestAuthorization() async -> NotificationAuthorizationState {
         guard notificationsEnabled else { return await authorizationState() }
         _ = try? await UNUserNotificationCenter.current()

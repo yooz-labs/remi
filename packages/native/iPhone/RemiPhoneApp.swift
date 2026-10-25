@@ -26,7 +26,10 @@ struct RemiPhoneApp: App {
                     }
                 }
             }
-            .task { if scenePhase == .active { notifications.activate() } }
+            .task {
+                PhoneNotificationCoordinator.shareSoundsPreference()
+                if scenePhase == .active { notifications.activate() }
+            }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { notifications.activate() }
                 else if phase == .background { notifications.background() }
