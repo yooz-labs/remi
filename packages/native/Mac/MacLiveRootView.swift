@@ -2199,16 +2199,21 @@ private struct MacLiveNewSessionSheet: View {
 
             Divider()
 
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: RemiTheme.Spacing.m) {
-                    launchSummary
-                    Spacer(minLength: RemiTheme.Spacing.m)
-                    actionButtons
-                }
-                VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
-                    launchSummary
-                    actionButtons
-                        .frame(maxWidth: .infinity, alignment: .trailing)
+            // Cancel and Create stay side by side; the summary gives way (it truncates) before
+            // they do. At accessibility sizes the summary takes its own line above them.
+            Group {
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
+                        launchSummary
+                        actionButtons
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                } else {
+                    HStack(spacing: RemiTheme.Spacing.m) {
+                        launchSummary
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        actionButtons
+                    }
                 }
             }
             .padding(RemiTheme.Spacing.m)
@@ -2254,8 +2259,15 @@ private struct MacLiveNewSessionSheet: View {
         ].joined(separator: " · ")
     }
 
-    @ViewBuilder private var actionButtons: some View {
-        Button("Cancel", role: .cancel) { dismiss() }
+    private var actionButtons: some View {
+        HStack(spacing: RemiTheme.Spacing.s) {
+            Button("Cancel", role: .cancel) { dismiss() }
+            createButton
+        }
+        .fixedSize()
+    }
+
+    private var createButton: some View {
         Button("Create") {
             guard let submission = draft.submission else { return }
             onCreate(
