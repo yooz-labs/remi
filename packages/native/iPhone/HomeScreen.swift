@@ -679,7 +679,10 @@ private struct SessionsSection: View {
     let onResumeSession: (String, String) -> Void
     let onNewSessionHere: (String, String) -> Void
     @Environment(\.openSessionInDetail) private var openSessionInDetail
+    @Environment(\.selectedSessionID) private var selectedSessionID
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var focusedWorkspace: PhoneWorkspaceFocus?
+    @State private var menuWorkspaceID: String?
     @State private var showsRecent = false
 
     var body: some View {
@@ -760,74 +763,67 @@ private struct SessionsSection: View {
     }
 
     private func workspaceEntry(_ workspace: PhoneSessionWorkspace) -> some View {
-        Button {
-            // A tap opens the workspace's latest session. Without a detail pane to show it in
-            // (a standalone Home), fall back to the list of the workspace's sessions.
-            if let openSessionInDetail, let latest = workspace.sessions.first {
-                openSessionInDetail(latest)
-            } else {
-                focusedWorkspace = PhoneWorkspaceFocus(id: workspace.id)
-            }
-        } label: {
-            PhoneWorkspaceRow(workspace: workspace)
-        }
-        .buttonStyle(.plain)
-        .contextMenu {
-            if let openSessionInDetail {
-                ForEach(workspace.sessions.prefix(Self.menuSessionLimit)) { session in
-                    Button(sessionMenuTitle(session), systemImage: sessionMenuSymbol(session.status)) {
-                        openSessionInDetail(session)
+        PhoneWorkspaceRow(workspace: workspace) { menuWorkspaceID = workspace.id }
+            // A tap opens the workspace's latest session; press and hold, or the trailing
+            // button, lists the rest in a popover that always opens from this row.
+            .onTapGesture { openLatest(in: workspace) }
+            .onLongPressGesture(minimumDuration: 0.35) { menuWorkspaceID = workspace.id }
+            .sensoryFeedback(.impact(weight: .light), trigger: menuWorkspaceID) { _, id in id != nil }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction(named: "Show sessions") { menuWorkspaceID = workspace.id }
+            .popover(
+                isPresented: popoverBinding(for: workspace.id),
+                attachmentAnchor: .rect(.bounds),
+                arrowEdge: popoverEdge
+            ) {
+                PhoneWorkspaceSessionsPopover(
+                    workspace: workspace,
+                    selectedSessionID: selectedSessionID,
+                    onOpen: { session in
+                        menuWorkspaceID = nil
+                        open(session, in: workspace)
+                    },
+                    onShowAll: {
+                        menuWorkspaceID = nil
+                        focusedWorkspace = PhoneWorkspaceFocus(id: workspace.id)
+                    },
+                    onNewSessionHere: {
+                        menuWorkspaceID = nil
+                        onNewSessionHere(workspace.machineID, workspace.projectPath)
+                    },
+                    onResume: { session in
+                        menuWorkspaceID = nil
+                        onResumeSession(session.machineID, session.id)
                     }
-                }
-                Divider()
+                )
+                .presentationCompactAdaptation(.popover)
             }
-            Button(showSessionsLabel(workspace.sessions.count), systemImage: "rectangle.stack") {
-                focusedWorkspace = PhoneWorkspaceFocus(id: workspace.id)
-            }
-            Button("Copy directory", systemImage: "doc.on.doc") {
-                UIPasteboard.general.string = workspace.projectPath
-            }
-            Button("New session here", systemImage: "plus.rectangle.on.folder") {
-                onNewSessionHere(workspace.machineID, workspace.projectPath)
-            }
-            if let resumable = workspace.sessions.first(where: { $0.canResume }) {
-                Button("Resume latest", systemImage: "play.fill") {
-                    onResumeSession(resumable.machineID, resumable.id)
-                }
-                .disabled(resumable.isResuming)
-            }
+    }
+
+    /// Opens to the right of the row beside a detail pane, so the list stays in view; below the
+    /// row when the window is compact and the row spans it.
+    private var popoverEdge: Edge { horizontalSizeClass == .regular ? .leading : .top }
+
+    private func popoverBinding(for workspaceID: String) -> Binding<Bool> {
+        Binding(
+            get: { menuWorkspaceID == workspaceID },
+            set: { if !$0, menuWorkspaceID == workspaceID { menuWorkspaceID = nil } }
+        )
+    }
+
+    private func openLatest(in workspace: PhoneSessionWorkspace) {
+        guard let latest = workspace.sessions.first else { return }
+        open(latest, in: workspace)
+    }
+
+    /// Shows a session in the detail pane. Without one (a standalone Home), list the workspace's
+    /// sessions instead.
+    private func open(_ session: RemiSessionSummary, in workspace: PhoneSessionWorkspace) {
+        if let openSessionInDetail {
+            openSessionInDetail(session)
+        } else {
+            focusedWorkspace = PhoneWorkspaceFocus(id: workspace.id)
         }
-    }
-
-    /// Sessions listed in a workspace's long-press menu; the rest are behind "Show N sessions".
-    private static let menuSessionLimit = 8
-
-    private func sessionMenuTitle(_ session: RemiSessionSummary) -> String {
-        "\(session.name) · \(sessionMenuStatus(session))"
-    }
-
-    private func sessionMenuStatus(_ session: RemiSessionSummary) -> String {
-        guard session.isLive else { return String(localized: "Finished") }
-        return switch session.status {
-        case .needsYou: String(localized: "Needs you")
-        case .working: String(localized: "Working")
-        case .connecting: String(localized: "Connecting")
-        case .idle, .offline: String(localized: "Idle")
-        }
-    }
-
-    private func sessionMenuSymbol(_ status: RemiSessionStatus) -> String {
-        switch status {
-        case .needsYou: "questionmark.bubble"
-        case .working: "bolt"
-        case .connecting: "arrow.triangle.2.circlepath"
-        case .idle: "pause.circle"
-        case .offline: "clock.arrow.circlepath"
-        }
-    }
-
-    private func showSessionsLabel(_ count: Int) -> String {
-        count == 1 ? "Show 1 session" : "Show \(count) sessions"
     }
 
     private func recentWorkspaceLabel(_ count: Int) -> String {
@@ -889,6 +885,9 @@ private extension RemiSessionSummary {
 private struct PhoneWorkspaceRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let workspace: PhoneSessionWorkspace
+    /// Lists the workspace's sessions. The same menu opens on press and hold; this button makes
+    /// it findable without knowing the gesture.
+    let onShowSessions: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: RemiTheme.Spacing.s) {
@@ -950,17 +949,24 @@ private struct PhoneWorkspaceRow: View {
                 }
             }
 
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
-                .padding(.top, RemiTheme.Spacing.xs)
-                .accessibilityHidden(true)
+            Button(action: onShowSessions) {
+                Image(systemName: "ellipsis.circle")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .frame(
+                        width: RemiTheme.Size.minimumTapTarget,
+                        height: RemiTheme.Size.minimumTapTarget
+                    )
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Sessions in \(workspace.project)")
         }
         .padding(.vertical, RemiTheme.Spacing.xs)
         .contentShape(.rect)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityLabel)
-        .accessibilityHint("Shows sessions in this workspace")
+        .accessibilityHint("Opens the latest session")
     }
 
     private var sessionCountLabel: String {
@@ -975,6 +981,134 @@ private struct PhoneWorkspaceRow: View {
             parts.append(workspace.questionCount == 1 ? "1 question needs attention" : "\(workspace.questionCount) questions need attention")
         }
         return parts.joined(separator: ", ")
+    }
+}
+
+/// The small menu for a workspace: its sessions, newest and most urgent first, and the actions
+/// that used to live in the context menu.
+private struct PhoneWorkspaceSessionsPopover: View {
+    private static let sessionLimit = 8
+
+    let workspace: PhoneSessionWorkspace
+    let selectedSessionID: String?
+    let onOpen: (RemiSessionSummary) -> Void
+    let onShowAll: () -> Void
+    let onNewSessionHere: () -> Void
+    let onResume: (RemiSessionSummary) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
+            VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
+                Text(workspace.project).font(.headline)
+                Text(workspace.machineName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, RemiTheme.Spacing.xs)
+
+            // Rows take their natural height; they scroll only when they do not fit the screen.
+            ViewThatFits(in: .vertical) {
+                sessionRows
+                ScrollView { sessionRows }
+            }
+
+            Divider()
+
+            if workspace.sessions.count > Self.sessionLimit {
+                actionButton(
+                    "Show all \(workspace.sessions.count) sessions",
+                    systemImage: "rectangle.stack",
+                    action: onShowAll
+                )
+            }
+            actionButton("New session here", systemImage: "plus.rectangle.on.folder", action: onNewSessionHere)
+            if let resumable = workspace.sessions.first(where: { $0.canResume }) {
+                actionButton("Resume latest", systemImage: "play.fill") { onResume(resumable) }
+                    .disabled(resumable.isResuming)
+            }
+            actionButton("Copy directory", systemImage: "doc.on.doc") {
+                UIPasteboard.general.string = workspace.projectPath
+            }
+        }
+        .padding(RemiTheme.Spacing.s)
+        .frame(width: 320)
+    }
+
+    private var sessionRows: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(workspace.sessions.prefix(Self.sessionLimit)) { session in
+                sessionButton(session)
+            }
+        }
+    }
+
+    private func sessionButton(_ session: RemiSessionSummary) -> some View {
+        let isSelected = session.id == selectedSessionID
+        return Button { onOpen(session) } label: {
+            HStack(spacing: RemiTheme.Spacing.s) {
+                Image(systemName: symbol(for: session))
+                    .frame(width: 24)
+                    .foregroundStyle(session.status == .needsYou ? RemiTheme.Color.attentionInk : .secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(session.name)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    Text(statusText(for: session))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                if isSelected {
+                    Image(systemName: "checkmark").font(.caption.weight(.bold)).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, RemiTheme.Spacing.xs)
+            .padding(.horizontal, RemiTheme.Spacing.xs)
+            .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .background(
+            isSelected ? Color.primary.opacity(0.08) : Color.clear,
+            in: RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
+        )
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private func actionButton(
+        _ title: LocalizedStringKey,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.subheadline)
+                .frame(maxWidth: .infinity, minHeight: RemiTheme.Size.minimumTapTarget, alignment: .leading)
+                .padding(.horizontal, RemiTheme.Spacing.xs)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func statusText(for session: RemiSessionSummary) -> String {
+        guard session.isLive else { return String(localized: "Finished") }
+        return switch session.status {
+        case .needsYou: String(localized: "Needs you")
+        case .working: String(localized: "Working")
+        case .connecting: String(localized: "Connecting")
+        case .idle, .offline: String(localized: "Idle")
+        }
+    }
+
+    private func symbol(for session: RemiSessionSummary) -> String {
+        guard session.isLive else { return "clock.arrow.circlepath" }
+        return switch session.status {
+        case .needsYou: "questionmark.bubble"
+        case .working: "bolt"
+        case .connecting: "arrow.triangle.2.circlepath"
+        case .idle, .offline: "pause.circle"
+        }
     }
 }
 
@@ -1499,6 +1633,21 @@ private struct ApprovalHelp: View {
             onResumeSession: { _, _ in },
             onNewSessionHere: { _, _ in }
         )
+    }
+}
+
+#Preview("Workspace popover", traits: .fixedLayout(width: 380, height: 520)) {
+    if let workspace = PhoneSessionWorkspace(sessions: RemiPreviewData.sessions) {
+        PhoneWorkspaceSessionsPopover(
+            workspace: workspace,
+            selectedSessionID: RemiPreviewData.sessions.first?.id,
+            onOpen: { _ in },
+            onShowAll: {},
+            onNewSessionHere: {},
+            onResume: { _ in }
+        )
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28))
+        .padding()
     }
 }
 #endif
