@@ -83,8 +83,7 @@ public struct RemiConversationChip: View {
     }
 
     private var background: Color {
-        if active { return RemiTheme.Color.activityWash }
-        return selected ? Color.primary.opacity(0.1) : RemiTheme.Color.elevatedSurface
+        selected ? RemiTheme.Color.activityWash : RemiTheme.Color.elevatedSurface
     }
 
     public var body: some View {
@@ -94,7 +93,7 @@ public struct RemiConversationChip: View {
                     .foregroundStyle(selected ? Color.primary : .secondary)
                 Text(title).lineLimit(1)
                 Circle()
-                    .fill(active ? RemiTheme.Color.activityDot : Color.secondary.opacity(0.35))
+                    .fill(active ? Color.primary.opacity(0.72) : Color.secondary.opacity(0.35))
                     .frame(width: 6, height: 6)
                     .accessibilityHidden(true)
             }
@@ -105,8 +104,8 @@ public struct RemiConversationChip: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        // A live conversation wears the same pale green as a working session; the outline,
-        // not the fill, says which one is open.
+        // Every tab is neutral; the open conversation wears the same pale green as a working
+        // session.
         .background(background, in: Capsule())
         .overlay {
             Capsule()
