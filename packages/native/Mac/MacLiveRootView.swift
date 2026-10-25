@@ -147,10 +147,9 @@ struct MacLiveRootView: View {
                     }
                 } detail: {
                     if showingInbox {
-                        ContentUnavailableView(
-                            "Inbox",
-                            systemImage: "tray",
-                            description: Text("Answer a request here, or open its conversation to read more.")
+                        MacInboxDetailState(
+                            needsYouSessionCount: allSessions.count { $0.status == .needsYou },
+                            onOpenNext: { jumpToNeedsYou(offset: 1) }
                         )
                     } else if let session = visibleSessions.first(where: { $0.id == selectedSessionID }) {
                         let viewsKey = store.sessionKey(machineID: session.machineID, sessionID: session.id)
@@ -966,6 +965,7 @@ struct MacLiveRootView: View {
 }
 
 /// Holds the live drafts outside view state: typing updates it without redrawing the window.
+@MainActor
 private final class MacDraftBox {
     var drafts = RemiSessionDrafts()
     var isLoaded = false
@@ -1069,11 +1069,7 @@ private struct MacSessionList: View {
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            MacSessionTriageBar(
-                scope: $scope,
-                sessions: sessions,
-                visibleCount: filteredSessions.count
-            )
+            MacSessionTriageBar(scope: $scope, sessions: sessions)
         }
         .searchable(text: $searchText, prompt: "Search sessions")
         .focusedSceneValue(
@@ -1248,7 +1244,8 @@ private struct MacSessionList: View {
     }
 
     private func moveSelection(offsetBy offset: Int) {
-        let orderedIDs = workspaces.flatMap { $0.sessions.map(\.id) }
+        // The order on screen: active workspaces, then the recent ones that are shown.
+        let orderedIDs = (activeWorkspaces + shownRecentWorkspaces).flatMap { $0.sessions.map(\.id) }
         // No match must never deselect: with nothing visible the selection stays.
         guard !orderedIDs.isEmpty else { return }
         selection = RemiOrderedSelection.shifted(
@@ -1273,46 +1270,56 @@ private struct MacSessionList: View {
     }
 }
 
+/// The detail pane while the Inbox shows: the cards are in the middle column, so this says what
+/// to do next and, when something waits, opens its conversation in one step.
+private struct MacInboxDetailState: View {
+    let needsYouSessionCount: Int
+    let onOpenNext: () -> Void
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Inbox", systemImage: "tray")
+        } description: {
+            if needsYouSessionCount > 0 {
+                Text("Answer a request in the list, or open its conversation to read more.")
+            } else {
+                Text("Nothing is waiting. Choose a session from a machine to read it.")
+            }
+        } actions: {
+            if needsYouSessionCount > 0 {
+                Button("Open the next conversation that needs you", action: onOpenNext)
+                    .buttonStyle(.glassProminent)
+            }
+        }
+    }
+}
+
 private struct MacSessionTriageBar: View {
     @Binding var scope: RemiSessionScope
     let sessions: [RemiSessionSummary]
-    let visibleCount: Int
 
     var body: some View {
-        HStack(spacing: RemiTheme.Spacing.s) {
-            Picker("Session filter", selection: $scope) {
-                ForEach(RemiSessionScope.allCases, id: \.self) { option in
-                    Text(label(option, count: option.count(in: sessions))).tag(option)
-                }
+        Picker("Show", selection: $scope) {
+            ForEach(RemiSessionScope.allCases, id: \.self) { option in
+                Text(label(option)).tag(option)
             }
-            .pickerStyle(.menu)
-            .fixedSize()
-
-            Spacer(minLength: RemiTheme.Spacing.xs)
-
-            Text(summary)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
         }
+        .pickerStyle(.segmented)
+        .labelsHidden()
         .padding(.horizontal, RemiTheme.Spacing.m)
         .padding(.vertical, RemiTheme.Spacing.xs)
-        .background(.bar)
-        .overlay(alignment: .bottom) { Divider() }
-        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Show sessions")
+        .help("Show every session, only those that need you, live ones, or stored ones")
     }
 
-    private var summary: LocalizedStringResource {
-        visibleCount == sessions.count
-            ? "\(sessions.count) total"
-            : "\(visibleCount) of \(sessions.count)"
-    }
-
-    private func label(_ scope: RemiSessionScope, count: Int) -> LocalizedStringResource {
+    /// Only the group that asks for the person's attention carries a count.
+    private func label(_ scope: RemiSessionScope) -> LocalizedStringResource {
         switch scope {
-        case .all: "All (\(count))"
-        case .needsYou: "Needs You (\(count))"
-        case .live: "Live (\(count))"
-        case .stored: "Stored (\(count))"
+        case .all: "All"
+        case .needsYou:
+            scope.count(in: sessions) > 0 ? "Needs you \(scope.count(in: sessions))" : "Needs you"
+        case .live: "Live"
+        case .stored: "Stored"
         }
     }
 }
@@ -1426,11 +1433,6 @@ private struct MacSessionListRow: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .frame(
-                    minWidth: RemiTheme.Size.minimumTapTarget,
-                    minHeight: RemiTheme.Size.minimumTapTarget
-                )
-                .contentShape(.rect)
                 .disabled(session.isResuming)
                 .accessibilityLabel(session.isResuming ? "Resuming session" : "Resume session")
                 .help(session.isResuming ? "Resuming session" : "Resume session")
@@ -1517,10 +1519,14 @@ private struct MacCompactSessionRow: View {
         return "Stored · \(identity)"
     }
 
+    // Built once; a row would otherwise build both on every render.
+    private static let activityWithFraction = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+    private static let activityPlain = Date.ISO8601FormatStyle()
+
     private var lastActivityDate: Date? {
         guard let lastActivity = session.lastActivity else { return nil }
-        return (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(lastActivity))
-            ?? (try? Date.ISO8601FormatStyle().parse(lastActivity))
+        return (try? Self.activityWithFraction.parse(lastActivity))
+            ?? (try? Self.activityPlain.parse(lastActivity))
     }
 
     private var accessibilityLabel: String {
