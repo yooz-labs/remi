@@ -47,6 +47,7 @@ The person is busy elsewhere; the app's job is to tell them what needs them, let
   Notes about requests resolved elsewhere can still show below.
 - **Sessions live in a left drawer,** reached by an edge swipe or a button at the top left.
   The drawer groups them Needs you, Active and Recent, and each row names its project and its machine.
+  A running session wears the same faint-green Working badge as on the Mac (a dot at accessibility text sizes), and a long press on a row lists the project's other sessions on that machine, most recent first, beside Resume, New session here and the copy actions.
   Search lives in the drawer; the Inbox has none.
   The machine strip in the drawer is a temporary filter: it narrows the list of sessions and never the Inbox or notifications.
   The Inbox has no persisted machine selection; it always spans every machine.
