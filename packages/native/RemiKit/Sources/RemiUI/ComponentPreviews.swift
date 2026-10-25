@@ -220,4 +220,18 @@ private struct ToolRunGallery: View {
     PreviewQuestionCard(model: RemiPreviewData.questionStates[2])
         .padding(RemiTheme.Spacing.m)
 }
+
+private struct StatusBadgeGallery: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
+            ForEach([RemiSessionStatus.needsYou, .working, .idle, .connecting, .offline], id: \.self) { status in
+                RemiStatusBadge(status: status)
+            }
+        }
+        .padding()
+    }
+}
+
+#Preview("Status badges · Light") { StatusBadgeGallery().preferredColorScheme(.light) }
+#Preview("Status badges · Dark") { StatusBadgeGallery().preferredColorScheme(.dark) }
 #endif
