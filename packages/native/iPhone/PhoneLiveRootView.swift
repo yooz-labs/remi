@@ -19,6 +19,9 @@ struct PhoneLiveRootView: View {
     /// Which column a collapsed (compact) split view shows. Ignored when both columns are visible.
     @State private var compactColumn: NavigationSplitViewColumn = .sidebar
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    /// The workspace menu Home asks for. It is drawn here, above the split view, so it can open
+    /// beside its row and is not clipped by the sidebar column.
+    @State private var workspaceMenu: PhoneWorkspaceMenu?
     /// An action chosen in the detail pane's bar that Home runs, because Home owns its sheets.
     @State private var homeActionRequest: PhoneHomeAction?
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -30,6 +33,7 @@ struct PhoneLiveRootView: View {
 
     var body: some View {
         navigationLayout
+        .overlay { PhoneWorkspaceMenuOverlay(menu: $workspaceMenu, besideRow: actionsInDetail) }
         .onChange(of: store.persistableEndpoints) { _, endpoints in
             MachineConfigurationStore.shared.save(endpoints)
             relayNotifications.reconcileEndpoints()
@@ -137,6 +141,7 @@ struct PhoneLiveRootView: View {
                 .environment(\.openSessionInDetail, openSessionInDetail)
                 .environment(\.selectedSessionID, selectedDestination?.sessionID)
                 .environment(\.hasDetailPane, actionsInDetail)
+                .environment(\.workspaceMenu, $workspaceMenu)
                 .environment(\.homeActionRequest, $homeActionRequest)
         } detail: {
             detailContent

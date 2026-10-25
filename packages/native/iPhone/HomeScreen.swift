@@ -648,9 +648,10 @@ private struct SessionsSection: View {
     let onNewSessionHere: (String, String) -> Void
     @Environment(\.openSessionInDetail) private var openSessionInDetail
     @Environment(\.selectedSessionID) private var selectedSessionID
-    @Environment(\.hasDetailPane) private var hasDetailPane
+    @Environment(\.workspaceMenu) private var workspaceMenu
+    @State private var rowFrames = PhoneRowFrames()
+    @State private var menuTrigger = 0
     @State private var focusedWorkspace: PhoneWorkspaceFocus?
-    @State private var menuWorkspaceID: String?
     @State private var showsRecent = false
 
     var body: some View {
@@ -731,52 +732,55 @@ private struct SessionsSection: View {
     }
 
     private func workspaceEntry(_ workspace: PhoneSessionWorkspace) -> some View {
-        PhoneWorkspaceRow(workspace: workspace) { menuWorkspaceID = workspace.id }
+        PhoneWorkspaceRow(workspace: workspace) { showMenu(for: workspace) }
             // A tap opens the workspace's latest session; press and hold, or the trailing
-            // button, lists the rest in a popover that always opens from this row.
+            // button, lists the rest in a menu drawn next to this row.
             .onTapGesture { openLatest(in: workspace) }
-            .onLongPressGesture(minimumDuration: 0.35) { menuWorkspaceID = workspace.id }
-            .sensoryFeedback(.impact(weight: .light), trigger: menuWorkspaceID) { _, id in id != nil }
-            .accessibilityAddTraits(.isButton)
-            .accessibilityAction(named: "Show sessions") { menuWorkspaceID = workspace.id }
-            .popover(
-                isPresented: popoverBinding(for: workspace.id),
-                attachmentAnchor: .rect(.bounds),
-                arrowEdge: popoverEdge
-            ) {
-                PhoneWorkspaceSessionsPopover(
-                    workspace: workspace,
-                    selectedSessionID: selectedSessionID,
-                    onOpen: { session in
-                        menuWorkspaceID = nil
-                        open(session, in: workspace)
-                    },
-                    onShowAll: {
-                        menuWorkspaceID = nil
-                        focusedWorkspace = PhoneWorkspaceFocus(id: workspace.id)
-                    },
-                    onNewSessionHere: {
-                        menuWorkspaceID = nil
-                        onNewSessionHere(workspace.machineID, workspace.projectPath)
-                    },
-                    onResume: { session in
-                        menuWorkspaceID = nil
-                        onResumeSession(session.machineID, session.id)
-                    }
-                )
-                .presentationCompactAdaptation(.popover)
+            .onLongPressGesture(minimumDuration: 0.35) { showMenu(for: workspace) }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                rowFrames.frames[workspace.id] = frame
             }
+            .sensoryFeedback(.impact(weight: .light), trigger: menuTrigger)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction(named: "Show sessions") { showMenu(for: workspace) }
     }
 
-    /// Opens to the right of the row beside a detail pane, so the list stays in view; below the
-    /// row when the window is compact and the row spans it.
-    private var popoverEdge: Edge { hasDetailPane ? .leading : .top }
-
-    private func popoverBinding(for workspaceID: String) -> Binding<Bool> {
-        Binding(
-            get: { menuWorkspaceID == workspaceID },
-            set: { if !$0, menuWorkspaceID == workspaceID { menuWorkspaceID = nil } }
+    /// Shows the workspace's menu next to its row. Without a root to draw it (a standalone
+    /// Home), list the workspace's sessions instead.
+    private func showMenu(for workspace: PhoneSessionWorkspace) {
+        guard let workspaceMenu else {
+            focusedWorkspace = PhoneWorkspaceFocus(id: workspace.id)
+            return
+        }
+        menuTrigger += 1
+        let close = { withAnimation(.snappy) { workspaceMenu.wrappedValue = nil } }
+        let content = PhoneWorkspaceSessionsPopover(
+            workspace: workspace,
+            selectedSessionID: selectedSessionID,
+            onOpen: { session in
+                close()
+                open(session, in: workspace)
+            },
+            onShowAll: {
+                close()
+                focusedWorkspace = PhoneWorkspaceFocus(id: workspace.id)
+            },
+            onNewSessionHere: {
+                close()
+                onNewSessionHere(workspace.machineID, workspace.projectPath)
+            },
+            onResume: { session in
+                close()
+                onResumeSession(session.machineID, session.id)
+            }
         )
+        withAnimation(.snappy) {
+            workspaceMenu.wrappedValue = PhoneWorkspaceMenu(
+                id: workspace.id,
+                anchor: rowFrames.frames[workspace.id] ?? .zero,
+                content: AnyView(content)
+            )
+        }
     }
 
     private func openLatest(in workspace: PhoneSessionWorkspace) {
