@@ -1040,7 +1040,7 @@ private struct MacSessionList: View {
             }
 
             if !recentWorkspaces.isEmpty {
-                // Every recent workspace, collapsed. The rows in the list do not depend on what is
+                // Every workspace without a live session. The rows in the list do not depend on what is
                 // selected: adding or removing a workspace when the selection moved left the
                 // outline list drawing the open session over the wrong row.
                 Section("Recent") {
@@ -1146,7 +1146,11 @@ private struct MacSessionList: View {
             }
             workspaceFooter(workspace)
         } label: {
-            MacWorkspaceGroupLabel(workspace: workspace, isExpanded: isExpanded.wrappedValue)
+            MacWorkspaceGroupLabel(
+                workspace: workspace,
+                isExpanded: isExpanded.wrappedValue,
+                onToggle: { toggle(workspace) }
+            )
                 .contentShape(.rect)
                 // A click opens a closed project and shows its latest session (the most urgent,
                 // then the most recent), or closes an open one. The project row itself is never
@@ -1235,6 +1239,11 @@ private struct MacSessionList: View {
     }
 
     private func toggle(_ workspace: MacSessionWorkspace) {
+        // While searching every project is open, so a click only shows its latest session.
+        guard searchText.isEmpty else {
+            if let latest = workspace.sessions.first { selection = latest.id }
+            return
+        }
         guard !expandedWorkspaces.contains(workspace.id) else {
             expandedWorkspaces.remove(workspace.id)
             return
@@ -1358,54 +1367,16 @@ private struct MacSessionTriageBar: View {
     }
 }
 
-private struct MacSessionWorkspace: Identifiable {
-    let id: String
-    let project: String
-    let projectPath: String
-    let sessions: [RemiSessionSummary]
-
-    init?(sessions: [RemiSessionSummary]) {
-        guard let first = sessions.first else { return nil }
-        id = "\(first.machineID)|\(first.projectPath)"
-        project = first.project
-        projectPath = first.projectPath
-        self.sessions = sessions.sorted { lhs, rhs in
-            if lhs.statusPriority != rhs.statusPriority {
-                return lhs.statusPriority < rhs.statusPriority
-            }
-            return (lhs.lastActivity ?? "") > (rhs.lastActivity ?? "")
-        }
-    }
-
-    var priority: Int { sessions.first?.statusPriority ?? .max }
-    var lastActivity: String? { sessions.compactMap(\.lastActivity).max() }
-    var hasLiveSessions: Bool { sessions.contains(where: \.isLive) }
-    var needsAttention: Bool { sessions.contains { $0.status == .needsYou } }
-    var workingCount: Int { sessions.filter { $0.status == .working }.count }
-    var hasWorkingSessions: Bool { workingCount > 0 }
-    var questionCount: Int { sessions.reduce(0) { $0 + $1.openQuestionCount } }
-}
-
-private extension RemiSessionSummary {
-    var statusPriority: Int {
-        switch status {
-        case .needsYou: 0
-        case .working: 1
-        case .connecting: 2
-        case .idle: 3
-        case .offline: 4
-        }
-    }
-}
+private typealias MacSessionWorkspace = RemiWorkspaceGroup
 
 private struct MacWorkspaceGroupLabel: View {
     let workspace: MacSessionWorkspace
     /// Whether the workspace's sessions are showing. When they are, each carries its own status.
     let isExpanded: Bool
-
-    private var showsWorking: Bool { !isExpanded && workspace.hasWorkingSessions }
+    let onToggle: () -> Void
 
     var body: some View {
+        let summary = workspace.rowSummary(isExpanded: isExpanded)
         // Baseline alignment keeps the title level with the badge's text.
         HStack(alignment: .firstTextBaseline, spacing: RemiTheme.Spacing.xs) {
             Label {
@@ -1419,29 +1390,23 @@ private struct MacWorkspaceGroupLabel: View {
 
             Spacer(minLength: RemiTheme.Spacing.xs)
 
-            if workspace.questionCount > 0 {
-                Label("\(workspace.questionCount)", systemImage: "questionmark.bubble.fill")
+            if let questionCount = summary.questionCount {
+                Label("\(questionCount)", systemImage: "questionmark.bubble.fill")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(RemiTheme.Color.attentionInk)
                     .padding(.horizontal, RemiTheme.Spacing.xs)
                     .padding(.vertical, RemiTheme.Spacing.xxxs)
                     .background(RemiTheme.Color.attention, in: Capsule())
             } else {
-                if showsWorking, workspace.sessions.count > 1 {
-                    // Some running: how many of the project's sessions.
-                    Text("\(workspace.workingCount)/\(workspace.sessions.count) active")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                } else if workspace.sessions.count > 1 {
-                    // A single session needs no count; the folder path is in the tooltip and the
-                    // conversation header.
-                    Text("\(workspace.sessions.count)")
+                // A single session needs no count; the folder path is in the tooltip and the
+                // conversation header.
+                if let countText = summary.countText {
+                    Text(countText)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
-                // Rightmost, so the badge lines up from one project to the next. A collapsed
-                // workspace still shows that something in it is running.
-                if showsWorking {
+                // Rightmost, so the badge lines up from one project to the next.
+                if summary.showsWorking {
                     RemiStatusBadge(status: .working)
                 }
             }
@@ -1451,20 +1416,10 @@ private struct MacWorkspaceGroupLabel: View {
         .padding(.top, RemiTheme.Spacing.xs)
         .help(workspace.projectPath)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibilityLabel)
-        .accessibilityHint("Opens the latest session. Use the disclosure arrow to show all sessions.")
-    }
-
-    private var accessibilityLabel: String {
-        var parts = [
-            workspace.project,
-            workspace.projectPath,
-            workspace.sessions.count == 1 ? "1 session" : "\(workspace.sessions.count) sessions"
-        ]
-        if workspace.questionCount > 0 {
-            parts.append(workspace.questionCount == 1 ? "1 question needs attention" : "\(workspace.questionCount) questions need attention")
-        }
-        return parts.joined(separator: ", ")
+        .accessibilityLabel(workspace.accessibilityLabel())
+        .accessibilityHint("Opens or closes the project and shows its latest session.")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction(named: isExpanded ? "Close project" : "Open project", onToggle)
     }
 }
 
