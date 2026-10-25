@@ -80,14 +80,14 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		FA1242000000000000000001 /* Exceptions for Mac Info.plist */ = {
+		FA1242000000000000000001 /* Exceptions for "Mac" folder in "RemiMac" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
 			);
 			target = 88C5CBB57676D62F2DD2B239 /* RemiMac */;
 		};
-		FA1242000000000000000002 /* Exceptions for iPhone Info.plist */ = {
+		FA1242000000000000000002 /* Exceptions for "iPhone" folder in "RemiPhone" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
@@ -100,7 +100,7 @@
 		2C263E6018E8520B878C3CBC /* Mac */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				FA1242000000000000000001 /* Exceptions for Mac Info.plist */,
+				FA1242000000000000000001 /* Exceptions for "Mac" folder in "RemiMac" target */,
 			);
 			path = Mac;
 			sourceTree = "<group>";
@@ -108,7 +108,7 @@
 		C4A1F0B80C1772222AE9ED3A /* iPhone */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				FA1242000000000000000002 /* Exceptions for iPhone Info.plist */,
+				FA1242000000000000000002 /* Exceptions for "iPhone" folder in "RemiPhone" target */,
 			);
 			path = iPhone;
 			sourceTree = "<group>";
@@ -171,7 +171,6 @@
 				04312C646CEAB6468D4770F2 /* Info.plist */,
 				CE291721449F25F61FB6CE45 /* RemiPush.entitlements */,
 			);
-			name = MacPushService;
 			path = MacPushService;
 			sourceTree = "<group>";
 		};
@@ -211,7 +210,6 @@
 				5A53226C1DB9381A4ABDFC8D /* Info.plist */,
 				78890260A27DA5777893A7FF /* RemiPush.entitlements */,
 			);
-			name = PhonePushService;
 			path = PhonePushService;
 			sourceTree = "<group>";
 		};
@@ -639,10 +637,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Mac/Remi.entitlements;
-				INFOPLIST_FILE = Mac/Info.plist;
 				COMBINE_HIDPI_IMAGES = YES;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				INFOPLIST_FILE = Mac/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Remi Dev";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -689,8 +687,8 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = iPhone/Remi.entitlements;
-				INFOPLIST_FILE = iPhone/Info.plist;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = iPhone/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Remi Dev";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan a pairing code shown by Remi on your computer.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Remi connects to the machines on your network that run your agents.";
@@ -717,8 +715,8 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = iPhone/Remi.entitlements;
-				INFOPLIST_FILE = iPhone/Info.plist;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = iPhone/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Remi Dev";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan a pairing code shown by Remi on your computer.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Remi connects to the machines on your network that run your agents.";
@@ -768,10 +766,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Mac/Remi.entitlements;
-				INFOPLIST_FILE = Mac/Info.plist;
 				COMBINE_HIDPI_IMAGES = YES;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				INFOPLIST_FILE = Mac/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
