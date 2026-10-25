@@ -3,7 +3,8 @@ import SwiftUI
 /// Shared visual tokens for Remi's native apps.
 ///
 /// The attention color is reserved for moments where an agent needs the person.
-/// Connectivity and activity use neutral system colors so the interface stays calm.
+/// Running work uses a faint wash of the same hue (Remi's own green, quieter than attention);
+/// connectivity uses neutral system colors so the interface stays calm.
 public enum RemiTheme {
     public enum Color {
         public static let attention = SwiftUI.Color(
@@ -18,6 +19,13 @@ public enum RemiTheme {
             red: 26.0 / 255.0,
             green: 28.0 / 255.0,
             blue: 10.0 / 255.0
+        )
+        /// A session that is working: a faint wash of the attention hue behind a deeper green dot.
+        public static let activityWash = attention.opacity(0.22)
+        public static let activityDot = SwiftUI.Color(
+            red: 112.0 / 255.0,
+            green: 164.0 / 255.0,
+            blue: 32.0 / 255.0
         )
         public static let surface = SwiftUI.Color.primary.opacity(0.055)
         public static let elevatedSurface = SwiftUI.Color.primary.opacity(0.09)
