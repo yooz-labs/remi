@@ -476,7 +476,8 @@ struct PhoneLiveRootView: View {
                     projectPath: session.projectPath,
                     lastActivity: session.lastActivity,
                     status: session.source == "daemon"
-                        ? (count > 0 ? .needsYou : session.status == "active" ? .working : .idle)
+                        ? (count > 0 ? .needsYou : (session.status == "active" ? RemiSessionStatus.working : .idle)
+                            .whileMachine(connected: machine.status == .connected))
                         : .offline,
                     lastMessage: session.lastMessage,
                     openQuestionCount: count,
