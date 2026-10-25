@@ -41,7 +41,14 @@ open class RemiPushServiceExtension: UNNotificationServiceExtension, @unchecked 
                         let content = UNMutableNotificationContent()
                         content.categoryIdentifier = actions?.categoryIdentifier ?? ""
                         content.userInfo = ["remiPush": try JSONSerialization.jsonObject(with: opened.originalCarrier)]
-                        if opened.kind != .dismiss { content.title = opened.title; content.body = opened.body }
+                        if opened.kind != .dismiss {
+                            content.title = opened.title; content.body = opened.body
+                            // A new content object carries none of the push's own sound or
+                            // grouping, so they are set here, from the verified kind.
+                            RemiPushPresentation.apply(
+                                opened.kind == .question ? .question : .information,
+                                sessionID: opened.sessionID, to: content)
+                        }
                         self.complete(id, content: content)
                     } catch { self.complete(id, content: nil) }
                 }

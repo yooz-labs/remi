@@ -194,7 +194,7 @@ enum MacNotificationCoordinator {
             content.categoryIdentifier = LocalQuestionNotificationPlan.categoryIdentifier
             content.body = plan.body
         }
-        content.sound = .default
+        RemiPushPresentation.apply(.question, sessionID: destination.sessionID, to: content)
         content.userInfo = destinationUserInfo(destination)
         let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
         do { try await UNUserNotificationCenter.current().add(request) }

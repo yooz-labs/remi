@@ -131,9 +131,8 @@ enum PhoneNotificationCoordinator {
         content.title = title
         content.body = summarizedBody
         content.userInfo = destinationUserInfo(destination)
-        if soundsEnabled {
-            content.sound = .default
-        }
+        RemiPushPresentation.apply(
+            .question, sessionID: destination.sessionID, sound: soundsEnabled, to: content)
         let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
         try? await UNUserNotificationCenter.current().add(request)
     }
