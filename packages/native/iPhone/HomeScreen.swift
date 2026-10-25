@@ -678,6 +678,7 @@ private struct SessionsSection: View {
     let onTerminateSession: (String) -> Void
     let onResumeSession: (String, String) -> Void
     let onNewSessionHere: (String, String) -> Void
+    @Environment(\.openSessionInDetail) private var openSessionInDetail
     @State private var focusedWorkspace: PhoneWorkspaceFocus?
     @State private var showsRecent = false
 
@@ -760,12 +761,26 @@ private struct SessionsSection: View {
 
     private func workspaceEntry(_ workspace: PhoneSessionWorkspace) -> some View {
         Button {
-            focusedWorkspace = PhoneWorkspaceFocus(id: workspace.id)
+            // A tap opens the workspace's latest session. Without a detail pane to show it in
+            // (a standalone Home), fall back to the list of the workspace's sessions.
+            if let openSessionInDetail, let latest = workspace.sessions.first {
+                openSessionInDetail(latest)
+            } else {
+                focusedWorkspace = PhoneWorkspaceFocus(id: workspace.id)
+            }
         } label: {
             PhoneWorkspaceRow(workspace: workspace)
         }
         .buttonStyle(.plain)
         .contextMenu {
+            if let openSessionInDetail {
+                ForEach(workspace.sessions.prefix(Self.menuSessionLimit)) { session in
+                    Button(sessionMenuTitle(session), systemImage: sessionMenuSymbol(session.status)) {
+                        openSessionInDetail(session)
+                    }
+                }
+                Divider()
+            }
             Button(showSessionsLabel(workspace.sessions.count), systemImage: "rectangle.stack") {
                 focusedWorkspace = PhoneWorkspaceFocus(id: workspace.id)
             }
@@ -781,6 +796,33 @@ private struct SessionsSection: View {
                 }
                 .disabled(resumable.isResuming)
             }
+        }
+    }
+
+    /// Sessions listed in a workspace's long-press menu; the rest are behind "Show N sessions".
+    private static let menuSessionLimit = 8
+
+    private func sessionMenuTitle(_ session: RemiSessionSummary) -> String {
+        "\(session.name) · \(sessionMenuStatus(session))"
+    }
+
+    private func sessionMenuStatus(_ session: RemiSessionSummary) -> String {
+        guard session.isLive else { return String(localized: "Finished") }
+        return switch session.status {
+        case .needsYou: String(localized: "Needs you")
+        case .working: String(localized: "Working")
+        case .connecting: String(localized: "Connecting")
+        case .idle, .offline: String(localized: "Idle")
+        }
+    }
+
+    private func sessionMenuSymbol(_ status: RemiSessionStatus) -> String {
+        switch status {
+        case .needsYou: "questionmark.bubble"
+        case .working: "bolt"
+        case .connecting: "arrow.triangle.2.circlepath"
+        case .idle: "pause.circle"
+        case .offline: "clock.arrow.circlepath"
         }
     }
 
@@ -1137,11 +1179,14 @@ private struct PhoneStoredSessionRow<Destination: View>: View {
                     ProgressView().controlSize(.small)
                 } else {
                     Label("Resume", systemImage: "play.fill")
+                        .labelStyle(.titleAndIcon)
                 }
             }
             .buttonStyle(.borderedProminent)
-            .frame(minHeight: RemiTheme.Size.minimumTapTarget)
-            .contentShape(.rect)
+            .buttonBorderShape(.capsule)
+            .controlSize(.regular)
+            .fixedSize()
+            .layoutPriority(2)
             .disabled(session.isResuming)
             .accessibilityLabel(session.isResuming ? "Resuming session" : "Resume session")
         }
@@ -1421,3 +1466,39 @@ private struct ApprovalHelp: View {
         .background(.orange.opacity(0.08), in: .rect(cornerRadius: RemiTheme.Radius.control))
     }
 }
+
+#if DEBUG
+#Preview("Workspace sessions · Duo width", traits: .fixedLayout(width: 686, height: 1000)) {
+    let finished = RemiSessionSummary(
+        id: "d765ad17",
+        machineID: "studio",
+        machineName: "127.0.0.1:18765",
+        name: "eventformer",
+        harness: "claude",
+        project: "eventformer",
+        projectPath: "/Users/yahya/Documents/git/eventformer",
+        status: .offline,
+        isLive: false,
+        canResume: true,
+        resumeIdentity: "d765ad17"
+    )
+    let workspace = PhoneSessionWorkspace(sessions: RemiPreviewData.sessions + [finished])
+    if let workspace {
+        PhoneWorkspaceSessionsSheet(
+            workspace: workspace,
+            transcriptForSession: { _ in [] },
+            questionsForSession: { _ in [] },
+            viewsForSession: { _ in [] },
+            viewsLoadedForSession: { _ in true },
+            onAnswer: { _, _, _ in },
+            onSubmit: { _, _, _ in },
+            onCancel: { _, _ in },
+            onOpenSession: { _ in },
+            onSend: { _, _ in true },
+            onTerminateSession: { _ in },
+            onResumeSession: { _, _ in },
+            onNewSessionHere: { _, _ in }
+        )
+    }
+}
+#endif
