@@ -61,19 +61,24 @@ public struct RemiConversationChip: View {
     private let systemImage: String
     private let active: Bool
     private let selected: Bool
+    private let compact: Bool
     private let action: () -> Void
 
+    /// `compact` drops the touch-target height for pointer-driven windows (the Mac): a smaller
+    /// caption-size pill, sized to its content.
     public init(
         title: String,
         systemImage: String,
         active: Bool,
         selected: Bool,
+        compact: Bool = false,
         action: @escaping () -> Void
     ) {
         self.title = title
         self.systemImage = systemImage
         self.active = active
         self.selected = selected
+        self.compact = compact
         self.action = action
     }
 
@@ -88,9 +93,10 @@ public struct RemiConversationChip: View {
                     .frame(width: 6, height: 6)
                     .accessibilityHidden(true)
             }
-            .font(.subheadline.weight(.semibold))
-            .frame(minHeight: RemiTheme.Size.minimumTapTarget)
-            .padding(.horizontal, RemiTheme.Spacing.s)
+            .font((compact ? Font.caption : .subheadline).weight(.semibold))
+            .frame(minHeight: compact ? nil : RemiTheme.Size.minimumTapTarget)
+            .padding(.horizontal, compact ? RemiTheme.Spacing.xs : RemiTheme.Spacing.s)
+            .padding(.vertical, compact ? RemiTheme.Spacing.xxs : 0)
             .contentShape(.rect)
         }
         .buttonStyle(.plain)

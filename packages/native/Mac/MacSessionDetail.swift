@@ -248,6 +248,16 @@ struct MacSessionDetail: View {
         // the conversation, so the session list's own search field keeps Command-F when the
         // list has focus. The toolbar's search button works regardless of focus.
         .focusedValue(
+            \.macConversations,
+            views.isEmpty ? nil : MacConversationActions(move: { offset in
+                selectedViewID = RemiConversationSelection.shiftedViewID(
+                    selectedViewID: selectedViewID,
+                    views: views,
+                    offset: offset
+                )
+            })
+        )
+        .focusedValue(
             \.macFind,
             RemiMacCommandAvailability.canFind(
                 hasOpenConversation: true,
@@ -471,109 +481,84 @@ struct MacSessionDetail: View {
     }
 }
 
+/// The conversations of the open session: Main and its subagents. Small pills in one row; when
+/// they do not fit, one menu holds them. Previous and Next Conversation are in the Go menu.
 private struct MacConversationPicker: View {
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let views: [SessionViewMeta]
     @Binding var selectedViewID: String
 
     var body: some View {
-        let layout = dynamicTypeSize.isAccessibilitySize
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: RemiTheme.Spacing.xs))
-            : AnyLayout(HStackLayout(alignment: .center, spacing: RemiTheme.Spacing.s))
+        ViewThatFits(in: .horizontal) {
+            pills
+                .fixedSize(horizontal: true, vertical: false)
+            menu
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 
-        layout {
-            Menu {
-                Button {
-                    selectedViewID = ""
-                } label: {
-                    Label("Main", systemImage: selectedViewID.isEmpty ? "checkmark" : "bubble.left.fill")
-                }
-                if !views.isEmpty { Divider() }
-                ForEach(views) { view in
-                    Button {
-                        selectedViewID = view.agentId
-                    } label: {
-                        Label(
-                            RemiConversationSelection.title(for: view, among: views),
-                            systemImage: selectedViewID == view.agentId ? "checkmark" : "person.2.fill"
-                        )
-                    }
-                }
+    private var pills: some View {
+        HStack(spacing: RemiTheme.Spacing.xs) {
+            RemiConversationChip(
+                title: "Main",
+                systemImage: "bubble.left.fill",
+                active: true,
+                selected: selectedViewID.isEmpty,
+                compact: true
+            ) { selectedViewID = "" }
+
+            ForEach(views) { view in
+                RemiConversationChip(
+                    title: title(for: view),
+                    systemImage: "person.2.fill",
+                    active: view.active,
+                    selected: selectedViewID == view.agentId,
+                    compact: true
+                ) { selectedViewID = view.agentId }
+            }
+        }
+    }
+
+    private var menu: some View {
+        Menu {
+            Button {
+                selectedViewID = ""
             } label: {
-                Label("Choose conversation", systemImage: "bubble.left.and.bubble.right")
-                    .labelStyle(.iconOnly)
-                    .frame(minWidth: RemiTheme.Size.minimumTapTarget)
+                Label("Main", systemImage: selectedViewID.isEmpty ? "checkmark" : "bubble.left.fill")
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .help("Choose a main or subagent conversation")
-
-            ScrollView(.horizontal) {
-                HStack(spacing: RemiTheme.Spacing.xs) {
-                    RemiConversationChip(
-                        title: "Main",
-                        systemImage: "bubble.left.fill",
-                        active: true,
-                        selected: selectedViewID.isEmpty
-                    ) { selectedViewID = "" }
-
-                    ForEach(views) { view in
-                        RemiConversationChip(
-                            title: RemiConversationSelection.title(for: view, among: views),
-                            systemImage: "person.2.fill",
-                            active: view.active,
-                            selected: selectedViewID == view.agentId
-                        ) { selectedViewID = view.agentId }
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-            .scrollIndicators(.hidden)
-
-            GlassEffectContainer(spacing: RemiTheme.Spacing.xxs) {
-                HStack(spacing: RemiTheme.Spacing.xxs) {
-                    conversationNavigationButton(
-                        title: "Previous conversation",
-                        systemImage: "chevron.left",
-                        key: .leftArrow,
-                        offset: -1
-                    )
-                    conversationNavigationButton(
-                        title: "Next conversation",
-                        systemImage: "chevron.right",
-                        key: .rightArrow,
-                        offset: 1
+            Divider()
+            ForEach(views) { view in
+                Button {
+                    selectedViewID = view.agentId
+                } label: {
+                    Label(
+                        title(for: view),
+                        systemImage: selectedViewID == view.agentId ? "checkmark" : "person.2.fill"
                     )
                 }
             }
-        }
-    }
-
-    private func conversationNavigationButton(
-        title: LocalizedStringKey,
-        systemImage: String,
-        key: KeyEquivalent,
-        offset: Int
-    ) -> some View {
-        Button {
-            selectConversation(offsetBy: offset)
         } label: {
-            Label(title, systemImage: systemImage)
-                .labelStyle(.iconOnly)
-                .frame(minWidth: RemiTheme.Size.minimumTapTarget)
+            Label(currentTitle, systemImage: "bubble.left.and.bubble.right")
+                .font(.caption.weight(.semibold))
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
-        .keyboardShortcut(key, modifiers: [.command, .option])
-        .help(title)
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Choose a main or subagent conversation")
     }
 
-    private func selectConversation(offsetBy offset: Int) {
-        selectedViewID = RemiConversationSelection.shiftedViewID(
-            selectedViewID: selectedViewID,
-            views: views,
-            offset: offset
-        )
+    private var currentTitle: String {
+        guard let view = views.first(where: { $0.agentId == selectedViewID }) else { return "Main" }
+        return title(for: view)
+    }
+
+    /// The agent's type, numbered when two share it ("general-purpose 2"), rather than the id
+    /// suffix the shared title adds, which is long and means nothing to the person.
+    private func title(for view: SessionViewMeta) -> String {
+        let base = RemiConversationSelection.title(for: view, among: [view])
+        let sameType = views.filter { RemiConversationSelection.title(for: $0, among: [$0]) == base }
+        guard sameType.count > 1, let index = sameType.firstIndex(where: { $0.agentId == view.agentId }) else {
+            return base
+        }
+        return "\(base) \(index + 1)"
     }
 }
 
