@@ -4,6 +4,8 @@ import SwiftUI
 import UIKit
 
 struct HomeScreen: View {
+    @Environment(\.homeActionsInDetail) private var homeActionsInDetail
+    @Environment(\.homeActionRequest) private var homeActionRequest
     @State private var showingPairing = false
     @State private var showingNewSession = false
     @State private var showingPreferences = false
@@ -187,57 +189,15 @@ struct HomeScreen: View {
         .navigationTitle("Remi")
         .searchable(text: $searchText, prompt: "Search Remi activity")
         .toolbar {
-            if #available(iOS 27.0, *) {
-                ToolbarOverflowMenu {
-                    if !availableSessionMachines.isEmpty {
-                        Button("Add machine", systemImage: "desktopcomputer.and.arrow.down") {
-                            showingPairing = true
-                        }
-                    }
-                    Button("Preferences", systemImage: "gearshape") {
-                        showingPreferences = true
-                    }
-                }
-
-                ToolbarItem(placement: .topBarPinnedTrailing) {
-                    if availableSessionMachines.isEmpty {
-                        Button("Add machine", systemImage: "desktopcomputer.and.arrow.down") {
-                            showingPairing = true
-                        }
-                    } else {
-                        Button("New session", systemImage: "plus.rectangle.on.folder") {
-                            presentNewSession()
-                        }
-                    }
-                }
-                .verticalBarPreferred()
-            } else {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button("New session", systemImage: "plus.rectangle.on.folder") {
-                            presentNewSession()
-                        }
-                        .disabled(availableSessionMachines.isEmpty)
-
-                        Button("Add machine", systemImage: "desktopcomputer.and.arrow.down") {
-                            showingPairing = true
-                        }
-
-                        Divider()
-
-                        Button("Preferences", systemImage: "gearshape") {
-                            showingPreferences = true
-                        }
-                    } label: {
-                        Label("Add", systemImage: "plus")
-                            .frame(
-                                minWidth: RemiTheme.Size.minimumTapTarget,
-                                minHeight: RemiTheme.Size.minimumTapTarget
-                            )
-                            .contentShape(.rect)
-                    }
-                }
+            if !homeActionsInDetail {
+                PhoneHomeToolbar(canCreateSession: !availableSessionMachines.isEmpty, perform: perform)
             }
+        }
+        .toolbar(removing: homeActionsInDetail ? .sidebarToggle : nil)
+        .onChange(of: homeActionRequest?.wrappedValue) { _, request in
+            guard let request else { return }
+            homeActionRequest?.wrappedValue = nil
+            perform(request)
         }
         .sheet(isPresented: $showingNewSession, onDismiss: clearNewSessionContext) {
             PhoneNewSessionSheet(
@@ -264,6 +224,14 @@ struct HomeScreen: View {
         }
         .sheet(isPresented: $showingPreferences) {
             PhonePreferencesSheet(publicIdentity: publicIdentity)
+        }
+    }
+
+    private func perform(_ action: PhoneHomeAction) {
+        switch action {
+        case .newSession: presentNewSession()
+        case .addMachine: showingPairing = true
+        case .preferences: showingPreferences = true
         }
     }
 

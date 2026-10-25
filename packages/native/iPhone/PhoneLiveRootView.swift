@@ -18,6 +18,15 @@ struct PhoneLiveRootView: View {
     @State private var selectedDestination: RemiNavigationDestination?
     /// Which column a collapsed (compact) split view shows. Ignored when both columns are visible.
     @State private var compactColumn: NavigationSplitViewColumn = .sidebar
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    /// An action chosen in the detail pane's bar that Home runs, because Home owns its sheets.
+    @State private var homeActionRequest: PhoneHomeAction?
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    /// In a wide window the detail pane's bar is the one the system puts on the side of the
+    /// display, so Home's actions and the sidebar toggle live there. A compact window collapses
+    /// the split view, and Home keeps them in its own bar.
+    private var actionsInDetail: Bool { horizontalSizeClass == .regular }
 
     var body: some View {
         navigationLayout
@@ -122,23 +131,53 @@ struct PhoneLiveRootView: View {
     /// session controls under the right hand. In a compact window the same view collapses into a
     /// stack, so a rotation or a fold never rebuilds the screen and loses a draft or a sheet.
     private var navigationLayout: some View {
-        NavigationSplitView(preferredCompactColumn: $compactColumn) {
+        NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $compactColumn) {
             homeScreen
                 .navigationSplitViewColumnWidth(min: 320, ideal: 380, max: 460)
                 .environment(\.openSessionInDetail, openSessionInDetail)
                 .environment(\.selectedSessionID, selectedDestination?.sessionID)
+                .environment(\.homeActionsInDetail, actionsInDetail)
+                .environment(\.homeActionRequest, $homeActionRequest)
         } detail: {
-            if let selectedDestination {
-                notificationDestination(selectedDestination)
-                    .id(selectedDestination)
-            } else {
-                ContentUnavailableView(
-                    "Select a session",
-                    systemImage: "rectangle.stack",
-                    description: Text("Choose a workspace, then a session, to read and answer it here.")
-                )
-            }
+            detailContent
+                .toolbar {
+                    if actionsInDetail {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button(
+                                sidebarIsHidden ? "Show sessions" : "Hide sessions",
+                                systemImage: "sidebar.leading"
+                            ) {
+                                withAnimation { columnVisibility = sidebarIsHidden ? .all : .detailOnly }
+                            }
+                        }
+                        .verticalBarPreferred()
+                        PhoneHomeToolbar(canCreateSession: canCreateSession) { homeActionRequest = $0 }
+                    }
+                }
         }
+        // The system's own toggle sits in the sidebar's bar; the one above replaces it.
+        .toolbar(removing: actionsInDetail ? .sidebarToggle : nil)
+    }
+
+    @ViewBuilder
+    private var detailContent: some View {
+        if let selectedDestination {
+            notificationDestination(selectedDestination)
+                .id(selectedDestination)
+        } else {
+            ContentUnavailableView(
+                "Select a session",
+                systemImage: "rectangle.stack",
+                description: Text("Choose a workspace, then a session, to read and answer it here.")
+            )
+        }
+    }
+
+    private var sidebarIsHidden: Bool { columnVisibility == .detailOnly }
+
+    /// Mirrors Home: a session can be started when a machine is connected.
+    private var canCreateSession: Bool {
+        store.machines.contains { $0.status == .connected }
     }
 
     private func openSessionInDetail(_ session: RemiSessionSummary) {
