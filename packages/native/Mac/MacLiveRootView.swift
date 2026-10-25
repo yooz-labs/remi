@@ -1929,6 +1929,11 @@ private struct MacAddMachineSheet: View {
                     Label("System access", systemImage: "lock.shield")
                 }
             }
+            // The same grouped form as the New session sheet: labels on the left, controls on the
+            // right, and the form fills the space between the header and the buttons. The
+            // default two-column form centered a short form in a tall sheet and ran its fields
+            // and notice text past the edges at the minimum width.
+            .formStyle(.grouped)
 
             Divider()
 
@@ -1946,8 +1951,8 @@ private struct MacAddMachineSheet: View {
         }
         .onDisappear { if let attemptID { onCancelPairing(attemptID) } }
         .frame(
-            minWidth: 480,
-            idealWidth: dynamicTypeSize.isAccessibilitySize ? 680 : 560,
+            minWidth: 520,
+            idealWidth: dynamicTypeSize.isAccessibilitySize ? 680 : 580,
             maxWidth: 720,
             minHeight: dynamicTypeSize.isAccessibilitySize ? 620 : 540,
             idealHeight: dynamicTypeSize.isAccessibilitySize ? 700 : 600,
