@@ -74,10 +74,9 @@ struct MacLiveRootView: View {
                                 Button {
                                     showingAddMachine = true
                                 } label: {
-                                    Label("Add machine", systemImage: "plus")
+                                    Label("Add machine", systemImage: "desktopcomputer.and.arrow.down")
                                 }
-                                .keyboardShortcut("n", modifiers: [.command, .shift])
-                                .help("Add another Remi machine")
+                                .help("Add another Remi machine (Shift-Command-N)")
                             }
                             .visibilityPriority(.high)
                         } else {
@@ -85,10 +84,9 @@ struct MacLiveRootView: View {
                                 Button {
                                     showingAddMachine = true
                                 } label: {
-                                    Label("Add machine", systemImage: "plus")
+                                    Label("Add machine", systemImage: "desktopcomputer.and.arrow.down")
                                 }
-                                .keyboardShortcut("n", modifiers: [.command, .shift])
-                                .help("Add another Remi machine")
+                                .help("Add another Remi machine (Shift-Command-N)")
                             }
                         }
                     }
@@ -117,9 +115,7 @@ struct MacLiveRootView: View {
                                 onRetryConnection: store.retryConnection,
                                 onNewSession: { presentNewSession() },
                                 onNewSessionHere: { presentNewSession(repository: $0) },
-                                onTerminate: { store.terminateSession(machineID: $0.machineID, sessionId: $0.id) },
-                                onNextNeedsYou: { jumpToNeedsYou(offset: 1) },
-                                canJumpToNeedsYou: commandAvailability.nextNeedsYou
+                                onTerminate: { store.terminateSession(machineID: $0.machineID, sessionId: $0.id) }
                             )
                         }
                     }
@@ -133,8 +129,7 @@ struct MacLiveRootView: View {
                                 } label: {
                                     Label("New session", systemImage: "plus")
                                 }
-                                .keyboardShortcut("n", modifiers: .command)
-                                .help("Start a new session")
+                                .help("Start a new session (Command-N)")
                                 .disabled(sessionCreationMachines.isEmpty)
                             }
                             .visibilityPriority(.high)
@@ -145,8 +140,7 @@ struct MacLiveRootView: View {
                                 } label: {
                                     Label("New session", systemImage: "plus")
                                 }
-                                .keyboardShortcut("n", modifiers: .command)
-                                .help("Start a new session")
+                                .help("Start a new session (Command-N)")
                                 .disabled(sessionCreationMachines.isEmpty)
                             }
                         }
@@ -238,45 +232,6 @@ struct MacLiveRootView: View {
                             canCreateSession: !sessionCreationMachines.isEmpty,
                             onNewSession: { presentNewSession() }
                         )
-                    }
-                }
-                .toolbar {
-                    ToolbarItemGroup(placement: .navigation) {
-                        MacMachineSwitcher(
-                            machines: machineSummaries,
-                            labels: machineLabels,
-                            selectedMachineID: selectedMachineID,
-                            onSelect: selectMachine,
-                            onMove: moveMachineSelection
-                        )
-
-                        Button {
-                            toggleMachineColumn()
-                        } label: {
-                            Label("Toggle machines", systemImage: "sidebar.leading")
-                        }
-                        .labelStyle(.iconOnly)
-                        .keyboardShortcut("1", modifiers: [.command, .control])
-                        .help("Show or hide machines (Control-Command-1)")
-
-                        Button {
-                            toggleSessionColumn()
-                        } label: {
-                            Label("Toggle navigation", systemImage: "rectangle.split.3x1")
-                        }
-                        .labelStyle(.iconOnly)
-                        .keyboardShortcut("2", modifiers: [.command, .control])
-                        .help("Show or hide both navigation columns (Control-Command-2)")
-
-                        Button {
-                            focusConversation()
-                        } label: {
-                            Label("Focus conversation", systemImage: "rectangle.righthalf.inset.filled")
-                        }
-                        .labelStyle(.iconOnly)
-                        .keyboardShortcut("3", modifiers: [.command, .control])
-                        .help("Focus conversation (Control-Command-3)")
-                        .disabled(selectedSessionID.isEmpty)
                     }
                 }
                 .navigationSplitViewStyle(.prominentDetail)
@@ -668,7 +623,14 @@ struct MacLiveRootView: View {
             nextNeedsYou: { jumpToNeedsYou(offset: 1) },
             previousNeedsYou: { jumpToNeedsYou(offset: -1) },
             moveMachine: { moveMachineSelection(offset: $0) },
-            reconnect: reconnectSelectedMachine
+            reconnect: reconnectSelectedMachine,
+            canCreateSession: !sessionCreationMachines.isEmpty,
+            newSession: { presentNewSession() },
+            addMachine: { showingAddMachine = true },
+            toggleMachines: toggleMachineColumn,
+            toggleSessions: toggleSessionColumn,
+            canFocusConversation: !selectedSessionID.isEmpty,
+            focusConversation: focusConversation
         )
     }
 
@@ -1020,8 +982,6 @@ private struct MacSessionsColumn: View {
     let onNewSession: () -> Void
     let onNewSessionHere: (String) -> Void
     let onTerminate: (RemiSessionSummary) -> Void
-    let onNextNeedsYou: () -> Void
-    let canJumpToNeedsYou: Bool
 
     var body: some View {
         Group {
@@ -1035,9 +995,7 @@ private struct MacSessionsColumn: View {
                         selection: $selection,
                         onResume: onResume,
                         onNewSessionHere: onNewSessionHere,
-                        onTerminate: onTerminate,
-                        onNextNeedsYou: onNextNeedsYou,
-                        canJumpToNeedsYou: canJumpToNeedsYou
+                        onTerminate: onTerminate
                     )
                 }
             } else if let machine {
@@ -1065,8 +1023,6 @@ private struct MacSessionList: View {
     let onResume: (RemiSessionSummary) -> Void
     let onNewSessionHere: (String) -> Void
     let onTerminate: (RemiSessionSummary) -> Void
-    let onNextNeedsYou: () -> Void
-    let canJumpToNeedsYou: Bool
     @State private var searchText = ""
     @State private var scope = RemiSessionScope.all
     @State private var showsRecent = false
@@ -1118,16 +1074,6 @@ private struct MacSessionList: View {
             )
         }
         .searchable(text: $searchText, prompt: "Search sessions")
-        .toolbar {
-            ToolbarItemGroup {
-                Button("Next session needing attention", systemImage: "questionmark.bubble", action: onNextNeedsYou)
-                .labelStyle(.iconOnly)
-                .help("Next session needing attention on any machine (Option-Command-J)")
-                .disabled(!canJumpToNeedsYou)
-                navigationButton(title: "Previous session", systemImage: "chevron.up", offset: -1)
-                navigationButton(title: "Next session", systemImage: "chevron.down", offset: 1)
-            }
-        }
         .focusedSceneValue(
             \.macSessionNavigation,
             filteredSessions.isEmpty ? nil : MacSessionNavigationActions(move: { moveSelection(offsetBy: $0) })
@@ -1264,17 +1210,6 @@ private struct MacSessionList: View {
         }
     }
 
-    private func navigationButton(title: String, systemImage: String, offset: Int) -> some View {
-        Button {
-            moveSelection(offsetBy: offset)
-        } label: {
-            Label(title, systemImage: systemImage)
-        }
-        .labelStyle(.iconOnly)
-        .help("\(title) (Option-Command-\(offset < 0 ? "↑" : "↓"))")
-        .disabled(filteredSessions.isEmpty)
-    }
-
     private func moveSelection(offsetBy offset: Int) {
         let orderedIDs = workspaces.flatMap { $0.sessions.map(\.id) }
         // No match must never deselect: with nothing visible the selection stays.
@@ -1342,66 +1277,6 @@ private struct MacSessionTriageBar: View {
         case .live: "Live (\(count))"
         case .stored: "Stored (\(count))"
         }
-    }
-}
-
-private struct MacMachineSwitcher: View {
-    let machines: [RemiMachineSummary]
-    let labels: [String: String]
-    let selectedMachineID: String
-    let onSelect: (String) -> Void
-    let onMove: (Int) -> Void
-
-    @ViewBuilder
-    var body: some View {
-        if machines.count > 1 {
-            HStack(spacing: RemiTheme.Spacing.xxs) {
-                Button("Previous machine", systemImage: "chevron.up") {
-                    onMove(-1)
-                }
-                .labelStyle(.iconOnly)
-                .help("Previous machine (Control-Option-↑)")
-
-                Menu {
-                    ForEach(machines) { machine in
-                        Button {
-                            onSelect(machine.id)
-                        } label: {
-                            Label(
-                                labels[machine.id] ?? machine.name,
-                                systemImage: machine.id == selectedMachineID ? "checkmark" : "desktopcomputer"
-                            )
-                        }
-                        .accessibilityLabel(RemiMachineStripPresentation.accessibilityLabel(
-                            for: machine,
-                            label: labels[machine.id]
-                        ))
-                        .accessibilityAddTraits(machine.id == selectedMachine?.id ? .isSelected : [])
-                    }
-                } label: {
-                    Label(
-                        selectedMachine.map { labels[$0.id] ?? $0.name } ?? "Machine",
-                        systemImage: "desktopcomputer"
-                    )
-                }
-                .fixedSize()
-                .accessibilityLabel(RemiMachineStripPresentation.menuAccessibilityLabel(
-                    selected: selectedMachine,
-                    label: selectedMachine.flatMap { labels[$0.id] }
-                ))
-                .help("Switch machine")
-
-                Button("Next machine", systemImage: "chevron.down") {
-                    onMove(1)
-                }
-                .labelStyle(.iconOnly)
-                .help("Next machine (Control-Option-↓)")
-            }
-        }
-    }
-
-    private var selectedMachine: RemiMachineSummary? {
-        machines.first { $0.id == selectedMachineID } ?? machines.first
     }
 }
 
@@ -2394,9 +2269,7 @@ private var workspacePreviewMachine: MachineState {
         selection: .constant("waiting"),
         onResume: { _ in },
         onNewSessionHere: { _ in },
-        onTerminate: { _ in },
-        onNextNeedsYou: {},
-        canJumpToNeedsYou: true
+        onTerminate: { _ in }
     )
     .frame(width: 460, height: 640)
     .preferredColorScheme(.dark)
@@ -2409,9 +2282,7 @@ private var workspacePreviewMachine: MachineState {
         selection: .constant("waiting"),
         onResume: { _ in },
         onNewSessionHere: { _ in },
-        onTerminate: { _ in },
-        onNextNeedsYou: {},
-        canJumpToNeedsYou: true
+        onTerminate: { _ in }
     )
     .frame(width: 620, height: 720)
     .environment(\.dynamicTypeSize, .accessibility5)

@@ -84,7 +84,11 @@ struct MacSessionDetail: View {
                 onCopyID: { copyToPasteboard(session.id) },
                 onCopyDirectory: { copyToPasteboard(session.projectPath) },
                 onResume: onResume,
-                onTerminate: { confirmingTermination = true }
+                onTerminate: { confirmingTermination = true },
+                canJumpToFirst: firstActivityID != nil && firstActivityID.map(displayRowID) != visibleEntryID,
+                canJumpToLatest: latestActivityID != nil && !followsLatest,
+                onJumpToFirst: jumpToFirstActivity,
+                onJumpToLatest: jumpToLatestActivity
             )
             if !views.isEmpty {
                 MacConversationPicker(views: views, selectedViewID: $selectedViewID)
@@ -268,8 +272,6 @@ struct MacSessionDetail: View {
     @ViewBuilder
     private var transcriptToolbarButtons: some View {
         if !visibleTranscript.isEmpty || !visibleQuestions.isEmpty {
-            firstActivityButton
-            latestActivityButton
             searchButton
         }
     }
@@ -304,32 +306,20 @@ struct MacSessionDetail: View {
         searchFocusRequest += 1
     }
 
-    private var latestActivityButton: some View {
-        Button("Jump to latest activity", systemImage: "arrow.down.to.line") {
-            focusedQuestionID = nil
-            accessibilityQuestionID = nil
-            resetReview()
-            followsLatest = true
-            latestScrollRequest += 1
-        }
-        .labelStyle(.iconOnly)
-        .keyboardShortcut(.downArrow, modifiers: .command)
-        .disabled(latestActivityID == nil || followsLatest)
-        .help("Jump to latest activity (Command-↓)")
+    private func jumpToLatestActivity() {
+        focusedQuestionID = nil
+        accessibilityQuestionID = nil
+        resetReview()
+        followsLatest = true
+        latestScrollRequest += 1
     }
 
-    private var firstActivityButton: some View {
-        Button("Jump to first activity", systemImage: "arrow.up.to.line") {
-            guard let firstActivityID else { return }
-            followsLatest = false
-            withAnimation(.easeInOut(duration: 0.2)) {
-                visibleEntryID = displayRowID(firstActivityID)
-            }
+    private func jumpToFirstActivity() {
+        guard let firstActivityID else { return }
+        followsLatest = false
+        withAnimation(.easeInOut(duration: 0.2)) {
+            visibleEntryID = displayRowID(firstActivityID)
         }
-        .labelStyle(.iconOnly)
-        .keyboardShortcut(.upArrow, modifiers: .command)
-        .disabled(firstActivityID == nil || firstActivityID.map(displayRowID) == visibleEntryID)
-        .help("Jump to first activity (Command-↑)")
     }
 
     /// The entries the transcript groups and the ones it must keep visible (search matches).
@@ -640,6 +630,10 @@ private struct MacSessionToolbarHeader: View {
     let onCopyDirectory: () -> Void
     let onResume: (() -> Void)?
     let onTerminate: () -> Void
+    let canJumpToFirst: Bool
+    let canJumpToLatest: Bool
+    let onJumpToFirst: () -> Void
+    let onJumpToLatest: () -> Void
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
@@ -698,6 +692,13 @@ private struct MacSessionToolbarHeader: View {
                 .help("Resume this session")
             }
             Menu {
+                // Not toolbar buttons or Command-arrow shortcuts: those moved the text cursor in
+                // the message field.
+                Button("Jump to first activity", systemImage: "arrow.up.to.line", action: onJumpToFirst)
+                    .disabled(!canJumpToFirst)
+                Button("Jump to latest activity", systemImage: "arrow.down.to.line", action: onJumpToLatest)
+                    .disabled(!canJumpToLatest)
+                Divider()
                 Button("Copy session ID", systemImage: "doc.on.doc", action: onCopyID)
                 Button("Copy directory", systemImage: "folder", action: onCopyDirectory)
                 if session.canTerminate {
