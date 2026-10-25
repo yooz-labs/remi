@@ -21,11 +21,11 @@ public enum RemiTheme {
             blue: 10.0 / 255.0
         )
         /// A session that is working: a faint wash of the attention hue behind a deeper green dot.
-        public static let activityWash = attention.opacity(0.22)
+        public static let activityWash = attention.opacity(0.15)
         public static let activityDot = SwiftUI.Color(
-            red: 112.0 / 255.0,
-            green: 164.0 / 255.0,
-            blue: 32.0 / 255.0
+            red: 128.0 / 255.0,
+            green: 186.0 / 255.0,
+            blue: 40.0 / 255.0
         )
         public static let surface = SwiftUI.Color.primary.opacity(0.055)
         public static let elevatedSurface = SwiftUI.Color.primary.opacity(0.09)
