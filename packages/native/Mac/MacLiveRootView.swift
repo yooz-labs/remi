@@ -1389,8 +1389,8 @@ private struct MacWorkspaceGroupLabel: View {
                     .padding(.vertical, RemiTheme.Spacing.xxxs)
                     .background(RemiTheme.Color.attention, in: Capsule())
             } else {
-                if showsWorking, workspace.workingCount > 1 {
-                    // Several running: how many of the project's sessions.
+                if showsWorking, workspace.sessions.count > 1 {
+                    // Some running: how many of the project's sessions.
                     Text("\(workspace.workingCount)/\(workspace.sessions.count) active")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
