@@ -1027,29 +1027,31 @@ private struct MacSessionList: View {
     @State private var scope = RemiSessionScope.all
     @State private var showsRecent = false
     @State private var expandedWorkspaces: Set<String> = []
+    @State private var workspacesSeenNeedingYou: Set<String> = []
     @State private var pendingTermination: RemiSessionSummary?
 
     var body: some View {
         List(selection: $selection) {
-            ForEach(activeWorkspaces) { workspace in
-                workspaceGroup(workspace)
+            if !activeWorkspaces.isEmpty {
+                Section("Active") {
+                    ForEach(activeWorkspaces) { workspace in
+                        workspaceGroup(workspace)
+                    }
+                }
             }
 
             if !recentWorkspaces.isEmpty {
-                if searchText.isEmpty {
-                    DisclosureGroup(isExpanded: $showsRecent) {
-                        ForEach(recentWorkspaces) { workspace in
-                            workspaceGroup(workspace)
-                        }
-                    } label: {
-                        Label(recentWorkspaceLabel, systemImage: "clock")
-                            .font(.subheadline.weight(.semibold))
-                    }
-                    .accessibilityLabel(recentWorkspaceLabel)
-                    .accessibilityHint(showsRecent ? "Hides finished workspaces" : "Shows finished workspaces")
-                } else {
-                    ForEach(recentWorkspaces) { workspace in
+                Section("Recent") {
+                    ForEach(shownRecentWorkspaces) { workspace in
                         workspaceGroup(workspace)
+                    }
+                    if searchText.isEmpty, recentWorkspaces.count > Self.recentLimit {
+                        Button(showsRecent ? "Show fewer" : "Show all \(recentWorkspaces.count)") {
+                            showsRecent.toggle()
+                        }
+                        .buttonStyle(.plain)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -1078,23 +1080,31 @@ private struct MacSessionList: View {
             \.macSessionNavigation,
             filteredSessions.isEmpty ? nil : MacSessionNavigationActions(move: { moveSelection(offsetBy: $0) })
         )
-        .onAppear { expandRelevantWorkspace() }
+        .onAppear {
+            expandSelectedWorkspace()
+            expandWorkspacesNewlyNeedingYou()
+        }
         .onChange(of: machineID) { _, _ in
             searchText = ""
             scope = .all
             showsRecent = false
             expandedWorkspaces.removeAll()
-            expandRelevantWorkspace()
+            workspacesSeenNeedingYou.removeAll()
+            expandSelectedWorkspace()
+            expandWorkspacesNewlyNeedingYou()
         }
-        .onChange(of: selection) { _, _ in expandRelevantWorkspace() }
-        .onChange(of: filteredSessions.map(\.id)) { _, ids in
+        .onChange(of: selection) { _, _ in expandSelectedWorkspace() }
+        // Against every session, not the filtered ones: typing in the search field or choosing a
+        // filter must not swap the conversation that is open. It changes only when the open
+        // session is gone.
+        .onChange(of: sessions.map(\.id)) { _, ids in
             selection = RemiSessionTriage.reconciledSelection(
                 selection: selection,
                 visibleSessionIDs: ids
             )
         }
         .onChange(of: workspaces.map { "\($0.id):\($0.needsAttention)" }) { _, _ in
-            expandRelevantWorkspace()
+            expandWorkspacesNewlyNeedingYou()
         }
         .confirmationDialog(
             "Exit \(pendingTermination?.name ?? "session")?",
@@ -1139,8 +1149,16 @@ private struct MacSessionList: View {
         workspaces.filter { !$0.hasLiveSessions }
     }
 
-    private var recentWorkspaceLabel: String {
-        recentWorkspaces.count == 1 ? "1 recent workspace" : "\(recentWorkspaces.count) recent workspaces"
+    /// Recent workspaces shown before "Show all". One that holds the open session or needs the
+    /// person always shows, so the list never hides where the person is.
+    private static let recentLimit = 5
+
+    private var shownRecentWorkspaces: [MacSessionWorkspace] {
+        guard searchText.isEmpty, !showsRecent else { return recentWorkspaces }
+        return recentWorkspaces.enumerated().compactMap { index, workspace in
+            let pinned = workspace.needsAttention || workspace.sessions.contains { $0.id == selection }
+            return index < Self.recentLimit || pinned ? workspace : nil
+        }
     }
 
     private func workspaceGroup(_ workspace: MacSessionWorkspace) -> some View {
@@ -1150,6 +1168,10 @@ private struct MacSessionList: View {
             }
         } label: {
             MacWorkspaceGroupLabel(workspace: workspace)
+                .contentShape(.rect)
+                // The chevron expands; the name opens the workspace's latest session (the most
+                // urgent, then the most recent) and shows it in the list.
+                .onTapGesture { openLatest(in: workspace) }
         }
         .contextMenu {
             Button("New session here", systemImage: "plus") {
@@ -1189,6 +1211,12 @@ private struct MacSessionList: View {
             }
     }
 
+    private func openLatest(in workspace: MacSessionWorkspace) {
+        guard let latest = workspace.sessions.first else { return }
+        expandedWorkspaces.insert(workspace.id)
+        selection = latest.id
+    }
+
     private func workspaceExpansionBinding(_ workspace: MacSessionWorkspace) -> Binding<Bool> {
         Binding(
             get: { !searchText.isEmpty || expandedWorkspaces.contains(workspace.id) },
@@ -1203,11 +1231,20 @@ private struct MacSessionList: View {
         )
     }
 
-    private func expandRelevantWorkspace() {
-        for workspace in workspaces where workspace.needsAttention || workspace.sessions.contains(where: { $0.id == selection }) {
+    /// Shows the open session: expands its workspace when the selection moves into it. Not on
+    /// every list change, so a workspace the person collapsed stays collapsed.
+    private func expandSelectedWorkspace() {
+        for workspace in workspaces where workspace.sessions.contains(where: { $0.id == selection }) {
             expandedWorkspaces.insert(workspace.id)
-            if !workspace.hasLiveSessions { showsRecent = true }
         }
+    }
+
+    /// Expands a workspace the first time it needs the person, and not again until it has stopped
+    /// needing them, so a collapse the person chose is not undone by the next list update.
+    private func expandWorkspacesNewlyNeedingYou() {
+        let needing = Set(workspaces.filter(\.needsAttention).map(\.id))
+        expandedWorkspaces.formUnion(needing.subtracting(workspacesSeenNeedingYou))
+        workspacesSeenNeedingYou = needing
     }
 
     private func moveSelection(offsetBy offset: Int) {
@@ -1324,15 +1361,8 @@ private struct MacWorkspaceGroupLabel: View {
     var body: some View {
         HStack(spacing: RemiTheme.Spacing.xs) {
             Label(workspace.project, systemImage: "folder")
-                .font(.subheadline.weight(.semibold))
+                .font(.body.weight(.medium))
                 .lineLimit(1)
-
-            Text(workspace.projectPath)
-                .font(RemiTheme.Typography.code)
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .layoutPriority(-1)
 
             Spacer(minLength: RemiTheme.Spacing.xs)
 
@@ -1343,17 +1373,19 @@ private struct MacWorkspaceGroupLabel: View {
                     .padding(.horizontal, RemiTheme.Spacing.xs)
                     .padding(.vertical, RemiTheme.Spacing.xxxs)
                     .background(RemiTheme.Color.attention, in: Capsule())
+            } else if workspace.sessions.count > 1 {
+                // A single session needs no count; the folder path is in the tooltip and the
+                // conversation header.
+                Text("\(workspace.sessions.count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
-
-            Text(workspace.sessions.count == 1 ? "1 session" : "\(workspace.sessions.count) sessions")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
         }
-        .padding(.vertical, RemiTheme.Spacing.xxxs)
+        .padding(.vertical, RemiTheme.Spacing.xxs)
         .help(workspace.projectPath)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
-        .accessibilityHint("Expands or collapses sessions in this workspace")
+        .accessibilityHint("Opens the latest session. Use the disclosure arrow to show all sessions.")
     }
 
     private var accessibilityLabel: String {
