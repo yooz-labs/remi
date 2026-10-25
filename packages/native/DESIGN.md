@@ -21,9 +21,10 @@ The person is busy elsewhere; the app's job is to tell them what needs them, let
 ## The Mac app (Conductor-like)
 
 - **The main window has three columns:**
-  - machines, each with its repositories;
-  - the sessions of the selection, with status and the worktree or branch;
-  - the session itself.
+  - machines, with the Inbox above them;
+  - the sessions of the selected machine, grouped by workspace (the project folder): active workspaces first, then the most recent ones with "Show all". Clicking a workspace opens its latest session (the most urgent, then the most recent); its disclosure arrow lists the rest. A filter shows all, needs you, live or stored sessions;
+  - the session itself, with its conversations (Main and subagents) as small pills above the transcript.
+- **Controls:** the toolbars carry only what applies to what is open. Everything else is a menu command with a shortcut (new session, add machine, show or hide the columns, focus the conversation, previous and next session, conversation and machine). Jump to the first or latest activity is in the session's actions menu.
 - **The session view:** the transcript (agent messages, tool calls as compact chips that expand; a run of 3 or more is one row, "12 tool calls", that opens in place; the newest entry and search matches stay out of groups), the open cards inline, and a composer at the bottom.
 - **New session sheet:** pick the machine, repository, a new branch (the hub makes its worktree; starting in an existing worktree means picking its directory), harness (Claude Code, Codex) and model. The hub creates the worktree (`create_session_request.workspace`, #1236) when it lists the `workspaces` capability; for a hub that does not, the sheet starts a session in a directory.
 - **Menu bar extra:** a glanceable count of cards that need the person, and the list of them. It stays.
