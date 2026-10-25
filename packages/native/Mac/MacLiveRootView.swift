@@ -1139,25 +1139,63 @@ private struct MacSessionList: View {
     }
 
     private func workspaceGroup(_ workspace: MacSessionWorkspace) -> some View {
-        DisclosureGroup(isExpanded: workspaceExpansionBinding(workspace)) {
+        let isExpanded = workspaceExpansionBinding(workspace)
+        return DisclosureGroup(isExpanded: isExpanded) {
             ForEach(workspace.sessions) { session in
                 sessionRow(session)
             }
+            workspaceFooter(workspace)
         } label: {
-            MacWorkspaceGroupLabel(workspace: workspace, isExpanded: workspaceExpansionBinding(workspace).wrappedValue)
+            MacWorkspaceGroupLabel(workspace: workspace, isExpanded: isExpanded.wrappedValue)
                 .contentShape(.rect)
-                // The chevron expands; the name opens the workspace's latest session (the most
-                // urgent, then the most recent) and shows it in the list.
-                .onTapGesture { openLatest(in: workspace) }
+                // A project is a heading, not a destination: a click opens or closes it and never
+                // selects it, so no row of the list is highlighted except the open session.
+                .onTapGesture { isExpanded.wrappedValue.toggle() }
+                .selectionDisabled()
         }
-        .contextMenu {
-            Button("New session here", systemImage: "plus") {
+        .selectionDisabled()
+        .contextMenu { workspaceActions(workspace) }
+    }
+
+    /// Under the project's sessions: a new session in this project, and the rest of its actions.
+    private func workspaceFooter(_ workspace: MacSessionWorkspace) -> some View {
+        HStack(spacing: RemiTheme.Spacing.xs) {
+            Button {
                 onNewSessionHere(workspace.projectPath)
+            } label: {
+                Label("New session", systemImage: "plus")
+                    .font(.caption.weight(.medium))
             }
-            Button("Copy directory", systemImage: "doc.on.doc") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(workspace.projectPath, forType: .string)
+            .buttonStyle(.borderless)
+            .help("New session in \(workspace.project)")
+
+            Spacer(minLength: 0)
+
+            Menu {
+                workspaceActions(workspace)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .foregroundStyle(.secondary)
             }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("More actions for \(workspace.project)")
+            .accessibilityLabel("More actions for \(workspace.project)")
+        }
+        .padding(.leading, RemiTheme.Spacing.s)
+        .padding(.vertical, RemiTheme.Spacing.xxs)
+        .selectionDisabled()
+    }
+
+    @ViewBuilder
+    private func workspaceActions(_ workspace: MacSessionWorkspace) -> some View {
+        Button("New session here", systemImage: "plus") {
+            onNewSessionHere(workspace.projectPath)
+        }
+        Button("Copy directory", systemImage: "doc.on.doc") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(workspace.projectPath, forType: .string)
         }
     }
 
@@ -1194,19 +1232,6 @@ private struct MacSessionList: View {
                     }
                 }
             }
-    }
-
-    private func openLatest(in workspace: MacSessionWorkspace) {
-        guard let latest = workspace.sessions.first else { return }
-        guard expandedWorkspaces.contains(workspace.id) else {
-            // Expand first and select on the next turn. Selecting a session in the same update
-            // that reveals it asked the outline list to highlight a row that did not exist yet,
-            // and it drew the highlight over the wrong row.
-            expandedWorkspaces.insert(workspace.id)
-            Task { @MainActor in selection = latest.id }
-            return
-        }
-        selection = latest.id
     }
 
     private func workspaceExpansionBinding(_ workspace: MacSessionWorkspace) -> Binding<Bool> {
