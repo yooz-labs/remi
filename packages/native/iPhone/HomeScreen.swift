@@ -149,7 +149,7 @@ struct HomeScreen: View {
                         message: emptySessionsMessage,
                         canCreateSession: !availableSessionMachines.isEmpty,
                         onNewSession: { presentNewSession() },
-                        onReset: hasActiveFilters ? resetFilters : nil
+                        onReset: hasActiveFilters ? { resetFilters() } : nil
                     )
                 } else {
                     SessionsSection(
