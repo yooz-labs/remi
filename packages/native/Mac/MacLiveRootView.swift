@@ -1343,7 +1343,8 @@ private struct MacSessionWorkspace: Identifiable {
     var lastActivity: String? { sessions.compactMap(\.lastActivity).max() }
     var hasLiveSessions: Bool { sessions.contains(where: \.isLive) }
     var needsAttention: Bool { sessions.contains { $0.status == .needsYou } }
-    var hasWorkingSessions: Bool { sessions.contains { $0.status == .working } }
+    var workingCount: Int { sessions.filter { $0.status == .working }.count }
+    var hasWorkingSessions: Bool { workingCount > 0 }
     var questionCount: Int { sessions.reduce(0) { $0 + $1.openQuestionCount } }
 }
 
@@ -1364,8 +1365,11 @@ private struct MacWorkspaceGroupLabel: View {
     /// Whether the workspace's sessions are showing. When they are, each carries its own status.
     let isExpanded: Bool
 
+    private var showsWorking: Bool { !isExpanded && workspace.hasWorkingSessions }
+
     var body: some View {
-        HStack(spacing: RemiTheme.Spacing.xs) {
+        // Baseline alignment keeps the title level with the badge's text.
+        HStack(alignment: .firstTextBaseline, spacing: RemiTheme.Spacing.xs) {
             Label {
                 Text(workspace.project)
             } icon: {
@@ -1377,11 +1381,6 @@ private struct MacWorkspaceGroupLabel: View {
 
             Spacer(minLength: RemiTheme.Spacing.xs)
 
-            // A collapsed workspace still shows that something in it is running.
-            if !isExpanded, workspace.hasWorkingSessions, workspace.questionCount == 0 {
-                RemiStatusBadge(status: .working)
-            }
-
             if workspace.questionCount > 0 {
                 Label("\(workspace.questionCount)", systemImage: "questionmark.bubble.fill")
                     .font(.caption.weight(.bold))
@@ -1389,12 +1388,24 @@ private struct MacWorkspaceGroupLabel: View {
                     .padding(.horizontal, RemiTheme.Spacing.xs)
                     .padding(.vertical, RemiTheme.Spacing.xxxs)
                     .background(RemiTheme.Color.attention, in: Capsule())
-            } else if workspace.sessions.count > 1 {
-                // A single session needs no count; the folder path is in the tooltip and the
-                // conversation header.
-                Text("\(workspace.sessions.count)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+            } else {
+                if showsWorking, workspace.workingCount > 1 {
+                    // Several running: how many of the project's sessions.
+                    Text("\(workspace.workingCount)/\(workspace.sessions.count) active")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                } else if workspace.sessions.count > 1 {
+                    // A single session needs no count; the folder path is in the tooltip and the
+                    // conversation header.
+                    Text("\(workspace.sessions.count)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                // Rightmost, so the badge lines up from one project to the next. A collapsed
+                // workspace still shows that something in it is running.
+                if showsWorking {
+                    RemiStatusBadge(status: .working)
+                }
             }
         }
         // Space above, so a project reads as a heading over its sessions, not another row.
