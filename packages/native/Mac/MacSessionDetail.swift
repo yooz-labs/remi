@@ -481,22 +481,27 @@ struct MacSessionDetail: View {
     }
 }
 
-/// The conversations of the open session: Main and its subagents. Small pills in one row; when
-/// they do not fit, one menu holds them. Previous and Next Conversation are in the Go menu.
+/// The conversations of the open session as tabs: Main, then every active subagent, so what is
+/// running is one click away. Finished subagents are in the "Earlier" menu; the one that is open
+/// always stays a tab. Previous and Next Conversation are in the Go menu.
 private struct MacConversationPicker: View {
     let views: [SessionViewMeta]
     @Binding var selectedViewID: String
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            pills
+            tabs
                 .fixedSize(horizontal: true, vertical: false)
-            menu
+            // Many active subagents: the same tabs, scrolling, with no scroll bar.
+            ScrollView(.horizontal) { tabs }
+                .scrollIndicators(.never)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Conversations")
     }
 
-    private var pills: some View {
+    private var tabs: some View {
         HStack(spacing: RemiTheme.Spacing.xs) {
             RemiConversationChip(
                 title: "Main",
@@ -506,7 +511,7 @@ private struct MacConversationPicker: View {
                 compact: true
             ) { selectedViewID = "" }
 
-            ForEach(views) { view in
+            ForEach(tabViews) { view in
                 RemiConversationChip(
                     title: title(for: view),
                     systemImage: "person.2.fill",
@@ -514,44 +519,46 @@ private struct MacConversationPicker: View {
                     selected: selectedViewID == view.agentId,
                     compact: true
                 ) { selectedViewID = view.agentId }
+                // A finished conversation that is open stays a tab, but quieter than a live one.
+                .opacity(view.active || selectedViewID == view.agentId ? 1 : 0.6)
+            }
+
+            if !earlierViews.isEmpty {
+                earlierMenu
             }
         }
     }
 
-    private var menu: some View {
+    /// Active subagents, plus the open one if it has finished.
+    private var tabViews: [SessionViewMeta] {
+        views.filter { $0.active || $0.agentId == selectedViewID }
+    }
+
+    private var earlierViews: [SessionViewMeta] {
+        views.filter { !$0.active && $0.agentId != selectedViewID }
+    }
+
+    private var earlierMenu: some View {
         Menu {
-            Button {
-                selectedViewID = ""
-            } label: {
-                Label("Main", systemImage: selectedViewID.isEmpty ? "checkmark" : "bubble.left.fill")
-            }
-            Divider()
-            ForEach(views) { view in
+            ForEach(earlierViews) { view in
                 Button {
                     selectedViewID = view.agentId
                 } label: {
-                    Label(
-                        title(for: view),
-                        systemImage: selectedViewID == view.agentId ? "checkmark" : "person.2.fill"
-                    )
+                    Label(title(for: view), systemImage: "person.2.fill")
                 }
             }
         } label: {
-            Label(currentTitle, systemImage: "bubble.left.and.bubble.right")
+            Text("Earlier \(earlierViews.count)")
                 .font(.caption.weight(.semibold))
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help("Choose a main or subagent conversation")
-    }
-
-    private var currentTitle: String {
-        guard let view = views.first(where: { $0.agentId == selectedViewID }) else { return "Main" }
-        return title(for: view)
+        .help("Finished subagent conversations")
     }
 
     /// The agent's type, numbered when two share it ("general-purpose 2"), rather than the id
-    /// suffix the shared title adds, which is long and means nothing to the person.
+    /// suffix the shared title adds, which is long and means nothing to the person. Numbered by
+    /// position among all the session's agents, so a number does not change as tabs come and go.
     private func title(for view: SessionViewMeta) -> String {
         let base = RemiConversationSelection.title(for: view, among: [view])
         let sameType = views.filter { RemiConversationSelection.title(for: $0, among: [$0]) == base }
@@ -717,6 +724,32 @@ private struct MacSessionToolbarHeader: View {
         .foregroundStyle(.secondary)
     }
 }
+
+#if DEBUG
+private struct MacConversationTabsPreview: View {
+    let views: [SessionViewMeta]
+    @State private var selectedViewID = ""
+
+    var body: some View {
+        MacConversationPicker(views: views, selectedViewID: $selectedViewID)
+            .padding()
+            .frame(width: 520)
+    }
+}
+
+#Preview("Conversation tabs") {
+    VStack(alignment: .leading, spacing: 24) {
+        MacConversationTabsPreview(views: [
+            SessionViewMeta(agentId: "a1", agentType: "general-purpose", active: true),
+            SessionViewMeta(agentId: "a2", agentType: "general-purpose", active: true),
+            SessionViewMeta(agentId: "a3", agentType: "Explore", active: false),
+            SessionViewMeta(agentId: "a4", agentType: "code-reviewer", active: false),
+        ])
+        MacConversationTabsPreview(views: [])
+    }
+    .padding()
+}
+#endif
 
 #if DEBUG
 #Preview("Subagent conversations") {

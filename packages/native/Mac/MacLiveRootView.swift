@@ -1182,6 +1182,14 @@ private struct MacSessionList: View {
 
     private func sessionRow(_ session: RemiSessionSummary) -> some View {
         MacSessionListRow(session: session, onResume: { onResume(session) })
+            // Indented behind a thin rule, so the sessions belong to the project above them.
+            .padding(.leading, RemiTheme.Spacing.s)
+            .background(alignment: .leading) {
+                Rectangle()
+                    .fill(.quaternary)
+                    .frame(width: 2)
+                    .padding(.vertical, 2)
+            }
             .tag(session.id)
             .contextMenu {
                 if session.canResume {
@@ -1388,7 +1396,11 @@ private struct MacWorkspaceGroupLabel: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.vertical, RemiTheme.Spacing.xxs)
+        // A soft tinted bar so a project reads as a heading over its sessions, not another row.
+        .padding(.horizontal, RemiTheme.Spacing.xs)
+        .padding(.vertical, RemiTheme.Spacing.xs)
+        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.top, RemiTheme.Spacing.xs)
         .help(workspace.projectPath)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
