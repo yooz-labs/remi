@@ -1144,7 +1144,7 @@ private struct MacSessionList: View {
                 sessionRow(session)
             }
         } label: {
-            MacWorkspaceGroupLabel(workspace: workspace)
+            MacWorkspaceGroupLabel(workspace: workspace, isExpanded: workspaceExpansionBinding(workspace).wrappedValue)
                 .contentShape(.rect)
                 // The chevron expands; the name opens the workspace's latest session (the most
                 // urgent, then the most recent) and shows it in the list.
@@ -1343,6 +1343,7 @@ private struct MacSessionWorkspace: Identifiable {
     var lastActivity: String? { sessions.compactMap(\.lastActivity).max() }
     var hasLiveSessions: Bool { sessions.contains(where: \.isLive) }
     var needsAttention: Bool { sessions.contains { $0.status == .needsYou } }
+    var hasWorkingSessions: Bool { sessions.contains { $0.status == .working } }
     var questionCount: Int { sessions.reduce(0) { $0 + $1.openQuestionCount } }
 }
 
@@ -1360,14 +1361,26 @@ private extension RemiSessionSummary {
 
 private struct MacWorkspaceGroupLabel: View {
     let workspace: MacSessionWorkspace
+    /// Whether the workspace's sessions are showing. When they are, each carries its own status.
+    let isExpanded: Bool
 
     var body: some View {
         HStack(spacing: RemiTheme.Spacing.xs) {
-            Label(workspace.project, systemImage: "folder")
-                .font(.body.weight(.medium))
-                .lineLimit(1)
+            Label {
+                Text(workspace.project)
+            } icon: {
+                // Neutral, so the list's color is the status, not a row of blue folders.
+                Image(systemName: "folder").foregroundStyle(.secondary)
+            }
+            .font(.body.weight(.medium))
+            .lineLimit(1)
 
             Spacer(minLength: RemiTheme.Spacing.xs)
+
+            // A collapsed workspace still shows that something in it is running.
+            if !isExpanded, workspace.hasWorkingSessions, workspace.questionCount == 0 {
+                RemiStatusBadge(status: .working)
+            }
 
             if workspace.questionCount > 0 {
                 Label("\(workspace.questionCount)", systemImage: "questionmark.bubble.fill")
