@@ -31,6 +31,10 @@ test('largest canonical carrier framing fits actual4096 APNs JSON without unsign
   expect(body.aps.category).toBe('');
   // The generic fallback is audible: only the extension knows the card is worth a sound.
   expect(body.aps.sound).toBe('default');
+  // Nothing that depends on the sealed event kind is set here: the extension chooses it on the device.
+  expect(body.aps).not.toHaveProperty('interruption-level');
+  expect(body.aps).not.toHaveProperty('thread-id');
+  expect(body.aps).not.toHaveProperty('relevance-score');
   expect(body.remiPush.sealed).toBe(maximum.sealed);
   expect(body).not.toHaveProperty('opt_0');
 });
