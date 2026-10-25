@@ -178,6 +178,21 @@ struct PhoneDrawerView: View {
         )
     }
 
+    /// The project's other sessions on the same machine, most recent first, for the row's
+    /// long-press menu. From every session, not the filtered list, so a search does not hide them.
+    private func otherSessions(in session: RemiSessionSummary) -> [RemiSessionSummary] {
+        sessions
+            .filter {
+                $0.machineID == session.machineID && $0.projectPath == session.projectPath
+                    && $0.key != session.key
+            }
+            .sorted { ($0.lastActivity ?? "") > ($1.lastActivity ?? "") }
+            .prefix(Self.otherSessionsShown)
+            .map { $0 }
+    }
+
+    private static let otherSessionsShown = 8
+
     private var filteredKey: String? {
         if case .machine(let key) = filter { return key }
         return nil
@@ -397,6 +412,8 @@ struct PhoneDrawerView: View {
                     machineLabel: context.labels[session.machineID],
                     canRunOnMachine: context.connected.contains(session.machineID),
                     action: { if !blocksTaps { onSelectSession(session) } },
+                    otherSessions: otherSessions(in: session),
+                    onSelectOther: { other in if !blocksTaps { onSelectSession(other) } },
                     onResume: { onResumeSession(session.machineID, session.id) },
                     onNewSessionHere: { onNewSessionHere(session.machineID, session.projectPath) }
                 )
@@ -442,6 +459,9 @@ private struct PhoneDrawerSessionRow: View {
     /// True when the session's machine is connected, so Resume and New session here can work.
     let canRunOnMachine: Bool
     let action: () -> Void
+    /// The project's other sessions, offered under a long press.
+    let otherSessions: [RemiSessionSummary]
+    let onSelectOther: (RemiSessionSummary) -> Void
     let onResume: () -> Void
     let onNewSessionHere: () -> Void
 
@@ -479,6 +499,20 @@ private struct PhoneDrawerSessionRow: View {
         }
         if canRunOnMachine {
             Button("New session here", systemImage: "plus.rectangle.on.folder", action: onNewSessionHere)
+        }
+        if !otherSessions.isEmpty {
+            Menu("Other sessions in \(session.project)", systemImage: "clock.arrow.circlepath") {
+                ForEach(otherSessions, id: \.key) { other in
+                    let row = PhoneDrawerSessionPresentation(
+                        session: other, isLastKnown: isLastKnown, machineLabel: machineLabel)
+                    Button {
+                        onSelectOther(other)
+                    } label: {
+                        Text(row.title)
+                        Text(row.subtitle)
+                    }
+                }
+            }
         }
         Button("Copy directory", systemImage: "doc.on.doc") {
             Self.copyLocally(session.projectPath)
@@ -521,6 +555,17 @@ private struct PhoneDrawerSessionRow: View {
     private var indicator: some View {
         if session.openQuestionCount > 0 {
             PhoneDrawerCountBadge(count: session.openQuestionCount)
+        } else if session.status == .working {
+            // The same green as the Mac's Working badge. The badge at ordinary sizes; at the
+            // largest text sizes a dot, which does not crowd the title.
+            if dynamicTypeSize.isAccessibilitySize {
+                Circle()
+                    .fill(RemiTheme.Color.activityDot)
+                    .frame(width: statusDotSize, height: statusDotSize)
+                    .accessibilityHidden(true)
+            } else {
+                RemiStatusBadge(status: .working)
+            }
         } else {
             Circle()
                 .fill(Color.secondary.opacity(session.isLive ? 0.7 : 0.3))

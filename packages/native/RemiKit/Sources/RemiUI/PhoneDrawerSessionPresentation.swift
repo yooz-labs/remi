@@ -41,6 +41,7 @@ public struct PhoneDrawerSessionPresentation: Equatable, Sendable {
             let count = session.openQuestionCount
             label += count == 1 ? ", 1 question waiting" : ", \(count) questions waiting"
         }
+        if session.status == .working { label += ", working" }
         if let activity {
             label += ", last active " + Self.relative(activity, to: now, style: .full, locale: locale)
         }
