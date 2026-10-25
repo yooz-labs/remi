@@ -23,7 +23,7 @@ struct PhoneLiveRootView: View {
     /// beside its row and is not clipped by the sidebar column.
     @State private var workspaceMenu: PhoneWorkspaceMenu?
     /// An action chosen in the detail pane's bar that Home runs, because Home owns its sheets.
-    @State private var homeActionRequest: PhoneHomeAction?
+    @State private var homeActionRequest: PhoneHomeActionRequest?
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     /// In a wide window the detail pane's bar is the one the system puts on the side of the
@@ -34,6 +34,13 @@ struct PhoneLiveRootView: View {
     var body: some View {
         navigationLayout
         .overlay { PhoneWorkspaceMenuOverlay(menu: $workspaceMenu, besideRow: actionsInDetail) }
+        // A fold, rotation or resize moves the rows the menu was placed from.
+        .onChange(of: horizontalSizeClass) { _, _ in workspaceMenu = nil }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in workspaceMenu = nil }
+        // In a compact window, going back from a session leaves nothing selected.
+        .onChange(of: compactColumn) { _, column in
+            if column == .sidebar, !actionsInDetail { selectedDestination = nil }
+        }
         .onChange(of: store.persistableEndpoints) { _, endpoints in
             MachineConfigurationStore.shared.save(endpoints)
             relayNotifications.reconcileEndpoints()
@@ -156,7 +163,9 @@ struct PhoneLiveRootView: View {
                             }
                         }
                         .verticalBarPreferred()
-                        PhoneHomeToolbar(canCreateSession: canCreateSession) { homeActionRequest = $0 }
+                        PhoneHomeToolbar(canCreateSession: canCreateSession) {
+                            homeActionRequest = PhoneHomeActionRequest(action: $0)
+                        }
                     }
                 }
         }

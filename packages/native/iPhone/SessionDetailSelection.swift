@@ -15,5 +15,5 @@ extension EnvironmentValues {
     @Entry var hasDetailPane = false
 
     /// Set by the root to ask Home to run an action from the detail pane's bar.
-    @Entry var homeActionRequest: Binding<PhoneHomeAction?>?
+    @Entry var homeActionRequest: Binding<PhoneHomeActionRequest?>?
 }

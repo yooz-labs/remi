@@ -194,10 +194,10 @@ struct HomeScreen: View {
             }
         }
         .toolbar(removing: hasDetailPane ? .sidebarToggle : nil)
-        .onChange(of: homeActionRequest?.wrappedValue) { _, request in
-            guard let request else { return }
+        .onChange(of: homeActionRequest?.wrappedValue?.id) { _, id in
+            guard id != nil, let request = homeActionRequest?.wrappedValue else { return }
             homeActionRequest?.wrappedValue = nil
-            perform(request)
+            perform(request.action)
         }
         .sheet(isPresented: $showingNewSession, onDismiss: clearNewSessionContext) {
             PhoneNewSessionSheet(
@@ -685,6 +685,11 @@ private struct SessionsSection: View {
                 .accessibilityHint(showsRecent ? "Hides finished workspaces" : "Shows finished workspaces")
             }
         }
+        // The menu is drawn from a snapshot; close it when what it lists changes.
+        .onChange(of: openMenuSignature) { old, new in
+            guard old != nil, new != old else { return }
+            workspaceMenu?.wrappedValue = nil
+        }
         .sheet(item: $focusedWorkspace) { focus in
             if let workspace = workspaces.first(where: { $0.id == focus.id }) {
                 PhoneWorkspaceSessionsSheet(
@@ -731,6 +736,15 @@ private struct SessionsSection: View {
         )
     }
 
+    /// What the open menu shows: the workspace's sessions without their ticking activity time, and
+    /// which one is open. nil when no menu is open or its workspace is gone.
+    private var openMenuSignature: [PhoneMenuRowKey]? {
+        guard let id = workspaceMenu?.wrappedValue?.id,
+              let workspace = workspaces.first(where: { $0.id == id })
+        else { return nil }
+        return workspace.sessions.map { PhoneMenuRowKey(session: $0, isSelected: $0.id == selectedSessionID) }
+    }
+
     private func workspaceEntry(_ workspace: PhoneSessionWorkspace) -> some View {
         PhoneWorkspaceRow(workspace: workspace) { showMenu(for: workspace) }
             // A tap opens the workspace's latest session; press and hold, or the trailing
@@ -740,8 +754,10 @@ private struct SessionsSection: View {
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
                 rowFrames.frames[workspace.id] = frame
             }
+            .onDisappear { rowFrames.frames[workspace.id] = nil }
             .sensoryFeedback(.impact(weight: .light), trigger: menuTrigger)
             .accessibilityAddTraits(.isButton)
+            .accessibilityAction { openLatest(in: workspace) }
             .accessibilityAction(named: "Show sessions") { showMenu(for: workspace) }
     }
 
@@ -800,6 +816,28 @@ private struct SessionsSection: View {
 
     private func recentWorkspaceLabel(_ count: Int) -> String {
         count == 1 ? "1 recent workspace" : "\(count) recent workspaces"
+    }
+}
+
+/// A session as the workspace menu shows it. Leaves out the activity time, which changes every
+/// few seconds and would close the menu for nothing.
+private struct PhoneMenuRowKey: Equatable {
+    let id: String
+    let name: String
+    let status: RemiSessionStatus
+    let isLive: Bool
+    let canResume: Bool
+    let isResuming: Bool
+    let isSelected: Bool
+
+    init(session: RemiSessionSummary, isSelected: Bool) {
+        id = session.id
+        name = session.name
+        status = session.status
+        isLive = session.isLive
+        canResume = session.canResume
+        isResuming = session.isResuming
+        self.isSelected = isSelected
     }
 }
 
@@ -936,7 +974,7 @@ private struct PhoneWorkspaceRow: View {
         }
         .padding(.vertical, RemiTheme.Spacing.xs)
         .contentShape(.rect)
-        .accessibilityElement(children: .contain)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityHint("Opens the latest session")
     }

@@ -50,40 +50,57 @@ struct PhoneWorkspaceMenuOverlay: View {
     @Binding var menu: PhoneWorkspaceMenu?
     /// True when a detail pane sits beside Home, which is where the menu opens.
     let besideRow: Bool
-    @State private var size: CGSize = .zero
+    /// The size of the menu being shown, kept with its id so a new menu is hidden until measured.
+    @State private var measured: Measured?
+
+    private struct Measured: Equatable {
+        let id: String
+        let size: CGSize
+    }
 
     var body: some View {
+        // Inside the safe area, so the menu stays clear of the status bar and the home indicator.
         GeometryReader { proxy in
-            if let menu {
-                let origin = proxy.frame(in: .global).origin
-                let anchor = menu.anchor.offsetBy(dx: -origin.x, dy: -origin.y)
-                ZStack(alignment: .topLeading) {
-                    Color.clear
-                        .contentShape(.rect)
-                        .onTapGesture { dismiss() }
-                        .accessibilityHidden(true)
+            ZStack(alignment: .topLeading) {
+                if let menu {
+                    let origin = proxy.frame(in: .global).origin
+                    let anchor = menu.anchor.offsetBy(dx: -origin.x, dy: -origin.y)
+                    let size = measured?.id == menu.id ? measured?.size ?? .zero : .zero
 
                     CappedHeight(max: maxHeight(anchor: anchor, bounds: proxy.size)) {
                         menu.content
                     }
-                        .frame(width: min(Self.width, proxy.size.width - 2 * Self.margin))
-                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 24))
-                        .shadow(color: .black.opacity(0.18), radius: 24, y: 8)
-                        .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
-                        .offset(position(anchor: anchor, bounds: proxy.size))
-                        // Hidden until measured, so it does not flash at the corner.
-                        .opacity(size == .zero ? 0 : 1)
-                        .transition(.scale(scale: 0.96, anchor: .leading).combined(with: .opacity))
+                    .frame(width: min(Self.width, proxy.size.width - 2 * Self.margin))
+                    .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 24))
+                    .shadow(color: .black.opacity(0.18), radius: 24, y: 8)
+                    .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+                        measured = Measured(id: menu.id, size: size)
+                    }
+                    .offset(position(anchor: anchor, bounds: proxy.size, size: size))
+                    // Hidden until measured, so it does not flash at the corner.
+                    .opacity(size == .zero ? 0 : 1)
+                    .transition(.scale(scale: 0.96, anchor: .leading).combined(with: .opacity))
+                    .accessibilityAddTraits(.isModal)
+                    .accessibilityAction(.escape) { dismiss() }
                 }
-                .accessibilityAction(.escape) { dismiss() }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            // The whole screen, status bar included, closes the menu when tapped.
+            .background {
+                if menu != nil {
+                    Color.clear
+                        .ignoresSafeArea()
+                        .contentShape(.rect)
+                        .onTapGesture { dismiss() }
+                        .accessibilityHidden(true)
+                }
             }
         }
-        .ignoresSafeArea()
         .allowsHitTesting(menu != nil)
-        .onChange(of: menu?.id) { _, _ in size = .zero }
     }
 
     private func dismiss() {
+        guard menu != nil else { return }
         withAnimation(.snappy) { menu = nil }
     }
 
@@ -111,7 +128,7 @@ struct PhoneWorkspaceMenuOverlay: View {
         return below >= room(above: anchor) || below >= 280
     }
 
-    private func position(anchor: CGRect, bounds: CGSize) -> CGSize {
+    private func position(anchor: CGRect, bounds: CGSize, size: CGSize) -> CGSize {
         let margin = Self.margin
         let maxX = max(margin, bounds.width - size.width - margin)
         let maxY = max(margin, bounds.height - size.height - margin)

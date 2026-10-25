@@ -9,6 +9,13 @@ enum PhoneHomeAction: Equatable {
     case preferences
 }
 
+/// A request for Home to run an action. Each request has its own id, so asking for the same action
+/// twice is two changes, and Home sees both.
+struct PhoneHomeActionRequest: Equatable {
+    let id = UUID()
+    let action: PhoneHomeAction
+}
+
 /// The actions at the top of Home. In a wide window they sit in the detail pane's bar, which the
 /// system presents on the side of the display, under the right hand; in a compact window they
 /// stay in Home's own bar.
