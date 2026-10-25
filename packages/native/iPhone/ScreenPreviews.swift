@@ -73,6 +73,7 @@ private struct SplitPreview: View {
                 machines: RemiPreviewData.machines
             )
             .navigationSplitViewColumnWidth(min: 320, ideal: 380, max: 460)
+            .environment(\.openSessionInDetail, { _ in })
         } detail: {
             SessionScreen(
                 session: RemiPreviewData.primarySession,

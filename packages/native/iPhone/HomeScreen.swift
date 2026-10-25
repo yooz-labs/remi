@@ -951,6 +951,7 @@ private struct PhoneWorkspaceSessionsSheet: View {
     let onNewSessionHere: (String, String) -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openSessionInDetail) private var openSessionInDetail
+    @Environment(\.selectedSessionID) private var selectedSessionID
     @State private var searchText = ""
 
     var body: some View {
@@ -1026,13 +1027,18 @@ private struct PhoneWorkspaceSessionsSheet: View {
             }
             .contextMenu { copySessionIDButton(session.id) }
         } else if let openSessionInDetail {
+            let isSelected = session.id == selectedSessionID
             Button {
                 openSessionInDetail(session)
                 dismiss()
             } label: {
                 RemiSessionRow(session: session)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(.rect)
             }
             .buttonStyle(.plain)
+            .listRowBackground(isSelected ? Color.primary.opacity(0.09) : nil)
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
             .contextMenu { copySessionIDButton(session.id) }
         } else {
             NavigationLink {

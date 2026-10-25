@@ -10,30 +10,17 @@ struct PhoneLiveRootView: View {
     @State private var questionFeedbackTrigger = 0
     @State private var answerFeedbackTrigger = 0
     @State private var notificationRouter = PhoneNotificationRouter.shared
-    @State private var notificationPath: [RemiNavigationDestination] = []
     @State private var pendingResume: ResumeSessionKey?
     @State private var relayNotifications = NativeRelayNotifications.shared
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    /// The session shown in the detail pane when the layout is a split view.
+    /// The session shown in the detail pane. In a compact window the split view collapses into a
+    /// stack, so this is also the session pushed on top of Home.
     @State private var selectedDestination: RemiNavigationDestination?
-
-    /// A wide window, such as the open inner display of iPhone Duo, shows the session list and a
-    /// session side by side. A compact one keeps the single navigation stack.
-    private var usesSplitLayout: Bool { horizontalSizeClass == .regular }
+    /// Which column a collapsed (compact) split view shows. Ignored when both columns are visible.
+    @State private var compactColumn: NavigationSplitViewColumn = .sidebar
 
     var body: some View {
         navigationLayout
-        .onChange(of: horizontalSizeClass) { _, _ in
-            // The two layouts keep their selection in different places; carry it across.
-            if usesSplitLayout {
-                selectedDestination = notificationPath.last
-                notificationPath = []
-            } else if let selectedDestination {
-                notificationPath = [selectedDestination]
-                self.selectedDestination = nil
-            }
-        }
         .onChange(of: store.persistableEndpoints) { _, endpoints in
             MachineConfigurationStore.shared.save(endpoints)
             relayNotifications.reconcileEndpoints()
@@ -129,32 +116,17 @@ struct PhoneLiveRootView: View {
         )
     }
 
-    @ViewBuilder
+    /// Session list on the leading side, the selected session on the trailing side. In a wide
+    /// window, such as the open inner display of iPhone Duo, the system keeps the sidebar bar
+    /// horizontal and presents the detail pane's bar on the side of the display, which puts the
+    /// session controls under the right hand. In a compact window the same view collapses into a
+    /// stack, so a rotation or a fold never rebuilds the screen and loses a draft or a sheet.
     private var navigationLayout: some View {
-        if usesSplitLayout {
-            splitLayout
-        } else {
-            stackLayout
-        }
-    }
-
-    private var stackLayout: some View {
-        NavigationStack(path: $notificationPath) {
-            homeScreen
-                .navigationDestination(for: RemiNavigationDestination.self) { destination in
-                    notificationDestination(destination)
-                }
-        }
-    }
-
-    /// Session list on the leading side, the selected session on the trailing side. The system
-    /// keeps the sidebar bar horizontal and presents the detail pane's bar on the side of the
-    /// display on iPhone Duo, which puts the session controls under the right hand.
-    private var splitLayout: some View {
-        NavigationSplitView {
+        NavigationSplitView(preferredCompactColumn: $compactColumn) {
             homeScreen
                 .navigationSplitViewColumnWidth(min: 320, ideal: 380, max: 460)
                 .environment(\.openSessionInDetail, openSessionInDetail)
+                .environment(\.selectedSessionID, selectedDestination?.sessionID)
         } detail: {
             if let selectedDestination {
                 notificationDestination(selectedDestination)
@@ -170,16 +142,13 @@ struct PhoneLiveRootView: View {
     }
 
     private func openSessionInDetail(_ session: RemiSessionSummary) {
-        selectedDestination = RemiNavigationDestination(machineID: session.machineID, sessionID: session.id)
+        present(RemiNavigationDestination(machineID: session.machineID, sessionID: session.id))
     }
 
-    /// Shows a session in whichever layout is active: the detail pane or the top of the stack.
+    /// Shows a session in the detail pane, or on top of Home when the window is compact.
     private func present(_ destination: RemiNavigationDestination) {
-        if usesSplitLayout {
-            selectedDestination = destination
-        } else {
-            notificationPath = [destination]
-        }
+        selectedDestination = destination
+        compactColumn = .detail
     }
 
     private func dismissNotice() {
