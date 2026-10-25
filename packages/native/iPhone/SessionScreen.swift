@@ -164,11 +164,13 @@ struct SessionScreen: View {
                     searchButton
                 }
                 .visibilityPriority(.high)
+                .verticalBarPreferred()
                 if session.canTerminate {
                     ToolbarItem(placement: .topBarTrailing) {
                         sessionActions
                     }
                     .visibilityPriority(.low)
+                    .verticalBarPreferred()
                 }
             } else {
                 ToolbarItem(placement: .topBarTrailing) {

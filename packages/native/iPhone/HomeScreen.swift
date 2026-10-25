@@ -210,6 +210,7 @@ struct HomeScreen: View {
                         }
                     }
                 }
+                .verticalBarPreferred()
             } else {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
