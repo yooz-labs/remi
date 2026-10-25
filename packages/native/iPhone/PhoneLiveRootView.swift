@@ -162,6 +162,7 @@ struct PhoneLiveRootView: View {
                 drawerContent(sessions: sessions, machines: machines)
                     .phoneSidebarEnvironment(chrome)
                     .toolbar(.hidden, for: .navigationBar)
+                    .background(RemiTheme.Color.sidebarTint)
                     .navigationSplitViewColumnWidth(RemiTheme.Size.sidebarWidth)
             } detail: {
                 shellContent(sessions: sessions, machines: machines)
