@@ -2018,7 +2018,6 @@ private var workspacePreviewMachine: MachineState {
     )
     .frame(width: 620, height: 720)
     .environment(\.dynamicTypeSize, .accessibility5)
-    .environment(\.accessibilityReduceTransparency, true)
 }
 
 private var workspacePreviewSessions: [RemiSessionSummary] {
@@ -2052,6 +2051,7 @@ private var workspacePreviewSessions: [RemiSessionSummary] {
     ]
 }
 
+@MainActor
 private var rejectedRelayMachineDraft: AddMachineDraft {
     struct Rejected: Error {}
     let draft = AddMachineDraft { _ in throw Rejected() }
