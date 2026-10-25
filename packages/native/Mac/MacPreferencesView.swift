@@ -150,7 +150,7 @@ struct MacPreferencesView: View {
                         onDismiss: store.clearLatestError
                     )
                 } else if let message = relayNotifications.notice ?? store.relayNotificationNotice {
-                    PreferencesFeedback(message: message, systemImage: "info.circle.fill", tint: .blue) {
+                    PreferencesFeedback(message: message, systemImage: "info.circle.fill", tint: .teal) {
                         relayNotifications.clearNotice()
                         store.clearRelayNotificationNotice()
                     }
@@ -461,7 +461,7 @@ struct MacPreferencesView: View {
     private func statusTint(_ status: MachineConnectionStatus) -> Color {
         switch status {
         case .connected: .green
-        case .connecting: .blue
+        case .connecting: .teal
         case .waitingForApproval, .waitingForRelayConfirmation: .orange
         case .disconnected, .unavailable: .secondary
         }
@@ -590,7 +590,7 @@ private struct MachinePreferencesRow: View {
     private var statusTint: Color {
         switch machine.status {
         case .connected: .green
-        case .connecting: .blue
+        case .connecting: .teal
         case .waitingForApproval, .waitingForRelayConfirmation: .orange
         case .disconnected, .unavailable: .secondary
         }
