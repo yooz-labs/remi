@@ -63,6 +63,28 @@ private struct SessionPreview: View {
     }
 }
 
+/// The wide layout of `PhoneLiveRootView`: the session list beside the selected session.
+private struct SplitPreview: View {
+    var body: some View {
+        NavigationSplitView {
+            HomeScreen(
+                questions: RemiPreviewData.questionStates,
+                sessions: RemiPreviewData.sessions,
+                machines: RemiPreviewData.machines
+            )
+            .navigationSplitViewColumnWidth(min: 320, ideal: 380, max: 460)
+        } detail: {
+            SessionScreen(
+                session: RemiPreviewData.primarySession,
+                transcript: RemiPreviewData.transcript,
+                questions: [RemiPreviewData.binaryQuestion],
+                views: [],
+                transcriptForView: { _ in RemiPreviewData.transcript }
+            )
+        }
+    }
+}
+
 private struct PairingPreview: View {
     var draft = AddMachineDraft()
 
@@ -97,6 +119,7 @@ private struct EmptyHomePreview: View {
 #Preview("Home · Dark") { HomePreview(questions: [RemiPreviewData.binaryQuestion], sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines).preferredColorScheme(.dark) }
 #Preview("Home · Accessibility") { HomePreview(questions: [RemiPreviewData.binaryQuestion], sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines).environment(\.dynamicTypeSize, .accessibility5) }
 #Preview("Home · Compact") { HomePreview(questions: RemiPreviewData.questionStates, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines).frame(width: 320) }
+#Preview("Split · Duo inner display", traits: .fixedLayout(width: 952, height: 668)) { SplitPreview() }
 #Preview("Home · Stored session") { HomePreview(questions: [], sessions: Array(RemiPreviewData.sessions.suffix(1)), machines: Array(RemiPreviewData.machines.prefix(1))).preferredColorScheme(.light) }
 #Preview("Home · Attention queue") { HomePreview(questions: RemiPreviewData.questionStates, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines).preferredColorScheme(.light) }
 #Preview("Home · Direct Recovery") {

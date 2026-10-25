@@ -14,42 +14,24 @@ struct PhoneLiveRootView: View {
     @State private var pendingResume: ResumeSessionKey?
     @State private var relayNotifications = NativeRelayNotifications.shared
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// The session shown in the detail pane when the layout is a split view.
+    @State private var selectedDestination: RemiNavigationDestination?
+
+    /// A wide window, such as the open inner display of iPhone Duo, shows the session list and a
+    /// session side by side. A compact one keeps the single navigation stack.
+    private var usesSplitLayout: Bool { horizontalSizeClass == .regular }
 
     var body: some View {
-        NavigationStack(path: $notificationPath) {
-            HomeScreen(
-                questions: allQuestions,
-                sessions: allSessions,
-                machines: machineSummaries,
-                sessionMachines: store.machines,
-                recentRepositories: store.recentRepositoriesByMachine,
-                publicIdentity: store.publicIdentity,
-                selectedMachineID: $selectedMachineID,
-                errorMessage: store.latestOperationError ?? store.latestError?.message,
-                noticeMessage: store.latestOperationNotice ?? relayNotifications.notice ?? store.relayNotificationNotice,
-                transcriptForSession: transcript,
-                questionsForSession: questions,
-                viewsForSession: { store.sessionViewsBySession[$0] ?? [] },
-                viewsLoadedForSession: { store.sessionViewsBySession[$0] != nil },
-                onAnswer: answer,
-                onSubmit: submit,
-                onCancel: cancel,
-                onOpenSession: openSession,
-                onSend: sendChat,
-                onTerminateSession: store.terminateSession,
-                onResumeSession: resumeSession,
-                onCreateSession: createSession,
-                onAddMachine: addMachine,
-                onRemoveMachine: removeMachine,
-                onRetryApproval: store.retryApproval,
-                onRetryConnection: store.retryConnection,
-                onEnableRelayNotifications: relayNotifications.enable,
-                enablingRelayNotifications: relayNotifications.enabling,
-                onDismissError: store.clearLatestError,
-                onDismissNotice: dismissNotice
-            )
-            .navigationDestination(for: RemiNavigationDestination.self) { destination in
-                notificationDestination(destination)
+        navigationLayout
+        .onChange(of: horizontalSizeClass) { _, _ in
+            // The two layouts keep their selection in different places; carry it across.
+            if usesSplitLayout {
+                selectedDestination = notificationPath.last
+                notificationPath = []
+            } else if let selectedDestination {
+                notificationPath = [selectedDestination]
+                self.selectedDestination = nil
             }
         }
         .onChange(of: store.persistableEndpoints) { _, endpoints in
@@ -105,11 +87,98 @@ struct PhoneLiveRootView: View {
             else { return }
             pendingResume = nil
             selectedMachineID = destination.machineID
-            notificationPath = [RemiNavigationDestination(
+            present(RemiNavigationDestination(
                 machineID: destination.machineID,
                 sessionID: destination.sessionID
-            )]
+            ))
             store.consumeResumedSessionDestination(id: destination.id)
+        }
+    }
+
+    private var homeScreen: some View {
+        HomeScreen(
+            questions: allQuestions,
+            sessions: allSessions,
+            machines: machineSummaries,
+            sessionMachines: store.machines,
+            recentRepositories: store.recentRepositoriesByMachine,
+            publicIdentity: store.publicIdentity,
+            selectedMachineID: $selectedMachineID,
+            errorMessage: store.latestOperationError ?? store.latestError?.message,
+            noticeMessage: store.latestOperationNotice ?? relayNotifications.notice ?? store.relayNotificationNotice,
+            transcriptForSession: transcript,
+            questionsForSession: questions,
+            viewsForSession: { store.sessionViewsBySession[$0] ?? [] },
+            viewsLoadedForSession: { store.sessionViewsBySession[$0] != nil },
+            onAnswer: answer,
+            onSubmit: submit,
+            onCancel: cancel,
+            onOpenSession: openSession,
+            onSend: sendChat,
+            onTerminateSession: store.terminateSession,
+            onResumeSession: resumeSession,
+            onCreateSession: createSession,
+            onAddMachine: addMachine,
+            onRemoveMachine: removeMachine,
+            onRetryApproval: store.retryApproval,
+            onRetryConnection: store.retryConnection,
+            onEnableRelayNotifications: relayNotifications.enable,
+            enablingRelayNotifications: relayNotifications.enabling,
+            onDismissError: store.clearLatestError,
+            onDismissNotice: dismissNotice
+        )
+    }
+
+    @ViewBuilder
+    private var navigationLayout: some View {
+        if usesSplitLayout {
+            splitLayout
+        } else {
+            stackLayout
+        }
+    }
+
+    private var stackLayout: some View {
+        NavigationStack(path: $notificationPath) {
+            homeScreen
+                .navigationDestination(for: RemiNavigationDestination.self) { destination in
+                    notificationDestination(destination)
+                }
+        }
+    }
+
+    /// Session list on the leading side, the selected session on the trailing side. The system
+    /// keeps the sidebar bar horizontal and presents the detail pane's bar on the side of the
+    /// display on iPhone Duo, which puts the session controls under the right hand.
+    private var splitLayout: some View {
+        NavigationSplitView {
+            homeScreen
+                .navigationSplitViewColumnWidth(min: 320, ideal: 380, max: 460)
+                .environment(\.openSessionInDetail, openSessionInDetail)
+        } detail: {
+            if let selectedDestination {
+                notificationDestination(selectedDestination)
+                    .id(selectedDestination)
+            } else {
+                ContentUnavailableView(
+                    "Select a session",
+                    systemImage: "rectangle.stack",
+                    description: Text("Choose a workspace, then a session, to read and answer it here.")
+                )
+            }
+        }
+    }
+
+    private func openSessionInDetail(_ session: RemiSessionSummary) {
+        selectedDestination = RemiNavigationDestination(machineID: session.machineID, sessionID: session.id)
+    }
+
+    /// Shows a session in whichever layout is active: the detail pane or the top of the stack.
+    private func present(_ destination: RemiNavigationDestination) {
+        if usesSplitLayout {
+            selectedDestination = destination
+        } else {
+            notificationPath = [destination]
         }
     }
 
@@ -442,7 +511,7 @@ struct PhoneLiveRootView: View {
         guard let destination = notificationRouter.destination else { return }
         pendingResume = nil
         selectedMachineID = destination.machineID
-        notificationPath = [destination]
+        present(destination)
         notificationRouter.destination = nil
     }
 

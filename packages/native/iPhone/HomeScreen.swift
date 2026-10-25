@@ -950,6 +950,7 @@ private struct PhoneWorkspaceSessionsSheet: View {
     let onResumeSession: (String, String) -> Void
     let onNewSessionHere: (String, String) -> Void
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openSessionInDetail) private var openSessionInDetail
     @State private var searchText = ""
 
     var body: some View {
@@ -1018,9 +1019,20 @@ private struct PhoneWorkspaceSessionsSheet: View {
         if session.canResume {
             PhoneStoredSessionRow(session: session, onResume: {
                 onResumeSession(session.machineID, session.id)
+            }, onOpen: openSessionInDetail.map { open in
+                { open(session); dismiss() }
             }) {
                 sessionDestination(session)
             }
+            .contextMenu { copySessionIDButton(session.id) }
+        } else if let openSessionInDetail {
+            Button {
+                openSessionInDetail(session)
+                dismiss()
+            } label: {
+                RemiSessionRow(session: session)
+            }
+            .buttonStyle(.plain)
             .contextMenu { copySessionIDButton(session.id) }
         } else {
             NavigationLink {
@@ -1086,6 +1098,8 @@ private struct PhoneStoredSessionRow<Destination: View>: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let session: RemiSessionSummary
     let onResume: () -> Void
+    /// Set by the split layout: show the session in the detail pane instead of pushing it.
+    let onOpen: (() -> Void)?
     @ViewBuilder let destination: () -> Destination
 
     var body: some View {
@@ -1094,12 +1108,22 @@ private struct PhoneStoredSessionRow<Destination: View>: View {
             : AnyLayout(HStackLayout(alignment: .center, spacing: RemiTheme.Spacing.s))
 
         layout {
-            NavigationLink(destination: destination) {
-                RemiSessionRow(session: session)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .layoutPriority(1)
+            if let onOpen {
+                Button(action: onOpen) {
+                    RemiSessionRow(session: session)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .layoutPriority(1)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+            } else {
+                NavigationLink(destination: destination) {
+                    RemiSessionRow(session: session)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .layoutPriority(1)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
             Button(action: onResume) {
                 if session.isResuming {
