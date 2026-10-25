@@ -1025,7 +1025,6 @@ private struct MacSessionList: View {
     let onTerminate: (RemiSessionSummary) -> Void
     @State private var searchText = ""
     @State private var scope = RemiSessionScope.all
-    @State private var showsRecent = false
     @State private var expandedWorkspaces: Set<String> = []
     @State private var workspacesSeenNeedingYou: Set<String> = []
     @State private var pendingTermination: RemiSessionSummary?
@@ -1041,17 +1040,12 @@ private struct MacSessionList: View {
             }
 
             if !recentWorkspaces.isEmpty {
+                // Every recent workspace, collapsed. The rows in the list do not depend on what is
+                // selected: adding or removing a workspace when the selection moved left the
+                // outline list drawing the open session over the wrong row.
                 Section("Recent") {
-                    ForEach(shownRecentWorkspaces) { workspace in
+                    ForEach(recentWorkspaces) { workspace in
                         workspaceGroup(workspace)
-                    }
-                    if searchText.isEmpty, recentWorkspaces.count > Self.recentLimit {
-                        Button(showsRecent ? "Show fewer" : "Show all \(recentWorkspaces.count)") {
-                            showsRecent.toggle()
-                        }
-                        .buttonStyle(.plain)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -1083,7 +1077,6 @@ private struct MacSessionList: View {
         .onChange(of: machineID) { _, _ in
             searchText = ""
             scope = .all
-            showsRecent = false
             expandedWorkspaces.removeAll()
             workspacesSeenNeedingYou.removeAll()
             expandSelectedWorkspace()
@@ -1143,18 +1136,6 @@ private struct MacSessionList: View {
 
     private var recentWorkspaces: [MacSessionWorkspace] {
         workspaces.filter { !$0.hasLiveSessions }
-    }
-
-    /// Recent workspaces shown before "Show all". One that holds the open session or needs the
-    /// person always shows, so the list never hides where the person is.
-    private static let recentLimit = 5
-
-    private var shownRecentWorkspaces: [MacSessionWorkspace] {
-        guard searchText.isEmpty, !showsRecent else { return recentWorkspaces }
-        return recentWorkspaces.enumerated().compactMap { index, workspace in
-            let pinned = workspace.needsAttention || workspace.sessions.contains { $0.id == selection }
-            return index < Self.recentLimit || pinned ? workspace : nil
-        }
     }
 
     private func workspaceGroup(_ workspace: MacSessionWorkspace) -> some View {
@@ -1217,7 +1198,14 @@ private struct MacSessionList: View {
 
     private func openLatest(in workspace: MacSessionWorkspace) {
         guard let latest = workspace.sessions.first else { return }
-        expandedWorkspaces.insert(workspace.id)
+        guard expandedWorkspaces.contains(workspace.id) else {
+            // Expand first and select on the next turn. Selecting a session in the same update
+            // that reveals it asked the outline list to highlight a row that did not exist yet,
+            // and it drew the highlight over the wrong row.
+            expandedWorkspaces.insert(workspace.id)
+            Task { @MainActor in selection = latest.id }
+            return
+        }
         selection = latest.id
     }
 
@@ -1253,7 +1241,7 @@ private struct MacSessionList: View {
 
     private func moveSelection(offsetBy offset: Int) {
         // The order on screen: active workspaces, then the recent ones that are shown.
-        let orderedIDs = (activeWorkspaces + shownRecentWorkspaces).flatMap { $0.sessions.map(\.id) }
+        let orderedIDs = (activeWorkspaces + recentWorkspaces).flatMap { $0.sessions.map(\.id) }
         // No match must never deselect: with nothing visible the selection stays.
         guard !orderedIDs.isEmpty else { return }
         selection = RemiOrderedSelection.shifted(
@@ -1396,10 +1384,8 @@ private struct MacWorkspaceGroupLabel: View {
                     .foregroundStyle(.secondary)
             }
         }
-        // A soft tinted bar so a project reads as a heading over its sessions, not another row.
-        .padding(.horizontal, RemiTheme.Spacing.xs)
+        // Space above, so a project reads as a heading over its sessions, not another row.
         .padding(.vertical, RemiTheme.Spacing.xs)
-        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
         .padding(.top, RemiTheme.Spacing.xs)
         .help(workspace.projectPath)
         .accessibilityElement(children: .combine)
