@@ -136,7 +136,7 @@ struct PhoneLiveRootView: View {
                 .navigationSplitViewColumnWidth(min: 320, ideal: 380, max: 460)
                 .environment(\.openSessionInDetail, openSessionInDetail)
                 .environment(\.selectedSessionID, selectedDestination?.sessionID)
-                .environment(\.homeActionsInDetail, actionsInDetail)
+                .environment(\.hasDetailPane, actionsInDetail)
                 .environment(\.homeActionRequest, $homeActionRequest)
         } detail: {
             detailContent

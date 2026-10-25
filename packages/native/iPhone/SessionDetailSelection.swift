@@ -9,8 +9,10 @@ extension EnvironmentValues {
     /// The session shown in the detail pane, so the lists can mark it as selected.
     @Entry var selectedSessionID: String?
 
-    /// True when the root shows Home's actions in the detail pane's bar, so Home leaves them out.
-    @Entry var homeActionsInDetail = false
+    /// True when a detail pane sits beside Home (a wide window). Home then leaves its actions to
+    /// the detail pane's bar, and opens its popovers to the right, over the detail pane. Read this
+    /// rather than the size class, which the sidebar column reports as compact.
+    @Entry var hasDetailPane = false
 
     /// Set by the root to ask Home to run an action from the detail pane's bar.
     @Entry var homeActionRequest: Binding<PhoneHomeAction?>?

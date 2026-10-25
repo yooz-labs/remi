@@ -4,7 +4,7 @@ import SwiftUI
 import UIKit
 
 struct HomeScreen: View {
-    @Environment(\.homeActionsInDetail) private var homeActionsInDetail
+    @Environment(\.hasDetailPane) private var hasDetailPane
     @Environment(\.homeActionRequest) private var homeActionRequest
     @State private var showingPairing = false
     @State private var showingNewSession = false
@@ -189,11 +189,11 @@ struct HomeScreen: View {
         .navigationTitle("Remi")
         .searchable(text: $searchText, prompt: "Search Remi activity")
         .toolbar {
-            if !homeActionsInDetail {
+            if !hasDetailPane {
                 PhoneHomeToolbar(canCreateSession: !availableSessionMachines.isEmpty, perform: perform)
             }
         }
-        .toolbar(removing: homeActionsInDetail ? .sidebarToggle : nil)
+        .toolbar(removing: hasDetailPane ? .sidebarToggle : nil)
         .onChange(of: homeActionRequest?.wrappedValue) { _, request in
             guard let request else { return }
             homeActionRequest?.wrappedValue = nil
@@ -648,7 +648,7 @@ private struct SessionsSection: View {
     let onNewSessionHere: (String, String) -> Void
     @Environment(\.openSessionInDetail) private var openSessionInDetail
     @Environment(\.selectedSessionID) private var selectedSessionID
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.hasDetailPane) private var hasDetailPane
     @State private var focusedWorkspace: PhoneWorkspaceFocus?
     @State private var menuWorkspaceID: String?
     @State private var showsRecent = false
@@ -770,7 +770,7 @@ private struct SessionsSection: View {
 
     /// Opens to the right of the row beside a detail pane, so the list stays in view; below the
     /// row when the window is compact and the row spans it.
-    private var popoverEdge: Edge { horizontalSizeClass == .regular ? .leading : .top }
+    private var popoverEdge: Edge { hasDetailPane ? .leading : .top }
 
     private func popoverBinding(for workspaceID: String) -> Binding<Bool> {
         Binding(
@@ -965,6 +965,15 @@ private struct PhoneWorkspaceSessionsPopover: View {
     let onResume: (RemiSessionSummary) -> Void
 
     var body: some View {
+        // The whole popover takes its natural height and scrolls only when the screen is too short.
+        ViewThatFits(in: .vertical) {
+            content
+            ScrollView { content }
+        }
+        .frame(width: 320)
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
             VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
                 Text(workspace.project).font(.headline)
@@ -974,11 +983,7 @@ private struct PhoneWorkspaceSessionsPopover: View {
             }
             .padding(.horizontal, RemiTheme.Spacing.xs)
 
-            // Rows take their natural height; they scroll only when they do not fit the screen.
-            ViewThatFits(in: .vertical) {
-                sessionRows
-                ScrollView { sessionRows }
-            }
+            sessionRows
 
             Divider()
 
@@ -999,7 +1004,6 @@ private struct PhoneWorkspaceSessionsPopover: View {
             }
         }
         .padding(RemiTheme.Spacing.s)
-        .frame(width: 320)
     }
 
     private var sessionRows: some View {
