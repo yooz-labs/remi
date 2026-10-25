@@ -248,18 +248,20 @@ struct PhoneLiveRootView: View {
                 .toolbar {
                     if chrome.showsMenuButton {
                         ToolbarItem(placement: .topBarLeading) { menuButton }
-                    } else if chrome.usesSidebar {
+                    } else if chrome.usesSidebar, columnLayout.visibility != .detailOnly {
+                        // Only while the sidebar shows. Once it is hidden the split view adds
+                        // its own toggle to this bar, and drawing ours as well gave two
+                        // sidebar icons side by side (iPad and iPhone Duo).
                         ToolbarItem(placement: .topBarLeading) { sidebarToggleButton }
                     }
                 }
         }
     }
 
-    /// The sidebar toggle, drawn here and not by the system. The detail holds its own
-    /// NavigationStack, and whether the system's toggle shows through that nesting on an
-    /// iPhone-family app was not checked at runtime, so the system's is removed in
-    /// `rootLayout` and this one is the only one, driven by the same column layout the
-    /// keyboard shortcut uses.
+    /// The sidebar toggle for while the sidebar shows, drawn here because the sidebar's own bar
+    /// is hidden and the system adds no toggle then. It is driven by the same column layout the
+    /// keyboard shortcut uses. When the sidebar is hidden the system's toggle appears in this
+    /// bar by itself (checked on iPad and on iPhone Duo), so this one steps aside.
     private var sidebarToggleButton: some View {
         Button {
             toggleSidebar()
