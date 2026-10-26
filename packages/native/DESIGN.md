@@ -27,7 +27,7 @@ The person is busy elsewhere; the app's job is to tell them what needs them, let
 - **Controls:** the toolbars carry only what applies to what is open. Everything else is a menu command with a shortcut (new session, add machine, show or hide the columns, focus the conversation, previous and next session, conversation and machine). Jump to the first or latest activity is in the session's actions menu.
 - **The session view:** the transcript (agent messages, tool calls as compact chips that expand; a run of 3 or more is one row, "12 tool calls", that opens in place; the newest entry and search matches stay out of groups), the open cards inline, and a composer at the bottom.
 - **New session sheet:** pick the machine, repository, a new branch (the hub makes its worktree; starting in an existing worktree means picking its directory), harness (Claude Code, Codex) and model. The hub creates the worktree (`create_session_request.workspace`, #1236) when it lists the `workspaces` capability; for a hub that does not, the sheet starts a session in a directory.
-- **Menu bar extra:** a glanceable count of cards that need the person, and the list of them. It stays.
+- **Menu bar extra:** a glanceable count of cards that need the person, and the list of them. It stays. Its icon is the "r" in a square, one color: a thin outlined square with a filled "r" while nothing waits, and a filled square with the "r" knocked out while something does (the same pair as Transit's "t"), with the count beside it.
 - **Notifications:** native, grouped by machine. A card's notification opens it in place.
   Short, fully displayed one-time Yes/No requests also offer those choices in the
   notification on an unlocked Mac, without bringing the main window forward.

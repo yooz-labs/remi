@@ -28,3 +28,27 @@ magick r-dark.png -alpha off PNG24:icon-dark.png
 
 Do not redraw or substitute the letterform in this repository. Update the
 canonical Yooz asset first, then update the hashes and shipping files together.
+
+## Mac app icon and menu bar icon
+
+The Mac app icon is the iPhone's light icon, so the two apps share one mark.
+`Mac/Assets.xcassets/AppIcon.appiconset/icon_1024.png` is a byte-for-byte copy of
+`iPhone/Assets.xcassets/AppIcon.appiconset/icon-light.png` (shipping hash above); the smaller sizes
+are that file scaled with `sips -z <px> <px>`. Like Transit's Mac icon, the artwork is used as
+shipped, with no extra shaping.
+
+The menu bar icon is drawn at run time by `RemiMenuBarIcon` (`RemiKit/Sources/RemiUI/MenuBarIcon.swift`),
+as Transit's is: the "r" in a rounded square, one color, as a template image that macOS tints for the
+light or dark menu bar. Nothing waiting is a thin outlined square with a filled "r"; something
+waiting is a filled square with the "r" knocked out. The letter's shape is
+`RemiKit/Sources/RemiUI/Resources/r-mask.png`, the alpha of the tinted icon
+(`icon-tinted.png`, a copy of the canonical `r-tinted.png`), cropped to the glyph and halved in size.
+Regenerate it after the mark changes, and commit the result:
+
+```sh
+uv run packages/native/scripts/generate-menubar-mask.py
+```
+
+| Source | Generated | Used by |
+|---|---|---|
+| `icon-tinted.png` | `r-mask.png` | `RemiMenuBarIcon` |
