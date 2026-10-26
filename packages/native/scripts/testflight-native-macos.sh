@@ -57,7 +57,14 @@ expect_exempt_encryption() {
 }
 # A signed bundle's entitlements as a plist on stdout.
 entitlements_of() { codesign -d --entitlements :- "$1" 2>/dev/null; }
-entitlement_value() { plutil -extract "$2" raw -o - - <<<"$1" 2>/dev/null || true; }
+# PlistBuddy, not plutil -extract: entitlement keys contain dots, which plutil reads as nesting.
+entitlement_value() {
+  local file
+  file=$(mktemp /tmp/remi-entitlements.XXXXXX)
+  printf '%s' "$1" > "$file"
+  /usr/libexec/PlistBuddy -c "Print :$2" "$file" 2>/dev/null || true
+  rm -f "$file"
+}
 
 need git
 need xcodebuild
