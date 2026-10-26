@@ -219,7 +219,9 @@ struct MacLiveRootView: View {
                             machineID: session.machineID,
                             sessionID: session.id
                         ))
-                        .task(id: session.id) { store.loadTranscript(machineID: session.machineID, sessionId: session.id) }
+                        .task(id: store.transcriptRouteGeneration(machineID: session.machineID, sessionID: session.id)) {
+                            store.loadTranscript(machineID: session.machineID, sessionId: session.id)
+                        }
                     } else if notificationDestination != nil {
                         ContentUnavailableView(
                             "Conversation unavailable",
@@ -787,7 +789,7 @@ struct MacLiveRootView: View {
                 projectPath: session.projectPath,
                 lastActivity: session.lastActivity,
                 status: session.source == "daemon"
-                    ? (questionCount > 0 ? .needsYou : status(for: session.status)
+                    ? (questionCount > 0 ? .needsYou : RemiSessionStatus(activityStatus: machine.activityStatus(for: session))
                         .whileMachine(connected: machine.status == .connected))
                     : .offline,
                 lastMessage: session.lastMessage,
@@ -933,14 +935,6 @@ struct MacLiveRootView: View {
 
     private func rawQuestion(id: String) -> QuestionMessage? {
         selectedMachine?.questions.first { $0.question.id == id }
-    }
-
-    private func status(for value: String) -> RemiSessionStatus {
-        switch value {
-        case "active": .working
-        case "idle": .idle
-        default: .offline
-        }
     }
 
     private func answerPath(_ value: QuestionAnswerPath?) -> RemiAnswerPath? {

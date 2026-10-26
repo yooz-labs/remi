@@ -1,5 +1,11 @@
 # Plan: the roadmap
 
+## Native activity and conversation recovery (2026-10-26, #1673)
+
+The native apps must consume existing `session_update` and `remi_status` events without changing discovery metadata or harness identity. Clear ephemeral activity when the owning route is lost. Reload a selected transcript when its authenticated route becomes available or changes generation; never replay chat or answers. Regression gates cover existing shared protocol fixtures, live-state precedence over a later census, per-machine isolation, stale generations, connection loss and read readiness. Rendered and signed-device acceptance remain separate from source checks.
+
+APNs delivery remains under investigation against #1667; this phase does not change subscriptions, leases, relay enrollment, answer authority, or notification policy.
+
 ## Backend session continuation (2026-10-22, #1595)
 
 The current [backend capability plan](issue-1595-backend-plan.md) separates existing

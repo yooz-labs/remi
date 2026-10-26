@@ -25,6 +25,16 @@ public struct RemiProjectSessions: Sendable {
 }
 
 public extension RemiSessionStatus {
+    /// Shared activity vocabulary for Claude and Codex (#1673).
+    init(activityStatus: String) {
+        switch activityStatus {
+        case "active", "thinking", "executing", "working", "evaluating", "approved": self = .working
+        case "waiting": self = .needsYou
+        case "starting": self = .connecting
+        default: self = .idle
+        }
+    }
+
     /// "Working" is a claim about this moment. From a machine the app cannot reach it is a stale
     /// claim, so it reads as idle until the machine answers. Everything else is shown as known.
     func whileMachine(connected: Bool) -> RemiSessionStatus {

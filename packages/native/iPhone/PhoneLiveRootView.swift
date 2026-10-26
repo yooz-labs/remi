@@ -505,7 +505,7 @@ struct PhoneLiveRootView: View {
                     projectPath: session.projectPath,
                     lastActivity: session.lastActivity,
                     status: session.source == "daemon"
-                        ? (count > 0 ? .needsYou : (session.status == "active" ? RemiSessionStatus.working : .idle)
+                        ? (count > 0 ? .needsYou : RemiSessionStatus(activityStatus: machine.activityStatus(for: session))
                             .whileMachine(connected: machine.status == .connected))
                         : .offline,
                     lastMessage: session.lastMessage,
@@ -853,7 +853,7 @@ struct PhoneLiveRootView: View {
             initialPane: route.pane
         )
         .id(route)
-        .onAppear {
+        .task(id: store.transcriptRouteGeneration(machineID: session.machineID, sessionID: route.conversationID ?? session.id)) {
             store.loadTranscript(machineID: session.machineID, sessionId: route.conversationID ?? session.id)
         }
         .onChange(of: shell.pendingFocus, initial: true) { _, _ in
