@@ -70,6 +70,18 @@ public struct RemiComposer<LeadingAccessory: View>: View {
                             reduceTransparency: reduceTransparency
                         ))
                         .disabled(promptWaiting || isSending)
+                        #if os(iOS)
+                        // A way to put the keyboard away without sending or clearing the draft.
+                        .toolbar {
+                            ToolbarItemGroup(placement: .keyboard) {
+                                Spacer()
+                                Button("Hide keyboard", systemImage: "keyboard.chevron.compact.down") {
+                                    isFocused = false
+                                }
+                                .labelStyle(.iconOnly)
+                            }
+                        }
+                        #endif
 
                     if !promptWaiting || onInterrupt != nil {
                         actionButton
