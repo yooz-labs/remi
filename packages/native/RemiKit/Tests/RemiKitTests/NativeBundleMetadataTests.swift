@@ -42,6 +42,19 @@ struct NativeBundleMetadataTests {
         #expect(entitlements["com.apple.developer.usernotifications.time-sensitive"] as? Bool == true)
     }
 
+    /// The iPhone target runs on the iPad as a native app, so it declares all four orientations
+    /// itself instead of leaving the iPad's list to a default: a partial list is rejected at upload.
+    @Test func theIPadDeclaresEveryOrientation() throws {
+        let plist = try #require(PropertyListSerialization.propertyList(
+            from: Data(contentsOf: Self.native.appendingPathComponent("iPhone/Info.plist")), format: nil) as? [String: Any])
+        let orientations = try #require(plist["UISupportedInterfaceOrientations~ipad"] as? [String])
+        #expect(Set(orientations) == [
+            "UIInterfaceOrientationPortrait", "UIInterfaceOrientationPortraitUpsideDown",
+            "UIInterfaceOrientationLandscapeLeft", "UIInterfaceOrientationLandscapeRight",
+        ])
+        #expect(plist["UIRequiresFullScreen"] == nil)
+    }
+
     @Test(arguments: ["Mac", "iPhone"])
     func privateAddressPolicyDoesNotDisablePublicTransportSecurity(_ target: String) throws {
         let plist = try #require(PropertyListSerialization.propertyList(
