@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 public extension EnvironmentValues {
     /// Bumped to ask the composer to take keyboard focus (a hardware-keyboard shortcut).
@@ -76,6 +79,24 @@ public struct RemiComposer<LeadingAccessory: View>: View {
                             reduceTransparency: reduceTransparency
                         ))
                         .disabled(promptWaiting || isSending)
+                        #if os(macOS)
+                        // Return sends and Shift+Return is a new line, as in a chat app.
+                        .onKeyPress(.return, phases: .down) { press in
+                            switch RemiComposerReturnKey.action(
+                                modifiers: press.modifiers, canSend: canSend, isComposing: isComposingText
+                            ) {
+                            case .send: onSend(); return .handled
+                            case .ignore: return .handled
+                            case .passThrough: return .ignored
+                            }
+                        }
+                        // The same rule if the field takes Return for itself and submits.
+                        .onSubmit {
+                            if RemiComposerReturnKey.action(
+                                modifiers: [], canSend: canSend, isComposing: isComposingText
+                            ) == .send { onSend() }
+                        }
+                        #endif
 
                     if !promptWaiting || onInterrupt != nil {
                         actionButton
@@ -88,6 +109,13 @@ public struct RemiComposer<LeadingAccessory: View>: View {
         }
         .onChange(of: dismissRequest) { _, _ in isFocused = false }
     }
+
+    #if os(macOS)
+    /// Whether the field is holding text an input method has not committed yet.
+    private var isComposingText: Bool {
+        (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() ?? false
+    }
+    #endif
 
     private var canSend: Bool {
         !isSending && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
