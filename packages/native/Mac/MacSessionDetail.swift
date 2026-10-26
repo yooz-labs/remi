@@ -511,61 +511,42 @@ private struct MacConversationPicker: View {
                 compact: true
             ) { selectedViewID = "" }
 
-            ForEach(tabViews) { view in
+            ForEach(conversations.tabs) { view in
                 RemiConversationChip(
-                    title: title(for: view),
+                    title: conversations.title(for: view),
                     systemImage: "person.2.fill",
                     active: view.active,
                     selected: selectedViewID == view.agentId,
                     compact: true
                 ) { selectedViewID = view.agentId }
-                // A finished conversation that is open stays a tab, but quieter than a live one.
-                .opacity(view.active || selectedViewID == view.agentId ? 1 : 0.6)
             }
 
-            if !earlierViews.isEmpty {
+            if !conversations.earlier.isEmpty {
                 earlierMenu
             }
         }
     }
 
-    /// Active subagents, plus the open one if it has finished.
-    private var tabViews: [SessionViewMeta] {
-        views.filter { $0.active || $0.agentId == selectedViewID }
-    }
-
-    private var earlierViews: [SessionViewMeta] {
-        views.filter { !$0.active && $0.agentId != selectedViewID }
+    private var conversations: RemiConversationTabs {
+        RemiConversationTabs(views: views, selectedViewID: selectedViewID)
     }
 
     private var earlierMenu: some View {
         Menu {
-            ForEach(earlierViews) { view in
+            ForEach(conversations.earlier) { view in
                 Button {
                     selectedViewID = view.agentId
                 } label: {
-                    Label(title(for: view), systemImage: "person.2.fill")
+                    Label(conversations.title(for: view), systemImage: "person.2.fill")
                 }
             }
         } label: {
-            Text("Earlier \(earlierViews.count)")
+            Text("Earlier \(conversations.earlier.count)")
                 .font(.caption.weight(.semibold))
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help("Finished subagent conversations")
-    }
-
-    /// The agent's type, numbered when two share it ("general-purpose 2"), rather than the id
-    /// suffix the shared title adds, which is long and means nothing to the person. Numbered by
-    /// position among all the session's agents, so a number does not change as tabs come and go.
-    private func title(for view: SessionViewMeta) -> String {
-        let base = RemiConversationSelection.title(for: view, among: [view])
-        let sameType = views.filter { RemiConversationSelection.title(for: $0, among: [$0]) == base }
-        guard sameType.count > 1, let index = sameType.firstIndex(where: { $0.agentId == view.agentId }) else {
-            return base
-        }
-        return "\(base) \(index + 1)"
     }
 }
 
