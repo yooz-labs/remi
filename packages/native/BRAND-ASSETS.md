@@ -41,7 +41,7 @@ The menu bar icon is drawn at run time by `RemiMenuBarIcon` (`RemiKit/Sources/Re
 as Transit's is: the "r" in a rounded square, one color, as a template image that macOS tints for the
 light or dark menu bar. Nothing waiting is a thin outlined square with a filled "r"; something
 waiting is a filled square with the "r" knocked out. The letter's shape is
-`RemiKit/Sources/RemiUI/Resources/r-mask.png`, the alpha of the tinted icon
+`Mac/Assets.xcassets/MenuBarGlyph.imageset/r-mask.png` (loaded by the Mac app from its asset catalog), the alpha of the tinted icon
 (`icon-tinted.png`, a copy of the canonical `r-tinted.png`), cropped to the glyph and halved in size.
 Regenerate it after the mark changes, and commit the result:
 

@@ -1,0 +1,12 @@
+{
+  "images" : [
+    {
+      "filename" : "r-mask.png",
+      "idiom" : "universal"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

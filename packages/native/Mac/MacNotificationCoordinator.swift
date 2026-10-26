@@ -268,6 +268,9 @@ private struct MacMenuBarStatusLabel: View {
     let pendingCount: Int
     let identityAvailable: Bool
 
+    /// The letter's shape, read once from the asset catalog (`nil`, not a crash, if it is missing).
+    private static let glyphMask: NSImage? = NSImage(named: "MenuBarGlyph")
+
     private var status: RemiMenuBarStatus {
         RemiMenuBarStatus(pendingCount: pendingCount, identityAvailable: identityAvailable)
     }
@@ -292,9 +295,10 @@ private struct MacMenuBarStatusLabel: View {
     private var icon: some View {
         if !identityAvailable {
             Image(systemName: "exclamationmark.triangle")
-        } else if let mask = RemiMenuBarIcon.bundledMask(),
+        } else if let mask = Self.glyphMask,
                   let image = RemiMenuBarIcon.image(needsYou: status.needsYou, mask: mask) {
-            Image(nsImage: image)
+            // Explicitly a template, so the bar's tint applies even beside the count.
+            Image(nsImage: image).renderingMode(.template)
         } else {
             Image(systemName: status.needsYou ? "questionmark.bubble.fill" : "questionmark.bubble")
         }

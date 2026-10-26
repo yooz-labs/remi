@@ -58,7 +58,18 @@ apns_line=$(awk '/fail "exported app is not using production APNS"/ { print NR; 
 cmp -s "$REPO_ROOT/packages/native/Mac/Assets.xcassets/AppIcon.appiconset/icon_1024.png" \
   "$REPO_ROOT/packages/native/iPhone/Assets.xcassets/AppIcon.appiconset/icon-light.png" ||
   fail "the Mac app icon is not the iPhone light icon"
-[ -s "$REPO_ROOT/packages/native/RemiKit/Sources/RemiUI/Resources/r-mask.png" ] || fail "the menu bar glyph mask is missing"
+# Every size is that file scaled the way BRAND-ASSETS.md says, so a hand-edited size is caught.
+ICON_SOURCE="$REPO_ROOT/packages/native/iPhone/Assets.xcassets/AppIcon.appiconset/icon-light.png"
+ICON_CHECK=$(mktemp -d /tmp/remi-macos-icons.XXXXXX)
+for size in 16 32 64 128 256 512; do
+  sips -z "$size" "$size" "$ICON_SOURCE" --out "$ICON_CHECK/icon_${size}.png" >/dev/null
+  cmp -s "$ICON_CHECK/icon_${size}.png" "$REPO_ROOT/packages/native/Mac/Assets.xcassets/AppIcon.appiconset/icon_${size}.png" ||
+    { rm -rf "$ICON_CHECK"; fail "Mac icon_${size}.png is not the iPhone light icon scaled to ${size}"; }
+done
+rm -rf "$ICON_CHECK"
+MASK="$REPO_ROOT/packages/native/Mac/Assets.xcassets/MenuBarGlyph.imageset/r-mask.png"
+[ -s "$MASK" ] || fail "the menu bar glyph mask is missing"
+[ -s "$REPO_ROOT/packages/native/Mac/Assets.xcassets/MenuBarGlyph.imageset/Contents.json" ] || fail "the menu bar glyph image set has no Contents.json"
 
 # The ordering the release depends on: validate with App Store Connect before uploading.
 validate_line=$(awk '/altool --validate-app/ { print NR; exit }' "$SCRIPT")

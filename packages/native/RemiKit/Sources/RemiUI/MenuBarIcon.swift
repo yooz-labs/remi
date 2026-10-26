@@ -8,9 +8,11 @@ import AppKit
 /// - Nothing waiting: a thin outlined square with a filled "r".
 /// - Something needs the person: a filled square with the "r" knocked out.
 ///
-/// The "r" is the brand mark's own shape (`Resources/r-mask.png`, an alpha mask cut from the
-/// tinted app icon by `scripts/generate-menubar-mask.py`), not a font, drawn at run time so it
-/// is crisp at 1x and 2x.
+/// The "r" is the brand mark's own shape (`Mac/Assets.xcassets/MenuBarGlyph.imageset/r-mask.png`,
+/// an alpha mask cut from the tinted app icon by `scripts/generate-menubar-mask.py`), not a font,
+/// drawn at run time so it is crisp at 1x and 2x. The app supplies the mask from its asset
+/// catalog: a missing image there is `nil`, where a missing Swift package resource bundle is a
+/// crash.
 public enum RemiMenuBarIcon {
     /// The standard menu bar icon canvas.
     public static let size = NSSize(width: 18, height: 18)
@@ -22,18 +24,7 @@ public enum RemiMenuBarIcon {
     static let cornerRadius: CGFloat = 4
     /// How much of the square's height the "r" takes. The mark is square, so this is also its
     /// width fraction.
-    static let glyphHeightFraction: CGFloat = 0.6
-
-    /// The mask's resource name (`Resources/r-mask.png`).
-    static let maskResourceName = "r-mask"
-
-    /// The bundled mask, or `nil` if the resource is missing.
-    public static func bundledMask() -> NSImage? {
-        guard let url = Bundle.module.url(forResource: maskResourceName, withExtension: "png") else {
-            return nil
-        }
-        return NSImage(contentsOf: url)
-    }
+    static let glyphHeightFraction: CGFloat = 0.66
 
     /// The icon for a state, drawn from `mask` (black with the "r" as its alpha), or `nil` when
     /// the mask has no bitmap.
@@ -109,6 +100,17 @@ public enum RemiMenuBarIcon {
 #if DEBUG && canImport(AppKit)
 import SwiftUI
 
+extension RemiMenuBarIcon {
+    /// The mask from the Mac asset catalog in the source tree, for the preview.
+    static func previewMask() -> NSImage? {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Mac/Assets.xcassets/MenuBarGlyph.imageset/r-mask.png")
+        return NSImage(contentsOf: url)
+    }
+}
+
 /// The icon in both states on a light and a dark menu bar, at its real size and magnified, so the
 /// shape can be reviewed without running the app. Template images take the bar's tint.
 private struct MenuBarIconGallery: View {
@@ -136,7 +138,7 @@ private struct MenuBarIconGallery: View {
 
     @ViewBuilder
     private func icon(needsYou: Bool, scale: CGFloat) -> some View {
-        if let mask = RemiMenuBarIcon.bundledMask(), let image = RemiMenuBarIcon.image(needsYou: needsYou, mask: mask) {
+        if let mask = RemiMenuBarIcon.previewMask(), let image = RemiMenuBarIcon.image(needsYou: needsYou, mask: mask) {
             Image(nsImage: image)
                 .renderingMode(.template)
                 .interpolation(.none)

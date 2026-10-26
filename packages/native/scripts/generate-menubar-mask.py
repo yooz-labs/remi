@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["pillow>=10", "numpy>=1.26"]
+# dependencies = ["pillow>=10,<13", "numpy>=1.26"]
 # ///
 """Derive the "r" alpha mask the Mac menu bar icon is drawn from (#1239).
 
@@ -13,8 +13,9 @@ so its alpha channel is already the letter's shape. The result is black with tha
 to the glyph's bounding box and halved in size, so the app can draw it as a monochrome template
 image at any scale. Nothing is redrawn: the letterform is the brand mark's own.
 
-Commit the output (`RemiKit/Sources/RemiUI/Resources/r-mask.png`); rerun this after the mark
-changes. The output is deterministic for a given source.
+Commit the output (`Mac/Assets.xcassets/MenuBarGlyph.imageset/r-mask.png`); rerun this after the
+mark changes. The output is deterministic for a given source and Pillow version, so a different
+Pillow can show a small byte difference in a regenerated mask.
 """
 
 import sys
@@ -33,9 +34,13 @@ def main() -> None:
         else NATIVE / "iPhone/Assets.xcassets/AppIcon.appiconset/icon-tinted.png"
     )
     output = (
-        Path(sys.argv[2]) if len(sys.argv) > 2 else NATIVE / "RemiKit/Sources/RemiUI/Resources/r-mask.png"
+        Path(sys.argv[2])
+        if len(sys.argv) > 2
+        else NATIVE / "Mac/Assets.xcassets/MenuBarGlyph.imageset/r-mask.png"
     )
 
+    if not source.is_file():
+        sys.exit(f"{source}: no such file")
     alpha = np.asarray(Image.open(source).convert("RGBA"), dtype=np.float64)[:, :, 3] / 255.0
     rows = np.flatnonzero(alpha.max(axis=1) > 0.02)
     cols = np.flatnonzero(alpha.max(axis=0) > 0.02)
@@ -48,6 +53,7 @@ def main() -> None:
     mask[:, :, 3] = np.round(alpha * 255).astype(np.uint8)
     image = Image.fromarray(mask, "RGBA")
     image = image.resize((image.width // 2, image.height // 2), Image.Resampling.LANCZOS)
+    output.parent.mkdir(parents=True, exist_ok=True)
     image.save(output, optimize=True)
     print(f"{output}: {image.width}x{image.height} (glyph box in the source: x {left}-{right}, y {top}-{bottom})")
 

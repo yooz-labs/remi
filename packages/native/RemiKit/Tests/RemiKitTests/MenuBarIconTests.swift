@@ -40,9 +40,18 @@ import Testing
 import AppKit
 
 @Suite struct MenuBarIconTests {
+    /// The mask the Mac app ships, read from its asset catalog in the source tree.
+    private func mask() throws -> NSImage {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Mac/Assets.xcassets/MenuBarGlyph.imageset/r-mask.png")
+        return try #require(NSImage(contentsOf: url), "the menu bar glyph mask is missing from the Mac asset catalog")
+    }
+
     /// The icon drawn into a 2x bitmap (36 by 36 pixels): the alpha of every pixel.
     private func alphas(needsYou: Bool) throws -> [[Double]] {
-        let mask = try #require(RemiMenuBarIcon.bundledMask())
+        let mask = try mask()
         let image = try #require(RemiMenuBarIcon.image(needsYou: needsYou, mask: mask))
         let side = 36
         let rep = try #require(NSBitmapImageRep(
@@ -60,7 +69,7 @@ import AppKit
     }
 
     @Test func theMaskIsBundledAndIsTheLettersShape() throws {
-        let mask = try #require(RemiMenuBarIcon.bundledMask())
+        let mask = try mask()
         let bitmap = try #require(mask.cgImage(forProposedRect: nil, context: nil, hints: nil))
         #expect(bitmap.width > 100 && bitmap.height > 100)
         // Cropped to the glyph, so it is not a wide or tall strip.
@@ -69,7 +78,7 @@ import AppKit
     }
 
     @Test func bothStatesAreMonochromeTemplatesOnTheStandardCanvas() throws {
-        let mask = try #require(RemiMenuBarIcon.bundledMask())
+        let mask = try mask()
         for needsYou in [false, true] {
             let image = try #require(RemiMenuBarIcon.image(needsYou: needsYou, mask: mask))
             #expect(image.isTemplate)
@@ -98,8 +107,15 @@ import AppKit
         #expect(interior > letter)
         #expect(outside > 0)
         // The letter sits in the middle of the canvas, clear of the border.
-        #expect((letterRows.min() ?? 0) >= 6 && (letterRows.max() ?? 99) <= 29)
-        #expect((letterColumns.min() ?? 0) >= 6 && (letterColumns.max() ?? 99) <= 29)
+        let top = letterRows.min() ?? 0, bottom = letterRows.max() ?? 99
+        let left = letterColumns.min() ?? 0, right = letterColumns.max() ?? 99
+        #expect(top >= 6 && bottom <= 29 && left >= 6 && right <= 29)
+        // The mark is square, so its box is about square, and it sits in the middle of the canvas.
+        #expect(abs((bottom - top) - (right - left)) <= 3)
+        #expect(abs(Double(top + bottom) / 2 - 17.5) <= 1.5)
+        #expect(abs(Double(left + right) / 2 - 17.5) <= 1.5)
+        // And it is a good part of the square, not a speck: about two thirds of its height.
+        #expect(bottom - top + 1 >= 18)
     }
 
     @Test func theEmptyStateHasAnEmptyMiddleAndTheWaitingStateAFilledOne() throws {
