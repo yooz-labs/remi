@@ -255,7 +255,9 @@ for TARGET in "$EXPORTED_APP" "$EXPORTED_EXTENSION"; do
   grep -Fq "$TEAM_ID.live.yooz.remi" <<<"$ENTITLEMENTS" || fail "exported target is missing its app group"
   [ "$(entitlement_value "$ENTITLEMENTS" com.apple.security.get-task-allow)" != true ] || fail "exported target permits debugger access"
   # A development identity here would mean the export did not re-sign for distribution.
-  codesign -dvv "$TARGET" 2>&1 | grep -Eq '^Authority=(Apple Distribution|3rd Party Mac Developer Application)' ||
+  # Captured first: grep -q exiting early would make codesign fail on a closed pipe under pipefail.
+  SIGNATURE=$(codesign -dvv "$TARGET" 2>&1) || fail "cannot read the exported target signature"
+  grep -Eq '^Authority=(Apple Distribution|3rd Party Mac Developer Application)' <<<"$SIGNATURE" ||
     fail "exported target is not signed with a distribution identity"
 done
 ! grep -R -a -q 'live.yooz.remi.dev' "$EXPORTED_APP" || fail "development identity leaked into the exported app"
