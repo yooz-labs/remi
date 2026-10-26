@@ -111,7 +111,7 @@ These are built once and used by both apps:
   - transport (local, direct, relay);
   - the person's own name for it.
 - **Transcript entries:** user message, agent message (Markdown), tool call chip, error.
-- **Composer:** text, send, interrupt (Esc), and the "a prompt is waiting" refusal (`PROMPT_WAITING`), shown as an explanation rather than an error.
+- **Composer:** text, send (on the Mac, Return sends and Shift+Return starts a new line), interrupt (Esc), and the "a prompt is waiting" refusal (`PROMPT_WAITING`), shown as an explanation rather than an error.
 
 ## States every screen handles
 
