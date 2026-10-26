@@ -624,19 +624,45 @@ private struct ConversationPicker: View {
                         active: true,
                         selected: selectedViewID.isEmpty
                     ) { selectedViewID = "" }
-                    ForEach(views) { view in
+                    // What is running is next to Main, however many finished ones there are.
+                    ForEach(conversations.tabs) { view in
                         RemiConversationChip(
-                            title: RemiConversationSelection.title(for: view, among: views),
+                            title: conversations.title(for: view),
                             systemImage: "person.2.fill",
                             active: view.active,
                             selected: selectedViewID == view.agentId
                         ) { selectedViewID = view.agentId }
+                        .opacity(view.active || selectedViewID == view.agentId ? 1 : 0.6)
                     }
+                    if !conversations.earlier.isEmpty { earlierMenu }
                 }
                 .padding(.vertical, 2)
             }
             .scrollIndicators(.hidden)
         }
+    }
+
+    private var conversations: RemiConversationTabs {
+        RemiConversationTabs(views: views, selectedViewID: selectedViewID)
+    }
+
+    /// Finished conversations. They stay reachable, but do not take a chip each.
+    private var earlierMenu: some View {
+        Menu {
+            ForEach(conversations.earlier) { view in
+                Button(conversations.title(for: view), systemImage: "person.2.fill") {
+                    selectedViewID = view.agentId
+                }
+            }
+        } label: {
+            Text("Earlier \(conversations.earlier.count)")
+                .font(.subheadline.weight(.semibold))
+                .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+                .padding(.horizontal, RemiTheme.Spacing.xs)
+                .contentShape(.rect)
+        }
+        .accessibilityLabel("Earlier conversations, \(conversations.earlier.count)")
+        .accessibilityHint("Finished subagent conversations")
     }
 }
 
