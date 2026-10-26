@@ -12,6 +12,10 @@ struct PhoneProjectMenu: Identifiable {
     let id: String
     /// The row's frame in the window.
     let anchor: CGRect
+    /// True when the menu offers something that needs its machine connected (New session here,
+    /// Resume). Such a menu is closed if the machine stops being connected; one for a machine that
+    /// was never connected (a last-known row) has no such actions and stays.
+    let requiresConnection: Bool
     let content: AnyView
 }
 
@@ -50,7 +54,6 @@ struct PhoneProjectMenuOverlay: View {
     /// Wider at larger text sizes, so titles are not cut short when Dynamic Type grows.
     @ScaledMetric(relativeTo: .body) private var width: CGFloat = 320
     @AccessibilityFocusState private var menuFocused: Bool
-    @FocusState private var hasKeyboardFocus: Bool
 
     @Binding var menu: PhoneProjectMenu?
     /// True when a detail pane sits beside the list, which is where the menu opens.
@@ -91,11 +94,15 @@ struct PhoneProjectMenuOverlay: View {
                     .accessibilityAction(.escape) { dismiss() }
                     // VoiceOver starts inside the menu, not on the row under it.
                     .accessibilityFocused($menuFocused)
-                    // A hardware keyboard closes it with Escape.
-                    .focusable()
-                    .focused($hasKeyboardFocus)
-                    .onKeyPress(.escape) { dismiss(); return .handled }
-                    .onAppear { menuFocused = true; hasKeyboardFocus = true }
+                    .onAppear { menuFocused = true }
+                    // A hardware keyboard closes it with Escape, without taking focus from the
+                    // composer or the list.
+                    .background {
+                        Button("Close", action: dismiss)
+                            .keyboardShortcut(.cancelAction)
+                            .opacity(0)
+                            .accessibilityHidden(true)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -113,6 +120,8 @@ struct PhoneProjectMenuOverlay: View {
             // Not the first measurement, which is the window taking its size, not changing it.
             .onChange(of: proxy.size) { old, _ in if old != .zero { dismiss() } }
         }
+        // The keyboard appearing or going away must not move the menu or close it.
+        .ignoresSafeArea(.keyboard)
         .allowsHitTesting(menu != nil)
     }
 
@@ -185,6 +194,7 @@ private struct ProjectMenuPreview: View {
             menu = PhoneProjectMenu(
                 id: "w",
                 anchor: rowFrame,
+                requiresConnection: true,
                 content: AnyView(PhoneProjectMenuContent(
                     session: RemiPreviewData.sessions[0],
                     otherSessions: Array(RemiPreviewData.sessions.dropFirst()),

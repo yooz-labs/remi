@@ -449,6 +449,7 @@ private struct PhoneDrawerSessionRow: View {
     @ScaledMetric(relativeTo: .body) private var statusDotSize = RemiTheme.Size.statusDot
     @State private var frame = PhoneRowFrame()
     @State private var isHovering = false
+    @FocusState private var rowFocused: Bool
     @State private var menuOpenedCount = 0
     let session: RemiSessionSummary
     let isSelected: Bool
@@ -467,9 +468,12 @@ private struct PhoneDrawerSessionRow: View {
         HStack(alignment: .center, spacing: RemiTheme.Spacing.s) {
             texts
             Spacer(minLength: RemiTheme.Spacing.xs)
-            // A pointer has no long press: the same menu opens from this while it hovers.
-            if isHovering { moreButton }
             indicator
+        }
+        // A pointer or a keyboard has no long press: the same menu opens from this while the row
+        // is hovered or has focus. Over the row, so showing it does not move the text.
+        .overlay(alignment: .trailing) {
+            if isHovering || rowFocused { moreButton.padding(.trailing, RemiTheme.Spacing.xl) }
         }
         .padding(.horizontal, RemiTheme.Spacing.s)
         .padding(.vertical, RemiTheme.Spacing.xs)
@@ -483,6 +487,11 @@ private struct PhoneDrawerSessionRow: View {
         .contentShape(.hoverEffect, .rect(cornerRadius: RemiTheme.Radius.control))
         .hoverEffect(.highlight)
         .onHover { isHovering = $0 }
+        // Reachable from a hardware keyboard: focus the row, then Return or Space opens it.
+        .focusable()
+        .focused($rowFocused)
+        .onKeyPress(.return) { action(); return .handled }
+        .onKeyPress(.space) { action(); return .handled }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(presentation.accessibilityLabel)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
@@ -497,7 +506,8 @@ private struct PhoneDrawerSessionRow: View {
             Image(systemName: "ellipsis")
                 .foregroundStyle(.secondary)
                 .frame(width: RemiTheme.Size.minimumTapTarget, height: RemiTheme.Size.minimumTapTarget)
-                .contentShape(.rect)
+                .background(.regularMaterial, in: .circle)
+                .contentShape(.circle)
         }
         .buttonStyle(.plain)
         .accessibilityHidden(true)
@@ -520,7 +530,8 @@ private struct PhoneDrawerSessionRow: View {
             close: close)
         withAnimation(.snappy) {
             projectMenu.wrappedValue = PhoneProjectMenu(
-                id: "\(session.machineID)|\(session.id)", anchor: frame.rect, content: AnyView(content))
+                id: "\(session.machineID)|\(session.id)", anchor: frame.rect,
+                requiresConnection: canRunOnMachine, content: AnyView(content))
         }
     }
 
