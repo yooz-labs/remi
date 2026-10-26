@@ -787,7 +787,8 @@ struct MacLiveRootView: View {
                 projectPath: session.projectPath,
                 lastActivity: session.lastActivity,
                 status: session.source == "daemon"
-                    ? (questionCount > 0 ? .needsYou : status(for: session.status))
+                    ? (questionCount > 0 ? .needsYou : status(for: session.status)
+                        .whileMachine(connected: machine.status == .connected))
                     : .offline,
                 lastMessage: session.lastMessage,
                 openQuestionCount: questionCount,

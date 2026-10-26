@@ -240,7 +240,7 @@ struct SessionScreen: View {
                         }
                         .padding(RemiTheme.Spacing.m)
                         .scrollTargetLayout()
-                        .remiReadableColumn()
+                        .remiReadableScrollColumn()
                         .id(RemiTranscriptScrollTarget.latest)
                     }
                     .modifier(RemiTranscriptScrollBehavior(followsLatest: $followsLatest,

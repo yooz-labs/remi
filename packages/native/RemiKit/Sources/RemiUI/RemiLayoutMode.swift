@@ -33,4 +33,12 @@ public extension View {
         frame(maxWidth: RemiTheme.Size.readableContentWidth)
             .frame(maxWidth: .infinity)
     }
+
+    /// `remiReadableColumn` for the content of a scroll view. The width follows the scroll
+    /// view's own width, so the column is centered again as soon as the window turns or a
+    /// sidebar opens, not at the next scroll.
+    func remiReadableScrollColumn() -> some View {
+        frame(maxWidth: RemiTheme.Size.readableContentWidth)
+            .containerRelativeFrame(.horizontal, alignment: .center)
+    }
 }

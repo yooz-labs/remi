@@ -27,6 +27,9 @@ public enum RemiTheme {
             green: 186.0 / 255.0,
             blue: 40.0 / 255.0
         )
+        /// A faint wash of the attention hue over the system sidebar material, so the iPad sidebar
+        /// reads as Remi's and not as the system's blue-gray.
+        public static let sidebarTint = attention.opacity(0.07)
         public static let surface = SwiftUI.Color.primary.opacity(0.055)
         public static let elevatedSurface = SwiftUI.Color.primary.opacity(0.09)
         public static let hairline = SwiftUI.Color.primary.opacity(0.13)

@@ -280,15 +280,18 @@ struct PhoneDrawerView: View {
     private var listContent: some View {
         let groups = displayed
         let context = rowContext
+        // From every session, not the filtered list, so a search does not hide them; indexed once
+        // per pass. Like the list's own order, the membership is live while a drag freezes rows.
+        let projects = RemiProjectSessions(sessions: sessions)
         return LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
             PhoneDrawerInboxRow(
                 count: questionCount,
                 isSelected: destination == .inbox,
                 action: { if !blocksTaps { onSelectInbox() } }
             )
-            section("Needs you", groups.needsYou, context)
-            section("Active", groups.active, context)
-            section("Recent", groups.recent, context)
+            section("Needs you", groups.needsYou, context, projects)
+            section("Active", groups.active, context, projects)
+            section("Recent", groups.recent, context, projects)
             if groups.isEmpty { emptyStateView }
         }
         .padding(.horizontal, RemiTheme.Spacing.xs)
@@ -380,7 +383,10 @@ struct PhoneDrawerView: View {
     }
 
     @ViewBuilder
-    private func section(_ title: LocalizedStringKey, _ rows: [RemiSessionSummary], _ context: RowContext) -> some View {
+    private func section(
+        _ title: LocalizedStringKey, _ rows: [RemiSessionSummary], _ context: RowContext,
+        _ projects: RemiProjectSessions
+    ) -> some View {
         if !rows.isEmpty {
             Text(title)
                 .font(RemiTheme.Typography.eyebrow)
@@ -397,6 +403,8 @@ struct PhoneDrawerView: View {
                     machineLabel: context.labels[session.machineID],
                     canRunOnMachine: context.connected.contains(session.machineID),
                     action: { if !blocksTaps { onSelectSession(session) } },
+                    otherSessions: projects.others(than: session),
+                    onSelectOther: { other in if !blocksTaps { onSelectSession(other) } },
                     onResume: { onResumeSession(session.machineID, session.id) },
                     onNewSessionHere: { onNewSessionHere(session.machineID, session.projectPath) }
                 )
@@ -434,6 +442,7 @@ private struct PhoneDrawerInboxRow: View {
 
 private struct PhoneDrawerSessionRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @ScaledMetric(relativeTo: .body) private var statusDotSize = RemiTheme.Size.statusDot
     let session: RemiSessionSummary
     let isSelected: Bool
@@ -442,6 +451,9 @@ private struct PhoneDrawerSessionRow: View {
     /// True when the session's machine is connected, so Resume and New session here can work.
     let canRunOnMachine: Bool
     let action: () -> Void
+    /// The project's other sessions, offered under a long press.
+    let otherSessions: [RemiSessionSummary]
+    let onSelectOther: (RemiSessionSummary) -> Void
     let onResume: () -> Void
     let onNewSessionHere: () -> Void
 
@@ -480,11 +492,35 @@ private struct PhoneDrawerSessionRow: View {
         if canRunOnMachine {
             Button("New session here", systemImage: "plus.rectangle.on.folder", action: onNewSessionHere)
         }
+        if !otherSessions.isEmpty {
+            Menu("Other sessions in \(session.project)", systemImage: "clock.arrow.circlepath") {
+                ForEach(otherSessions, id: \.key) { other in
+                    let row = PhoneDrawerSessionPresentation(
+                        session: other, isLastKnown: isLastKnown, machineLabel: machineLabel)
+                    Button {
+                        onSelectOther(other)
+                    } label: {
+                        Text(row.title)
+                        Text(Self.detail(for: other, subtitle: row.subtitle))
+                    }
+                    .accessibilityLabel(row.accessibilityLabel)
+                }
+            }
+        }
         Button("Copy directory", systemImage: "doc.on.doc") {
             Self.copyLocally(session.projectPath)
         }
         Button("Copy session ID", systemImage: "doc.on.doc") {
             Self.copyLocally(session.id)
+        }
+    }
+
+    /// What a menu entry says under its title: a running or waiting session says so, in words.
+    private static func detail(for session: RemiSessionSummary, subtitle: String) -> String {
+        switch session.status {
+        case .needsYou: String(localized: "Needs you") + " · " + subtitle
+        case .working: String(localized: "Working") + " · " + subtitle
+        default: subtitle
         }
     }
 
@@ -521,6 +557,18 @@ private struct PhoneDrawerSessionRow: View {
     private var indicator: some View {
         if session.openQuestionCount > 0 {
             PhoneDrawerCountBadge(count: session.openQuestionCount)
+        } else if session.status == .working {
+            // The same green as the Mac's Working badge. The badge where the row has room (the
+            // iPad sidebar); a dot on the narrow iPhone drawer and at the largest text sizes,
+            // where a badge would crowd the title and subtitle.
+            if dynamicTypeSize.isAccessibilitySize || horizontalSizeClass == .compact {
+                Circle()
+                    .fill(RemiTheme.Color.activityDot)
+                    .frame(width: statusDotSize, height: statusDotSize)
+                    .accessibilityHidden(true)
+            } else {
+                RemiStatusBadge(status: .working)
+            }
         } else {
             Circle()
                 .fill(Color.secondary.opacity(session.isLive ? 0.7 : 0.3))
