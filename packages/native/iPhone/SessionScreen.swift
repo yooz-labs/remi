@@ -29,6 +29,7 @@ struct SessionScreen: View {
     @State private var pane: PhoneSessionPane
     @State private var draft: String
     @State private var selectedViewID: String
+    @State private var composerDismissRequest = 0
     @State private var focusState: PhoneQuestionFocusState
     @State private var confirmingTermination = false
     @State private var isSearchPresented = false
@@ -247,6 +248,10 @@ struct SessionScreen: View {
                         isReviewing: isSearchPresented || focusedQuestionID != nil,
                         onFollow: { scrollToLatest(using: proxy) }))
                     .scrollPosition(id: $visibleEntryID, anchor: .top)
+                    // A tap on the transcript puts the composer's keyboard away; the draft stays.
+                    // It asks the composer to let go, so a tap that lands on another text field
+                    // (a question's free-text answer) does not fight that field for focus.
+                    .simultaneousGesture(TapGesture().onEnded { composerDismissRequest += 1 })
                     .modifier(SessionNavigationBarBehavior())
                     .onAppear { focusQuestion(using: proxy) }
                     .onChange(of: questions.map(\.questionID)) { _, questionIDs in
@@ -286,6 +291,7 @@ struct SessionScreen: View {
             onSend: onSend,
             onInterrupt: nil
         )
+        .environment(\.remiComposerDismissRequest, composerDismissRequest)
         .navigationTitle(session.displayTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

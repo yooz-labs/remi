@@ -5,6 +5,11 @@ public extension EnvironmentValues {
     /// A composer that cannot take text right now, because a prompt is waiting or a
     /// message is sending, ignores the request.
     @Entry var remiComposerFocusRequest = 0
+
+    /// Bumped to ask the composer to put its keyboard away, keeping its draft. A tap on the
+    /// transcript sends it. Only the composer reacts, so a tap that lands on another text field
+    /// never takes that field's focus away.
+    @Entry var remiComposerDismissRequest = 0
 }
 
 /// The message field and its action button.
@@ -19,6 +24,7 @@ public struct RemiComposer<LeadingAccessory: View>: View {
     /// glyph never outgrows its circle.
     @ScaledMetric(relativeTo: .body) private var controlSize: CGFloat = RemiTheme.Size.minimumTapTarget
     @Environment(\.remiComposerFocusRequest) private var focusRequest
+    @Environment(\.remiComposerDismissRequest) private var dismissRequest
     @FocusState private var isFocused: Bool
     @Binding private var text: String
     private let promptWaiting: Bool
@@ -80,21 +86,35 @@ public struct RemiComposer<LeadingAccessory: View>: View {
         .onChange(of: focusRequest) { _, _ in
             if !promptWaiting && !isSending { isFocused = true }
         }
+        .onChange(of: dismissRequest) { _, _ in isFocused = false }
     }
 
     private var canSend: Bool {
         !isSending && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    /// With the keyboard up and nothing to send, the send button has nothing to do, so it puts the
+    /// keyboard away instead. Once there is text it sends, as before; a tap on the transcript also
+    /// lowers the keyboard. The control is in the composer's own row, not a bar above the keyboard,
+    /// so nothing floats over the field while someone is typing.
+    private var hidesKeyboard: Bool {
+        #if os(iOS)
+        !promptWaiting && !isSending && !canSend && isFocused
+        #else
+        false
+        #endif
+    }
+
     private var actionButton: some View {
         let isActive = promptWaiting || canSend
-        return Button(action: promptWaiting ? interrupt : onSend) {
+        let action: () -> Void = hidesKeyboard ? { isFocused = false } : (promptWaiting ? interrupt : onSend)
+        return Button(action: action) {
             Group {
                 if isSending && !promptWaiting {
                     ProgressView()
                         .controlSize(.small)
                 } else {
-                    Image(systemName: promptWaiting ? "escape" : "arrow.up")
+                    Image(systemName: promptWaiting ? "escape" : hidesKeyboard ? "keyboard.chevron.compact.down" : "arrow.up")
                         .font(.body.weight(.semibold))
                 }
             }
@@ -107,12 +127,13 @@ public struct RemiComposer<LeadingAccessory: View>: View {
             tint: promptWaiting || !isActive ? nil : RemiTheme.Color.attention,
             reduceTransparency: reduceTransparency
         ))
-        .opacity(isActive || isSending ? 1 : 0.6)
-        .disabled(!promptWaiting && !canSend)
+        .opacity(isActive || isSending || hidesKeyboard ? 1 : 0.6)
+        .disabled(!promptWaiting && !canSend && !hidesKeyboard)
         .animation(RemiTheme.Motion.quick, value: isActive)
-        .accessibilityLabel(promptWaiting ? "Interrupt agent" : "Send message")
+        .animation(RemiTheme.Motion.quick, value: hidesKeyboard)
+        .accessibilityLabel(promptWaiting ? "Interrupt agent" : hidesKeyboard ? "Hide keyboard" : "Send message")
         .accessibilityValue(isSending ? "Sending" : "")
-        .accessibilityHint(isActive || isSending ? "" : "Type a message first")
+        .accessibilityHint(isActive || isSending || hidesKeyboard ? "" : "Type a message first")
     }
 
     private func interrupt() {
