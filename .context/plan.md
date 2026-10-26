@@ -966,3 +966,7 @@ The owner's authenticated App Store Connect session confirmed Yooz Remi app
 shared app-version script. The portal requests Account Holder acceptance of an
 updated Developer Program License Agreement before updates/new submissions;
 no agreement acceptance, signing or upload was performed here.
+
+## Paired-device notification scope (2026-10-26, #1677/#1678)
+
+Implement the approved notification-only admission foundation with a separate enrollment file and current grant/enrollment epochs. Notification channels may register/unregister a secure recipient or submit a valid signed notification answer; general application ingress, broadcasts and incidental child output stay unavailable. This phase has no production enrollment caller or capability advertisement. Follow [notification-scope-plan.md](notification-scope-plan.md) for the tests and the selected rolling 30-day renewal policy that later phases implement.

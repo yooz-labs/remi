@@ -10,6 +10,7 @@ import {
 import type { IdentityStore } from '../auth/identity-store.ts';
 import { newAuthorityEpoch } from '../storage/authority-epoch.ts';
 import { withInterprocessFileLock } from '../storage/interprocess-file-lock.ts';
+import { readNotificationEnrollments } from '../storage/notification-enrollments.ts';
 import { readRelayEnrollments, writeRelayEnrollments } from '../storage/relay-enrollments.ts';
 import { activateSecurePushLocked } from '../storage/secure-push-activation.ts';
 import {
@@ -60,7 +61,22 @@ export class SecurePushStore {
         const enrolled = rows.find(
           (row) => row.publicKey === publicKey && row.fingerprint === grant.fingerprint,
         );
-        if (!enrolled) return null;
+        if (!enrolled) {
+          const notification = readNotificationEnrollments(this.directory).find(
+            (row) =>
+              row.publicKey === publicKey &&
+              row.fingerprint === grant.fingerprint &&
+              row.authorizationEpoch === authorizationEpoch,
+          );
+          if (!notification) return null;
+          activateSecurePushLocked(this.directory);
+          return Object.freeze({
+            publicKey,
+            fingerprint: grant.fingerprint,
+            authorizationEpoch,
+            enrollmentEpoch: notification.enrollmentEpoch,
+          });
+        }
         activateSecurePushLocked(this.directory);
         const enrollmentEpoch = enrolled.enrollmentEpoch ?? newAuthorityEpoch();
         if (!enrolled.enrollmentEpoch)
@@ -278,14 +294,19 @@ export class SecurePushStore {
       .keys.find(
         (key) => key.publicKey === authority.publicKey && key.fingerprint === authority.fingerprint,
       );
-    return (
-      grant !== undefined &&
-      readRelayEnrollments(this.directory).some(
-        (row) =>
-          row.publicKey === authority.publicKey &&
-          row.fingerprint === authority.fingerprint &&
-          row.enrollmentEpoch === authority.enrollmentEpoch,
-      )
+    if (!grant) return false;
+    const relay = readRelayEnrollments(this.directory).find(
+      (row) => row.publicKey === authority.publicKey && row.fingerprint === authority.fingerprint,
+    );
+    // A full enrollment supersedes notification-only authority. An upgrade cannot
+    // silently broaden an already-open notification channel's captured generation.
+    if (relay) return relay.enrollmentEpoch === authority.enrollmentEpoch;
+    return readNotificationEnrollments(this.directory).some(
+      (row) =>
+        row.publicKey === authority.publicKey &&
+        row.fingerprint === authority.fingerprint &&
+        row.authorizationEpoch === authority.authorizationEpoch &&
+        row.enrollmentEpoch === authority.enrollmentEpoch,
     );
   }
   private currentInsideLock(entry: SecurePushAuthority): boolean {
