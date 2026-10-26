@@ -165,8 +165,10 @@ struct PhoneLiveRootView: View {
                     .background(RemiTheme.Color.sidebarTint)
                     .navigationSplitViewColumnWidth(RemiTheme.Size.sidebarWidth)
             } detail: {
+                // No `toolbar(removing: .sidebarToggle)`: the system's toggle is what shows once the
+                // sidebar is hidden (see `shellContent`), so removing it would leave a hidden
+                // sidebar with no control on a device without a keyboard.
                 shellContent(sessions: sessions, machines: machines)
-                    .toolbar(removing: .sidebarToggle)
             }
             .navigationSplitViewStyle(.balanced)
         } else {
@@ -248,7 +250,7 @@ struct PhoneLiveRootView: View {
                 .toolbar {
                     if chrome.showsMenuButton {
                         ToolbarItem(placement: .topBarLeading) { menuButton }
-                    } else if chrome.usesSidebar, columnLayout.visibility != .detailOnly {
+                    } else if chrome.showsSidebarToggle(sidebarHidden: columnLayout.visibility == .detailOnly) {
                         // Only while the sidebar shows. Once it is hidden the split view adds
                         // its own toggle to this bar, and drawing ours as well gave two
                         // sidebar icons side by side (iPad and iPhone Duo).

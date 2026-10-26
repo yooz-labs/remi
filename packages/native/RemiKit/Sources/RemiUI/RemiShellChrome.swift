@@ -38,6 +38,13 @@ public struct RemiShellChrome: Equatable, Sendable {
         allowsEdgePan && !isDrawerOpen && isAtRoot
     }
 
+    /// Whether the app draws its own sidebar toggle. Only beside a sidebar that is showing: once
+    /// the split view hides the sidebar it adds a toggle of its own, and drawing ours as well gave
+    /// two sidebar icons side by side. In compact the menu button opens the drawer instead.
+    public func showsSidebarToggle(sidebarHidden: Bool) -> Bool {
+        usesSidebar && !sidebarHidden
+    }
+
     /// The sidebar's environment values, nil in compact where the shell owns them.
     public var sidebarEnvironment: SidebarEnvironment? {
         usesSidebar ? SidebarEnvironment() : nil

@@ -54,4 +54,15 @@ import Testing
         state.layoutModeChanged(to: .compact)
         #expect(state == before)
     }
+
+    @Test func theAppDrawsASidebarToggleOnlyBesideAShowingSidebar() {
+        let regular = RemiShellChrome.resolve(mode: .regular)
+        #expect(regular.showsSidebarToggle(sidebarHidden: false))
+        // Hidden: the split view adds its own toggle, and a second one would sit beside it.
+        #expect(!regular.showsSidebarToggle(sidebarHidden: true))
+        // Compact has no sidebar to toggle; the menu button opens the drawer.
+        let compact = RemiShellChrome.resolve(mode: .compact)
+        #expect(!compact.showsSidebarToggle(sidebarHidden: false))
+        #expect(!compact.showsSidebarToggle(sidebarHidden: true))
+    }
 }
