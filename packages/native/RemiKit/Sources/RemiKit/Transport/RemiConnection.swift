@@ -95,6 +95,7 @@ public enum RemiInboundEvent: Sendable, Equatable {
     case resumeSessionResponse(ResumeSessionResponseMessage)
     case killSessionResponse(KillSessionResponseMessage)
     case sessionUpdate(SessionUpdateMessage)
+    case remiStatus(RemiStatusMessage)
     case error(ErrorMessage)
     case relayReady
     case answerResult(AnswerResultMessage)
@@ -656,6 +657,8 @@ public actor RemiConnection {
             ))
         case "session_update":
             eventHandler(.sessionUpdate(try decoder.decode(SessionUpdateMessage.self, from: data)))
+        case "remi_status":
+            eventHandler(.remiStatus(try decoder.decode(RemiStatusMessage.self, from: data)))
         case "error":
             let message = try decoder.decode(ErrorMessage.self, from: data)
             // Direct Hello also supports auth-disabled hubs. An authenticated hub
