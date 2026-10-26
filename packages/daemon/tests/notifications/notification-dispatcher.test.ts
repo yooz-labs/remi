@@ -863,7 +863,7 @@ describe('NotificationDispatcher.dismiss (#585 P7)', () => {
       handleQuestion: () => {},
       handleStatusChange: () => {},
     } as never);
-    // Attach a client: dismiss must STILL fire (unlike maybePush) — the card may
+    // Attach a client: dismiss must STILL fire — the card may
     // be on another device's lock screen.
     registry.attachConnection(SID, 'c0000000-0000-0000-0000-000000000000' as UUID);
     deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });

@@ -341,9 +341,8 @@ export type PushFn = typeof sendPushTrigger;
  * to decide whether a held hook kept blocking Claude. A hold since #1126 has
  * a fixed deadline instead (`[prompts] hold_seconds`) and never waits on
  * delivery, so this is diagnostic only:
- *   - `in_app`     a client is attached, so the question shows in-app (the only
- *                  case where `maybePush` deliberately does NOT push — but the
- *                  user IS reachable).
+ *   - `in_app`     a client is attached and no registered recipient has an enabled
+ *                  push channel; the question remains reachable in-app.
  *   - `pushed`     at least one APNS push returned 2xx.
  *   - `deduped`    the push was suppressed because an identical one already went
  *                  out (the earlier push is the delivery).
@@ -901,9 +900,8 @@ export class NotificationDispatcher {
    * Fire a QUIET APNS dismissal for a resolved question (#585, P7). Sends a
    * `content-available` push (no alert, no sound) keyed by `apns-collapse-id` =
    * questionId so a suspended device replaces/clears the earlier lock-screen card
-   * for that exact question. Fans out to every registered device — unlike
-   * `maybePush`, it deliberately does NOT skip when a client is attached: the
-   * card may still sit on another device's lock screen, and the collapse-id makes
+   * for that exact question. Like `maybePush`, it does not skip attached clients:
+   * the card may still sit on another device's lock screen, and the collapse-id makes
    * a no-op dismissal harmless. No dedup gate (a repeat dismissal is idempotent at
    * the device). No-op when no tokens are registered.
    *
