@@ -176,6 +176,15 @@ public struct MachineState: Sendable, Equatable, Identifiable {
     public var status: MachineConnectionStatus
     public var sessionConnectionIssue: String?
     public var sessions: [DiscoverableSession]
+    /// Live events override a list's coarse discovery state until their socket is lost (#1673).
+    struct SessionActivity: Sendable, Equatable {
+        let status: String
+        let origin: MachineEndpoint
+    }
+    var sessionActivity: [String: SessionActivity] = [:]
+    public func activityStatus(for session: DiscoverableSession) -> String {
+        sessionActivity[session.sessionId]?.status ?? session.status
+    }
     public var hasLoadedSessions: Bool
     public var questions: [QuestionMessage]
     public var capabilities: [String]
@@ -342,6 +351,9 @@ public final class MachineStore {
     func ownedStartApprovalPolling(_ endpoint: MachineEndpoint) { startApprovalPolling(for: endpoint) }
     #endif
     public private(set) var transcriptsBySession: [MachineSessionKey: [TranscriptContentMessage]] = [:]
+    /// A selected conversation reloads when its owning socket becomes ready or reconnects.
+    /// The routing table itself is not observable; a task keyed only by session id misses this.
+    public private(set) var transcriptRouteGenerations: [MachineSessionKey: UUID] = [:]
     /// Sessions whose transcript has been requested and has not finished arriving (#1602).
     public private(set) var transcriptsLoading: Set<MachineSessionKey> = []
     public private(set) var sessionViewsBySession: [MachineSessionKey: [SessionViewMeta]] = [:]
@@ -951,6 +963,7 @@ public final class MachineStore {
     }
 
     private func retireProfileConnections(machineIndex index: Int, reason: String) {
+        machines[index].sessionActivity.removeAll()
         let roots = Set(machines[index].routingRoutes)
         failedDirectRoutes.subtract(roots)
         for root in roots { terminalRootStates[root] = nil }
@@ -963,6 +976,7 @@ public final class MachineStore {
             finishResume(requestID: requestID, error: reason)
         }
         routeBySession = routeBySession.filter { !retiredSet.contains($0.value) }
+        transcriptRouteGenerations = transcriptRouteGenerations.filter { routeBySession[$0.key] != nil }
         for route in retired {
             if let key = brokerKey(route), let generation = connectionGenerations[route] {
                 RelayChannelBroker.shared.retire(key: key, id: generation)
@@ -999,6 +1013,7 @@ public final class MachineStore {
         }
         let activeConnections = Array(connections.values)
         connectionGenerations.removeAll()
+        transcriptRouteGenerations.removeAll()
         relayPairingContexts.removeAll()
         connections.removeAll()
         parentByConnection.removeAll()
@@ -1008,6 +1023,7 @@ public final class MachineStore {
         failedChildConnections.removeAll()
         for index in machines.indices {
             machines[index].status = .disconnected
+            machines[index].sessionActivity.removeAll()
             machines[index].sessionConnectionIssue = nil
             machines[index].recoveryProgress = nil
         }
@@ -1449,6 +1465,13 @@ public final class MachineStore {
         transcriptsLoading.contains(sessionKey(machineID: machineID, sessionID: sessionID))
     }
 
+    public func transcriptRouteGeneration(machineID: String, sessionID: String) -> UUID? {
+        let key = sessionKey(machineID: machineID, sessionID: sessionID)
+        guard let route = routeBySession[key], let current = connectionGenerations[route],
+              transcriptRouteGenerations[key] == current else { return nil }
+        return current
+    }
+
     @discardableResult
     public func loadTranscript(machineID: String, sessionId: String) -> String? {
         let key = sessionKey(machineID: machineID, sessionID: sessionId)
@@ -1835,6 +1858,7 @@ public final class MachineStore {
             target.usesConfiguredDisplayName = true
         }
         target.sessions = mergeSessions(target.sessions, with: source.sessions)
+        target.sessionActivity.merge(source.sessionActivity) { current, _ in current }
         for question in source.questions where !target.questions.contains(where: { $0.question.id == question.question.id }) {
             target.questions.append(question)
         }
@@ -1856,6 +1880,7 @@ public final class MachineStore {
             !machines[machineIndex].connectionPreference.permits($0)
         })
         for route in parentByConnection.filter({ forbidden.contains($0.value) }).map(\.key) {
+            machines[machineIndex].sessionActivity = machines[machineIndex].sessionActivity.filter { $0.value.origin != route }
             if let key = brokerKey(route), let generation = connectionGenerations[route] {
                 RelayChannelBroker.shared.retire(key: key, id: generation)
             }
@@ -1945,6 +1970,7 @@ public final class MachineStore {
 
     private func failClosed(_ endpoint: MachineEndpoint, machineIndex: Int, reason: String) {
         machines[machineIndex].status = .unavailable(reason: reason)
+        machines[machineIndex].sessionActivity.removeAll()
         let roots = Set(machines[machineIndex].routingRoutes)
         for route in parentByConnection.filter({ roots.contains($0.value) }).map(\.key) {
             if let key = brokerKey(route), let generation = connectionGenerations[route] {
@@ -1962,6 +1988,10 @@ public final class MachineStore {
               let index = machineIndex(containing: parent)
         else { return }
         if case .connected = state {} else { panesConnectionLost(endpoint) }
+        if case .connected = state {} else {
+            machines[index].sessionActivity = machines[index].sessionActivity.filter { $0.value.origin != endpoint }
+            transcriptRouteGenerations = transcriptRouteGenerations.filter { routeBySession[$0.key] != endpoint }
+        }
 
         // Session sockets do not describe the machine route's reachability, but
         // terminal failures still need an explicit retry path (#1561).
@@ -2054,6 +2084,10 @@ public final class MachineStore {
         }
 
         switch event {
+        case .sessionUpdate(let message):
+            machines[index].sessionActivity[message.session.id] = .init(status: message.session.status, origin: endpoint)
+        case .remiStatus(let message):
+            machines[index].sessionActivity[message.sessionId] = .init(status: message.status.sessionStatus, origin: endpoint)
         case .terminalView(let message):
             receiveTerminalView(message, from: endpoint, machineIndex: index)
         case .fileFetch(let message):
@@ -2112,7 +2146,9 @@ public final class MachineStore {
             let activeOrigin = machines[index].endpoint.id == parent.id
             if activeOrigin {
                 for session in response.sessions {
-                    routeBySession[MachineSessionKey(machineID: machines[index].id, sessionID: session.sessionId)] = endpoint
+                    let key = MachineSessionKey(machineID: machines[index].id, sessionID: session.sessionId)
+                    routeBySession[key] = endpoint
+                    transcriptRouteGenerations[key] = generation
                 }
             }
             machines[index].sessions = mergeSessions(
@@ -2166,7 +2202,9 @@ public final class MachineStore {
                 return $0.agentType.localizedCaseInsensitiveCompare($1.agentType) == .orderedAscending
             }
             for subagent in message.subagents {
-                routeBySession[MachineSessionKey(machineID: machines[index].id, sessionID: subagent.agentId)] = endpoint
+                let key = MachineSessionKey(machineID: machines[index].id, sessionID: subagent.agentId)
+                routeBySession[key] = endpoint
+                transcriptRouteGenerations[key] = generation
             }
         case .recentRepositories(let response):
             guard endpoint == parent else { return }
@@ -2191,8 +2229,10 @@ public final class MachineStore {
             if response.success {
                 let sessionId = killedKey.sessionID
                 machines[index].sessions.removeAll { $0.sessionId == sessionId }
+                machines[index].sessionActivity[sessionId] = nil
                 machines[index].questions.removeAll { $0.sessionId == sessionId }
                 transcriptsBySession[killedKey] = nil
+                transcriptRouteGenerations[killedKey] = nil
                 sessionViewsBySession[killedKey] = nil
                 routeBySession[killedKey] = nil
                 terminalViews[killedKey] = nil
@@ -2216,7 +2256,7 @@ public final class MachineStore {
             }
         case .transcriptComplete(let complete):
             finishTranscriptLoad(MachineSessionKey(machineID: machines[index].id, sessionID: complete.sessionId))
-        case .sessionUpdate, .unsupported, .pushRegistration:
+        case .unsupported, .pushRegistration:
             break
         }
     }
