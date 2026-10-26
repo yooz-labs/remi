@@ -8,17 +8,17 @@
 # app. It does not touch the older WebView menu-bar app (scripts/testflight-macos.sh).
 #
 # Usage:
-#   scripts/testflight-native-macos.sh --preflight-only    # settings and source checks, no build
-#   scripts/testflight-native-macos.sh --unsigned-archive  # archive without signing, inspect payload
-#   scripts/testflight-native-macos.sh                     # archive, export and verify the .pkg
-#   scripts/testflight-native-macos.sh --upload            # ... and upload it to TestFlight
+#   packages/native/scripts/testflight-native-macos.sh --preflight-only    # settings and source checks, no build
+#   packages/native/scripts/testflight-native-macos.sh --unsigned-archive  # archive without signing, inspect payload
+#   packages/native/scripts/testflight-native-macos.sh                     # archive, export and verify the .pkg
+#   packages/native/scripts/testflight-native-macos.sh --upload            # ... and upload it to TestFlight
 #
 # --upload needs ASC_KEY_ID and ASC_ISSUER_ID (in .env or the environment), the API key at
 # ~/.appstoreconnect/private_keys/AuthKey_<KEYID>.p8, and the "Apple Distribution" and
 # "3rd Party Mac Developer Installer" (Mac Installer Distribution) certificates in the keychain.
 set -euo pipefail
 
-REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 PROJECT="$REPO_ROOT/packages/native/Remi.xcodeproj"
 SCHEME="RemiMac"
 TEAM_ID="${REMI_APPLE_TEAM_ID:-9DQ459HAZB}"
