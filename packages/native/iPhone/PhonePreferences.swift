@@ -1,11 +1,12 @@
 import SwiftUI
 import RemiKit
+import RemiPush
 import RemiUI
 import UIKit
 
 enum PhonePreferenceKey {
     static let questionNotifications = "remi.phone.question-notifications"
-    static let notificationSounds = "remi.phone.notification-sounds"
+    static let notificationSounds = RemiPushPresentation.soundsPreferenceKey
     static let haptics = "remi.phone.haptics"
 }
 
@@ -31,6 +32,10 @@ struct PhonePreferencesSheet: View {
                     Toggle("Question notifications", isOn: $notificationsEnabled)
                     Toggle("Notification sounds", isOn: $soundsEnabled)
                         .disabled(!notificationsEnabled)
+                        .onChange(of: soundsEnabled) { _, enabled in
+                            RemiPushPresentation.shareSoundsPreference(
+                                enabled, with: UserDefaults(suiteName: RemiPushPresentation.sharedDefaultsSuite))
+                        }
                     Toggle("Concise question summaries", isOn: $summariesEnabled)
                         .disabled(!notificationsEnabled)
 
