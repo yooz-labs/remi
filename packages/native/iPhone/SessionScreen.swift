@@ -29,6 +29,7 @@ struct SessionScreen: View {
     @State private var pane: PhoneSessionPane
     @State private var draft: String
     @State private var selectedViewID: String
+    @State private var composerDismissRequest = 0
     @State private var focusState: PhoneQuestionFocusState
     @State private var confirmingTermination = false
     @State private var isSearchPresented = false
@@ -247,10 +248,10 @@ struct SessionScreen: View {
                         isReviewing: isSearchPresented || focusedQuestionID != nil,
                         onFollow: { scrollToLatest(using: proxy) }))
                     .scrollPosition(id: $visibleEntryID, anchor: .top)
-                    // Reading the transcript is how the keyboard is put away: dragging it down
-                    // lowers the keyboard, and so does a tap on the text. The draft stays.
-                    .scrollDismissesKeyboard(.interactively)
-                    .simultaneousGesture(TapGesture().onEnded { Self.dismissKeyboard() })
+                    // A tap on the transcript puts the composer's keyboard away; the draft stays.
+                    // It asks the composer to let go, so a tap that lands on another text field
+                    // (a question's free-text answer) does not fight that field for focus.
+                    .simultaneousGesture(TapGesture().onEnded { composerDismissRequest += 1 })
                     .modifier(SessionNavigationBarBehavior())
                     .onAppear { focusQuestion(using: proxy) }
                     .onChange(of: questions.map(\.questionID)) { _, questionIDs in
@@ -290,6 +291,7 @@ struct SessionScreen: View {
             onSend: onSend,
             onInterrupt: nil
         )
+        .environment(\.remiComposerDismissRequest, composerDismissRequest)
         .navigationTitle(session.displayTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -510,13 +512,6 @@ struct SessionScreen: View {
     }
 
     private var focusedQuestionID: String? { focusState.focused }
-
-    /// Takes the keyboard away from whatever has it. A tap on a control still reaches the control:
-    /// this runs beside it, not instead of it.
-    private static func dismissKeyboard() {
-        UIApplication.shared.sendAction(
-            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-    }
 
     private func focusQuestion(using proxy: ScrollViewProxy) {
         guard let focusedQuestionID,

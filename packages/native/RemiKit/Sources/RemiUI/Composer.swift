@@ -1,10 +1,18 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 public extension EnvironmentValues {
     /// Bumped to ask the composer to take keyboard focus (a hardware-keyboard shortcut).
     /// A composer that cannot take text right now, because a prompt is waiting or a
     /// message is sending, ignores the request.
     @Entry var remiComposerFocusRequest = 0
+
+    /// Bumped to ask the composer to put its keyboard away, keeping its draft. A tap on the
+    /// transcript sends it. Only the composer reacts, so a tap that lands on another text field
+    /// never takes that field's focus away.
+    @Entry var remiComposerDismissRequest = 0
 }
 
 /// The message field and its action button.
@@ -19,6 +27,7 @@ public struct RemiComposer<LeadingAccessory: View>: View {
     /// glyph never outgrows its circle.
     @ScaledMetric(relativeTo: .body) private var controlSize: CGFloat = RemiTheme.Size.minimumTapTarget
     @Environment(\.remiComposerFocusRequest) private var focusRequest
+    @Environment(\.remiComposerDismissRequest) private var dismissRequest
     @FocusState private var isFocused: Bool
     @Binding private var text: String
     private let promptWaiting: Bool
@@ -76,7 +85,12 @@ public struct RemiComposer<LeadingAccessory: View>: View {
                             ToolbarItemGroup(placement: .keyboard) {
                                 Spacer()
                                 Button("Hide keyboard", systemImage: "keyboard.chevron.compact.down") {
+                                    // Whichever field has the keyboard (the transcript search
+                                    // field and a question's free-text field show this bar too).
                                     isFocused = false
+                                    UIApplication.shared.sendAction(
+                                        #selector(UIResponder.resignFirstResponder),
+                                        to: nil, from: nil, for: nil)
                                 }
                                 .labelStyle(.iconOnly)
                             }
@@ -92,6 +106,7 @@ public struct RemiComposer<LeadingAccessory: View>: View {
         .onChange(of: focusRequest) { _, _ in
             if !promptWaiting && !isSending { isFocused = true }
         }
+        .onChange(of: dismissRequest) { _, _ in isFocused = false }
     }
 
     private var canSend: Bool {
