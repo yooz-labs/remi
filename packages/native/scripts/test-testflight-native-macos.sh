@@ -53,6 +53,13 @@ apns_line=$(awk '/fail "exported app is not using production APNS"/ { print NR; 
 [ -n "$export_line" ] && [ -n "$apns_line" ] || fail "export/APNS checks are absent"
 [ "$apns_line" -gt "$export_line" ] || fail "production APNS is checked before distribution export"
 
+# The Mac app icon is the iPhone's light icon (BRAND-ASSETS.md): same bytes at 1024, so the two
+# apps cannot drift apart, and the menu bar mask is bundled.
+cmp -s "$REPO_ROOT/packages/native/Mac/Assets.xcassets/AppIcon.appiconset/icon_1024.png" \
+  "$REPO_ROOT/packages/native/iPhone/Assets.xcassets/AppIcon.appiconset/icon-light.png" ||
+  fail "the Mac app icon is not the iPhone light icon"
+[ -s "$REPO_ROOT/packages/native/RemiKit/Sources/RemiUI/Resources/r-mask.png" ] || fail "the menu bar glyph mask is missing"
+
 # The ordering the release depends on: validate with App Store Connect before uploading.
 validate_line=$(awk '/altool --validate-app/ { print NR; exit }' "$SCRIPT")
 upload_line=$(awk '/altool --upload-app/ { print NR; exit }' "$SCRIPT")
