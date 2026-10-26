@@ -443,7 +443,14 @@ private struct PhoneDrawerInboxRow: View {
 private struct PhoneDrawerSessionRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.projectMenu) private var projectMenu
+    @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
     @ScaledMetric(relativeTo: .body) private var statusDotSize = RemiTheme.Size.statusDot
+    @State private var frame = PhoneRowFrame()
+    /// Set when a long press opened the menu, so the lift of the finger that follows it is not
+    /// also taken as a tap on the row.
+    @State private var openedByLongPress = false
+    @State private var menuOpenedCount = 0
     let session: RemiSessionSummary
     let isSelected: Bool
     let isLastKnown: Bool
@@ -458,7 +465,9 @@ private struct PhoneDrawerSessionRow: View {
     let onNewSessionHere: () -> Void
 
     var body: some View {
-        Button(action: action) {
+        Button {
+            if openedByLongPress { openedByLongPress = false } else { action() }
+        } label: {
             HStack(alignment: .center, spacing: RemiTheme.Spacing.s) {
                 texts
                 Spacer(minLength: RemiTheme.Spacing.xs)
@@ -476,60 +485,36 @@ private struct PhoneDrawerSessionRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(presentation.accessibilityLabel)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .contextMenu { menuItems }
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame.rect = $0 }
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.4).onEnded { _ in
+                openedByLongPress = true
+                presentMenu()
+            }
+        )
+        // The long press has no VoiceOver equivalent of its own.
+        .accessibilityAction(named: "More actions") { presentMenu() }
+        .sensoryFeedback(.impact(weight: .light), trigger: menuOpenedCount) { _, _ in hapticsEnabled }
+    }
+
+    /// Opens the project's menu beside this row, drawn by the root above the whole screen.
+    private func presentMenu() {
+        guard let projectMenu else { return }
+        menuOpenedCount += 1
+        let close = { withAnimation(.snappy) { projectMenu.wrappedValue = nil } }
+        let content = PhoneProjectMenuContent(
+            session: session, otherSessions: otherSessions, isLastKnown: isLastKnown,
+            machineLabel: machineLabel, canRunOnMachine: canRunOnMachine,
+            onSelectOther: onSelectOther, onResume: onResume, onNewSessionHere: onNewSessionHere,
+            close: close)
+        withAnimation(.snappy) {
+            projectMenu.wrappedValue = PhoneProjectMenu(
+                id: "\(session.machineID)|\(session.id)", anchor: frame.rect, content: AnyView(content))
+        }
     }
 
     private var presentation: PhoneDrawerSessionPresentation {
         PhoneDrawerSessionPresentation(session: session, isLastKnown: isLastKnown, machineLabel: machineLabel)
-    }
-
-    @ViewBuilder
-    private var menuItems: some View {
-        if session.canResume && canRunOnMachine {
-            Button(session.isResuming ? "Resuming" : "Resume", systemImage: "play.fill", action: onResume)
-                .disabled(session.isResuming)
-        }
-        if canRunOnMachine {
-            Button("New session here", systemImage: "plus.rectangle.on.folder", action: onNewSessionHere)
-        }
-        if !otherSessions.isEmpty {
-            Menu("Other sessions in \(session.project)", systemImage: "clock.arrow.circlepath") {
-                ForEach(otherSessions, id: \.key) { other in
-                    let row = PhoneDrawerSessionPresentation(
-                        session: other, isLastKnown: isLastKnown, machineLabel: machineLabel)
-                    Button {
-                        onSelectOther(other)
-                    } label: {
-                        Text(row.title)
-                        Text(Self.detail(for: other, subtitle: row.subtitle))
-                    }
-                    .accessibilityLabel(row.accessibilityLabel)
-                }
-            }
-        }
-        Button("Copy directory", systemImage: "doc.on.doc") {
-            Self.copyLocally(session.projectPath)
-        }
-        Button("Copy session ID", systemImage: "doc.on.doc") {
-            Self.copyLocally(session.id)
-        }
-    }
-
-    /// What a menu entry says under its title: a running or waiting session says so, in words.
-    private static func detail(for session: RemiSessionSummary, subtitle: String) -> String {
-        switch session.status {
-        case .needsYou: String(localized: "Needs you") + " · " + subtitle
-        case .working: String(localized: "Working") + " · " + subtitle
-        default: subtitle
-        }
-    }
-
-    /// Local only, so Universal Clipboard does not sync a path or an id to other devices.
-    private static func copyLocally(_ value: String) {
-        UIPasteboard.general.setItems(
-            [[UTType.plainText.identifier: value]],
-            options: [.localOnly: true]
-        )
     }
 
     private var texts: some View {
