@@ -38,6 +38,7 @@ struct PhoneLiveRootView: View {
     @State private var activeSheet: PhoneShellSheet?
     @State private var composerFocusRequest = 0
     @State private var pairingAttemptID: UUID?
+    @State private var projectMenu: PhoneProjectMenu?
     @State private var relayNotifications = NativeRelayNotifications.shared
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -67,6 +68,10 @@ struct PhoneLiveRootView: View {
         let sessions = allSessions
         let machines = machineSummaries
         return rootLayout(sessions: sessions, machines: machines)
+        // A row's long-press menu is drawn here, above the drawer and the detail pane, so it can
+        // open beside its row whichever column the row is in.
+        .environment(\.projectMenu, $projectMenu)
+        .overlay { PhoneProjectMenuOverlay(menu: $projectMenu, besideRow: chrome.usesSidebar) }
         .environment(\.remiComposerFocusRequest, composerFocusRequest)
         .background { keyboardCommands }
         .onChange(of: layoutMode, initial: true) { _, mode in
