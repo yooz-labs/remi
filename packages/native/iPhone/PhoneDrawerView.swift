@@ -444,12 +444,11 @@ private struct PhoneDrawerSessionRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.projectMenu) private var projectMenu
+    @Environment(\.phoneDrawerBlocksTaps) private var blocksTaps
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
     @ScaledMetric(relativeTo: .body) private var statusDotSize = RemiTheme.Size.statusDot
     @State private var frame = PhoneRowFrame()
-    /// Set when a long press opened the menu, so the lift of the finger that follows it is not
-    /// also taken as a tap on the row.
-    @State private var openedByLongPress = false
+    @State private var isHovering = false
     @State private var menuOpenedCount = 0
     let session: RemiSessionSummary
     let isSelected: Bool
@@ -465,41 +464,53 @@ private struct PhoneDrawerSessionRow: View {
     let onNewSessionHere: () -> Void
 
     var body: some View {
-        Button {
-            if openedByLongPress { openedByLongPress = false } else { action() }
-        } label: {
-            HStack(alignment: .center, spacing: RemiTheme.Spacing.s) {
-                texts
-                Spacer(minLength: RemiTheme.Spacing.xs)
-                indicator
-            }
-            .padding(.horizontal, RemiTheme.Spacing.s)
-            .padding(.vertical, RemiTheme.Spacing.xs)
-            .frame(minHeight: RemiTheme.Size.minimumTapTarget)
-            .background(isSelected ? RemiTheme.Color.elevatedSurface : .clear, in: .rect(cornerRadius: RemiTheme.Radius.control))
-            .contentShape(.rect)
+        HStack(alignment: .center, spacing: RemiTheme.Spacing.s) {
+            texts
+            Spacer(minLength: RemiTheme.Spacing.xs)
+            // A pointer has no long press: the same menu opens from this while it hovers.
+            if isHovering { moreButton }
+            indicator
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, RemiTheme.Spacing.s)
+        .padding(.vertical, RemiTheme.Spacing.xs)
+        .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+        .background(isSelected ? RemiTheme.Color.elevatedSurface : .clear, in: .rect(cornerRadius: RemiTheme.Radius.control))
+        .contentShape(.rect)
+        // A tap opens the session and a long press opens the menu; SwiftUI lets only one of them
+        // fire, so a long press is never also a tap, and a cancelled touch leaves nothing behind.
+        .onTapGesture(perform: action)
+        .onLongPressGesture(minimumDuration: 0.4) { presentMenu() }
         .contentShape(.hoverEffect, .rect(cornerRadius: RemiTheme.Radius.control))
         .hoverEffect(.highlight)
+        .onHover { isHovering = $0 }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(presentation.accessibilityLabel)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame.rect = $0 }
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.4).onEnded { _ in
-                openedByLongPress = true
-                presentMenu()
-            }
-        )
         // The long press has no VoiceOver equivalent of its own.
         .accessibilityAction(named: "More actions") { presentMenu() }
         .sensoryFeedback(.impact(weight: .light), trigger: menuOpenedCount) { _, _ in hapticsEnabled }
     }
 
+    private var moreButton: some View {
+        Button { presentMenu() } label: {
+            Image(systemName: "ellipsis")
+                .foregroundStyle(.secondary)
+                .frame(width: RemiTheme.Size.minimumTapTarget, height: RemiTheme.Size.minimumTapTarget)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityHidden(true)
+    }
+
+    private var presentation: PhoneDrawerSessionPresentation {
+        PhoneDrawerSessionPresentation(session: session, isLastKnown: isLastKnown, machineLabel: machineLabel)
+    }
+
     /// Opens the project's menu beside this row, drawn by the root above the whole screen.
     private func presentMenu() {
-        guard let projectMenu else { return }
+        // Not while the drawer is being dragged: the row is moving, so its frame is not its place.
+        guard let projectMenu, !blocksTaps else { return }
         menuOpenedCount += 1
         let close = { withAnimation(.snappy) { projectMenu.wrappedValue = nil } }
         let content = PhoneProjectMenuContent(
@@ -511,10 +522,6 @@ private struct PhoneDrawerSessionRow: View {
             projectMenu.wrappedValue = PhoneProjectMenu(
                 id: "\(session.machineID)|\(session.id)", anchor: frame.rect, content: AnyView(content))
         }
-    }
-
-    private var presentation: PhoneDrawerSessionPresentation {
-        PhoneDrawerSessionPresentation(session: session, isLastKnown: isLastKnown, machineLabel: machineLabel)
     }
 
     private var texts: some View {

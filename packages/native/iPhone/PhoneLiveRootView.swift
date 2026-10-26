@@ -71,7 +71,17 @@ struct PhoneLiveRootView: View {
         // A row's long-press menu is drawn here, above the drawer and the detail pane, so it can
         // open beside its row whichever column the row is in.
         .environment(\.projectMenu, $projectMenu)
+        // What is under the menu is out of reach of VoiceOver while it shows.
+        .accessibilityHidden(projectMenu != nil)
         .overlay { PhoneProjectMenuOverlay(menu: $projectMenu, besideRow: chrome.usesSidebar) }
+        // The menu was built from the row as it was. When the drawer, the open session, the layout
+        // or the machine's connection changes, or its session is gone, it is out of date: close it.
+        .onChange(of: projectMenuValidity(sessions: sessions, machines: machines)) { _, valid in
+            if !valid { projectMenu = nil }
+        }
+        .onChange(of: shell.isDrawerOpen) { _, _ in projectMenu = nil }
+        .onChange(of: shell.destination) { _, _ in projectMenu = nil }
+        .onChange(of: layoutMode) { _, _ in projectMenu = nil }
         .environment(\.remiComposerFocusRequest, composerFocusRequest)
         .background { keyboardCommands }
         .onChange(of: layoutMode, initial: true) { _, mode in
@@ -156,6 +166,17 @@ struct PhoneLiveRootView: View {
             )
             store.consumeResumedSessionDestination(id: destination.id)
         }
+    }
+
+    /// Whether the open row menu still describes the list: its session is still there and its
+    /// machine is still connected. A menu built before either changed would offer actions (Resume,
+    /// New session here) that no longer work.
+    private func projectMenuValidity(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> Bool {
+        guard let menu = projectMenu else { return true }
+        let stillListed = sessions.contains { "\($0.machineID)|\($0.id)" == menu.id }
+        let machineID = menu.id.split(separator: "|", maxSplits: 1).first.map(String.init)
+        let connected = machines.first { $0.id == machineID }?.reachability == .connected
+        return stillListed && connected
     }
 
     /// Compact: the drawer over the content. Regular: the same drawer content as a

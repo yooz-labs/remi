@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 /// What a session row's long-press menu holds: actions for the project, its other sessions on the
 /// machine (most recent first), and the copy actions. Drawn by `PhoneProjectMenuOverlay`.
 struct PhoneProjectMenuContent: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let session: RemiSessionSummary
     let otherSessions: [RemiSessionSummary]
     let isLastKnown: Bool
@@ -92,11 +93,11 @@ struct PhoneProjectMenuContent: View {
             onSelectOther(other)
         } label: {
             VStack(alignment: .leading, spacing: RemiTheme.Spacing.xxxs) {
-                Text(row.title).lineLimit(1)
+                Text(row.title).lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 Text(Self.detail(for: other, subtitle: row.subtitle))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, RemiTheme.Spacing.m)

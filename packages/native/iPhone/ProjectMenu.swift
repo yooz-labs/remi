@@ -46,8 +46,11 @@ private struct CappedHeight: Layout {
 }
 
 struct PhoneProjectMenuOverlay: View {
-    private static let width: CGFloat = 320
     private static let margin: CGFloat = 8
+    /// Wider at larger text sizes, so titles are not cut short when Dynamic Type grows.
+    @ScaledMetric(relativeTo: .body) private var width: CGFloat = 320
+    @AccessibilityFocusState private var menuFocused: Bool
+    @FocusState private var hasKeyboardFocus: Bool
 
     @Binding var menu: PhoneProjectMenu?
     /// True when a detail pane sits beside the list, which is where the menu opens.
@@ -72,7 +75,7 @@ struct PhoneProjectMenuOverlay: View {
                     CappedHeight(max: maxHeight(anchor: anchor, bounds: proxy.size)) {
                         menu.content
                     }
-                    .frame(width: min(Self.width, proxy.size.width - 2 * Self.margin))
+                    .frame(width: min(width, proxy.size.width - 2 * Self.margin))
                     .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 24))
                     .shadow(color: .black.opacity(0.18), radius: 24, y: 8)
                     .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
@@ -82,8 +85,17 @@ struct PhoneProjectMenuOverlay: View {
                     // Hidden until measured, so it does not flash at the corner.
                     .opacity(size == .zero ? 0 : 1)
                     .transition(.scale(scale: 0.96, anchor: .leading).combined(with: .opacity))
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Session actions")
                     .accessibilityAddTraits(.isModal)
                     .accessibilityAction(.escape) { dismiss() }
+                    // VoiceOver starts inside the menu, not on the row under it.
+                    .accessibilityFocused($menuFocused)
+                    // A hardware keyboard closes it with Escape.
+                    .focusable()
+                    .focused($hasKeyboardFocus)
+                    .onKeyPress(.escape) { dismiss(); return .handled }
+                    .onAppear { menuFocused = true; hasKeyboardFocus = true }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -97,6 +109,9 @@ struct PhoneProjectMenuOverlay: View {
                         .accessibilityHidden(true)
                 }
             }
+            // The anchor is where the row was. Once the window turns or resizes, it is not.
+            // Not the first measurement, which is the window taking its size, not changing it.
+            .onChange(of: proxy.size) { old, _ in if old != .zero { dismiss() } }
         }
         .allowsHitTesting(menu != nil)
     }
