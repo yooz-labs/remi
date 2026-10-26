@@ -5,7 +5,8 @@
 # packages/native, exports a Mac App Store .pkg, verifies what was exported, and with --upload
 # sends it to TestFlight through altool. It shares the App Store Connect record (live.yooz.remi,
 # macOS platform), the version and the build counter in config/app-release.json with the iPhone
-# app. It does not touch the older WebView menu-bar app (scripts/testflight-macos.sh).
+# app and with the older WebView menu-bar app (scripts/testflight-macos.sh), which it replaces in
+# the Mac TestFlight train: bump the build number when either has uploaded the current one.
 #
 # Usage:
 #   packages/native/scripts/testflight-native-macos.sh --preflight-only    # settings and source checks, no build
@@ -66,6 +67,9 @@ entitlement_value() {
   rm -f "$file"
 }
 
+# Tests source this file for its helpers and stop here, before anything runs.
+if [ "${REMI_TESTFLIGHT_SOURCE_ONLY:-}" = 1 ]; then return 0 2>/dev/null || exit 0; fi
+
 need git
 need xcodebuild
 need xcrun
@@ -96,7 +100,8 @@ expect_contains "$PBXPROJ" "APNS_ENVIRONMENT = production;" "native project has 
 expect_contains "$APP_ENTITLEMENTS" "com.apple.security.app-sandbox" "Mac app is not sandboxed"
 expect_contains "$APP_ENTITLEMENTS" "com.apple.security.network.client" "Mac app has no outgoing network entitlement"
 expect_contains "$APP_ENTITLEMENTS" "live.yooz.remi.secure-push" "app push keychain group is missing"
-expect_contains "$APP_ENTITLEMENTS" "live.yooz.remi" "app-group entitlement is missing"
+expect_contains "$APP_ENTITLEMENTS" "\$(DEVELOPMENT_TEAM).live.yooz.remi" "app-group entitlement is missing"
+expect_contains "$EXTENSION_ENTITLEMENTS" "\$(DEVELOPMENT_TEAM).live.yooz.remi" "extension app-group entitlement is missing"
 expect_contains "$EXTENSION_ENTITLEMENTS" "live.yooz.remi.secure-push" "extension push keychain group is missing"
 expect_contains "$EXTENSION_ENTITLEMENTS" "com.apple.security.app-sandbox" "Mac push extension is not sandboxed"
 expect_contains "$PBXPROJ" "INFOPLIST_KEY_NSLocalNetworkUsageDescription" "local-network usage description is missing"
@@ -110,6 +115,8 @@ done
 expect_file "$MAC_SOURCE/PrivacyInfo.xcprivacy" "Mac app privacy manifest"
 plutil -lint "$MAC_SOURCE/PrivacyInfo.xcprivacy" >/dev/null || fail "Mac privacy manifest is not a valid plist"
 [ "$(plist_value "$MAC_SOURCE/PrivacyInfo.xcprivacy" NSPrivacyTracking)" = false ] || fail "Mac privacy manifest declares tracking"
+# MachinePanes reads the system uptime to time out requests; that API needs its reason declared.
+expect_contains "$MAC_SOURCE/PrivacyInfo.xcprivacy" "NSPrivacyAccessedAPICategorySystemBootTime" "Mac privacy manifest does not declare system boot time"
 
 echo "[1/7] Checking native Release build settings"
 OVERRIDES=(MARKETING_VERSION="$MARKETING" CURRENT_PROJECT_VERSION="$BUILD"
@@ -139,7 +146,9 @@ if [ -f "$REPO_ROOT/.env" ]; then
 fi
 AUTH_ARGS=()
 if [ "$UNSIGNED_ARCHIVE" = false ] && [ -n "${ASC_KEY_ID:-}" ] && [ -n "${ASC_ISSUER_ID:-}" ]; then
-  AUTH_KEY_PATH="${ASC_KEY_PATH:-$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8}"
+  # altool looks in the default key directory only, so a custom path would pass the check and then
+  # fail at upload; the key is always read from there.
+  AUTH_KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
   expect_file "$AUTH_KEY_PATH" "App Store Connect API key"
   AUTH_ARGS=(-authenticationKeyPath "$AUTH_KEY_PATH" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID")
 fi
@@ -204,9 +213,10 @@ fi
 
 echo "[3/7] Verifying archive signing and entitlements"
 codesign --verify --deep --strict "$APP" || fail "archived app signature verification failed"
-ARCHIVE_ENTITLEMENTS=$(entitlements_of "$APP")
+ARCHIVE_ENTITLEMENTS=$(entitlements_of "$APP") || fail "cannot read archived app entitlements"
 [ "$(entitlement_value "$ARCHIVE_ENTITLEMENTS" com.apple.security.app-sandbox)" = true ] || fail "signed app is not sandboxed"
 grep -Fq 'live.yooz.remi.secure-push' <<<"$ARCHIVE_ENTITLEMENTS" || fail "signed app is missing the shared push keychain group"
+grep -Fq "$TEAM_ID.live.yooz.remi" <<<"$ARCHIVE_ENTITLEMENTS" || fail "signed app is missing its app group"
 # Automatic signing may use a development profile here. App Store export re-signs the payload;
 # production APNS and no debugger access are required on that final app.
 
@@ -227,7 +237,9 @@ if [ "${#AUTH_ARGS[@]}" -gt 0 ]; then EXPORT_CMD+=("${AUTH_ARGS[@]}"); fi
 PKG_COUNT=$(find "$EXPORT_PATH" -maxdepth 1 -type f -name '*.pkg' | wc -l | tr -d ' ')
 [ "$PKG_COUNT" -eq 1 ] || fail "expected exactly one .pkg in $EXPORT_PATH, found $PKG_COUNT"
 PKG=$(find "$EXPORT_PATH" -maxdepth 1 -type f -name '*.pkg')
-pkgutil --check-signature "$PKG" >/dev/null || fail "the package is not signed with an installer certificate"
+PKG_SIGNATURE=$(pkgutil --check-signature "$PKG") || fail "the package is not signed"
+grep -Eq '3rd Party Mac Developer Installer|Mac Installer Distribution' <<<"$PKG_SIGNATURE" ||
+  fail "the package is not signed with a Mac installer distribution certificate"
 VERIFY_DIR=$(mktemp -d /tmp/remi-native-macos-pkg.XXXXXX)
 pkgutil --expand-full "$PKG" "$VERIFY_DIR/expanded" >/dev/null || fail "cannot expand the package"
 EXPORTED_APP=$(find "$VERIFY_DIR/expanded" -maxdepth 6 -type d -name 'Remi.app' | head -1)
@@ -240,8 +252,13 @@ for TARGET in "$EXPORTED_APP" "$EXPORTED_EXTENSION"; do
   ENTITLEMENTS=$(entitlements_of "$TARGET") || fail "cannot read exported target entitlements"
   [ "$(entitlement_value "$ENTITLEMENTS" com.apple.security.app-sandbox)" = true ] || fail "exported target is not sandboxed"
   grep -Fq 'live.yooz.remi.secure-push' <<<"$ENTITLEMENTS" || fail "exported target is missing the shared push keychain group"
+  grep -Fq "$TEAM_ID.live.yooz.remi" <<<"$ENTITLEMENTS" || fail "exported target is missing its app group"
   [ "$(entitlement_value "$ENTITLEMENTS" com.apple.security.get-task-allow)" != true ] || fail "exported target permits debugger access"
+  # A development identity here would mean the export did not re-sign for distribution.
+  codesign -dvv "$TARGET" 2>&1 | grep -Eq '^Authority=(Apple Distribution|3rd Party Mac Developer Application)' ||
+    fail "exported target is not signed with a distribution identity"
 done
+! grep -R -a -q 'live.yooz.remi.dev' "$EXPORTED_APP" || fail "development identity leaked into the exported app"
 EXPORTED_APP_ENTITLEMENTS=$(entitlements_of "$EXPORTED_APP") || fail "cannot read exported app entitlements"
 [ "$(entitlement_value "$EXPORTED_APP_ENTITLEMENTS" com.apple.developer.aps-environment)" = production ] || fail "exported app is not using production APNS"
 
@@ -265,6 +282,11 @@ echo "[6/7] Upload"
 if [ "$DO_UPLOAD" = true ]; then
   [ -n "${ASC_KEY_ID:-}" ] && [ -n "${ASC_ISSUER_ID:-}" ] || fail "set ASC_KEY_ID and ASC_ISSUER_ID before --upload"
   expect_file "${AUTH_KEY_PATH:-}" "App Store Connect API key"
+  # Validate first: App Store Connect rejects a repeated build number or a bad plist here, before
+  # the upload, so a number already used by the older WebView Mac app (it shares this counter and
+  # this record) fails with a clear message. Nothing is delivered by this step.
+  xcrun altool --validate-app -f "$PKG" -t macos --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" ||
+    fail "App Store Connect validation failed; nothing was uploaded"
   xcrun altool --upload-app -f "$PKG" -t macos --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
   echo "Uploaded native Remi for Mac $MARKETING ($BUILD) to TestFlight"
 else

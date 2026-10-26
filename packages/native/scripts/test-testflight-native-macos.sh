@@ -4,6 +4,8 @@ set -euo pipefail
 
 REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 SCRIPT="$REPO_ROOT/packages/native/scripts/testflight-native-macos.sh"
+OUT=$(mktemp /tmp/remi-macos-contract.XXXXXX)
+trap 'rm -f "$OUT"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 contains() { grep -Fq -- "$2" "$1" || fail "$3"; }
 excludes() { ! grep -Fq -- "$2" "$1" || fail "$3"; }
@@ -51,15 +53,41 @@ apns_line=$(awk '/fail "exported app is not using production APNS"/ { print NR; 
 [ -n "$export_line" ] && [ -n "$apns_line" ] || fail "export/APNS checks are absent"
 [ "$apns_line" -gt "$export_line" ] || fail "production APNS is checked before distribution export"
 
+# The ordering the release depends on: validate with App Store Connect before uploading.
+validate_line=$(awk '/altool --validate-app/ { print NR; exit }' "$SCRIPT")
+upload_line=$(awk '/altool --upload-app/ { print NR; exit }' "$SCRIPT")
+[ -n "$validate_line" ] && [ -n "$upload_line" ] || fail "validate/upload steps are absent"
+[ "$validate_line" -lt "$upload_line" ] || fail "the package is uploaded before it is validated"
+contains "$SCRIPT" 'REMI_TESTFLIGHT_SOURCE_ONLY' "helpers cannot be sourced for testing"
+
+# Both apps read the system uptime (MachinePanes), so both manifests declare its reason.
+for manifest in packages/native/Mac/PrivacyInfo.xcprivacy packages/native/iPhone/PrivacyInfo.xcprivacy; do
+  contains "$REPO_ROOT/$manifest" "NSPrivacyAccessedAPICategorySystemBootTime" "$manifest does not declare system boot time"
+  contains "$REPO_ROOT/$manifest" "35F9.1" "$manifest has no reason for system boot time"
+done
+
+# The entitlement helper, on a real plist. Keys contain dots, which plutil reads as nesting; an
+# absent key must read as empty, not fail.
+FIXTURE='<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
+<key>com.apple.security.app-sandbox</key><true/>
+<key>com.apple.developer.aps-environment</key><string>production</string>
+<key>keychain-access-groups</key><array><string>T.live.yooz.remi.secure-push</string></array>
+</dict></plist>'
+(
+  REMI_TESTFLIGHT_SOURCE_ONLY=1 . "$SCRIPT"
+  [ "$(entitlement_value "$FIXTURE" com.apple.security.app-sandbox)" = true ] || fail "sandbox entitlement is not read"
+  [ "$(entitlement_value "$FIXTURE" com.apple.developer.aps-environment)" = production ] || fail "APNs entitlement is not read"
+  [ -z "$(entitlement_value "$FIXTURE" com.apple.security.get-task-allow)" ] || fail "an absent entitlement is not read as empty"
+) || exit 1
+
 "$SCRIPT" --preflight-only
-if "$SCRIPT" --preflight-only --upload >/tmp/remi-macos-invalid.out 2>&1; then
+if "$SCRIPT" --preflight-only --upload >"$OUT" 2>&1; then
   fail "--preflight-only --upload was accepted"
 fi
-if "$SCRIPT" --unsigned-archive --upload >/tmp/remi-macos-invalid.out 2>&1; then
+if "$SCRIPT" --unsigned-archive --upload >"$OUT" 2>&1; then
   fail "--unsigned-archive --upload was accepted"
 fi
-if "$SCRIPT" --not-an-option >/tmp/remi-macos-invalid.out 2>&1; then
+if "$SCRIPT" --not-an-option >"$OUT" 2>&1; then
   fail "unknown option was accepted"
 fi
-rm -f /tmp/remi-macos-invalid.out
 echo "PASS: native Mac TestFlight release contract"
