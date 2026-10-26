@@ -1991,6 +1991,14 @@ public final class MachineStore {
         if case .connected = state {} else {
             machines[index].sessionActivity = machines[index].sessionActivity.filter { $0.value.origin != endpoint }
             transcriptRouteGenerations = transcriptRouteGenerations.filter { routeBySession[$0.key] != endpoint }
+            // A lost child does not disconnect its hub. Apply the same conservative idle
+            // display as a lost machine, instead of reviving a stale "active" list entry.
+            if endpoint.id != parent.id {
+                for session in machines[index].activeSessions where
+                    routeBySession[MachineSessionKey(machineID: machines[index].id, sessionID: session.sessionId)] == endpoint {
+                    machines[index].sessionActivity[session.sessionId] = .init(status: "idle", origin: endpoint)
+                }
+            }
         }
 
         // Session sockets do not describe the machine route's reachability, but
@@ -2147,6 +2155,12 @@ public final class MachineStore {
             if activeOrigin {
                 for session in response.sessions {
                     let key = MachineSessionKey(machineID: machines[index].id, sessionID: session.sessionId)
+                    // Siblings list the same on-disk transcripts. Keep a ready reader so
+                    // an unrelated census cannot retrigger the selected history task.
+                    if session.source != "daemon", let owner = routeBySession[key],
+                       let ready = transcriptRouteGenerations[key], connectionGenerations[owner] == ready {
+                        continue
+                    }
                     routeBySession[key] = endpoint
                     transcriptRouteGenerations[key] = generation
                 }
