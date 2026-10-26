@@ -14,18 +14,24 @@ public struct RemiConversationTabs: Equatable, Sendable {
     private let all: [SessionViewMeta]
 
     public init(views: [SessionViewMeta], selectedViewID: String) {
-        all = views
-        tabs = views.filter { $0.active || $0.agentId == selectedViewID }
-        earlier = views.filter { !$0.active && $0.agentId != selectedViewID }
+        // One entry per agent: a repeated id would give the list two rows with one identity.
+        var seen = Set<String>()
+        let unique = views.filter { seen.insert($0.agentId).inserted }
+        all = unique
+        tabs = unique.filter { $0.active || $0.agentId == selectedViewID }
+        earlier = unique.filter { !$0.active && $0.agentId != selectedViewID }
     }
 
     /// The agent's type, numbered when two share it ("general-purpose 2"), rather than the id
     /// suffix `RemiConversationSelection.title` adds, which is long and means nothing to the
-    /// person. Numbered by position among all the session's agents, so a number does not change
-    /// as tabs come and go.
+    /// person. The number follows the agents' ids, not their place in the list: the daemon lists
+    /// running agents first, so a place in the list changes when an agent finishes and two agents
+    /// would swap names under the person. Types are compared without regard to case.
     public func title(for view: SessionViewMeta) -> String {
         let base = RemiConversationSelection.title(for: view, among: [view])
-        let sameType = all.filter { RemiConversationSelection.title(for: $0, among: [$0]) == base }
+        let sameType = all
+            .filter { RemiConversationSelection.title(for: $0, among: [$0]).localizedCaseInsensitiveCompare(base) == .orderedSame }
+            .sorted { $0.agentId < $1.agentId }
         guard sameType.count > 1, let index = sameType.firstIndex(where: { $0.agentId == view.agentId }) else {
             return base
         }

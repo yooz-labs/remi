@@ -519,8 +519,6 @@ private struct MacConversationPicker: View {
                     selected: selectedViewID == view.agentId,
                     compact: true
                 ) { selectedViewID = view.agentId }
-                // A finished conversation that is open stays a tab, but quieter than a live one.
-                .opacity(view.active || selectedViewID == view.agentId ? 1 : 0.6)
             }
 
             if !conversations.earlier.isEmpty {

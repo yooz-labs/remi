@@ -43,13 +43,51 @@ import Testing
         #expect(tabs.earlier.isEmpty)
     }
 
-    @Test func twoOfOneTypeAreNumberedByPositionAmongAll() {
-        let views = [view("a", active: false), view("b", active: true), view("c", "Explore", active: true)]
+    @Test func twoOfOneTypeAreNumberedByTheirIds() {
+        let views = [view("a1", active: false), view("b2", active: true), view("c3", "Explore", active: true)]
         let tabs = RemiConversationTabs(views: views, selectedViewID: "")
         #expect(tabs.title(for: views[0]) == "general-purpose 1")
-        // Numbered among all, so the number does not change when the first one leaves the tabs.
         #expect(tabs.title(for: views[1]) == "general-purpose 2")
         #expect(tabs.title(for: views[2]) == "Explore")
+    }
+
+    @Test func aTitleDoesNotChangeWhenTheDaemonReordersTheList() {
+        // The daemon lists running agents first. When A finishes, the list becomes [B, A].
+        let a = view("a1", active: true), b = view("b2", active: true)
+        let before = RemiConversationTabs(views: [a, b], selectedViewID: "")
+        let finished = view("a1", active: false)
+        let after = RemiConversationTabs(views: [b, finished], selectedViewID: "")
+        #expect(before.title(for: a) == after.title(for: finished))
+        #expect(before.title(for: b) == after.title(for: b))
+    }
+
+    @Test func typesAreNumberedTogetherWhateverTheirCase() {
+        let views = [view("a1", "Explore", active: true), view("b2", "explore", active: true)]
+        let tabs = RemiConversationTabs(views: views, selectedViewID: "")
+        #expect(tabs.title(for: views[0]) == "Explore 1")
+        #expect(tabs.title(for: views[1]) == "explore 2")
+    }
+
+    @Test func aRepeatedAgentIdIsOneConversation() {
+        let tabs = RemiConversationTabs(
+            views: [view("a", active: true), view("a", active: true), view("b", active: false)],
+            selectedViewID: "")
+        #expect(tabs.tabs.map(\.agentId) == ["a"])
+        #expect(tabs.earlier.map(\.agentId) == ["b"])
+    }
+
+    @Test func aRunningOpenConversationThatFinishesStaysATab() {
+        let running = RemiConversationTabs(views: [view("a", active: true)], selectedViewID: "a")
+        let finished = RemiConversationTabs(views: [view("a", active: false)], selectedViewID: "a")
+        #expect(running.tabs.map(\.agentId) == ["a"])
+        #expect(finished.tabs.map(\.agentId) == ["a"])
+        #expect(finished.earlier.isEmpty)
+    }
+
+    @Test func aSelectionThatIsNotInTheListMakesNoExtraTab() {
+        let tabs = RemiConversationTabs(views: [view("a", active: false)], selectedViewID: "gone")
+        #expect(tabs.tabs.isEmpty)
+        #expect(tabs.earlier.map(\.agentId) == ["a"])
     }
 
     @Test func aLoneAgentOfATypeIsNotNumbered() {

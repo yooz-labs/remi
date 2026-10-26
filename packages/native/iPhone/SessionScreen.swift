@@ -632,13 +632,14 @@ private struct ConversationPicker: View {
                             active: view.active,
                             selected: selectedViewID == view.agentId
                         ) { selectedViewID = view.agentId }
-                        .opacity(view.active || selectedViewID == view.agentId ? 1 : 0.6)
                     }
-                    if !conversations.earlier.isEmpty { earlierMenu }
                 }
                 .padding(.vertical, 2)
             }
             .scrollIndicators(.hidden)
+
+            // Outside the scrolling chips, so it is always in reach however many are running.
+            if !conversations.earlier.isEmpty { earlierMenu }
         }
     }
 
@@ -658,7 +659,9 @@ private struct ConversationPicker: View {
             Text("Earlier \(conversations.earlier.count)")
                 .font(.subheadline.weight(.semibold))
                 .frame(minHeight: RemiTheme.Size.minimumTapTarget)
-                .padding(.horizontal, RemiTheme.Spacing.xs)
+                .padding(.horizontal, RemiTheme.Spacing.s)
+                .background(RemiTheme.Color.elevatedSurface, in: Capsule())
+                .overlay { Capsule().stroke(RemiTheme.Color.hairline, lineWidth: 1) }
                 .contentShape(.rect)
         }
         .accessibilityLabel("Earlier conversations, \(conversations.earlier.count)")
