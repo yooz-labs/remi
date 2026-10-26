@@ -81,20 +81,29 @@ public struct RemiComposer<LeadingAccessory: View>: View {
                         .disabled(promptWaiting || isSending)
                         #if os(macOS)
                         // Return sends and Shift+Return is a new line, as in a chat app.
-                        .onKeyPress(.return, phases: .down) { press in
-                            switch RemiComposerReturnKey.action(
-                                modifiers: press.modifiers, canSend: canSend, isComposing: isComposingText
-                            ) {
-                            case .send: onSend(); return .handled
+                        .onKeyPress(.return, phases: [.down, .repeat]) { press in
+                            let action = RemiComposerReturnKey.action(
+                                modifiers: press.modifiers, canSend: canSend, isComposing: isComposingText)
+                            switch action {
+                            case .send:
+                                // Holding Return sends once: a repeat is taken and does nothing.
+                                if press.phase == .down { onSend() }
+                                return .handled
                             case .ignore: return .handled
                             case .passThrough: return .ignored
                             }
                         }
-                        // The same rule if the field takes Return for itself and submits.
+                        // The same rule if the field takes Return for itself and submits. Submit
+                        // carries no modifiers, so it reads the keys held at that moment.
                         .onSubmit {
                             if RemiComposerReturnKey.action(
-                                modifiers: [], canSend: canSend, isComposing: isComposingText
+                                modifiers: Self.heldModifiers, canSend: canSend, isComposing: isComposingText
                             ) == .send { onSend() }
+                        }
+                        // After a send the field is disabled for a moment; it takes the keyboard back,
+                        // so the next message can be typed without a click.
+                        .onChange(of: isSending) { was, now in
+                            if was && !now && !promptWaiting { isFocused = true }
                         }
                         #endif
 
@@ -111,9 +120,23 @@ public struct RemiComposer<LeadingAccessory: View>: View {
     }
 
     #if os(macOS)
-    /// Whether the field is holding text an input method has not committed yet.
+    /// Whether the field is holding text an input method has not committed yet. Any text input
+    /// responder is asked, not only an `NSTextView`, since the field editor's class is the
+    /// system's to change.
     private var isComposingText: Bool {
-        (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() ?? false
+        let responder = (NSApp.keyWindow ?? NSApp.mainWindow)?.firstResponder
+        return (responder as? NSTextInputClient)?.hasMarkedText() ?? false
+    }
+
+    /// The modifier keys held now, for a handler (`onSubmit`) that is not given them.
+    private static var heldModifiers: EventModifiers {
+        let flags = NSEvent.modifierFlags
+        var modifiers: EventModifiers = []
+        if flags.contains(.shift) { modifiers.insert(.shift) }
+        if flags.contains(.option) { modifiers.insert(.option) }
+        if flags.contains(.command) { modifiers.insert(.command) }
+        if flags.contains(.control) { modifiers.insert(.control) }
+        return modifiers
     }
     #endif
 
