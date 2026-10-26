@@ -1,10 +1,14 @@
 /** Actual encrypted peers, HubRelay and local Worker/DO exercise scope at ingress and egress. */
 import { afterEach, expect, test } from 'bun:test';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   type ProtocolMessage,
   createError,
+  createPing,
   createSecurePushRegisterRequest,
   createSecurePushUnregisterRequest,
+  createSessionListRequest,
   relayV2,
   serialize,
 } from '@remi/shared';
@@ -17,7 +21,7 @@ afterEach(async () => {
 });
 
 async function start() {
-  const hub = await resumedHub({}, true);
+  const hub = await resumedHub({}, { notificationOnly: true });
   cleanup.push(hub.cleanup);
   return hub;
 }
@@ -51,6 +55,68 @@ test('notification-only channel receives no machine broadcasts, including genera
   ).json();
   hub.relay.broadcast(question);
   expect(await hub.quiet(150)).toBe(true);
+}, 15000);
+
+test('authenticated notification RPCs outlive the normal application Hello deadline', async () => {
+  const hub = await start();
+  await Bun.sleep(10_100);
+  const ping = createPing();
+  expect(await hub.exchange(ping)).toMatchObject({ type: 'pong', pingId: ping.id });
+}, 15000);
+
+test('damaged notification storage does not disable independently authorized full relay peers', async () => {
+  const hub = await resumedHub(
+    {},
+    {
+      prepareDirectory: (directory) => {
+        writeFileSync(join(directory, 'notification_devices.json'), 'PRIVATE_PARSER_SENTINEL');
+      },
+    },
+  );
+  cleanup.push(hub.cleanup);
+  expect(hub.logs).toContain(
+    'Notification enrollment store unreadable; notification-only admission unavailable',
+  );
+  const pair = await relayV2.generateEcPair();
+  expect(
+    await hub.exchange(
+      createSecurePushRegisterRequest({
+        token: 'ab'.repeat(32),
+        environment: 'sandbox',
+        pushPublicKey: relayV2.b64u(pair.publicKey),
+        keyVersion: 1,
+      }),
+    ),
+  ).toMatchObject({ success: true });
+}, 15000);
+
+test('internal dirty-list refresh cannot bypass a notification channel scope', async () => {
+  let requests = 0;
+  const hub = await resumedHub(
+    {},
+    {
+      notificationOnly: true,
+      events: {
+        onSessionListRequest: () => {
+          requests++;
+        },
+      },
+    },
+  );
+  cleanup.push(hub.cleanup);
+  // Exercise the real callback's target, not an I/O substitute. A future internal
+  // caller must not bypass the same scope boundary enforced on protocol ingress.
+  const peers = Reflect.get(hub.relay, 'peers') as Map<string, { listDirty: boolean }>;
+  const peer = [...peers.values()][0];
+  if (!peer) throw new Error('OWNED_NOTIFICATION_PEER_MISSING');
+  peer.listDirty = true;
+  Reflect.get(hub.relay, 'refreshSessionList').call(hub.relay, peer);
+  await Promise.resolve();
+  await expect(
+    Reflect.get(hub.relay, 'sessionList').call(hub.relay, peer, createSessionListRequest(false)),
+  ).rejects.toThrow('NOTIFICATION_SCOPE');
+  expect(requests).toBe(0);
+  expect(await hub.quiet(100)).toBe(true);
 }, 15000);
 
 for (const name of [

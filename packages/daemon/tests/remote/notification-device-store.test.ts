@@ -111,3 +111,34 @@ test('revoked notification generations do not consume the next pairing budget', 
   expect(rows).toHaveLength(1);
   expect(rows[0].publicKey).toBe(fresh.identity.publicKey);
 });
+
+test('notification store faults retain key floors without blocking full relay push recipients', async () => {
+  const notification = await enrolled();
+  const subscriptions = new SecurePushStore(directory, trust);
+  const capture = subscriptions.captureAuthority(notification.identity.publicKey);
+  if (!capture) throw new Error('OWNED_NOTIFICATION_AUTHORITY_MISSING');
+  const key = await relayV2.generateEcPair();
+  const registration = {
+    token: 'ab'.repeat(32),
+    environment: 'sandbox' as const,
+    pushPublicKey: relayV2.b64u(key.publicKey),
+    keyVersion: 1,
+  };
+  expect(await subscriptions.register(capture, registration)).toMatchObject({ success: true });
+  const full = await createIdentity();
+  await trust.addAuthorizedKey(full.publicKey, 'owned full recipient');
+  await new RelayDeviceStore(directory, trust).add(full.publicKey, 'owned full recipient');
+  const authority = subscriptions.captureAuthority(full.publicKey);
+  if (!authority) throw new Error('OWNED_FULL_AUTHORITY_MISSING');
+  expect(await subscriptions.register(authority, registration)).toMatchObject({ success: true });
+  writeFileSync(join(directory, 'notification_devices.json'), 'PRIVATE_PARSER_SENTINEL');
+  expect(subscriptions.listCurrent().map((row) => row.publicKey)).toEqual([full.publicKey]);
+  const retained = JSON.parse(
+    readFileSync(join(directory, 'secure_push_subscriptions.json'), 'utf8'),
+  ).subscriptions;
+  expect(retained).toHaveLength(2);
+  expect(
+    retained.find((row: { publicKey: string }) => row.publicKey === notification.identity.publicKey)
+      .keyVersion,
+  ).toBe(1);
+});

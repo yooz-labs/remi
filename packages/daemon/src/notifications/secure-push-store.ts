@@ -10,7 +10,10 @@ import {
 import type { IdentityStore } from '../auth/identity-store.ts';
 import { newAuthorityEpoch } from '../storage/authority-epoch.ts';
 import { withInterprocessFileLock } from '../storage/interprocess-file-lock.ts';
-import { readNotificationEnrollments } from '../storage/notification-enrollments.ts';
+import {
+  NotificationStorageError,
+  readNotificationEnrollments,
+} from '../storage/notification-enrollments.ts';
 import { readRelayEnrollments, writeRelayEnrollments } from '../storage/relay-enrollments.ts';
 import { activateSecurePushLocked } from '../storage/secure-push-activation.ts';
 import {
@@ -36,6 +39,8 @@ export interface SecurePushStoreOptions {
 }
 export class SecurePushStore {
   private readonly leaseMs: number;
+  /** Unknown notification authority is retained for key floors but never a recipient. */
+  private readonly unavailableEnrollments = new WeakSet<StoredSecurePushSubscription>();
   constructor(
     private readonly directory: string,
     private readonly trust: IdentityStore,
@@ -247,6 +252,7 @@ export class SecurePushStore {
   }
   private leaseCurrent(entry: StoredSecurePushSubscription): boolean {
     return (
+      !this.unavailableEnrollments.has(entry) &&
       !entry.leaseExpired &&
       (this.leaseMs === 0 || Date.now() - (entry.lastSeenAt ?? 0) < this.leaseMs)
     );
@@ -257,8 +263,17 @@ export class SecurePushStore {
     let changed = false;
     const current: StoredSecurePushSubscription[] = [];
     for (const entry of stored) {
-      if (!this.currentInsideLock(entry)) {
-        changed = true;
+      try {
+        if (!this.currentInsideLock(entry)) {
+          changed = true;
+          continue;
+        }
+      } catch (error) {
+        if (!(error instanceof NotificationStorageError)) throw error;
+        // Scope-local damage must neither erase a recipient's key-version floor
+        // nor stop independent valid full-relay recipients from being served.
+        this.unavailableEnrollments.add(entry);
+        current.push(entry);
         continue;
       }
       // Existing v1 records get one migration lease, not an unlimited historical registration.

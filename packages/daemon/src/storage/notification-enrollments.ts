@@ -4,6 +4,13 @@ import { join } from 'node:path';
 import { isAuthorityEpoch } from './authority-epoch.ts';
 import { writeRestrictedJson } from './restricted-json.ts';
 
+export class NotificationStorageError extends Error {
+  constructor() {
+    super('NOTIFICATION_STORAGE_ERROR');
+    this.name = 'NotificationStorageError';
+  }
+}
+
 export interface NotificationEnrollment {
   readonly publicKey: string;
   readonly fingerprint: string;
@@ -20,9 +27,9 @@ export function readNotificationEnrollments(directory: string): NotificationEnro
     value = JSON.parse(readFileSync(join(directory, 'notification_devices.json'), 'utf8'));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-    throw new Error('NOTIFICATION_STORAGE_ERROR');
+    throw new NotificationStorageError();
   }
-  if (!Array.isArray(value) || value.length > 64) throw new Error('NOTIFICATION_STORAGE_ERROR');
+  if (!Array.isArray(value) || value.length > 64) throw new NotificationStorageError();
   const keys = new Set<string>();
   for (const row of value) {
     if (
@@ -43,7 +50,7 @@ export function readNotificationEnrollments(directory: string): NotificationEnro
       !isAuthorityEpoch(row.enrollmentEpoch) ||
       keys.has(row.publicKey)
     )
-      throw new Error('NOTIFICATION_STORAGE_ERROR');
+      throw new NotificationStorageError();
     keys.add(row.publicKey);
   }
   return value as NotificationEnrollment[];

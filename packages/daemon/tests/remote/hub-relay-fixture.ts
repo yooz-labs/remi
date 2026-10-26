@@ -17,13 +17,22 @@ import {
 } from '@remi/shared';
 import { Socket, admit, clientUrl } from '../../../signaling/tests/e2e/endpoints.ts';
 import { startWorker } from '../../../signaling/tests/e2e/harness.ts';
+import type { AdapterEvents } from '../../src/adapters/connection-adapter.ts';
 import { IdentityStore } from '../../src/auth/identity-store.ts';
 import { HubRelay, type HubRelayConfig } from '../../src/remote/hub-relay.ts';
 import { NotificationDeviceStore } from '../../src/remote/notification-device-store.ts';
 import { RelayDeviceStore } from '../../src/remote/relay-device-store.ts';
 import { SessionRegistryFile } from '../../src/session/session-registry-file.ts';
 
-export async function resumedHub(config: Partial<HubRelayConfig> = {}, notificationOnly = false) {
+export async function resumedHub(
+  config: Partial<HubRelayConfig> = {},
+  options: {
+    notificationOnly?: boolean;
+    prepareDirectory?: (directory: string) => void;
+    events?: Partial<AdapterEvents>;
+  } = {},
+) {
+  const { notificationOnly = false, prepareDirectory } = options;
   const dir = mkdtempSync(join(tmpdir(), 'remi-hub-secure-push-'));
   chmodSync(dir, 0o700);
   const worker = await startWorker();
@@ -52,20 +61,42 @@ export async function resumedHub(config: Partial<HubRelayConfig> = {}, notificat
     admitted = resolve;
   });
   const logs: string[] = [];
-  const relay = new HubRelay({
-    relayUrl: worker.wsUrl,
-    identity,
-    trust,
-    dir,
-    registry: new SessionRegistryFile(join(dir, 'live')),
-    log: (message) => {
-      logs.push(message);
-      if (message === 'Relay control admitted') admitted();
+  const relay = new HubRelay(
+    {
+      relayUrl: worker.wsUrl,
+      identity,
+      trust,
+      dir,
+      registry: new SessionRegistryFile(join(dir, 'live')),
+      log: (message) => {
+        logs.push(message);
+        if (message === 'Relay control admitted') admitted();
+      },
+      ...config,
     },
-    ...config,
-  });
+    options.events,
+  );
+  prepareDirectory?.(dir);
   await relay.start();
-  await admission;
+  let admissionTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      admission,
+      new Promise<never>((_, reject) => {
+        admissionTimer = setTimeout(
+          () => reject(new Error('OWNED_RELAY_ADMISSION_DEADLINE')),
+          5000,
+        );
+      }),
+    ]);
+  } catch (error) {
+    await relay.stop();
+    await worker.stop();
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
+  } finally {
+    clearTimeout(admissionTimer);
+  }
   const socket = await Socket.open(clientUrl(worker, Buffer.from(rid).toString('hex')));
   await admit(socket, { signer, publicKey: signer.publicKey }, 'client', rid);
   await socket.json();

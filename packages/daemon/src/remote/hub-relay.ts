@@ -165,6 +165,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   private readonly locals = new Map<string, (text: string) => void>();
   private readonly devices: RelayDeviceStore;
   private readonly notificationDevices: NotificationDeviceStore;
+  private notificationStorageUnavailable = false;
   private readonly subscriptions: SecurePushStore;
   private stateTail: Promise<unknown> = Promise.resolve();
   private readonly revisions = new Map<string, number>();
@@ -258,7 +259,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
         // Reconnect enrollment shares the grant/revoke ordering domain. Never
         // reenroll a captured entry after its durable revocation has completed.
         const devices = new Map(
-          [...this.notificationDevices.list(), ...this.devices.list()].map((device) => [
+          [...this.notificationControlDevices(), ...this.devices.list()].map((device) => [
             device.publicKey,
             device,
           ]),
@@ -327,6 +328,22 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   }
   private admittedKey(publicKey: string): boolean {
     return this.devices.isEnrolled(publicKey) || this.notificationDevices.isEnrolled(publicKey);
+  }
+  private notificationControlDevices() {
+    try {
+      const devices = this.notificationDevices.list();
+      this.notificationStorageUnavailable = false;
+      return devices;
+    } catch {
+      // Refuse the damaged scope without disabling independent valid full
+      // enrollments. Handshake admission still reads and refuses this store.
+      if (!this.notificationStorageUnavailable)
+        this.log(
+          'Notification enrollment store unreadable; notification-only admission unavailable',
+        );
+      this.notificationStorageUnavailable = true;
+      return [];
+    }
   }
   private current(peer: Peer): boolean {
     const current =
@@ -762,11 +779,15 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       () => this.current(peer),
       peer.pushAuthority,
       () => {
+        if (peer.scope !== 'full') return;
         peer.listDirty = true;
         this.refreshSessionList(peer);
       },
       this.cfg.dir,
     );
+    // This scope intentionally has no application Hello. Its restricted RPCs
+    // do not need Connection's general dispatch or its pre-Hello deadline.
+    if (peer.scope !== 'full') return;
     peer.connection = new Connection(
       {
         get readyState() {
@@ -796,6 +817,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   }
   /** One aggregate at a time, with at most one trailing refresh and no polling (#1285). */
   private refreshSessionList(peer: Peer): void {
+    if (peer.scope !== 'full') return;
     if (!peer.listDirty || peer.listing || peer.listRefreshQueued || !this.current(peer)) return;
     peer.listRefreshQueued = true;
     queueMicrotask(() => {
@@ -818,6 +840,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     });
   }
   private async sessionList(peer: Peer, request: SessionListRequestMessage): Promise<void> {
+    if (peer.scope !== 'full') throw new Error('NOTIFICATION_SCOPE');
     const deadline = Date.now() + 5000;
     let localTimedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
