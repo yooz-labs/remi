@@ -658,13 +658,13 @@ describe('NotificationDispatcher.maybePush', () => {
     expect(pushed[0]?.opts['options']).toEqual(['Yes', 'No']);
   });
 
-  test('does NOT push when a client is attached (it sees the question in-app)', () => {
+  test('pushes registered devices even when a client is attached', () => {
     register(true);
     deviceTokens.set('a', { token: 'a', platform: 'ios', registeredAt: 1, connectionId: SID });
 
     make().maybePush(SID, question('q1', [yesOpt, noOpt]));
 
-    expect(pushed).toHaveLength(0);
+    expect(pushed).toHaveLength(1);
   });
 
   test('does NOT push when no devices are registered', () => {
@@ -1000,10 +1000,10 @@ describe('NotificationDispatcher delivery outcome (#603 Phase 1)', () => {
     await registry.shutdown();
   });
 
-  test('in_app when a client is attached (no push, but the user is reachable)', async () => {
+  test('pushed when a client is attached and a registered recipient accepts', async () => {
     register(true);
     addToken('a');
-    expect(await make(okPush).maybePush(SID, question('q1', [yesOpt, noOpt]))).toBe('in_app');
+    expect(await make(okPush).maybePush(SID, question('q1', [yesOpt, noOpt]))).toBe('pushed');
   });
 
   test('no_channel when there is no client and no device token', async () => {
@@ -1181,12 +1181,12 @@ describe('NotificationDispatcher held escalation (#603 Phase 3)', () => {
     expect(await d.maybePush(SID, question('q1', [yesOpt, noOpt]), { held: true })).toBe('failed');
   });
 
-  test('a non-held push with a client attached still does NOT push (unchanged)', async () => {
+  test('a non-held push with a client attached still reaches registered devices', async () => {
     register(true);
     addToken('a');
     const outcome = await make().maybePush(SID, question('q1', [yesOpt, noOpt]));
-    expect(pushed).toEqual([]);
-    expect(outcome).toBe('in_app');
+    expect(pushed).toEqual(['a']);
+    expect(outcome).toBe('pushed');
   });
 
   test('a held escalation bypasses dedup: a second identical held push still fires', async () => {

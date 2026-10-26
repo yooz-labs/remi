@@ -2,12 +2,12 @@
  * NotificationDispatcher — owns APNS push for a session's questions.
  *
  * Epic #453 phase 1: extracted from `cli/session-phases/message-api-setup.ts`
- * so the push concern (active-client gate + per-prompt dedup + the device-token
+ * so the push concern (per-prompt dedup + the device-token
  * fan-out) is a named member of the future `QuestionPipeline`, not inlined in
  * the MessageAPI question callback.
  *
- * Push fires only when no client is actively viewing the session (attached
- * clients see the question in-app over the WebSocket). The per-session
+ * Question pushes reach registered devices even while a client is attached (#1674):
+ * a socket says nothing about whether the person can see that device. The per-session
  * PushDedup baseline suppresses the PTY+Hook double-emission of one prompt so
  * the user does not get two lock-screen notifications per prompt (#409); it is
  * reset whenever the agent leaves the 'waiting' state.
@@ -289,16 +289,28 @@ export function buildPushText(
   return { title, body };
 }
 
-/** Full secure display input. Contexts alone decides whether it fits an action (#1200).
- * Legacy preview limits must not hide the actual target while retaining a one-tap grant. */
+/** Secure display input. A one-tap grant keeps its complete ask (#1200).
+ * Cards that already require the app get a short preview, never the full plan or command detail (#1674). */
 export function buildSecurePushText(
   sessionName: string,
   question: Question,
 ): { title: string; body: string } {
   const ask = normalizeNotificationText(question.text) || 'Allow this action?';
   const detail = question.detail === undefined ? '' : normalizeNotificationText(question.detail);
+  const title = `${sessionName}: question`;
+  if (pushCategoryFor(question) === undefined || question.questions !== undefined) {
+    let preview = ask;
+    if (question.kind === 'plan_approval') {
+      preview = 'Plan ready for review. Open Remi to approve or keep planning.';
+    } else if (question.questions !== undefined) {
+      const count = question.questions.length;
+      preview = `${count} ${count === 1 ? 'question needs' : 'questions need'} your input. Open Remi to review.`;
+    }
+    const body = preview.length <= 160 ? preview : `${preview.slice(0, 157).trimEnd()}...`;
+    return { title, body };
+  }
   return {
-    title: `${sessionName}: question`,
+    title,
     body: detail && detail !== ask ? `${ask}\n${detail}` : ask,
   };
 }
@@ -495,8 +507,7 @@ export class NotificationDispatcher {
   }
 
   /**
-   * Push `question` to all registered devices, unless a client is actively
-   * attached (they see it in-app) or the dedup gate suppresses it.
+   * Push `question` to registered devices that want questions, subject to dedup.
    * `questionSessionId` is the primary id the client knows (from hello_ack).
    *
    * Returns the resolved DELIVERY OUTCOME (epic #603 Phase 1). The question
@@ -512,8 +523,7 @@ export class NotificationDispatcher {
 
   /** Resolve the delivery outcome for one question (fanning out the per-token
    *  pushes when a push is actually warranted). See `DeliveryOutcome`. A HELD
-   *  escalation (#603 Phase 3) skips the attached-client short-circuit and the
-   *  dedup gate — its lock-screen card is load-bearing. */
+   *  escalation (#603 Phase 3) skips the dedup gate — its lock-screen card is load-bearing. */
   private computeDelivery(
     questionSessionId: UUID,
     question: Question,
@@ -530,12 +540,8 @@ export class NotificationDispatcher {
     const sessionForPush = sessionRegistry.getSession(questionSessionId);
     const hasActiveClient =
       sessionForPush !== undefined && sessionForPush.attachedConnections.size > 0;
-    // A non-held question with a client attached: it is seen in-app over the
-    // WebSocket; no push (as before), and the user IS reachable -> in_app. A HELD
-    // escalation does NOT short-circuit here — it also pushes to the lock screen
-    // because the attached client may be backgrounded (#603 Phase 3), like
-    // dismiss(). Its outcome still reports in_app (reachable) below.
-    if (!held && hasActiveClient) return Promise.resolve('in_app');
+    // An attached client is evidence for in-app reachability only when no push
+    // channel exists. It never suppresses another device's notification (#1674).
     // Devices that want question pushes (#968). A device muted for questions is
     // as unreachable for this question as one that never registered, so it is
     // filtered HERE — above the no-channel check — and not at the fan-out.
