@@ -268,29 +268,36 @@ private struct MacMenuBarStatusLabel: View {
     let pendingCount: Int
     let identityAvailable: Bool
 
+    private var status: RemiMenuBarStatus {
+        RemiMenuBarStatus(pendingCount: pendingCount, identityAvailable: identityAvailable)
+    }
+
     var body: some View {
         HStack(spacing: RemiTheme.Spacing.xxs) {
-            Image(systemName: systemImage)
-            if identityAvailable && pendingCount > 0 {
-                Text(pendingCount, format: .number)
+            icon
+            if let count = status.count {
+                Text(count, format: .number)
                     .font(.caption.weight(.semibold))
                     .monospacedDigit()
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text(accessibilityLabel))
+        .accessibilityLabel(Text(status.accessibilityLabel))
     }
 
-    private var systemImage: String {
-        guard identityAvailable else { return "exclamationmark.triangle" }
-        return pendingCount > 0 ? "questionmark.bubble.fill" : "questionmark.bubble"
-    }
-
-    private var accessibilityLabel: LocalizedStringResource {
-        guard identityAvailable else { return "Remi unavailable" }
-        if pendingCount == 0 { return "Remi, no pending requests" }
-        if pendingCount == 1 { return "Remi, 1 pending request" }
-        return "Remi, \(pendingCount) pending requests"
+    /// Remi's "r" in a square, outlined while nothing waits and filled while something does (a
+    /// template image, so the menu bar tints it). Without an identity, or if the mask cannot be
+    /// read, the symbols the item used before.
+    @ViewBuilder
+    private var icon: some View {
+        if !identityAvailable {
+            Image(systemName: "exclamationmark.triangle")
+        } else if let mask = RemiMenuBarIcon.bundledMask(),
+                  let image = RemiMenuBarIcon.image(needsYou: status.needsYou, mask: mask) {
+            Image(nsImage: image)
+        } else {
+            Image(systemName: status.needsYou ? "questionmark.bubble.fill" : "questionmark.bubble")
+        }
     }
 }
 
