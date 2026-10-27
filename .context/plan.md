@@ -972,3 +972,7 @@ The owner's authenticated App Store Connect session confirmed Yooz Remi app
 shared app-version script. The portal requests Account Holder acceptance of an
 updated Developer Program License Agreement before updates/new submissions;
 no agreement acceptance, signing or upload was performed here.
+
+## Registered question delivery (2026-10-26, #1674)
+
+Deliver question pushes to valid registered recipients even when a client is attached; keep preferences, validity checks and deduplication. Bound secure previews for cards that already require opening the app, without shortening a one-tap permission's authoritative ask. The broader [paired-device notification plan](notification-reliability-2026-10.md) remains pending owner approval for route-independent scoped enrollment and persistent registration. Signed APNs, extension and Watch acceptance remain separate gates.
