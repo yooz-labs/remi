@@ -40,23 +40,14 @@ open class RemiPushServiceExtension: UNNotificationServiceExtension, @unchecked 
                 let opened = try store.open(carrier: bytes)
                 store.publishActions(for: opened) { [weak self] actions in
                     guard let self, self.current(id) else { return }
-                    do {
-                        try store.recheck(opened)
-                        let content = UNMutableNotificationContent()
-                        content.categoryIdentifier = actions?.categoryIdentifier ?? ""
-                        content.userInfo = ["remiPush": try JSONSerialization.jsonObject(with: opened.originalCarrier)]
-                        if opened.kind != .dismiss {
-                            content.title = opened.title; content.body = opened.body
+                    if let actions {
+                        self.completeVerified(id, store: store, opened: opened, category: actions.categoryIdentifier)
+                    } else if opened.kind != .dismiss {
+                        store.publishReviewAction(for: opened) { [weak self] published in
+                            self?.completeVerified(id, store: store, opened: opened,
+                                category: published ? RemiPushStore.foregroundCategoryIdentifier(for: opened) : "")
                         }
-                        // A new content object carries none of the push's own sound or
-                        // grouping, so they are set here, from the verified kind.
-                        if let importance = RemiPushPresentation.importance(for: opened.kind) {
-                            RemiPushPresentation.apply(
-                                importance, sessionID: opened.sessionID,
-                                sound: RemiPushPresentation.extensionSoundsEnabled(), to: content)
-                        }
-                        self.complete(id, content: content)
-                    } catch { self.complete(id, content: nil) }
+                    } else { self.completeVerified(id, store: store, opened: opened, category: "") }
                 }
             } catch { self.complete(id, content: nil) }
         }
@@ -64,6 +55,22 @@ open class RemiPushServiceExtension: UNNotificationServiceExtension, @unchecked 
     public override func serviceExtensionTimeWillExpire() {
         lock.lock(); let current = delivery; delivery = nil; lock.unlock()
         if let current { current.handler(current.fallback) }
+    }
+    private func completeVerified(_ id: UUID, store: RemiPushStore, opened: VerifiedPushNotification, category: String) {
+        guard current(id) else { return }
+        do {
+            try store.recheck(opened)
+            let content = UNMutableNotificationContent()
+            content.categoryIdentifier = category
+            content.userInfo = ["remiPush": try JSONSerialization.jsonObject(with: opened.originalCarrier)]
+            if opened.kind != .dismiss { content.title = opened.title; content.body = opened.body }
+            if let importance = RemiPushPresentation.importance(for: opened.kind) {
+                RemiPushPresentation.apply(importance, sessionID: opened.sessionID,
+                    sound: RemiPushPresentation.extensionSoundsEnabled(), to: content)
+            }
+            try store.recheck(opened)
+            complete(id, content: content)
+        } catch { complete(id, content: nil) }
     }
     private func current(_ id: UUID) -> Bool {
         lock.lock(); defer { lock.unlock() }; return delivery?.id == id

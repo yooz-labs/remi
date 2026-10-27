@@ -36,7 +36,7 @@
  * Tombstones older than 30 days are garbage-collected on every write.
  *
  * A token also EXPIRES (#1254): a device not seen within the push lease
- * (`[notifications] push_lease_hours`, default 24) is dropped from memory and
+ * (`[notifications] push_lease_hours`, default 720 hours / 30 days) is dropped from memory and
  * from the file, unless it has a live connection on this daemon (`isLive`).
  * The phone is seen when it registers, while its connection stays open, and
  * when that connection closes; `lastSeenAt` records it, and the latest
@@ -46,6 +46,7 @@
  */
 
 import * as fs from 'node:fs';
+import { DEFAULT_PUSH_LEASE_MS } from './push-lease.ts';
 
 import type { DeviceTokenEntry } from '../cli/handlers/trivial-events.ts';
 import { log, logError } from '../cli/logger.ts';
@@ -67,8 +68,8 @@ interface StoredTombstone {
  *  this stale (a token this old would have rotated or been re-registered). */
 const TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** The push lease when none is configured: 24 hours (#1254, owner decision). */
-export const DEFAULT_PUSH_LEASE_MS = 24 * 60 * 60 * 1000;
+/** Shared default; explicit host overrides remain authoritative (#1677). */
+export { DEFAULT_PUSH_LEASE_MS } from './push-lease.ts';
 
 export interface DeviceTokenStoreOptions {
   /**

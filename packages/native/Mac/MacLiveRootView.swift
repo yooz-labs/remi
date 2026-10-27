@@ -54,12 +54,10 @@ struct MacLiveRootView: View {
                             )
                                 .tag(RemiMacSidebarSelection.machine(machine.id))
                                 .contextMenu {
-                                    if machine.endpoint.relayPin != nil {
-                                        Button("Enable relay notifications", systemImage: "bell.badge") {
-                                            relayNotifications.enable(on: machine.endpoint)
-                                        }
-                                        .disabled(relayNotifications.enabling || !store.persistableEndpoints.contains(machine.endpoint))
-                                    }
+                                    PairedNotificationControls(state: store.pairedNotificationState(for: machine.endpoint),
+                                        busy: relayNotifications.enabling, connected: machine.status == .connected,
+                                        enable: { relayNotifications.enable(on: machine.endpoint) },
+                                        revoke: { relayNotifications.revoke(on: machine.endpoint) })
                                     Button("Remove machine", systemImage: "trash", role: .destructive) {
                                         pendingMachineRemoval = machine
                                     }
@@ -272,13 +270,7 @@ struct MacLiveRootView: View {
         }
         .onChange(of: notificationRouter.destination, initial: true) { _, destination in
             guard let destination else { return }
-            pendingResume = nil
-            showingInbox = false
-            notificationDestination = destination
-            selectedMachineID = destination.machineID
-            selectedSessionID = destination.sessionID
-            preferredCompactColumn = .detail
-            store.loadTranscript(machineID: destination.machineID, sessionId: destination.agentID ?? destination.sessionID)
+            navigateToNotification(destination)
             notificationRouter.destination = nil
         }
         .onChange(of: store.resumedSessionDestination) { _, destination in
@@ -319,8 +311,21 @@ struct MacLiveRootView: View {
                 }
             }
         }
+        .onChange(of: relayNotifications.notificationSessionNavigation, initial: true) { _, destination in
+            guard let destination else { return }
+            guard store.notificationSessionDestination == destination else {
+                relayNotifications.consumeNotificationSessionNavigation(destination); return
+            }
+            navigateToNotification(.init(machineID: destination.machineID, sessionID: destination.sessionID))
+            relayNotifications.consumeNotificationSessionNavigation(destination)
+            relayNotifications.closeNotification()
+        }
         .sheet(isPresented: $relayNotifications.presentsRelayNotification, onDismiss: relayNotifications.closeNotification) {
-            RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification)
+            RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification) { destination in
+                guard store.notificationSessionDestination == destination else { return }
+                navigateToNotification(.init(machineID: destination.machineID, sessionID: destination.sessionID))
+                relayNotifications.closeNotification()
+            }
                 .frame(minWidth: 440, minHeight: 320)
         }
         .sheet(isPresented: $showingNewSession, onDismiss: {
@@ -409,6 +414,16 @@ struct MacLiveRootView: View {
                 machineSelection.wrappedValue = newValue?.machineID
             }
         )
+    }
+
+    private func navigateToNotification(_ destination: RemiNavigationDestination) {
+        pendingResume = nil
+        showingInbox = false
+        notificationDestination = destination
+        selectedMachineID = destination.machineID
+        selectedSessionID = destination.sessionID
+        preferredCompactColumn = .detail
+        store.loadTranscript(machineID: destination.machineID, sessionId: destination.agentID ?? destination.sessionID)
     }
 
     /// Opens a card's conversation: switches machine and session by their qualified key, and

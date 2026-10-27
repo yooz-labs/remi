@@ -369,8 +369,11 @@ public final class MachineStore {
     public private(set) var relayNotificationNotice: String?
     public private(set) var relayNotificationBusy = false
     public private(set) var lastRelayAnswerOutcome: String?
+    public private(set) var pairedNotificationStates: [String: PairedNotificationState] = [:]
+    @ObservationIgnored private var notificationAttempts: [String: UUID] = [:]
     @ObservationIgnored private let pushStore: RemiPushStore?
     @ObservationIgnored private var pushTrustIntents: Set<MachineEndpoint> = []
+    @ObservationIgnored private var pushRenewalIntents: Set<MachineEndpoint> = []
     @ObservationIgnored private var pushEnabled: Set<String> = []
     @ObservationIgnored private var suspendedRelayRooms: Set<Data> = []
     @ObservationIgnored private var tokenRegistration: (token: String, environment: String)?
@@ -487,6 +490,7 @@ public final class MachineStore {
             relayNotificationNotice = "Finish pairing before enabling relay notifications."; return
         }
         let intent = UUID()
+        if pairedNotificationState(for: endpoint) == .renewalRequired { pushRenewalIntents.insert(endpoint) }
         connectionGenerations[endpoint] = intent
         let foreground = connections.removeValue(forKey: endpoint)
         parentByConnection[endpoint] = nil
@@ -495,6 +499,153 @@ public final class MachineStore {
         pushEnabled.insert(endpoint.id); pushTrustIntents.insert(endpoint)
         relayNotificationNotice = "Authenticating the relay before enabling notifications."
         connect(endpoint, parent: endpoint)
+    }
+
+    public func pairedNotificationState(for endpoint: MachineEndpoint) -> PairedNotificationState? {
+        guard let index = machineIndex(containing: endpoint) else { return nil }
+        return pairedNotificationStates[machines[index].id]
+    }
+
+    /// Current direct authentication bootstraps a separate notification-only route (#1680).
+    public func registerPairedNotifications(on endpoint: MachineEndpoint, continueAfterInactivity: Bool = false) async {
+        guard let index = machineIndex(containing: endpoint), let pushStore,
+              machines[index].endpoint == endpoint, endpoint.relayPin == nil,
+              machines[index].status == .connected,
+              let connection = connections[endpoint], let generation = connectionGenerations[endpoint],
+              let tokenRegistration else { return }
+        let host = machines[index].id, pairing = machines[index].pairingLifetime
+        guard notificationAttempts[host] == nil else { return }
+        guard machines[index].capabilities.contains("notifications") else {
+            pairedNotificationStates[host] = .unsupported; return
+        }
+        let attempt = UUID()
+        notificationAttempts[host] = attempt; pairedNotificationStates[host] = .registering
+        defer {
+            if notificationAttempts[host] == attempt {
+                notificationAttempts[host] = nil
+                if pairedNotificationStates[host] == .registering,
+                   machines.contains(where: { $0.id == host && $0.pairingLifetime == pairing }) {
+                    pairedNotificationStates[host] = .failed
+                }
+            }
+        }
+        let epochStore = registrationEpoch, epoch = registrationEpoch.capture(), identity = identity
+        let ledgerGeneration = try? pushStore.generation()
+        let validate: @Sendable () throws -> Void = {
+            try identity.validateForSigning()
+            guard !Task.isCancelled, epochStore.matches(epoch), let ledgerGeneration,
+                  try pushStore.generation() == ledgerGeneration else { throw RemiPushError.changed }
+        }
+        func current() -> Bool {
+            guard let found = machineIndex(containing: endpoint) else { return false }
+            return notificationAttempts[host] == attempt && connectionGenerations[endpoint] == generation && connections[endpoint] === connection &&
+                machines[found].id == host && machines[found].pairingLifetime == pairing && running
+        }
+        do {
+            try validate()
+            let (key, validateConnection) = try await connection.notificationHostPermit()
+            guard current() else { throw RemiPushError.changed }
+            let request = NotificationHostRequest(action: continueAfterInactivity ? "continue" : "enable")
+            let response = try await connection.exchange(request, id: request.id, expected: .notificationHost,
+                until: .now.advanced(by: .seconds(12)), validate: { try validate(); try validateConnection() })
+            try validate()
+            try validateConnection()
+            guard current(), try await connection.notificationHostKey() == key,
+                  case .notificationHost(let status) = response else { throw RemiPushError.changed }
+            guard status.success else {
+                pairedNotificationStates[host] = status.error == "HOST_SETUP_REQUIRED" ? .hostSetupRequired :
+                    status.error == "UNSUPPORTED" ? .unsupported : .failed
+                return
+            }
+            if status.state == "renewal_required" { pairedNotificationStates[host] = .renewalRequired; return }
+            guard let route = status.relayUrl, let ledgerGeneration else { throw RemiPushError.invalid }
+            let pin = try RelayMachinePin(relayURL: route, machinePublicKey: RelayCrypto.b64(key))
+            let room = RelayCrypto.room(key)
+            var origin = URLComponents(string: route)
+            origin?.scheme = "https"
+            guard let audience = origin?.string else { throw RemiPushError.invalid }
+            try validate()
+            guard current() else { throw RemiPushError.changed }
+            try pushStore.commitNotificationMachine(room: room, machinePublicKey: key, origin: audience,
+                relayURL: route, authority: identity.pushAuthority, generation: ledgerGeneration)
+            guard let trust = try pushStore.machine(room: room) else { throw RemiPushError.changed }
+            let registered = try await PairedNotificationRegistration.register(pin: pin, identity: identity,
+                pushStore: pushStore, token: tokenRegistration.token, environment: tokenRegistration.environment,
+                renewExpired: continueAfterInactivity, validate: {
+                    try validate()
+                    try validateConnection()
+                    guard try pushStore.machine(room: room) == trust else { throw RemiPushError.changed }
+                }, ownedSession: notificationOwnedSession)
+            try validate()
+            guard current() else { throw RemiPushError.changed }
+            pairedNotificationStates[host] = registered.success ? .registered :
+                registered.error == "RENEWAL_REQUIRED" ? .renewalRequired : .failed
+        } catch {
+            if current() { pairedNotificationStates[host] = .failed }
+        }
+    }
+
+    private var notificationOwnedSession: URLSession? {
+        #if DEBUG
+        ownedTestSession
+        #else
+        nil
+        #endif
+    }
+
+    /// Local trust is removed before awaiting host acknowledgement or accepting late callbacks.
+    @discardableResult public func revokePairedNotifications(on endpoint: MachineEndpoint) async -> Bool {
+        guard let index = machineIndex(containing: endpoint), let pushStore else { return false }
+        let host = machines[index].id
+        let identity = identity
+        registrationEpoch.replace()
+        notificationAttempts[host] = nil
+        pushEnabled.remove(endpoint.id); pushTrustIntents.remove(endpoint); pushRenewalIntents.remove(endpoint)
+        do {
+            let rooms = notificationRooms(for: machines[index])
+            for trust in try pushStore.notificationMachines() where rooms.contains(trust.room) {
+                try pushStore.forgetMachine(room: trust.room)
+            }
+            pairedNotificationStates[host] = .disabled
+            let connection = connections[endpoint]
+            if endpoint.relayPin != nil {
+                let request = RelayPushRequest(type: "secure_push_unregister_request", id: UUID().uuidString.lowercased(),
+                    timestamp: Date().ISO8601Format(), token: nil, environment: nil, pushPublicKey: nil, keyVersion: nil)
+                let response = try await connection?.exchange(request, id: request.id,
+                    expected: .push(type: "secure_push_unregister_response", keyVersion: nil),
+                    until: .now.advanced(by: .seconds(12)), validate: { try identity.validateForSigning() })
+                guard case .push(let result) = response, result.success else { throw RemiPushError.unavailable }
+                return true
+            }
+            let key = try await connection?.notificationHostKey()
+            guard let key else { throw RemiPushError.unavailable }
+            try pushStore.forgetMachine(room: RelayCrypto.room(key))
+            let request = NotificationHostRequest(action: "revoke")
+            let response = try await connection?.exchange(request, id: request.id, expected: .notificationHost,
+                until: .now.advanced(by: .seconds(12)), validate: { try identity.validateForSigning() })
+            guard case .notificationHost(let result) = response, result.success, result.state == "revoked" else {
+                throw RemiPushError.unavailable
+            }
+            return true
+        } catch {
+            relayNotificationNotice = "Notifications are disabled here. Reconnect to confirm revocation on the host."
+            return false
+        }
+    }
+
+    /// A restored profile's display ID is an endpoint until discovery arrives.
+    /// Revocation instead derives rooms from validated durable key material (#1680).
+    private func notificationRooms(for machine: MachineState) -> Set<Data> {
+        var keys: [Data] = []
+        if let saved = machine.durableMachinePublicKey, let key = try? RelayCrypto.unb64(saved) { keys.append(key) }
+        for route in machine.routingRoutes {
+            if let saved = route.expectedPublicKey, let key = Data(base64Encoded: saved), key.base64EncodedString() == saved { keys.append(key) }
+            if let pin = route.relayPin, let key = try? RelayCrypto.unb64(pin.machinePublicKey) { keys.append(key) }
+        }
+        return Set(keys.compactMap { key in
+            guard (try? MachineIdentityVerifier.machineID(forPublicKey: key)) != nil else { return nil }
+            return RelayCrypto.room(key)
+        })
     }
 
     /// Persisted preference is only registration intent. Existing completed
@@ -537,15 +688,21 @@ public final class MachineStore {
                       try pushStore.machine(room: room) == trust, try pushStore.recipient() == recipient else { throw RemiPushError.changed }
             }
             try validate()
-            let request = RelayPushRequest(type: "secure_push_register_request", id: UUID().uuidString.lowercased(),
+            var request = RelayPushRequest(type: "secure_push_register_request", id: UUID().uuidString.lowercased(),
                 timestamp: Date().ISO8601Format(), token: tokenRegistration.token, environment: tokenRegistration.environment,
                 pushPublicKey: RelayCrypto.b64(recipient.publicKey), keyVersion: recipient.keyVersion)
+            request.renewExpired = pushRenewalIntents.remove(endpoint) != nil
             let response = try await connection.exchange(request, id: request.id,
                 expected: .push(type: "secure_push_register_response", keyVersion: recipient.keyVersion),
                 until: .now.advanced(by: .seconds(10)), validate: validate)
             guard connectionGenerations[endpoint] == generation else { return }
             try validate()
-            guard case .push(let result) = response, result.success else { throw RemiPushError.unavailable }
+            guard case .push(let result) = response else { throw RemiPushError.unavailable }
+            if let index = machineIndex(containing: endpoint) {
+                pairedNotificationStates[machines[index].id] = result.success ? .registered :
+                    result.error == "RENEWAL_REQUIRED" ? .renewalRequired : .failed
+            }
+            guard result.success else { throw RemiPushError.unavailable }
             relayNotificationNotice = "Relay notifications enabled."
         } catch {
             if connectionGenerations[endpoint] == generation { relayNotificationNotice = "Relay notifications could not be registered. Enable them again to retry." }
@@ -560,6 +717,20 @@ public final class MachineStore {
             guard opened.kind != .dismiss else { throw RemiPushError.changed }
             verifiedRelayNotification = opened; relayNotificationNotice = nil
         } catch { verifiedRelayNotification = nil; relayNotificationNotice = "This relay notification is no longer available. Open the current session." }
+    }
+    /// Navigation uses a reverified capsule and an existing paired machine; it grants no operation.
+    public var notificationSessionDestination: MachineSessionKey? {
+        guard let opened = verifiedRelayNotification, let pushStore,
+              (try? pushStore.recheck(opened)) != nil, let session = opened.sessionID,
+              let machine = machines.first(where: { state in
+                  if let encoded = state.durableMachinePublicKey,
+                     (try? RelayCrypto.unb64(encoded)) == opened.machine.machinePublicKey { return true }
+                  return state.routingRoutes.contains { route in
+                      if let key = route.expectedPublicKey, Data(base64Encoded: key) == opened.machine.machinePublicKey { return true }
+                      return route.relayPin?.machinePublicKey == RelayCrypto.b64(opened.machine.machinePublicKey)
+                  }
+              }) else { return nil }
+        return sessionKey(machineID: machine.id, sessionID: session)
     }
     public var relayNotificationChoices: [VerifiedPushOption] {
         verifiedRelayNotification.map(NativeAnswerProof.choices) ?? []
@@ -589,7 +760,7 @@ public final class MachineStore {
         // URLSession cancellation/actor retirement, not only BYE emission.
         let began = ContinuousClock.now, settlement = began.advanced(by: .seconds(23))
         guard let pushStore else { return .refused }
-        guard MachineConnectionPolicyFence.shared.permitsRelay(room: original.machine.room) else {
+        guard original.machine.notificationOnly || MachineConnectionPolicyFence.shared.permitsRelay(room: original.machine.room) else {
             if action == nil { relayNotificationNotice = "This machine is locked to a direct layer. Open the session to answer there." }
             return .refused
         }
@@ -608,7 +779,7 @@ public final class MachineStore {
         let identity = identity, lifetime = answerEpoch.capture(), lifetimeStore = answerEpoch
         let presentation = presentationEpoch.capture(), presentationStore = presentationEpoch
         let validate: @Sendable () throws -> Void = {
-            guard MachineConnectionPolicyFence.shared.permitsRelay(room: original.machine.room) else { throw RemiPushError.changed }
+            guard original.machine.notificationOnly || MachineConnectionPolicyFence.shared.permitsRelay(room: original.machine.room) else { throw RemiPushError.changed }
             guard lifetimeStore.matches(lifetime), action != nil || presentationStore.matches(presentation), !Task.isCancelled else { throw RemiPushError.changed }
             try identity.validateForSigning(); try pushStore.recheck(original)
             if let action { try pushStore.recheckAction(action) }
@@ -1268,6 +1439,10 @@ public final class MachineStore {
         defer { if running { recoveryCoordinator?.trigger(newEpisode: true) } }
         registrationEpoch.replace(); answerEpoch.replace()
         let removedMachine = machines.first { $0.routingRoutes.contains(where: { $0.id == endpoint.id }) }
+        if let removedMachine {
+            notificationAttempts[removedMachine.id] = nil
+            pairedNotificationStates[removedMachine.id] = nil
+        }
         if removedMachine?.pairingLifetime == pairingOriginLifetime { pairingCoordinator?.cancel() }
         let configuredRoutes = removedMachine?.routingRoutes ?? [endpoint]
         for route in configuredRoutes {
@@ -1324,6 +1499,9 @@ public final class MachineStore {
         // Callback/reconnect authority is invalidated before durable forget.
         if let pushStore {
             do {
+                if let removedMachine {
+                    for room in notificationRooms(for: removedMachine) { try pushStore.forgetMachine(room: room) }
+                }
                 for pin in configuredRoutes.compactMap(\.relayPin) {
                     try pushStore.forgetMachine(room: RelayCrypto.room(RelayCrypto.unb64(pin.machinePublicKey)))
                 }

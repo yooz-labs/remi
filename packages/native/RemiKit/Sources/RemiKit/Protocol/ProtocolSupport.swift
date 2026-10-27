@@ -22,6 +22,7 @@ public enum HubCapability: String, Sendable, Equatable, CaseIterable {
     case structuredChat = "structured_chat"
     case browserLinks = "browser_links"
     case fileDownload = "file_download"
+    case notifications
     /// Reserved (ADR 0047): no daemon advertises it yet; it waits on the host and relay phases
     /// B3c and B4. It is in no registry in `packages/shared`, so the wording below is this app's.
     case terminalView = "terminal_view"
@@ -39,6 +40,7 @@ public enum HubCapability: String, Sendable, Equatable, CaseIterable {
         case .structuredChat: "send chat to the attached Codex session"
         case .browserLinks: "receive browser links from the attached Claude session"
         case .fileDownload: "download a file from the attached session"
+        case .notifications: "manage paired-device background notifications"
         case .terminalView: "show the terminal of the attached session"
         }
     }

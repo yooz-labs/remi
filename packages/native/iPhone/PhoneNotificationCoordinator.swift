@@ -67,7 +67,8 @@ final class PhoneNotificationDelegate: NSObject, UIApplicationDelegate, UNUserNo
         didReceive response: UNNotificationResponse
     ) async {
         if RemiPushStore.isSecureNotification(content: response.notification.request.content, identifier: response.actionIdentifier) {
-            if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+            if response.actionIdentifier == UNNotificationDefaultActionIdentifier ||
+                RemiPushStore.isForegroundNotificationAction(response.actionIdentifier) {
                 let carrier = NativeRelayNotifications.carrier(from: response.notification.request.content.userInfo)
                 await NativeRelayNotifications.shared.openDefaultTap(carrier: carrier)
             } else if response.actionIdentifier != UNNotificationDismissActionIdentifier {

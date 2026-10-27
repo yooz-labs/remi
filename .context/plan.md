@@ -973,6 +973,21 @@ shared app-version script. The portal requests Account Holder acceptance of an
 updated Developer Program License Agreement before updates/new submissions;
 no agreement acceptance, signing or upload was performed here.
 
+## Paired-device notification scope (2026-10-26, #1677/#1678)
+
+Implement the approved notification-only admission foundation with a separate enrollment file and current grant/enrollment epochs. Notification channels may register/unregister a secure recipient or submit a valid signed notification answer; general application ingress, broadcasts and incidental child output stay unavailable. This phase has no production enrollment caller or capability advertisement. Follow [notification-scope-plan.md](notification-scope-plan.md) for the tests and the selected rolling 30-day renewal policy that later phases implement.
+
+## Paired host notification registration (2026-10-26, #1679)
+
+Add identity-bound direct bootstrap for encrypted notification registration, rolling 30-day inactive expiry with explicit Continue, and hub-owned forwarding of sealed session events. The host contract, negative-path controls and device acceptance limits are in [notification-host-plan.md](notification-host-plan.md). Native automatic registration and concise verified notification actions remain subsequent phases; source checks do not establish physical APNs or Watch delivery.
+
+## Native paired-device notification registration (2026-10-26, #1680)
+
+Native clients bootstrap a notification-only route from their authenticated direct host, register over a bounded encrypted channel, and keep that route out of saved foreground routes. Foreground use renews subscriptions; inactive expiry shows Continue, and Revoke intent survives app restart. Follow [notification-native-plan.md](notification-native-plan.md) for the identity/route/consent controls and signed-device acceptance limits.
 ## Registered question delivery (2026-10-26, #1674)
 
-Deliver question pushes to valid registered recipients even when a client is attached; keep preferences, validity checks and deduplication. Bound secure previews for cards that already require opening the app, without shortening a one-tap permission's authoritative ask. The broader [paired-device notification plan](notification-reliability-2026-10.md) remains pending owner approval for route-independent scoped enrollment and persistent registration. Signed APNs, extension and Watch acceptance remain separate gates.
+Deliver question pushes to valid registered recipients even when a client is attached; keep preferences, validity checks and deduplication. Bound secure previews for cards that already require opening the app, without shortening a one-tap permission's authoritative ask. The owner approved the broader paired-device plan and selected automatic active renewal with Continue/Revoke after 30 days inactive (#1677). Signed APNs, extension and Watch acceptance remain separate gates.
+
+## Concise notification presentation (2026-10-26, #1681)
+
+Use Allow once/Deny for exact verified binary choices, and keep complete signed action titles only when short. Otherwise publish a foreground Review request action without answer authority. Signed question metadata keeps app-only questions time-sensitive; completed turns receive Open session. Notification panels can open the matched paired session to review its full current content. The deterministic preview and immutable-action checks are in [notification-actions-plan.md](notification-actions-plan.md); owner APNs/NSE/iPhone/Watch receipts remain required for device acceptance.

@@ -25,7 +25,7 @@ public struct RelayPushResponse: Sendable, Equatable, Decodable {
         } else {
             keys.insert("error")
             guard let error = value.error, ["UNSUPPORTED", "NOT_AUTHORIZED", "NOT_ENROLLED", "INVALID_SUBSCRIPTION",
-                "STALE_KEY_VERSION", "CAPACITY", "STORE_ERROR"].contains(error) else { throw RelayFailure.malformed }
+                "STALE_KEY_VERSION", "CAPACITY", "STORE_ERROR", "RENEWAL_REQUIRED"].contains(error) else { throw RelayFailure.malformed }
         }
         guard Set(fields.keys) == keys else { throw RelayFailure.malformed }
         return value
@@ -40,12 +40,14 @@ struct RelayPushRequest: Encodable, Sendable {
     let environment: String?
     let pushPublicKey: String?
     let keyVersion: Int?
+    var renewExpired: Bool? = nil
 }
 enum RelayRPCExpected: Sendable {
+    case notificationHost
     case push(type: String, keyVersion: Int?)
     case answer(session: String, question: String)
 }
-enum RelayRPCResult: Sendable { case push(RelayPushResponse), answer(AnswerResultMessage) }
+enum RelayRPCResult: Sendable { case push(RelayPushResponse), answer(AnswerResultMessage), notificationHost(NotificationHostResponse) }
 struct RelayRPCWaiter {
     let expected: RelayRPCExpected
     let continuation: CheckedContinuation<RelayRPCResult, any Error>
