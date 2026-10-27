@@ -5,6 +5,15 @@ import Foundation
 public enum RemiTileSize: String, Codable, CaseIterable, Sendable {
     case compact, regular, large
 
+    /// About how tall the tile is, for packing columns before it is laid out.
+    public var estimatedHeight: CGFloat {
+        switch self {
+        case .compact: 150
+        case .regular: 250
+        case .large: 440
+        }
+    }
+
     /// Lines of the latest message the tile shows.
     public var messageLines: Int {
         switch self {
@@ -130,6 +139,20 @@ public enum RemiBoardOrder {
         return slots.compactMap { $0 }
     }
 
+    /// Packs tiles into columns in reading order: each goes under the shortest column so far
+    /// (the left one on a tie), so tiles of different sizes leave no gaps. Returns the
+    /// indices of `heights` in each column.
+    public static func columns(heights: [CGFloat], count: Int, spacing: CGFloat = 12) -> [[Int]] {
+        var result = [[Int]](repeating: [], count: max(count, 1))
+        var filled = [CGFloat](repeating: 0, count: result.count)
+        for (index, height) in heights.enumerated() {
+            let column = filled.indices.min { (filled[$0], $0) < (filled[$1], $1) } ?? 0
+            result[column].append(index)
+            filled[column] += height + spacing
+        }
+        return result
+    }
+
     /// The tile to move the cursor to after sending from `key`, wrapping at the end.
     public static func next(after key: String, in order: [String]) -> String? {
         guard !order.isEmpty else { return nil }
@@ -141,7 +164,7 @@ public enum RemiBoardOrder {
     private static func rank(
         _ session: RemiSessionSummary, interactions: [String: Date], now: Date
     ) -> (tier: Int, recency: TimeInterval) {
-        let activity = date(session.lastActivity)?.timeIntervalSince1970 ?? 0
+        let activity = activityDate(session.lastActivity)?.timeIntervalSince1970 ?? 0
         if session.status == .needsYou { return (0, activity) }
         if let typed = interactions[key(for: session)], now.timeIntervalSince(typed) < interactionWindow {
             return (1, typed.timeIntervalSince1970)
@@ -154,7 +177,8 @@ public enum RemiBoardOrder {
         }
     }
 
-    private static func date(_ value: String?) -> Date? {
+    /// A session's `lastActivity` as a date, or nil when it has none or cannot be read.
+    public static func activityDate(_ value: String?) -> Date? {
         guard let value else { return nil }
         let plain = ISO8601DateFormatter()
         if let parsed = plain.date(from: value) { return parsed }

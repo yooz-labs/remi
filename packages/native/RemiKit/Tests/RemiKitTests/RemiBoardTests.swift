@@ -166,4 +166,12 @@ import Testing
         #expect(RemiBoardOrder.next(after: "a", in: ["a"]) == nil)
         #expect(RemiBoardOrder.next(after: "x", in: ["a", "b"]) == "a")
     }
+
+    @Test func tilesPackIntoTheShortestColumnInReadingOrder() {
+        #expect(RemiBoardOrder.columns(heights: [100, 100, 100, 100], count: 2) == [[0, 2], [1, 3]])
+        // A tall first tile leaves the other column to take the next three.
+        #expect(RemiBoardOrder.columns(heights: [400, 100, 100, 100], count: 2) == [[0], [1, 2, 3]])
+        #expect(RemiBoardOrder.columns(heights: [], count: 3) == [[], [], []])
+        #expect(RemiBoardOrder.columns(heights: [1, 2], count: 0) == [[0, 1]])
+    }
 }
