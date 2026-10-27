@@ -12,7 +12,7 @@ import { CodexAsyncQuestions } from '../../../src/harness/codex/async-questions.
 import { CodexTextWriter } from '../../../src/harness/codex/codex-text-writer.ts';
 import { type AnswerCommit, AnswerDeliveryUncertainError } from '../../../src/harness/decision.ts';
 import { QuestionStore } from '../../../src/session/question-store.ts';
-import { FakeAppServer } from '../../helpers/fake-app-server.ts';
+import { FakeAppServer, rejection } from '../../helpers/fake-app-server.ts';
 
 const SID = '00000000-0000-4000-8000-000000000001' as UUID;
 const THREAD = '00000000-0000-7000-8000-000000000002';
@@ -242,11 +242,116 @@ test('lost acceptance is uncertain and cannot cause a second submission', async 
   const f = await fixture(100);
   const q = f.show();
   f.server.ignore('turn/steer');
-  await expect(f.channel.answerHeld(q.id, selections(), immediate)).rejects.toBeInstanceOf(
+  expect(await rejection(f.channel.answerHeld(q.id, selections(), immediate))).toBeInstanceOf(
     AnswerDeliveryUncertainError,
   );
   expect(f.effects()).toHaveLength(1);
   expect(f.notices.join(' ')).toContain('uncertain');
   expect(await f.channel.answerHeld(q.id, selections(), immediate)).toBe('closed');
   expect(f.effects()).toHaveLength(1);
+});
+
+test('uncertainty closes a partial replacement and cannot recover or resend its group', async () => {
+  const f = await fixture(120);
+  const old = f.show();
+  f.server.ignore('turn/steer');
+  const pending = rejection(f.channel.answerHeld(old.id, selections(), immediate));
+  await f.server.waitFor(() => f.effects().length === 1, 'the first possible input effect');
+  const source = parseAsyncQuestionSource(raw());
+  if (!source) throw new Error('OWNED_QUESTION_SOURCE_MISSING');
+  f.channel.handleNotification('item/started', {
+    threadId: THREAD,
+    item: {
+      type: 'userMessage',
+      id: 'external-partial',
+      content: [
+        {
+          type: 'text',
+          text: encodeAsyncQuestionReply(source, [{ questionIndex: 0, answer: 'Local' }]),
+        },
+      ],
+    },
+  });
+  const replacement = [...f.store.questions.values()][0];
+  if (!replacement) throw new Error('OWNED_REPLACEMENT_MISSING');
+  expect(replacement.id).not.toBe(old.id);
+  expect(await pending).toBeInstanceOf(AnswerDeliveryUncertainError);
+  expect(f.channel.isHeld(replacement.id)).toBe(false);
+  expect(f.store.get(replacement.id)).toBeNull();
+  f.server.onRequest('turn/steer', () => ({ turnId: TURN }));
+  expect(
+    await f.channel.answerHeld(replacement.id, { kind: 'text', text: 'again' }, immediate),
+  ).toBe('closed');
+  const history = asyncQuestionHistoryCollector();
+  history.source(source);
+  f.channel.reconcile(THREAD, history.finish(true));
+  expect(f.store.questions.size).toBe(0);
+  expect(f.effects()).toHaveLength(1);
+});
+
+test('a submitted reply echoed before its valid RPC result remains accepted', async () => {
+  const f = await fixture();
+  const q = f.show();
+  f.server.onRequest('turn/steer', (params) => {
+    const input = (params as { input: { text: string }[] }).input[0];
+    if (!input) throw new Error('Missing submitted reply');
+    f.channel.handleNotification('item/started', {
+      threadId: THREAD,
+      item: {
+        type: 'userMessage',
+        id: 'owned-echo',
+        content: [{ type: 'text', text: input.text }],
+      },
+    });
+    return { turnId: TURN };
+  });
+  expect(await f.channel.answerHeld(q.id, selections(), immediate)).toBe('resolved');
+  expect(f.notices).toEqual([]);
+  expect(f.channel.hasMainHold()).toBe(false);
+  expect(f.effects()).toHaveLength(1);
+});
+
+test('a reply observed before the input effect prevents sending; runtime loss after it remains uncertain', async () => {
+  for (const beforeSend of [true, false]) {
+    const f = await fixture();
+    const q = f.show();
+    const source = parseAsyncQuestionSource(raw());
+    if (!source) throw new Error('Missing question source');
+    if (beforeSend)
+      f.server.onRequest('thread/read', () => {
+        f.channel.handleNotification('item/started', {
+          threadId: THREAD,
+          item: {
+            type: 'userMessage',
+            id: 'outside-reply',
+            content: [
+              {
+                type: 'text',
+                text: encodeAsyncQuestionReply(source, [
+                  { questionIndex: 0, answer: 'Local' },
+                  { questionIndex: 1, answer: 'Outside reply' },
+                ]),
+              },
+            ],
+          },
+        });
+        return {
+          thread: {
+            id: THREAD,
+            ephemeral: false,
+            parentThreadId: null,
+            status: { type: 'active', activeFlags: [] },
+          },
+        };
+      });
+    else
+      f.server.onRequest('turn/steer', () => {
+        f.replaceEpoch();
+        return { turnId: TURN };
+      });
+    const reply = f.channel.answerHeld(q.id, selections(), immediate);
+    if (beforeSend) expect(await reply).toBe('closed');
+    else expect(await rejection(reply)).toBeInstanceOf(AnswerDeliveryUncertainError);
+    expect(f.effects()).toHaveLength(beforeSend ? 0 : 1);
+  }
 });

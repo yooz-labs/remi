@@ -149,6 +149,7 @@ export class CodexAsyncQuestions {
       kind: 'multi_question',
       source: 'elicitation',
       pendingLabel: 'Codex has a question',
+      cancelDismissesOnly: true,
       allowsFreeText: true,
       isAnswered: false,
     };
@@ -263,7 +264,10 @@ export class CodexAsyncQuestions {
   isHeld(id: UUID): boolean {
     const entry = this.byId.get(id);
     return (
-      !!entry && (entry.state === 'live' || entry.state === 'sending') && this.current(entry.group)
+      !!entry &&
+      (entry.state === 'live' || entry.state === 'sending') &&
+      this.current(entry.group) &&
+      !this.suppressed.has(this.key(entry.group.threadId, entry.group.source.callId))
     );
   }
   hasMainHold(): boolean {
@@ -308,6 +312,7 @@ export class CodexAsyncQuestions {
       !entry ||
       entry.state === 'closed' ||
       entry.state === 'answered' ||
+      this.suppressed.has(this.key(entry.group.threadId, entry.group.source.callId)) ||
       !this.current(entry.group)
     )
       return 'closed';
@@ -345,27 +350,41 @@ export class CodexAsyncQuestions {
     const text = encodeAsyncQuestionReply(entry.group.source, answers);
     if (!text) return 'refused';
     entry.state = 'sending';
-    const current = () =>
+    const canSend = () =>
       entry.state === 'sending' &&
+      !this.suppressed.has(this.key(entry.group.threadId, entry.group.source.callId)) &&
       this.current(entry.group) &&
       entry.group.entry === entry &&
       this.options.registry.getQuestion(this.options.sessionId, id)?.isAnswered === false;
+    let sent = false;
+    // A normal user-message echo can resolve/replace the card before its RPC
+    // result arrives. It removes pre-send authority, not a valid receipt for
+    // the already sent operation. Thread/runtime checks remain in both phases.
+    const current = () => this.current(entry.group) && (sent || canSend());
     let authorityRefused = false;
     const result = await this.options.writer.send(
       { id: generateId(), threadId: entry.group.threadId, text },
       current,
       (send) => {
-        const result = applyAnswerCommit(send, commit);
+        const result = applyAnswerCommit(() => {
+          if (!canSend()) return false;
+          send();
+          sent = true;
+          return true;
+        }, commit);
         if (result.kind === 'refused') {
           authorityRefused = true;
           return false;
         }
-        return true;
+        return result.value;
       },
     );
     if (result.outcome === 'uncertain') {
       this.suppress(entry.group);
       entry.state = 'closed';
+      const replacement = entry.group.entry;
+      if (replacement && replacement !== entry) this.clear(replacement, 'codex_async:uncertain');
+      this.options.changed?.();
       try {
         this.options.notice(
           'Question answer delivery is uncertain. Check this conversation before answering again.',
