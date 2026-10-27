@@ -11,6 +11,8 @@ struct MacCommandCenter: View {
     let sessions: [RemiSessionSummary]
     let machines: [RemiMachineSummary]
     let questions: [RemiQuestionCardModel]
+    /// The latest conversation entries of a session, for its tile.
+    let transcript: (RemiSessionSummary) -> [RemiTranscriptEntry]
     let onAnswer: (_ machineID: String, _ sessionID: String, _ questionID: String, _ value: String) -> Void
     let onSubmit: (_ machineID: String, _ sessionID: String, _ questionID: String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (_ machineID: String, _ sessionID: String, _ questionID: String) -> Void
@@ -25,6 +27,7 @@ struct MacCommandCenter: View {
     @State private var shownOrder: [String] = []
     @State private var machineFilter: String?
     @State private var onlyNeedsYou = false
+    @State private var showFinished = false
     @FocusState private var focus: String?
 
     private let spacing = RemiTheme.Spacing.s
@@ -51,37 +54,47 @@ struct MacCommandCenter: View {
     // MARK: filtering
 
     private var filtered: [RemiSessionSummary] {
-        sessions.filter { session in
-            (machineFilter == nil || session.machineID == machineFilter)
-                && (!onlyNeedsYou || session.status == .needsYou)
-        }
+        RemiBoardOrder.visible(sessions, machineID: machineFilter, onlyNeedsYou: onlyNeedsYou, showFinished: showFinished)
     }
 
+    private var liveSessions: [RemiSessionSummary] { sessions.filter(\.isLive) }
+    private var finishedCount: Int { sessions.count { !$0.isLive } }
     private var needsYouCount: Int { sessions.count { $0.status == .needsYou } }
 
+    /// Plain chips when they fit, a scrolling row when many machines do not. A scroll view at the
+    /// top of the window sits under the toolbar's edge blur, which washed the chips out.
     private var filterBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: RemiTheme.Spacing.xs) {
-                chip("All", count: sessions.count, selected: machineFilter == nil && !onlyNeedsYou) {
-                    machineFilter = nil
-                    onlyNeedsYou = false
-                }
-                chip("Needs you", count: needsYouCount, selected: onlyNeedsYou, highlight: needsYouCount > 0) {
-                    onlyNeedsYou.toggle()
-                }
-                Divider().frame(height: 16)
-                ForEach(machines) { machine in
-                    chip(
-                        machine.name,
-                        count: sessions.count { $0.machineID == machine.id },
-                        selected: machineFilter == machine.id
-                    ) {
-                        machineFilter = machineFilter == machine.id ? nil : machine.id
-                    }
+        ViewThatFits(in: .horizontal) {
+            chips
+            ScrollView(.horizontal, showsIndicators: false) { chips }
+        }
+        .padding(.horizontal, margin)
+        .padding(.vertical, RemiTheme.Spacing.xs)
+    }
+
+    private var chips: some View {
+        HStack(spacing: RemiTheme.Spacing.xs) {
+            chip("All", count: liveSessions.count, selected: machineFilter == nil && !onlyNeedsYou) {
+                machineFilter = nil
+                onlyNeedsYou = false
+            }
+            chip("Needs you", count: needsYouCount, selected: onlyNeedsYou, highlight: needsYouCount > 0) {
+                onlyNeedsYou.toggle()
+            }
+            Divider().frame(height: 16)
+            ForEach(machines) { machine in
+                chip(
+                    machine.name,
+                    count: liveSessions.count { $0.machineID == machine.id },
+                    selected: machineFilter == machine.id
+                ) {
+                    machineFilter = machineFilter == machine.id ? nil : machine.id
                 }
             }
-            .padding(.horizontal, margin)
-            .padding(.vertical, RemiTheme.Spacing.xs)
+            if finishedCount > 0 {
+                Divider().frame(height: 16)
+                chip("Finished", count: finishedCount, selected: showFinished) { showFinished.toggle() }
+            }
         }
     }
 
@@ -166,6 +179,7 @@ struct MacCommandCenter: View {
             tileKey: key,
             size: board.size(for: key),
             isPinned: board.isPinned(key),
+            entries: transcript(session),
             draft: Binding(get: { drafts[key] ?? "" }, set: { drafts[key] = $0 }),
             focus: $focus,
             onOpen: { onOpen(session) },
@@ -224,6 +238,7 @@ struct MacCommandCenter: View {
         sessions: RemiPreviewData.sessions,
         machines: RemiPreviewData.machines,
         questions: [],
+        transcript: { _ in [.agent(id: "a", text: "Running the tests."), .tool(id: "t", name: "Bash", summary: "swift test")] },
         onAnswer: { _, _, _, _ in },
         onSubmit: { _, _, _, _ in },
         onCancel: { _, _, _ in },

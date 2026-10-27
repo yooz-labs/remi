@@ -8,6 +8,8 @@ public struct RemiBoardTile<Question: View>: View {
     private let size: RemiTileSize
     private let isPinned: Bool
     private let pendingMessageCount: Int
+    /// The session's conversation so far; the tile shows the latest entries.
+    private let entries: [RemiTranscriptEntry]
     @Binding private var draft: String
     private let focus: FocusState<String?>.Binding
     private let onOpen: () -> Void
@@ -19,6 +21,8 @@ public struct RemiBoardTile<Question: View>: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var sendFailed = false
+    /// The question's natural height, so its area is as tall as it needs up to a cap.
+    @State private var questionHeight: CGFloat = 0
 
     public init(
         session: RemiSessionSummary,
@@ -26,6 +30,7 @@ public struct RemiBoardTile<Question: View>: View {
         size: RemiTileSize,
         isPinned: Bool,
         pendingMessageCount: Int = 0,
+        entries: [RemiTranscriptEntry] = [],
         draft: Binding<String>,
         focus: FocusState<String?>.Binding,
         onOpen: @escaping () -> Void,
@@ -39,6 +44,7 @@ public struct RemiBoardTile<Question: View>: View {
         self.size = size
         self.isPinned = isPinned
         self.pendingMessageCount = pendingMessageCount
+        self.entries = entries
         _draft = draft
         self.focus = focus
         self.onOpen = onOpen
@@ -54,13 +60,14 @@ public struct RemiBoardTile<Question: View>: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
             header
-            messageBody
-            Spacer(minLength: 0)
+            conversation
+            waitingQuestion
             footer
             quickComposer
         }
         .padding(RemiTheme.Spacing.s)
-        .frame(maxWidth: .infinity, minHeight: size.estimatedHeight, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: size.estimatedHeight)
         .background(tileBackground, in: .rect(cornerRadius: RemiTheme.Radius.control))
         .overlay { border }
         .contextMenu { menu }
@@ -107,9 +114,52 @@ public struct RemiBoardTile<Question: View>: View {
         }
     }
 
-    @ViewBuilder private var messageBody: some View {
+    /// The latest of the conversation, newest at the bottom, fading out at the top.
+    @ViewBuilder private var conversation: some View {
+        let shown = RemiBoardOrder.feed(entries, size: size)
+        if shown.isEmpty {
+            Text(emptyConversationText)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(size.messageLines)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .contentShape(.rect)
+                .onTapGesture(perform: onOpen)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
+                    ForEach(shown) { entry in FeedLine(entry: entry) }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .defaultScrollAnchor(.bottom)
+            .scrollIndicators(.hidden)
+            .frame(maxHeight: .infinity)
+            .mask(
+                LinearGradient(
+                    stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.12)],
+                    startPoint: .top, endPoint: .bottom
+                )
+            )
+        }
+    }
+
+    private var emptyConversationText: String {
+        if let message = session.lastMessage, !message.isEmpty { return message }
+        return session.isLive ? "Waiting for the conversation…" : "This session has finished."
+    }
+
+    /// A question waiting on the person, answered on the tile. It takes the room it needs up to
+    /// a cap and scrolls beyond that, so a long question cannot push the conversation away.
+    @ViewBuilder private var waitingQuestion: some View {
         if needsYou, let question {
-            question
+            ScrollView {
+                question
+                    .frame(maxWidth: .infinity)
+                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { questionHeight = $0 }
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(height: min(max(questionHeight, 1), size == .compact ? 180 : 260))
             if session.openQuestionCount > 1 {
                 Text("\(session.openQuestionCount - 1) more waiting. Open the conversation to see them.")
                     .font(RemiTheme.Typography.metadata)
@@ -125,21 +175,6 @@ public struct RemiBoardTile<Question: View>: View {
             .padding(.horizontal, RemiTheme.Spacing.xs)
             .padding(.vertical, RemiTheme.Spacing.xxs)
             .background(RemiTheme.Color.attention, in: Capsule())
-        }
-        if question != nil, needsYou {
-            EmptyView()
-        } else if let message = session.lastMessage, !message.isEmpty {
-            Text(message)
-                .font(.callout)
-                .foregroundStyle(size == .compact ? .secondary : .primary)
-                .lineLimit(size.messageLines)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(.rect)
-                .onTapGesture(perform: onOpen)
-        } else if !needsYou {
-            Text(session.isLive ? "Nothing said yet." : "This session has finished.")
-                .font(.callout)
-                .foregroundStyle(.tertiary)
         }
     }
 
@@ -273,6 +308,7 @@ public extension RemiBoardTile where Question == EmptyView {
         size: RemiTileSize,
         isPinned: Bool,
         pendingMessageCount: Int = 0,
+        entries: [RemiTranscriptEntry] = [],
         draft: Binding<String>,
         focus: FocusState<String?>.Binding,
         onOpen: @escaping () -> Void,
@@ -282,9 +318,47 @@ public extension RemiBoardTile where Question == EmptyView {
     ) {
         self.init(
             session: session, tileKey: tileKey, size: size, isPinned: isPinned,
-            pendingMessageCount: pendingMessageCount, draft: draft, focus: focus,
+            pendingMessageCount: pendingMessageCount, entries: entries, draft: draft, focus: focus,
             onOpen: onOpen, onSend: onSend, onSetSize: onSetSize, onTogglePin: onTogglePin,
             question: nil
         )
+    }
+}
+
+/// One line of the conversation on a tile: quieter than the full conversation view.
+private struct FeedLine: View {
+    let entry: RemiTranscriptEntry
+
+    var body: some View {
+        switch entry {
+        case .user(_, let text):
+            Text(text)
+                .font(.callout)
+                .lineLimit(3)
+                .padding(.horizontal, RemiTheme.Spacing.xs)
+                .padding(.vertical, RemiTheme.Spacing.xxs)
+                .background(RemiTheme.Color.attentionWash, in: .rect(cornerRadius: RemiTheme.Radius.compact))
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        case .agent(_, let text):
+            Text(text)
+                .font(.callout)
+                .lineLimit(6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        case .tool(_, let name, let summary):
+            HStack(spacing: RemiTheme.Spacing.xxs) {
+                Image(systemName: "wrench.and.screwdriver").imageScale(.small)
+                Text(name).fontWeight(.semibold)
+                Text(summary).lineLimit(1).truncationMode(.middle)
+            }
+            .font(RemiTheme.Typography.code)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        case .error(_, let text):
+            Label(text, systemImage: "exclamationmark.triangle")
+                .font(RemiTheme.Typography.metadata)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }

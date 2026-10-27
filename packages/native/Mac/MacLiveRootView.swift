@@ -430,6 +430,7 @@ struct MacLiveRootView: View {
             sessions: allSessions,
             machines: machineSummaries,
             questions: allQuestions,
+            transcript: boardEntries,
             onAnswer: { answerFromInbox(machineID: $0, sessionID: $1, questionID: $2, value: $3) },
             onSubmit: { submitFromInbox(machineID: $0, sessionID: $1, questionID: $2, selections: $3) },
             onCancel: { cancelFromInbox(machineID: $0, sessionID: $1, questionID: $2) },
@@ -1028,23 +1029,33 @@ struct MacLiveRootView: View {
     }
 
     private func transcript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
-        (store.transcriptsBySession[store.sessionKey(machineID: machineID, sessionID: sessionID)] ?? []).compactMap { message in
-            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !content.isEmpty {
-                return message.role == "user"
-                    ? .user(id: message.entryUuid, text: content)
-                    : .agent(id: message.entryUuid, text: content)
-            }
-            guard let tool = message.contentBlocks?.first(where: {
-                $0.type == "tool_use" || $0.type == "tool_result"
-            }) else { return nil }
-            let summary = tool.toolInput ?? tool.toolOutput ?? ""
-            return .tool(
-                id: message.entryUuid,
-                name: tool.toolName ?? "Tool",
-                summary: String(summary.prefix(240))
-            )
+        (store.transcriptsBySession[store.sessionKey(machineID: machineID, sessionID: sessionID)] ?? [])
+            .compactMap(transcriptEntry)
+    }
+
+    /// The latest of a session's conversation, for its tile on the board.
+    private func boardEntries(_ session: RemiSessionSummary) -> [RemiTranscriptEntry] {
+        (store.transcriptsBySession[store.sessionKey(machineID: session.machineID, sessionID: session.id)] ?? [])
+            .suffix(60)
+            .compactMap(transcriptEntry)
+    }
+
+    private func transcriptEntry(_ message: TranscriptContentMessage) -> RemiTranscriptEntry? {
+        let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !content.isEmpty {
+            return message.role == "user"
+                ? .user(id: message.entryUuid, text: content)
+                : .agent(id: message.entryUuid, text: content)
         }
+        guard let tool = message.contentBlocks?.first(where: {
+            $0.type == "tool_use" || $0.type == "tool_result"
+        }) else { return nil }
+        let summary = tool.toolInput ?? tool.toolOutput ?? ""
+        return .tool(
+            id: message.entryUuid,
+            name: tool.toolName ?? "Tool",
+            summary: String(summary.prefix(240))
+        )
     }
 
     private func rawQuestion(id: String) -> QuestionMessage? {
