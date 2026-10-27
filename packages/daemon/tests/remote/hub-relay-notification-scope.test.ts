@@ -57,6 +57,38 @@ test('notification-only channel receives no machine broadcasts, including genera
   expect(await hub.quiet(150)).toBe(true);
 }, 15000);
 
+test('new full-relay clients can decline expired renewal without breaking older omitted flags', async () => {
+  const hub = await resumedHub({ pushLeaseMs: 1000 });
+  cleanup.push(hub.cleanup);
+  const pair = await relayV2.generateEcPair();
+  const registration = {
+    token: 'ab'.repeat(32),
+    environment: 'sandbox' as const,
+    pushPublicKey: relayV2.b64u(pair.publicKey),
+    keyVersion: 1,
+  };
+  expect(await hub.exchange(createSecurePushRegisterRequest(registration))).toMatchObject({
+    success: true,
+  });
+  const file = join(hub.dir, 'secure_push_subscriptions.json');
+  const expire = () => {
+    const data = JSON.parse(readFileSync(file, 'utf8'));
+    data.subscriptions[0].lastSeenAt = Date.now() - 2000;
+    writeFileSync(file, JSON.stringify(data));
+  };
+  expire();
+  expect(
+    await hub.exchange({ ...createSecurePushRegisterRequest(registration), renewExpired: false }),
+  ).toMatchObject({ success: false, error: 'RENEWAL_REQUIRED' });
+  expect(await hub.exchange(createSecurePushRegisterRequest(registration, true))).toMatchObject({
+    success: true,
+  });
+  expire();
+  expect(await hub.exchange(createSecurePushRegisterRequest(registration))).toMatchObject({
+    success: true,
+  });
+}, 15000);
+
 test('encrypted notification registration requires explicit consent after inactive expiry', async () => {
   const hub = await resumedHub({ pushLeaseMs: 1000 }, { notificationOnly: true });
   cleanup.push(hub.cleanup);

@@ -21,6 +21,8 @@ struct PhoneMachinesSheet<PairingContent: View>: View {
     let onDone: () -> Void
     @ViewBuilder let pairingContent: (_ close: @escaping () -> Void) -> PairingContent
     @State private var showsPairing = false
+    var notificationStates: [String: PairedNotificationState] = [:]
+    var onRevokeNotifications: (MachineEndpoint) -> Void = { _ in }
 
     var body: some View {
         NavigationStack {
@@ -36,7 +38,9 @@ struct PhoneMachinesSheet<PairingContent: View>: View {
                     onPairAgain: { showsPairing = true },
                     onEnableRelayNotifications: onEnableRelayNotifications,
                     enablingRelayNotifications: enablingRelayNotifications,
-                    showsTitle: false
+                    showsTitle: false,
+                    notificationStates: notificationStates,
+                    onRevokeNotifications: onRevokeNotifications
                 )
                 .padding(RemiTheme.Spacing.m)
             }
@@ -70,6 +74,8 @@ struct MachinesSection: View {
     let enablingRelayNotifications: Bool
     let showsTitle: Bool
     @State private var pendingRemoval: RemiMachineSummary?
+    var notificationStates: [String: PairedNotificationState] = [:]
+    var onRevokeNotifications: (MachineEndpoint) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
@@ -85,7 +91,9 @@ struct MachinesSection: View {
                     onEnableRelayNotifications: onEnableRelayNotifications,
                     onRetryConnection: onRetryConnection,
                     onSetConnectionPreference: onSetConnectionPreference,
-                    onRemove: { pendingRemoval = machine }
+                    onRemove: { pendingRemoval = machine },
+                    notificationState: notificationStates[machine.id],
+                    onRevokeNotifications: onRevokeNotifications
                 )
                 if let state = states.first(where: { $0.id == machine.id }),
                    case .waitingForApproval(let fingerprint) = state.status {
@@ -241,6 +249,8 @@ struct PhoneMachineManagementRow: View {
     let onRetryConnection: (MachineEndpoint) -> Void
     let onSetConnectionPreference: (MachineEndpoint, MachineConnectionPreference) -> Void
     let onRemove: () -> Void
+    var notificationState: PairedNotificationState? = nil
+    var onRevokeNotifications: (MachineEndpoint) -> Void = { _ in }
 
     var body: some View {
         let layout = dynamicTypeSize.isAccessibilitySize
@@ -272,11 +282,11 @@ struct PhoneMachineManagementRow: View {
                         onRetryConnection(state.endpoint)
                     }
                 }
-                if let state, state.endpoint.relayPin != nil {
-                    Button("Enable relay notifications", systemImage: "bell.badge") {
-                        onEnableRelayNotifications(state.endpoint)
-                    }
-                    .disabled(enablingRelayNotifications || state.status != .connected)
+                if let state {
+                    PairedNotificationControls(state: notificationState, busy: enablingRelayNotifications,
+                        connected: state.status == .connected,
+                        enable: { onEnableRelayNotifications(state.endpoint) },
+                        revoke: { onRevokeNotifications(state.endpoint) })
                 }
                 Button("Remove machine", systemImage: "trash", role: .destructive) {
                     onRemove()

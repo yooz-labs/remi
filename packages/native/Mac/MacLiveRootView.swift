@@ -54,12 +54,10 @@ struct MacLiveRootView: View {
                             )
                                 .tag(RemiMacSidebarSelection.machine(machine.id))
                                 .contextMenu {
-                                    if machine.endpoint.relayPin != nil {
-                                        Button("Enable relay notifications", systemImage: "bell.badge") {
-                                            relayNotifications.enable(on: machine.endpoint)
-                                        }
-                                        .disabled(relayNotifications.enabling || !store.persistableEndpoints.contains(machine.endpoint))
-                                    }
+                                    PairedNotificationControls(state: store.pairedNotificationState(for: machine.endpoint),
+                                        busy: relayNotifications.enabling, connected: machine.status == .connected,
+                                        enable: { relayNotifications.enable(on: machine.endpoint) },
+                                        revoke: { relayNotifications.revoke(on: machine.endpoint) })
                                     Button("Remove machine", systemImage: "trash", role: .destructive) {
                                         pendingMachineRemoval = machine
                                     }

@@ -23,11 +23,13 @@ public struct PushMachineTrust: Sendable, Equatable {
     public let machinePublicKey: Data
     public let origin: String
     public let relayURL: String
+    public let notificationOnly: Bool
     public let authority: PushDeviceAuthority
     fileprivate init(_ value: NativePushState.MachineTrust) throws {
-        guard let route = value.relayUrl else { throw RemiPushError.unavailable }
+        guard let route = value.relayUrl ?? value.notificationRelayUrl else { throw RemiPushError.unavailable }
         room = value.rid; machinePublicKey = value.machinePublicKey
         origin = value.endpoint; relayURL = route; authority = .init(value.authority)
+        notificationOnly = value.relayUrl == nil
     }
 }
 
@@ -192,12 +194,19 @@ public final class RemiPushStore: @unchecked Sendable {
     }
     public func machine(room: Data) throws -> PushMachineTrust? { try state.machineTrust(rid: room).map(PushMachineTrust.init) }
     public func completedMachines() throws -> [PushMachineTrust] { try state.completedMachineTrusts().map(PushMachineTrust.init) }
+    public func notificationMachines() throws -> [PushMachineTrust] { try state.notificationMachineTrusts().map(PushMachineTrust.init) }
     public func commitMachine(room: Data, machinePublicKey: Data, origin: String, relayURL: String,
                               authority: PushDeviceAuthority, generation: Int64) throws {
         try state.installMachineTrust(.init(rid: room, machinePublicKey: machinePublicKey, endpoint: origin,
             authority: authority.native, relayUrl: relayURL), generation: generation)
     }
     public func forgetMachine(room: Data) throws { try state.forgetMachine(rid: room) }
+    /// Authenticated direct bootstrap supplies this route, independently of foreground routing.
+    public func commitNotificationMachine(room: Data, machinePublicKey: Data, origin: String, relayURL: String,
+                                          authority: PushDeviceAuthority, generation: Int64) throws {
+        try state.installMachineTrust(.init(rid: room, machinePublicKey: machinePublicKey, endpoint: origin,
+            authority: authority.native, notificationRelayUrl: relayURL), generation: generation)
+    }
     public func recipient(createIfMissing: Bool = false) throws -> PushRegistrationRecipient? {
         let key = try createIfMissing ? keys.loadOrCreate() : keys.load()
         return key.map { .init(publicKey: $0.publicKey, keyVersion: $0.keyVersion) }

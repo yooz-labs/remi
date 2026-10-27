@@ -980,3 +980,7 @@ Implement the approved notification-only admission foundation with a separate en
 ## Paired host notification registration (2026-10-26, #1679)
 
 Add identity-bound direct bootstrap for encrypted notification registration, rolling 30-day inactive expiry with explicit Continue, and hub-owned forwarding of sealed session events. The host contract, negative-path controls and device acceptance limits are in [notification-host-plan.md](notification-host-plan.md). Native automatic registration and concise verified notification actions remain subsequent phases; source checks do not establish physical APNs or Watch delivery.
+
+## Native paired-device notification registration (2026-10-26, #1680)
+
+Native clients bootstrap a notification-only route from their authenticated direct host, register over a bounded encrypted channel, and keep that route out of saved foreground routes. Foreground use renews subscriptions; inactive expiry shows Continue, and Revoke intent survives app restart. Follow [notification-native-plan.md](notification-native-plan.md) for the identity/route/consent controls and signed-device acceptance limits.

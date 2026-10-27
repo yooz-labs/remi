@@ -59,6 +59,13 @@ public final class NativeRelayNotifications {
     @ObservationIgnored private var pendingCarrier: Data?
     @ObservationIgnored private var latestToken: Data?
     @ObservationIgnored private var tokenTask: Task<Void, Never>?
+    @ObservationIgnored private var automaticTask: Task<Void, Never>?
+    @ObservationIgnored private var tokenEnvironment: String?
+    @ObservationIgnored private var disabledHosts: Set<String> = []
+    @ObservationIgnored private var pendingRevocations: Set<String> = []
+    @ObservationIgnored private var lastRegistrations: [String: Date] = [:]
+    @ObservationIgnored private var permissionRevokedHosts: Set<String> = []
+    @ObservationIgnored private var lastRevocations: [String: Date] = [:]
     @ObservationIgnored private var enableTask: Task<Void, Never>?
     @ObservationIgnored private var enableAttempt: UUID?
     @ObservationIgnored private var enablingEndpointID: String?
@@ -86,6 +93,8 @@ public final class NativeRelayNotifications {
            ["native-debug", "native-release"].contains(namespace) {
             intentKey = "remi.relay.notification-intent.\(namespace)"
             intents = Set((preferences.stringArray(forKey: intentKey) ?? []).prefix(128))
+            disabledHosts = Set((preferences.stringArray(forKey: intentKey + ".disabled") ?? []).prefix(128))
+            pendingRevocations = disabledHosts
         }
     }
 
@@ -108,6 +117,8 @@ public final class NativeRelayNotifications {
         self.ownedSession = ownedSession
         intentKey = "remi.relay.notification-intent.owned"
         intents = Set((defaults.stringArray(forKey: intentKey) ?? []).prefix(128))
+        disabledHosts = Set((defaults.stringArray(forKey: intentKey + ".disabled") ?? []).prefix(128))
+        pendingRevocations = disabledHosts
         do { _ = try ownedIdentityStore.loadCurrent() }
         catch { startupError = "The owned device identity is unavailable." }
         if let ownedForegroundEndpoints {
@@ -190,7 +201,8 @@ public final class NativeRelayNotifications {
             notificationPresentationID = UUID()
             presentsRelayNotification = true
         }
-        if !intents.isEmpty {
+        startAutomaticRegistration()
+        if !store.machines.isEmpty {
             // Refresh the OS token on foreground entry; never persist token bytes.
             registerWithAPNs()
             if let latestToken { acceptPushToken(latestToken) }
@@ -221,6 +233,7 @@ public final class NativeRelayNotifications {
             store?.suspendForegroundConnections()
         }
         cancelEnable()
+        automaticTask?.cancel(); automaticTask = nil
         tokenTask?.cancel(); tokenTask = nil
         finishPermission(false)
         finishToken(nil)
@@ -244,9 +257,9 @@ public final class NativeRelayNotifications {
     }
 
     public func enable(on endpoint: MachineEndpoint) {
-        guard foreground, !enabling, let current = store, endpoint.relayPin != nil,
+        guard foreground, !enabling, let current = store,
               current.persistableEndpoints.contains(endpoint) else {
-            notice = "Finish pairing and open Remi before enabling relay notifications."
+            notice = "Finish pairing and open Remi before enabling notifications."
             return
         }
         let epoch = lifecycle
@@ -254,7 +267,7 @@ public final class NativeRelayNotifications {
         enableAttempt = attempt
         enablingEndpointID = endpoint.id
         enabling = true
-        notice = "Allow notifications to receive relay alerts."
+        notice = "Allow notifications to receive alerts."
         enableTask = Task { [weak self, weak current] in
             guard let self, let current else { return }
             defer {
@@ -284,14 +297,25 @@ public final class NativeRelayNotifications {
                 return self.isEnableCurrent(current, epoch, attempt, endpoint) && !Task.isCancelled
             }), self.isEnableCurrent(current, epoch, attempt, endpoint), !Task.isCancelled else {
                 if self.isEnableCurrent(current, epoch, attempt, endpoint) {
-                    self.notice = "The signed APNs environment is unavailable. Relay notifications require a signed app."
+                    self.notice = "The signed APNs environment is unavailable. Notifications require a signed app."
                     self.enabling = false
                 }
                 return
             }
+            self.tokenEnvironment = environment
             current.updateRelayPushToken(token, environment: environment)
-            await current.enableRelayNotifications(on: endpoint)
+            if endpoint.relayPin != nil {
+                await current.enableRelayNotifications(on: endpoint)
+            } else {
+                await current.registerPairedNotifications(on: endpoint,
+                    continueAfterInactivity: current.pairedNotificationState(for: endpoint) == .renewalRequired)
+            }
             guard self.isEnableCurrent(current, epoch, attempt, endpoint), !Task.isCancelled else { return }
+            if let host = current.machines.first(where: { $0.endpoint == endpoint })?.id {
+                self.disabledHosts.remove(host); self.pendingRevocations.remove(host)
+                self.lastRegistrations[host] = Date()
+                self.saveDisabledHosts()
+            }
             self.intents.insert(endpoint.id)
             self.saveIntents()
             self.notice = nil
@@ -311,6 +335,23 @@ public final class NativeRelayNotifications {
         if intents.remove(endpoint.id) != nil { saveIntents() }
     }
 
+    public func revoke(on endpoint: MachineEndpoint) {
+        guard let current = store, let host = current.machines.first(where: { $0.endpoint == endpoint })?.id else { return }
+        machineWillChange(endpoint)
+        disabledHosts.insert(host); pendingRevocations.insert(host)
+        saveDisabledHosts()
+        Task { [weak self, weak current] in
+            guard let self, let current else { return }
+            if await current.revokePairedNotifications(on: endpoint) { self.pendingRevocations.remove(host) }
+            self.lastRegistrations[host] = nil
+        }
+    }
+
+    public func isDisabled(on endpoint: MachineEndpoint) -> Bool {
+        guard let host = store?.machines.first(where: { $0.endpoint == endpoint })?.id else { return false }
+        return disabledHosts.contains(host)
+    }
+
     /// Invoke after the store's durable Forget succeeds. A failed Forget leaves
     /// its endpoint present and keeps the recoverable preference intent.
     public func reconcileEndpoints() {
@@ -318,6 +359,9 @@ public final class NativeRelayNotifications {
         let present = Set(store.machines.map { $0.endpoint.id })
         let retained = intents.intersection(present)
         if retained != intents { intents = retained; saveIntents() }
+        let hosts = Set(store.machines.map(\.id))
+        disabledHosts.formIntersection(hosts); pendingRevocations.formIntersection(hosts)
+        saveDisabledHosts()
     }
 
     public func acceptPushToken(_ token: Data) {
@@ -334,6 +378,8 @@ public final class NativeRelayNotifications {
                       return self.isCurrent(current, epoch) && self.latestToken == token && !Task.isCancelled
                   }), self.isCurrent(current, epoch), self.latestToken == token, !Task.isCancelled else { return }
             current.updateRelayPushToken(token, environment: environment)
+            self.tokenEnvironment = environment
+            self.lastRegistrations.removeAll()
         }
     }
 
@@ -462,6 +508,48 @@ public final class NativeRelayNotifications {
     private func saveIntents() {
         guard !intentKey.isEmpty else { return }
         preferences.set(intents.sorted(), forKey: intentKey)
+    }
+    private func saveDisabledHosts() {
+        guard !intentKey.isEmpty else { return }
+        preferences.set(disabledHosts.sorted(), forKey: intentKey + ".disabled")
+    }
+
+    /// Polls readiness without opening another foreground route. Only actual app use renews.
+    private func startAutomaticRegistration() {
+        automaticTask?.cancel()
+        automaticTask = Task { [weak self] in
+            while let self, self.foreground, !Task.isCancelled {
+                await self.refreshPairedNotifications()
+                do { try await Task.sleep(for: .seconds(3)) } catch { return }
+            }
+        }
+    }
+    private func refreshPairedNotifications() async {
+        guard foreground, let current = store, !enabling else { return }
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        let allowed = settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
+        guard foreground, store === current, !Task.isCancelled else { return }
+        for machine in current.machines where machine.status == .connected {
+            let host = machine.id, endpoint = machine.endpoint
+            if !allowed || disabledHosts.contains(host) {
+                if !allowed, permissionRevokedHosts.insert(host).inserted { pendingRevocations.insert(host) }
+                if pendingRevocations.contains(host), Date().timeIntervalSince(lastRevocations[host] ?? .distantPast) >= 60 {
+                    lastRevocations[host] = Date()
+                    if await current.revokePairedNotifications(on: endpoint) { pendingRevocations.remove(host) }
+                }
+                continue
+            }
+            if permissionRevokedHosts.remove(host) != nil { lastRegistrations[host] = nil }
+            guard endpoint.relayPin == nil else { continue }
+            guard tokenEnvironment != nil, latestToken != nil else { continue }
+            let state = current.pairedNotificationState(for: endpoint)
+            if state == .renewalRequired || state == .registering { continue }
+            let interval: TimeInterval = state == .registered ? 15 * 60 : 60
+            if let last = lastRegistrations[host], Date().timeIntervalSince(last) < interval { continue }
+            lastRegistrations[host] = Date()
+            await current.registerPairedNotifications(on: endpoint)
+            guard foreground, store === current, !Task.isCancelled else { return }
+        }
     }
     private func clientID() -> String {
         let key = "remi.native.client-id"

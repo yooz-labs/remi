@@ -436,7 +436,9 @@ struct PhoneLiveRootView: View {
                 onSetConnectionPreference: { store.setConnectionPreference($1, for: $0) },
                 onEnableRelayNotifications: relayNotifications.enable,
                 onDone: { activeSheet = nil },
-                pairingContent: { close in pairingScreen(onDone: close) }
+                pairingContent: { close in pairingScreen(onDone: close) },
+                notificationStates: store.pairedNotificationStates,
+                onRevokeNotifications: relayNotifications.revoke
             )
             .presentationSizing(.form)
         }

@@ -1083,7 +1083,8 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
           peer.stage === 'ready' &&
           peer.pushMutation === mutation &&
           peer.pushAuthority === authority,
-        peer.scope === 'full' || message.renewExpired === true,
+        message.renewExpired === true ||
+          (peer.scope === 'full' && message.renewExpired === undefined),
       );
       // register's commit callback is inside the authorization lock: use only
       // in-memory lifecycle state there, never current()'s nested disk lock.
