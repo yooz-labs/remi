@@ -8,9 +8,18 @@ public enum RemiTileSize: String, Codable, CaseIterable, Sendable {
     /// About how tall the tile is, for packing columns before it is laid out.
     public var estimatedHeight: CGFloat {
         switch self {
-        case .compact: 130
-        case .regular: 190
-        case .large: 340
+        case .compact: 260
+        case .regular: 420
+        case .large: 640
+        }
+    }
+
+    /// How many of the latest conversation entries the tile keeps ready to show.
+    public var feedEntries: Int {
+        switch self {
+        case .compact: 4
+        case .regular: 8
+        case .large: 16
         }
     }
 
@@ -137,6 +146,23 @@ public enum RemiBoardOrder {
         var iterator = rest.makeIterator()
         for index in slots.indices where slots[index] == nil { slots[index] = iterator.next() }
         return slots.compactMap { $0 }
+    }
+
+    /// The sessions the board shows. Finished sessions stay off it (they are one search or the
+    /// machine's list away) unless `showFinished` asks for them.
+    public static func visible(
+        _ sessions: [RemiSessionSummary], machineID: String?, onlyNeedsYou: Bool, showFinished: Bool
+    ) -> [RemiSessionSummary] {
+        sessions.filter { session in
+            (showFinished || session.isLive)
+                && (machineID == nil || session.machineID == machineID)
+                && (!onlyNeedsYou || session.status == .needsYou)
+        }
+    }
+
+    /// The latest entries a tile of this size shows, oldest first.
+    public static func feed(_ entries: [RemiTranscriptEntry], size: RemiTileSize) -> [RemiTranscriptEntry] {
+        Array(entries.suffix(size.feedEntries))
     }
 
     /// Packs tiles into columns in reading order: each goes under the shortest column so far
