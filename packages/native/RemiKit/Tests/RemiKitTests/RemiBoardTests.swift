@@ -174,4 +174,34 @@ import Testing
         #expect(RemiBoardOrder.columns(heights: [], count: 3) == [[], [], []])
         #expect(RemiBoardOrder.columns(heights: [1, 2], count: 0) == [[0, 1]])
     }
+
+    // MARK: what the board shows
+
+    private func live(_ id: String, _ status: RemiSessionStatus = .idle, machine: String = "m") -> RemiSessionSummary {
+        RemiSessionSummary(
+            id: id, machineID: machine, machineName: machine, name: id, harness: "claude", project: "p",
+            status: status, isLive: status != .offline
+        )
+    }
+
+    @Test func finishedSessionsStayOffTheBoardUnlessAsked() {
+        let sessions = [live("a"), live("done", .offline), live("b", .working)]
+        #expect(RemiBoardOrder.visible(sessions, machineID: nil, onlyNeedsYou: false, showFinished: false).map(\.id) == ["a", "b"])
+        #expect(RemiBoardOrder.visible(sessions, machineID: nil, onlyNeedsYou: false, showFinished: true).map(\.id) == ["a", "done", "b"])
+    }
+
+    @Test func theFiltersNarrowTheBoard() {
+        let sessions = [live("a", machine: "one"), live("b", .needsYou, machine: "two"), live("c", machine: "two")]
+        #expect(RemiBoardOrder.visible(sessions, machineID: "two", onlyNeedsYou: false, showFinished: false).map(\.id) == ["b", "c"])
+        #expect(RemiBoardOrder.visible(sessions, machineID: nil, onlyNeedsYou: true, showFinished: false).map(\.id) == ["b"])
+        #expect(RemiBoardOrder.visible(sessions, machineID: "one", onlyNeedsYou: true, showFinished: false).isEmpty)
+    }
+
+    @Test func aTileShowsTheLatestEntriesItsSizeHasRoomFor() {
+        let entries = (0..<30).map { RemiTranscriptEntry.agent(id: "e\($0)", text: "m\($0)") }
+        #expect(RemiBoardOrder.feed(entries, size: .compact).count == RemiTileSize.compact.feedEntries)
+        #expect(RemiBoardOrder.feed(entries, size: .large).first?.id == "e\(30 - RemiTileSize.large.feedEntries)")
+        #expect(RemiBoardOrder.feed(entries, size: .large).last?.id == "e29")
+        #expect(RemiBoardOrder.feed([], size: .regular).isEmpty)
+    }
 }
