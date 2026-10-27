@@ -155,6 +155,32 @@ struct NativePushActionTests {
         }
     }
 
+    @MainActor @Test func reviewNavigationRequiresAnExistingMatchingMachineAndCurrentTrust() throws {
+        let (context, carrier) = try inputs(change: "appOnly"); defer { try? context.cleanup() }
+        let trust = try #require(try context.store.machine(room: context.room))
+        let endpoint = MachineEndpoint(host: "review.example", port: 18790, expectedPublicKey: trust.machinePublicKey.base64EncodedString())
+        let profile = MachineRouteProfile(machineID: RelayCrypto.hex(context.room), routes: [endpoint],
+            connectionPreference: .localOnly, machinePublicKey: RelayCrypto.b64(trust.machinePublicKey))
+        // Navigation does not read or use a device signing key; no connection is started.
+        let store = MachineStore(profiles: [profile], identity: ClientIdentity(), clientVersion: "owned-review-navigation",
+            clientId: UUID().uuidString.lowercased(), pushStore: context.store)
+        store.openRelayNotification(carrier: carrier)
+        let destination = try #require(store.notificationSessionDestination)
+        #expect(destination.machineID == store.machines[0].id)
+        #expect(destination.sessionID == store.verifiedRelayNotification?.sessionID)
+        #expect(store.machines[0].connectionPreference == .localOnly)
+        let otherKey = ClientIdentity().publicKeyRaw
+        let otherProfile = MachineRouteProfile(machineID: RelayCrypto.hex(RelayCrypto.room(otherKey)),
+            routes: [MachineEndpoint(host: "other.example", port: 18790, expectedPublicKey: otherKey.base64EncodedString())],
+            machinePublicKey: RelayCrypto.b64(otherKey))
+        let wrong = MachineStore(profiles: [otherProfile], identity: ClientIdentity(), clientVersion: "owned-review-navigation",
+            clientId: UUID().uuidString.lowercased(), pushStore: context.store)
+        wrong.openRelayNotification(carrier: carrier)
+        #expect(wrong.notificationSessionDestination == nil)
+        try context.store.forgetMachine(room: context.room)
+        #expect(store.notificationSessionDestination == nil)
+    }
+
     @Test func shippingSnapshotPreservesExactUntrustedOSValues() throws {
         let (context, carrier) = try inputs(); defer { try? context.cleanup() }
         let opened = try context.store.open(carrier: carrier)

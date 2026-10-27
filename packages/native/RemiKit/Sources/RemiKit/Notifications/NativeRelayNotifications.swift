@@ -40,6 +40,7 @@ public final class NativeRelayNotifications {
     public private(set) var notice: String?
     public private(set) var enabling = false
     public private(set) var notificationPresentationID: UUID?
+    public private(set) var notificationSessionNavigation: MachineSessionKey?
     public private(set) var lastBackgroundActionOutcome: RelayNotificationAnswerOutcome?
     public var presentsRelayNotification = false
 
@@ -201,9 +202,7 @@ public final class NativeRelayNotifications {
         if alreadyStarted, !actionInFlight { store.foregroundRecoveryActivated() }
         if let carrier = pendingCarrier {
             pendingCarrier = nil
-            store.openRelayNotification(carrier: carrier)
-            notificationPresentationID = UUID()
-            presentsRelayNotification = true
+            presentOriginalCarrier(carrier, in: store)
         }
         startAutomaticRegistration()
         // A first host can be paired later in this scene. Token acquisition is
@@ -396,7 +395,20 @@ public final class NativeRelayNotifications {
     public func openDefaultTap(carrier: Data?) {
         let original = carrier ?? Data()
         guard foreground, let store else { pendingCarrier = original; return }
+        presentOriginalCarrier(original, in: store)
+    }
+
+    public func consumeNotificationSessionNavigation(_ destination: MachineSessionKey) {
+        if notificationSessionNavigation == destination { notificationSessionNavigation = nil }
+    }
+    private func presentOriginalCarrier(_ original: Data, in store: MachineStore) {
         store.openRelayNotification(carrier: original)
+        if let destination = store.notificationSessionDestination {
+            notificationSessionNavigation = destination
+            notificationPresentationID = nil
+            presentsRelayNotification = false
+            return
+        }
         notificationPresentationID = UUID()
         presentsRelayNotification = true
     }

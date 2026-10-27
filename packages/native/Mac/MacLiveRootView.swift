@@ -317,6 +317,17 @@ struct MacLiveRootView: View {
                 }
             }
         }
+        .onChange(of: relayNotifications.notificationSessionNavigation, initial: true) { _, destination in
+            guard let destination else { return }
+            guard store.notificationSessionDestination == destination else {
+                relayNotifications.consumeNotificationSessionNavigation(destination); return
+            }
+            selectedMachineID = destination.machineID
+            selectedSessionID = destination.sessionID
+            preferredCompactColumn = .detail
+            relayNotifications.consumeNotificationSessionNavigation(destination)
+            relayNotifications.closeNotification()
+        }
         .sheet(isPresented: $relayNotifications.presentsRelayNotification, onDismiss: relayNotifications.closeNotification) {
             RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification) { destination in
                 relayNotifications.closeNotification()

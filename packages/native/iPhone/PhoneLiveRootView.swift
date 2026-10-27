@@ -109,6 +109,17 @@ struct PhoneLiveRootView: View {
                 activeSheet = nil
             }
         }
+        .onChange(of: relayNotifications.notificationSessionNavigation, initial: true) { _, destination in
+            guard let destination else { return }
+            guard store.notificationSessionDestination == destination else {
+                relayNotifications.consumeNotificationSessionNavigation(destination); return
+            }
+            activeSheet = nil
+            shell.openFromNotification(route: PhoneSessionRoute(machineKey: destination.machineID,
+                sessionID: destination.sessionID), questionID: nil)
+            relayNotifications.consumeNotificationSessionNavigation(destination)
+            relayNotifications.closeNotification()
+        }
         .onChange(of: activeSheet?.id) { old, new in
             // However the panel went away (swipe, Close, another sheet), tell the store.
             if old == PhoneShellSheet.relayNotification.id, new != old {
