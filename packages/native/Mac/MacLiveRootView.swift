@@ -318,7 +318,12 @@ struct MacLiveRootView: View {
             }
         }
         .sheet(isPresented: $relayNotifications.presentsRelayNotification, onDismiss: relayNotifications.closeNotification) {
-            RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification)
+            RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification) { destination in
+                relayNotifications.closeNotification()
+                selectedMachineID = destination.machineID
+                selectedSessionID = destination.sessionID
+                preferredCompactColumn = .detail
+            }
                 .frame(minWidth: 440, minHeight: 320)
         }
         .sheet(isPresented: $showingNewSession, onDismiss: {

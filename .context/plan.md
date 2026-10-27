@@ -987,3 +987,7 @@ Native clients bootstrap a notification-only route from their authenticated dire
 ## Registered question delivery (2026-10-26, #1674)
 
 Deliver question pushes to valid registered recipients even when a client is attached; keep preferences, validity checks and deduplication. Bound secure previews for cards that already require opening the app, without shortening a one-tap permission's authoritative ask. The owner approved the broader paired-device plan and selected automatic active renewal with Continue/Revoke after 30 days inactive (#1677). Signed APNs, extension and Watch acceptance remain separate gates.
+
+## Concise notification presentation (2026-10-26, #1681)
+
+Use Allow once/Deny for exact verified binary choices, and keep complete signed action titles only when short. Otherwise publish a foreground Review request action without answer authority. Signed question metadata keeps app-only questions time-sensitive; completed turns receive Open session. Notification panels can open the matched paired session to review its full current content. The deterministic preview and immutable-action checks are in [notification-actions-plan.md](notification-actions-plan.md); owner APNs/NSE/iPhone/Watch receipts remain required for device acceptance.

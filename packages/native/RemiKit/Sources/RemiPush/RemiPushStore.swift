@@ -83,7 +83,10 @@ public struct VerifiedPushNotification: @unchecked Sendable {
             options = value.options.map { .init(value: $0.value, label: $0.label, isYes: $0.isYes,
                 isNo: $0.isNo, description: $0.description, standingGrant: $0.standingGrant?.rawValue) }
         case .informational(let value):
-            kind = .information; title = PushDisplayText.escape(value.title); body = PushDisplayText.escape(value.body)
+            // An app-only question still needs attention. Classification uses signed
+            // content kind, never an outer APNs hint or a summary's wording (#1681).
+            kind = push.record.kind == NativePushCodec.Kind.question.byte ? .question : .information
+            title = PushDisplayText.escape(value.title); body = PushDisplayText.escape(value.body)
             sessionID = value.sessionId; questionID = nil; runtimeInstance = nil; category = "none"; options = []
         case .dismiss:
             kind = .dismiss; title = ""; body = ""; sessionID = nil; questionID = nil
@@ -232,6 +235,7 @@ public final class RemiPushStore: @unchecked Sendable {
             // Verified alerts can intentionally have no actions when publication
             // fails or the signed shape/protection policy requires the app.
             if content.categoryIdentifier.isEmpty { return true }
+            if content.categoryIdentifier == Self.foregroundCategoryIdentifier(for: opened) { return true }
             guard let actions = try actionSet(for: opened) else { return false }
             return Data(content.categoryIdentifier.utf8) == Data(actions.categoryIdentifier.utf8)
         } catch { return false }

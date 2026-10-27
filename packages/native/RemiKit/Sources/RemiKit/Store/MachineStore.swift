@@ -692,6 +692,20 @@ public final class MachineStore {
             verifiedRelayNotification = opened; relayNotificationNotice = nil
         } catch { verifiedRelayNotification = nil; relayNotificationNotice = "This relay notification is no longer available. Open the current session." }
     }
+    /// Navigation uses a reverified capsule and an existing paired machine; it grants no operation.
+    public var notificationSessionDestination: MachineSessionKey? {
+        guard let opened = verifiedRelayNotification, let pushStore,
+              (try? pushStore.recheck(opened)) != nil, let session = opened.sessionID,
+              let machine = machines.first(where: { state in
+                  if let encoded = state.durableMachinePublicKey,
+                     (try? RelayCrypto.unb64(encoded)) == opened.machine.machinePublicKey { return true }
+                  return state.routingRoutes.contains { route in
+                      if let key = route.expectedPublicKey, Data(base64Encoded: key) == opened.machine.machinePublicKey { return true }
+                      return route.relayPin?.machinePublicKey == RelayCrypto.b64(opened.machine.machinePublicKey)
+                  }
+              }) else { return nil }
+        return sessionKey(machineID: machine.id, sessionID: session)
+    }
     public var relayNotificationChoices: [VerifiedPushOption] {
         verifiedRelayNotification.map(NativeAnswerProof.choices) ?? []
     }

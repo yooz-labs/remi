@@ -422,7 +422,12 @@ struct PhoneLiveRootView: View {
         case .preferences:
             PhonePreferencesSheet(publicIdentity: store.publicIdentity)
         case .relayNotification:
-            RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification)
+            RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification) { destination in
+                relayNotifications.closeNotification()
+                activeSheet = nil
+                shell.openFromNotification(route: PhoneSessionRoute(machineKey: destination.machineID,
+                    sessionID: destination.sessionID), questionID: nil)
+            }
                 .presentationSizing(.form)
         case .machines:
             PhoneMachinesSheet(
