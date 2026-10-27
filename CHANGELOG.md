@@ -4,6 +4,17 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-27
+
+- Codex asynchronous questions now become readable question cards and Question/Answer history. Replies retain the original question identity, recheck authority at send time, and stop automatic retry after uncertain delivery. Following a thread selected with Codex's internal `/resume` remains deferred (#1687, #1691).
+- Native app source consumes live session activity updates and reloads selected Codex history after authenticated reconnect. Pending questions take precedence over activity labels; disconnected routes clear stale activity (#1675).
+- Paired native apps can register a notification-only connection after notification permission, independently of the foreground session connection. Authenticated use renews registration; after 30 days inactive the app offers Continue or Revoke. Existing explicit `push_lease_hours` settings remain effective (#1678–#1680).
+- Registered devices remain push recipients while attached. Notification previews are short; complete short binary requests can show Deny and Allow once, while longer or complex requests open Review request in the app. Summaries do not authorize approval of hidden details (#1676, #1680).
+- The hub can forward secure question pushes from its current local session daemons without copying the provider credential into their arguments. Push still needs the deployment credential and compatible app registration. Publishing this CLI does not update an already-running daemon or complete physical iPhone/Watch delivery acceptance (#1679, #1681).
+- Linux ARM64 release binaries are now built and smoke-tested on a native ARM64 runner. All three platform binaries must report the exact source version before publication; release-workflow PRs exercise these builds without publishing (#1694).
+- Terminal screen capture, bounded storage and ownership checks are included for the integrated terminal work. Remote terminal service and encrypted relay qualification remain separate work; this release does not enable an unfinished service (#1595, #1655, #1657).
+- Native app changes below are distributed through their separate app build. This daemon release does not sign or upload the app, deploy a Worker, or establish the remaining device acceptance gates.
+
 - Native app source adds per-machine Automatic, Local only, Tailscale only and Relay only preferences, bounded handshakes and full authenticated machine-pin persistence. Re-pairing preserves the saved policy, alias and routes. An unavailable locked layer does not fall back (#1571).
 - `remi pair --qr-version 2` offers one to four direct addresses under the same machine key and pairing nonce. The native candidate tries permitted Local addresses before Tailscale and stops on authentication or identity refusal. V1 remains the CLI default for compatibility; v2 needs the separately distributed compatible app. Relay enrollment stays explicit (#1574).
 - Native recovery discovers compatible local hubs and verifies the saved full key before replacing a connection. A healthy route stays active while a preferred route is checked. Discovery addresses stay in memory; network changes and Retry use bounded episodes without replaying pending operations. Hubs and session daemons now advertise distinct default Bonjour names (#1575).
