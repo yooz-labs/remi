@@ -8,12 +8,16 @@ struct MacLiveRootView: View {
 
     @AppStorage("remi.mac.selected-machine") private var selectedMachineID = ""
     @AppStorage("remi.mac.selected-session") private var selectedSessionID = ""
+    @AppStorage("remi.mac.last-threads") private var lastThreadsStorage = ""
     @SceneStorage("remi.mac.column-layout") private var columnLayoutStorage = ""
     @SceneStorage("remi.mac.drafts") private var draftsStorage = ""
     @Environment(\.scenePhase) private var scenePhase
     @State private var draftBox = MacDraftBox()
     @State private var draftFlush: Task<Void, Never>?
     @State private var showingInbox = false
+    /// A hub lists its sessions before its per-session daemons do; until this is true a
+    /// remembered thread missing from the list is waited for, not replaced.
+    @State private var restoreGraceOver = false
     @State private var showingNewSession = false
     @State private var newSessionMachineID: String?
     @State private var newSessionRepository: String?
@@ -248,6 +252,14 @@ struct MacLiveRootView: View {
         .task {
             restoreColumnLayout()
             reconcileNavigation()
+            try? await Task.sleep(for: .seconds(4))
+            restoreGraceOver = true
+            reconcileNavigation()
+        }
+        .onChange(of: selectedSessionID) { _, sessionID in
+            var threads = RemiLastThreads(storage: lastThreadsStorage)
+            threads.remember(machineID: selectedMachineID, sessionID: sessionID)
+            lastThreadsStorage = threads.storageValue
         }
         .onChange(of: currentColumnLayout) { _, layout in
             columnLayoutStorage = layout.storageValue
@@ -552,9 +564,15 @@ struct MacLiveRootView: View {
             selectedMachineID = store.machines.first?.id ?? ""
         }
         guard selectedMachine?.hasLoadedSessions == true else { return }
-        let sessionIDs = selectedMachine?.sessions.map(\.sessionId) ?? []
-        if !sessionIDs.contains(selectedSessionID) {
-            selectedSessionID = sessionIDs.first ?? ""
+        switch RemiLastThreads(storage: lastThreadsStorage).resolve(
+            machineID: selectedMachineID,
+            current: selectedSessionID,
+            available: selectedMachine?.sessions.map(\.sessionId) ?? [],
+            settled: restoreGraceOver && selectedMachine?.status == .connected
+        ) {
+        case .open(let sessionID): selectedSessionID = sessionID
+        case .clear: selectedSessionID = ""
+        case .wait: break
         }
         preferredCompactColumn = RemiMacCompactDestination.resolve(
             hasMachine: selectedMachine != nil,
