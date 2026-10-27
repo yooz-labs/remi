@@ -439,6 +439,7 @@ export async function runSuite(
   output: string,
   summary: string,
   streams: { stdout?: Writable; stderr?: Writable } = {},
+  workerIndex?: number,
 ): Promise<void> {
   requireValue(
     !existsSync(output) && !existsSync(summary),
@@ -446,6 +447,11 @@ export async function runSuite(
   );
   const started = performance.now();
   const { files, lanes, before, contract } = prepareSuite(root);
+  requireValue(
+    workerIndex === undefined ||
+      (Number.isInteger(workerIndex) && workerIndex >= 0 && workerIndex < lanes.length),
+    'Invalid worker index',
+  );
   for (const origin of [
     root,
     path.join(root, 'packages/daemon/src'),
@@ -469,6 +475,7 @@ export async function runSuite(
       cases: CaseRecord[];
       assertions: number;
       contractFailure: string | null;
+      cleanupVerified: boolean;
     }
   >();
   const reports = new Map<number, LineCoverage>();
@@ -479,8 +486,13 @@ export async function runSuite(
     before,
     runtime: Bun.revision,
     token,
+    workerIndex: workerIndex ?? null,
+    machineBootId:
+      process.platform === 'linux'
+        ? readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim()
+        : null,
     scope:
-      'isolated target then parallel daemon/other shared-cache workers; cross-worker cache interactions and hidden nested child imports are not attested',
+      'isolated target and daemon/other shared-cache cohorts; concurrent workers require separate runner machines; cross-worker cache interactions and hidden nested child imports are not attested',
   });
   let failed = false;
   try {
@@ -543,6 +555,7 @@ export async function runSuite(
       evidence.set(index, {
         lane: name,
         contractFailure,
+        cleanupVerified: result.cleanupVerified,
         exit: result.exitCode,
         files: result.testFiles,
         ...actual,
@@ -560,23 +573,25 @@ export async function runSuite(
       // deletion. On an unproved/throwing exit, retain worker.json and its home.
       rmSync(home, { recursive: true });
     }
-    await runLane(0, lanes[0] as string[]);
-    // Settle every started worker before reporting any error. A failed sibling
-    // must not orphan a live test process or publish partial coverage.
-    const settled = await Promise.allSettled(
-      lanes.slice(1).map((lane, index) => runLane(index + 1, lane)),
-    );
-    const errors = settled.flatMap((result) =>
-      result.status === 'rejected' ? [result.reason] : [],
-    );
-    if (errors.length === 1) throw errors[0];
-    if (errors.length > 1) throw new AggregateError(errors, 'Test worker execution failed');
+    // Local complete runs are sequential: HOME does not isolate TCP ports.
+    // CI runs one exact worker per fresh GitHub-hosted VM, then aggregates all.
+    for (const [index, lane] of lanes.entries())
+      if (workerIndex === undefined || workerIndex === index) await runLane(index, lane);
     requireValue(
       JSON.stringify(discoverTests(root)) === JSON.stringify(files) &&
         JSON.stringify(snapshotSources(root, files)) === JSON.stringify(before),
       'Source/discovery changed during execution',
     );
     requireValue(!failed, 'One or more test lanes failed');
+    if (workerIndex !== undefined) {
+      requireValue(evidence.size === 1 && reports.size === 1, 'Incomplete worker evidence');
+      json(path.join(output, 'worker-success.json'), {
+        workerIndex,
+        runtime: Bun.revision,
+        elapsedMs: performance.now() - started,
+      });
+      return; // A worker alone MUST NOT publish a threshold summary.
+    }
     requireValue(
       evidence.size === lanes.length && reports.size === lanes.length,
       'Incomplete worker evidence',
@@ -615,17 +630,124 @@ export async function runSuite(
   }
 }
 
+/** Accept only the complete same-source population of validated worker reports. */
+export function aggregateWorkers(
+  root: string,
+  input: string,
+  output: string,
+  summary: string,
+  requireIsolatedMachines = false,
+): void {
+  requireValue(!existsSync(output) && !existsSync(summary), 'Refusing existing aggregate evidence');
+  const { files, lanes, before, contract } = prepareSuite(root);
+  const names = lanes.map((_, index) => `worker-${index}`);
+  requireValue(
+    JSON.stringify(readdirSync(input).sort(compare)) === JSON.stringify(names),
+    'Missing or unexpected test worker',
+  );
+  const reports: LineCoverage[] = [];
+  const cases: CaseRecord[] = [];
+  let assertions = 0;
+  const machineBootIds = new Set<string>();
+  for (const [index, lane] of lanes.entries()) {
+    const directory = path.join(input, names[index] as string);
+    const manifest = JSON.parse(readFileSync(path.join(directory, 'manifest.json'), 'utf8'));
+    if (requireIsolatedMachines) {
+      requireValue(
+        typeof manifest.machineBootId === 'string' &&
+          /^[0-9a-f-]{36}$/.test(manifest.machineBootId) &&
+          !machineBootIds.has(manifest.machineBootId),
+        'Workers must run on distinct machines',
+      );
+      machineBootIds.add(manifest.machineBootId);
+    }
+    requireValue(
+      manifest.workerIndex === index &&
+        manifest.runtime === Bun.revision &&
+        JSON.stringify(manifest.files) === JSON.stringify(files) &&
+        JSON.stringify(manifest.lanes) === JSON.stringify(lanes) &&
+        JSON.stringify(manifest.before) === JSON.stringify(before),
+      'Worker source/discovery/runtime mismatch',
+    );
+    const success = JSON.parse(readFileSync(path.join(directory, 'worker-success.json'), 'utf8'));
+    requireValue(
+      success.workerIndex === index &&
+        success.runtime === Bun.revision &&
+        Number.isFinite(success.elapsedMs) &&
+        success.elapsedMs >= 0 &&
+        success.elapsedMs < CONTROLLER_MS,
+      'Unvalidated test worker',
+    );
+    const name = index === 0 ? 'target' : `rest-${index}`;
+    const laneDirectory = path.join(directory, name);
+    const actual = JSON.parse(readFileSync(path.join(laneDirectory, 'actual.json'), 'utf8'));
+    const parsed = parseCases(readFileSync(path.join(laneDirectory, 'junit.xml'), 'utf8'), lane);
+    requireValue(
+      actual.exit === 0 &&
+        actual.cleanupVerified === true &&
+        actual.contractFailure === null &&
+        actual.lane === name &&
+        Array.isArray(actual.files) &&
+        JSON.stringify([...actual.files].sort(compare)) ===
+          JSON.stringify([...lane].sort(compare)) &&
+        JSON.stringify(actual.cases) === JSON.stringify(parsed.cases) &&
+        actual.assertions === parsed.assertions &&
+        parsed.cases.every((row) => row.status !== 'fail'),
+      'Invalid worker case evidence',
+    );
+    if (index === 0) validateTargetContract(contract, root, parsed);
+    reports.push(
+      parseLineCoverage(readFileSync(path.join(laneDirectory, 'lcov.info'), 'utf8'), root, before),
+    );
+    cases.push(...parsed.cases);
+    assertions += parsed.assertions;
+  }
+  requireValue(
+    JSON.stringify(snapshotSources(root, files)) === JSON.stringify(before) &&
+      JSON.stringify(discoverTests(root)) === JSON.stringify(files),
+    'Aggregate source/discovery changed',
+  );
+  const merged = unionLineCoverage(reports);
+  mkdirSync(output, { recursive: false });
+  json(path.join(output, 'line-union.json'), merged);
+  writeFileSync(path.join(output, 'lcov.info'), serializeLineCoverage(merged), { flag: 'wx' });
+  json(path.join(output, 'success.json'), {
+    files: files.length,
+    cases,
+    assertions,
+    runtime: Bun.revision,
+    workers: names.length,
+  });
+  const temporary = path.join(output, 'threshold-summary.txt');
+  writeFileSync(temporary, lineSummary(merged), { flag: 'wx' });
+  linkSync(temporary, summary);
+  unlinkSync(temporary);
+}
+
 if (import.meta.main) {
   try {
+    const args = process.argv.slice(2);
     requireValue(
-      process.argv.length === 2,
-      'This complete suite runner accepts no test selection flags',
+      args.length <= 1 &&
+        (args.length === 0 || /^--worker=[0-2]$/.test(args[0] ?? '') || args[0] === '--aggregate'),
+      'Unsupported test controller command',
     );
-    await runSuite(
-      realpathSync(process.cwd()),
-      path.resolve('coverage/test-lanes'),
-      path.resolve('test-output.txt'),
-    );
+    if (args[0] === '--aggregate')
+      aggregateWorkers(
+        realpathSync(process.cwd()),
+        path.resolve('coverage/test-workers'),
+        path.resolve('coverage/test-aggregate'),
+        path.resolve('test-output.txt'),
+        true,
+      );
+    else
+      await runSuite(
+        realpathSync(process.cwd()),
+        path.resolve('coverage/test-lanes'),
+        path.resolve('test-output.txt'),
+        {},
+        args[0] === undefined ? undefined : Number(args[0].slice('--worker='.length)),
+      );
   } catch (error) {
     console.error(error);
     process.exitCode = 1;

@@ -15,6 +15,7 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import {
   TARGET,
+  aggregateWorkers,
   caseMultiset,
   discoverTests,
   parseCases,
@@ -310,7 +311,7 @@ test('missing/duplicate/malformed/foreign ownership evidence fails closed', () =
 
 function suiteFixture(fail: boolean): string {
   const home = fixture();
-  source(home, '.gitignore', 'node_modules\ncoverage/test-lanes/\ntest-output.txt\n');
+  source(home, '.gitignore', 'node_modules\ncoverage/\ntest-output.txt\n');
   source(
     home,
     TARGET,
@@ -435,76 +436,79 @@ test('actual failing rest assertion leaves NO threshold input and retains failur
   }
 });
 
-test('actual workers overlap, isolate homes and both settle before summary or failure', async () => {
-  for (const fail of [false, true]) {
-    const home = suiteFixture(fail);
-    const state = path.join(home, 'worker-state');
-    mkdirSync(state);
-    source(
+test('actual partial workers cannot publish coverage; aggregate requires every same-source report and verified cleanup', async () => {
+  const home = suiteFixture(false);
+  source(
+    home,
+    'packages/daemon/owned.test.ts',
+    "import {test,expect} from 'bun:test';test('owned daemon',()=>expect(1).toBe(1));\n",
+  );
+  const input = path.join(home, 'coverage/test-workers');
+  mkdirSync(input, { recursive: true });
+  const summary = path.join(home, 'test-output.txt');
+  for (const index of [0, 1, 2]) {
+    await runSuite(
       home,
-      '.gitignore',
-      `${readFileSync(path.join(home, '.gitignore'), 'utf8')}worker-state/\n`,
+      path.join(input, `worker-${index}`),
+      summary,
+      { stdout: output().stream, stderr: output().stream },
+      index,
     );
-    for (const [own, other, file] of [
-      ['daemon', 'other', 'packages/daemon/parallel.test.ts'],
-      ['other', 'daemon', 'rest.test.ts'],
-    ]) {
-      source(
-        home,
-        file as string,
-        `import {test,expect} from 'bun:test';
-import {writeFileSync,readFileSync,existsSync} from 'node:fs';
-import path from 'node:path';
-test('owned ${own}',async()=>{
-  const dir=${JSON.stringify(state)};
-  const own=path.join(dir,${JSON.stringify(own)});
-  const other=path.join(dir,${JSON.stringify(other)});
-  writeFileSync(own,JSON.stringify({home:process.env.HOME,pid:process.pid}));
-  const end=performance.now()+2000;
-  while(!existsSync(other)){if(performance.now()>end)throw Error('Workers did not overlap');await Bun.sleep(5);}
-  const sibling=JSON.parse(readFileSync(other,'utf8'));
-  expect(sibling.home).not.toBe(process.env.HOME);
-  expect(sibling.pid).not.toBe(process.pid);
-  expect(process.env.HOME).not.toBe(${JSON.stringify(process.env['HOME'])});
-  if(${JSON.stringify(own)}==='daemon'){await Bun.sleep(75);writeFileSync(path.join(dir,'settled'),'yes');}
-  expect(${own === 'other' && fail ? '2' : '1'}).toBe(1);
-});\n`,
-      );
-    }
-    const out = output();
-    const err = output();
-    const directory = path.join(home, 'coverage/test-lanes');
-    const summary = path.join(home, 'test-output.txt');
-    let failure: unknown;
+    expect(existsSync(summary)).toBe(false);
+    if (index < 2)
+      expect(() =>
+        aggregateWorkers(home, input, path.join(home, 'coverage/missing'), summary),
+      ).toThrow('Missing');
+  }
+  const workerHomes = ['target', 'rest-1', 'rest-2'].map(
+    (name, index) =>
+      JSON.parse(readFileSync(path.join(input, `worker-${index}`, name, 'worker.json'), 'utf8'))
+        .home,
+  );
+  expect(new Set(workerHomes).size).toBe(3);
+  for (const workerHome of workerHomes) expect(existsSync(workerHome)).toBe(false);
+  // This owned component control runs serially on one machine. The production
+  // CLI requires distinct actual Linux boot IDs from separate hosted VMs.
+  expect(() =>
+    aggregateWorkers(home, input, path.join(home, 'coverage/same-machine'), summary, true),
+  ).toThrow('distinct machines');
+  for (const [file, mutate] of [
+    [
+      'worker-1/worker-success.json',
+      (row: Record<string, unknown>) => ({ ...row, runtime: 'wrong' }),
+    ],
+    ['worker-1/manifest.json', (row: Record<string, unknown>) => ({ ...row, workerIndex: 2 })],
+    [
+      'worker-1/rest-1/actual.json',
+      (row: Record<string, unknown>) => ({ ...row, cleanupVerified: false }),
+    ],
+    ['worker-1/rest-1/actual.json', (row: Record<string, unknown>) => ({ ...row, exit: 1 })],
+    ['worker-1/rest-1/actual.json', (row: Record<string, unknown>) => ({ ...row, cases: [] })],
+  ] as const) {
+    const target = path.join(input, file);
+    const saved = readFileSync(target, 'utf8');
+    writeFileSync(target, JSON.stringify(mutate(JSON.parse(saved))));
     try {
-      await runSuite(home, directory, summary, { stdout: out.stream, stderr: err.stream });
-    } catch (error) {
-      failure = error;
-    }
-    expect(readFileSync(path.join(state, 'settled'), 'utf8')).toBe('yes');
-    const workers = ['target', 'rest-1', 'rest-2'].map((name) =>
-      JSON.parse(readFileSync(path.join(directory, name, 'worker.json'), 'utf8')),
-    );
-    expect(new Set(workers.map((worker) => worker.home)).size).toBe(3);
-    for (const worker of workers) if (existsSync(worker.home)) homes.push(worker.home);
-    // Every actual child has ended before either success or rejection reaches us.
-    for (const name of ['daemon', 'other']) {
-      const worker = JSON.parse(readFileSync(path.join(state, name), 'utf8'));
-      expect(() => process.kill(worker.pid, 0)).toThrow();
-    }
-    if (fail) {
-      expect(failure).toBeInstanceOf(Error);
-      expect(() => readFileSync(summary)).toThrow();
-    } else {
-      expect(failure).toBeUndefined();
-      expect(readFileSync(summary, 'utf8')).toContain('All files');
-      for (const worker of workers) expect(existsSync(worker.home)).toBe(false);
-      const completed = JSON.parse(readFileSync(path.join(directory, 'success.json'), 'utf8'));
-      expect(completed.files).toBe(3);
-      expect(completed.cases).toHaveLength(3);
+      expect(() =>
+        aggregateWorkers(home, input, path.join(home, 'coverage/rejected'), summary),
+      ).toThrow();
+      expect(existsSync(summary)).toBe(false);
+    } finally {
+      writeFileSync(target, saved);
     }
   }
-}, 10000);
+  aggregateWorkers(home, input, path.join(home, 'coverage/complete'), summary);
+  expect(readFileSync(summary, 'utf8')).toContain('All files');
+  const complete = JSON.parse(
+    readFileSync(path.join(home, 'coverage/complete/success.json'), 'utf8'),
+  );
+  expect(complete.files).toBe(3);
+  expect(complete.cases).toHaveLength(3);
+  expect(complete.assertions).toBe(3);
+  expect(() =>
+    aggregateWorkers(home, input, path.join(home, 'coverage/complete'), summary),
+  ).toThrow('existing');
+});
 
 test('new, removed and source-mode/discovery changes remain visible, not silently omitted', () => {
   const home = suiteFixture(false);
