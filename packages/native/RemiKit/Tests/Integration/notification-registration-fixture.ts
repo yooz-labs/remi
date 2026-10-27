@@ -22,10 +22,13 @@ const { createHelloAck, createNotificationHostResponse } = await import(
   `${root}/packages/shared/src/index.ts`
 );
 const own = mkdtempSync(join(tmpdir(), 'remi-native-notifications-'));
+const { RelayDeviceStore } = await import(
+  `${root}/packages/daemon/src/remote/relay-device-store.ts`
+);
 chmodSync(own, 0o700);
 const out = (value: object) => process.stdout.write(`${JSON.stringify(value)}\n`);
-const hub = await resumedHub({ pushLeaseMs: 1000 });
-const subscriptions = new SecurePushStore(hub.dir, hub.trust, 64, { leaseMs: 1000 });
+const hub = await resumedHub({ pushLeaseMs: 10_000 });
+const subscriptions = new SecurePushStore(hub.dir, hub.trust, 64, { leaseMs: 10_000 });
 const machine = await hub.trust.unlock();
 writeFileSync(
   join(own, 'tls.cnf'),
@@ -54,6 +57,14 @@ execFileSync(
 );
 chmodSync(join(own, 'key.pem'), 0o600);
 const tunnels = new Set<Duplex>();
+let expireAtUpgrade = false;
+let expiredAtUpgrade = 0;
+function expireSubscription() {
+  const file = join(hub.dir, 'secure_push_subscriptions.json');
+  const data = JSON.parse(readFileSync(file, 'utf8'));
+  for (const row of data.subscriptions) row.lastSeenAt = Date.now() - 20_000;
+  writeFileSync(file, JSON.stringify(data));
+}
 const gateway = createServer(
   { key: readFileSync(join(own, 'key.pem')), cert: readFileSync(ca) },
   (_req, res) => {
@@ -62,6 +73,11 @@ const gateway = createServer(
   },
 );
 gateway.on('upgrade', (req, socket, head) => {
+  if (expireAtUpgrade) {
+    expireSubscription();
+    expireAtUpgrade = false;
+    expiredAtUpgrade++;
+  }
   const upstream = new URL(hub.pin.relayUrl);
   const target = connect(Number(upstream.port), upstream.hostname);
   tunnels.add(socket);
@@ -157,12 +173,14 @@ try {
     const message = JSON.parse(line);
     if (message.kind === 'authorize') {
       await hub.trust.addAuthorizedKey(message.publicKey, 'owned Swift device');
+      if (message.full === 'yes')
+        await new RelayDeviceStore(hub.dir, hub.trust).add(
+          message.publicKey,
+          'owned existing full grant',
+        );
       out({ kind: 'authorized' });
     } else if (message.kind === 'expire') {
-      const file = join(hub.dir, 'secure_push_subscriptions.json');
-      const data = JSON.parse(readFileSync(file, 'utf8'));
-      for (const row of data.subscriptions) row.lastSeenAt = Date.now() - 2000;
-      writeFileSync(file, JSON.stringify(data));
+      expireSubscription();
       out({ kind: 'expired' });
     } else if (message.kind === 'state') {
       const current = subscriptions.listCurrent();
@@ -170,7 +188,11 @@ try {
         kind: 'state',
         count: current.length,
         tokenMatches: current.length === 1 && current[0]?.token === message.expectedToken,
+        expiredAtUpgrade,
       });
+    } else if (message.kind === 'expire_at_upgrade') {
+      expireAtUpgrade = true;
+      out({ kind: 'armed' });
     } else if (message.kind === 'pause_enable') {
       enablePause = new Promise<void>((yes) => {
         releaseEnable = yes;

@@ -5,6 +5,42 @@ import Testing
 @testable import RemiKit
 
 struct PairedNotificationTests {
+    @MainActor @Test func anEmptyForegroundSceneRequestsItsTokenWithoutWaitingForTheFirstHost() throws {
+        let context = try OwnedIdentityContext(); defer { try? context.cleanup() }
+        _ = try context.store.loadOrCreate()
+        let suite = "live.yooz.remi.tests.notifications.\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+        let coordinator = try NativeRelayNotifications(ownedPushStore: context.push, ownedIdentityStore: context.store,
+            defaultsSuite: suite, ownedForegroundEndpoints: [])
+        coordinator.activate()
+        #expect(coordinator.ownedPushRegistrationRequestCount == 1)
+        coordinator.activate()
+        #expect(coordinator.ownedPushRegistrationRequestCount == 1)
+        coordinator.background()
+    }
+
+    @MainActor @Test func offlineRestoredProfilesRemoveNotificationAuthorityBeforeNetworkWork() async throws {
+        let context = try OwnedIdentityContext(); defer { try? context.cleanup() }
+        let identity = try context.store.loadOrCreate(), machine = ClientIdentity().publicKeyRaw
+        let room = RelayCrypto.room(machine), generation = try context.push.generation()
+        func install() throws {
+            try context.push.commitNotificationMachine(room: room, machinePublicKey: machine, origin: "https://relay.example",
+                relayURL: "wss://relay.example", authority: identity.pushAuthority, generation: generation)
+        }
+        try install()
+        let endpoint = MachineEndpoint(host: "review.example", port: 18790, expectedPublicKey: machine.base64EncodedString())
+        let profile = MachineRouteProfile(machineID: RelayCrypto.hex(room), routes: [endpoint],
+            connectionPreference: .localOnly, machinePublicKey: RelayCrypto.b64(machine))
+        let store = MachineStore(profiles: [profile], identity: identity, clientVersion: "owned-offline-revoke",
+            clientId: UUID().uuidString.lowercased(), pushStore: context.push)
+        #expect(store.machines[0].machineID != RelayCrypto.hex(room))
+        #expect(await store.revokePairedNotifications(on: endpoint) == false)
+        #expect(try context.push.notificationMachines().isEmpty)
+        try install()
+        #expect(store.removeMachine(endpoint))
+        #expect(try context.push.notificationMachines().isEmpty)
+    }
+
     @MainActor @Test func revokeIntentSurvivesCoordinatorRecreation() async throws {
         let context = try OwnedIdentityContext(); defer { try? context.cleanup() }
         _ = try context.store.loadOrCreate()
@@ -124,8 +160,8 @@ struct PairedNotificationTests {
 }
 
 @MainActor struct PairedNotificationSourceTests {
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_NOTIFICATION_SOURCE_ROOT"] != nil))
-    func actualDirectBootstrapRegistersThroughEncryptedScopeAndRequiresContinue() async throws {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_NOTIFICATION_SOURCE_ROOT"] != nil), arguments: [false, true])
+    func actualDirectBootstrapRegistersThroughEncryptedScopeAndRequiresContinue(fullEnrollment: Bool) async throws {
         let fixture = try NotificationFixture(root: #require(ProcessInfo.processInfo.environment["REMI_NOTIFICATION_SOURCE_ROOT"]))
         let context = try OwnedIdentityContext(); defer { try? context.cleanup() }
         let identity = try context.store.loadOrCreate()
@@ -133,7 +169,7 @@ struct PairedNotificationTests {
         do {
             let ready = try await fixture.next()
             let port = try #require(ready["directPort"] as? Int), key = try #require(ready["machineKey"] as? String)
-            try fixture.send(["kind": "authorize", "publicKey": identity.publicKeyBase64])
+            try fixture.send(["kind": "authorize", "publicKey": identity.publicKeyBase64, "full": fullEnrollment ? "yes" : "no"])
             #expect(try await fixture.next()["kind"] as? String == "authorized")
             let endpoint = MachineEndpoint(host: "127.0.0.1", port: port, expectedPublicKey: key)
             let current = MachineStore(endpoints: [endpoint], identity: identity,
@@ -161,6 +197,15 @@ struct PairedNotificationTests {
             await current.registerPairedNotifications(on: endpoint)
             try fixture.send(["kind": "state", "expectedToken": String(repeating: "cd", count: 32)])
             #expect(try await fixture.next()["tokenMatches"] as? Bool == true)
+            if fullEnrollment {
+                try fixture.send(["kind": "expire_at_upgrade"]); _ = try await fixture.next()
+                await current.registerPairedNotifications(on: endpoint)
+                #expect(current.pairedNotificationState(for: endpoint) == .renewalRequired)
+                try fixture.send(["kind": "state"])
+                #expect(try await fixture.next()["expiredAtUpgrade"] as? Int == 1)
+                await current.registerPairedNotifications(on: endpoint, continueAfterInactivity: true)
+                #expect(current.pairedNotificationState(for: endpoint) == .registered)
+            }
             try fixture.send(["kind": "expire"]); _ = try await fixture.next()
             await current.registerPairedNotifications(on: endpoint)
             #expect(current.pairedNotificationState(for: endpoint) == .renewalRequired)
@@ -170,6 +215,20 @@ struct PairedNotificationTests {
             #expect(try context.push.notificationMachines().isEmpty)
             try fixture.send(["kind": "state"])
             #expect(try await fixture.next()["count"] as? Int == 0)
+            try fixture.send(["kind": "pause_enable"]); _ = try await fixture.next()
+            let interrupted = Task { await current.registerPairedNotifications(on: endpoint) }
+            #expect(try await fixture.next()["kind"] as? String == "host-waiting")
+            current.suspendForegroundConnections()
+            await interrupted.value
+            #expect(current.pairedNotificationState(for: endpoint) != .registering)
+            try fixture.send(["kind": "release_enable"]); _ = try await fixture.next()
+            current.start()
+            let resumed = ContinuousClock.now.advanced(by: .seconds(10))
+            while current.machines[0].status != .connected {
+                try #require(.now < resumed); try await Task.sleep(for: .milliseconds(20))
+            }
+            await current.registerPairedNotifications(on: endpoint)
+            #expect(current.pairedNotificationState(for: endpoint) == .registered)
             try fixture.send(["kind": "pause_enable"]); _ = try await fixture.next()
             let lateRegistration = Task { await current.registerPairedNotifications(on: endpoint) }
             #expect(try await fixture.next()["kind"] as? String == "host-waiting")
