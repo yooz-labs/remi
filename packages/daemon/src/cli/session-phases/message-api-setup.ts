@@ -9,8 +9,8 @@
  *   - the live transcript watcher (forceRead on status change so the UI
  *     reflects the latest transcript frame without waiting for the next
  *     2s poll)
- *   - the push-notification client, used only when no client is actively
- *     viewing the session (attached clients see the question in-app)
+ *   - the push-notification client, used for registered recipients even when
+ *     a client is attached (#1674)
  *
  * Returns both the configured MessageAPI and the `sendAndRecord` closure
  * because the hook bridge and PTY setup also dispatch through
@@ -168,10 +168,9 @@ export function createMessageApiForSession(
       // threading needed.
       sessionRegistry.addQuestion(questionSessionId, stamped, stamped.source ?? 'unknown');
 
-      // Push: a non-held question only pushes when no client is attached (the
-      // client sees it in-app). A `held` push (`pushHeldHook`, #603 Phase 3)
-      // always also pushes to the lock screen — the attached client may be
-      // backgrounded. The question path does not await the delivery outcome
+      // Push to registered recipients even while a client is attached (#1674).
+      // A `held` push (`pushHeldHook`, #603 Phase 3) also bypasses shape dedup.
+      // The question path does not await the delivery outcome
       // maybePush returns. Fire-and-forget
       // from this synchronous hook callback, so guard against a future
       // pushConfig/refreshDeviceTokens contract change surfacing as an

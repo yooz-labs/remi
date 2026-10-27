@@ -984,3 +984,6 @@ Add identity-bound direct bootstrap for encrypted notification registration, rol
 ## Native paired-device notification registration (2026-10-26, #1680)
 
 Native clients bootstrap a notification-only route from their authenticated direct host, register over a bounded encrypted channel, and keep that route out of saved foreground routes. Foreground use renews subscriptions; inactive expiry shows Continue, and Revoke intent survives app restart. Follow [notification-native-plan.md](notification-native-plan.md) for the identity/route/consent controls and signed-device acceptance limits.
+## Registered question delivery (2026-10-26, #1674)
+
+Deliver question pushes to valid registered recipients even when a client is attached; keep preferences, validity checks and deduplication. Bound secure previews for cards that already require opening the app, without shortening a one-tap permission's authoritative ask. The owner approved paired-device enrollment and selected automatic active renewal with Continue/Revoke after 30 days inactive (#1677). Signed APNs, extension and Watch acceptance remain separate gates.
