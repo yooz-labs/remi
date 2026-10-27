@@ -351,6 +351,8 @@ public final class MachineStore {
     func ownedStartApprovalPolling(_ endpoint: MachineEndpoint) { startApprovalPolling(for: endpoint) }
     #endif
     public private(set) var transcriptsBySession: [MachineSessionKey: [TranscriptContentMessage]] = [:]
+    /// Messages sent from this app that a session's transcript does not show yet.
+    public private(set) var outgoingBySession: [MachineSessionKey: OutgoingMessages] = [:]
     /// A selected conversation reloads when its owning socket becomes ready or reconnects.
     /// The routing table itself is not observable; a task keyed only by session id misses this.
     public private(set) var transcriptRouteGenerations: [MachineSessionKey: UUID] = [:]
@@ -1529,6 +1531,7 @@ public final class MachineStore {
         terminalViews = terminalViews.filter { !keyMachineIDs.contains($0.key.machineID) }
         fileDownloads = fileDownloads.filter { !keyMachineIDs.contains($0.key.machineID) }
         transcriptsBySession = transcriptsBySession.filter { !keyMachineIDs.contains($0.key.machineID) }
+        outgoingBySession = outgoingBySession.filter { !keyMachineIDs.contains($0.key.machineID) }
         sessionViewsBySession = sessionViewsBySession.filter { !keyMachineIDs.contains($0.key.machineID) }
         for key in transcriptsLoading where keyMachineIDs.contains(key.machineID) { finishTranscriptLoad(key) }
         for machineID in machineIDs { recentRepositoriesByMachine[machineID] = nil }
@@ -1795,8 +1798,13 @@ public final class MachineStore {
     }
 
     @discardableResult
+    public func outgoingMessages(machineID: String, sessionID: String) -> [OutgoingMessage] {
+        outgoingBySession[sessionKey(machineID: machineID, sessionID: sessionID)]?.items ?? []
+    }
+
     public func sendChat(machineID: String, sessionId: String, content: String, claudeSessionId: String? = nil) async -> Bool {
-        guard let connection = connection(for: sessionKey(machineID: machineID, sessionID: sessionId)) else {
+        let key = sessionKey(machineID: machineID, sessionID: sessionId)
+        guard let connection = connection(for: key) else {
             latestOperationError = "Cannot send message: this session is unavailable."
             return false
         }
@@ -1807,10 +1815,13 @@ public final class MachineStore {
             content: content,
             claudeSessionId: claudeSessionId
         )
+        outgoingBySession[key, default: OutgoingMessages()].add(id: message.id, content: content)
         do {
             try await connection.send(message)
+            outgoingBySession[key]?.markSent(id: message.id)
             return true
         } catch {
+            outgoingBySession[key]?.remove(id: message.id)
             latestOperationError = "Message not sent. Check the connection and try again."
             return false
         }
@@ -2385,6 +2396,10 @@ public final class MachineStore {
         case .transcript(let message):
             let key = MachineSessionKey(machineID: machines[index].id, sessionID: message.sessionId)
             var transcript = transcriptsBySession[key, default: []]
+            let isNewEntry = !transcript.contains { $0.entryUuid == message.entryUuid }
+            if isNewEntry, message.role == "user" {
+                outgoingBySession[key]?.confirm(transcriptContent: message.content)
+            }
             transcript.removeAll { $0.entryUuid == message.entryUuid }
             transcript.append(message)
             transcriptsBySession[key] = transcript

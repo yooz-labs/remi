@@ -22,16 +22,19 @@ import Testing
         var outgoing = OutgoingMessages()
         outgoing.add(id: "1", content: "yes")
         outgoing.add(id: "2", content: "yes")
-        #expect(outgoing.confirm(transcriptContent: "  yes\n"))
+        let first = outgoing.confirm(transcriptContent: "  yes\n")
+        #expect(first)
         #expect(outgoing.items.map(\.id) == ["2"])
-        #expect(outgoing.confirm(transcriptContent: "yes"))
+        let second = outgoing.confirm(transcriptContent: "yes")
+        #expect(second)
         #expect(outgoing.items.isEmpty)
     }
 
     @Test func anUnrelatedTranscriptEntryConfirmsNothing() {
         var outgoing = OutgoingMessages()
         outgoing.add(id: "1", content: "run the tests")
-        #expect(!outgoing.confirm(transcriptContent: "something else"))
+        let confirmed = outgoing.confirm(transcriptContent: "something else")
+        #expect(!confirmed)
         #expect(outgoing.items.count == 1)
     }
 
