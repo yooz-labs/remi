@@ -8,9 +8,9 @@ public enum RemiTileSize: String, Codable, CaseIterable, Sendable {
     /// About how tall the tile is, for packing columns before it is laid out.
     public var estimatedHeight: CGFloat {
         switch self {
-        case .compact: 150
-        case .regular: 250
-        case .large: 440
+        case .compact: 130
+        case .regular: 190
+        case .large: 340
         }
     }
 
