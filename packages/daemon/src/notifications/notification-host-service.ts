@@ -3,6 +3,7 @@ import type { NotificationHostRequest, NotificationHostResult, UUID } from '@rem
 import type { IdentityStore } from '../auth/identity-store.ts';
 import type { HubRelay } from '../remote/hub-relay.ts';
 import { NotificationDeviceStore } from '../remote/notification-device-store.ts';
+import { relaySecurePushAudience } from '../remote/relay-url.ts';
 import type { SecurePushStore, SecureSubscriptionState } from './secure-push-store.ts';
 
 export interface NotificationHostClient {
@@ -25,20 +26,8 @@ export class NotificationHostService {
   private readonly origin: string | null;
   constructor(private readonly options: NotificationHostServiceOptions) {
     this.enrollments = new NotificationDeviceStore(options.directory, options.trust);
-    try {
-      const url = new URL(options.relayUrl);
-      this.origin =
-        url.protocol === 'wss:' &&
-        !url.username &&
-        !url.password &&
-        url.pathname === '/' &&
-        !url.search &&
-        !url.hash
-          ? url.origin
-          : null;
-    } catch {
-      this.origin = null;
-    }
+    const audience = relaySecurePushAudience(options.relayUrl);
+    this.origin = audience === null ? null : audience.replace(/^https:/, 'wss:');
   }
   isAvailable(connectionId: UUID): boolean {
     return this.options.client(connectionId)?.isCurrent() === true;

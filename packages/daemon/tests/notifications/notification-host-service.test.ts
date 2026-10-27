@@ -31,7 +31,11 @@ afterEach(async () => {
   for (const close of cleanups.splice(0).reverse()) await close();
 });
 
-async function fixture(capabilityOnly = false, leaseMs = 30 * 24 * 60 * 60 * 1000) {
+async function fixture(
+  capabilityOnly = false,
+  leaseMs = 30 * 24 * 60 * 60 * 1000,
+  relayUrl = 'wss://relay.example',
+) {
   const hub = await resumedHub({ pushLeaseMs: leaseMs });
   cleanups.push(hub.cleanup);
   const device = await unlockIdentity(await createIdentity());
@@ -67,7 +71,7 @@ async function fixture(capabilityOnly = false, leaseMs = 30 * 24 * 60 * 60 * 100
     subscriptions,
     relay: () => hub.relay,
     senderReady: () => senderReady,
-    relayUrl: 'wss://relay.example',
+    relayUrl,
     client: (id) => {
       const connection = server.getConnection(id);
       const publicKey = connection?.connectionClientPublicKey;
@@ -161,6 +165,15 @@ test('a capability-only local utility cannot select a device or enroll notificat
   const f = await fixture(true);
   expect(await f.exchange('enable')).toMatchObject({ success: false, error: 'NOT_AUTHORIZED' });
   expect(new NotificationDeviceStore(f.hub.dir, f.hub.trust).list()).toEqual([]);
+}, 15000);
+
+test('supported HTTPS signaling roots bootstrap a canonical WSS notification route', async () => {
+  const f = await fixture(false, 30 * 24 * 60 * 60 * 1000, 'https://relay.example');
+  expect(await f.exchange('enable')).toMatchObject({
+    success: true,
+    state: 'registration_required',
+    relayUrl: 'wss://relay.example',
+  });
 }, 15000);
 
 test('host setup failure is explicit and does not create an unserviceable enrollment', async () => {

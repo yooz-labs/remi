@@ -264,7 +264,7 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // it, short enough to still be useful for "went to get coffee" absences.
     // Personal preference varies a lot here, hence configurable.
     turn_complete_min_seconds: 60,
-    // A phone not seen for a day stops getting pushes (#1254).
+    // Default: ask to continue after 30 days without authenticated use (#1679).
     push_lease_hours: DEFAULT_PUSH_LEASE_HOURS,
     // Subagent commands (foreground or background) worth a heads-up when
     // Claude ran them without asking (#807, #1155; a call that prompts is
