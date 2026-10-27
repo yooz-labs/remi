@@ -4,6 +4,13 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+- Native app source adds per-machine Automatic, Local only, Tailscale only and Relay only preferences, bounded handshakes and full authenticated machine-pin persistence. Re-pairing preserves the saved policy, alias and routes. An unavailable locked layer does not fall back (#1571).
+- `remi pair --qr-version 2` offers one to four direct addresses under the same machine key and pairing nonce. The native candidate tries permitted Local addresses before Tailscale and stops on authentication or identity refusal. V1 remains the CLI default for compatibility; v2 needs the separately distributed compatible app. Relay enrollment stays explicit (#1574).
+- Native recovery discovers compatible local hubs and verifies the saved full key before replacing a connection. A healthy route stays active while a preferred route is checked. Discovery addresses stay in memory; network changes and Retry use bounded episodes without replaying pending operations. Hubs and session daemons now advertise distinct default Bonjour names (#1575).
+- The next native build retains build 14's accepted chat behavior: open at the latest message, follow new messages at the bottom, and preserve the reader's place when scrolling back (#1568). Native build 15, signed permission behavior and physical route transitions have separate distribution and acceptance gates.
+- Card Cancel checks the exact prompt again at the queued terminal write. A stale or formerly held card clears without sending Esc into a running agent. Confirmed owning-turn completion also clears a render-owned card that the permission gate does not track (#1570). Ambiguous status updates alone still do not dismiss questions.
+- CI records bounded owned-process wait metadata and an independent logging-stage channel. Linux Bun 1.3.11 directory cleanup is handled without assuming a Promise return. These diagnostics do not establish the cause of the intermittent full-suite stall (#1206).
+
 ## [0.8.2] - 2026-10-27
 
 - Codex asynchronous questions now become readable question cards and Question/Answer history. Replies retain the original question identity, recheck authority at send time, and stop automatic retry after uncertain delivery. Following a thread selected with Codex's internal `/resume` remains deferred (#1687, #1691).
@@ -13,14 +20,7 @@ All notable changes to Remi are documented here.
 - The hub can forward secure question pushes from its current local session daemons without copying the provider credential into their arguments. Push still needs the deployment credential and compatible app registration. Publishing this CLI does not update an already-running daemon or complete physical iPhone/Watch delivery acceptance (#1679, #1681).
 - Linux ARM64 release binaries are now built and smoke-tested on a native ARM64 runner. All three platform binaries must report the exact source version before publication; release-workflow PRs exercise these builds without publishing (#1694).
 - Terminal screen capture, bounded storage and ownership checks are included for the integrated terminal work. Remote terminal service and encrypted relay qualification remain separate work; this release does not enable an unfinished service (#1595, #1655, #1657).
-- Native app changes below are distributed through their separate app build. This daemon release does not sign or upload the app, deploy a Worker, or establish the remaining device acceptance gates.
-
-- Native app source adds per-machine Automatic, Local only, Tailscale only and Relay only preferences, bounded handshakes and full authenticated machine-pin persistence. Re-pairing preserves the saved policy, alias and routes. An unavailable locked layer does not fall back (#1571).
-- `remi pair --qr-version 2` offers one to four direct addresses under the same machine key and pairing nonce. The native candidate tries permitted Local addresses before Tailscale and stops on authentication or identity refusal. V1 remains the CLI default for compatibility; v2 needs the separately distributed compatible app. Relay enrollment stays explicit (#1574).
-- Native recovery discovers compatible local hubs and verifies the saved full key before replacing a connection. A healthy route stays active while a preferred route is checked. Discovery addresses stay in memory; network changes and Retry use bounded episodes without replaying pending operations. Hubs and session daemons now advertise distinct default Bonjour names (#1575).
-- The next native build retains build 14's accepted chat behavior: open at the latest message, follow new messages at the bottom, and preserve the reader's place when scrolling back (#1568). Native build 15, signed permission behavior and physical route transitions have separate distribution and acceptance gates.
-- Card Cancel checks the exact prompt again at the queued terminal write. A stale or formerly held card clears without sending Esc into a running agent. Confirmed owning-turn completion also clears a render-owned card that the permission gate does not track (#1570). Ambiguous status updates alone still do not dismiss questions.
-- CI records bounded owned-process wait metadata and an independent logging-stage channel. Linux Bun 1.3.11 directory cleanup is handled without assuming a Promise return. These diagnostics do not establish the cause of the intermittent full-suite stall (#1206).
+- Native app source changes are distributed through their separate app build. This daemon release does not sign or upload the app, deploy a Worker, or establish the remaining device acceptance gates.
 
 ## [0.8.0] - 2026-10-20
 
