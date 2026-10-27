@@ -71,9 +71,10 @@ import {
   isClaudeRecord,
 } from '../../session/session-store.ts';
 import { shellQuote } from '../../session/shell-quote.ts';
-import type { HarnessLaunchContext, HarnessSession } from '../types.ts';
+import type { DecisionChannel, HarnessLaunchContext, HarnessSession } from '../types.ts';
 import { AppServerClient, type AppServerClientOptions } from './app-server-client.ts';
 import { parseResolved } from './approval-cards.ts';
+import { CodexAsyncQuestions } from './async-questions.ts';
 import { localAttachCommand } from './attach-hint.ts';
 import { resolveCodexWorkingDirectory, validateCodexArgs } from './codex-args.ts';
 import { createCodexChat } from './codex-chat.ts';
@@ -334,7 +335,9 @@ export function createCodexSession(
   const statuses = new Map<string, ThreadStatus>();
   let reported: AgentStatus | null = null;
   const publish = (): void => {
-    const next = aggregateStatus(statuses.values());
+    const next = link.asyncQuestions?.hasMainHold()
+      ? 'waiting'
+      : aggregateStatus(statuses.values());
     if (next === reported) return;
     reported = next;
     try {
@@ -385,7 +388,7 @@ export function createCodexSession(
 
   // The tracker needs the client and the client's events need the tracker, so the events
   // reach it through this holder (nothing arrives before `client.start()`).
-  const link: { tracker?: ThreadTracker } = {};
+  const link: { tracker?: ThreadTracker; asyncQuestions?: CodexAsyncQuestions } = {};
   // Set first by dispose(): stopping the client reports a drop, which must not re-arm the watchdog.
   let disposed = false;
   /** Why the last attempt to find the socket failed, to word the watchdog's notice. */
@@ -464,10 +467,12 @@ export function createCodexSession(
         clearTimeout(stableTimer);
         dropDescendantStatuses();
         decisions.handleDisconnected();
+        link.asyncQuestions?.forceRelease(false);
         link.tracker?.handleDisconnected();
         armWatchdog();
       } else if (event.type === 'notification') {
         link.tracker?.handleNotification(event.method, event.params);
+        link.asyncQuestions?.handleNotification(event.method, event.params);
         turns?.handleNotification(event.method, event.params);
         chat.handleNotification(event.method, event.params);
         if (event.method === 'serverRequest/resolved') {
@@ -497,7 +502,10 @@ export function createCodexSession(
     ...deps.decisions,
   });
   // A card whose request is pending is not evicted by the pending-question cap.
-  deps.sessionRegistry.setQuestionEvictionGuard(sessionId, (id) => decisions.isHeld(id));
+  deps.sessionRegistry.setQuestionEvictionGuard(
+    sessionId,
+    (id) => decisions.isHeld(id) || link.asyncQuestions?.isHeld(id) === true,
+  );
   // The session's chat: its history is read from the app-server on a client's request
   // (`HarnessSession.chat`), and each item that completes on its thread goes to every client.
   const chat = createCodexChat({
@@ -511,6 +519,8 @@ export function createCodexSession(
       if (!disposed) ctx.sendAndRecord(message);
     },
     log,
+    questionEpoch: () => (!disposed && client.state === 'ready' ? chatEpoch : null),
+    onQuestionHistory: (threadId, history) => link.asyncQuestions?.reconcile(threadId, history),
   });
   // How each turn of the session's own thread ended (`turn/completed`), reported to the daemon's sink.
   const turns =
@@ -583,6 +593,7 @@ export function createCodexSession(
         // The old thread's cards are not this session's any more, and must not be answered.
         // The harness moved to a new thread (#1235).
         decisions.forceRelease('the session moved to a new thread', 'harness');
+        link.asyncQuestions?.forceRelease();
         sendSystemMessage(ROTATION_MESSAGE);
         publish();
       }
@@ -620,8 +631,48 @@ export function createCodexSession(
   const textWriter = new CodexTextWriter({
     client,
     current: chatContext,
+    blocked: () => decisions.blocksStructuredChat() || link.asyncQuestions?.hasMainHold() === true,
+  });
+  const questionWriter = new CodexTextWriter({
+    client,
+    current: chatContext,
     blocked: () => decisions.blocksStructuredChat(),
   });
+  const asyncQuestions = new CodexAsyncQuestions({
+    sessionId,
+    current: chatContext,
+    writer: questionWriter,
+    registry: deps.sessionRegistry,
+    present: (question) =>
+      messageApi.handleQuestion(question, { held: true, answerPath: 'structured' }),
+    resolved: deps.onQuestionResolved,
+    notice: sendSystemMessage,
+    log,
+    changed: () => {
+      if (!disposed) publish();
+    },
+  });
+  link.asyncQuestions = asyncQuestions;
+  const decisionChannel: DecisionChannel = {
+    requiresAnswerCommit: (id) => asyncQuestions.owns(id),
+    answerValidity: (id) =>
+      asyncQuestions.owns(id) ? asyncQuestions.answerValidity(id) : decisions.answerValidity(id),
+    answerHeld: (id, answer, commit) =>
+      asyncQuestions.owns(id)
+        ? asyncQuestions.answerHeld(id, answer, commit)
+        : decisions.answerHeld(id, answer, commit),
+    retireQuestion: (id) => {
+      asyncQuestions.retireQuestion(id);
+      decisions.retireQuestion(id);
+    },
+    isHeld: (id) => asyncQuestions.isHeld(id) || decisions.isHeld(id),
+    hasMainHold: () => asyncQuestions.hasMainHold() || decisions.hasMainHold(),
+    hasOpenHookPrompt: () => asyncQuestions.hasMainHold() || decisions.hasOpenHookPrompt(),
+    noteTerminalEscape: () => decisions.noteTerminalEscape(),
+    forceRelease: (reason) => ({
+      resolved: asyncQuestions.forceRelease().resolved + decisions.forceRelease(reason).resolved,
+    }),
+  };
 
   const pty = createPtySessionForSession(
     {
@@ -646,7 +697,7 @@ export function createCodexSession(
 
   return {
     pty,
-    decisions,
+    decisions: decisionChannel,
     chat,
     structuredChat: {
       context: () => chatContext()?.epoch ?? null,
@@ -669,6 +720,8 @@ export function createCodexSession(
       disposed = true;
       chatEpoch = {};
       textWriter.close();
+      questionWriter.close();
+      asyncQuestions.dispose();
       clearTimeout(stableTimer);
       cancelWatchdog();
       tracker.dispose();

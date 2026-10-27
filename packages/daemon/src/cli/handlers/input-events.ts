@@ -31,6 +31,7 @@ import type {
 
 import {
   type AnswerCommit,
+  AnswerDeliveryUncertainError,
   type HeldAnswer,
   type HeldAnswerOutcome,
   applyAnswerCommit,
@@ -81,7 +82,13 @@ export interface InputHandlerDeps {
     questionId: UUID,
     answer: HeldAnswer,
     commit?: AnswerCommit,
-  ) => HeldAnswerOutcome;
+  ) => HeldAnswerOutcome | Promise<HeldAnswerOutcome>;
+  /** Undefined preserves older channels; null explicitly refuses a new async reply. */
+  prepareAnswerCommit?: (
+    connectionId: UUID,
+    sessionId: UUID,
+    questionId: UUID,
+  ) => AnswerCommit | null | undefined;
   /**
    * A raw input that is a bare Escape was written to this session's
    * terminal (#1155): the web client's Esc button, Telegram's `/interrupt`,
@@ -334,7 +341,11 @@ export function trackerScreenDeps(
 /** The gate reads the answer path uses (`SessionGateHandle`). */
 export interface GateAnswerHandle {
   retireQuestion(questionId: UUID): void;
-  answerHeld(questionId: UUID, answer: HeldAnswer, commit?: AnswerCommit): HeldAnswerOutcome;
+  answerHeld(
+    questionId: UUID,
+    answer: HeldAnswer,
+    commit?: AnswerCommit,
+  ): HeldAnswerOutcome | Promise<HeldAnswerOutcome>;
   noteTerminalEscape(): void;
 }
 
@@ -673,7 +684,9 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     // Cleanup (gate retirement, removeQuestion, broadcast) is unconditional so
     // the card always clears.
     if (extra?.cancel) {
-      const held = answerHeld?.(session.sessionId, questionId, { kind: 'cancel' }) ?? 'unknown';
+      const pendingHeld =
+        answerHeld?.(session.sessionId, questionId, { kind: 'cancel' }) ?? 'unknown';
+      const held = pendingHeld instanceof Promise ? await pendingHeld : pendingHeld;
       const active = sessionRegistry.getQuestion(session.sessionId, questionId);
       const canEscape = () =>
         held === 'unknown' &&
@@ -823,7 +836,10 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         );
         // A first delivery that threw was not delivered; the thrower reports
         // that itself, the duplicate reports it as not delivered.
-        return inFlight.outcome.catch((): AnswerOutcome => 'stale');
+        return inFlight.outcome.catch((error): AnswerOutcome => {
+          if (error instanceof AnswerDeliveryUncertainError) throw error;
+          return 'stale';
+        });
       }
       log(
         `[Answer] refusing a different answer for ${questionId.slice(0, 8)}: another answer is being applied`,
@@ -865,8 +881,8 @@ export function createInputHandlers(deps: InputHandlerDeps) {
   /**
    * The held-prompt half of `applyAnswer` (#1126). Returns the outcome when
    * the gate held (or once held) this question, null when the caller's PTY
-   * path applies (`unknown`). Synchronous: the hook response is settled
-   * before anything else can run.
+   * path applies (`unknown`). Claude's hook response settles synchronously;
+   * an asynchronous harness reply keeps its in-flight claim until settled.
    *   - `resolved`: the hook answered; the card is consumed and dismissed.
    *   - `refused`: not an answer this card offers (free text on a permission,
    *     a stale label, an incomplete AskUserQuestion answer, #1127); the
@@ -886,7 +902,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     session: ManagedSession,
     active: Question,
     commit?: AnswerCommit,
-  ): AnswerOutcome | null {
+  ): AnswerOutcome | null | Promise<AnswerOutcome | null> {
     if (!answerHeld) return null;
     const selections = structuredSelections(extra);
     const named = selections === undefined ? namedOption(active.options, answer) : undefined;
@@ -902,89 +918,112 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           : option === undefined
             ? { kind: 'text', text: answer }
             : { kind: 'option', option, ...(message !== undefined ? { message } : {}) };
-    const outcome = answerHeld(session.sessionId, questionId, held, commit);
-    if (outcome === 'unknown') return null;
-    if (outcome === 'resolved') {
-      resolvedAnswers.record(questionId, [
-        answerCacheKey(answer, selections),
-        ...(option ? [option.value, option.label] : []),
-      ]);
-      sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:hook');
-      try {
-        onQuestionResolved?.(session.sessionId, questionId, answeredFrom(viaRelay));
-      } catch (err) {
-        logError(`[Answer] question_resolved broadcast failed: ${errorToString(err)}`);
+    const finish = (outcome: HeldAnswerOutcome): AnswerOutcome | null => {
+      if (outcome === 'unknown') return null;
+      if (outcome === 'resolved') {
+        resolvedAnswers.record(questionId, [
+          answerCacheKey(answer, selections),
+          ...(option ? [option.value, option.label] : []),
+        ]);
+        sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:hook');
+        try {
+          onQuestionResolved?.(session.sessionId, questionId, answeredFrom(viaRelay));
+        } catch (err) {
+          logError(`[Answer] question_resolved broadcast failed: ${errorToString(err)}`);
+        }
+        log(`[Answer] held prompt ${questionId.slice(0, 8)} answered through its hook`);
+        return 'delivered';
       }
-      log(`[Answer] held prompt ${questionId.slice(0, 8)} answered through its hook`);
-      return 'delivered';
-    }
-    const closed = outcome === 'closed';
-    const authorityRefused = outcome === 'authority-refused';
-    log(
-      closed
-        ? `[Answer] refusing ${questionId.slice(0, 8)}: its hold has ended, answer at the terminal; nothing typed`
-        : authorityRefused
-          ? '[Answer] final authority refused; card and hold kept'
-          : `[Answer] refusing ${questionId.slice(0, 8)}: unsupported held answer kind ${held.kind}; card and hold kept`,
-    );
-    traceQuestionEvent({
-      action: 'stale_answer',
-      sessionId: session.sessionId,
-      questionId,
-      promptId: active.promptId,
-      signal: 'STALE_ANSWER',
-      callSite: 'input-events.handleAnswer:heldPrompt',
-      detail: {
-        reason: closed
-          ? 'hold-closed'
+      const closed = outcome === 'closed';
+      const authorityRefused = outcome === 'authority-refused';
+      log(
+        closed
+          ? `[Answer] refusing ${questionId.slice(0, 8)}: its hold has ended, answer at the terminal; nothing typed`
           : authorityRefused
-            ? 'authority-refused'
-            : active.terminalOnly === true
-              ? 'terminal-only'
-              : held.kind === 'ambiguous'
-                ? 'ambiguous-option'
-                : 'not-a-held-option',
-        source: active.source,
-      },
-    });
-    if (closed) {
-      sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:hold_closed');
-      try {
-        // The answer was refused: the card is only cleared (#1235).
-        onQuestionResolved?.(session.sessionId, questionId, CLEARED_ONLY);
-      } catch (err) {
-        logError(`[Answer] question_resolved broadcast failed: ${errorToString(err)}`);
-      }
-    }
-    if (!viaRelay) {
-      send(
-        connectionId,
-        createError(
-          'STALE_ANSWER',
-          closed
-            ? 'This prompt is no longer waiting for the phone; answer it in the terminal'
-            : active.terminalOnly === true
-              ? TERMINAL_ONLY_MESSAGE
-              : held.kind === 'ambiguous'
-                ? named?.kind === 'ambiguous' && named.cause === 'value-label'
-                  ? AMBIGUOUS_VALUE_LABEL_MESSAGE
-                  : AMBIGUOUS_DISPLAY_LABEL_MESSAGE
-                : selections !== undefined
-                  ? 'Answer every question: one choice, or your own text of up to 2000 characters, for each single-choice question, and at least one choice for each multiple-choice question'
-                  : 'This prompt takes one of its own options',
-          {
-            sessionId,
-            // A refused answer leaves the card live, and a client drops the
-            // card a STALE_ANSWER names; only a closed one is named. The
-            // pending list still carries the refused card, so a client's
-            // reconciliation keeps it.
-            ...(closed ? { questionId } : {}),
-            pendingQuestionIds: [...session.currentQuestions.keys()],
-          },
-        ),
+            ? '[Answer] final authority refused; card and hold kept'
+            : `[Answer] refusing ${questionId.slice(0, 8)}: unsupported held answer kind ${held.kind}; card and hold kept`,
       );
+      traceQuestionEvent({
+        action: 'stale_answer',
+        sessionId: session.sessionId,
+        questionId,
+        promptId: active.promptId,
+        signal: 'STALE_ANSWER',
+        callSite: 'input-events.handleAnswer:heldPrompt',
+        detail: {
+          reason: closed
+            ? 'hold-closed'
+            : authorityRefused
+              ? 'authority-refused'
+              : active.terminalOnly === true
+                ? 'terminal-only'
+                : held.kind === 'ambiguous'
+                  ? 'ambiguous-option'
+                  : 'not-a-held-option',
+          source: active.source,
+        },
+      });
+      if (closed) {
+        sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:hold_closed');
+        try {
+          // The answer was refused: the card is only cleared (#1235).
+          onQuestionResolved?.(session.sessionId, questionId, CLEARED_ONLY);
+        } catch (err) {
+          logError(`[Answer] question_resolved broadcast failed: ${errorToString(err)}`);
+        }
+      }
+      if (!viaRelay) {
+        send(
+          connectionId,
+          createError(
+            'STALE_ANSWER',
+            closed
+              ? 'This prompt is no longer waiting for the phone; answer it in the terminal'
+              : authorityRefused
+                ? 'This device or connection is no longer authorized to answer. Reconnect to this host.'
+                : active.terminalOnly === true
+                  ? TERMINAL_ONLY_MESSAGE
+                  : held.kind === 'ambiguous'
+                    ? named?.kind === 'ambiguous' && named.cause === 'value-label'
+                      ? AMBIGUOUS_VALUE_LABEL_MESSAGE
+                      : AMBIGUOUS_DISPLAY_LABEL_MESSAGE
+                    : selections !== undefined
+                      ? 'Answer every question: one choice, or your own text of up to 2000 characters, for each single-choice question, and at least one choice for each multiple-choice question'
+                      : 'This prompt takes one of its own options',
+            {
+              sessionId,
+              // A refused answer leaves the card live, and a client drops the
+              // card a STALE_ANSWER names; only a closed one is named. The
+              // pending list still carries the refused card, so a client's
+              // reconciliation keeps it.
+              ...(closed ? { questionId } : {}),
+              pendingQuestionIds: [...session.currentQuestions.keys()],
+            },
+          ),
+        );
+      }
+      return 'stale';
+    };
+    const uncertain = (error: unknown): never => {
+      if (error instanceof AnswerDeliveryUncertainError) {
+        sessionRegistry.removeQuestion(session.sessionId, questionId, 'user_answer:uncertain');
+        try {
+          onQuestionResolved?.(session.sessionId, questionId, CLEARED_ONLY);
+        } catch (err) {
+          logError(`[Answer] uncertain card dismissal failed: ${errorToString(err)}`);
+        }
+      }
+      throw error;
+    };
+    try {
+      const prepared =
+        commit ?? deps.prepareAnswerCommit?.(connectionId, session.sessionId, questionId);
+      if (prepared === null) return finish('authority-refused');
+      const pending = answerHeld(session.sessionId, questionId, held, prepared);
+      return pending instanceof Promise ? pending.then(finish, uncertain) : finish(pending);
+    } catch (error) {
+      return uncertain(error);
     }
-    return 'stale';
   }
 
   /**
@@ -1008,7 +1047,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     // prompt whose hold has ended is answered only at the terminal. Both are
     // decided here, before anything could be typed. Since #1127 that covers
     // AskUserQuestion (its `selections` included) and ExitPlanMode.
-    const heldOutcome = applyHeldAnswer(
+    const pendingHeldOutcome = applyHeldAnswer(
       connectionId,
       sessionId,
       questionId,
@@ -1019,6 +1058,8 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       active,
       commit,
     );
+    const heldOutcome =
+      pendingHeldOutcome instanceof Promise ? await pendingHeldOutcome : pendingHeldOutcome;
     if (heldOutcome !== null) return heldOutcome;
 
     // Submit the answer to the PTY, where Claude's native prompt is waiting.

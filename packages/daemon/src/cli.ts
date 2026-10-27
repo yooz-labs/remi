@@ -2179,6 +2179,10 @@ const inputHandlers: InputHandlers = createInputHandlers({
   // prompt through its hook. One helper, shared with the tests, like
   // trackerScreenDeps below.
   ...gateAnswerDeps((sessionId) => harnessSessions.get(sessionId)?.decisions),
+  prepareAnswerCommit: (connectionId, sessionId, questionId) =>
+    harnessSessions.get(sessionId)?.decisions.requiresAnswerCommit?.(questionId)
+      ? (structuredChatService?.decisionCommit(connectionId, sessionId) ?? null)
+      : undefined,
   // #1155: the chat guard reads the one "a prompt is up" signal Stop reads.
   ...promptUpWiring,
   // #1177: a Codex session takes no typed chat (its TUI cannot be read), whatever
