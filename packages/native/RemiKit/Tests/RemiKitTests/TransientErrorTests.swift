@@ -12,8 +12,8 @@ import Testing
 
     /// Waits until `condition` holds, up to two seconds, so the tests do not depend on one fixed
     /// sleep being long enough on a busy machine.
-    @MainActor private func waitUntil(_ condition: () -> Bool) async {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    @MainActor private func waitUntil(timeout: Duration = .seconds(2), _ condition: () -> Bool) async {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
         while !condition(), ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(10))
         }
@@ -27,22 +27,28 @@ import Testing
         #expect(store.latestOperationError == nil)
     }
 
-    @Test @MainActor func aNewerErrorIsNotClearedByAnOlderTimer() async {
+    @Test @MainActor func aNewerErrorIsNotClearedByAnOlderTimerButIsClearedByItsOwn() async {
         let store = makeStore()
-        store.setTransientOperationError("first", for: .milliseconds(60))
-        store.setTransientOperationError("second", for: .seconds(30))
-        // Past the first timer: the second is still showing.
-        try? await Task.sleep(for: .milliseconds(250))
+        store.setTransientOperationError("first", for: .milliseconds(50))
+        store.setTransientOperationError("second", for: .milliseconds(1500))
+        // Well past the first timer: the second is still showing.
+        try? await Task.sleep(for: .milliseconds(300))
         #expect(store.latestOperationError == "second")
+        // And its own timer does clear it.
+        await waitUntil(timeout: .seconds(4)) { store.latestOperationError == nil }
+        #expect(store.latestOperationError == nil)
     }
 
     @Test @MainActor func theSameMessageAgainRestartsTheWait() async {
         let store = makeStore()
-        store.setTransientOperationError("Message not sent.", for: .milliseconds(60))
-        store.setTransientOperationError("Message not sent.", for: .seconds(30))
-        try? await Task.sleep(for: .milliseconds(250))
-        // A second failure must not be wiped by the first failure's timer.
+        store.setTransientOperationError("Message not sent.", for: .milliseconds(50))
+        store.setTransientOperationError("Message not sent.", for: .milliseconds(1500))
+        try? await Task.sleep(for: .milliseconds(300))
+        // A second failure must not be wiped by the first failure's timer...
         #expect(store.latestOperationError == "Message not sent.")
+        // ...and still clears when its own wait is over.
+        await waitUntil(timeout: .seconds(4)) { store.latestOperationError == nil }
+        #expect(store.latestOperationError == nil)
     }
 
     @Test @MainActor func aClearInTheMeantimeIsRespected() async {

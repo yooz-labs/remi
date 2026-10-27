@@ -27,6 +27,8 @@ enum RemiComposerSubmission {
 
 public struct RemiSessionInteractionBar: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+    @Environment(\.accessibilitySwitchControlEnabled) private var switchControlEnabled
     @Binding private var draft: String
     private let state: RemiSessionInteractionState
     private let onSend: (String) async -> Bool
@@ -56,20 +58,24 @@ public struct RemiSessionInteractionBar: View {
         Group {
             switch state {
             case .liveMain(let promptWaiting):
-                RemiComposer(
-                    text: $draft,
-                    promptWaiting: promptWaiting,
-                    isSending: isSending,
-                    onSend: sendDraft,
-                    onInterrupt: onInterrupt
-                )
-                if sendFailed {
-                    RemiFeedbackBanner(
-                        message: Self.failureMessage,
-                        tone: .error,
-                        onDismiss: { sendFailed = false }
+                // One stack, so the banner sits under the composer and the bar's padding, column and
+                // material apply to the pair once.
+                VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
+                    RemiComposer(
+                        text: $draft,
+                        promptWaiting: promptWaiting,
+                        isSending: isSending,
+                        onSend: sendDraft,
+                        onInterrupt: onInterrupt
                     )
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    if sendFailed {
+                        RemiFeedbackBanner(
+                            message: Self.failureMessage,
+                            tone: .error,
+                            onDismiss: { sendFailed = false }
+                        )
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    }
                 }
             case .liveSubagent:
                 readOnlyLabel(
@@ -96,9 +102,11 @@ public struct RemiSessionInteractionBar: View {
         .onChange(of: sendFailureCount) { _, _ in
             AccessibilityNotification.Announcement(Self.failureMessage).post()
         }
-        // Clears itself; a new failure restarts the wait, and a send or a dismiss cancels it.
+        // Clears itself; a new failure restarts the wait. A dismiss or a send clears the flag, so
+        // the timer finds nothing left to do. Not while VoiceOver or Switch Control is on: those
+        // users may need longer than any fixed time to reach it, and Dismiss is there.
         .task(id: sendFailureCount) {
-            guard sendFailed else { return }
+            guard sendFailed, !voiceOverEnabled, !switchControlEnabled else { return }
             try? await Task.sleep(for: Self.failureNoticeDuration)
             guard !Task.isCancelled else { return }
             sendFailed = false

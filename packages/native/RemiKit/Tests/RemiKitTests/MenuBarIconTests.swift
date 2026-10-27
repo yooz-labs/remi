@@ -116,7 +116,7 @@ import AppKit
         #expect(abs(Double(left + right) / 2 - 17.5) <= 1.5)
         // And it is a good part of the square, not a speck, but with room round it: a little over a
         // half of the 16 pt square, which is 18 pixels at 2x.
-        #expect(bottom - top + 1 >= 16 && bottom - top + 1 <= 20)
+        #expect(bottom - top + 1 >= 17 && bottom - top + 1 <= 19)
     }
 
     @Test func theEmptyStateHasAnEmptyMiddleAndTheWaitingStateAFilledOne() throws {
