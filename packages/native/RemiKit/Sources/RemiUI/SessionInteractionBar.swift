@@ -33,6 +33,12 @@ public struct RemiSessionInteractionBar: View {
     private let onInterrupt: (() -> Void)?
     @State private var isSending = false
     @State private var sendFailed = false
+    /// Counts failures, so a second one restarts the notice's timer.
+    @State private var sendFailureCount = 0
+
+    /// How long the "not sent" notice stays before it clears itself. The draft is untouched, and
+    /// the notice can be dismissed sooner.
+    public static let failureNoticeDuration: Duration = .seconds(12)
 
     public init(
         draft: Binding<String>,
@@ -58,9 +64,12 @@ public struct RemiSessionInteractionBar: View {
                     onInterrupt: onInterrupt
                 )
                 if sendFailed {
-                    Label("Message wasn’t sent. Your draft is still here.", systemImage: "exclamationmark.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    RemiFeedbackBanner(
+                        message: Self.failureMessage,
+                        tone: .error,
+                        onDismiss: { sendFailed = false }
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
             case .liveSubagent:
                 readOnlyLabel(
@@ -82,7 +91,21 @@ public struct RemiSessionInteractionBar: View {
         // (read-only notes, the send-failure caption) keeps the bar material so it stays legible
         // over transcript content scrolling underneath.
         .background(floatsOverTranscript ? AnyShapeStyle(.clear) : barMaterial)
+        .animation(RemiTheme.Motion.quick, value: sendFailed)
+        // Said once when it appears, so VoiceOver does not depend on landing on the banner.
+        .onChange(of: sendFailureCount) { _, _ in
+            AccessibilityNotification.Announcement(Self.failureMessage).post()
+        }
+        // Clears itself; a new failure restarts the wait, and a send or a dismiss cancels it.
+        .task(id: sendFailureCount) {
+            guard sendFailed else { return }
+            try? await Task.sleep(for: Self.failureNoticeDuration)
+            guard !Task.isCancelled else { return }
+            sendFailed = false
+        }
     }
+
+    static let failureMessage = "Message wasn’t sent. Your draft is still here."
 
     private var floatsOverTranscript: Bool {
         guard !reduceTransparency, !sendFailed else { return false }
@@ -112,6 +135,7 @@ public struct RemiSessionInteractionBar: View {
                 draft = ""
             } else {
                 sendFailed = true
+                sendFailureCount += 1
             }
             isSending = false
         }

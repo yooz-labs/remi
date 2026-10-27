@@ -360,6 +360,8 @@ public final class MachineStore {
     public private(set) var recentRepositoriesByMachine: [String: [RecentRepository]] = [:]
     public private(set) var latestError: ErrorMessage?
     public private(set) var latestOperationError: String?
+    /// Identifies the transient error on screen, so its timer clears that one and not a newer one.
+    private var transientOperationErrorToken = UUID()
     public private(set) var latestOperationNotice: String?
     public private(set) var resumedSessionDestination: ResumedSessionDestination?
     public private(set) var resumingSessions: Set<ResumeSessionKey> = []
@@ -1633,8 +1635,27 @@ public final class MachineStore {
             try await connection.send(message)
             return true
         } catch {
-            latestOperationError = "Message not sent. Check the connection and try again."
+            setTransientOperationError("Message not sent. Check the connection and try again.")
             return false
+        }
+    }
+
+    /// How long a "try again" error stays up before it clears itself.
+    public nonisolated static let transientErrorDuration: Duration = .seconds(12)
+
+    /// Shows `message` as the latest operation error and clears it after `duration`, unless
+    /// something else has replaced it by then. For an error the person can simply retry, like a
+    /// message that did not send, which should not sit on screen for good. Other errors keep
+    /// needing a dismiss.
+    func setTransientOperationError(_ message: String, for duration: Duration = MachineStore.transientErrorDuration) {
+        let token = UUID()
+        transientOperationErrorToken = token
+        latestOperationError = message
+        Task { [weak self] in
+            try? await Task.sleep(for: duration)
+            guard let self, self.transientOperationErrorToken == token,
+                  self.latestOperationError == message else { return }
+            self.latestOperationError = nil
         }
     }
 
