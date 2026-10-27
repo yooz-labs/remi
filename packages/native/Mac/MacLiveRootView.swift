@@ -412,6 +412,10 @@ struct MacLiveRootView: View {
         MacCommandCenter(
             sessions: allSessions,
             machines: machineSummaries,
+            questions: allQuestions,
+            onAnswer: { answerFromInbox(machineID: $0, sessionID: $1, questionID: $2, value: $3) },
+            onSubmit: { submitFromInbox(machineID: $0, sessionID: $1, questionID: $2, selections: $3) },
+            onCancel: { cancelFromInbox(machineID: $0, sessionID: $1, questionID: $2) },
             onOpen: openFromBoard,
             onSend: sendFromBoard
         )

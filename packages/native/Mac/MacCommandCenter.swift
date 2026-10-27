@@ -10,6 +10,10 @@ import SwiftUI
 struct MacCommandCenter: View {
     let sessions: [RemiSessionSummary]
     let machines: [RemiMachineSummary]
+    let questions: [RemiQuestionCardModel]
+    let onAnswer: (_ machineID: String, _ sessionID: String, _ questionID: String, _ value: String) -> Void
+    let onSubmit: (_ machineID: String, _ sessionID: String, _ questionID: String, [RemiQuestionStepSelection]) -> Void
+    let onCancel: (_ machineID: String, _ sessionID: String, _ questionID: String) -> Void
     let onOpen: (RemiSessionSummary) -> Void
     let onSend: (RemiSessionSummary, String) async -> Bool
 
@@ -154,6 +158,9 @@ struct MacCommandCenter: View {
 
     private func tile(_ session: RemiSessionSummary, order: [String]) -> some View {
         let key = RemiBoardOrder.key(for: session)
+        let waiting = questions.first {
+            $0.machineID == session.machineID && $0.sessionID == session.id && $0.state == .pending
+        }
         return RemiBoardTile(
             session: session,
             tileKey: key,
@@ -182,6 +189,14 @@ struct MacCommandCenter: View {
                     board.pin(key, atSlot: order.firstIndex(of: key) ?? 0)
                 }
                 saveBoard()
+            },
+            question: waiting.map { card in
+                RemiQuestionCard(
+                    model: card,
+                    onAnswer: { onAnswer(card.machineID, card.sessionID, card.questionID, $0) },
+                    onSubmit: { onSubmit(card.machineID, card.sessionID, card.questionID, $0) },
+                    onCancel: { onCancel(card.machineID, card.sessionID, card.questionID) }
+                )
             }
         )
         .draggable(key)
@@ -208,6 +223,10 @@ struct MacCommandCenter: View {
     MacCommandCenter(
         sessions: RemiPreviewData.sessions,
         machines: RemiPreviewData.machines,
+        questions: [],
+        onAnswer: { _, _, _, _ in },
+        onSubmit: { _, _, _, _ in },
+        onCancel: { _, _, _ in },
         onOpen: { _ in },
         onSend: { _, _ in true }
     )
