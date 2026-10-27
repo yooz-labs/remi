@@ -929,6 +929,14 @@ struct MacLiveRootView: View {
     }
 
     private func transcript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
+        let confirmed = confirmedTranscript(machineID: machineID, sessionID: sessionID)
+        let pending = store.outgoingMessages(machineID: machineID, sessionID: sessionID).map {
+            RemiTranscriptEntry.pending(id: "pending-\($0.id)", text: $0.content, state: $0.delivery == .sending ? .sending : .sent)
+        }
+        return confirmed + pending
+    }
+
+    private func confirmedTranscript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
         (store.transcriptsBySession[store.sessionKey(machineID: machineID, sessionID: sessionID)] ?? []).compactMap { message in
             let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if !content.isEmpty {
