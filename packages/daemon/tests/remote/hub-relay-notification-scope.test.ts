@@ -1,6 +1,6 @@
 /** Actual encrypted peers, HubRelay and local Worker/DO exercise scope at ingress and egress. */
 import { afterEach, expect, test } from 'bun:test';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   type ProtocolMessage,
@@ -55,6 +55,35 @@ test('notification-only channel receives no machine broadcasts, including genera
   ).json();
   hub.relay.broadcast(question);
   expect(await hub.quiet(150)).toBe(true);
+}, 15000);
+
+test('encrypted notification registration requires explicit consent after inactive expiry', async () => {
+  const hub = await resumedHub({ pushLeaseMs: 1000 }, { notificationOnly: true });
+  cleanup.push(hub.cleanup);
+  const pair = await relayV2.generateEcPair();
+  const registration = {
+    token: 'ab'.repeat(32),
+    environment: 'sandbox' as const,
+    pushPublicKey: relayV2.b64u(pair.publicKey),
+    keyVersion: 1,
+  };
+  expect(await hub.exchange(createSecurePushRegisterRequest(registration))).toMatchObject({
+    success: true,
+  });
+  const file = join(hub.dir, 'secure_push_subscriptions.json');
+  const stored = JSON.parse(readFileSync(file, 'utf8'));
+  const epoch = stored.subscriptions[0].subscriptionEpoch;
+  stored.subscriptions[0].lastSeenAt = Date.now() - 2000;
+  writeFileSync(file, JSON.stringify(stored));
+  expect(await hub.exchange(createSecurePushRegisterRequest(registration))).toMatchObject({
+    success: false,
+    error: 'RENEWAL_REQUIRED',
+  });
+  expect(JSON.parse(readFileSync(file, 'utf8')).subscriptions[0].leaseExpired).toBe(true);
+  expect(await hub.exchange(createSecurePushRegisterRequest(registration, true))).toMatchObject({
+    success: true,
+  });
+  expect(JSON.parse(readFileSync(file, 'utf8')).subscriptions[0].subscriptionEpoch).not.toBe(epoch);
 }, 15000);
 
 test('authenticated notification RPCs outlive the normal application Hello deadline', async () => {

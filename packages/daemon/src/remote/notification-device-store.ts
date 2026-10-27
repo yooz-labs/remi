@@ -92,4 +92,21 @@ export class NotificationDeviceStore {
       );
     });
   }
+  /** A direct device may remove only its own still-current enrollment generation. */
+  removeForAuthority(
+    publicKey: string,
+    authorizationEpoch: string,
+    mayCommit: () => boolean,
+  ): boolean {
+    return this.trust.withAuthorizationEpoch(publicKey, (epoch) => {
+      if (!epoch || epoch !== authorizationEpoch || !mayCommit()) return false;
+      const rows = readNotificationEnrollments(this.directory);
+      if (rows.length > 0) activateSecurePushLocked(this.directory);
+      writeNotificationEnrollments(
+        this.directory,
+        rows.filter((row) => row.publicKey !== publicKey || row.authorizationEpoch !== epoch),
+      );
+      return true;
+    });
+  }
 }

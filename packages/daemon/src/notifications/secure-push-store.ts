@@ -22,6 +22,7 @@ import {
   readSecurePushSubscriptions,
   writeSecurePushSubscriptions,
 } from '../storage/secure-push-subscriptions.ts';
+import { DEFAULT_PUSH_LEASE_MS } from './push-lease.ts';
 import { sanitizePushPreferences } from './push-preferences.ts';
 
 export interface SecurePushAuthority {
@@ -37,6 +38,10 @@ export interface SecurePushStoreOptions {
   /** The same configured push lease as legacy registrations; 0 never expires (#1272). */
   readonly leaseMs?: number;
 }
+export interface SecureSubscriptionState {
+  readonly state: 'registration_required' | 'active' | 'renewal_required';
+  readonly expiresAt: string | null;
+}
 export class SecurePushStore {
   private readonly leaseMs: number;
   /** Unknown notification authority is retained for key floors but never a recipient. */
@@ -49,7 +54,7 @@ export class SecurePushStore {
   ) {
     if (!Number.isInteger(capacity) || capacity < 1 || capacity > 64)
       throw new Error('SECURE_PUSH_CAPACITY_CONFIG');
-    this.leaseMs = options.leaseMs ?? 24 * 60 * 60 * 1000;
+    this.leaseMs = options.leaseMs ?? DEFAULT_PUSH_LEASE_MS;
     if (!Number.isFinite(this.leaseMs) || this.leaseMs < 0)
       throw new Error('SECURE_PUSH_LEASE_CONFIG');
   }
@@ -123,6 +128,7 @@ export class SecurePushStore {
     authority: SecurePushAuthority,
     registration: SecurePushRegistration,
     mayCommit: () => boolean = () => true,
+    allowExpired = true,
   ): Promise<SecurePushRegisterResult> {
     // Copy before the first await: mutable callers cannot replace token/key/authority later.
     const captured = Object.freeze({ ...authority });
@@ -149,6 +155,8 @@ export class SecurePushStore {
         const stored = this.subscriptionsInsideLock();
         const current = stored.filter((entry) => this.leaseCurrent(entry));
         const known = stored.find((entry) => entry.publicKey === captured.publicKey);
+        if (known?.leaseExpired && !allowExpired)
+          return { success: false, error: 'RENEWAL_REQUIRED' };
         const existing = current.find((entry) => entry.publicKey === captured.publicKey);
         if (
           known &&
@@ -200,6 +208,23 @@ export class SecurePushStore {
         Object.freeze({ ...entry, pushPrefs: Object.freeze({ ...entry.pushPrefs }) }),
       ),
     );
+  }
+  /** Reads durable expiry before any foreground renewal; never revives an old epoch. */
+  subscriptionState(authority: SecurePushAuthority): SecureSubscriptionState | null {
+    return this.trust.withAuthorizationEpoch(authority.publicKey, (epoch) => {
+      if (!this.isCurrentAuthorityInsideLock(authority, epoch)) return null;
+      const entry = this.subscriptionsInsideLock().find(
+        (row) => row.publicKey === authority.publicKey,
+      );
+      if (!entry) return { state: 'registration_required', expiresAt: null };
+      return {
+        state: this.leaseCurrent(entry) ? 'active' : 'renewal_required',
+        expiresAt:
+          this.leaseMs === 0
+            ? null
+            : new Date((entry.lastSeenAt ?? 0) + this.leaseMs).toISOString(),
+      };
+    });
   }
   /** Recheck captured epochs and invoke the effect synchronously; await returned promises outside. */
   withCurrentSubscription<T>(snapshot: SecurePushSnapshot, operation: () => T): T | null {

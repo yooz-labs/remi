@@ -45,6 +45,7 @@ import type {
   ImageInsertionIngressResult,
   ImageStagingIngressResult,
   NativeAnswerMessage,
+  NotificationHostRequest,
   PushPreferences,
   UUID,
 } from '@remi/shared';
@@ -94,6 +95,7 @@ export interface ClientMessageEventArgs {
   onImageUpload: [ingress: Exclude<ImageStagingIngressResult, { kind: 'uncorrelatable' }>];
   /** Signed native proof; its child-owned ledger is separate from ordinary answer aliases (#1201). */
   onNativeAnswer: [message: NativeAnswerMessage];
+  onNotificationHostRequest: [message: NotificationHostRequest];
   /** User input received. `messageId` is the wire message's own id (#681),
    *  carried so a rejection (e.g. NOT_ACTIVE_CONNECTION) can name the
    *  specific bubble that was dropped. */
@@ -176,6 +178,7 @@ export const CLIENT_MESSAGE_EVENT_KEYS = [
   'onImageInsert',
   'onImageUpload',
   'onNativeAnswer',
+  'onNotificationHostRequest',
   'onUserInput',
   'onAnswer',
   'onBulletExpandRequest',

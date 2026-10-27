@@ -5,7 +5,7 @@
  * Owner decision (2026-10-06): a phone's push registration lives while the
  * phone keeps connecting, ends at once on the explicit disconnect signal
  * (`unregister`), and otherwise expires a set time after the phone was last
- * seen (`[notifications] push_lease_hours`, default 24).
+ * seen (`[notifications] push_lease_hours`, default 720 hours / 30 days).
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -99,12 +99,15 @@ describe('the push lease (#1254)', () => {
     expect(store.map.has('ancient')).toBe(true);
   });
 
-  test('the default lease is 24 hours', () => {
-    seed([entry('day-old', Date.now() - 25 * HOUR), entry('hour-old', Date.now() - HOUR)]);
+  test('the default lease is 30 days', () => {
+    seed([
+      entry('expired', Date.now() - 31 * 24 * HOUR),
+      entry('active', Date.now() - 29 * 24 * HOUR),
+    ]);
     const store = new DeviceTokenStore(file);
     store.load();
 
-    expect([...store.map.keys()]).toEqual(['hour-old']);
+    expect([...store.map.keys()]).toEqual(['active']);
   });
 
   test('an expired token stays out after a refresh, even if a stale sibling wrote it back', () => {

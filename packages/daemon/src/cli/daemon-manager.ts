@@ -14,6 +14,7 @@ import { errorToString } from '@remi/shared';
 import { remiHome } from '../config/remi-home.ts';
 import { SessionRegistryFile } from '../session/session-registry-file.ts';
 import { readLocalDaemonEndpoint } from '../storage/local-daemon-endpoints.ts';
+import { withLegacyPushEligibility } from '../storage/secure-push-activation.ts';
 import { rotateIfNeeded } from './log-rotation.ts';
 import { resolveExistingDirectory } from './path-resolver.ts';
 import { formatVersionDrift } from './version-drift.ts';
@@ -624,6 +625,12 @@ export async function spawnRemiDaemon(
   // status-<PORT>.json a wrapper would, instead of clobbering the parent's
   // own ~/.remi/daemon-status.json.
   childEnv['REMI_SPAWNED_CHILD'] = '1';
+  // Secure recipients use the capability-proved hub sender. Keep inheritance
+  // only for the existing plaintext compatibility path until its latch retires.
+  if (!withLegacyPushEligibility(REMI_DIR, () => true).allowed) {
+    // biome-ignore lint/performance/noDelete: the credential must be absent from the child
+    delete childEnv['REMI_PUSH_SECRET'];
+  }
 
   // #1025: without this, the child inherits OUR cwd (the hub's, for a
   // hub-spawned child), so anything the child reads from process.cwd()

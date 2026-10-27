@@ -9,6 +9,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
 import { parse as parseToml } from 'smol-toml';
+import { DEFAULT_PUSH_LEASE_HOURS } from '../notifications/push-lease.ts';
 import { remiHome } from './remi-home.ts';
 
 const REMI_DIR = remiHome();
@@ -90,7 +91,7 @@ export interface NotificationsConfig {
   readonly turn_complete_min_seconds: number;
   /**
    * How long a phone keeps getting pushes after it was last seen (#1254, owner
-   * decision 2026-10-06). The phone renews it by connecting and by staying
+   * decision, updated to 30 days in #1677). The phone renews it by connecting and by staying
    * connected, and the lease counts from when its connection closed;
    * disconnecting the machine in the app (legacy or secure unregister, sent only
    * while the machine is reachable) ends it at once. 0 means it never
@@ -264,7 +265,7 @@ export const DEFAULT_CONFIG: RemiConfig = {
     // Personal preference varies a lot here, hence configurable.
     turn_complete_min_seconds: 60,
     // A phone not seen for a day stops getting pushes (#1254).
-    push_lease_hours: 24,
+    push_lease_hours: DEFAULT_PUSH_LEASE_HOURS,
     // Subagent commands (foreground or background) worth a heads-up when
     // Claude ran them without asking (#807, #1155; a call that prompts is
     // shown as its prompt).

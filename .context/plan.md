@@ -976,3 +976,7 @@ no agreement acceptance, signing or upload was performed here.
 ## Paired-device notification scope (2026-10-26, #1677/#1678)
 
 Implement the approved notification-only admission foundation with a separate enrollment file and current grant/enrollment epochs. Notification channels may register/unregister a secure recipient or submit a valid signed notification answer; general application ingress, broadcasts and incidental child output stay unavailable. This phase has no production enrollment caller or capability advertisement. Follow [notification-scope-plan.md](notification-scope-plan.md) for the tests and the selected rolling 30-day renewal policy that later phases implement.
+
+## Paired host notification registration (2026-10-26, #1679)
+
+Add identity-bound direct bootstrap for encrypted notification registration, rolling 30-day inactive expiry with explicit Continue, and hub-owned forwarding of sealed session events. The host contract, negative-path controls and device acceptance limits are in [notification-host-plan.md](notification-host-plan.md). Native automatic registration and concise verified notification actions remain subsequent phases; source checks do not establish physical APNs or Watch delivery.

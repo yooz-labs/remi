@@ -38,6 +38,7 @@ import {
   type IdentityStore,
   validatePublicKey,
 } from '../auth/identity-store.ts';
+import { DEFAULT_PUSH_LEASE_MS } from '../notifications/push-lease.ts';
 import { sanitizePushPreferences } from '../notifications/push-preferences.ts';
 import { type SecurePushAuthority, SecurePushStore } from '../notifications/secure-push-store.ts';
 import { AnswerResults } from '../server/answer-results.ts';
@@ -197,6 +198,62 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   get isRunning(): boolean {
     return this.running;
   }
+  get notificationReady(): boolean {
+    return this.running && this.control?.ready === true;
+  }
+  /** Direct pairing grants this limited scope only for the captured current grant. */
+  async enrollNotifications(
+    publicKey: string,
+    authorizationEpoch: string,
+    mayCommit: () => boolean,
+  ): Promise<void> {
+    const control = this.control;
+    if (!this.notificationReady || !control) throw new Error('HOST_SETUP_REQUIRED');
+    await this.serial(async () => {
+      const current = () => this.running && this.control === control && mayCommit();
+      if (!current() || this.cfg.trust.captureAuthorizationEpoch(publicKey) !== authorizationEpoch)
+        throw new Error('NOTIFICATION_NOT_AUTHORIZED');
+      // Existing full enrollment already permits secure registration. Do not
+      // make it depend on or duplicate the separate limited-scope store.
+      if (!this.devices.isEnrolled(publicKey))
+        await this.notificationDevices.add(
+          publicKey,
+          authorizationEpoch,
+          'Paired notifications',
+          current,
+        );
+      if (!current()) throw new Error('NOTIFICATION_NOT_AUTHORIZED');
+      if (!(await control.command({ t: 'enroll', key: new Uint8Array(fromBase64(publicKey)) })))
+        throw new Error('HOST_SETUP_REQUIRED');
+      if (!current() || this.cfg.trust.captureAuthorizationEpoch(publicKey) !== authorizationEpoch)
+        throw new Error('NOTIFICATION_NOT_AUTHORIZED');
+    });
+  }
+  /** Revoke notification delivery without removing direct trust or a full relay grant. */
+  async revokeNotifications(
+    publicKey: string,
+    authorizationEpoch: string,
+    mayCommit: () => boolean,
+  ): Promise<void> {
+    await this.serial(async () => {
+      if (
+        !mayCommit() ||
+        this.cfg.trust.captureAuthorizationEpoch(publicKey) !== authorizationEpoch
+      )
+        throw new Error('NOTIFICATION_NOT_AUTHORIZED');
+      const authority = this.subscriptions.captureAuthority(publicKey);
+      if (authority && authority.authorizationEpoch !== authorizationEpoch)
+        throw new Error('NOTIFICATION_NOT_AUTHORIZED');
+      if (authority) this.subscriptions.unregister(authority);
+      if (!this.notificationDevices.removeForAuthority(publicKey, authorizationEpoch, mayCommit))
+        throw new Error('NOTIFICATION_NOT_AUTHORIZED');
+      for (const peer of this.peers.values())
+        if (peer.key === publicKey && peer.scope === 'notification')
+          void this.closePeer(peer, true);
+      if (!this.devices.isEnrolled(publicKey))
+        await this.control?.command({ t: 'revoke', key: new Uint8Array(fromBase64(publicKey)) });
+    });
+  }
   private log(message: string): void {
     this.cfg.log?.(message);
   }
@@ -208,7 +265,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     );
     this.rid = await relayV2.ridOf(this.machine.publicKey);
     this.running = true;
-    const leaseMs = this.cfg.pushLeaseMs ?? 24 * 60 * 60 * 1000;
+    const leaseMs = this.cfg.pushLeaseMs ?? DEFAULT_PUSH_LEASE_MS;
     this.pushLeaseTimer = setInterval(
       () => {
         for (const peer of this.peers.values())
@@ -990,9 +1047,12 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
         'pushPublicKey',
         'keyVersion',
         'pushPrefs',
+        'renewExpired',
       ];
       let registration: ReturnType<typeof normalizeSecureRegistration>;
       try {
+        if (message.renewExpired !== undefined && typeof message.renewExpired !== 'boolean')
+          throw new Error('INVALID_SUBSCRIPTION');
         if (Object.keys(message).some((key) => !allowed.includes(key)))
           throw new Error('INVALID_SUBSCRIPTION');
         registration = normalizeSecureRegistration({
@@ -1023,6 +1083,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
           peer.stage === 'ready' &&
           peer.pushMutation === mutation &&
           peer.pushAuthority === authority,
+        peer.scope === 'full' || message.renewExpired === true,
       );
       // register's commit callback is inside the authorization lock: use only
       // in-memory lifecycle state there, never current()'s nested disk lock.

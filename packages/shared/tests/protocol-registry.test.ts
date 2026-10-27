@@ -56,6 +56,8 @@ const GOLDEN_TYPES = [
   'image_upload_refused',
 
   'native_answer',
+  'notification_host_request',
+  'notification_host_response',
   'secure_push_register_request',
   'secure_push_register_response',
   'secure_push_unregister_request',
@@ -115,12 +117,12 @@ const GOLDEN_TYPES = [
 ] as const;
 
 describe('protocol registry golden equality (#895)', () => {
-  test('GOLDEN_TYPES has exactly 91 entries with no duplicates', () => {
-    expect(GOLDEN_TYPES.length).toBe(91);
-    expect(new Set(GOLDEN_TYPES).size).toBe(91);
+  test('GOLDEN_TYPES has exactly 93 entries with no duplicates', () => {
+    expect(GOLDEN_TYPES.length).toBe(93);
+    expect(new Set(GOLDEN_TYPES).size).toBe(93);
   });
 
-  test('MESSAGE_DIRECTION keys are exactly the golden 91 types, no more, no fewer', () => {
+  test('MESSAGE_DIRECTION keys are exactly the golden 93 types, no more, no fewer', () => {
     const registryTypes = Object.keys(MESSAGE_DIRECTION).sort();
     const golden = [...GOLDEN_TYPES].sort();
     expect(registryTypes).toEqual(golden);

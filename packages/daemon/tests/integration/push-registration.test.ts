@@ -51,7 +51,7 @@ describe('the phone decides what it is pushed (#1258)', () => {
 describe('the push lease (#1254)', () => {
   test('a token whose phone has not been seen for longer than the lease is not pushed', async () => {
     const r = await startWithPhone({
-      // Registered two days ago and never seen since; the default lease is 24 hours.
+      // Inactive beyond the 30-day default; a connected token remains eligible.
       seed: (remiDir) =>
         fs.writeFileSync(
           path.join(remiDir, 'device-tokens.json'),
@@ -60,7 +60,7 @@ describe('the push lease (#1254)', () => {
               {
                 token: STALE,
                 platform: 'ios',
-                registeredAt: Date.now() - 48 * HOUR,
+                registeredAt: Date.now() - 31 * 24 * HOUR,
                 connectionId: 'c0000000-0000-0000-0000-000000000000',
               },
             ],
