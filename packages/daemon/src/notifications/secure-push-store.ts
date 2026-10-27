@@ -263,6 +263,7 @@ export class SecurePushStore {
     let changed = false;
     const current: StoredSecurePushSubscription[] = [];
     for (const entry of stored) {
+      let unavailable = false;
       try {
         if (!this.currentInsideLock(entry)) {
           changed = true;
@@ -272,9 +273,7 @@ export class SecurePushStore {
         if (!(error instanceof NotificationStorageError)) throw error;
         // Scope-local damage must neither erase a recipient's key-version floor
         // nor stop independent valid full-relay recipients from being served.
-        this.unavailableEnrollments.add(entry);
-        current.push(entry);
-        continue;
+        unavailable = true;
       }
       // Existing v1 records get one migration lease, not an unlimited historical registration.
       // Persist clock rollback clamping once, so re-reads cannot repeatedly extend the lease.
@@ -285,15 +284,15 @@ export class SecurePushStore {
       // Only explicit unregister/revoke resets that floor; a fresh registration rotates epoch.
       const rowChanged = entry.lastSeenAt !== lastSeenAt || leaseExpired !== !!entry.leaseExpired;
       changed ||= rowChanged;
-      current.push(
-        rowChanged
-          ? {
-              ...entry,
-              lastSeenAt,
-              ...(leaseExpired ? { leaseExpired: true as const } : {}),
-            }
-          : entry,
-      );
+      const normalized = rowChanged
+        ? {
+            ...entry,
+            lastSeenAt,
+            ...(leaseExpired ? { leaseExpired: true as const } : {}),
+          }
+        : entry;
+      if (unavailable) this.unavailableEnrollments.add(normalized);
+      current.push(normalized);
     }
     if (changed) writeSecurePushSubscriptions(this.directory, current);
     return current;

@@ -142,3 +142,32 @@ test('notification store faults retain key floors without blocking full relay pu
       .keyVersion,
   ).toBe(1);
 });
+
+test('an enrollment fault cannot hide expiry and revive it after repair or a longer lease', async () => {
+  const { identity } = await enrolled();
+  const subscriptions = new SecurePushStore(directory, trust, 64, { leaseMs: 1000 });
+  const authority = subscriptions.captureAuthority(identity.publicKey);
+  if (!authority) throw new Error('OWNED_NOTIFICATION_AUTHORITY_MISSING');
+  const pair = await relayV2.generateEcPair();
+  expect(
+    await subscriptions.register(authority, {
+      token: 'ab'.repeat(32),
+      environment: 'sandbox',
+      pushPublicKey: relayV2.b64u(pair.publicKey),
+      keyVersion: 1,
+    }),
+  ).toMatchObject({ success: true });
+  const file = join(directory, 'secure_push_subscriptions.json');
+  const stored = JSON.parse(readFileSync(file, 'utf8'));
+  stored.subscriptions[0].lastSeenAt = Date.now() - 2000;
+  writeFileSync(file, JSON.stringify(stored));
+  const enrollmentFile = join(directory, 'notification_devices.json');
+  const originalEnrollment = readFileSync(enrollmentFile, 'utf8');
+  writeFileSync(enrollmentFile, 'PRIVATE_PARSER_SENTINEL');
+  expect(subscriptions.listCurrent()).toEqual([]);
+  expect(JSON.parse(readFileSync(file, 'utf8')).subscriptions[0].leaseExpired).toBe(true);
+  writeFileSync(enrollmentFile, originalEnrollment);
+  expect(
+    new SecurePushStore(directory, trust, 64, { leaseMs: 30 * 24 * 60 * 60 * 1000 }).listCurrent(),
+  ).toEqual([]);
+});
