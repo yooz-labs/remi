@@ -66,6 +66,10 @@ public final class NativeRelayNotifications {
     @ObservationIgnored private var lastRegistrations: [String: Date] = [:]
     @ObservationIgnored private var permissionRevokedHosts: Set<String> = []
     @ObservationIgnored private var lastRevocations: [String: Date] = [:]
+    @ObservationIgnored private var lastAPNsRegistration: Date?
+    #if DEBUG
+    @ObservationIgnored var ownedPushRegistrationRequestCount = 0
+    #endif
     @ObservationIgnored private var enableTask: Task<Void, Never>?
     @ObservationIgnored private var enableAttempt: UUID?
     @ObservationIgnored private var enablingEndpointID: String?
@@ -202,11 +206,10 @@ public final class NativeRelayNotifications {
             presentsRelayNotification = true
         }
         startAutomaticRegistration()
-        if !store.machines.isEmpty {
-            // Refresh the OS token on foreground entry; never persist token bytes.
-            registerWithAPNs()
-            if let latestToken { acceptPushToken(latestToken) }
-        }
+        // A first host can be paired later in this scene. Token acquisition is
+        // independent of that host's foreground-route census (#1680).
+        registerWithAPNs()
+        if let latestToken { acceptPushToken(latestToken) }
     }
 
     /// Retries foreground identity loading after a protected store or provider
@@ -541,7 +544,7 @@ public final class NativeRelayNotifications {
             }
             if permissionRevokedHosts.remove(host) != nil { lastRegistrations[host] = nil }
             guard endpoint.relayPin == nil else { continue }
-            guard tokenEnvironment != nil, latestToken != nil else { continue }
+            guard tokenEnvironment != nil, latestToken != nil else { registerWithAPNs(); continue }
             let state = current.pairedNotificationState(for: endpoint)
             if state == .renewalRequired || state == .registering { continue }
             let interval: TimeInterval = state == .registered ? 15 * 60 : 60
@@ -563,8 +566,11 @@ public final class NativeRelayNotifications {
         started = true
         store.start()
     }
-    private func registerWithAPNs() {
+    private func registerWithAPNs(force: Bool = false) {
+        guard force || Date().timeIntervalSince(lastAPNsRegistration ?? .distantPast) >= 30 else { return }
+        lastAPNsRegistration = Date()
         #if DEBUG
+        ownedPushRegistrationRequestCount += 1
         guard !ownedTesting else { return }
         #endif
         #if os(iOS)
@@ -599,7 +605,7 @@ public final class NativeRelayNotifications {
                     do { try await Task.sleep(for: .seconds(15)) } catch { return }
                     self?.finishToken(nil, id: id)
                 }
-                registerWithAPNs()
+                registerWithAPNs(force: true)
             }
         } onCancel: { [weak self] in
             Task { @MainActor in self?.finishToken(nil, id: id) }

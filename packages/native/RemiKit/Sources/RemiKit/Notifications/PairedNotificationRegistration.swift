@@ -50,7 +50,7 @@ enum PairedNotificationRegistration {
             var request = RelayPushRequest(type: "secure_push_register_request", id: UUID().uuidString.lowercased(),
                 timestamp: Date().ISO8601Format(), token: token, environment: environment,
                 pushPublicKey: RelayCrypto.b64(recipient.publicKey), keyVersion: recipient.keyVersion)
-            request.renewExpired = renewExpired ? true : nil
+            request.renewExpired = renewExpired
             let result = try await channel.exchange(request, id: request.id,
                 expected: .push(type: "secure_push_register_response", keyVersion: recipient.keyVersion),
                 until: deadline, validate: {
