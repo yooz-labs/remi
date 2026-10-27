@@ -2,6 +2,7 @@ import { afterAll, expect, test } from 'bun:test';
 import {
   chmodSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -116,6 +117,19 @@ test('discovery equals actual Bun headers across suffixes/extensions, hidden fil
 
 test('partition includes target once and every other file exactly once', () => {
   expect(partitionTests(['other.test.ts', TARGET])).toEqual([[TARGET], ['other.test.ts']]);
+  const complete = [
+    TARGET,
+    'packages/daemon/tests/one.test.ts',
+    'packages/web/two.test.ts',
+    'tests/three.test.ts',
+  ];
+  const lanes = partitionTests(complete);
+  expect(lanes).toEqual([
+    [TARGET],
+    ['packages/daemon/tests/one.test.ts'],
+    ['packages/web/two.test.ts', 'tests/three.test.ts'],
+  ]);
+  expect(lanes.flat()).toEqual(complete);
   for (const files of [[], [TARGET], [TARGET, TARGET], ['other.test.ts']])
     expect(() => partitionTests(files)).toThrow();
 });
@@ -357,7 +371,7 @@ function suiteFixture(fail: boolean): string {
   return home;
 }
 
-test('actual two-process controller publishes ONLY a complete validated summary, preserving manifest and source evidence', async () => {
+test('actual controller publishes ONLY a complete validated summary, preserving manifest and source evidence', async () => {
   const home = suiteFixture(false);
   const out = output();
   const err = output();
@@ -396,7 +410,7 @@ test('actual failing rest assertion leaves NO threshold input and retains failur
     expect(failure.evidence).toHaveLength(1);
     expect(failure.evidence[0].lane).toBe('target');
     expect(failure.evidence[0].exit).toBe(0);
-    const report = readFileSync(path.join(directory, 'rest/junit.xml'), 'utf8');
+    const report = readFileSync(path.join(directory, 'rest-1/junit.xml'), 'utf8');
     expect(report).toContain('failures="1"');
     expect(report).toContain('<failure type="AssertionError"');
     expect(report).toContain('>AssertionError: expect(received).toBe(expected)');
@@ -420,6 +434,77 @@ test('actual failing rest assertion leaves NO threshold input and retains failur
     );
   }
 });
+
+test('actual workers overlap, isolate homes and both settle before summary or failure', async () => {
+  for (const fail of [false, true]) {
+    const home = suiteFixture(fail);
+    const state = path.join(home, 'worker-state');
+    mkdirSync(state);
+    source(
+      home,
+      '.gitignore',
+      `${readFileSync(path.join(home, '.gitignore'), 'utf8')}worker-state/\n`,
+    );
+    for (const [own, other, file] of [
+      ['daemon', 'other', 'packages/daemon/parallel.test.ts'],
+      ['other', 'daemon', 'rest.test.ts'],
+    ]) {
+      source(
+        home,
+        file as string,
+        `import {test,expect} from 'bun:test';
+import {writeFileSync,readFileSync,existsSync} from 'node:fs';
+import path from 'node:path';
+test('owned ${own}',async()=>{
+  const dir=${JSON.stringify(state)};
+  const own=path.join(dir,${JSON.stringify(own)});
+  const other=path.join(dir,${JSON.stringify(other)});
+  writeFileSync(own,JSON.stringify({home:process.env.HOME,pid:process.pid}));
+  const end=performance.now()+2000;
+  while(!existsSync(other)){if(performance.now()>end)throw Error('Workers did not overlap');await Bun.sleep(5);}
+  const sibling=JSON.parse(readFileSync(other,'utf8'));
+  expect(sibling.home).not.toBe(process.env.HOME);
+  expect(sibling.pid).not.toBe(process.pid);
+  expect(process.env.HOME).not.toBe(${JSON.stringify(process.env['HOME'])});
+  if(${JSON.stringify(own)}==='daemon'){await Bun.sleep(75);writeFileSync(path.join(dir,'settled'),'yes');}
+  expect(${own === 'other' && fail ? '2' : '1'}).toBe(1);
+});\n`,
+      );
+    }
+    const out = output();
+    const err = output();
+    const directory = path.join(home, 'coverage/test-lanes');
+    const summary = path.join(home, 'test-output.txt');
+    let failure: unknown;
+    try {
+      await runSuite(home, directory, summary, { stdout: out.stream, stderr: err.stream });
+    } catch (error) {
+      failure = error;
+    }
+    expect(readFileSync(path.join(state, 'settled'), 'utf8')).toBe('yes');
+    const workers = ['target', 'rest-1', 'rest-2'].map((name) =>
+      JSON.parse(readFileSync(path.join(directory, name, 'worker.json'), 'utf8')),
+    );
+    expect(new Set(workers.map((worker) => worker.home)).size).toBe(3);
+    for (const worker of workers) if (existsSync(worker.home)) homes.push(worker.home);
+    // Every actual child has ended before either success or rejection reaches us.
+    for (const name of ['daemon', 'other']) {
+      const worker = JSON.parse(readFileSync(path.join(state, name), 'utf8'));
+      expect(() => process.kill(worker.pid, 0)).toThrow();
+    }
+    if (fail) {
+      expect(failure).toBeInstanceOf(Error);
+      expect(() => readFileSync(summary)).toThrow();
+    } else {
+      expect(failure).toBeUndefined();
+      expect(readFileSync(summary, 'utf8')).toContain('All files');
+      for (const worker of workers) expect(existsSync(worker.home)).toBe(false);
+      const completed = JSON.parse(readFileSync(path.join(directory, 'success.json'), 'utf8'));
+      expect(completed.files).toBe(3);
+      expect(completed.cases).toHaveLength(3);
+    }
+  }
+}, 10000);
 
 test('new, removed and source-mode/discovery changes remain visible, not silently omitted', () => {
   const home = suiteFixture(false);
@@ -455,7 +540,7 @@ test('actual checkout public-template inputs and partition retain the production
   expect(prepared.files).toContain(TARGET);
   expect(prepared.before['.env.example']?.sha256).toMatch(/^[0-9a-f]{64}$/);
   expect(prepared.lanes[0]).toEqual([TARGET]);
-  expect(prepared.lanes[1].length + 1).toBe(prepared.files.length);
+  expect(prepared.lanes.slice(1).flat().length + 1).toBe(prepared.files.length);
 });
 
 test('only a tracked canonical root public example is readable; real/nested/untracked env paths refuse', () => {

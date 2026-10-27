@@ -4,13 +4,16 @@ import {
   linkSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Writable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
@@ -117,17 +120,20 @@ export function discoverTests(root: string): string[] {
   return files.sort(compare);
 }
 
-export function partitionTests(files: string[]): [string[], string[]] {
+export function partitionTests(files: string[]): string[][] {
   requireValue(
     files.filter((file) => file === TARGET).length === 1,
     'Exact target must occur once',
   );
   const rest = files.filter((file) => file !== TARGET);
-  requireValue(
-    rest.length > 0 && new Set(files).size === files.length,
-    'Invalid two-process partition',
-  );
-  return [[TARGET], rest];
+  requireValue(rest.length > 0 && new Set(files).size === files.length, 'Invalid test partition');
+  // Keep the pinned target isolated. Each other file belongs to exactly one
+  // sorted shared-cache cohort; no test-selection flags can shrink the suite.
+  return [
+    [TARGET],
+    rest.filter((file) => file.startsWith('packages/daemon/')),
+    rest.filter((file) => !file.startsWith('packages/daemon/')),
+  ].filter((lane) => lane.length > 0);
 }
 
 /** Git is source identity evidence only. Discovery above includes untracked tests too. */
@@ -402,7 +408,7 @@ export function prepareSuite(root: string) {
   const contract = JSON.parse(
     readFileSync(path.join(root, 'scripts/ci/remote-new-client-contract.json'), 'utf8'),
   ) as TestContract;
-  // Source drift is refused BEFORE either body, not repaired or regenerated in CI.
+  // Source drift is refused BEFORE any worker body, not repaired or regenerated in CI.
   requireValue(
     contract.target === TARGET && contract.runtime === Bun.revision,
     'Unsupported target contract',
@@ -454,31 +460,41 @@ export async function runSuite(
   mkdirSync(path.dirname(output), { recursive: true });
   mkdirSync(output, { recursive: false });
   const token = randomUUID();
-  const evidence: {
-    lane: string;
-    exit: number;
-    files: string[];
-    cases: CaseRecord[];
-    assertions: number;
-    contractFailure: string | null;
-  }[] = [];
-  const reports: LineCoverage[] = [];
+  const evidence = new Map<
+    number,
+    {
+      lane: string;
+      exit: number;
+      files: string[];
+      cases: CaseRecord[];
+      assertions: number;
+      contractFailure: string | null;
+    }
+  >();
+  const reports = new Map<number, LineCoverage>();
+  const orderedEvidence = () => [...evidence].sort(([a], [b]) => a - b).map(([, value]) => value);
   json(path.join(output, 'manifest.json'), {
     files,
     lanes,
     before,
     runtime: Bun.revision,
     token,
-    scope: 'lane-process target ownership; hidden nested child imports are not attested',
+    scope:
+      'isolated target then parallel daemon/other shared-cache workers; cross-worker cache interactions and hidden nested child imports are not attested',
   });
   let failed = false;
   try {
-    for (const [index, lane] of lanes.entries()) {
+    async function runLane(index: number, lane: string[]): Promise<void> {
       const remaining = CONTROLLER_MS - (performance.now() - started) - CLEANUP_MS;
       const deadline = Math.min(index === 0 ? 300_000 : 1_200_000, remaining);
       requireValue(deadline > 0, 'Controller deadline exhausted');
-      const laneOutput = path.join(output, index === 0 ? 'target' : 'rest');
+      const name = index === 0 ? 'target' : `rest-${index}`;
+      const laneOutput = path.join(output, name);
       mkdirSync(laneOutput);
+      // Real home-based state (daemon.pid, trust files, install probes) must
+      // never be shared by concurrent workers or touch the invoking user's home.
+      const home = realpathSync(mkdtempSync(path.join(tmpdir(), 'remi-ci-home-')));
+      json(path.join(laneOutput, 'worker.json'), { index, name, home, files: lane });
       const reportFile = path.join(laneOutput, 'junit.xml');
       const argv = [
         process.execPath,
@@ -499,7 +515,7 @@ export async function runSuite(
         timeoutMs: deadline,
         captureLoggingStages:
           index === 1 && lane.includes('packages/daemon/tests/cli/log-file.test.ts'),
-        env: { ...process.env, CI_TEST_OWNER_TOKEN: token },
+        env: { ...process.env, HOME: home, CI_TEST_OWNER_TOKEN: token },
         cwd: root,
       });
       requireValue(result.cleanupVerified, 'Owned process cleanup is unproved');
@@ -524,35 +540,56 @@ export async function runSuite(
           contractFailure = error instanceof Error ? error.message : String(error);
         }
       }
-      evidence.push({
-        lane: index === 0 ? 'target' : 'rest',
+      evidence.set(index, {
+        lane: name,
         contractFailure,
         exit: result.exitCode,
         files: result.testFiles,
         ...actual,
       });
-      json(path.join(laneOutput, 'actual.json'), evidence.at(-1));
+      json(path.join(laneOutput, 'actual.json'), evidence.get(index));
       failed ||=
         contractFailure !== null ||
         result.exitCode !== 0 ||
         actual.cases.some((row) => row.status === 'fail');
-      reports.push(
+      reports.set(
+        index,
         parseLineCoverage(readFileSync(path.join(laneOutput, 'lcov.info'), 'utf8'), root, before),
       );
+      // runChild proves the whole owned process group was reaped before this
+      // deletion. On an unproved/throwing exit, retain worker.json and its home.
+      rmSync(home, { recursive: true });
     }
+    await runLane(0, lanes[0] as string[]);
+    // Settle every started worker before reporting any error. A failed sibling
+    // must not orphan a live test process or publish partial coverage.
+    const settled = await Promise.allSettled(
+      lanes.slice(1).map((lane, index) => runLane(index + 1, lane)),
+    );
+    const errors = settled.flatMap((result) =>
+      result.status === 'rejected' ? [result.reason] : [],
+    );
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, 'Test worker execution failed');
     requireValue(
       JSON.stringify(discoverTests(root)) === JSON.stringify(files) &&
         JSON.stringify(snapshotSources(root, files)) === JSON.stringify(before),
       'Source/discovery changed during execution',
     );
     requireValue(!failed, 'One or more test lanes failed');
-    const merged = unionLineCoverage(reports);
+    requireValue(
+      evidence.size === lanes.length && reports.size === lanes.length,
+      'Incomplete worker evidence',
+    );
+    const merged = unionLineCoverage(
+      [...reports].sort(([a], [b]) => a - b).map(([, value]) => value),
+    );
     json(path.join(output, 'line-union.json'), merged);
     writeFileSync(path.join(output, 'lcov.info'), serializeLineCoverage(merged), { flag: 'wx' });
     json(path.join(output, 'success.json'), {
       files: files.length,
-      cases: evidence.flatMap((row) => row.cases),
-      assertions: evidence.reduce((sum, row) => sum + row.assertions, 0),
+      cases: orderedEvidence().flatMap((row) => row.cases),
+      assertions: orderedEvidence().reduce((sum, row) => sum + row.assertions, 0),
       runtime: Bun.revision,
       elapsedMs: performance.now() - started,
       functionBranchAggregate: 'unavailable',
@@ -569,9 +606,9 @@ export async function runSuite(
   } catch (error) {
     json(path.join(output, 'failure.json'), {
       error: error instanceof Error ? error.message : String(error),
-      evidence,
+      evidence: orderedEvidence(),
       elapsedMs: performance.now() - started,
-      remainingNotRun: lanes.slice(evidence.length),
+      unvalidated: lanes.filter((_, index) => !evidence.has(index)),
       thresholdRowWritten: existsSync(summary),
     });
     throw error;

@@ -158,7 +158,8 @@ jobs:
         if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
         env:
           E2E_BUNDLER: esbuild
-        # #1206: target alone, then every other discovered file in one shared Bun cache.
+        # #1206/#1626: pinned target alone, then complete daemon/other cohorts in
+        # parallel shared-cache workers with separate HOME and unchanged budgets.
         # Raw logs are separate from the one validated line-union threshold row.
         # pipefail preserves test/discovery/coverage/cleanup failures through tee.
         run: |
