@@ -1,28 +1,29 @@
 {
   "source_commit": "d2e90a89cc92c3ab9e6550265bca9372ea33239f",
   "measurement_sha256": {
-    "ci.yml/test/Test with coverage": "c907b53be2f9a68977d8098ec0faf672feae85533c205844e1f3b5bac8998a92",
     "ci.yml/test/Check coverage threshold": "7014458938cc5124d84339467e759c3fe0291d8bac11640437bcf639d21b3b2e",
     "relay-r7.yml/local-relay/Existing actual wire and authority controls": "c29611f2846d7edf06765b403f4a264b9bb918dae88358dba64d84fde54caaaa",
-    "relay-r7.yml/local-relay/Same attached session for 61 actual minutes": "34d0b295f1c1b80b3a4f2ee2d885cebefec8f50dc78af473160873ca5995c0d3"
+    "relay-r7.yml/local-relay/Same attached session for 61 actual minutes": "34d0b295f1c1b80b3a4f2ee2d885cebefec8f50dc78af473160873ca5995c0d3",
+    "ci.yml/test-workers/Test with coverage": "495206362fed7c62c98b57c75020d4f9062261d46243eb464766ac4d8daa931a",
+    "ci.yml/test/Aggregate coverage": "26f2d491bc581045e1542235ebc11e153add39c2573ca853fe02a0174c799e2b"
   },
   "measurement_provenance": {
-    "ci.yml/test/Test with coverage": {
-      "previous_command": "bun scripts/ci/run-bun-test-with-diagnostics.ts --coverage --coverage-reporter=text --coverage-reporter=lcov",
-      "wrapped_command": "bun scripts/ci/run-bun-test-batches.ts",
+    "ci.yml/test-workers/Test with coverage": {
+      "previous_command": "bun scripts/ci/run-bun-test-batches.ts",
+      "wrapped_command": "bun scripts/ci/run-bun-test-batches.ts --worker=${{ matrix.worker }}",
       "coverage_pipeline": "2>&1 | tee test-batches-output.txt",
       "environment": {
         "E2E_BUNDLER": "esbuild"
       },
       "bundler_reason": "#1206: the same Linux ARM64 139-file prefix timed out in Bun.build and passed with esbuild; full hosted acceptance remains required.",
       "threshold_input": "test-output.txt contains one validated line-only union row",
-      "partition": "remote-new-client.test.ts alone; every other discovered file together; no retries",
+      "partition": "isolated target, daemon and other complete cohorts on separate hosted VMs; no retries",
       "bounds_ms": {
         "target": 300000,
         "rest": 1200000,
         "controller": 1320000
       },
-      "reason": "#1206: two sequential fresh processes with explicit target ownership and a manual case/source contract; original stall root cause remains unknown."
+      "reason": "#1626: active-progress runs exceeded the rest-worker budget; separate VMs preserve TCP isolation, complete source-bound evidence and unchanged worker budgets. Earlier stalls remain undiagnosed."
     }
   },
   "scope_action": {
@@ -172,6 +173,13 @@
         }
       },
       {
+        "uses": "actions/setup-node@v4",
+        "if": "needs.scope.result == 'success' && needs.scope.outputs.relay != 'false'",
+        "with": {
+          "node-version": "24"
+        }
+      },
+      {
         "uses": "oven-sh/setup-bun@v2",
         "if": "needs.scope.result == 'success' && needs.scope.outputs.relay != 'false'",
         "with": {
@@ -235,6 +243,174 @@
         "name": "Report scoped soak skip",
         "if": "needs.scope.result == 'success' && needs.scope.outputs.relay != 'false' && needs.scope.outputs.relay_soak == 'false'",
         "run": "echo \"61-minute soak scoped out for exact reviewed input transitions; short relay controls remain required.\" >> \"$GITHUB_STEP_SUMMARY\""
+      }
+    ]
+  },
+  "test_worker_job": {
+    "name": "Test worker ${{ matrix.worker }}",
+    "runs-on": "ubuntu-latest",
+    "needs": ["scope"],
+    "if": "${{ !cancelled() }}",
+    "timeout-minutes": "25",
+    "strategy": {
+      "fail-fast": "false",
+      "matrix": {
+        "worker": ["0", "1", "2"]
+      }
+    },
+    "steps": [
+      {
+        "name": "Fail unvalidated scope",
+        "if": "needs.scope.result != 'success'",
+        "run": "echo \"CI scope validation failed; runtime checks were not started.\" >&2\nexit 1\n"
+      },
+      {
+        "uses": "actions/checkout@v5",
+        "if": "needs.scope.result == 'success' && needs.scope.outputs.test != 'false'"
+      },
+      {
+        "uses": "actions/setup-node@v4",
+        "if": "needs.scope.result == 'success' && needs.scope.outputs.test != 'false'",
+        "with": {
+          "node-version": "24"
+        }
+      },
+      {
+        "uses": "oven-sh/setup-bun@v2",
+        "if": "needs.scope.result == 'success' && needs.scope.outputs.test != 'false'",
+        "with": {
+          "bun-version": "${{ env.BUN_VERSION }}"
+        }
+      },
+      {
+        "run": "bun install --frozen-lockfile",
+        "if": "needs.scope.result == 'success' && needs.scope.outputs.test != 'false'"
+      },
+      {
+        "name": "Test with coverage",
+        "if": "needs.scope.result == 'success' && needs.scope.outputs.test != 'false'",
+        "env": {
+          "E2E_BUNDLER": "esbuild"
+        },
+        "run": "set -o pipefail\nbun scripts/ci/run-bun-test-batches.ts --worker=${{ matrix.worker }} 2>&1 | tee test-batches-output.txt\n"
+      },
+      {
+        "name": "Upload worker evidence",
+        "if": "always() && needs.scope.result == 'success' && needs.scope.outputs.test != 'false'",
+        "uses": "actions/upload-artifact@v4",
+        "with": {
+          "name": "test-worker-${{ matrix.worker }}-${{ github.run_id }}-${{ github.run_attempt }}",
+          "path": "coverage/test-lanes/",
+          "if-no-files-found": "error",
+          "retention-days": "14"
+        }
+      },
+      {
+        "name": "Upload worker log",
+        "if": "always() && needs.scope.result == 'success' && needs.scope.outputs.test != 'false'",
+        "uses": "actions/upload-artifact@v4",
+        "with": {
+          "name": "test-worker-log-${{ matrix.worker }}-${{ github.run_id }}-${{ github.run_attempt }}",
+          "path": "test-batches-output.txt",
+          "if-no-files-found": "error",
+          "retention-days": "14"
+        }
+      },
+      {
+        "name": "Report scoped skip",
+        "if": "needs.scope.result == 'success' && needs.scope.outputs.test == 'false'",
+        "run": "echo \"test skipped; no relevant inputs changed.\" >> \"$GITHUB_STEP_SUMMARY\""
+      }
+    ]
+  },
+  "test_aggregate_job": {
+    "name": "Test",
+    "runs-on": "ubuntu-latest",
+    "needs": ["scope", "test-workers"],
+    "if": "${{ !cancelled() }}",
+    "timeout-minutes": "25",
+    "steps": [
+      {
+        "name": "Fail unvalidated scope",
+        "if": "needs.scope.result != 'success'",
+        "run": "echo \"CI scope validation failed; runtime checks were not started.\" >&2\nexit 1\n"
+      },
+      {
+        "name": "Fail incomplete test workers",
+        "if": "needs.scope.result == 'success' && needs.scope.outputs.test != 'false' && needs.test-workers.result != 'success'",
+        "run": "echo \"Every test worker must pass before coverage can be aggregated.\" >&2\nexit 1\n"
+      },
+      {
+        "uses": "actions/checkout@v5",
+        "if": "needs.scope.result == 'success' && needs.scope.outputs.test != 'false'"
+      },
+      {
+        "uses": "actions/setup-node@v4",
+        "if": "needs.scope.result == 'success' && needs.scope.outputs.test != 'false'",
+        "with": {
+          "node-version": "24"
+        }
+      },
+      {
+        "uses": "oven-sh/setup-bun@v2",
+        "if": "needs.scope.result == 'success' && needs.scope.outputs.test != 'false'",
+        "with": {
+          "bun-version": "${{ env.BUN_VERSION }}"
+        }
+      },
+      {
+        "run": "bun install --frozen-lockfile",
+        "if": "needs.scope.result == 'success' && needs.scope.outputs.test != 'false'"
+      },
+      {
+        "uses": "actions/download-artifact@v4",
+        "if": "needs.scope.result == 'success' && needs.scope.outputs.test != 'false'",
+        "with": {
+          "name": "test-worker-0-${{ github.run_id }}-${{ github.run_attempt }}",
+          "path": "coverage/test-workers/worker-0"
+        }
+      },
+      {
+        "uses": "actions/download-artifact@v4",
+        "if": "needs.scope.result == 'success' && needs.scope.outputs.test != 'false'",
+        "with": {
+          "name": "test-worker-1-${{ github.run_id }}-${{ github.run_attempt }}",
+          "path": "coverage/test-workers/worker-1"
+        }
+      },
+      {
+        "uses": "actions/download-artifact@v4",
+        "if": "needs.scope.result == 'success' && needs.scope.outputs.test != 'false'",
+        "with": {
+          "name": "test-worker-2-${{ github.run_id }}-${{ github.run_attempt }}",
+          "path": "coverage/test-workers/worker-2"
+        }
+      },
+      {
+        "name": "Aggregate coverage",
+        "if": "needs.scope.result == 'success' && needs.scope.outputs.test != 'false'",
+        "run": "set -o pipefail\nbun scripts/ci/run-bun-test-batches.ts --aggregate 2>&1 | tee test-batches-output.txt\n"
+      },
+      {
+        "name": "Check coverage threshold",
+        "if": "needs.scope.result == 'success' && needs.scope.outputs.test != 'false'",
+        "run": "# The \"All files\" row is pipe-delimited: File | % Funcs | % Lines | Uncovered.\n# Treat the stream as text: test-runner diagnostics may contain NUL/control bytes.\n# % Lines is the 3rd field. Strip ANSI colour codes first (bun colourises\n# on a TTY) and fail loudly if parsing yields a non-number \u2014 the previous\n# `awk '{print $NF}'` extracted the trailing \"|\", silently passing the gate.\nCOVERAGE=$(grep -a \"All files\" test-output.txt | head -1 \\\n  | sed 's/\\x1b\\[[0-9;]*m//g' | awk -F'|' '{gsub(/[[:space:]]/,\"\",$3); print $3}' | tr -d '%')\necho \"Line coverage: ${COVERAGE}%\"\nif ! echo \"$COVERAGE\" | grep -qE '^[0-9]+(\\.[0-9]+)?$'; then\n  echo \"Could not parse line coverage from bun output\"\n  exit 1\nfi\nif [ \"$(echo \"$COVERAGE < 60\" | bc -l)\" -eq 1 ]; then\n  echo \"Coverage ${COVERAGE}% is below 60% threshold\"\n  exit 1\nfi\n"
+      },
+      {
+        "name": "Upload test evidence",
+        "if": "always() && needs.scope.result == 'success' && needs.scope.outputs.test != 'false'",
+        "uses": "actions/upload-artifact@v4",
+        "with": {
+          "name": "test-evidence-${{ github.run_id }}-${{ github.run_attempt }}",
+          "path": "coverage/test-workers/\ncoverage/test-aggregate/\ntest-batches-output.txt\ntest-output.txt\n",
+          "if-no-files-found": "error",
+          "retention-days": "14"
+        }
+      },
+      {
+        "name": "Report scoped skip",
+        "if": "needs.scope.result == 'success' && needs.scope.outputs.test == 'false'",
+        "run": "echo \"test skipped; no relevant inputs changed.\" >> \"$GITHUB_STEP_SUMMARY\""
       }
     ]
   }

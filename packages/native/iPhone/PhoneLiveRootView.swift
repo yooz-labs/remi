@@ -2,72 +2,129 @@ import RemiKit
 import RemiUI
 import SwiftUI
 
+/// A sheet the shell presents over any destination.
+enum PhoneShellSheet: Identifiable {
+    case newSession(machineID: String?, repository: String?)
+    case pairing
+    case preferences
+    case machines
+    /// A relay notification question. One presentation with the others: two `.sheet`
+    /// modifiers on one host cannot both be up.
+    case relayNotification
+
+    var id: String {
+        switch self {
+        case .newSession: "newSession"
+        case .pairing: "pairing"
+        case .preferences: "preferences"
+        case .machines: "machines"
+        case .relayNotification: "relayNotification"
+        }
+    }
+}
+
 struct PhoneLiveRootView: View {
     let store: MachineStore
-    @AppStorage("selectedMachineID") private var selectedMachineID = ""
     @State private var knownQuestionIDs: Set<String> = []
     @State private var notificationBaselineEstablished = false
     @State private var questionFeedbackTrigger = 0
     @State private var answerFeedbackTrigger = 0
     @State private var notificationRouter = PhoneNotificationRouter.shared
-    @State private var notificationPath: [RemiNavigationDestination] = []
+    @State private var shell = PhoneShellState()
+    /// Above the compact/regular switch, so a rebuilt session screen gets its draft,
+    /// pushed conversation and reading position back. A reference type: scroll position
+    /// writes must not re-render this view.
+    @State private var sessionViewStates = RemiSessionViewStateHolder()
+    @State private var activeSheet: PhoneShellSheet?
+    @State private var composerFocusRequest = 0
     @State private var pairingAttemptID: UUID?
-    @State private var pendingResume: ResumeSessionKey?
+    @State private var projectMenu: PhoneProjectMenu?
     @State private var relayNotifications = NativeRelayNotifications.shared
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// The sidebar's visibility at regular width; the Mac column helpers remember the
+    /// visible layout while it is hidden.
+    @State private var columnLayout = RemiMacColumnLayout(visibility: .all, expandedVisibility: .all)
+
+    private var layoutMode: RemiLayoutMode {
+        RemiLayoutMode.resolve(horizontalSizeClass: horizontalSizeClass)
+    }
+
+    private var chrome: RemiShellChrome { RemiShellChrome.resolve(mode: layoutMode) }
+
+    private var columnVisibility: Binding<NavigationSplitViewVisibility> {
+        Binding(
+            get: { columnLayout.visibility },
+            set: { visibility in
+                let expanded = visibility == .detailOnly ? columnLayout.expandedVisibility : visibility
+                columnLayout = RemiMacColumnLayout(visibility: visibility, expandedVisibility: expanded)
+            }
+        )
+    }
 
     var body: some View {
-        NavigationStack(path: $notificationPath) {
-            HomeScreen(
-                questions: allQuestions,
-                sessions: allSessions,
-                machines: machineSummaries,
-                sessionMachines: store.machines,
-                recentRepositories: store.recentRepositoriesByMachine,
-                publicIdentity: store.publicIdentity,
-                selectedMachineID: $selectedMachineID,
-                errorMessage: store.latestOperationError ?? store.latestError?.message,
-                noticeMessage: store.latestOperationNotice ?? relayNotifications.notice ?? store.relayNotificationNotice,
-                transcriptForSession: transcript,
-                questionsForSession: questions,
-                viewsForSession: { store.sessionViewsBySession[$0] ?? [] },
-                viewsLoadedForSession: { store.sessionViewsBySession[$0] != nil },
-                onAnswer: answer,
-                onSubmit: submit,
-                onCancel: cancel,
-                onOpenSession: openSession,
-                onSend: sendChat,
-                onTerminateSession: store.terminateSession,
-                onResumeSession: resumeSession,
-                onCreateSession: createSession,
-                pairingAttempts: store.pairingAttempts,
-                onCancelPairing: store.cancelPairing,
-                onAddMachine: addMachine,
-                onRemoveMachine: removeMachine,
-                onRetryApproval: store.retryApproval,
-                onRetryConnection: store.retryConnection,
-                onSetConnectionPreference: { store.setConnectionPreference($1, for: $0) },
-                onEnableRelayNotifications: relayNotifications.enable,
-                enablingRelayNotifications: relayNotifications.enabling,
-                onDismissError: store.clearLatestError,
-                onDismissNotice: dismissNotice
-            )
-            .navigationDestination(for: RemiNavigationDestination.self) { destination in
-                notificationDestination(destination)
-            }
+        // Worked out once per pass and handed down: building them is the costly part of a
+        // store tick, and the drawer, the Inbox and the session all need them.
+        let sessions = allSessions
+        let machines = machineSummaries
+        return rootLayout(sessions: sessions, machines: machines)
+        // A row's long-press menu is drawn here, above the drawer and the detail pane, so it can
+        // open beside its row whichever column the row is in.
+        .environment(\.projectMenu, $projectMenu)
+        .overlay { PhoneProjectMenuOverlay(menu: $projectMenu, besideRow: chrome.usesSidebar) }
+        // The menu was built from the row as it was. When the drawer, the open session, the layout
+        // or the machine's connection changes, or its session is gone, it is out of date: close it.
+        .onChange(of: projectMenuValidity(sessions: sessions, machines: machines)) { _, valid in
+            if !valid { projectMenu = nil }
+        }
+        .onChange(of: shell.isDrawerOpen) { _, _ in projectMenu = nil }
+        .onChange(of: shell.destination) { _, _ in projectMenu = nil }
+        .onChange(of: layoutMode) { _, _ in projectMenu = nil }
+        .environment(\.remiComposerFocusRequest, composerFocusRequest)
+        .background { keyboardCommands }
+        .onChange(of: layoutMode, initial: true) { _, mode in
+            shell.layoutModeChanged(to: mode)
+        }
+        .sheet(item: $activeSheet) { sheet in
+            sheetContent(sheet)
         }
         .onChange(of: store.pairingAttempts) { _, _ in
             guard let id = pairingAttemptID, let result = store.pairingAttempt(id: id),
-                  case .admitted(let profileID) = result.phase else { return }
-            selectedMachineID = profileID
+                  case .admitted = result.phase else { return }
+            // A filter on another machine would hide the one just paired.
+            shell.clearFilter()
             pairingAttemptID = nil
+        }
+        .onChange(of: store.machines.map(\.id), initial: true) { _, ids in
+            shell.machinesChanged(ids: ids)
         }
         .onChange(of: store.persistableProfiles) { _, profiles in
             MachineConfigurationStore.shared.saveProfiles(profiles)
             relayNotifications.reconcileEndpoints()
         }
-        .sheet(isPresented: $relayNotifications.presentsRelayNotification, onDismiss: relayNotifications.closeNotification) {
-            RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification)
+        .onChange(of: relayNotifications.presentsRelayNotification, initial: true) { _, presents in
+            if presents {
+                activeSheet = .relayNotification
+            } else if case .relayNotification = activeSheet {
+                activeSheet = nil
+            }
+        }
+        .onChange(of: relayNotifications.notificationSessionNavigation, initial: true) { _, destination in
+            guard let destination else { return }
+            guard store.notificationSessionDestination == destination else {
+                relayNotifications.consumeNotificationSessionNavigation(destination); return
+            }
+            activeSheet = nil
+            shell.openFromNotification(route: PhoneSessionRoute(machineKey: destination.machineID,
+                sessionID: destination.sessionID), questionID: nil)
+            relayNotifications.consumeNotificationSessionNavigation(destination)
+            relayNotifications.closeNotification()
+        }
+        .onChange(of: activeSheet?.id) { old, new in
+            // However the panel went away (swipe, Close, another sheet), tell the store.
+            if old == PhoneShellSheet.relayNotification.id, new != old {
+                relayNotifications.closeNotification()
+            }
         }
         .task { routePendingNotification() }
         .sensoryFeedback(.warning, trigger: questionFeedbackTrigger) { _, _ in
@@ -91,6 +148,8 @@ struct PhoneLiveRootView: View {
                 Task {
                     await PhoneNotificationCoordinator.notify(
                         id: id,
+                        // The full session name: a notification shows no machine beside it,
+                        // so the machine prefix is what says where the session runs (#1647).
                         title: "\(question.sessionName) needs you",
                         body: question.text,
                         destination: destination
@@ -107,20 +166,320 @@ struct PhoneLiveRootView: View {
             routePendingNotification()
         }
         .onChange(of: store.resumedSessionDestination) { _, destination in
-            guard let destination,
-                  pendingResume == ResumeSessionKey(
-                    machineID: destination.machineID,
-                    sessionID: destination.requestedSessionID
-                  )
-            else { return }
-            pendingResume = nil
-            selectedMachineID = destination.machineID
-            notificationPath = [RemiNavigationDestination(
-                machineID: destination.machineID,
-                sessionID: destination.sessionID
-            )]
+            guard let destination else { return }
+            // Lands only while this resume is still pending: any navigation the person made
+            // since clears it (PhoneShellState), and then the landing must not move them.
+            shell.landResume(
+                ResumeSessionKey(machineID: destination.machineID, sessionID: destination.requestedSessionID),
+                at: PhoneSessionRoute(machineKey: destination.machineID, sessionID: destination.sessionID)
+            )
             store.consumeResumedSessionDestination(id: destination.id)
         }
+    }
+
+    /// Whether the open row menu still describes the list: its session is still there and, if it
+    /// offers actions that need the machine, the machine is still connected. A menu built before
+    /// either changed would offer actions (Resume, New session here) that no longer work.
+    private func projectMenuValidity(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> Bool {
+        guard let menu = projectMenu else { return true }
+        let stillListed = sessions.contains { "\($0.machineID)|\($0.id)" == menu.id }
+        let machineID = menu.id.split(separator: "|", maxSplits: 1).first.map(String.init)
+        let connected = machines.first { $0.id == machineID }?.reachability == .connected
+        // A menu for a machine that was never connected has no connected-only actions to go stale.
+        return stillListed && (connected || !menu.requiresConnection)
+    }
+
+    /// Compact: the drawer over the content. Regular: the same drawer content as a
+    /// persistent sidebar beside the same destination content.
+    @ViewBuilder
+    private func rootLayout(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
+        if chrome.usesSidebar {
+            NavigationSplitView(columnVisibility: columnVisibility) {
+                drawerContent(sessions: sessions, machines: machines)
+                    .phoneSidebarEnvironment(chrome)
+                    .toolbar(.hidden, for: .navigationBar)
+                    .background(RemiTheme.Color.sidebarTint)
+                    .navigationSplitViewColumnWidth(RemiTheme.Size.sidebarWidth)
+            } detail: {
+                // No `toolbar(removing: .sidebarToggle)`: the system's toggle is what shows once the
+                // sidebar is hidden (see `shellContent`), so removing it would leave a hidden
+                // sidebar with no control on a device without a keyboard.
+                shellContent(sessions: sessions, machines: machines)
+            }
+            .navigationSplitViewStyle(.balanced)
+        } else {
+            PhoneShell(state: $shell, chrome: chrome) {
+                shellContent(sessions: sessions, machines: machines)
+            } drawer: {
+                drawerContent(sessions: sessions, machines: machines)
+            }
+        }
+    }
+
+    /// Hardware-keyboard commands, in step with the Mac app: Command-N new session,
+    /// Option-Command-Up and Down previous and next session, Control-Command-S the sidebar,
+    /// Command-L the message field.
+    ///
+    /// These are invisible buttons, not scene-level `.commands`. Commands reach this view's
+    /// state only through focused values, and whether an iPhone-family app builds a main
+    /// menu from them on iOS 27 is not something this change could check. The cost of
+    /// buttons: the system's shortcut overlay does not list them, and each one must carry
+    /// its own guard (`keyboardGuard`) so it never acts behind a sheet or the open drawer.
+    private var keyboardCommands: some View {
+        Group {
+            Button("New session") { present(.newSession(machineID: shell.filteredMachineKey, repository: nil)) }
+                .keyboardShortcut("n", modifiers: .command)
+                .disabled(!keyboardGuard.allows(.newSession))
+            Button("Previous session") { stepSession(by: -1) }
+                .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+                .disabled(!keyboardGuard.allows(.previousSession))
+            Button("Next session") { stepSession(by: 1) }
+                .keyboardShortcut(.downArrow, modifiers: [.command, .option])
+                .disabled(!keyboardGuard.allows(.nextSession))
+            Button("Toggle sidebar") { toggleSidebar() }
+                .keyboardShortcut("s", modifiers: [.command, .control])
+                .disabled(!keyboardGuard.allows(.toggleSidebar))
+            Button("Focus message field") { composerFocusRequest += 1 }
+                .keyboardShortcut("l", modifiers: .command)
+                .disabled(!keyboardGuard.allows(.focusComposer))
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
+    }
+
+    private var keyboardGuard: RemiKeyboardCommandGuard {
+        RemiKeyboardCommandGuard(
+            sheetIsActive: activeSheet != nil,
+            drawerIsOpen: shell.isDrawerOpen,
+            hasSelectedSession: shell.selectedRoute != nil,
+            hasConnectedMachine: !availableSessionMachines.isEmpty
+        )
+    }
+
+    private func stepSession(by offset: Int) {
+        guard let next = RemiSessionNavigation.shifted(
+            from: shell.selectedSessionKey,
+            in: allSessions,
+            machineKey: shell.filteredMachineKey,
+            offset: offset
+        ) else { return }
+        selectSession(next)
+    }
+
+    private func toggleSidebar() {
+        if chrome.usesSidebar {
+            columnLayout = columnLayout.togglingNavigation()
+        } else {
+            shell.toggleDrawer()
+        }
+    }
+
+    private func shellContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
+        // Built here, before the NavigationStack. Doing it this way made the Inbox refresh
+        // live when a machine changes state; building it inside the stack's closure did
+        // not. The mechanism is not verified (#1592).
+        let destination = destinationContent(sessions: sessions, machines: machines)
+        return NavigationStack {
+            destination
+                .toolbar {
+                    if chrome.showsMenuButton {
+                        ToolbarItem(placement: .topBarLeading) { menuButton }
+                    } else if chrome.showsSidebarToggle(sidebarHidden: columnLayout.visibility == .detailOnly) {
+                        // Only while the sidebar shows. Once it is hidden the split view adds
+                        // its own toggle to this bar, and drawing ours as well gave two
+                        // sidebar icons side by side (iPad and iPhone Duo).
+                        ToolbarItem(placement: .topBarLeading) { sidebarToggleButton }
+                    }
+                }
+        }
+    }
+
+    /// The sidebar toggle for while the sidebar shows, drawn here because the sidebar's own bar
+    /// is hidden and the system adds no toggle then. It is driven by the same column layout the
+    /// keyboard shortcut uses. When the sidebar is hidden the system's toggle appears in this
+    /// bar by itself (checked on iPad and on iPhone Duo), so this one steps aside.
+    private var sidebarToggleButton: some View {
+        Button {
+            toggleSidebar()
+        } label: {
+            Label("Toggle sidebar", systemImage: "sidebar.leading")
+                .labelStyle(.iconOnly)
+                .frame(
+                    minWidth: RemiTheme.Size.minimumTapTarget,
+                    minHeight: RemiTheme.Size.minimumTapTarget
+                )
+                .contentShape(.rect)
+        }
+    }
+
+    // iOS 27 has `topBarPinnedTrailing` only; there is no pinned leading placement.
+    private var menuButton: some View {
+        Button {
+            shell.toggleDrawer()
+        } label: {
+            Label("Menu", systemImage: "line.3.horizontal")
+                .labelStyle(.iconOnly)
+                .frame(
+                    minWidth: RemiTheme.Size.minimumTapTarget,
+                    minHeight: RemiTheme.Size.minimumTapTarget
+                )
+                .contentShape(.rect)
+        }
+    }
+
+    @ViewBuilder
+    private func destinationContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
+        switch shell.destination {
+        case .inbox:
+            inboxContent(sessions: sessions, machines: machines)
+        case .session(let route):
+            sessionContent(route, sessions: sessions)
+        }
+    }
+
+    private func inboxContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
+        InboxScreen(
+            questions: allQuestions,
+            sessions: sessions,
+            machines: machines,
+            sessionMachines: store.machines,
+            errorMessage: store.latestOperationError ?? store.latestError?.message,
+            noticeMessage: store.latestOperationNotice ?? relayNotifications.notice ?? store.relayNotificationNotice,
+            onAnswer: { answer(machineID: $0, sessionId: $1, questionId: $2, value: $3) },
+            onSubmit: { submit(machineID: $0, sessionId: $1, questionId: $2, values: $3) },
+            onCancel: { cancel(machineID: $0, sessionId: $1, questionId: $2) },
+            onNewSession: { activeSheet = .newSession(machineID: nil, repository: nil) },
+            onOpenQuestionSession: openQuestionSession,
+            onPresentPairing: { activeSheet = .pairing },
+            onPresentPreferences: { activeSheet = .preferences },
+            onManageMachines: { activeSheet = .machines },
+            onDismissError: store.clearLatestError,
+            onDismissNotice: dismissNotice
+        )
+    }
+
+    private func drawerContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
+        PhoneDrawerView(
+            sessions: sessions,
+            machines: machines,
+            filter: shell.drawerFilter,
+            questionCount: store.machines.reduce(0) { $0 + $1.questions.count },
+            destination: shell.destination,
+            canCreateSession: !availableSessionMachines.isEmpty,
+            onClose: { shell.closeDrawer() },
+            onSelectAllMachines: { shell.clearFilter() },
+            onSelectMachine: { shell.selectMachineFilter($0) },
+            onManageMachines: { present(.machines) },
+            onResumeSession: resumeSession,
+            onNewSessionHere: { present(.newSession(machineID: $0, repository: $1)) },
+            onSelectInbox: { shell.select(.inbox) },
+            onSelectSession: selectSession,
+            onNewSession: { present(.newSession(machineID: shell.filteredMachineKey, repository: nil)) },
+            onAddMachine: { present(.pairing) },
+            onPreferences: { present(.preferences) }
+        )
+    }
+
+    private func present(_ sheet: PhoneShellSheet) {
+        shell.closeDrawer()
+        activeSheet = sheet
+    }
+
+    /// `machineKey` is the machine profile id (`MachineState.id`), the id the rest of this
+    /// view uses. Switching it to the authenticated machine identity id is a follow-up;
+    /// `store.machine(withIdentifier:)` already accepts either.
+    private func route(for session: RemiSessionSummary) -> PhoneSessionRoute {
+        PhoneSessionRoute(machineKey: session.machineID, sessionID: session.id)
+    }
+
+    private func selectSession(_ session: RemiSessionSummary) {
+        store.loadTranscript(machineID: session.machineID, sessionId: session.id)
+        shell.selectSession(machineKey: session.machineID, sessionID: session.id)
+    }
+
+    /// Navigates to the conversation of `target` and focuses its question. It never answers.
+    private func openQuestionSession(_ target: RemiInboxPresentation.OpenTarget, questionID: String) {
+        store.loadTranscript(machineID: target.machineID, sessionId: target.sessionID)
+        // Opening a subagent conversation of the session already on screen changes the
+        // route's conversation id on purpose (the screen must show that conversation); the
+        // same route is a no-op.
+        shell.openFromNotification(
+            route: PhoneSessionRoute(
+                machineKey: target.machineID,
+                sessionID: target.sessionID,
+                conversationID: target.conversationID
+            ),
+            questionID: questionID
+        )
+    }
+
+    @ViewBuilder
+    private func sheetContent(_ sheet: PhoneShellSheet) -> some View {
+        switch sheet {
+        case .newSession(let machineID, let repository):
+            PhoneNewSessionSheet(
+                machines: availableSessionMachines,
+                recentRepositories: store.recentRepositoriesByMachine,
+                machineLabels: RemiMachineStripPresentation.uniqueLabels(for: machineSummaries),
+                preferredMachineID: machineID,
+                preferredRepository: repository,
+                onCreate: createSession
+            )
+        case .pairing:
+            pairingScreen { activeSheet = nil }
+                .presentationSizing(.form)
+        case .preferences:
+            PhonePreferencesSheet(publicIdentity: store.publicIdentity)
+        case .relayNotification:
+            RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification) { destination in
+                relayNotifications.closeNotification()
+                activeSheet = nil
+                shell.openFromNotification(route: PhoneSessionRoute(machineKey: destination.machineID,
+                    sessionID: destination.sessionID), questionID: nil)
+            }
+                .presentationSizing(.form)
+        case .machines:
+            PhoneMachinesSheet(
+                machines: machineSummaries,
+                states: store.machines,
+                publicIdentity: store.publicIdentity,
+                enablingRelayNotifications: relayNotifications.enabling,
+                onRemove: removeMachine,
+                onRetryApproval: store.retryApproval,
+                onRetryConnection: store.retryConnection,
+                onSetConnectionPreference: { store.setConnectionPreference($1, for: $0) },
+                onEnableRelayNotifications: relayNotifications.enable,
+                onDone: { activeSheet = nil },
+                pairingContent: { close in pairingScreen(onDone: close) },
+                notificationStates: store.pairedNotificationStates,
+                onRevokeNotifications: relayNotifications.revoke
+            )
+            .presentationSizing(.form)
+        }
+    }
+
+    /// The pairing screen, shared by the root sheet and the one the Machines sheet hosts.
+    private func pairingScreen(onDone: @escaping () -> Void) -> some View {
+        NavigationStack {
+            PairingScreen(
+                publicIdentity: store.publicIdentity,
+                machineStates: store.machines,
+                pairingAttempts: store.pairingAttempts,
+                onCancelPairing: store.cancelPairing,
+                onAddMachine: addMachine
+            )
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done", action: onDone)
+                }
+            }
+        }
+    }
+
+    private var availableSessionMachines: [MachineState] {
+        store.machines.filter { $0.status == .connected }
     }
 
     private func dismissNotice() {
@@ -164,7 +523,8 @@ struct PhoneLiveRootView: View {
                     projectPath: session.projectPath,
                     lastActivity: session.lastActivity,
                     status: session.source == "daemon"
-                        ? (count > 0 ? .needsYou : session.status == "active" ? .working : .idle)
+                        ? (count > 0 ? .needsYou : RemiSessionStatus(activityStatus: machine.activityStatus(for: session))
+                            .whileMachine(connected: machine.status == .connected))
                         : .offline,
                     lastMessage: session.lastMessage,
                     openQuestionCount: count,
@@ -216,14 +576,13 @@ struct PhoneLiveRootView: View {
         })
     }
 
-    private func questions(_ sessionId: String) -> [RemiQuestionCardModel] {
-        let active = store.machines.flatMap { machine in
-            machine.questions.filter { $0.sessionId == sessionId }.map {
-                presentation($0, machine: machine)
-            }
+    private func questions(machineID: String, sessionID sessionId: String) -> [RemiQuestionCardModel] {
+        guard let owner = store.machine(withIdentifier: machineID) else { return [] }
+        let active = owner.questions.filter { $0.sessionId == sessionId }.map {
+            presentation($0, machine: owner)
         }
         let resolved: [RemiQuestionCardModel] = store.recentlyResolvedQuestions.compactMap { record in
-            guard record.message.sessionId == sessionId,
+            guard record.message.sessionId == sessionId, record.machineID == owner.id,
                   let machine = store.machine(withIdentifier: record.machineID)
             else { return nil }
             return presentation(
@@ -314,8 +673,8 @@ struct PhoneLiveRootView: View {
         }
     }
 
-    private func transcript(_ sessionId: String) -> [RemiTranscriptEntry] {
-        (store.transcriptsBySession[sessionId] ?? []).compactMap { message in
+    private func transcript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
+        (store.transcriptsBySession[store.sessionKey(machineID: machineID, sessionID: sessionID)] ?? []).compactMap { message in
             let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if !content.isEmpty {
                 return message.role == "user"
@@ -334,27 +693,30 @@ struct PhoneLiveRootView: View {
         }
     }
 
-    private func answer(sessionId: String, questionId: String, value: String) {
+    private func answer(machineID: String, sessionId: String, questionId: String, value: String) {
         answerFeedbackTrigger += 1
         store.answer(
+            machineID: machineID,
             sessionId: sessionId,
             questionId: questionId,
             answer: value,
-            claudeSessionId: rawQuestion(questionId)?.claudeSessionId
+            claudeSessionId: rawQuestion(machineID: machineID, questionId)?.claudeSessionId
         )
     }
 
     private func submit(
+        machineID: String,
         sessionId: String,
         questionId: String,
         values: [RemiQuestionStepSelection]
     ) {
         answerFeedbackTrigger += 1
         store.answer(
+            machineID: machineID,
             sessionId: sessionId,
             questionId: questionId,
             answer: "",
-            claudeSessionId: rawQuestion(questionId)?.claudeSessionId,
+            claudeSessionId: rawQuestion(machineID: machineID, questionId)?.claudeSessionId,
             selections: values.compactMap { value in
                 guard let questionIndex = Int(value.stepID) else { return nil }
                 return AnswerSelection(
@@ -366,21 +728,22 @@ struct PhoneLiveRootView: View {
         )
     }
 
-    private func cancel(sessionId: String, questionId: String) {
+    private func cancel(machineID: String, sessionId: String, questionId: String) {
         answerFeedbackTrigger += 1
         store.answer(
+            machineID: machineID,
             sessionId: sessionId,
             questionId: questionId,
             answer: "",
-            claudeSessionId: rawQuestion(questionId)?.claudeSessionId,
+            claudeSessionId: rawQuestion(machineID: machineID, questionId)?.claudeSessionId,
             cancel: true
         )
     }
 
-    private func sendChat(sessionId: String, content: String) async -> Bool {
-        let binding = store.machines.lazy.flatMap(\.sessions)
+    private func sendChat(machineID: String, sessionId: String, content: String) async -> Bool {
+        let binding = store.machine(withIdentifier: machineID)?.sessions
             .first { $0.sessionId == sessionId }?.claudeSessionId
-        return await store.sendChat(sessionId: sessionId, content: content, claudeSessionId: binding)
+        return await store.sendChat(machineID: machineID, sessionId: sessionId, content: content, claudeSessionId: binding)
     }
 
     private func addMachine(_ request: AddMachineRequest) -> UUID? {
@@ -390,6 +753,8 @@ struct PhoneLiveRootView: View {
             pairingAttemptID = id
             return id
         case .endpoint(let endpoint):
+            // Same reason as a paired machine: do not let a filter hide the new one.
+            shell.clearFilter()
             relayNotifications.machineWillChange(endpoint)
             store.addMachine(endpoint)
             MachineConfigurationStore.shared.saveProfiles(store.persistableProfiles)
@@ -420,19 +785,14 @@ struct PhoneLiveRootView: View {
         )
     }
 
-    private func openSession(_ sessionID: String) {
-        pendingResume = nil
-        store.loadTranscript(sessionId: sessionID)
-    }
-
     private func resumeSession(machineID: String, sessionID: String) {
         guard let machine = store.machine(withIdentifier: machineID) else { return }
-        pendingResume = ResumeSessionKey(machineID: machine.id, sessionID: sessionID)
+        shell.beginResume(ResumeSessionKey(machineID: machine.id, sessionID: sessionID))
         store.resumeSession(on: machine.endpoint, sessionId: sessionID)
     }
 
-    private func rawQuestion(_ id: String) -> QuestionMessage? {
-        store.machines.lazy.flatMap(\.questions).first { $0.question.id == id }
+    private func rawQuestion(machineID: String, _ id: String) -> QuestionMessage? {
+        store.machine(withIdentifier: machineID)?.questions.first { $0.question.id == id }
     }
 
     private func destination(forQuestionIdentity id: String) -> RemiNavigationDestination? {
@@ -457,42 +817,103 @@ struct PhoneLiveRootView: View {
 
     private func routePendingNotification() {
         guard let destination = notificationRouter.destination else { return }
-        pendingResume = nil
-        selectedMachineID = destination.machineID
-        notificationPath = [destination]
+        // A sheet would hide the session this notification opens.
+        activeSheet = nil
+        shell.openFromNotification(
+            route: PhoneSessionRoute(
+                machineKey: destination.machineID,
+                sessionID: destination.sessionID,
+                conversationID: destination.agentID
+            ),
+            questionID: destination.questionID
+        )
         notificationRouter.destination = nil
     }
 
     @ViewBuilder
-    private func notificationDestination(_ destination: RemiNavigationDestination) -> some View {
-        if let session = allSessions.first(where: {
-            $0.id == destination.sessionID && $0.machineID == destination.machineID
-        }) {
-            SessionScreen(
-                session: session,
-                transcript: transcript(session.id),
-                questions: questions(session.id),
-                views: store.sessionViewsBySession[session.id] ?? [],
-                viewsLoaded: store.sessionViewsBySession[session.id] != nil,
-                initialConversationID: destination.agentID,
-                initialQuestionID: destination.questionID,
-                transcriptForView: transcript,
-                onSelectView: store.loadTranscript,
-                onAnswer: { answer(sessionId: session.id, questionId: $0, value: $1) },
-                onSubmit: { submit(sessionId: session.id, questionId: $0, values: $1) },
-                onCancel: { cancel(sessionId: session.id, questionId: $0) },
-                onSend: { await sendChat(sessionId: session.id, content: $0) },
-                onTerminate: { store.terminateSession(sessionId: session.id) }
-            )
-            .onAppear {
-                store.loadTranscript(sessionId: destination.agentID ?? session.id)
-            }
+    private func sessionContent(_ route: PhoneSessionRoute, sessions: [RemiSessionSummary]) -> some View {
+        if let machine = store.machine(withIdentifier: route.machineKey),
+           let session = sessions.first(where: { $0.machineID == machine.id && $0.id == route.sessionID }) {
+            sessionScreen(session, route: route)
+        } else if store.machine(withIdentifier: route.machineKey) == nil {
+            // The machine was removed: nothing can bring this session back, so leave at
+            // once. A known machine whose session is briefly missing keeps the grace period.
+            Color.clear.onAppear { shell.sessionVanished(route) }
         } else {
-            ContentUnavailableView(
-                "Conversation unavailable",
-                systemImage: "bubble.left.and.bubble.right",
-                description: Text("The session may have ended or the machine may be offline.")
-            )
+            reconnectingPlaceholder(route)
+        }
+    }
+
+    private func sessionScreen(_ session: RemiSessionSummary, route: PhoneSessionRoute) -> some View {
+        let focus = shell.focusQuestionID(for: route)
+        let viewsKey = store.sessionKey(machineID: session.machineID, sessionID: session.id)
+        return SessionScreen(
+            session: session,
+            transcript: transcript(machineID: session.machineID, sessionID: session.id),
+            questions: questions(machineID: session.machineID, sessionID: session.id),
+            views: store.sessionViewsBySession[viewsKey] ?? [],
+            viewsLoaded: store.sessionViewsBySession[viewsKey] != nil,
+            isLoadingTranscript: { store.isLoadingTranscript(machineID: session.machineID, sessionID: $0) },
+            initialConversationID: route.conversationID,
+            initialQuestionID: focus,
+            transcriptForView: { transcript(machineID: session.machineID, sessionID: $0) },
+            onSelectView: { store.loadTranscript(machineID: session.machineID, sessionId: $0) },
+            onAnswer: { answer(machineID: session.machineID, sessionId: session.id, questionId: $0, value: $1) },
+            onSubmit: { submit(machineID: session.machineID, sessionId: session.id, questionId: $0, values: $1) },
+            onCancel: { cancel(machineID: session.machineID, sessionId: session.id, questionId: $0) },
+            onSend: { await sendChat(machineID: session.machineID, sessionId: session.id, content: $0) },
+            onTerminate: { store.terminateSession(machineID: session.machineID, sessionId: session.id) },
+            onClose: { shell.select(.inbox) },
+            focusQuestionRequest: focus,
+            restoredState: sessionViewStates.state(for: session.key),
+            onViewStateChange: { state in sessionViewStates.update(session.key) { $0 = state } },
+            panes: panes(for: session),
+            initialPane: route.pane
+        )
+        .id(route)
+        .task(id: store.transcriptRouteGeneration(machineID: session.machineID, sessionID: route.conversationID ?? session.id)) {
+            store.loadTranscript(machineID: session.machineID, sessionId: route.conversationID ?? session.id)
+        }
+        .onChange(of: shell.pendingFocus, initial: true) { _, _ in
+            guard shell.focusQuestionID(for: route) != nil else { return }
+            // Consume in a later transaction so SessionScreen's own onChange sees the
+            // request first.
+            Task { @MainActor in _ = shell.consumeFocus(for: route) }
+        }
+    }
+
+    /// The terminal and files panes this session's machine can serve, from its `hello_ack` (#1639).
+    private func panes(for session: RemiSessionSummary) -> SessionPanes {
+        let machine = store.machine(withIdentifier: session.machineID)
+        let machineID = session.machineID
+        let sessionID = session.id
+        return SessionPanes(
+            availability: RemiPaneAvailability(
+                ack: machine?.helloAck,
+                isConnected: machine?.status == .connected,
+                transportBlock: machine.flatMap { PaneTransportPolicy.blockReason(for: $0.endpoint) }),
+            terminal: store.terminalView(machineID: machineID, sessionID: sessionID),
+            download: store.fileDownload(machineID: machineID, sessionID: sessionID),
+            openTerminal: { store.openTerminal(machineID: machineID, sessionID: sessionID) },
+            leaveTerminal: { store.leaveTerminal(machineID: machineID, sessionID: sessionID) },
+            tick: { store.tickPanes() },
+            beginDownload: { store.beginFileDownload(machineID: machineID, sessionID: sessionID, path: $0) },
+            cancelDownload: { store.cancelFileDownload(machineID: machineID, sessionID: sessionID) },
+            discardDownload: { store.discardFileDownload(machineID: machineID, sessionID: sessionID) })
+    }
+
+    private func reconnectingPlaceholder(_ route: PhoneSessionRoute) -> some View {
+        VStack(spacing: RemiTheme.Spacing.s) {
+            ProgressView()
+            Text("Reconnecting")
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+        .task(id: route) {
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+            shell.sessionVanished(route)
         }
     }
 

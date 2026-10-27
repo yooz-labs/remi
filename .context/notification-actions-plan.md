@@ -1,0 +1,9 @@
+# Concise verified notification actions (#1681)
+
+The owner approved short informative notification previews and options, with Review request whenever a summary cannot safely support an allow action. The reviewed #1676 preview/fan-out fix is included as a dependency here. Keep full question content and structured selections in the app.
+
+For a completely represented signed binary permission with exact Yes/No and no option descriptions, present deterministic Allow once/Deny titles bound to the original values and a new immutable category domain. Keep Deny first. Other fully represented actions retain their complete signed titles only when each fits a 24-character action budget; longer, protected or unsupported shapes publish one Review request action with the OS foreground option. Review has no answer value, never constructs a native-answer proof, and only opens the original verified capsule/session in the app. No generated summary grants authority over unseen detail.
+
+The NSE publishes either the verified answer category or the verified review category, using the existing shared publication lease and independent original-carrier rechecks. Mac and iPhone delegates route the exact review identifier to the existing default-open flow. A malformed or stale capsule fails verification there. Body/title/category still need exact verification for presentation and answering. Do not weaken native ledger, current-context or replay checks.
+
+Verify original signed vectors, deterministic title/value binding, long/complex/protected Review publication policy, foreground action flags, untrusted/stale rejection, full in-app choices, and concise secure previews with real stores/crypto. Signed app/NSE/APNs delivery, physical device and Watch acceptance remain owner gates; local OS category controls and HTTP receipts do not prove them.

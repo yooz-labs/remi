@@ -67,7 +67,8 @@ final class PhoneNotificationDelegate: NSObject, UIApplicationDelegate, UNUserNo
         didReceive response: UNNotificationResponse
     ) async {
         if RemiPushStore.isSecureNotification(content: response.notification.request.content, identifier: response.actionIdentifier) {
-            if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+            if response.actionIdentifier == UNNotificationDefaultActionIdentifier ||
+                RemiPushStore.isForegroundNotificationAction(response.actionIdentifier) {
                 let carrier = NativeRelayNotifications.carrier(from: response.notification.request.content.userInfo)
                 await NativeRelayNotifications.shared.openDefaultTap(carrier: carrier)
             } else if response.actionIdentifier != UNNotificationDismissActionIdentifier {
@@ -98,6 +99,14 @@ private final class PhoneBackgroundFetchCompletion {
 }
 
 enum PhoneNotificationCoordinator {
+    /// Hands the sounds setting to the notification service extension, which cannot read the
+    /// app's own defaults. Called at launch, so a setting made before the extension read it still
+    /// reaches it.
+    static func shareSoundsPreference() {
+        RemiPushPresentation.shareSoundsPreference(
+            soundsEnabled, with: UserDefaults(suiteName: RemiPushPresentation.sharedDefaultsSuite))
+    }
+
     static func requestAuthorization() async -> NotificationAuthorizationState {
         guard notificationsEnabled else { return await authorizationState() }
         _ = try? await UNUserNotificationCenter.current()
@@ -131,9 +140,8 @@ enum PhoneNotificationCoordinator {
         content.title = title
         content.body = summarizedBody
         content.userInfo = destinationUserInfo(destination)
-        if soundsEnabled {
-            content.sound = .default
-        }
+        RemiPushPresentation.apply(
+            .question, sessionID: destination.sessionID, sound: soundsEnabled, to: content)
         let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
         try? await UNUserNotificationCenter.current().add(request)
     }

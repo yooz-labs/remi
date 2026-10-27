@@ -36,7 +36,7 @@ The Mac track uses RemiUI too. Publish components early and keep their APIs smal
 - **Done when** every component has previews in light and dark mode and at the largest Dynamic Type size, and the owner has reviewed screenshots in the PR.
 
 **M1b: the iPhone screens, with preview data only.**
-- [ ] **Screens:** home (sessions by machine, cards on top), the session, pairing (the steps to run on the machine), empty and first-run states, built from the M1a components.
+- [ ] **Screens:** the Inbox (cards that need the person) with sessions in the drawer, the session, pairing (the steps to run on the machine), empty and first-run states, built from the M1a components.
 - **Done when** every screen has previews in light and dark mode and at the largest Dynamic Type size, and the owner has reviewed screenshots in the PR.
 
 **M2: live, on RemiKit.**

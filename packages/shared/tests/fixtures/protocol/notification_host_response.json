@@ -1,0 +1,10 @@
+{
+  "type": "notification_host_response",
+  "id": "a6c0b4c8-3bb4-4412-83c4-d61cf386bb16",
+  "timestamp": "2026-10-27T00:08:27.252Z",
+  "requestId": "fixture-request-id",
+  "success": true,
+  "state": "registration_required",
+  "relayUrl": "wss://relay.example",
+  "expiresAt": null
+}

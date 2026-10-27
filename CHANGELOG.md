@@ -11,6 +11,17 @@ All notable changes to Remi are documented here.
 - Card Cancel checks the exact prompt again at the queued terminal write. A stale or formerly held card clears without sending Esc into a running agent. Confirmed owning-turn completion also clears a render-owned card that the permission gate does not track (#1570). Ambiguous status updates alone still do not dismiss questions.
 - CI records bounded owned-process wait metadata and an independent logging-stage channel. Linux Bun 1.3.11 directory cleanup is handled without assuming a Promise return. These diagnostics do not establish the cause of the intermittent full-suite stall (#1206).
 
+## [0.8.2] - 2026-10-27
+
+- Codex asynchronous questions now become readable question cards and Question/Answer history. Replies retain the original question identity, recheck authority at send time, and stop automatic retry after uncertain delivery. Following a thread selected with Codex's internal `/resume` remains deferred (#1687, #1691).
+- Native app source consumes live session activity updates and reloads selected Codex history after authenticated reconnect. Pending questions take precedence over activity labels; disconnected routes clear stale activity (#1675).
+- Paired native apps can register a notification-only connection after notification permission, independently of the foreground session connection. Authenticated use renews registration; after 30 days inactive the app offers Continue or Revoke. Existing explicit `push_lease_hours` settings remain effective (#1678–#1680).
+- Registered devices remain push recipients while attached. Notification previews are short; complete short binary requests can show Deny and Allow once, while longer or complex requests open Review request in the app. Summaries do not authorize approval of hidden details (#1676, #1680).
+- The hub can forward secure question pushes from its current local session daemons without copying the provider credential into their arguments. Push still needs the deployment credential and compatible app registration. Publishing this CLI does not update an already-running daemon or complete physical iPhone/Watch delivery acceptance (#1679, #1681).
+- Linux ARM64 release binaries are now built and smoke-tested on a native ARM64 runner. All three platform binaries must report the exact source version before publication; release-workflow PRs exercise these builds without publishing (#1694).
+- Terminal screen capture, bounded storage and ownership checks are included for the integrated terminal work. Remote terminal service and encrypted relay qualification remain separate work; this release does not enable an unfinished service (#1595, #1655, #1657).
+- Native app source changes are distributed through their separate app build. This daemon release does not sign or upload the app, deploy a Worker, or establish the remaining device acceptance gates.
+
 ## [0.8.0] - 2026-10-20
 
 ### Upgrade for the native TestFlight app

@@ -95,11 +95,17 @@ public enum RemiInboundEvent: Sendable, Equatable {
     case resumeSessionResponse(ResumeSessionResponseMessage)
     case killSessionResponse(KillSessionResponseMessage)
     case sessionUpdate(SessionUpdateMessage)
+    case remiStatus(RemiStatusMessage)
     case error(ErrorMessage)
     case relayReady
     case answerResult(AnswerResultMessage)
     case pushRegistration(RelayPushResponse)
     case relayStreamEnded(clean: Bool)
+    /// A strictly decoded `session_terminal_*` answer (ADR 0047). Nothing sends the family until a
+    /// hub advertises `terminal_view`, so none arrives today.
+    case terminalView(TerminalViewMessage)
+    /// A strictly decoded `file_fetch_*` answer (ADR 0045), under the same condition as `terminalView`.
+    case fileFetch(FileFetchMessage)
     case unsupported(type: String)
 }
 
@@ -159,6 +165,7 @@ public actor RemiConnection {
     private var pendingAuthentication: PendingAuthentication?
     /// The key that authenticated this direct connection. Relay authority comes from the pin.
     private var authenticatedServerPublicKey: Data?
+    private let notificationAuthorityEpoch = RelayRegistrationEpoch()
     private var applicationAdmitted = false
     private var relayHelloBuffer = RelayHelloBuffer()
     private var initialDirectHelloPending = false
@@ -216,6 +223,19 @@ public actor RemiConnection {
     func configureOneShot() throws {
         guard !shouldRun else { throw RelayFailure.state }
         singleAttempt = true; applicationHello = false
+    }
+
+    /// The live direct handshake supplies bootstrap authority, never response fields.
+    func notificationHostKey() throws -> Data {
+        guard configuration.relayPin == nil, applicationAdmitted,
+              case .connected = state, let key = authenticatedServerPublicKey else { throw RelayFailure.closed }
+        return key
+    }
+
+    func notificationHostPermit() throws -> (Data, @Sendable () throws -> Void) {
+        let key = try notificationHostKey()
+        let epoch = notificationAuthorityEpoch, captured = epoch.capture()
+        return (key, { guard epoch.matches(captured) else { throw RelayFailure.closed } })
     }
     #if DEBUG
     nonisolated var ownedExpectedMachineID: String? { expectedMachineID }
@@ -320,10 +340,28 @@ public actor RemiConnection {
         runTask = Task { await run() }
     }
 
+    /// Sends a frame already encoded and validated by its strict codec (`encodedFrame()` of the
+    /// terminal-view and file-fetch families), through the same path as `send`.
+    /// Refused with `PaneTransportBlocked` unless this connection's route may carry the family
+    /// (`PaneTransportPolicy.current`), so no caller can bypass the policy.
+    public func sendEncodedFrame(_ frame: String) async throws {
+        try await sendEncodedFrame(frame, policy: .current)
+    }
+
+    func sendEncodedFrame(_ frame: String, policy: PaneTransportPolicy) async throws {
+        if let reason = policy.reason(viaRelay: configuration.relayPin != nil) {
+            throw PaneTransportBlocked(reason: reason)
+        }
+        try await deliver(Data(frame.utf8), validateBeforeSend: nil)
+    }
+
     public func send<T: Encodable & Sendable>(_ message: T,
         validateBeforeSend: (@Sendable () throws -> Void)? = nil) async throws {
+        try await deliver(try encoder.encode(message), validateBeforeSend: validateBeforeSend)
+    }
+
+    private func deliver(_ data: Data, validateBeforeSend: (@Sendable () throws -> Void)?) async throws {
         guard let socket else { throw URLError(.notConnectedToInternet) }
-        let data = try encoder.encode(message)
         if configuration.relayPin != nil {
             guard relayChannel != nil, !relayClosing, pendingSends < 64 else { throw RelayFailure.closed }
             guard !data.isEmpty, data.count <= RelayCrypto.maxPlaintext else { throw RelayFailure.oversize }
@@ -380,12 +418,21 @@ public actor RemiConnection {
                 if !shouldRun || Task.isCancelled { return }
                 if error is CancellationError && directDeadlineFailure == nil { return }
                 let directFailure = directDeadlineFailure
+                // closeSocket() below resets this; a socket lost after admission is not a login failure.
+                let wasAdmitted = applicationAdmitted
                 let authenticationStarted = directOpeningCompleted || pendingAuthentication != nil || authenticatedServerPublicKey != nil
                 if configuration.relayPin != nil {
                     if let channel = relayChannel { eventHandler(.relayStreamEnded(clean: channel.peerEnded && !channel.failed)) }
                     socket?.cancel(with: .init(rawValue: 4400) ?? .policyViolation, reason: Data("closed".utf8))
                 }
                 closeSocket()
+                if configuration.relayPin == nil, let reason = Self.directPolicyRejectionDescription(error) {
+                    // A local OS-policy refusal is terminal, not evidence that
+                    // another transport may bypass the selected layer (#1583).
+                    shouldRun = false
+                    transition(to: .rejected(reason: reason))
+                    return
+                }
                 if directFailure == .authentication || (configuration.relayPin == nil && configuration.directRetryPolicy != .runtime && authenticationStarted) {
                     shouldRun = false
                     transition(to: .rejected(reason: "The machine did not finish authentication. Check its terminal and retry this layer."))
@@ -406,7 +453,9 @@ public actor RemiConnection {
                     transition(to: .rejected(reason: "The relay connection closed. Pair again if this machine has not been saved."))
                     return
                 }
-                if configuration.relayPin == nil && directFailure != .unreachable && !Self.isDirectReachabilityFailure(error) {
+                if configuration.relayPin == nil && !Self.shouldRetryDirectFailure(
+                    error: error, deadlineUnreachable: directFailure == .unreachable, wasAdmitted: wasAdmitted
+                ) {
                     shouldRun = false
                     transition(to: .rejected(
                         reason: "The direct connection failed authentication or protocol validation."
@@ -622,6 +671,8 @@ public actor RemiConnection {
             ))
         case "session_update":
             eventHandler(.sessionUpdate(try decoder.decode(SessionUpdateMessage.self, from: data)))
+        case "remi_status":
+            eventHandler(.remiStatus(try decoder.decode(RemiStatusMessage.self, from: data)))
         case "error":
             let message = try decoder.decode(ErrorMessage.self, from: data)
             // Direct Hello also supports auth-disabled hubs. An authenticated hub
@@ -641,6 +692,12 @@ public actor RemiConnection {
                 finishRPC(result.requestId, result: .success(.answer(result)))
             }
             eventHandler(.answerResult(result))
+        case "notification_host_response":
+            guard configuration.relayPin == nil, applicationAdmitted else { throw RelayFailure.malformed }
+            let result = try NotificationHostResponse.decode(data)
+            if let pending = rpcWaiters[result.requestId], case .notificationHost = pending.expected {
+                finishRPC(result.requestId, result: .success(.notificationHost(result)))
+            }
         case "secure_push_register_response", "secure_push_unregister_response":
             let result = try RelayPushResponse.decode(data)
             if let pending = rpcWaiters[result.requestId], case .push(let type, let version) = pending.expected,
@@ -648,6 +705,21 @@ public actor RemiConnection {
                 finishRPC(result.requestId, result: .success(.push(result)))
             }
             eventHandler(.pushRegistration(result))
+        case "session_terminal_opened", "session_terminal_snapshot", "session_terminal_unchanged",
+            "session_terminal_closed", "session_terminal_refused":
+            // The strict codec decides; a frame it refuses is as good as unknown.
+            if let message = try? TerminalViewMessage.decode(data) {
+                eventHandler(.terminalView(message))
+            } else {
+                eventHandler(.unsupported(type: envelope.type))
+            }
+        case "file_fetch_accepted", "file_fetch_chunk", "file_fetch_result", "file_fetch_cancel_result",
+            "file_fetch_refused":
+            if let message = try? FileFetchMessage.decode(data) {
+                eventHandler(.fileFetch(message))
+            } else {
+                eventHandler(.unsupported(type: envelope.type))
+            }
         default:
             eventHandler(.unsupported(type: envelope.type))
         }
@@ -666,6 +738,7 @@ public actor RemiConnection {
     }
 
     private func closeSocket() {
+        notificationAuthorityEpoch.replace()
         ready = false
         let waiting = readyWaiters; readyWaiters.removeAll()
         for waiter in waiting.values { waiter.resume(throwing: RelayFailure.closed) }
@@ -881,8 +954,35 @@ public actor RemiConnection {
         min(pow(2, Double(max(0, attempt - 1))), 30)
     }
 
+    /// Whether a failed direct socket is retried instead of rejected.
+    ///
+    /// A socket that dies after the machine was admitted (a graceful hub close, a restart) is a
+    /// transport loss, whatever transport error the system reports for it, so the connection
+    /// retries with backoff (#1599). Protocol violations still fail closed after admission, and a
+    /// failure before admission is judged by its error: only reachability failures retry, so a
+    /// changed machine identity or a failed handshake still fails closed. Every retry runs the
+    /// full pinned handshake again before the machine is admitted.
+    static func shouldRetryDirectFailure(error: any Error, deadlineUnreachable: Bool, wasAdmitted: Bool) -> Bool {
+        deadlineUnreachable || isDirectReachabilityFailure(error)
+            || (wasAdmitted && !isLocalProtocolViolation(error))
+    }
+
+    /// Errors this client raises itself when the peer breaks the protocol, as opposed to the
+    /// system reporting that the transport went away.
+    static func isLocalProtocolViolation(_ error: any Error) -> Bool {
+        error is RemiConnectionError || error is AuthenticationHandshakeError
+            || error is RelayFailure || error is DecodingError
+    }
+
     /// Only network reachability failures may activate a relay fallback. TLS trust,
     /// authentication, decoding, and protocol failures deliberately fail closed.
+    static func directPolicyRejectionDescription(_ error: any Error) -> String? {
+        let error = error as NSError
+        guard error.domain == NSURLErrorDomain,
+              error.code == URLError.appTransportSecurityRequiresSecureConnection.rawValue else { return nil }
+        return "The OS blocked this direct address (ATS -1022). Use a private LAN or Tailscale address, or an enrolled relay."
+    }
+
     static func isDirectReachabilityFailure(_ error: any Error) -> Bool {
         if let error = error as? URLError {
             return [

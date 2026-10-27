@@ -12,6 +12,7 @@
  * it ran, its final answer, why it failed).
  */
 
+import { type AsyncQuestionSource, parseAsyncQuestionSource } from './async-question-codec.ts';
 import { UUID_PATTERN } from './codex-args.ts';
 
 /**
@@ -207,7 +208,7 @@ export type ThreadItemInfo =
       /** The `text` parts of `content`, joined by a newline; images, mentions and skills are not text. */
       text: string;
     }
-  | { type: 'agentMessage'; id: string; text: string }
+  | { type: 'agentMessage'; id: string; text: string; asyncQuestion?: AsyncQuestionSource }
   | {
       type: 'commandExecution';
       id: string;
@@ -238,8 +239,16 @@ export function parseThreadItem(v: unknown): ThreadItemInfo | null {
         .join('\n');
       return { type: 'userMessage', id, text };
     }
-    case 'agentMessage':
-      return typeof v['text'] === 'string' ? { type: 'agentMessage', id, text: v['text'] } : null;
+    case 'agentMessage': {
+      if (typeof v['text'] !== 'string') return null;
+      const asyncQuestion = parseAsyncQuestionSource(v);
+      return {
+        type: 'agentMessage',
+        id,
+        text: v['text'],
+        ...(asyncQuestion ? { asyncQuestion } : {}),
+      };
+    }
     case 'commandExecution': {
       if (typeof v['command'] !== 'string') return null;
       const exitCode = v['exitCode'];

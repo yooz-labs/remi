@@ -34,11 +34,11 @@ public struct RemiPendingQuestionItem: Identifiable, Sendable, Equatable {
 public enum RemiPendingQuestionPresentation {
     public static func groups(
         machines: [MachineState],
-        viewsBySession: [String: [SessionViewMeta]] = [:]
+        viewsBySession: [MachineSessionKey: [SessionViewMeta]] = [:]
     ) -> [RemiPendingQuestionGroup] {
         machines.compactMap { machine in
             let items = machine.questions.map { message in
-                item(machine: machine, message: message, views: viewsBySession[message.sessionId] ?? [])
+                item(machine: machine, message: message, views: viewsBySession[MachineSessionKey(machineID: machine.id, sessionID: message.sessionId)] ?? [])
             }
             .sorted(by: itemOrder)
             guard !items.isEmpty else { return nil }

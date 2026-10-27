@@ -1,8 +1,8 @@
 /**
  * Runs the REAL signaling Worker and the REAL ConnectionRoom Durable Object
  * (workerd, SQLite-backed storage, real hibernation) inside the test process,
- * through the Miniflare library. No Cloudflare account, login or network is
- * involved, and nothing is mocked: a test talks to the Worker with real
+ * through the Miniflare library. No Cloudflare account or login is required,
+ * and nothing is mocked: a test talks to the Worker with real
  * WebSocket clients.
  *
  * What differs from production, so a test reader does not over-read a pass:
@@ -12,6 +12,8 @@
  * - migrations in wrangler.toml are not exercised (the classes are declared
  *   directly), and the production hibernation threshold and alarm precision
  *   are unverified here.
+ * - pinned push audiences use an owned transparent TCP listener, held across
+ *   fresh workerd restarts; HTTP/WebSocket bytes and Host headers are unchanged.
  *
  * Never SIGKILL a test run that uses this harness: Miniflare's `workerd` child
  * process is cleaned up on a normal exit, SIGINT and SIGTERM only.
@@ -19,10 +21,10 @@
 
 import { realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { createServer } from 'node:net';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Miniflare } from 'miniflare';
+import { openWorkerListener } from './worker-listener.ts';
 
 const PKG = resolve(import.meta.dir, '../..');
 
@@ -40,6 +42,25 @@ export interface TestWorker {
   /** `ws://127.0.0.1:<port>` */
   readonly wsUrl: string;
   stop(): Promise<void>;
+  /** Fresh real runtime/storage handles at the same still-owned pinned origin. */
+  restart(): Promise<TestWorker>;
+}
+
+type WorkerListener = Awaited<ReturnType<typeof openWorkerListener>>;
+async function cleanupWorker(
+  mf: Miniflare | undefined,
+  listener: WorkerListener | undefined,
+  failures: unknown[] = [],
+): Promise<void> {
+  for (const close of [() => mf?.dispose(), () => listener?.close()]) {
+    try {
+      await close();
+    } catch (failure) {
+      failures.push(failure);
+    }
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length) throw new AggregateError(failures, 'Owned Worker cleanup failed');
 }
 
 let bundled: Promise<string> | undefined;
@@ -93,59 +114,88 @@ function bundle(): Promise<string> {
  * variables and the Durable Object bindings come from wrangler.toml so they
  * cannot drift from what is deployed.
  */
-export async function startWorker(
+export function startWorker(
   vars: Record<string, string> = {},
   pinPushAudience = false,
   ownedPersistence?: { path: string; port?: number },
+  beforeRuntime?: (url: string) => void | Promise<void>,
+): Promise<TestWorker> {
+  return createWorker(vars, pinPushAudience, ownedPersistence, beforeRuntime);
+}
+
+async function createWorker(
+  vars: Record<string, string>,
+  pinPushAudience: boolean,
+  ownedPersistence?: { path: string; port?: number },
+  beforeRuntime?: (url: string) => void | Promise<void>,
+  existingListener?: WorkerListener,
 ): Promise<TestWorker> {
   const cfg = Bun.TOML.parse(await Bun.file(`${PKG}/wrangler.toml`).text()) as WranglerConfig;
   const sqlite = new Set(cfg.migrations.flatMap((m) => m.new_sqlite_classes ?? []));
-  // Configure the exact owned audience BEFORE the first runtime start. Reserving an
-  // ephemeral loopback port avoids restarting workerd solely to learn its origin.
-  let port = ownedPersistence?.port ?? 0;
-  if (pinPushAudience && port === 0) {
-    const listener = createServer();
-    await new Promise<void>((resolve, reject) => {
-      listener.once('error', reject);
-      listener.listen(0, '127.0.0.1', resolve);
-    });
-    const address = listener.address();
-    if (!address || typeof address === 'string') throw new Error('owned listener unavailable');
-    port = address.port;
-    await new Promise<void>((resolve, reject) =>
-      listener.close((e) => (e ? reject(e) : resolve())),
-    );
-  }
-  const audience = `http://127.0.0.1:${port}`;
-  const options = {
-    modules: true,
-    script: await bundle(),
-    compatibilityDate: cfg.compatibility_date,
-    bindings: { ...cfg.vars, ...vars, ...(pinPushAudience ? { PUSH_AUDIENCE: audience } : {}) },
-    durableObjects: Object.fromEntries(
-      cfg.durable_objects.bindings.map((b) => [
-        b.name,
-        { className: b.class_name, useSQLite: sqlite.has(b.class_name) },
-      ]),
-    ),
-    port,
-    ...(ownedPersistence ? { durableObjectsPersist: ownedPersistence.path } : {}),
-  };
-  const mf = new Miniflare(options);
-  let url: string;
+  // Hold the exact public origin throughout startup; selecting then closing a port races (#1623).
+  const listener =
+    existingListener ??
+    (pinPushAudience ? await openWorkerListener(ownedPersistence?.port ?? 0) : undefined);
+  const audience = listener?.url;
+  let mf: Miniflare | undefined;
   try {
-    url = String((await mf.ready) as URL).replace(/\/$/, '');
-    if (pinPushAudience && url !== audience) throw new Error('owned audience listener mismatch');
-  } catch (e) {
-    // Retain the R4 owned-startup cleanup without masking its original failure.
-    try {
-      await mf.dispose();
-    } catch {
-      /* preserve the original readiness failure */
-    }
-    throw e;
+    if (audience) await beforeRuntime?.(audience);
+    const options = {
+      modules: true,
+      script: await bundle(),
+      compatibilityDate: cfg.compatibility_date,
+      bindings: { ...cfg.vars, ...vars, ...(audience ? { PUSH_AUDIENCE: audience } : {}) },
+      durableObjects: Object.fromEntries(
+        cfg.durable_objects.bindings.map((b) => [
+          b.name,
+          { className: b.class_name, useSQLite: sqlite.has(b.class_name) },
+        ]),
+      ),
+      port: listener ? 0 : (ownedPersistence?.port ?? 0),
+      ...(ownedPersistence ? { durableObjectsPersist: ownedPersistence.path } : {}),
+    };
+    mf = new Miniflare(options);
+    const backend = String((await mf.ready) as URL).replace(/\/$/, '');
+    await listener?.forwardTo(backend);
+    const url = audience ?? backend;
+    const runtime = mf;
+    let closed = false;
+    let stopping: Promise<void> | undefined;
+    return {
+      mf: runtime,
+      url,
+      wsUrl: url.replace(/^http/, 'ws'),
+      async stop() {
+        if (stopping) return stopping;
+        if (closed) return;
+        closed = true;
+        stopping = cleanupWorker(runtime, listener);
+        return stopping;
+      },
+      async restart() {
+        if (closed || !listener || !ownedPersistence)
+          throw new Error('Owned persistent Worker unavailable');
+        closed = true;
+        try {
+          await listener.pause();
+          await runtime.dispose();
+          return await createWorker(
+            vars,
+            pinPushAudience,
+            ownedPersistence,
+            beforeRuntime,
+            listener,
+          );
+        } catch (error) {
+          await cleanupWorker(runtime, listener, [error]);
+          throw error;
+        }
+      },
+    };
+  } catch (error) {
+    await cleanupWorker(mf, listener, [error]);
+    throw error;
   }
-  return { mf, url, wsUrl: url.replace(/^http/, 'ws'), stop: () => mf.dispose() };
 }
 
 /** `fetch` without keep-alive: Miniflare closes idle keep-alive connections after 5 s. */

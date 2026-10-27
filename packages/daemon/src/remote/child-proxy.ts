@@ -182,6 +182,9 @@ export class ChildProxy {
       | { readonly kind: 'message'; readonly message: ProtocolMessage }
       | { readonly kind: 'file'; readonly original: string },
   ): Promise<void> {
+    // B2 is structural only; do not allocate/attach a child for this new family.
+    if (input.kind === 'message' && input.message.type.startsWith('session_terminal_'))
+      throw new Error('TERMINAL_VIEW_UNAVAILABLE');
     const live = this.registry.listLive().find((entry) => entry.sessionId === sessionId);
     if (
       this.closed ||
@@ -331,7 +334,12 @@ export class ChildProxy {
             return;
           }
           // Defense before forwarding: the remote relay never receives raw terminal bytes.
-          if (incoming.type !== 'raw_pty_output' && !this.closed) this.receive(incoming);
+          if (
+            incoming.type !== 'raw_pty_output' &&
+            !incoming.type.startsWith('session_terminal_') &&
+            !this.closed
+          )
+            this.receive(incoming);
         };
         ws.onerror = () => {
           clearTimeout(timer);

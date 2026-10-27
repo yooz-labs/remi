@@ -3,7 +3,7 @@ import RemiKit
 import RemiUI
 import SwiftUI
 
-private struct HomePreview: View {
+private struct InboxPreview: View {
     let questions: [RemiQuestionCardModel]
     let sessions: [RemiSessionSummary]
     let machines: [RemiMachineSummary]
@@ -11,7 +11,7 @@ private struct HomePreview: View {
 
     var body: some View {
         NavigationStack {
-            HomeScreen(
+            InboxScreen(
                 questions: questions,
                 sessions: sessions,
                 machines: machines,
@@ -41,15 +41,42 @@ private var unavailableDirectSummary: RemiMachineSummary {
     )
 }
 
+/// Panes as a machine that advertises both capabilities would offer them. The terminal is the
+/// real controller driven by the golden snapshot frame.
+private func previewPanes(terminalOpen: Bool = true, download: FileDownloadFlow? = nil) -> SessionPanes {
+    let snapshot = RemiPreviewData.fixtureTerminalSnapshot
+    var controller = TerminalViewController(sessionId: snapshot.header.sessionId, makeRequestId: { snapshot.requestId })
+    let now = Date(timeIntervalSince1970: 1_792_627_200)
+    _ = controller.handle(.open, now: 0, date: now)
+    if terminalOpen {
+        let opened = SessionTerminalOpened(
+            header: snapshot.header, requestId: snapshot.requestId, viewId: snapshot.viewId,
+            expiresAt: "2026-10-22T00:05:00.000Z")
+        _ = controller.handle(.message(.opened(opened)), now: 0, date: now)
+        _ = controller.handle(.message(.snapshot(snapshot)), now: 0, date: now)
+    }
+    var panes = SessionPanes()
+    panes.availability = RemiPaneAvailability(
+        ack: HubSupportAck(protocolVersion: .number(1), capabilities: ["terminal_view", "file_download"]),
+        isConnected: true)
+    panes.terminal = controller
+    panes.download = download
+    return panes
+}
+
 private struct SessionPreview: View {
+    var session: RemiSessionSummary = RemiPreviewData.primarySession
+    var transcript: [RemiTranscriptEntry] = RemiPreviewData.transcript
     var initialConversationID: String? = nil
     var initialQuestionID: String? = nil
+    var panes: SessionPanes = .chatOnly
+    var initialPane: PhoneSessionPane = .chat
 
     var body: some View {
         NavigationStack {
             SessionScreen(
-                session: RemiPreviewData.primarySession,
-                transcript: RemiPreviewData.transcript,
+                session: session,
+                transcript: transcript,
                 questions: [RemiPreviewData.binaryQuestion],
                 views: [
                     SessionViewMeta(agentId: "explore", agentType: "Explore", active: true),
@@ -57,10 +84,99 @@ private struct SessionPreview: View {
                 ],
                 initialConversationID: initialConversationID,
                 initialQuestionID: initialQuestionID,
-                transcriptForView: { _ in RemiPreviewData.transcript }
+                transcriptForView: { _ in transcript },
+                panes: panes,
+                initialPane: initialPane
             )
         }
     }
+}
+
+private struct ShellPreview: View {
+    @State private var state: PhoneShellState
+    let machines: [RemiMachineSummary]
+    let sessions: [RemiSessionSummary]
+    let initialQuery: String
+
+    init(
+        isDrawerOpen: Bool,
+        machines: [RemiMachineSummary] = RemiPreviewData.machines,
+        sessions: [RemiSessionSummary] = RemiPreviewData.sessions,
+        filter: PhoneDrawerFilter = .all,
+        initialQuery: String = ""
+    ) {
+        let route = PhoneSessionRoute(
+            machineKey: RemiPreviewData.primarySession.machineID,
+            sessionID: RemiPreviewData.primarySession.id
+        )
+        self.machines = machines
+        self.sessions = sessions
+        self.initialQuery = initialQuery
+        _state = State(initialValue: PhoneShellState(
+            destination: .session(route),
+            isDrawerOpen: isDrawerOpen,
+            drawerFilter: filter
+        ))
+    }
+
+    var body: some View {
+        PhoneShell(state: $state) {
+            SessionPreview()
+        } drawer: {
+            PhoneDrawerView(
+                sessions: sessions,
+                machines: machines,
+                filter: state.drawerFilter,
+                initialQuery: initialQuery,
+                questionCount: 1,
+                destination: state.destination,
+                canCreateSession: true,
+                onClose: { state.closeDrawer() },
+                onSelectAllMachines: { state.clearFilter() },
+                onSelectMachine: { state.selectMachineFilter($0) },
+                onSelectInbox: { state.select(.inbox) },
+                onSelectSession: { state.select(.session(PhoneSessionRoute(machineKey: $0.machineID, sessionID: $0.id))) },
+                onNewSession: {},
+                onAddMachine: {},
+                onPreferences: {}
+            )
+        }
+    }
+}
+
+/// Machines for the drawer previews, in the shapes `MachineStore` produces. The first is
+/// the preview data's Studio; the others are connected unless a state is given.
+private func drawerMachines(_ count: Int, states: [Int: RemiMachineReachability] = [:]) -> [RemiMachineSummary] {
+    let names = ["Studio", "Laptop", "Mac mini", "Office iMac", "Build server", "Home server"]
+    return (0..<count).map { index in
+        RemiMachineSummary(
+            id: index == 0 ? "studio" : "machine-\(index)",
+            name: names[index],
+            address: index == 0 ? "127.0.0.1:18765" : "100.72.14.\(index):18765",
+            reachability: states[index] ?? .connected,
+            transport: index == 0 ? .local : .direct,
+            sessionCount: 1,
+            openQuestionCount: index == 0 ? 1 : 0
+        )
+    }
+}
+
+/// One session per machine, plus the preview data's sessions on Studio.
+private func drawerSessions(on machines: [RemiMachineSummary]) -> [RemiSessionSummary] {
+    let others = machines.dropFirst().map { machine in
+        RemiSessionSummary(
+            id: "session-\(machine.id)",
+            machineID: machine.id,
+            machineName: machine.name,
+            name: "Work on \(machine.name)",
+            harness: "Claude",
+            project: "remi",
+            lastActivity: "2026-10-21T09:00:00Z",
+            status: .working,
+            lastMessage: "Running the test suite"
+        )
+    }
+    return RemiPreviewData.sessions + others
 }
 
 private struct PairingPreview: View {
@@ -86,39 +202,158 @@ private struct FirstRunPreview: View {
     }
 }
 
-private struct EmptyHomePreview: View {
-    var body: some View {
-        HomePreview(questions: [], sessions: [], machines: RemiPreviewData.machines)
-    }
+/// A preview card moved onto a real preview session, so its Open conversation link shows.
+/// The preview data's cards name a session ("native-app") that no preview session has.
+private func inboxCard(
+    _ base: RemiQuestionCardModel,
+    session: RemiSessionSummary = RemiPreviewData.primarySession
+) -> RemiQuestionCardModel {
+    RemiQuestionCardModel(
+        id: RemiQuestionCardModel.identity(
+            machineID: session.machineID,
+            sessionID: session.id,
+            questionID: base.questionID
+        ),
+        questionID: base.questionID,
+        kind: base.kind,
+        text: base.text,
+        detail: base.detail,
+        machineID: session.machineID,
+        machineName: session.machineName,
+        sessionID: session.id,
+        sessionName: session.name,
+        agentID: base.agentID,
+        options: base.options,
+        steps: base.steps,
+        terminalOnly: base.terminalOnly,
+        answerPath: base.answerPath,
+        state: base.state
+    )
 }
 
-#Preview("Home · Light") { HomePreview(questions: [RemiPreviewData.binaryQuestion], sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines).preferredColorScheme(.light) }
-#Preview("Home · Dark") { HomePreview(questions: [RemiPreviewData.binaryQuestion], sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines).preferredColorScheme(.dark) }
-#Preview("Home · Accessibility") { HomePreview(questions: [RemiPreviewData.binaryQuestion], sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines).environment(\.dynamicTypeSize, .accessibility5) }
-#Preview("Home · Compact") { HomePreview(questions: RemiPreviewData.questionStates, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines).frame(width: 320) }
-#Preview("Home · Stored session") { HomePreview(questions: [], sessions: Array(RemiPreviewData.sessions.suffix(1)), machines: Array(RemiPreviewData.machines.prefix(1))).preferredColorScheme(.light) }
-#Preview("Home · Attention queue") { HomePreview(questions: RemiPreviewData.questionStates, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines).preferredColorScheme(.light) }
-#Preview("Home · Direct Recovery") {
-    HomePreview(
-        questions: [],
-        sessions: [],
-        machines: [unavailableDirectSummary],
-        machineStates: [unavailableDirectState]
+private var connectedStudioState: MachineState {
+    var machine = MachineState(
+        endpoint: MachineEndpoint(host: "127.0.0.1", port: 18_765),
+        displayName: "Studio"
     )
+    machine.status = .connected
+    return machine
 }
-#Preview("Home · Direct Recovery · Accessibility") {
-    HomePreview(
-        questions: [],
-        sessions: [],
-        machines: [unavailableDirectSummary],
-        machineStates: [unavailableDirectState]
-    )
+
+private let inboxOneCard = [inboxCard(RemiPreviewData.binaryQuestion)]
+
+private let inboxSeveralCards = [
+    RemiPreviewData.binaryQuestion,
+    RemiPreviewData.standingGrantQuestion,
+    RemiPreviewData.planQuestion,
+    RemiPreviewData.askUserQuestion,
+].map { inboxCard($0) }
+
+private let inboxAttentionQueue = RemiPreviewData.questionStates.map { inboxCard($0) }
+
+private let inboxResolvedOnly = RemiPreviewData.questionStates
+    .filter { if case .resolvedElsewhere = $0.state { true } else { false } }
+    .map { inboxCard($0) }
+
+private let inboxThreeProblemMachines = drawerMachines(
+    3,
+    states: [0: .unreachable, 1: .unreachable, 2: .waitingForApproval]
+)
+
+#Preview("Inbox · One card · Light") {
+    InboxPreview(questions: inboxOneCard, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+    .preferredColorScheme(.light)
+}
+#Preview("Inbox · One card · Dark") {
+    InboxPreview(questions: inboxOneCard, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+    .preferredColorScheme(.dark)
+}
+#Preview("Inbox · One card · Accessibility") {
+    InboxPreview(questions: inboxOneCard, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
     .environment(\.dynamicTypeSize, .accessibility5)
 }
+#Preview("Inbox · Several cards") {
+    InboxPreview(questions: inboxSeveralCards, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+}
+#Preview("Inbox · Attention queue") {
+    InboxPreview(questions: inboxAttentionQueue, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+    .preferredColorScheme(.light)
+}
+#Preview("Inbox · Attention queue · Compact") {
+    InboxPreview(questions: inboxAttentionQueue, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+    .frame(width: 320)
+}
+#Preview("Inbox · Card without a session") {
+    InboxPreview(questions: [RemiPreviewData.binaryQuestion], sessions: [], machines: RemiPreviewData.machines)
+}
+#Preview("Inbox · Resolved elsewhere") {
+    InboxPreview(questions: inboxResolvedOnly, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+}
+#Preview("Inbox · Quiet · Light") {
+    InboxPreview(questions: [], sessions: RemiPreviewData.sessions, machines: Array(RemiPreviewData.machines.prefix(1)), machineStates: [connectedStudioState])
+    .preferredColorScheme(.light)
+}
+#Preview("Inbox · Quiet · Dark") {
+    InboxPreview(questions: [], sessions: RemiPreviewData.sessions, machines: Array(RemiPreviewData.machines.prefix(1)), machineStates: [connectedStudioState])
+    .preferredColorScheme(.dark)
+}
+#Preview("Inbox · Quiet · Accessibility") {
+    InboxPreview(questions: [], sessions: RemiPreviewData.sessions, machines: Array(RemiPreviewData.machines.prefix(1)), machineStates: [connectedStudioState])
+    .environment(\.dynamicTypeSize, .accessibility5)
+}
+#Preview("Inbox · Quiet · No active sessions") {
+    InboxPreview(questions: [], sessions: Array(RemiPreviewData.sessions.suffix(1)), machines: Array(RemiPreviewData.machines.prefix(1)), machineStates: [connectedStudioState])
+}
+#Preview("Inbox · Quiet · No machine connected") {
+    InboxPreview(
+        questions: [],
+        sessions: RemiPreviewData.sessions,
+        machines: [unavailableDirectSummary],
+        machineStates: [unavailableDirectState]
+    )
+}
+#Preview("Inbox · First run") {
+    InboxPreview(questions: [], sessions: [], machines: [])
+}
+#Preview("Inbox · One machine problem") {
+    InboxPreview(questions: [], sessions: [], machines: [unavailableDirectSummary], machineStates: [unavailableDirectState])
+}
+#Preview("Inbox · One machine problem · Accessibility") {
+    InboxPreview(questions: [], sessions: [], machines: [unavailableDirectSummary], machineStates: [unavailableDirectState])
+    .environment(\.dynamicTypeSize, .accessibility5)
+}
+#Preview("Inbox · Three machine problems") {
+    InboxPreview(questions: inboxOneCard, sessions: RemiPreviewData.sessions, machines: inboxThreeProblemMachines)
+}
 
+#Preview("Session · Hub name and tool runs") {
+    SessionPreview(session: RemiPreviewData.hubNamedSession, transcript: RemiPreviewData.toolRunTranscript)
+}
+#Preview("Session · Hub name and tool runs · Accessibility") {
+    SessionPreview(session: RemiPreviewData.hubNamedSession, transcript: RemiPreviewData.toolRunTranscript)
+        .environment(\.dynamicTypeSize, .accessibility5)
+}
 #Preview("Session · Light") { SessionPreview().preferredColorScheme(.light) }
 #Preview("Session · Dark") { SessionPreview().preferredColorScheme(.dark) }
 #Preview("Session · Accessibility") { SessionPreview().environment(\.dynamicTypeSize, .accessibility5) }
+#Preview("Session · With panes offered") { SessionPreview(panes: previewPanes()) }
+#Preview("Session · Terminal pane") { SessionPreview(panes: previewPanes(), initialPane: .terminal) }
+#Preview("Session · Terminal pane · Opening") {
+    SessionPreview(panes: previewPanes(terminalOpen: false), initialPane: .terminal)
+}
+#Preview("Session · Terminal pane · Accessibility") {
+    SessionPreview(panes: previewPanes(), initialPane: .terminal).environment(\.dynamicTypeSize, .accessibility3)
+}
+#Preview("Session · Terminal not available") {
+    var panes = previewPanes()
+    panes.availability = RemiPaneAvailability(
+        ack: HubSupportAck(protocolVersion: .number(1), capabilities: ["file_download"]), isConnected: true)
+    return SessionPreview(panes: panes, initialPane: .terminal)
+}
+#Preview("Session · Files pane") { SessionPreview(panes: previewPanes(), initialPane: .files) }
+#Preview("Session · Files pane · Verified") {
+    SessionPreview(panes: previewPanes(download: RemiFileDownloadPreviewFlows.flow(upTo: 3)), initialPane: .files)
+}
 #Preview("Session · Notification focus") {
     SessionPreview(initialQuestionID: RemiPreviewData.binaryQuestion.questionID)
 }
@@ -127,6 +362,45 @@ private struct EmptyHomePreview: View {
         initialConversationID: "explore",
         initialQuestionID: RemiPreviewData.binaryQuestion.questionID
     )
+}
+
+#Preview("Shell · Drawer closed") { ShellPreview(isDrawerOpen: false) }
+#Preview("Shell · Drawer open · Light") { ShellPreview(isDrawerOpen: true).preferredColorScheme(.light) }
+#Preview("Shell · Drawer open · Dark") { ShellPreview(isDrawerOpen: true).preferredColorScheme(.dark) }
+#Preview("Shell · Drawer open · Accessibility") { ShellPreview(isDrawerOpen: true).environment(\.dynamicTypeSize, .accessibility5) }
+
+#Preview("Drawer · 1 machine") {
+    ShellPreview(isDrawerOpen: true, machines: drawerMachines(1), sessions: RemiPreviewData.sessions)
+}
+#Preview("Drawer · 3 machines") {
+    let machines = drawerMachines(3)
+    return ShellPreview(isDrawerOpen: true, machines: machines, sessions: drawerSessions(on: machines))
+}
+#Preview("Drawer · 3 machines · Filtered") {
+    let machines = drawerMachines(3)
+    return ShellPreview(isDrawerOpen: true, machines: machines, sessions: drawerSessions(on: machines), filter: .machine("machine-1"))
+}
+#Preview("Drawer · 6 machines") {
+    let machines = drawerMachines(6)
+    return ShellPreview(isDrawerOpen: true, machines: machines, sessions: drawerSessions(on: machines))
+}
+#Preview("Drawer · Offline and approval") {
+    let machines = drawerMachines(3, states: [1: .unreachable, 2: .waitingForApproval])
+    return ShellPreview(isDrawerOpen: true, machines: machines, sessions: drawerSessions(on: machines))
+}
+#Preview("Drawer · Search, no results") {
+    let machines = drawerMachines(3)
+    return ShellPreview(isDrawerOpen: true, machines: machines, sessions: drawerSessions(on: machines), initialQuery: "no such session")
+}
+#Preview("Drawer · 3 machines · Accessibility") {
+    let machines = drawerMachines(3)
+    return ShellPreview(isDrawerOpen: true, machines: machines, sessions: drawerSessions(on: machines))
+        .environment(\.dynamicTypeSize, .accessibility5)
+}
+#Preview("Drawer · 3 machines · Dark") {
+    let machines = drawerMachines(3)
+    return ShellPreview(isDrawerOpen: true, machines: machines, sessions: drawerSessions(on: machines))
+        .preferredColorScheme(.dark)
 }
 
 #Preview("Pairing · Light") { PairingPreview().preferredColorScheme(.light) }
@@ -138,7 +412,71 @@ private struct EmptyHomePreview: View {
 #Preview("First Run · Dark") { FirstRunPreview().preferredColorScheme(.dark) }
 #Preview("First Run · Accessibility") { FirstRunPreview().environment(\.dynamicTypeSize, .accessibility5) }
 
-#Preview("Empty · Light") { EmptyHomePreview().preferredColorScheme(.light) }
-#Preview("Empty · Dark") { EmptyHomePreview().preferredColorScheme(.dark) }
-#Preview("Empty · Accessibility") { EmptyHomePreview().environment(\.dynamicTypeSize, .accessibility5) }
+// MARK: Wide, landscape and narrow canvases (#1629)
+
+/// The regular-width shell as `PhoneLiveRootView` builds it: the drawer content as a
+/// sidebar beside the session. A preview cannot change its window's real size class, so
+/// this one shows the sidebar only where the canvas is regular for real (an iPhone Max in
+/// landscape); elsewhere the system collapses the split view, as it does in the app.
+private struct RegularShellPreview: View {
+    @State private var state = PhoneShellState(destination: .session(PhoneSessionRoute(
+        machineKey: RemiPreviewData.primarySession.machineID,
+        sessionID: RemiPreviewData.primarySession.id
+    )))
+
+    var body: some View {
+        NavigationSplitView {
+            PhoneDrawerView(
+                sessions: RemiPreviewData.sessions,
+                machines: RemiPreviewData.machines,
+                filter: state.drawerFilter,
+                questionCount: 1,
+                destination: state.destination,
+                canCreateSession: true,
+                onClose: {},
+                onSelectAllMachines: { state.clearFilter() },
+                onSelectMachine: { state.selectMachineFilter($0) },
+                onSelectInbox: { state.select(.inbox) },
+                onSelectSession: { state.select(.session(PhoneSessionRoute(machineKey: $0.machineID, sessionID: $0.id))) },
+                onNewSession: {},
+                onAddMachine: {},
+                onPreferences: {}
+            )
+            .phoneSidebarEnvironment(RemiShellChrome.resolve(mode: .regular))
+            .toolbar(.hidden, for: .navigationBar)
+            .navigationSplitViewColumnWidth(RemiTheme.Size.sidebarWidth)
+        } detail: {
+            SessionPreview()
+        }
+        .navigationSplitViewStyle(.balanced)
+        .environment(\.horizontalSizeClass, .regular)
+    }
+}
+
+#Preview("Session · Wide 700") { SessionPreview().frame(width: 700) }
+#Preview("Session · Wide 1000") { SessionPreview().frame(width: 1_000) }
+#Preview("Session · Wide 1000 · Accessibility") {
+    SessionPreview().frame(width: 1_000).environment(\.dynamicTypeSize, .accessibility5)
+}
+#Preview("Session · Landscape", traits: .landscapeLeft) { SessionPreview() }
+#Preview("Session · 320") { SessionPreview().frame(width: 320) }
+#Preview("Inbox · Wide 700") {
+    InboxPreview(questions: inboxSeveralCards, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+        .frame(width: 700)
+}
+#Preview("Inbox · Wide 1000") {
+    InboxPreview(questions: inboxSeveralCards, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+        .frame(width: 1_000)
+}
+#Preview("Inbox · Landscape", traits: .landscapeLeft) {
+    InboxPreview(questions: inboxSeveralCards, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+}
+#Preview("Inbox · 320") {
+    InboxPreview(questions: inboxSeveralCards, sessions: RemiPreviewData.sessions, machines: RemiPreviewData.machines)
+        .frame(width: 320)
+}
+#Preview("Shell · Regular sidebar", traits: .landscapeLeft) { RegularShellPreview() }
+#Preview("Shell · Regular sidebar · Dark", traits: .landscapeLeft) {
+    RegularShellPreview().preferredColorScheme(.dark)
+}
 #endif

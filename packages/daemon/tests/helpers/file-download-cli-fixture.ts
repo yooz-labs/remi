@@ -32,6 +32,8 @@ export async function fileDownloadCliFixture(
     projectName?: string;
     threadNamespace?: string;
     port?: number;
+    /** Controlled real PTY output for source-composition tests, without an agent/provider turn. */
+    consumerOutput?: string;
     observe?: (owned: {
       readonly files: ReturnType<typeof directTlsFixture>;
       readonly proc: Bun.Subprocess;
@@ -221,6 +223,7 @@ fs.writeFileSync(input,'',{mode:0o600});
 process.stdin.setRawMode(true);
 process.stdin.on('data',(bytes)=>fs.appendFileSync(input,bytes));
 process.stdin.resume();
+process.stdout.write(${JSON.stringify(options.consumerOutput ?? '')});
 fs.writeFileSync(pid+'.tmp',String(process.pid),{mode:0o600});fs.renameSync(pid+'.tmp',pid);
 ${
   harness === 'codex'

@@ -21,9 +21,20 @@ export function isFileDownloadCandidate(input: string | Uint8Array): boolean {
   return imageOperationCandidate(input, 'file_fetch_');
 }
 
+/** Terminal route selection only; shape and authority stay separate. */
+export function isTerminalViewCandidate(input: string | Uint8Array): boolean {
+  return imageOperationCandidate(input, 'session_terminal_');
+}
+
 function imageOperationCandidate(
   input: string | Uint8Array,
-  prefix: 'image_upload_' | 'image_insert_' | 'chat_submit_' | 'browser_link_' | 'file_fetch_',
+  prefix:
+    | 'image_upload_'
+    | 'image_insert_'
+    | 'chat_submit_'
+    | 'browser_link_'
+    | 'file_fetch_'
+    | 'session_terminal_',
 ): boolean {
   if (typeof input !== 'string' && !(input instanceof Uint8Array)) return false;
   // Read the received units directly: no input-sized copy, UTF-8/JSON/base64 conversion or cutoff.

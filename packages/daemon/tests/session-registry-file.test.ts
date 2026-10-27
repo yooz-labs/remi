@@ -9,7 +9,7 @@ import {
   claudeChildLooksAlive,
   couldBeClaudeEntry,
 } from '../src/session/session-registry-file.ts';
-import { TEST_BIND_HOST, reserveRange } from './session/port-test-helpers.ts';
+import { TEST_BIND_HOST, occupyEphemeral, reserveRange } from './session/port-test-helpers.ts';
 
 /** Spawn a trivial process and await its exit to obtain a really-dead pid. */
 async function deadChildPid(): Promise<number> {
@@ -175,12 +175,23 @@ describe('SessionRegistryFile', () => {
   });
 
   test('findAvailablePort skips used ports', async () => {
-    const base = await reserveRange(10);
-    registry.register(makeEntry({ sessionId: 'a', wsPort: base }));
-    registry.register(makeEntry({ sessionId: 'b', wsPort: base + 1 }));
-
-    const port = await registry.findAvailablePort(base, 10, TEST_BIND_HOST);
-    expect(port).toBe(base + 2);
+    // Only the third candidate must bind: the registry excludes the first two.
+    // Hold that actual OS-assigned port through setup; no ten-port free run is needed (#1644).
+    const held = await occupyEphemeral();
+    const base = held.port - 2;
+    const release = () =>
+      new Promise<void>((resolve, reject) => {
+        held.server.close((error?: Error) => (error ? reject(error) : resolve()));
+      });
+    try {
+      registry.register(makeEntry({ sessionId: 'a', wsPort: base }));
+      registry.register(makeEntry({ sessionId: 'b', wsPort: base + 1 }));
+      await release();
+      const port = await registry.findAvailablePort(base, 10, TEST_BIND_HOST);
+      expect(port).toBe(base + 2);
+    } finally {
+      if (held.server.listening) await release();
+    }
   });
 
   test('findAvailablePort fills non-contiguous gaps', async () => {

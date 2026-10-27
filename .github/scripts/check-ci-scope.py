@@ -1578,7 +1578,7 @@ def isolated_test_controls():
                 missing = tree(source_head, removals=(path,))
                 check(missing, tree(missing, updates), ("comment missing", path))
 
-            for path in module["ISOLATED_TEST_RUNNERS"]:
+            for path in (*module["ISOLATED_TEST_RUNNERS"], *module["WORKER_LISTENER_RUNNERS"]):
                 content = actual("show", f"{source_head}:{path}")
                 for mode, body in (("100644", content + b"\n// computed producer discovery\n"),
                                    ("100755", content), ("120000", content), ("160000", content)):
@@ -1880,14 +1880,22 @@ def dormant_codec_controls():
                     result["relay_soak"] is not skip), (label, result)
                 controls += 1
             policy_paths = (".github/scripts/ci-scope.py", ".github/scripts/check-ci-scope.py", ".github/ci-scope.md",
-                            ".github/workflows/relay-r7.yml", ".github/scripts/workflow-scope.py",
+                            ".github/scripts/workflow-scope.py",
                             ".github/scripts/workflow-contracts.json")
+            runner_path = ".github/workflows/relay-r7.yml"
+            runner_blob = module["SOAK_CODEC_CORE"][runner_path][1]
+            runner_body = subprocess.check_output(["git", "cat-file", "blob", runner_blob], cwd=source)
             base = make(module["SOAK_CODEC_SOURCE_ROOT"],
-                        [(path, (source / path).read_bytes(), "100644") for path in policy_paths])
+                        [*( (path, (source / path).read_bytes(), "100644") for path in policy_paths),
+                         (runner_path, runner_body, "100644")])
             updates = [(path, body(module["SOAK_CODEC_CANDIDATE_ROOT"], path), "100644")
                        for path in module["SOAK_CODEC_TRANSITION"]]
             head = make(base, updates)
             check(base, head, "complete exact codec transition", True)
+            # Retain the historical exact runner for this exact historical transition.
+            # Today's Node setup remains a changed execution input, including when already on base.
+            runner_base = make(base, [(runner_path, (source / runner_path).read_bytes(), "100644")])
+            check(runner_base, make(runner_base, updates), "current Node runner restores the soak")
             check(base, make(base, [*updates, ("docs/owned-codec.md", "inert prose\n", "100644")]),
                   "codec plus inert docs", True)
             version = json.loads(body(base, "package.json"))["version"]
@@ -4098,7 +4106,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         # The real validator must reject coverage removal, rather than calling a no-op covered.
         git("reset", "--hard", base); git("clean", "-fdq")
         value = WORKFLOW_TOOLS["load"](WORKFLOWS["ci.yml"])
-        next(s for s in value["jobs"]["test"]["steps"] if s.get("name") == "Test with coverage")["run"] = "true"
+        next(s for s in value["jobs"]["test-workers"]["steps"] if s.get("name") == "Test with coverage")["run"] = "true"
         write(".github/workflows/ci.yml", yaml.safe_dump(value, sort_keys=False))
         try:
             WORKFLOW_TOOLS["validate"]()
@@ -4141,7 +4149,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         # #1206 execution change: preserve the historical population/count, report new
         # actual-Git routing/measurement refusal controls separately.
         sequential_start = count
-        routing_refusal("ci.yml", lambda w: next(s for s in w["jobs"]["test"]["steps"]
+        routing_refusal("ci.yml", lambda w: next(s for s in w["jobs"]["test-workers"]["steps"]
                         if s.get("name") == "Test with coverage").update(
                         run="bun scripts/ci/run-bun-test-batches.ts | tee test-output.txt\n"))
         routing_refusal("ci.yml", lambda w: next(s for s in w["jobs"]["test"]["steps"]
@@ -4156,7 +4164,16 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         count += 1
         sequential_runner_controls = count - sequential_start
         count = sequential_start
-        for filename, job, name in (("ci.yml", "test", "Test with coverage"),
+        isolated_worker_start = count
+        routing_refusal("ci.yml", lambda w: w["jobs"]["test-workers"]["strategy"]["matrix"].update(worker=["0", "1"]))
+        routing_refusal("ci.yml", lambda w: w["jobs"]["test-workers"]["strategy"].update(**{"fail-fast": "true"}))
+        routing_refusal("ci.yml", lambda w: w["jobs"]["test-workers"].update(**{"runs-on": "self-hosted"}))
+        routing_refusal("ci.yml", lambda w: w["jobs"]["test"].update(needs=["scope"]))
+        routing_refusal("ci.yml", lambda w: w["jobs"]["test"].update(steps=[s for s in w["jobs"]["test"]["steps"] if s.get("name") != "Fail incomplete test workers"]))
+        routing_refusal("ci.yml", lambda w: next(s for s in w["jobs"]["test"]["steps"] if s.get("uses") == "actions/download-artifact@v4")["with"].update(name="test-worker-0-old-run"))
+        isolated_worker_controls = count - isolated_worker_start
+        count = isolated_worker_start
+        for filename, job, name in (("ci.yml", "test-workers", "Test with coverage"),
                                    ("ci.yml", "test", "Check coverage threshold"),
                                    ("relay-r7.yml", "local-relay", "Existing actual wire and authority controls"),
                                    ("relay-r7.yml", "local-relay", "Same attached session for 61 actual minutes")):
@@ -4861,6 +4878,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
                           "dormant_codec_controls": codec_controls,
                           "isolated_family_controls": family_controls,
                           "sequential_runner_controls": sequential_runner_controls,
+                          "isolated_worker_controls": isolated_worker_controls,
                           "current_diagnostic_controls": current_diagnostic_controls,
                           "source_reader_controls": reader_controls,
                           "scope": "owned real git diffs and event inputs"}))

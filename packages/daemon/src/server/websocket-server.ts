@@ -88,6 +88,8 @@ export interface ServerConfig {
  * `connectionId` first -- one server serves many peers.
  */
 export interface ServerEvents extends ClientMessageEventsWithConnectionId {
+  /** Invoked only after the actual-loopback and private capability gates. */
+  onLocalPushForward?: (request: Request) => Promise<Response>;
   /** Server started listening */
   onStart: (port: number) => void;
 
@@ -335,6 +337,19 @@ export class WebSocketServer {
         )
           return new Response('Forbidden', { status: 403 });
 
+        if (url.pathname === '/local-secure-push') {
+          const allowed = shouldSkipAuthForPeer(true, server.requestIP(req)?.address, {
+            hasCapability: capabilityTokenMatches(
+              req.headers.get(CAPABILITY_HEADER),
+              self.config.capabilityToken,
+            ),
+          });
+          if (!allowed) return new Response('Forbidden', { status: 403 });
+          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+          return (
+            self.events.onLocalPushForward?.(req) ?? new Response('Unavailable', { status: 503 })
+          );
+        }
         if (url.pathname === '/relay-control') {
           const peer = server.requestIP(req)?.address;
           const hasCapability = capabilityTokenMatches(

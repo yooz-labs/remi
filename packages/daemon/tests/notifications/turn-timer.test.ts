@@ -169,6 +169,7 @@ describe('buildTurnCompleteText', () => {
     const long = 'x'.repeat(500);
     const { body } = buildTurnCompleteText('proj', long);
     expect(body.length).toBeLessThan(long.length);
+    expect(Array.from(body).length).toBeLessThanOrEqual(161);
     expect(body.endsWith('…')).toBe(true);
   });
 

@@ -20,6 +20,7 @@ import {
   createAuthResult,
   createError,
   createHelloAck,
+  createNotificationHostResponse,
   createPing,
   createPong,
   createSecurePushRegisterResponse,
@@ -385,6 +386,18 @@ export class Connection {
       // type, so a new registry key breaks this object's compile until it is
       // decided, rather than silently falling through a switch's default.
       const handlers: ClientMessageHandlers = {
+        notification_host_request: (message) => {
+          if (this.events.onNotificationHostRequest) this.events.onNotificationHostRequest(message);
+          else
+            this.send(
+              createNotificationHostResponse(message.id, { success: false, error: 'UNSUPPORTED' }),
+            );
+        },
+        // B2 defines syntax only; a secure host route and caller must qualify first (#1612).
+        session_terminal_open: () => this.close('Terminal view unavailable'),
+        session_terminal_read: () => this.close('Terminal view unavailable'),
+        session_terminal_close: () => this.close('Terminal view unavailable'),
+
         file_fetch_begin: () => this.close('Invalid file download route'),
         file_fetch_read: () => this.close('Invalid file download route'),
         file_fetch_complete: () => this.close('Invalid file download route'),

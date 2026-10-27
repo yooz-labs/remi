@@ -75,9 +75,23 @@ public struct RemiSessionInteractionBar: View {
             }
         }
         .padding(.horizontal, RemiTheme.Spacing.m)
-        .padding(.vertical, RemiTheme.Spacing.s)
-        .frame(maxWidth: .infinity)
-        .background(reduceTransparency ? AnyShapeStyle(.background) : AnyShapeStyle(.bar))
+        .padding(.vertical, RemiTheme.Spacing.xs)
+        // The bar's material spans the canvas; the controls stay in the readable column.
+        .remiReadableColumn()
+        // Only the live composer floats: its glass controls carry their own surface. Plain text
+        // (read-only notes, the send-failure caption) keeps the bar material so it stays legible
+        // over transcript content scrolling underneath.
+        .background(floatsOverTranscript ? AnyShapeStyle(.clear) : barMaterial)
+    }
+
+    private var floatsOverTranscript: Bool {
+        guard !reduceTransparency, !sendFailed else { return false }
+        if case .liveMain = state { return true }
+        return false
+    }
+
+    private var barMaterial: AnyShapeStyle {
+        reduceTransparency ? AnyShapeStyle(.background) : AnyShapeStyle(.bar)
     }
 
     private func readOnlyLabel(_ title: LocalizedStringKey, systemImage: String) -> some View {

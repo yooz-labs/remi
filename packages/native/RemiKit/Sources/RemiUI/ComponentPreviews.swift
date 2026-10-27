@@ -149,6 +149,32 @@ private struct SessionInteractionGallery: View {
     }
 }
 
+private struct ToolRunGallery: View {
+    @State private var expanded: Set<String> = []
+    var startsExpanded = false
+
+    var body: some View {
+        let rows = RemiTranscriptGrouping.rows(for: RemiPreviewData.toolRunTranscript)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.m) {
+                RemiSessionRow(session: RemiPreviewData.hubNamedSession)
+                RemiTranscriptRowsView(rows: rows, expandedEntryIDs: $expanded) { entry in
+                    RemiTranscriptEntryView(entry: entry)
+                }
+            }
+            .padding(RemiTheme.Spacing.m)
+        }
+        .onAppear {
+            if startsExpanded { expanded = Set(RemiPreviewData.toolRunTranscript.map(\.id)) }
+        }
+    }
+}
+
+#Preview("Tool runs · Light") { ToolRunGallery().preferredColorScheme(.light) }
+#Preview("Tool runs · Dark") { ToolRunGallery().preferredColorScheme(.dark) }
+#Preview("Tool runs · Expanded") { ToolRunGallery(startsExpanded: true) }
+#Preview("Tool runs · Accessibility") { ToolRunGallery().environment(\.dynamicTypeSize, .accessibility5) }
+
 #Preview("Question Cards · Light") {
     QuestionCardGallery().preferredColorScheme(.light)
 }
@@ -194,4 +220,18 @@ private struct SessionInteractionGallery: View {
     PreviewQuestionCard(model: RemiPreviewData.questionStates[2])
         .padding(RemiTheme.Spacing.m)
 }
+
+private struct StatusBadgeGallery: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
+            ForEach([RemiSessionStatus.needsYou, .working, .idle, .connecting, .offline], id: \.self) { status in
+                RemiStatusBadge(status: status)
+            }
+        }
+        .padding()
+    }
+}
+
+#Preview("Status badges · Light") { StatusBadgeGallery().preferredColorScheme(.light) }
+#Preview("Status badges · Dark") { StatusBadgeGallery().preferredColorScheme(.dark) }
 #endif

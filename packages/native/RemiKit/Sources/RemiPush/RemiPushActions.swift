@@ -53,6 +53,10 @@ enum NativePushActionPolicy {
         categories.allSatisfy { !$0.identifier.hasPrefix(prefix) }
     }
     static func title(_ option: VerifiedPushOption) -> String {
+        if option.standingGrant == nil, option.description == nil {
+            if option.isYes && !option.isNo && option.label == "Yes" { return "Allow once" }
+            if option.isNo && !option.isYes && option.label == "No" { return "Deny" }
+        }
         let described = option.label + (option.description.map { " \u{2014} " + $0 } ?? "")
         return option.standingGrant == "addRules" && option.description != nil
             ? described + " · This session"
@@ -86,8 +90,10 @@ enum NativePushActionPolicy {
         guard !notification.machine.authority.requiresAppUnlock else { return nil }
         let options = choices(notification)
         guard !options.isEmpty else { return nil }
+        // Never truncate an authorizing title; longer choices belong in the app (#1681).
+        guard options.allSatisfy({ title($0).count <= 24 }) else { return nil }
         var tuple = Data()
-        for part in [Data("remi-native-v2 actions".utf8), notification.machine.room,
+        for part in [Data("remi-native-v2 short-actions".utf8), notification.machine.room,
                      notification.machine.machinePublicKey, notification.machine.authority.publicKey,
                      Data(notification.machine.authority.revision.utf8), notification.contentDigest] {
             guard part.count <= 65535 else { throw RemiPushError.invalid }
@@ -95,7 +101,7 @@ enum NativePushActionPolicy {
         }
         let hash = SHA256.hash(data: tuple).map { String(format: "%02x", $0) }.joined()
         let identifier = prefix + String(notification.expiresAt) + "." + hash
-        // No is the first nondestructive action, including Watch Double Tap.
+        // Deny is the first nondestructive action, including Watch Double Tap.
         let ordered = options.enumerated().sorted { lhs, rhs in
             lhs.element.isNo != rhs.element.isNo ? lhs.element.isNo : lhs.offset < rhs.offset
         }
@@ -135,6 +141,45 @@ enum NativePushActionPolicy {
 }
 
 extension RemiPushStore {
+    public static let reviewCategoryIdentifier = "remi.secure.v2.review"
+    public static let reviewActionIdentifier = "remi.secure.v2.review.open"
+    public static let openSessionActionIdentifier = "remi.secure.v2.open.session"
+    private static let openSessionCategoryIdentifier = "remi.secure.v2.open"
+    public static func isForegroundNotificationAction(_ identifier: String) -> Bool {
+        identifier == reviewActionIdentifier || identifier == openSessionActionIdentifier
+    }
+    static func foregroundCategoryIdentifier(for notification: VerifiedPushNotification) -> String {
+        notification.kind == .question ? reviewCategoryIdentifier : openSessionCategoryIdentifier
+    }
+    static var reviewCategory: UNNotificationCategory {
+        .init(identifier: reviewCategoryIdentifier, actions: [
+            UNNotificationAction(identifier: reviewActionIdentifier, title: "Review request", options: [.foreground])
+        ], intentIdentifiers: [], options: [.customDismissAction])
+    }
+    private static var openSessionCategory: UNNotificationCategory {
+        .init(identifier: openSessionCategoryIdentifier, actions: [
+            UNNotificationAction(identifier: openSessionActionIdentifier, title: "Open session", options: [.foreground])
+        ], intentIdentifiers: [], options: [.customDismissAction])
+    }
+
+    /// Review opens the app and has no answer value or signing authority.
+    public func publishReviewAction(for notification: VerifiedPushNotification,
+                                    completion: @escaping @Sendable (Bool) -> Void) {
+        #if DEBUG
+        guard !isOwnedTestStore else { completion(false); return }
+        #endif
+        NativePushCategoryPublisher.queue.async {
+            do {
+                try self.recheck(notification)
+                guard notification.kind != .dismiss else { completion(false); return }
+                let category = notification.kind == .question ? Self.reviewCategory : Self.openSessionCategory
+                try NativePushCategoryPublisher.publish([category], lock: self.categoryLockURL,
+                    validate: { try self.recheck(notification) })
+                try self.recheck(notification)
+                completion(true)
+            } catch { completion(false) }
+        }
+    }
     /// Classification consumes malformed secure markers but grants no authority.
     public static func isSecureNotification(content: UNNotificationContent, identifier: String? = nil) -> Bool {
         content.userInfo["remiPush"] != nil || content.categoryIdentifier.hasPrefix(NativePushActionPolicy.prefix) ||

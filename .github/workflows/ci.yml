@@ -128,14 +128,16 @@ jobs:
         if: needs.scope.result == 'success' && needs.scope.outputs.typecheck == 'false'
         run: echo "typecheck skipped; no relevant inputs changed." >> "$GITHUB_STEP_SUMMARY"
 
-  test:
-    name: Test
+  test-workers:
+    name: Test worker ${{ matrix.worker }}
     runs-on: ubuntu-latest
     needs: [scope]
     if: ${{ !cancelled() }}
-    # #1206: previous runs stopped before module-body entry; no root cause is established.
-    # Keep the 25-minute job bound, above the runner's 22-minute controller budget.
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: [0, 1, 2]
     steps:
       - name: Fail unvalidated scope
         if: needs.scope.result != 'success'
@@ -144,6 +146,10 @@ jobs:
           exit 1
       - uses: actions/checkout@v5
         if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
+      - uses: actions/setup-node@v4
+        if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
+        with:
+          node-version: '24'
       - uses: oven-sh/setup-bun@v2
         if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
         with:
@@ -154,12 +160,81 @@ jobs:
         if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
         env:
           E2E_BUNDLER: esbuild
-        # #1206: target alone, then every other discovered file in one shared Bun cache.
-        # Raw logs are separate from the one validated line-union threshold row.
-        # pipefail preserves test/discovery/coverage/cleanup failures through tee.
+        # Each matrix job gets a fresh hosted VM, including TCP port space.
         run: |
           set -o pipefail
-          bun scripts/ci/run-bun-test-batches.ts 2>&1 | tee test-batches-output.txt
+          bun scripts/ci/run-bun-test-batches.ts --worker=${{ matrix.worker }} 2>&1 | tee test-batches-output.txt
+      - name: Upload worker evidence
+        if: always() && needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-worker-${{ matrix.worker }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: coverage/test-lanes/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload worker log
+        if: always() && needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-worker-log-${{ matrix.worker }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-batches-output.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Report scoped skip
+        if: needs.scope.result == 'success' && needs.scope.outputs.test == 'false'
+        run: echo "test skipped; no relevant inputs changed." >> "$GITHUB_STEP_SUMMARY"
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: [scope, test-workers]
+    if: ${{ !cancelled() }}
+    # #1206: previous runs stopped before module-body entry; no root cause is established.
+    # Keep the 25-minute job bound, above the runner's 22-minute controller budget.
+    timeout-minutes: 25
+    steps:
+      - name: Fail unvalidated scope
+        if: needs.scope.result != 'success'
+        run: |
+          echo "CI scope validation failed; runtime checks were not started." >&2
+          exit 1
+      - name: Fail incomplete test workers
+        if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false' && needs.test-workers.result != 'success'
+        run: |
+          echo "Every test worker must pass before coverage can be aggregated." >&2
+          exit 1
+      - uses: actions/checkout@v5
+        if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
+      - uses: actions/setup-node@v4
+        if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+        if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
+      - uses: actions/download-artifact@v4
+        if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
+        with:
+          name: test-worker-0-${{ github.run_id }}-${{ github.run_attempt }}
+          path: coverage/test-workers/worker-0
+      - uses: actions/download-artifact@v4
+        if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
+        with:
+          name: test-worker-1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: coverage/test-workers/worker-1
+      - uses: actions/download-artifact@v4
+        if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
+        with:
+          name: test-worker-2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: coverage/test-workers/worker-2
+      - name: Aggregate coverage
+        if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
+        run: |
+          set -o pipefail
+          bun scripts/ci/run-bun-test-batches.ts --aggregate 2>&1 | tee test-batches-output.txt
       - name: Check coverage threshold
         if: needs.scope.result == 'success' && needs.scope.outputs.test != 'false'
         run: |
@@ -186,7 +261,8 @@ jobs:
         with:
           name: test-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            coverage/test-lanes/
+            coverage/test-workers/
+            coverage/test-aggregate/
             test-batches-output.txt
             test-output.txt
           if-no-files-found: error

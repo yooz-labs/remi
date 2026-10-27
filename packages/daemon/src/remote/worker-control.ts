@@ -4,6 +4,9 @@ type Signer = relayV2.Signer;
 type HostCommand = relayV2.HostCommand;
 
 export class WorkerControl {
+  get ready(): boolean {
+    return !this.poisoned && this.admitted && this.socket?.readyState === WebSocket.OPEN;
+  }
   private socket: WebSocket | undefined;
   private admitted = false;
   private poisoned = false;

@@ -219,6 +219,7 @@ export class RelayMachineChannel {
       );
       if (
         !message ||
+        message.type.startsWith('session_terminal_') ||
         [
           'auth_challenge',
           'auth_result',

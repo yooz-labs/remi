@@ -2,7 +2,7 @@
  * Deterministic builders for the golden protocol fixtures (#895).
  *
  * One builder per {@link ProtocolMessageMap} key, each calling that type's
- * own `create*` factory (not a hand-built object literal) so the fixture
+ * own `create*` factory or strict decoder of independently frozen vectors, so the fixture
  * reflects the real wire shape the factory produces. All non-envelope
  * arguments are fixed literals so builders are reproducible; the envelope
  * `id`/`timestamp` (and, for `session_update`, the nested `session.startedAt`
@@ -22,6 +22,10 @@ import { decodeFileDownloadFrame } from '../../../src/file-download.ts';
 import { identityFromClaudeId } from '../../../src/harness.ts';
 import { decodeImageInsertionFrame } from '../../../src/image-insertion.ts';
 import { decodeImageStagingFrame } from '../../../src/image-staging.ts';
+import {
+  createNotificationHostRequest,
+  createNotificationHostResponse,
+} from '../../../src/notification-host.ts';
 import {
   createAck,
   createAgentOutput,
@@ -88,6 +92,7 @@ import {
   createSecurePushUnregisterResponse,
 } from '../../../src/secure-push-messages.ts';
 import { decodeStructuredChatFrame } from '../../../src/structured-chat.ts';
+import { decodeTerminalViewFrame } from '../../../src/terminal-view.ts';
 import type {
   Acknowledgment,
   Bullet,
@@ -262,7 +267,7 @@ const FIXED_TRANSCRIPT_BLOCK: TranscriptContentBlock = {
 };
 
 /**
- * One builder per registry key, calling that type's own factory with fixed
+ * One builder per registry key, using its factory or frozen strict vectors with fixed
  * arguments. Typed against {@link ProtocolMessageMap} so adding a registry
  * key without adding a builder here is a compile error (mirrors the
  * `MessageHandlers` totality property from #896).
@@ -320,7 +325,35 @@ function downloadVector<K extends Extract<keyof ProtocolMessageMap, `file_fetch_
   return message as ProtocolMessageMap[K];
 }
 
+function terminalVector<K extends Extract<keyof ProtocolMessageMap, `session_terminal_${string}`>>(
+  type: K,
+): ProtocolMessageMap[K] {
+  const vectors = JSON.parse(
+    readFileSync(new URL('../terminal-view/vectors.json', import.meta.url), 'utf8'),
+  ) as { positive: { raw: string; expected: { type: string } }[] };
+  const vector = vectors.positive.find((entry) => entry.expected.type === type);
+  const message = vector && decodeTerminalViewFrame(vector.raw);
+  if (!message || message.type !== type) throw new Error('Missing strict terminal fixture');
+  return message as ProtocolMessageMap[K];
+}
+
 export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => ProtocolMessageMap[K] } = {
+  notification_host_request: () => createNotificationHostRequest('enable'),
+  notification_host_response: () =>
+    createNotificationHostResponse('fixture-request-id', {
+      success: true,
+      state: 'registration_required',
+      relayUrl: 'wss://relay.example',
+      expiresAt: null,
+    }),
+  session_terminal_open: () => terminalVector('session_terminal_open'),
+  session_terminal_opened: () => terminalVector('session_terminal_opened'),
+  session_terminal_read: () => terminalVector('session_terminal_read'),
+  session_terminal_snapshot: () => terminalVector('session_terminal_snapshot'),
+  session_terminal_unchanged: () => terminalVector('session_terminal_unchanged'),
+  session_terminal_close: () => terminalVector('session_terminal_close'),
+  session_terminal_closed: () => terminalVector('session_terminal_closed'),
+  session_terminal_refused: () => terminalVector('session_terminal_refused'),
   file_fetch_begin: () => downloadVector('file_fetch_begin'),
   file_fetch_accepted: () => downloadVector('file_fetch_accepted'),
   file_fetch_read: () => downloadVector('file_fetch_read'),

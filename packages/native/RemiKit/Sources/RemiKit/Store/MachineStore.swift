@@ -152,6 +152,10 @@ public struct MachineState: Sendable, Equatable, Identifiable {
     var recoveryRevision: UInt64 = 0
     public var recoveryProgress: MachineRecoveryProgress?
     public var activeConnectionLayer: MachineConnectionLayer? { status == .connected ? endpoint.connectionLayer : nil }
+    /// #1586: a healthy locked route has no permitted improvement to search for.
+    var needsRouteRecovery: Bool {
+        status != .connected || (connectionPreference == .automatic && endpoint.connectionLayer != .local)
+    }
     public var attemptedConnectionLayer: MachineConnectionLayer? {
         if let progress = recoveryProgress { return progress.attemptedLayer }
         switch status {
@@ -172,9 +176,21 @@ public struct MachineState: Sendable, Equatable, Identifiable {
     public var status: MachineConnectionStatus
     public var sessionConnectionIssue: String?
     public var sessions: [DiscoverableSession]
+    /// Live events override a list's coarse discovery state until their socket is lost (#1673).
+    struct SessionActivity: Sendable, Equatable {
+        let status: String
+        let origin: MachineEndpoint
+    }
+    var sessionActivity: [String: SessionActivity] = [:]
+    public func activityStatus(for session: DiscoverableSession) -> String {
+        sessionActivity[session.sessionId]?.status ?? session.status
+    }
     public var hasLoadedSessions: Bool
     public var questions: [QuestionMessage]
     public var capabilities: [String]
+    /// The protocol version and capabilities of the latest `hello_ack` from this machine's active
+    /// route (#1639). Nil until one arrives; decide with `HubSupport.check`, never by daemon version.
+    public internal(set) var helloAck: HubSupportAck?
     public var harnesses: [String]
     public var activeSessions: [DiscoverableSession] { sessions.filter { $0.source == "daemon" } }
 
@@ -278,6 +294,12 @@ public struct ResumedSessionDestination: Sendable, Equatable, Identifiable {
     public let sessionID: String
 }
 
+/// A session on a machine: the machine profile id (`MachineState.id`) with the session id.
+/// A session id alone is not unique across machines (a resumed or forked session, an id
+/// collision). The store's routes, transcripts, session views, pending answers, kill requests
+/// and transcript loading are keyed by it, and its per-session calls take the machine id (#1601).
+public typealias MachineSessionKey = ResumeSessionKey
+
 public struct ResumeSessionKey: Sendable, Hashable {
     public let machineID: String
     public let sessionID: String
@@ -302,6 +324,14 @@ public struct ResolvedQuestionRecord: Sendable, Equatable, Identifiable {
 public final class MachineStore {
     public private(set) var machines: [MachineState]
     public private(set) var pairingAttempts: [PairingAttemptState] = []
+    /// One read-only terminal view per session while its pane is open (#1639).
+    public internal(set) var terminalViews: [MachineSessionKey: TerminalViewController] = [:]
+    /// One file download per session while its sheet is open (#1639).
+    public internal(set) var fileDownloads: [MachineSessionKey: FileDownloadFlow] = [:]
+    /// Which routes may carry pane frames. Tests inject another; the app always uses `current`.
+    @ObservationIgnored var paneTransportPolicy = PaneTransportPolicy.current
+    /// Receives each pane frame instead of the connection, so tests can read what would be sent.
+    @ObservationIgnored var paneFrameSender: (@MainActor (String) -> Void)?
     @ObservationIgnored private var pairingCoordinator: PairingAttemptCoordinator?
     @ObservationIgnored private var pairingOriginLifetime: UUID?
     @ObservationIgnored private var recoveryCoordinator: MachineRecoveryCoordinator?
@@ -314,12 +344,19 @@ public final class MachineStore {
     func ownedConnectionID(_ endpoint: MachineEndpoint) -> ObjectIdentifier? { connections[endpoint].map(ObjectIdentifier.init) }
     private(set) var ownedSessionListReceipts: Set<String> = []
     func ownedRequestSessions(_ endpoint: MachineEndpoint) -> String? { requestSessions(from: endpoint) }
-    var ownedSessionRoutes: [String: MachineEndpoint] { routeBySession }
+    var ownedSessionRoutes: [MachineSessionKey: MachineEndpoint] { routeBySession }
     var ownedParentRoutes: [MachineEndpoint: MachineEndpoint] { parentByConnection }
     var ownedTerminalRootIDs: [String] { terminalRootStates.keys.map(\.id).sorted() }
+    var ownedApprovalPollCount: Int { approvalPollTasks.count }
+    func ownedStartApprovalPolling(_ endpoint: MachineEndpoint) { startApprovalPolling(for: endpoint) }
     #endif
-    public private(set) var transcriptsBySession: [String: [TranscriptContentMessage]] = [:]
-    public private(set) var sessionViewsBySession: [String: [SessionViewMeta]] = [:]
+    public private(set) var transcriptsBySession: [MachineSessionKey: [TranscriptContentMessage]] = [:]
+    /// A selected conversation reloads when its owning socket becomes ready or reconnects.
+    /// The routing table itself is not observable; a task keyed only by session id misses this.
+    public private(set) var transcriptRouteGenerations: [MachineSessionKey: UUID] = [:]
+    /// Sessions whose transcript has been requested and has not finished arriving (#1602).
+    public private(set) var transcriptsLoading: Set<MachineSessionKey> = []
+    public private(set) var sessionViewsBySession: [MachineSessionKey: [SessionViewMeta]] = [:]
     public private(set) var recentRepositoriesByMachine: [String: [RecentRepository]] = [:]
     public private(set) var latestError: ErrorMessage?
     public private(set) var latestOperationError: String?
@@ -332,8 +369,11 @@ public final class MachineStore {
     public private(set) var relayNotificationNotice: String?
     public private(set) var relayNotificationBusy = false
     public private(set) var lastRelayAnswerOutcome: String?
+    public private(set) var pairedNotificationStates: [String: PairedNotificationState] = [:]
+    @ObservationIgnored private var notificationAttempts: [String: UUID] = [:]
     @ObservationIgnored private let pushStore: RemiPushStore?
     @ObservationIgnored private var pushTrustIntents: Set<MachineEndpoint> = []
+    @ObservationIgnored private var pushRenewalIntents: Set<MachineEndpoint> = []
     @ObservationIgnored private var pushEnabled: Set<String> = []
     @ObservationIgnored private var suspendedRelayRooms: Set<Data> = []
     @ObservationIgnored private var tokenRegistration: (token: String, environment: String)?
@@ -351,7 +391,11 @@ public final class MachineStore {
     @ObservationIgnored private let identity: ClientIdentity
     @ObservationIgnored private let clientVersion: String
     @ObservationIgnored private let clientId: String
-    @ObservationIgnored private var connections: [MachineEndpoint: RemiConnection] = [:]
+    @ObservationIgnored var connections: [MachineEndpoint: RemiConnection] = [:]
+    /// Bounded retries for machines waiting for local approval (#1599); see ApprovalPollPolicy.
+    @ObservationIgnored private var approvalPollTasks: [MachineEndpoint: Task<Void, Never>] = [:]
+    /// Injectable so tests can use a short interval; production always uses the standard policy.
+    @ObservationIgnored var approvalPollPolicy = ApprovalPollPolicy.standard
     @ObservationIgnored private(set) var connectionGenerations: [MachineEndpoint: UUID] = [:]
     @ObservationIgnored private var relayPairingContexts: [MachineEndpoint: (Data, UInt64?)] = [:]
     @ObservationIgnored private var parentByConnection: [MachineEndpoint: MachineEndpoint] = [:]
@@ -359,16 +403,24 @@ public final class MachineStore {
     @ObservationIgnored private var failedDirectRoutes: Set<MachineEndpoint> = []
     @ObservationIgnored private var terminalRootStates: [MachineEndpoint: RemiConnectionState] = [:]
     @ObservationIgnored private var failedChildConnections: Set<MachineEndpoint> = []
-    @ObservationIgnored private var routeBySession: [String: MachineEndpoint] = [:]
-    @ObservationIgnored private var sessionByKillRequest: [String: String] = [:]
+    @ObservationIgnored var routeBySession: [MachineSessionKey: MachineEndpoint] = [:]
+    /// One timer per loading key, so a repeat load replaces the older timer instead of being cut
+    /// short by it. The request id says which request the timer and a failure belong to.
+    @ObservationIgnored private var transcriptLoadTimers: [MachineSessionKey: (requestID: String, task: Task<Void, Never>)] = [:]
+    @ObservationIgnored private var transcriptKeyByRequest: [String: MachineSessionKey] = [:]
+    /// How long a load may run without a completion; tests shorten it.
+    @ObservationIgnored var transcriptLoadTimeoutOverride: Duration?
+    @ObservationIgnored var sessionByKillRequest: [String: MachineSessionKey] = [:]
     @ObservationIgnored private var resumeAttemptsByRequest: [String: ResumeAttempt] = [:]
     @ObservationIgnored private var resumeRequestByChild: [MachineEndpoint: String] = [:]
     @ObservationIgnored private var resumeTimeoutTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var resolvedQuestionRemovalTasks: [String: Task<Void, Never>] = [:]
     private var pendingRelayIDs: Set<String> = []
-    @ObservationIgnored private var pendingAnswers: [String: AnswerMessage] = [:]
+    @ObservationIgnored private var pendingAnswers: [String: PendingAnswer] = [:]
     @ObservationIgnored private var localNotificationAnswers: Set<RemiNavigationDestination> = []
     #if DEBUG
+    /// Replaces the wire send of a transcript request, so a timer test does not depend on a live hub.
+    @ObservationIgnored var ownedTranscriptSend: (@MainActor (TranscriptLoadRequestMessage) async throws -> Void)?
     @ObservationIgnored var ownedBeforeLocalAnswerSend: (@Sendable () async throws -> Void)?
     #endif
     @ObservationIgnored private var answerTimeoutTasks: [String: Task<Void, Never>] = [:]
@@ -438,6 +490,7 @@ public final class MachineStore {
             relayNotificationNotice = "Finish pairing before enabling relay notifications."; return
         }
         let intent = UUID()
+        if pairedNotificationState(for: endpoint) == .renewalRequired { pushRenewalIntents.insert(endpoint) }
         connectionGenerations[endpoint] = intent
         let foreground = connections.removeValue(forKey: endpoint)
         parentByConnection[endpoint] = nil
@@ -446,6 +499,153 @@ public final class MachineStore {
         pushEnabled.insert(endpoint.id); pushTrustIntents.insert(endpoint)
         relayNotificationNotice = "Authenticating the relay before enabling notifications."
         connect(endpoint, parent: endpoint)
+    }
+
+    public func pairedNotificationState(for endpoint: MachineEndpoint) -> PairedNotificationState? {
+        guard let index = machineIndex(containing: endpoint) else { return nil }
+        return pairedNotificationStates[machines[index].id]
+    }
+
+    /// Current direct authentication bootstraps a separate notification-only route (#1680).
+    public func registerPairedNotifications(on endpoint: MachineEndpoint, continueAfterInactivity: Bool = false) async {
+        guard let index = machineIndex(containing: endpoint), let pushStore,
+              machines[index].endpoint == endpoint, endpoint.relayPin == nil,
+              machines[index].status == .connected,
+              let connection = connections[endpoint], let generation = connectionGenerations[endpoint],
+              let tokenRegistration else { return }
+        let host = machines[index].id, pairing = machines[index].pairingLifetime
+        guard notificationAttempts[host] == nil else { return }
+        guard machines[index].capabilities.contains("notifications") else {
+            pairedNotificationStates[host] = .unsupported; return
+        }
+        let attempt = UUID()
+        notificationAttempts[host] = attempt; pairedNotificationStates[host] = .registering
+        defer {
+            if notificationAttempts[host] == attempt {
+                notificationAttempts[host] = nil
+                if pairedNotificationStates[host] == .registering,
+                   machines.contains(where: { $0.id == host && $0.pairingLifetime == pairing }) {
+                    pairedNotificationStates[host] = .failed
+                }
+            }
+        }
+        let epochStore = registrationEpoch, epoch = registrationEpoch.capture(), identity = identity
+        let ledgerGeneration = try? pushStore.generation()
+        let validate: @Sendable () throws -> Void = {
+            try identity.validateForSigning()
+            guard !Task.isCancelled, epochStore.matches(epoch), let ledgerGeneration,
+                  try pushStore.generation() == ledgerGeneration else { throw RemiPushError.changed }
+        }
+        func current() -> Bool {
+            guard let found = machineIndex(containing: endpoint) else { return false }
+            return notificationAttempts[host] == attempt && connectionGenerations[endpoint] == generation && connections[endpoint] === connection &&
+                machines[found].id == host && machines[found].pairingLifetime == pairing && running
+        }
+        do {
+            try validate()
+            let (key, validateConnection) = try await connection.notificationHostPermit()
+            guard current() else { throw RemiPushError.changed }
+            let request = NotificationHostRequest(action: continueAfterInactivity ? "continue" : "enable")
+            let response = try await connection.exchange(request, id: request.id, expected: .notificationHost,
+                until: .now.advanced(by: .seconds(12)), validate: { try validate(); try validateConnection() })
+            try validate()
+            try validateConnection()
+            guard current(), try await connection.notificationHostKey() == key,
+                  case .notificationHost(let status) = response else { throw RemiPushError.changed }
+            guard status.success else {
+                pairedNotificationStates[host] = status.error == "HOST_SETUP_REQUIRED" ? .hostSetupRequired :
+                    status.error == "UNSUPPORTED" ? .unsupported : .failed
+                return
+            }
+            if status.state == "renewal_required" { pairedNotificationStates[host] = .renewalRequired; return }
+            guard let route = status.relayUrl, let ledgerGeneration else { throw RemiPushError.invalid }
+            let pin = try RelayMachinePin(relayURL: route, machinePublicKey: RelayCrypto.b64(key))
+            let room = RelayCrypto.room(key)
+            var origin = URLComponents(string: route)
+            origin?.scheme = "https"
+            guard let audience = origin?.string else { throw RemiPushError.invalid }
+            try validate()
+            guard current() else { throw RemiPushError.changed }
+            try pushStore.commitNotificationMachine(room: room, machinePublicKey: key, origin: audience,
+                relayURL: route, authority: identity.pushAuthority, generation: ledgerGeneration)
+            guard let trust = try pushStore.machine(room: room) else { throw RemiPushError.changed }
+            let registered = try await PairedNotificationRegistration.register(pin: pin, identity: identity,
+                pushStore: pushStore, token: tokenRegistration.token, environment: tokenRegistration.environment,
+                renewExpired: continueAfterInactivity, validate: {
+                    try validate()
+                    try validateConnection()
+                    guard try pushStore.machine(room: room) == trust else { throw RemiPushError.changed }
+                }, ownedSession: notificationOwnedSession)
+            try validate()
+            guard current() else { throw RemiPushError.changed }
+            pairedNotificationStates[host] = registered.success ? .registered :
+                registered.error == "RENEWAL_REQUIRED" ? .renewalRequired : .failed
+        } catch {
+            if current() { pairedNotificationStates[host] = .failed }
+        }
+    }
+
+    private var notificationOwnedSession: URLSession? {
+        #if DEBUG
+        ownedTestSession
+        #else
+        nil
+        #endif
+    }
+
+    /// Local trust is removed before awaiting host acknowledgement or accepting late callbacks.
+    @discardableResult public func revokePairedNotifications(on endpoint: MachineEndpoint) async -> Bool {
+        guard let index = machineIndex(containing: endpoint), let pushStore else { return false }
+        let host = machines[index].id
+        let identity = identity
+        registrationEpoch.replace()
+        notificationAttempts[host] = nil
+        pushEnabled.remove(endpoint.id); pushTrustIntents.remove(endpoint); pushRenewalIntents.remove(endpoint)
+        do {
+            let rooms = notificationRooms(for: machines[index])
+            for trust in try pushStore.notificationMachines() where rooms.contains(trust.room) {
+                try pushStore.forgetMachine(room: trust.room)
+            }
+            pairedNotificationStates[host] = .disabled
+            let connection = connections[endpoint]
+            if endpoint.relayPin != nil {
+                let request = RelayPushRequest(type: "secure_push_unregister_request", id: UUID().uuidString.lowercased(),
+                    timestamp: Date().ISO8601Format(), token: nil, environment: nil, pushPublicKey: nil, keyVersion: nil)
+                let response = try await connection?.exchange(request, id: request.id,
+                    expected: .push(type: "secure_push_unregister_response", keyVersion: nil),
+                    until: .now.advanced(by: .seconds(12)), validate: { try identity.validateForSigning() })
+                guard case .push(let result) = response, result.success else { throw RemiPushError.unavailable }
+                return true
+            }
+            let key = try await connection?.notificationHostKey()
+            guard let key else { throw RemiPushError.unavailable }
+            try pushStore.forgetMachine(room: RelayCrypto.room(key))
+            let request = NotificationHostRequest(action: "revoke")
+            let response = try await connection?.exchange(request, id: request.id, expected: .notificationHost,
+                until: .now.advanced(by: .seconds(12)), validate: { try identity.validateForSigning() })
+            guard case .notificationHost(let result) = response, result.success, result.state == "revoked" else {
+                throw RemiPushError.unavailable
+            }
+            return true
+        } catch {
+            relayNotificationNotice = "Notifications are disabled here. Reconnect to confirm revocation on the host."
+            return false
+        }
+    }
+
+    /// A restored profile's display ID is an endpoint until discovery arrives.
+    /// Revocation instead derives rooms from validated durable key material (#1680).
+    private func notificationRooms(for machine: MachineState) -> Set<Data> {
+        var keys: [Data] = []
+        if let saved = machine.durableMachinePublicKey, let key = try? RelayCrypto.unb64(saved) { keys.append(key) }
+        for route in machine.routingRoutes {
+            if let saved = route.expectedPublicKey, let key = Data(base64Encoded: saved), key.base64EncodedString() == saved { keys.append(key) }
+            if let pin = route.relayPin, let key = try? RelayCrypto.unb64(pin.machinePublicKey) { keys.append(key) }
+        }
+        return Set(keys.compactMap { key in
+            guard (try? MachineIdentityVerifier.machineID(forPublicKey: key)) != nil else { return nil }
+            return RelayCrypto.room(key)
+        })
     }
 
     /// Persisted preference is only registration intent. Existing completed
@@ -488,15 +688,21 @@ public final class MachineStore {
                       try pushStore.machine(room: room) == trust, try pushStore.recipient() == recipient else { throw RemiPushError.changed }
             }
             try validate()
-            let request = RelayPushRequest(type: "secure_push_register_request", id: UUID().uuidString.lowercased(),
+            var request = RelayPushRequest(type: "secure_push_register_request", id: UUID().uuidString.lowercased(),
                 timestamp: Date().ISO8601Format(), token: tokenRegistration.token, environment: tokenRegistration.environment,
                 pushPublicKey: RelayCrypto.b64(recipient.publicKey), keyVersion: recipient.keyVersion)
+            request.renewExpired = pushRenewalIntents.remove(endpoint) != nil
             let response = try await connection.exchange(request, id: request.id,
                 expected: .push(type: "secure_push_register_response", keyVersion: recipient.keyVersion),
                 until: .now.advanced(by: .seconds(10)), validate: validate)
             guard connectionGenerations[endpoint] == generation else { return }
             try validate()
-            guard case .push(let result) = response, result.success else { throw RemiPushError.unavailable }
+            guard case .push(let result) = response else { throw RemiPushError.unavailable }
+            if let index = machineIndex(containing: endpoint) {
+                pairedNotificationStates[machines[index].id] = result.success ? .registered :
+                    result.error == "RENEWAL_REQUIRED" ? .renewalRequired : .failed
+            }
+            guard result.success else { throw RemiPushError.unavailable }
             relayNotificationNotice = "Relay notifications enabled."
         } catch {
             if connectionGenerations[endpoint] == generation { relayNotificationNotice = "Relay notifications could not be registered. Enable them again to retry." }
@@ -511,6 +717,20 @@ public final class MachineStore {
             guard opened.kind != .dismiss else { throw RemiPushError.changed }
             verifiedRelayNotification = opened; relayNotificationNotice = nil
         } catch { verifiedRelayNotification = nil; relayNotificationNotice = "This relay notification is no longer available. Open the current session." }
+    }
+    /// Navigation uses a reverified capsule and an existing paired machine; it grants no operation.
+    public var notificationSessionDestination: MachineSessionKey? {
+        guard let opened = verifiedRelayNotification, let pushStore,
+              (try? pushStore.recheck(opened)) != nil, let session = opened.sessionID,
+              let machine = machines.first(where: { state in
+                  if let encoded = state.durableMachinePublicKey,
+                     (try? RelayCrypto.unb64(encoded)) == opened.machine.machinePublicKey { return true }
+                  return state.routingRoutes.contains { route in
+                      if let key = route.expectedPublicKey, Data(base64Encoded: key) == opened.machine.machinePublicKey { return true }
+                      return route.relayPin?.machinePublicKey == RelayCrypto.b64(opened.machine.machinePublicKey)
+                  }
+              }) else { return nil }
+        return sessionKey(machineID: machine.id, sessionID: session)
     }
     public var relayNotificationChoices: [VerifiedPushOption] {
         verifiedRelayNotification.map(NativeAnswerProof.choices) ?? []
@@ -540,7 +760,7 @@ public final class MachineStore {
         // URLSession cancellation/actor retirement, not only BYE emission.
         let began = ContinuousClock.now, settlement = began.advanced(by: .seconds(23))
         guard let pushStore else { return .refused }
-        guard MachineConnectionPolicyFence.shared.permitsRelay(room: original.machine.room) else {
+        guard original.machine.notificationOnly || MachineConnectionPolicyFence.shared.permitsRelay(room: original.machine.room) else {
             if action == nil { relayNotificationNotice = "This machine is locked to a direct layer. Open the session to answer there." }
             return .refused
         }
@@ -559,7 +779,7 @@ public final class MachineStore {
         let identity = identity, lifetime = answerEpoch.capture(), lifetimeStore = answerEpoch
         let presentation = presentationEpoch.capture(), presentationStore = presentationEpoch
         let validate: @Sendable () throws -> Void = {
-            guard MachineConnectionPolicyFence.shared.permitsRelay(room: original.machine.room) else { throw RemiPushError.changed }
+            guard original.machine.notificationOnly || MachineConnectionPolicyFence.shared.permitsRelay(room: original.machine.room) else { throw RemiPushError.changed }
             guard lifetimeStore.matches(lifetime), action != nil || presentationStore.matches(presentation), !Task.isCancelled else { throw RemiPushError.changed }
             try identity.validateForSigning(); try pushStore.recheck(original)
             if let action { try pushStore.recheckAction(action) }
@@ -763,6 +983,7 @@ public final class MachineStore {
             }, publish: { [weak self] id, progress in
                 guard let self, let index = self.machines.firstIndex(where: { $0.id == id }),
                       self.recoveryTerminalRoot(for: self.machines[index]) == nil else { return }
+                guard self.machines[index].needsRouteRecovery || progress.phase == .recovered else { return }
                 self.machines[index].recoveryProgress = progress
                 if progress.phase == .probing { self.recoveryRequestedLifetimes.insert(self.machines[index].pairingLifetime) }
                 if self.machines[index].status != .connected {
@@ -783,8 +1004,7 @@ public final class MachineStore {
     func recoveryTargets() -> [MachineRecoveryTarget] {
         guard running else { return [] }
         return machines.compactMap { machine in
-            guard machine.configurationIssue == nil,
-                  machine.status != .connected || machine.endpoint.connectionLayer != .local else { return nil }
+            guard machine.configurationIssue == nil, machine.needsRouteRecovery else { return nil }
             if machine.status == .connecting, !recoveryRequestedLifetimes.contains(machine.pairingLifetime) { return nil }
             if pairingOriginLifetime == machine.pairingLifetime,
                pairingAttempts.last?.phase.isTerminal == false { return nil }
@@ -914,18 +1134,20 @@ public final class MachineStore {
     }
 
     private func retireProfileConnections(machineIndex index: Int, reason: String) {
+        machines[index].sessionActivity.removeAll()
         let roots = Set(machines[index].routingRoutes)
         failedDirectRoutes.subtract(roots)
         for root in roots { terminalRootStates[root] = nil }
         let retired = parentByConnection.filter { roots.contains($0.value) }.map(\.key)
         let retiredSet = Set(retired)
-        for answer in Array(pendingAnswers.values) where routeBySession[answer.sessionId].map(retiredSet.contains) == true {
+        for answer in Array(pendingAnswers.values) where routeBySession[answer.key].map(retiredSet.contains) == true {
             finishAnswer(answer.id, outcome: "uncertain")
         }
         for (requestID, attempt) in Array(resumeAttemptsByRequest) where roots.contains(attempt.parent) {
             finishResume(requestID: requestID, error: reason)
         }
         routeBySession = routeBySession.filter { !retiredSet.contains($0.value) }
+        transcriptRouteGenerations = transcriptRouteGenerations.filter { routeBySession[$0.key] != nil }
         for route in retired {
             if let key = brokerKey(route), let generation = connectionGenerations[route] {
                 RelayChannelBroker.shared.retire(key: key, id: generation)
@@ -952,6 +1174,8 @@ public final class MachineStore {
         pairingCoordinator?.cancel()
         recoveryCoordinator?.stop()
         recoveryRequestedLifetimes.removeAll()
+        for task in approvalPollTasks.values { task.cancel() }
+        approvalPollTasks.removeAll()
         running = false
         registrationEpoch.replace()
         if invalidateAnswers { answerEpoch.replace() }
@@ -960,6 +1184,7 @@ public final class MachineStore {
         }
         let activeConnections = Array(connections.values)
         connectionGenerations.removeAll()
+        transcriptRouteGenerations.removeAll()
         relayPairingContexts.removeAll()
         connections.removeAll()
         parentByConnection.removeAll()
@@ -969,6 +1194,7 @@ public final class MachineStore {
         failedChildConnections.removeAll()
         for index in machines.indices {
             machines[index].status = .disconnected
+            machines[index].sessionActivity.removeAll()
             machines[index].sessionConnectionIssue = nil
             machines[index].recoveryProgress = nil
         }
@@ -1018,7 +1244,7 @@ public final class MachineStore {
             setConnectionPreference(preference, for: oldRoute)
             let affected = parentByConnection.filter { $0.value.id == oldRoute.id }.map(\.key)
             let affectedSet = Set(affected)
-            for answer in Array(pendingAnswers.values) where routeBySession[answer.sessionId].map(affectedSet.contains) == true {
+            for answer in Array(pendingAnswers.values) where routeBySession[answer.key].map(affectedSet.contains) == true {
                 finishAnswer(answer.id, outcome: "uncertain")
             }
             for (requestID, attempt) in Array(resumeAttemptsByRequest) where attempt.parent.id == oldRoute.id {
@@ -1213,9 +1439,14 @@ public final class MachineStore {
         defer { if running { recoveryCoordinator?.trigger(newEpisode: true) } }
         registrationEpoch.replace(); answerEpoch.replace()
         let removedMachine = machines.first { $0.routingRoutes.contains(where: { $0.id == endpoint.id }) }
+        if let removedMachine {
+            notificationAttempts[removedMachine.id] = nil
+            pairedNotificationStates[removedMachine.id] = nil
+        }
         if removedMachine?.pairingLifetime == pairingOriginLifetime { pairingCoordinator?.cancel() }
         let configuredRoutes = removedMachine?.routingRoutes ?? [endpoint]
         for route in configuredRoutes {
+            approvalPollTasks.removeValue(forKey: route)?.cancel()
             if let pin = route.relayPin, let room = try? RelayCrypto.room(RelayCrypto.unb64(pin.machinePublicKey)),
                verifiedRelayNotification?.machine.room == room { verifiedRelayNotification = nil }
             pushTrustIntents.remove(route)
@@ -1223,7 +1454,7 @@ public final class MachineStore {
             relayPairingContexts.removeValue(forKey: route)
         }
         let answerIDs: [String] = pendingAnswers.compactMap { id, answer in
-            let route = routeBySession[answer.sessionId] ?? endpoint
+            let route = routeBySession[answer.key] ?? endpoint
             guard let parent = parentByConnection[route],
                   configuredRoutes.contains(where: { $0.id == parent.id }) else { return nil }
             return id
@@ -1248,8 +1479,9 @@ public final class MachineStore {
         for id in resolvedIDs {
             resolvedQuestionRemovalTasks.removeValue(forKey: id)?.cancel()
         }
-        let sessionIDs = Set(removedMachine?.sessions.map(\.sessionId) ?? [])
-        let viewIDs = Set(sessionIDs.flatMap { sessionViewsBySession[$0]?.map(\.agentId) ?? [] })
+        // Per-session tables are keyed by the machine profile id (`MachineState.id`), the same id
+        // `sessionKey(machineID:sessionID:)` resolves to; the route and wire ids are covered too.
+        let keyMachineIDs = machineIDs.union([removedMachine?.id].compactMap { $0 })
         let endpoints = parentByConnection.compactMap { connection, parent in
             configuredRoutes.contains(where: { $0.id == parent.id }) ? connection : nil
         }
@@ -1267,6 +1499,9 @@ public final class MachineStore {
         // Callback/reconnect authority is invalidated before durable forget.
         if let pushStore {
             do {
+                if let removedMachine {
+                    for room in notificationRooms(for: removedMachine) { try pushStore.forgetMachine(room: room) }
+                }
                 for pin in configuredRoutes.compactMap(\.relayPin) {
                     try pushStore.forgetMachine(room: RelayCrypto.room(RelayCrypto.unb64(pin.machinePublicKey)))
                 }
@@ -1289,18 +1524,43 @@ public final class MachineStore {
         machines.removeAll { state in state.routingRoutes.contains(where: { $0.id == endpoint.id }) }
         for route in configuredRoutes { pushEnabled.remove(route.id) }
         routeBySession = routeBySession.filter { _, route in !endpoints.contains(route) }
-        sessionByKillRequest = sessionByKillRequest.filter { _, sessionID in
-            !sessionIDs.contains(sessionID)
-        }
-        for sessionID in sessionIDs {
-            transcriptsBySession[sessionID] = nil
-            sessionViewsBySession[sessionID] = nil
-        }
-        for viewID in viewIDs {
-            transcriptsBySession[viewID] = nil
-        }
+        sessionByKillRequest = sessionByKillRequest.filter { !keyMachineIDs.contains($0.value.machineID) }
+        // Terminal text and partial file bytes go with the machine.
+        terminalViews = terminalViews.filter { !keyMachineIDs.contains($0.key.machineID) }
+        fileDownloads = fileDownloads.filter { !keyMachineIDs.contains($0.key.machineID) }
+        transcriptsBySession = transcriptsBySession.filter { !keyMachineIDs.contains($0.key.machineID) }
+        sessionViewsBySession = sessionViewsBySession.filter { !keyMachineIDs.contains($0.key.machineID) }
+        for key in transcriptsLoading where keyMachineIDs.contains(key.machineID) { finishTranscriptLoad(key) }
         for machineID in machineIDs { recentRepositoriesByMachine[machineID] = nil }
         return true
+    }
+
+    /// Retries a machine that is waiting for local approval a few seconds apart, for a bounded
+    /// window, so approving the key on the machine connects without another tap (#1599). The
+    /// loop ends when the machine leaves the waiting state, is removed, or the window closes.
+    private func startApprovalPolling(for endpoint: MachineEndpoint) {
+        guard approvalPollTasks[endpoint] == nil else { return }
+        let policy = approvalPollPolicy
+        approvalPollTasks[endpoint] = Task { [weak self] in
+            let start = ContinuousClock.now
+            while !Task.isCancelled {
+                try? await Task.sleep(for: policy.interval)
+                guard !Task.isCancelled, let self else { return }
+                guard self.isWaitingForApproval(endpoint),
+                      policy.shouldContinue(elapsed: ContinuousClock.now - start)
+                else {
+                    self.approvalPollTasks[endpoint] = nil
+                    return
+                }
+                self.retryApproval(for: endpoint)
+            }
+        }
+    }
+
+    private func isWaitingForApproval(_ endpoint: MachineEndpoint) -> Bool {
+        guard let index = machineIndex(containing: endpoint) else { return false }
+        if case .waitingForApproval = machines[index].status { return true }
+        return false
     }
 
     public func retryApproval(for endpoint: MachineEndpoint) {
@@ -1354,6 +1614,14 @@ public final class MachineStore {
         machines.first { $0.id == identifier || $0.machineID == identifier }
     }
 
+    /// What the person sees when no permitted route reaches the machine.
+    nonisolated static func unreachableMessage(layer: String) -> String {
+        "Remi could not reach this machine over \(layer). Check that it is running and on the network, or choose another way to connect in the machine's settings."
+    }
+
+    /// The hub sends CLOSING while it shuts down (a restart, an update).
+    nonisolated static func isExpectedClosure(_ error: ErrorMessage) -> Bool { error.code == "CLOSING" }
+
     public func clearLatestError() {
         latestError = nil
         latestOperationError = nil
@@ -1365,17 +1633,66 @@ public final class MachineStore {
         relayNotificationNotice = nil
     }
 
-    public func loadTranscript(sessionId: String) {
-        guard let connection = connection(forSession: sessionId) else { return }
+    /// The store's key for a session: the machine profile id (a legacy endpoint id is
+    /// resolved to it) with the session id.
+    public func sessionKey(machineID: String, sessionID: String) -> MachineSessionKey {
+        MachineSessionKey(machineID: machine(withIdentifier: machineID)?.id ?? machineID, sessionID: sessionID)
+    }
+
+    public func isLoadingTranscript(machineID: String, sessionID: String) -> Bool {
+        transcriptsLoading.contains(sessionKey(machineID: machineID, sessionID: sessionID))
+    }
+
+    public func transcriptRouteGeneration(machineID: String, sessionID: String) -> UUID? {
+        let key = sessionKey(machineID: machineID, sessionID: sessionID)
+        guard let route = routeBySession[key], let current = connectionGenerations[route],
+              transcriptRouteGenerations[key] == current else { return nil }
+        return current
+    }
+
+    @discardableResult
+    public func loadTranscript(machineID: String, sessionId: String) -> String? {
+        let key = sessionKey(machineID: machineID, sessionID: sessionId)
+        guard let connection = connection(for: key) else { return nil }
         let request = TranscriptLoadRequestMessage(
             id: UUID().uuidString.lowercased(),
             timestamp: Date().ISO8601Format(),
             sessionId: sessionId
         )
-        Task { try? await connection.send(request) }
+        transcriptsLoading.insert(key)
+        if let previous = transcriptLoadTimers[key] { transcriptKeyByRequest[previous.requestID] = nil }
+        transcriptLoadTimers[key]?.task.cancel()
+        transcriptKeyByRequest[request.id] = key
+        Task { [weak self] in
+            do {
+                #if DEBUG
+                if let send = self?.ownedTranscriptSend { try await send(request); return }
+                #endif
+                try await connection.send(request)
+            } catch { self?.finishTranscriptLoad(key, requestID: request.id) }
+        }
+        // The completion message is the normal end; this keeps a lost one from showing a spinner forever.
+        let timeout = transcriptLoadTimeoutOverride ?? Self.transcriptLoadTimeout
+        transcriptLoadTimers[key] = (request.id, Task { [weak self] in
+            do { try await Task.sleep(for: timeout) } catch { return }
+            self?.finishTranscriptLoad(key, requestID: request.id)
+        })
+        return request.id
     }
 
+    /// Ends a load. With a request id, only the load that request started: a stale timer or
+    /// failure from a replaced request must not end the newer one.
+    private func finishTranscriptLoad(_ key: MachineSessionKey, requestID: String? = nil) {
+        if let requestID, transcriptLoadTimers[key]?.requestID != requestID { return }
+        transcriptLoadTimers.removeValue(forKey: key)?.task.cancel()
+        transcriptKeyByRequest = transcriptKeyByRequest.filter { $0.value != key }
+        transcriptsLoading.remove(key)
+    }
+
+    nonisolated static let transcriptLoadTimeout: Duration = .seconds(45)
+
     public func answer(
+        machineID: String,
         sessionId: String,
         questionId: String,
         answer: String,
@@ -1384,7 +1701,8 @@ public final class MachineStore {
         cancel: Bool? = nil,
         message: String? = nil
     ) {
-        guard let connection = connection(forSession: sessionId) else { return }
+        let key = sessionKey(machineID: machineID, sessionID: sessionId)
+        guard let connection = connection(for: key) else { return }
         let response = AnswerMessage(
             id: UUID().uuidString.lowercased(),
             timestamp: Date().ISO8601Format(),
@@ -1396,13 +1714,13 @@ public final class MachineStore {
             cancel: cancel,
             message: message
         )
-        if let route = routeBySession[sessionId], route.relayPin != nil {
+        if let route = routeBySession[key], route.relayPin != nil {
             guard pendingAnswers.count < 64 else {
                 latestOperationError = "Too many answers are awaiting confirmation. Wait before answering."
                 return
             }
-            guard !pendingAnswers.values.contains(where: { $0.sessionId == sessionId && $0.questionId == questionId }) else { return }
-            pendingAnswers[response.id] = response
+            guard !pendingAnswers.values.contains(where: { $0.key == key && $0.questionId == questionId }) else { return }
+            pendingAnswers[response.id] = PendingAnswer(machineID: key.machineID, message: response)
             answerTimeoutTasks[response.id] = Task { [weak self] in
                 do { try await Task.sleep(for: .seconds(15)) } catch { return }
                 self?.finishAnswer(response.id, outcome: "uncertain")
@@ -1417,7 +1735,7 @@ public final class MachineStore {
     public func localQuestionNotification(for destination: RemiNavigationDestination) -> LocalQuestionNotificationPlan? {
         guard let machine = machine(withIdentifier: destination.machineID),
               machine.status == .connected, machine.endpoint.relayPin == nil,
-              let route = routeBySession[destination.sessionID], route.relayPin == nil,
+              let route = routeBySession[sessionKey(machineID: machine.id, sessionID: destination.sessionID)], route.relayPin == nil,
               parentByConnection[route] == machine.endpoint,
               let generation = connectionGenerations[route],
               let current = machine.questions.first(where: {
@@ -1433,7 +1751,7 @@ public final class MachineStore {
         guard !Task.isCancelled,
               let machine = machine(withIdentifier: destination.machineID),
               machine.status == .connected, machine.endpoint.relayPin == nil,
-              let route = routeBySession[destination.sessionID], route.relayPin == nil,
+              let route = routeBySession[sessionKey(machineID: machine.id, sessionID: destination.sessionID)], route.relayPin == nil,
               parentByConnection[route] == machine.endpoint,
               let generation = connectionGenerations[route], let connection = connections[route],
               let current = machine.questions.first(where: {
@@ -1477,8 +1795,8 @@ public final class MachineStore {
     }
 
     @discardableResult
-    public func sendChat(sessionId: String, content: String, claudeSessionId: String? = nil) async -> Bool {
-        guard let connection = connection(forSession: sessionId) else {
+    public func sendChat(machineID: String, sessionId: String, content: String, claudeSessionId: String? = nil) async -> Bool {
+        guard let connection = connection(for: sessionKey(machineID: machineID, sessionID: sessionId)) else {
             latestOperationError = "Cannot send message: this session is unavailable."
             return false
         }
@@ -1498,8 +1816,8 @@ public final class MachineStore {
         }
     }
 
-    public func terminateSession(sessionId: String) {
-        guard let connection = connection(forSession: sessionId) else {
+    public func terminateSession(machineID: String, sessionId: String) {
+        guard let connection = connection(for: sessionKey(machineID: machineID, sessionID: sessionId)) else {
             latestOperationError = "Cannot exit session: its daemon is unavailable."
             return
         }
@@ -1508,7 +1826,7 @@ public final class MachineStore {
             timestamp: Date().ISO8601Format(),
             sessionId: sessionId
         )
-        sessionByKillRequest[request.id] = sessionId
+        sessionByKillRequest[request.id] = sessionKey(machineID: machineID, sessionID: sessionId)
         Task {
             do {
                 try await connection.send(request)
@@ -1718,6 +2036,7 @@ public final class MachineStore {
             target.usesConfiguredDisplayName = true
         }
         target.sessions = mergeSessions(target.sessions, with: source.sessions)
+        target.sessionActivity.merge(source.sessionActivity) { current, _ in current }
         for question in source.questions where !target.questions.contains(where: { $0.question.id == question.question.id }) {
             target.questions.append(question)
         }
@@ -1739,6 +2058,7 @@ public final class MachineStore {
             !machines[machineIndex].connectionPreference.permits($0)
         })
         for route in parentByConnection.filter({ forbidden.contains($0.value) }).map(\.key) {
+            machines[machineIndex].sessionActivity = machines[machineIndex].sessionActivity.filter { $0.value.origin != route }
             if let key = brokerKey(route), let generation = connectionGenerations[route] {
                 RelayChannelBroker.shared.retire(key: key, id: generation)
             }
@@ -1807,8 +2127,7 @@ public final class MachineStore {
         }
         guard let relay = permitted.first(where: { $0.relayPin != nil }) else {
             let layer = machines[machineIndex].connectionPreference.title
-            machines[machineIndex].status = .unavailable(reason:
-                "\(layer) is unreachable. Check that network or choose another connection layer.")
+            machines[machineIndex].status = .unavailable(reason: Self.unreachableMessage(layer: layer))
             return
         }
         machines[machineIndex].activate(relay)
@@ -1829,6 +2148,7 @@ public final class MachineStore {
 
     private func failClosed(_ endpoint: MachineEndpoint, machineIndex: Int, reason: String) {
         machines[machineIndex].status = .unavailable(reason: reason)
+        machines[machineIndex].sessionActivity.removeAll()
         let roots = Set(machines[machineIndex].routingRoutes)
         for route in parentByConnection.filter({ roots.contains($0.value) }).map(\.key) {
             if let key = brokerKey(route), let generation = connectionGenerations[route] {
@@ -1845,6 +2165,19 @@ public final class MachineStore {
         guard connectionGenerations[endpoint] == generation, let parent = parentByConnection[endpoint],
               let index = machineIndex(containing: parent)
         else { return }
+        if case .connected = state {} else { panesConnectionLost(endpoint) }
+        if case .connected = state {} else {
+            machines[index].sessionActivity = machines[index].sessionActivity.filter { $0.value.origin != endpoint }
+            transcriptRouteGenerations = transcriptRouteGenerations.filter { routeBySession[$0.key] != endpoint }
+            // A lost child does not disconnect its hub. Apply the same conservative idle
+            // display as a lost machine, instead of reviving a stale "active" list entry.
+            if endpoint.id != parent.id {
+                for session in machines[index].activeSessions where
+                    routeBySession[MachineSessionKey(machineID: machines[index].id, sessionID: session.sessionId)] == endpoint {
+                    machines[index].sessionActivity[session.sessionId] = .init(status: "idle", origin: endpoint)
+                }
+            }
+        }
 
         // Session sockets do not describe the machine route's reachability, but
         // terminal failures still need an explicit retry path (#1561).
@@ -1892,7 +2225,12 @@ public final class MachineStore {
             if machines[index].recoveryProgress?.phase == .recovered { machines[index].recoveryProgress = nil }
             if machines[index].endpoint == endpoint {
                 if case .unavailable = machines[index].status { break }
-                machines[index].status = .connecting
+                // A quiet approval retry must not flash the row between waiting and connecting.
+                var quietApprovalRetry = false
+                if approvalPollTasks[endpoint] != nil, case .waitingForApproval = machines[index].status {
+                    quietApprovalRetry = true
+                }
+                if !quietApprovalRetry { machines[index].status = .connecting }
             }
             if case .retrying = state, machines[index].durableMachinePublicKey != nil {
                 recoveryRequestedLifetimes.insert(machines[index].pairingLifetime)
@@ -1901,8 +2239,10 @@ public final class MachineStore {
         case .connected:
             routeDidConnect(endpoint, machineIndex: index)
             machines[index].status = .connected
+            if !machines[index].needsRouteRecovery { machines[index].recoveryProgress = nil }
         case .awaitingLocalApproval(let fingerprint):
             machines[index].status = .waitingForApproval(fingerprint: fingerprint)
+            startApprovalPolling(for: endpoint)
         case .awaitingRelayConfirmation(let fingerprint):
             machines[index].status = .waitingForRelayConfirmation(fingerprint: fingerprint)
         case .rejected(let reason):
@@ -1930,6 +2270,14 @@ public final class MachineStore {
         }
 
         switch event {
+        case .sessionUpdate(let message):
+            machines[index].sessionActivity[message.session.id] = .init(status: message.session.status, origin: endpoint)
+        case .remiStatus(let message):
+            machines[index].sessionActivity[message.sessionId] = .init(status: message.status.sessionStatus, origin: endpoint)
+        case .terminalView(let message):
+            receiveTerminalView(message, from: endpoint, machineIndex: index)
+        case .fileFetch(let message):
+            receiveFileFetch(message, from: endpoint, machineIndex: index)
         case .relayStreamEnded(let clean):
             if !clean { latestOperationError = "The relay closed without an authenticated ending. Check the session for uncertain delivery." }
         case .relayReady:
@@ -1937,7 +2285,7 @@ public final class MachineStore {
             if pushEnabled.contains(endpoint.id) { Task { await registerRelayToken(on: endpoint, generation: generation) } }
         case .answerResult(let result):
             guard let pending = pendingAnswers[result.requestId],
-                  routeBySession[pending.sessionId] == endpoint,
+                  routeBySession[pending.key] == endpoint,
                   pending.sessionId == result.sessionId, pending.questionId == result.questionId else { return }
             finishAnswer(result.requestId, outcome: result.outcome)
         case .hello(let acknowledgment, let authority):
@@ -1953,9 +2301,10 @@ public final class MachineStore {
             if endpoint == parent {
                 routeDidConnect(endpoint, machineIndex: index)
                 machines[index].status = .connected
-            }
+                }
             if endpoint == parent && machines[index].endpoint.id == endpoint.id {
                 machines[index].capabilities = acknowledgment.capabilities ?? []
+                machines[index].helloAck = HubSupportAck(acknowledgment)
                 machines[index].harnesses = acknowledgment.harnesses ?? ["claude"]
                 if machines[index].capabilities.contains("workspaces") {
                     requestRecentRepositories(from: endpoint)
@@ -1965,7 +2314,7 @@ public final class MachineStore {
                let attempt = resumeAttemptsByRequest[requestID] {
                 let sessionID = attempt.resolvedSessionID ?? acknowledgment.sessionId
                     ?? attempt.requestedSessionID
-                routeBySession[sessionID] = endpoint
+                routeBySession[MachineSessionKey(machineID: machines[index].id, sessionID: sessionID)] = endpoint
                 completeResume(requestID: requestID, sessionID: sessionID)
             }
             requestSessions(from: endpoint)
@@ -1983,7 +2332,15 @@ public final class MachineStore {
             let activeOrigin = machines[index].endpoint.id == parent.id
             if activeOrigin {
                 for session in response.sessions {
-                    routeBySession[session.sessionId] = endpoint
+                    let key = MachineSessionKey(machineID: machines[index].id, sessionID: session.sessionId)
+                    // Siblings list the same on-disk transcripts. Keep a ready reader so
+                    // an unrelated census cannot retrigger the selected history task.
+                    if session.source != "daemon", let owner = routeBySession[key],
+                       let ready = transcriptRouteGenerations[key], connectionGenerations[owner] == ready {
+                        continue
+                    }
+                    routeBySession[key] = endpoint
+                    transcriptRouteGenerations[key] = generation
                 }
             }
             machines[index].sessions = mergeSessions(
@@ -2007,7 +2364,7 @@ public final class MachineStore {
                 }
             }
         case .question(let message):
-            routeBySession[message.sessionId] = endpoint
+            routeBySession[MachineSessionKey(machineID: machines[index].id, sessionID: message.sessionId)] = endpoint
             machines[index].questions.removeAll { $0.question.id == message.question.id }
             machines[index].questions.append(message)
             let resolvedID = Self.resolvedQuestionID(
@@ -2026,17 +2383,20 @@ public final class MachineStore {
                 liveQuestionIDs: Set(snapshot.questionIds)
             )
         case .transcript(let message):
-            var transcript = transcriptsBySession[message.sessionId, default: []]
+            let key = MachineSessionKey(machineID: machines[index].id, sessionID: message.sessionId)
+            var transcript = transcriptsBySession[key, default: []]
             transcript.removeAll { $0.entryUuid == message.entryUuid }
             transcript.append(message)
-            transcriptsBySession[message.sessionId] = transcript
+            transcriptsBySession[key] = transcript
         case .sessionViews(let message):
-            sessionViewsBySession[message.sessionId] = message.subagents.sorted {
+            sessionViewsBySession[MachineSessionKey(machineID: machines[index].id, sessionID: message.sessionId)] = message.subagents.sorted {
                 if $0.active != $1.active { return $0.active && !$1.active }
                 return $0.agentType.localizedCaseInsensitiveCompare($1.agentType) == .orderedAscending
             }
             for subagent in message.subagents {
-                routeBySession[subagent.agentId] = endpoint
+                let key = MachineSessionKey(machineID: machines[index].id, sessionID: subagent.agentId)
+                routeBySession[key] = endpoint
+                transcriptRouteGenerations[key] = generation
             }
         case .recentRepositories(let response):
             guard endpoint == parent else { return }
@@ -2055,21 +2415,29 @@ public final class MachineStore {
         case .resumeSessionResponse(let response):
             handleResumeResponse(response, from: endpoint, parent: parent)
         case .killSessionResponse(let response):
-            guard let sessionId = sessionByKillRequest.removeValue(forKey: response.requestId) else {
+            guard let killedKey = sessionByKillRequest.removeValue(forKey: response.requestId) else {
                 return
             }
             if response.success {
+                let sessionId = killedKey.sessionID
                 machines[index].sessions.removeAll { $0.sessionId == sessionId }
+                machines[index].sessionActivity[sessionId] = nil
                 machines[index].questions.removeAll { $0.sessionId == sessionId }
-                transcriptsBySession[sessionId] = nil
-                sessionViewsBySession[sessionId] = nil
-                routeBySession[sessionId] = nil
+                transcriptsBySession[killedKey] = nil
+                transcriptRouteGenerations[killedKey] = nil
+                sessionViewsBySession[killedKey] = nil
+                routeBySession[killedKey] = nil
+                terminalViews[killedKey] = nil
+                fileDownloads[killedKey] = nil
                 requestSessions(from: parent)
             } else {
                 latestOperationError = "Could not exit session: \(response.error ?? "Unknown daemon error")"
             }
         case .error(let error):
-            latestError = error
+            // A hub announcing that it is closing is expected, not an error: the machine's own
+            // offline row says what the person needs to know (#1603).
+            if !Self.isExpectedClosure(error) { latestError = error }
+            finishTranscriptLoadFailed(by: error, machineID: machines[index].id)
             if error.code == "AUTH_REQUIRED" {
                 let requestIDs = resumeAttemptsByRequest.compactMap { requestID, attempt in
                     attempt.parent == endpoint ? requestID : nil
@@ -2078,8 +2446,23 @@ public final class MachineStore {
                     finishResume(requestID: requestID, error: error.message)
                 }
             }
-        case .sessionUpdate, .transcriptComplete, .unsupported, .pushRegistration:
+        case .transcriptComplete(let complete):
+            finishTranscriptLoad(MachineSessionKey(machineID: machines[index].id, sessionID: complete.sessionId))
+        case .unsupported, .pushRegistration:
             break
+        }
+    }
+
+    /// An error that names a transcript request (`details.requestId`, as the relay's delivery
+    /// errors do) or a session (`details.sessionId`) ends that load, so a refused request does
+    /// not leave a spinner until the timeout. No other wire field is read.
+    private func finishTranscriptLoadFailed(by error: ErrorMessage, machineID: String) {
+        if case .string(let requestID)? = error.details?["requestId"],
+           let key = transcriptKeyByRequest[requestID], key.machineID == machineID {
+            finishTranscriptLoad(key, requestID: requestID)
+        }
+        if case .string(let sessionID)? = error.details?["sessionId"] {
+            finishTranscriptLoad(MachineSessionKey(machineID: machineID, sessionID: sessionID))
         }
     }
 
@@ -2116,7 +2499,8 @@ public final class MachineStore {
         resumeAttemptsByRequest[response.requestId] = attempt
         requestSessions(from: parent)
         guard let port = response.port else {
-            routeBySession[sessionID] = endpoint
+            let machineID = machine(withIdentifier: parent.id)?.id ?? parent.id
+            routeBySession[MachineSessionKey(machineID: machineID, sessionID: sessionID)] = endpoint
             completeResume(requestID: response.requestId, sessionID: sessionID)
             return
         }
@@ -2254,8 +2638,10 @@ public final class MachineStore {
         Task { try? await connection.send(request) }
     }
 
-    private func connection(forSession sessionId: String) -> RemiConnection? {
-        routeBySession[sessionId].flatMap { connections[$0] }
+    /// The connection that holds this session on this machine. There is deliberately no
+    /// session-id-only lookup: two machines can hold the same id (#1601).
+    func connection(for key: MachineSessionKey) -> RemiConnection? {
+        routeBySession[key].flatMap { connections[$0] }
     }
 
     private func mergeSessions(
@@ -2268,6 +2654,16 @@ public final class MachineStore {
         }
         return sessions.values.sorted { $0.projectPath < $1.projectPath }
     }
+}
+
+/// An answer awaiting its receipt, with the machine it was sent to.
+private struct PendingAnswer {
+    let machineID: String
+    let message: AnswerMessage
+    var id: String { message.id }
+    var sessionId: String { message.sessionId }
+    var questionId: String { message.questionId }
+    var key: MachineSessionKey { MachineSessionKey(machineID: machineID, sessionID: message.sessionId) }
 }
 
 private struct ResumeAttempt {

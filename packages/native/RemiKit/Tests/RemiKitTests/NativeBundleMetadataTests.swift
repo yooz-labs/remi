@@ -1,3 +1,4 @@
+import CoreFoundation
 import Foundation
 import Testing
 
@@ -30,5 +31,53 @@ struct NativeBundleMetadataTests {
             from: Data(contentsOf: Self.native.appendingPathComponent("\(target)/Remi.entitlements")), format: nil) as? [String: Any])
         #expect(entitlements["com.apple.security.network.server"] == nil)
         #expect(entitlements["com.apple.developer.networking.multicast"] == nil)
+    }
+
+    /// A question is delivered as Time Sensitive (RemiPushPresentation); without the entitlement
+    /// the system quietly delivers it as an ordinary alert, which Focus can silence.
+    @Test(arguments: ["Mac", "iPhone"])
+    func appsDeclareTimeSensitiveNotifications(_ target: String) throws {
+        let entitlements = try #require(PropertyListSerialization.propertyList(
+            from: Data(contentsOf: Self.native.appendingPathComponent("\(target)/Remi.entitlements")), format: nil) as? [String: Any])
+        #expect(entitlements["com.apple.developer.usernotifications.time-sensitive"] as? Bool == true)
+    }
+
+    /// The iPhone target runs on the iPad as a native app, so it declares all four orientations
+    /// itself instead of leaving the iPad's list to a default: a partial list is rejected at upload.
+    @Test func theIPadDeclaresEveryOrientation() throws {
+        let plist = try #require(PropertyListSerialization.propertyList(
+            from: Data(contentsOf: Self.native.appendingPathComponent("iPhone/Info.plist")), format: nil) as? [String: Any])
+        let orientations = try #require(plist["UISupportedInterfaceOrientations~ipad"] as? [String])
+        #expect(Set(orientations) == [
+            "UIInterfaceOrientationPortrait", "UIInterfaceOrientationPortraitUpsideDown",
+            "UIInterfaceOrientationLandscapeLeft", "UIInterfaceOrientationLandscapeRight",
+        ])
+        #expect(plist["UIRequiresFullScreen"] == nil)
+    }
+
+    @Test(arguments: ["Mac", "iPhone"])
+    func privateAddressPolicyDoesNotDisablePublicTransportSecurity(_ target: String) throws {
+        let plist = try #require(PropertyListSerialization.propertyList(
+            from: Data(contentsOf: Self.native.appendingPathComponent("\(target)/Info.plist")), format: nil) as? [String: Any])
+        let ats = try #require(plist["NSAppTransportSecurity"] as? [String: Any])
+        #expect(Set(ats.keys) == ["NSExceptionDomains"])
+        let exceptions = try #require(ats["NSExceptionDomains"] as? [String: [String: Any]])
+        #expect(Set(exceptions.keys) == [
+            "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "172.16.0.0/12",
+            "192.168.0.0/16", "::1", "fc00::/7",
+        ])
+        for policy in exceptions.values {
+            #expect(Set(policy.keys) == ["NSExceptionAllowsInsecureHTTPLoads"])
+            #expect(policy["NSExceptionAllowsInsecureHTTPLoads"] as? Bool == true)
+        }
+    }
+
+    @Test(arguments: ["Mac", "iPhone"])
+    func exportDeclarationRecordsTheOwnerConfirmedExemption(_ target: String) throws {
+        let plist = try #require(PropertyListSerialization.propertyList(
+            from: Data(contentsOf: Self.native.appendingPathComponent("\(target)/Info.plist")), format: nil) as? [String: Any])
+        let value = try #require(plist["ITSAppUsesNonExemptEncryption"] as? NSNumber)
+        #expect(CFGetTypeID(value) == CFBooleanGetTypeID())
+        #expect(value.boolValue == false)
     }
 }
