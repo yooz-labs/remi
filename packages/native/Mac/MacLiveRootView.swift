@@ -17,6 +17,7 @@ struct MacLiveRootView: View {
     /// The command center is the landing view; leaving it for a conversation is remembered.
     @AppStorage("remi.mac.shows-board") private var showingBoard = true
     @State private var showingNewSession = false
+    @State private var showingJump = false
     @State private var newSessionMachineID: String?
     @State private var newSessionRepository: String?
     @State private var showingAddMachine = false
@@ -308,6 +309,20 @@ struct MacLiveRootView: View {
             showingBoard = false
             selectedMachineID = profileID
             pairingAttemptID = nil
+        }
+        .sheet(isPresented: $showingJump) {
+            MacJumpPalette(
+                sessions: allSessions,
+                questions: allQuestions,
+                onChoose: { result in
+                    showingJump = false
+                    switch result {
+                    case .session(let session): openFromBoard(session)
+                    case .question(_, let owner): if let owner { openFromBoard(owner) }
+                    }
+                },
+                onClose: { showingJump = false }
+            )
         }
         .sheet(isPresented: $showingAddMachine) {
             MacAddMachineSheet(pairingAttempts: store.pairingAttempts,
@@ -716,6 +731,7 @@ struct MacLiveRootView: View {
         MacWorkspaceActions(
             availability: commandAvailability,
             goToInbox: showInbox,
+            jump: { showingJump = true },
             nextNeedsYou: { jumpToNeedsYou(offset: 1) },
             previousNeedsYou: { jumpToNeedsYou(offset: -1) },
             moveMachine: { moveMachineSelection(offset: $0) },
