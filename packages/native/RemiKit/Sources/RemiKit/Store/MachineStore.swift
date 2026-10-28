@@ -415,6 +415,20 @@ public final class MachineStore {
     /// short by it. The request id says which request the timer and a failure belong to.
     @ObservationIgnored private var transcriptLoadTimers: [MachineSessionKey: (requestID: String, task: Task<Void, Never>)] = [:]
     @ObservationIgnored private var transcriptKeyByRequest: [String: MachineSessionKey] = [:]
+    /// History arriving for a load in progress. It is published once, when the load ends, so
+    /// replaying a long conversation is one UI update and not one per message. This holds for a
+    /// refresh of an already-shown transcript too: live entries wait for the load to end, and a
+    /// lost completion ends at the load timeout.
+    @ObservationIgnored private var transcriptStaging: [MachineSessionKey: [TranscriptContentMessage]] = [:]
+    /// The connection generation a live session's transcript was completely loaded on. Only a
+    /// session of the machine's own daemon (listed with source "daemon") is recorded: the daemon
+    /// sends that session's new entries to every connected client, so the kept text stays current
+    /// while the connection lives. Any other id (a subagent, an ended session) is read once from
+    /// disk with no live entries after it, so it is never recorded and is reloaded each time.
+    @ObservationIgnored private var transcriptLoadedOn: [MachineSessionKey: UUID] = [:]
+    /// The connection generation a load in flight was sent on. A load that started on a
+    /// generation that has since been replaced will never complete, so it does not block a new one.
+    @ObservationIgnored private var transcriptLoadStartedOn: [MachineSessionKey: UUID] = [:]
     /// How long a load may run without a completion; tests shorten it.
     @ObservationIgnored var transcriptLoadTimeoutOverride: Duration?
     @ObservationIgnored var sessionByKillRequest: [String: MachineSessionKey] = [:]
@@ -426,6 +440,8 @@ public final class MachineStore {
     @ObservationIgnored private var pendingAnswers: [String: PendingAnswer] = [:]
     @ObservationIgnored private var localNotificationAnswers: Set<RemiNavigationDestination> = []
     #if DEBUG
+    /// Replaces a route's connection generation, as a reconnect does.
+    func ownedReplaceConnectionGeneration(_ route: MachineEndpoint) { connectionGenerations[route] = UUID() }
     /// Replaces the wire send of a transcript request, so a timer test does not depend on a live hub.
     @ObservationIgnored var ownedTranscriptSend: (@MainActor (TranscriptLoadRequestMessage) async throws -> Void)?
     @ObservationIgnored var ownedBeforeLocalAnswerSend: (@Sendable () async throws -> Void)?
@@ -1537,6 +1553,8 @@ public final class MachineStore {
         fileDownloads = fileDownloads.filter { !keyMachineIDs.contains($0.key.machineID) }
         transcriptsBySession = transcriptsBySession.filter { !keyMachineIDs.contains($0.key.machineID) }
         outgoingBySession = outgoingBySession.filter { !keyMachineIDs.contains($0.key.machineID) }
+        transcriptStaging = transcriptStaging.filter { !keyMachineIDs.contains($0.key.machineID) }
+        transcriptLoadedOn = transcriptLoadedOn.filter { !keyMachineIDs.contains($0.key.machineID) }
         sessionViewsBySession = sessionViewsBySession.filter { !keyMachineIDs.contains($0.key.machineID) }
         for key in transcriptsLoading where keyMachineIDs.contains(key.machineID) { finishTranscriptLoad(key) }
         for machineID in machineIDs { recentRepositoriesByMachine[machineID] = nil }
@@ -1673,6 +1691,7 @@ public final class MachineStore {
         } else {
             transcriptLoadHadHistory.remove(key)
         }
+        if let route = routeBySession[key] { transcriptLoadStartedOn[key] = connectionGenerations[route] }
         if let previous = transcriptLoadTimers[key] { transcriptKeyByRequest[previous.requestID] = nil }
         transcriptLoadTimers[key]?.task.cancel()
         transcriptKeyByRequest[request.id] = key
@@ -1695,13 +1714,92 @@ public final class MachineStore {
 
     /// Ends a load. With a request id, only the load that request started: a stale timer or
     /// failure from a replaced request must not end the newer one.
-    private func finishTranscriptLoad(_ key: MachineSessionKey, requestID: String? = nil) {
+    private func finishTranscriptLoad(_ key: MachineSessionKey, requestID: String? = nil, completed: Bool = false) {
         if let requestID, transcriptLoadTimers[key]?.requestID != requestID { return }
         transcriptLoadTimers.removeValue(forKey: key)?.task.cancel()
         transcriptKeyByRequest = transcriptKeyByRequest.filter { $0.value != key }
+        // What arrived is shown even when the load did not finish; only a complete one counts as cached.
+        if let staged = transcriptStaging.removeValue(forKey: key) { transcriptsBySession[key] = staged }
+        transcriptLoadStartedOn[key] = nil
+        if completed, let route = routeBySession[key], let generation = connectionGenerations[route],
+           isLiveSession(key) {
+            transcriptLoadedOn[key] = generation
+        }
         transcriptsLoading.remove(key)
         transcriptLoadHadHistory.remove(key)
     }
+
+    /// A new user entry with the text of a message sent from here confirms that message.
+    /// A first load (no transcript published when it began) replays history, so a match there
+    /// proves nothing; a refresh of a published transcript delivers only genuinely new entries.
+    /// A "sending" entry is confirmable on purpose: if the echo beats the send's return,
+    /// markSent finds no entry and does nothing.
+    private func confirmOutgoing(_ message: TranscriptContentMessage, existing: [TranscriptContentMessage], key: MachineSessionKey) {
+        guard message.role == "user", !existing.contains(where: { $0.entryUuid == message.entryUuid }) else { return }
+        let replayingHistory = transcriptsLoading.contains(key) && !transcriptLoadHadHistory.contains(key)
+        guard !replayingHistory else { return }
+        outgoingBySession[key]?.confirm(transcriptContent: message.content)
+    }
+
+    /// An entry replaces the one with its id (and moves to the end, where a streaming update belongs),
+    /// or is added.
+    private static func apply(_ message: TranscriptContentMessage, to transcript: inout [TranscriptContentMessage]) {
+        transcript.removeAll { $0.entryUuid == message.entryUuid }
+        transcript.append(message)
+    }
+
+    /// Whether the key is a session of its machine's own daemon (listed with source "daemon").
+    private func isLiveSession(_ key: MachineSessionKey) -> Bool {
+        machines.first { $0.id == key.machineID }?.activeSessions.contains { $0.sessionId == key.sessionID } == true
+    }
+
+    /// Loads a session's transcript unless this connection already holds it whole or is loading
+    /// it on the current connection. Only a live session of the machine is kept (see
+    /// `transcriptLoadedOn`); a subagent or ended session is read again each time. A load that
+    /// started on a connection that has since been replaced does not count as loading.
+    /// Returns whether a request went out.
+    @discardableResult
+    public func ensureTranscript(machineID: String, sessionId: String) -> Bool {
+        let key = sessionKey(machineID: machineID, sessionID: sessionId)
+        let current = routeBySession[key].flatMap { connectionGenerations[$0] }
+        if transcriptsLoading.contains(key), transcriptLoadStartedOn[key] == current { return false }
+        if let current, transcriptLoadedOn[key] == current { return false }
+        return loadTranscript(machineID: machineID, sessionId: sessionId) != nil
+    }
+
+    /// The most loads one `warmActiveTranscripts` call starts, so a machine with many sessions
+    /// does not hold them all.
+    nonisolated static let warmTranscriptLimit = 24
+
+    /// The order warming visits sessions: one from each machine in turn, so no machine uses up
+    /// the limit before the others get a session.
+    nonisolated static func warmOrder(_ lists: [(machineID: String, sessionIDs: [String])]) -> [(machineID: String, sessionID: String)] {
+        var order: [(machineID: String, sessionID: String)] = []
+        var round = 0
+        while lists.contains(where: { round < $0.sessionIDs.count }) {
+            for list in lists where round < list.sessionIDs.count { order.append((list.machineID, list.sessionIDs[round])) }
+            round += 1
+        }
+        return order
+    }
+
+    /// Loads the transcript of live sessions on connected machines that are not loaded yet, in
+    /// `warmOrder`, stopping after `warmTranscriptLimit` loads started in this call. Sessions
+    /// already loaded or loading do not count toward the limit. Cheap to call again.
+    public func warmActiveTranscripts() {
+        warmTranscripts(in: machines.filter { $0.status == .connected }.map { ($0.id, $0.activeSessions.map(\.sessionId)) })
+    }
+
+    /// The loading half of `warmActiveTranscripts`, over the given machines' session ids.
+    func warmTranscripts(in lists: [(machineID: String, sessionIDs: [String])]) {
+        var started = 0
+        for (machineID, sessionID) in Self.warmOrder(lists) {
+            guard started < Self.warmTranscriptLimit else { return }
+            if ensureTranscript(machineID: machineID, sessionId: sessionID) { started += 1 }
+        }
+    }
+
+    func hasStagedTranscript(for key: MachineSessionKey) -> Bool { transcriptStaging[key] != nil }
 
     nonisolated static let transcriptLoadTimeout: Duration = .seconds(45)
 
@@ -2428,19 +2526,17 @@ public final class MachineStore {
             )
         case .transcript(let message):
             let key = MachineSessionKey(machineID: machines[index].id, sessionID: message.sessionId)
-            var transcript = transcriptsBySession[key, default: []]
-            let isNewEntry = !transcript.contains { $0.entryUuid == message.entryUuid }
-            // A first load (no transcript published when it began) replays history, so a match there proves nothing.
-            // A refresh (a transcript already published) delivers only genuinely new entries.
-            // A "sending" entry is confirmable on purpose: if the echo beats the send's return,
-            // markSent finds no entry and does nothing.
-            let replayingHistory = transcriptsLoading.contains(key) && !transcriptLoadHadHistory.contains(key)
-            if isNewEntry, message.role == "user", !replayingHistory {
-                outgoingBySession[key]?.confirm(transcriptContent: message.content)
+            if transcriptsLoading.contains(key) {
+                var staged = transcriptStaging[key] ?? transcriptsBySession[key] ?? []
+                confirmOutgoing(message, existing: staged, key: key)
+                Self.apply(message, to: &staged)
+                transcriptStaging[key] = staged
+            } else {
+                var transcript = transcriptsBySession[key, default: []]
+                confirmOutgoing(message, existing: transcript, key: key)
+                Self.apply(message, to: &transcript)
+                transcriptsBySession[key] = transcript
             }
-            transcript.removeAll { $0.entryUuid == message.entryUuid }
-            transcript.append(message)
-            transcriptsBySession[key] = transcript
         case .sessionViews(let message):
             sessionViewsBySession[MachineSessionKey(machineID: machines[index].id, sessionID: message.sessionId)] = message.subagents.sorted {
                 if $0.active != $1.active { return $0.active && !$1.active }
@@ -2501,7 +2597,10 @@ public final class MachineStore {
                 }
             }
         case .transcriptComplete(let complete):
-            finishTranscriptLoad(MachineSessionKey(machineID: machines[index].id, sessionID: complete.sessionId))
+            finishTranscriptLoad(
+                MachineSessionKey(machineID: machines[index].id, sessionID: complete.sessionId),
+                completed: true
+            )
         case .unsupported, .pushRegistration:
             break
         }

@@ -8,11 +8,11 @@ import Testing
 @MainActor
 @Suite(.serialized)
 struct SessionAddressingTests {
-    private func decode<T: Decodable>(_ name: String, as type: T.Type) throws -> T {
+    func decode<T: Decodable>(_ name: String, as type: T.Type) throws -> T {
         try JSONDecoder().decode(T.self, from: FixtureConformanceTests.fixture(name))
     }
 
-    private func listener() throws -> (Int32, Int) {
+    func listener() throws -> (Int32, Int) {
         let descriptor = Darwin.socket(AF_INET, SOCK_STREAM, 0)
         guard descriptor >= 0 else { throw CocoaError(.fileReadUnknown) }
         var address = sockaddr_in()
@@ -28,7 +28,7 @@ struct SessionAddressingTests {
         return (descriptor, Int(UInt16(bigEndian: address.sin_port)))
     }
 
-    private struct TwoMachines {
+    struct TwoMachines {
         let store: MachineStore
         let routes: [MachineEndpoint]
         let ids: (a: String, b: String)
@@ -37,7 +37,7 @@ struct SessionAddressingTests {
     }
 
     /// Two connected machines that both hold the fixture question's session id.
-    private func twoMachines() throws -> TwoMachines {
+    func twoMachines() throws -> TwoMachines {
         let first = try listener(), second = try listener()
         let keys = [Curve25519.Signing.PrivateKey().publicKey.rawRepresentation,
                     Curve25519.Signing.PrivateKey().publicKey.rawRepresentation]

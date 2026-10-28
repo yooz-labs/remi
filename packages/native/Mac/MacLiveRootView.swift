@@ -8,12 +8,21 @@ struct MacLiveRootView: View {
 
     @AppStorage("remi.mac.selected-machine") private var selectedMachineID = ""
     @AppStorage("remi.mac.selected-session") private var selectedSessionID = ""
+    @AppStorage("remi.mac.last-threads") private var lastThreadsStorage = ""
     @SceneStorage("remi.mac.column-layout") private var columnLayoutStorage = ""
     @SceneStorage("remi.mac.drafts") private var draftsStorage = ""
     @Environment(\.scenePhase) private var scenePhase
     @State private var draftBox = MacDraftBox()
     @State private var draftFlush: Task<Void, Never>?
     @State private var showingInbox = false
+    /// When each currently connected machine connected. A hub lists its sessions before its
+    /// per-session daemons do, so until a machine has been connected for the grace period a
+    /// remembered thread missing from its list is waited for, not replaced.
+    @State private var connectedAt: [String: Date] = [:]
+    /// Bumped when a machine's grace period ends, to run `reconcileNavigation` then.
+    @State private var graceTick = 0
+    /// The session `reconcileNavigation` chose as a fallback; `onChange` skips recording it.
+    @State private var autoSelected: (machineID: String, sessionID: String)?
     @State private var showingNewSession = false
     @State private var newSessionMachineID: String?
     @State private var newSessionRepository: String?
@@ -161,7 +170,7 @@ struct MacLiveRootView: View {
                             initialQuestionID: notificationDestination?.questionID,
                             transcriptForView: { transcript(machineID: session.machineID, sessionID: $0) },
                             isLoadingTranscript: { store.isLoadingTranscript(machineID: session.machineID, sessionID: $0) },
-                            onSelectView: { store.loadTranscript(machineID: session.machineID, sessionId: $0) },
+                            onSelectView: { store.ensureTranscript(machineID: session.machineID, sessionId: $0) },
                             onAnswer: { questionId, value in
                                 store.answer(
                                     machineID: session.machineID,
@@ -218,7 +227,7 @@ struct MacLiveRootView: View {
                             sessionID: session.id
                         ))
                         .task(id: store.transcriptRouteGeneration(machineID: session.machineID, sessionID: session.id)) {
-                            store.loadTranscript(machineID: session.machineID, sessionId: session.id)
+                            store.ensureTranscript(machineID: session.machineID, sessionId: session.id)
                         }
                     } else if notificationDestination != nil {
                         ContentUnavailableView(
@@ -249,6 +258,42 @@ struct MacLiveRootView: View {
             restoreColumnLayout()
             reconcileNavigation()
         }
+        .task(id: GraceWindow(connectedAt: connectedAt, tick: graceTick)) {
+            let now = Date()
+            let ends = connectedAt.values
+                .map { $0.addingTimeInterval(RemiLastThreads.defaultGrace) }
+                .filter { $0 > now }
+            guard let earliest = ends.min() else { return }
+            guard (try? await Task.sleep(for: .seconds(earliest.timeIntervalSince(now)))) != nil
+            else { return }
+            graceTick += 1
+            reconcileNavigation()
+        }
+        .onChange(of: connectedMachineIDs, initial: true) { _, ids in
+            let now = Date()
+            var next: [String: Date] = [:]
+            for id in ids { next[id] = connectedAt[id] ?? now }
+            connectedAt = next
+            reconcileNavigation()
+        }
+        .onChange(of: selectedSessionID) { _, sessionID in
+            // The flag never outlives the next selection change, whatever the outcome.
+            let auto = autoSelected
+            autoSelected = nil
+            guard RemiLastThreads.shouldRecord(
+                machineID: selectedMachineID, sessionID: sessionID, autoSelected: auto
+            ) else { return }
+            var threads = RemiLastThreads(storage: lastThreadsStorage)
+            threads.remember(machineID: selectedMachineID, sessionID: sessionID)
+            lastThreadsStorage = threads.storageValue
+        }
+        .onChange(of: store.machines.map(\.id), initial: true) { _, machineIDs in
+            // The store can fill asynchronously: an empty list must never wipe the memory.
+            guard !machineIDs.isEmpty else { return }
+            var threads = RemiLastThreads(storage: lastThreadsStorage)
+            threads.prune(keepingMachines: Set(machineIDs))
+            lastThreadsStorage = threads.storageValue
+        }
         .onChange(of: currentColumnLayout) { _, layout in
             columnLayoutStorage = layout.storageValue
         }
@@ -256,7 +301,9 @@ struct MacLiveRootView: View {
             MachineConfigurationStore.shared.saveProfiles(profiles)
             relayNotifications.reconcileEndpoints()
         }
+        .onChange(of: store.machines.map(\.status)) { _, _ in store.warmActiveTranscripts() }
         .onChange(of: navigationSnapshot, initial: true) { _, _ in
+            store.warmActiveTranscripts()
             reconcileNavigation()
             validateColumnLayout()
             pruneDrafts()
@@ -293,6 +340,8 @@ struct MacLiveRootView: View {
                   case .admitted(let profileID) = result.phase else { return }
             showingInbox = false
             selectedMachineID = profileID
+            selectedSessionID = ""
+            pendingResume = nil
             pairingAttemptID = nil
         }
         .sheet(isPresented: $showingAddMachine) {
@@ -423,7 +472,7 @@ struct MacLiveRootView: View {
         selectedMachineID = destination.machineID
         selectedSessionID = destination.sessionID
         preferredCompactColumn = .detail
-        store.loadTranscript(machineID: destination.machineID, sessionId: destination.agentID ?? destination.sessionID)
+        store.ensureTranscript(machineID: destination.machineID, sessionId: destination.agentID ?? destination.sessionID)
     }
 
     /// Opens a card's conversation: switches machine and session by their qualified key, and
@@ -440,7 +489,7 @@ struct MacLiveRootView: View {
         selectedMachineID = target.machineID
         selectedSessionID = target.sessionID
         preferredCompactColumn = .detail
-        store.loadTranscript(
+        store.ensureTranscript(
             machineID: target.machineID,
             sessionId: target.conversationID ?? target.sessionID
         )
@@ -515,6 +564,7 @@ struct MacLiveRootView: View {
         Binding(
             get: { selectedSessionID.isEmpty ? nil : selectedSessionID },
             set: {
+                autoSelected = nil
                 selectedSessionID = $0 ?? ""
                 preferredCompactColumn = selectedSessionID.isEmpty ? .content : .detail
                 if pendingResume?.machineID != selectedMachineID
@@ -526,10 +576,19 @@ struct MacLiveRootView: View {
         )
     }
 
+    private var connectedMachineIDs: [String] {
+        store.machines.filter { $0.status == .connected }.map(\.id)
+    }
+
+    private func isSettled(_ machine: MachineState?) -> Bool {
+        guard let machine else { return false }
+        return RemiLastThreads.isSettled(connectedAt: connectedAt[machine.id], now: Date())
+    }
+
     private var navigationSnapshot: [[String]] {
         store.machines.map { machine in
             [machine.id, machine.hasLoadedSessions ? "loaded" : "loading"]
-                + machine.activeSessions.map(\.sessionId)
+                + machine.sessions.map(\.sessionId)
         }
     }
 
@@ -552,9 +611,22 @@ struct MacLiveRootView: View {
             selectedMachineID = store.machines.first?.id ?? ""
         }
         guard selectedMachine?.hasLoadedSessions == true else { return }
-        let sessionIDs = selectedMachine?.sessions.map(\.sessionId) ?? []
-        if !sessionIDs.contains(selectedSessionID) {
-            selectedSessionID = sessionIDs.first ?? ""
+        switch RemiLastThreads(storage: lastThreadsStorage).resolve(
+            machineID: selectedMachineID,
+            current: selectedSessionID,
+            available: selectedMachine?.sessions.map(\.sessionId) ?? [],
+            settled: isSettled(selectedMachine)
+        ) {
+        case .open(let sessionID): selectedSessionID = sessionID
+        case .fallback(let sessionID):
+            if sessionID != selectedSessionID {
+                autoSelected = (machineID: selectedMachineID, sessionID: sessionID)
+            }
+            selectedSessionID = sessionID
+        case .clear:
+            autoSelected = nil
+            selectedSessionID = ""
+        case .wait: break
         }
         preferredCompactColumn = RemiMacCompactDestination.resolve(
             hasMachine: selectedMachine != nil,
@@ -2418,3 +2490,10 @@ private var workspacePreviewSessions: [RemiSessionSummary] {
     return draft
 }
 #endif
+
+/// The state a grace-period task is keyed on, so it restarts when a machine connects,
+/// disconnects, or a grace period ends.
+private struct GraceWindow: Hashable {
+    let connectedAt: [String: Date]
+    let tick: Int
+}
