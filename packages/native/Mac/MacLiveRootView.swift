@@ -287,7 +287,9 @@ struct MacLiveRootView: View {
             threads.remember(machineID: selectedMachineID, sessionID: sessionID)
             lastThreadsStorage = threads.storageValue
         }
-        .onChange(of: store.machines.map(\.id)) { _, machineIDs in
+        .onChange(of: store.machines.map(\.id), initial: true) { _, machineIDs in
+            // The store can fill asynchronously: an empty list must never wipe the memory.
+            guard !machineIDs.isEmpty else { return }
             var threads = RemiLastThreads(storage: lastThreadsStorage)
             threads.prune(keepingMachines: Set(machineIDs))
             lastThreadsStorage = threads.storageValue
