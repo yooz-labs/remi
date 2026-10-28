@@ -1844,6 +1844,14 @@ public final class MachineStore {
     /// message to the connection. Internal so tests can drive the receive path without a live socket.
     func trackOutgoing(key: MachineSessionKey, id: String, content: String) {
         outgoingBySession[key, default: OutgoingMessages(expiry: outgoingLifetime)].add(id: id, content: content)
+        // Expiry must change observed state, or the bubble stays on screen until something else does.
+        let delay = outgoingLifetime + 1
+        Task { [weak self] in
+            guard (try? await Task.sleep(for: .seconds(delay))) != nil else { return }
+            guard let self, outgoingBySession[key] != nil else { return }
+            outgoingBySession[key]?.removeExpired()
+            if outgoingBySession[key]?.items.isEmpty == true { outgoingBySession[key] = nil }
+        }
     }
 
     /// Marks a tracked message as handed to the connection. A no-op when the entry is already

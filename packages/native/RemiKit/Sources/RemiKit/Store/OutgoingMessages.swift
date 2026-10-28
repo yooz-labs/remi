@@ -50,6 +50,7 @@ public struct OutgoingMessages: Sendable, Equatable {
 
     /// Drops the expired entries so the change is visible to whoever observes the outbox.
     public mutating func removeExpired(now: Date = Date()) {
+        dropExpired(now: now)
     }
 
     private mutating func dropExpired(now: Date) {
