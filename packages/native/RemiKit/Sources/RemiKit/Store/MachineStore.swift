@@ -1797,11 +1797,11 @@ public final class MachineStore {
         } onCancel: { permit.replace() }
     }
 
-    @discardableResult
     public func outgoingMessages(machineID: String, sessionID: String) -> [OutgoingMessage] {
         outgoingBySession[sessionKey(machineID: machineID, sessionID: sessionID)]?.items ?? []
     }
 
+    @discardableResult
     public func sendChat(machineID: String, sessionId: String, content: String, claudeSessionId: String? = nil) async -> Bool {
         let key = sessionKey(machineID: machineID, sessionID: sessionId)
         guard let connection = connection(for: key) else {
@@ -1815,16 +1815,24 @@ public final class MachineStore {
             content: content,
             claudeSessionId: claudeSessionId
         )
-        outgoingBySession[key, default: OutgoingMessages()].add(id: message.id, content: content)
+        trackOutgoing(key: key, id: message.id, content: content)
         do {
             try await connection.send(message)
             outgoingBySession[key]?.markSent(id: message.id)
             return true
         } catch {
+            // The bubble goes so the composer's draft is not shown twice. If the connection
+            // failed after the daemon already received the message, the text can still arrive.
             outgoingBySession[key]?.remove(id: message.id)
             latestOperationError = "Message not sent. Check the connection and try again."
             return false
         }
+    }
+
+    /// Puts a sent message in the session's outbox, as `sendChat` does before it hands the
+    /// message to the connection. Internal so tests can drive the receive path without a live socket.
+    func trackOutgoing(key: MachineSessionKey, id: String, content: String) {
+        outgoingBySession[key, default: OutgoingMessages()].add(id: id, content: content)
     }
 
     public func terminateSession(machineID: String, sessionId: String) {
