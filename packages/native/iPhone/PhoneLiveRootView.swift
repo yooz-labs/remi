@@ -348,6 +348,7 @@ struct PhoneLiveRootView: View {
         PhoneBoardScreen(
             sessions: sessions,
             machines: machines,
+            loadedMachines: Set(store.machines.filter { $0.status == .connected && $0.hasLoadedSessions }.map(\.id)),
             questions: allQuestions,
             errorMessage: store.latestOperationError ?? store.latestError?.message,
             noticeMessage: store.latestOperationNotice ?? relayNotifications.notice ?? store.relayNotificationNotice,

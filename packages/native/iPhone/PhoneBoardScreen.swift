@@ -11,6 +11,10 @@ import SwiftUI
 struct PhoneBoardScreen: View {
     let sessions: [RemiSessionSummary]
     let machines: [RemiMachineSummary]
+    /// Machines that are connected and have loaded their session list. Only these, once they
+    /// have also settled, may have a pin pruned: a machine that just reconnected lists no
+    /// sessions yet, and that is not the sessions being gone.
+    let loadedMachines: Set<String>
     let questions: [RemiQuestionCardModel]
     let errorMessage: String?
     let noticeMessage: String?
@@ -40,6 +44,9 @@ struct PhoneBoardScreen: View {
     @State private var machineFilter: String?
     @State private var onlyNeedsYou = false
     @State private var showFinished = false
+    /// When each loaded machine entered `loadedMachines`, for the settling grace period.
+    @State private var loadedAt: [String: Date] = [:]
+    @State private var graceTick = 0
     @FocusState private var focus: String?
 
     private var density: RemiTileSize { RemiTileSize.phoneDensity(stored: densityStorage) }
@@ -61,9 +68,38 @@ struct PhoneBoardScreen: View {
             ToolbarItem(placement: .topBarTrailing) { overflowMenu }
         }
         .onAppear(perform: loadBoard)
-        .onChange(of: sessions.map(RemiBoardOrder.key(for:))) { _, keys in
-            if board.prune(live: Set(keys), connectedMachines: []) { saveBoard() }
+        .onChange(of: sessions.map(RemiBoardOrder.key(for:))) { pruneBoard() }
+        .onChange(of: loadedMachines, initial: true) { _, ids in
+            let now = Date()
+            loadedAt = Dictionary(uniqueKeysWithValues: ids.map { ($0, loadedAt[$0] ?? now) })
+            pruneBoard()
         }
+        .task(id: GraceWindow(loadedAt: loadedAt, tick: graceTick)) {
+            // Prune again when a grace period ends: nothing else changes at that moment.
+            let now = Date()
+            let ends = loadedAt.values
+                .map { $0.addingTimeInterval(RemiLastThreads.defaultGrace) }
+                .filter { $0 > now }
+            guard let earliest = ends.min() else { return }
+            guard (try? await Task.sleep(for: .seconds(earliest.timeIntervalSince(now)))) != nil
+            else { return }
+            graceTick += 1
+            pruneBoard()
+        }
+    }
+
+    /// Forgets pins and sizes of sessions a settled machine no longer lists, and drafts and
+    /// interactions of sessions that are gone. Every session counts as live here, finished ones
+    /// too, so showing them again finds their pins. Saves only when something was removed.
+    private func pruneBoard() {
+        let live = Set(sessions.map(RemiBoardOrder.key(for:)))
+        let now = Date()
+        let settled = Set(loadedMachines.filter {
+            RemiLastThreads.isSettled(connectedAt: loadedAt[$0], now: now)
+        })
+        if board.prune(live: live, connectedMachines: settled) { saveBoard() }
+        drafts = drafts.filter { live.contains($0.key) }
+        interactions = interactions.filter { live.contains($0.key) }
     }
 
     // MARK: list
@@ -95,15 +131,25 @@ struct PhoneBoardScreen: View {
         .onChange(of: order, initial: true) { _, keys in shownOrder = keys }
     }
 
-    private func arranged(now: Date) -> [RemiSessionSummary] {
-        let writing = focus != nil || drafts.values.contains { !$0.isEmpty }
-        let held: [String: Int] = writing
-            ? Dictionary(uniqueKeysWithValues: shownOrder.enumerated().map { ($1, $0) })
-            : [:]
-        let visible = RemiBoardOrder.visible(
+    private var filtered: [RemiSessionSummary] {
+        RemiBoardOrder.visible(
             sessions, machineID: machineFilter, onlyNeedsYou: onlyNeedsYou, showFinished: showFinished
         )
-        return RemiBoardOrder.arrange(visible, state: board, interactions: interactions, held: held, now: now)
+    }
+
+    /// The tiles on screen that have a working composer: none in the compact density, which
+    /// hides the composers. A draft left anywhere else must not freeze the order.
+    private var composerKeys: Set<String> {
+        density.showsComposer ? Set(filtered.filter(\.isLive).map(RemiBoardOrder.key(for:))) : []
+    }
+
+    private func arranged(now: Date) -> [RemiSessionSummary] {
+        let keys = composerKeys
+        let writing = RemiBoardOrder.isWriting(
+            hasFocus: focus.map { keys.contains($0) } ?? false, drafts: drafts, composerKeys: keys
+        )
+        let held = writing ? RemiBoardOrder.held(from: shownOrder) : [:]
+        return RemiBoardOrder.arrange(filtered, state: board, interactions: interactions, held: held, now: now)
     }
 
     private func tile(_ session: RemiSessionSummary, order: [String]) -> some View {
@@ -272,11 +318,19 @@ struct PhoneBoardScreen: View {
     private func saveBoard() { boardStorage = board.storageValue }
 }
 
+/// The state a grace-period task is keyed on, so it restarts when a machine enters or leaves the
+/// loaded set, or a grace period ends.
+private struct GraceWindow: Hashable {
+    let loadedAt: [String: Date]
+    let tick: Int
+}
+
 #Preview("Board") {
     NavigationStack {
         PhoneBoardScreen(
             sessions: RemiPreviewData.sessions,
             machines: RemiPreviewData.machines,
+            loadedMachines: [],
             questions: [],
             errorMessage: nil,
             noticeMessage: nil,
