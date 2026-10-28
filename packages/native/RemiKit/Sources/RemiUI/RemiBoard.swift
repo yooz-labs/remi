@@ -73,6 +73,10 @@ public struct RemiBoardState: Codable, Equatable, Sendable {
         pinnedSlots[key] = slot
     }
 
+    /// Stub until the pruning change lands.
+    @discardableResult
+    public mutating func prune(live: Set<String>, connectedMachines: Set<String>) -> Bool { false }
+
     /// Forgets tiles for sessions that no longer exist.
     public mutating func prune(keeping live: Set<String>) {
         pinnedSlots = pinnedSlots.filter { live.contains($0.key) }
@@ -97,6 +101,9 @@ public enum RemiBoardOrder {
     public static func key(for session: RemiSessionSummary) -> String {
         "\(session.machineID)\u{1F}\(session.id)"
     }
+
+    /// Stub until the pruning change lands.
+    public static func machineID(ofKey key: String) -> String { "" }
 
     /// The board's order. Pinned tiles keep their slots, and so do `held` tiles (one whose
     /// composer is in use keeps the slot it has now, so it never jumps under the cursor).

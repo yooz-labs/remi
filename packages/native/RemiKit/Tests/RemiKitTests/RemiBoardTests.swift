@@ -175,15 +175,41 @@ import Testing
         #expect(RemiBoardState(storage: "") == RemiBoardState())
     }
 
-    @Test func pruningForgetsSessionsThatAreGone() {
+    @Test func aConnectedMachinesMissingSessionIsPruned() {
+        let gone = RemiBoardOrder.key(for: session("gone", machine: "one"))
+        let kept = RemiBoardOrder.key(for: session("kept", machine: "one"))
         var state = RemiBoardState()
-        state.pin("gone", atSlot: 0)
-        state.setSize(.large, for: "gone")
-        state.pin("kept", atSlot: 1)
-        state.prune(keeping: ["kept"])
-        #expect(!state.isPinned("gone"))
-        #expect(state.size(for: "gone") == .regular)
-        #expect(state.isPinned("kept"))
+        state.pin(gone, atSlot: 0)
+        state.setSize(.large, for: gone)
+        state.pin(kept, atSlot: 1)
+        let changed = state.prune(live: [kept], connectedMachines: ["one"])
+        #expect(changed)
+        #expect(!state.isPinned(gone))
+        #expect(state.size(for: gone) == .regular)
+        #expect(state.isPinned(kept))
+    }
+
+    @Test func aDisconnectedMachinesEntriesStayWhileItsListIsMissing() {
+        let away = RemiBoardOrder.key(for: session("away", machine: "two"))
+        var state = RemiBoardState()
+        state.pin(away, atSlot: 0)
+        state.setSize(.large, for: away)
+        let changed = state.prune(live: [], connectedMachines: ["one"])
+        #expect(!changed)
+        #expect(state.isPinned(away))
+        #expect(state.size(for: away) == .large)
+    }
+
+    @Test func pruningNothingReportsNoChange() {
+        var state = RemiBoardState()
+        let changed = state.prune(live: [], connectedMachines: ["one"])
+        #expect(!changed)
+    }
+
+    @Test func aKeyNamesItsMachine() {
+        let key = RemiBoardOrder.key(for: session("s", machine: "box"))
+        #expect(RemiBoardOrder.machineID(ofKey: key) == "box")
+        #expect(RemiBoardOrder.machineID(ofKey: "no-separator") == "no-separator")
     }
 
     // MARK: next tile
