@@ -335,11 +335,35 @@ struct PhoneLiveRootView: View {
     @ViewBuilder
     private func destinationContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
         switch shell.destination {
+        case .board:
+            boardContent(sessions: sessions, machines: machines)
         case .inbox:
             inboxContent(sessions: sessions, machines: machines)
         case .session(let route):
             sessionContent(route, sessions: sessions)
         }
+    }
+
+    private func boardContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
+        PhoneBoardScreen(
+            sessions: sessions,
+            machines: machines,
+            questions: allQuestions,
+            errorMessage: store.latestOperationError ?? store.latestError?.message,
+            noticeMessage: store.latestOperationNotice ?? relayNotifications.notice ?? store.relayNotificationNotice,
+            transcript: boardEntries,
+            onAnswer: { answer(machineID: $0, sessionId: $1, questionId: $2, value: $3) },
+            onSubmit: { submit(machineID: $0, sessionId: $1, questionId: $2, values: $3) },
+            onCancel: { cancel(machineID: $0, sessionId: $1, questionId: $2) },
+            onOpen: selectSession,
+            onSend: { session, content in
+                await sendChat(machineID: session.machineID, sessionId: session.id, content: content)
+            },
+            onNewSession: { activeSheet = .newSession(machineID: nil, repository: nil) },
+            onManageMachines: { activeSheet = .machines },
+            onDismissError: store.clearLatestError,
+            onDismissNotice: dismissNotice
+        )
     }
 
     private func inboxContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
@@ -377,6 +401,7 @@ struct PhoneLiveRootView: View {
             onManageMachines: { present(.machines) },
             onResumeSession: resumeSession,
             onNewSessionHere: { present(.newSession(machineID: $0, repository: $1)) },
+            onSelectBoard: { shell.select(.board) },
             onSelectInbox: { shell.select(.inbox) },
             onSelectSession: selectSession,
             onNewSession: { present(.newSession(machineID: shell.filteredMachineKey, repository: nil)) },
@@ -677,23 +702,33 @@ struct PhoneLiveRootView: View {
     }
 
     private func transcript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
-        (store.transcriptsBySession[store.sessionKey(machineID: machineID, sessionID: sessionID)] ?? []).compactMap { message in
-            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !content.isEmpty {
-                return message.role == "user"
-                    ? .user(id: message.entryUuid, text: content)
-                    : .agent(id: message.entryUuid, text: content)
-            }
-            guard let tool = message.contentBlocks?.first(where: {
-                $0.type == "tool_use" || $0.type == "tool_result"
-            }) else { return nil }
-            let summary = tool.toolInput ?? tool.toolOutput ?? ""
-            return .tool(
-                id: message.entryUuid,
-                name: tool.toolName ?? "Tool",
-                summary: String(summary.prefix(240))
-            )
+        (store.transcriptsBySession[store.sessionKey(machineID: machineID, sessionID: sessionID)] ?? [])
+            .compactMap(transcriptEntry)
+    }
+
+    /// The latest of a session's conversation, for its card on the board.
+    private func boardEntries(_ session: RemiSessionSummary) -> [RemiTranscriptEntry] {
+        (store.transcriptsBySession[store.sessionKey(machineID: session.machineID, sessionID: session.id)] ?? [])
+            .suffix(60)
+            .compactMap(transcriptEntry)
+    }
+
+    private func transcriptEntry(_ message: TranscriptContentMessage) -> RemiTranscriptEntry? {
+        let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !content.isEmpty {
+            return message.role == "user"
+                ? .user(id: message.entryUuid, text: content)
+                : .agent(id: message.entryUuid, text: content)
         }
+        guard let tool = message.contentBlocks?.first(where: {
+            $0.type == "tool_use" || $0.type == "tool_result"
+        }) else { return nil }
+        let summary = tool.toolInput ?? tool.toolOutput ?? ""
+        return .tool(
+            id: message.entryUuid,
+            name: tool.toolName ?? "Tool",
+            summary: String(summary.prefix(240))
+        )
     }
 
     private func answer(machineID: String, sessionId: String, questionId: String, value: String) {
@@ -866,7 +901,7 @@ struct PhoneLiveRootView: View {
             onCancel: { cancel(machineID: session.machineID, sessionId: session.id, questionId: $0) },
             onSend: { await sendChat(machineID: session.machineID, sessionId: session.id, content: $0) },
             onTerminate: { store.terminateSession(machineID: session.machineID, sessionId: session.id) },
-            onClose: { shell.select(.inbox) },
+            onClose: { shell.select(.board) },
             focusQuestionRequest: focus,
             restoredState: sessionViewStates.state(for: session.key),
             onViewStateChange: { state in sessionViewStates.update(session.key) { $0 = state } },
