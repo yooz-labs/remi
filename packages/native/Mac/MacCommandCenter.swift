@@ -60,8 +60,8 @@ struct MacCommandCenter: View {
         let live = Set(sessions.map(RemiBoardOrder.key(for:)))
         if board.prune(live: live, connectedMachines: settledMachines) { saveBoard() }
         // A draft or a recent interaction of a session that is gone would linger for good.
-        drafts = drafts.filter { live.contains($0.key) }
-        interactions = interactions.filter { live.contains($0.key) }
+        drafts = RemiBoardOrder.keeping(drafts, live: live, settledMachines: settledMachines)
+        interactions = RemiBoardOrder.keeping(interactions, live: live, settledMachines: settledMachines)
     }
 
     // MARK: filtering

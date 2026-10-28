@@ -68,6 +68,10 @@ struct PhoneBoardScreen: View {
             }
             ToolbarItem(placement: .topBarTrailing) { overflowMenu }
         }
+        .onChange(of: density) { _, size in
+            // The composers are gone in Compact; do not leave the keyboard waiting for one.
+            if !size.showsComposer { focus = nil }
+        }
         .onAppear(perform: loadBoard)
         .onChange(of: sessions.map(RemiBoardOrder.key(for:))) { pruneBoard() }
         .onChange(of: loadedMachines, initial: true) { _, ids in
@@ -99,8 +103,8 @@ struct PhoneBoardScreen: View {
             RemiLastThreads.isSettled(connectedAt: loadedAt[$0], now: now)
         })
         if board.prune(live: live, connectedMachines: settled) { saveBoard() }
-        drafts = drafts.filter { live.contains($0.key) }
-        interactions = interactions.filter { live.contains($0.key) }
+        drafts = RemiBoardOrder.keeping(drafts, live: live, settledMachines: settled)
+        interactions = RemiBoardOrder.keeping(interactions, live: live, settledMachines: settled)
     }
 
     // MARK: list
@@ -129,7 +133,8 @@ struct PhoneBoardScreen: View {
                     RemiFeedbackBanner(message: noticeMessage, tone: .information, onDismiss: onDismissNotice)
                 }
                 PhoneMachineProblemRows(machines: machines, onManage: onManageMachines)
-                chips
+                // With no machine there is nothing to filter; the first screen is the way to add one.
+                if !machines.isEmpty { chips }
                 if ordered.isEmpty {
                     emptyState
                 } else {
