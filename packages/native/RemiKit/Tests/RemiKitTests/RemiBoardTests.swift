@@ -104,6 +104,34 @@ import Testing
         #expect(result.count == 3)
     }
 
+    @Test func twoSessionsWithTheSameKeyShowOnceAndKeepTheFirst() {
+        let first = session("a", .working)
+        let second = session("a", .idle)
+        let result = RemiBoardOrder.arrange(
+            [first, session("b"), second], state: RemiBoardState(), interactions: [:], held: [:], now: now
+        )
+        #expect(result.count == 2)
+        #expect(result.filter { $0.id == "a" }.map(\.status) == [.working])
+    }
+
+    @Test func slotsPastTheEndKeepTheirRelativeOrder() {
+        let sessions = [session("a"), session("b"), session("c")]
+        var state = RemiBoardState()
+        state.pin(RemiBoardOrder.key(for: sessions[0]), atSlot: 9)
+        state.pin(RemiBoardOrder.key(for: sessions[1]), atSlot: 10)
+        #expect(order(sessions, state: state) == ["c", "a", "b"])
+    }
+
+    @Test func aHeldTileThatDisappearedIsSkippedAndANewTileFillsItsPlace() {
+        let sessions = [session("a", .working), session("new", .needsYou), session("c", .idle)]
+        let held = [
+            RemiBoardOrder.key(for: session("gone")): 0,
+            RemiBoardOrder.key(for: sessions[0]): 1,
+            RemiBoardOrder.key(for: sessions[2]): 2,
+        ]
+        #expect(order(sessions, held: held) == ["new", "a", "c"])
+    }
+
     @Test func movingATileOntoAnotherTakesItsPlaceAndPinsIt() {
         let sessions = [session("a", .needsYou), session("b", .working), session("c", .idle)]
         var state = RemiBoardState()
