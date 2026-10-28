@@ -50,7 +50,8 @@ public struct RemiLastThreads: Equatable, Sendable {
         sessionID: String,
         autoSelected: (machineID: String, sessionID: String)?
     ) -> Bool {
-        true
+        guard let autoSelected else { return true }
+        return !(autoSelected.machineID == machineID && autoSelected.sessionID == sessionID)
     }
 
     /// Seconds a machine must stay connected before its session list counts as complete.

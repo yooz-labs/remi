@@ -22,7 +22,7 @@ struct MacLiveRootView: View {
     /// Bumped when a machine's grace period ends, to run `reconcileNavigation` then.
     @State private var graceTick = 0
     /// The session `reconcileNavigation` chose as a fallback; `onChange` skips recording it.
-    @State private var autoSelectedSessionID: String?
+    @State private var autoSelected: (machineID: String, sessionID: String)?
     @State private var showingNewSession = false
     @State private var newSessionMachineID: String?
     @State private var newSessionRepository: String?
@@ -277,10 +277,12 @@ struct MacLiveRootView: View {
             reconcileNavigation()
         }
         .onChange(of: selectedSessionID) { _, sessionID in
-            if autoSelectedSessionID == sessionID {
-                autoSelectedSessionID = nil
-                return
-            }
+            // The flag never outlives the next selection change, whatever the outcome.
+            let auto = autoSelected
+            autoSelected = nil
+            guard RemiLastThreads.shouldRecord(
+                machineID: selectedMachineID, sessionID: sessionID, autoSelected: auto
+            ) else { return }
             var threads = RemiLastThreads(storage: lastThreadsStorage)
             threads.remember(machineID: selectedMachineID, sessionID: sessionID)
             lastThreadsStorage = threads.storageValue
@@ -558,7 +560,7 @@ struct MacLiveRootView: View {
         Binding(
             get: { selectedSessionID.isEmpty ? nil : selectedSessionID },
             set: {
-                autoSelectedSessionID = nil
+                autoSelected = nil
                 selectedSessionID = $0 ?? ""
                 preferredCompactColumn = selectedSessionID.isEmpty ? .content : .detail
                 if pendingResume?.machineID != selectedMachineID
@@ -613,9 +615,13 @@ struct MacLiveRootView: View {
         ) {
         case .open(let sessionID): selectedSessionID = sessionID
         case .fallback(let sessionID):
-            if sessionID != selectedSessionID { autoSelectedSessionID = sessionID }
+            if sessionID != selectedSessionID {
+                autoSelected = (machineID: selectedMachineID, sessionID: sessionID)
+            }
             selectedSessionID = sessionID
-        case .clear: selectedSessionID = ""
+        case .clear:
+            autoSelected = nil
+            selectedSessionID = ""
         case .wait: break
         }
         preferredCompactColumn = RemiMacCompactDestination.resolve(
