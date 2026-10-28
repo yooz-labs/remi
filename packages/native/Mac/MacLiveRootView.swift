@@ -570,7 +570,7 @@ struct MacLiveRootView: View {
             available: selectedMachine?.sessions.map(\.sessionId) ?? [],
             settled: restoreGraceOver && selectedMachine?.status == .connected
         ) {
-        case .open(let sessionID): selectedSessionID = sessionID
+        case .open(let sessionID), .fallback(let sessionID): selectedSessionID = sessionID
         case .clear: selectedSessionID = ""
         case .wait: break
         }
