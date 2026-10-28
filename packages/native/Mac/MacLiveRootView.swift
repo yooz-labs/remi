@@ -1107,15 +1107,29 @@ struct MacLiveRootView: View {
     }
 
     private func transcript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
+        let confirmed = confirmedTranscript(machineID: machineID, sessionID: sessionID)
+        // Pending entries follow every confirmed entry, so an agent reply that arrives before
+        // the echo of an earlier message shows above that message.
+        return confirmed + pendingEntries(machineID: machineID, sessionID: sessionID)
+    }
+
+    private func confirmedTranscript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
         (store.transcriptsBySession[store.sessionKey(machineID: machineID, sessionID: sessionID)] ?? [])
             .compactMap(transcriptEntry)
     }
 
+    private func pendingEntries(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
+        store.outgoingMessages(machineID: machineID, sessionID: sessionID).map {
+            RemiTranscriptEntry.pending(id: "pending-\($0.id)", text: $0.content, state: $0.delivery == .sending ? .sending : .sent)
+        }
+    }
+
     /// The latest of a session's conversation, for its tile on the board.
     private func boardEntries(_ session: RemiSessionSummary) -> [RemiTranscriptEntry] {
-        (store.transcriptsBySession[store.sessionKey(machineID: session.machineID, sessionID: session.id)] ?? [])
+        let confirmed = (store.transcriptsBySession[store.sessionKey(machineID: session.machineID, sessionID: session.id)] ?? [])
             .suffix(60)
             .compactMap(transcriptEntry)
+        return confirmed + pendingEntries(machineID: session.machineID, sessionID: session.id)
     }
 
     private func transcriptEntry(_ message: TranscriptContentMessage) -> RemiTranscriptEntry? {

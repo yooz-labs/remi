@@ -62,11 +62,15 @@ struct SessionAddressingTests {
             sessionID: question.sessionId, sockets: [first.0, second.0])
     }
 
-    private func transcriptContent(sessionID: String, text: String) throws -> TranscriptContentMessage {
+    private func transcriptContent(
+        sessionID: String, text: String, role: String? = nil, entryUuid: String? = nil
+    ) throws -> TranscriptContentMessage {
         var payload = try #require(try JSONSerialization.jsonObject(
             with: FixtureConformanceTests.fixture("transcript_content")) as? [String: Any])
         payload["sessionId"] = sessionID
         payload["content"] = text
+        if let role { payload["role"] = role }
+        if let entryUuid { payload["entryUuid"] = entryUuid }
         return try JSONDecoder().decode(TranscriptContentMessage.self,
             from: JSONSerialization.data(withJSONObject: payload))
     }
@@ -204,5 +208,158 @@ struct SessionAddressingTests {
         #expect(store.removeMachine(fixture.routes[0]))
         #expect(!store.isLoadingTranscript(machineID: fixture.ids.a, sessionID: sid))
         #expect(store.isLoadingTranscript(machineID: fixture.ids.b, sessionID: sid))
+    }
+
+    // MARK: Pending outgoing messages (#1239)
+
+    private func pendingTexts(_ fixture: TwoMachines, _ machine: String) -> [String] {
+        fixture.store.outgoingMessages(machineID: machine, sessionID: fixture.sessionID).map(\.content)
+    }
+
+    @Test func aSendOnASocketThatNeverOpensLeavesNoBubbleAndSaysSo() async throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let sent = await fixture.store.sendChat(machineID: fixture.ids.a, sessionId: fixture.sessionID, content: "hello")
+        #expect(!sent)
+        #expect(pendingTexts(fixture, fixture.ids.a).isEmpty)
+        #expect(fixture.store.latestOperationError == "Message not sent. Check the connection and try again.")
+    }
+
+    @Test func aTrackedMessageStartsSendingAndBecomesSent() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let key = fixture.store.sessionKey(machineID: fixture.ids.a, sessionID: fixture.sessionID)
+        fixture.store.trackOutgoing(key: key, id: "m1", content: "hello")
+        #expect(fixture.store.outgoingMessages(machineID: fixture.ids.a, sessionID: fixture.sessionID).map(\.delivery) == [.sending])
+        fixture.store.markOutgoingSent(key: key, id: "m1")
+        #expect(fixture.store.outgoingMessages(machineID: fixture.ids.a, sessionID: fixture.sessionID).map(\.delivery) == [.sent])
+        #expect(pendingTexts(fixture, fixture.ids.b).isEmpty)
+    }
+
+    @Test func onlyANewUserEntryConfirmsAndAnUpdateConfirmsNothing() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let generation = try #require(store.connectionGenerations[fixture.routes[0]])
+        // An entry already in the transcript, then the person sends the same text again.
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "go", role: "user", entryUuid: "e1")),
+            from: fixture.routes[0], generation: generation)
+        store.trackOutgoing(key: key, id: "m1", content: "go")
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "go", role: "user", entryUuid: "e1")),
+            from: fixture.routes[0], generation: generation)
+        #expect(pendingTexts(fixture, fixture.ids.a) == ["go"])
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "go", role: "assistant", entryUuid: "e2")),
+            from: fixture.routes[0], generation: generation)
+        #expect(pendingTexts(fixture, fixture.ids.a) == ["go"])
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "  go\n", role: "user", entryUuid: "e3")),
+            from: fixture.routes[0], generation: generation)
+        #expect(pendingTexts(fixture, fixture.ids.a).isEmpty)
+    }
+
+    @Test func theSameTextSentTwiceIsConfirmedOldestFirstOneAtATime() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let generation = try #require(store.connectionGenerations[fixture.routes[0]])
+        store.trackOutgoing(key: key, id: "m1", content: "yes")
+        store.trackOutgoing(key: key, id: "m2", content: "yes")
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "yes", role: "user", entryUuid: "e1")),
+            from: fixture.routes[0], generation: generation)
+        #expect(store.outgoingMessages(machineID: fixture.ids.a, sessionID: sid).map(\.id) == ["m2"])
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "yes", role: "user", entryUuid: "e2")),
+            from: fixture.routes[0], generation: generation)
+        #expect(pendingTexts(fixture, fixture.ids.a).isEmpty)
+    }
+
+    @Test func aHistoryReplayDuringTheFirstLoadDoesNotConfirmButALiveEntryAfterwardsDoes() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        store.ownedTranscriptSend = { _ in }
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let generation = try #require(store.connectionGenerations[fixture.routes[0]])
+        store.trackOutgoing(key: key, id: "m1", content: "X")
+        store.loadTranscript(machineID: fixture.ids.a, sessionId: sid)
+        #expect(store.transcriptsBySession[key] == nil)
+        // The replay holds an old message with the same text.
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "X", role: "user", entryUuid: "old")),
+            from: fixture.routes[0], generation: generation)
+        #expect(pendingTexts(fixture, fixture.ids.a) == ["X"])
+
+        var payload = try #require(try JSONSerialization.jsonObject(
+            with: FixtureConformanceTests.fixture("transcript_load_complete")) as? [String: Any])
+        payload["sessionId"] = sid
+        let complete = try JSONDecoder().decode(TranscriptLoadCompleteMessage.self,
+            from: JSONSerialization.data(withJSONObject: payload))
+        store.receive(.transcriptComplete(complete), from: fixture.routes[0], generation: generation)
+        #expect(!store.isLoadingTranscript(machineID: fixture.ids.a, sessionID: sid))
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "X", role: "user", entryUuid: "live")),
+            from: fixture.routes[0], generation: generation)
+        #expect(pendingTexts(fixture, fixture.ids.a).isEmpty)
+    }
+
+    @Test func aLaterReplayedEntryDuringTheFirstLoadDoesNotConfirmEither() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        store.ownedTranscriptSend = { _ in }
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let generation = try #require(store.connectionGenerations[fixture.routes[0]])
+        store.trackOutgoing(key: key, id: "m1", content: "X")
+        store.loadTranscript(machineID: fixture.ids.a, sessionId: sid)
+        // The replay arrives in order: an assistant entry first, then an old user entry with the same text.
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "hi", role: "assistant", entryUuid: "a1")),
+            from: fixture.routes[0], generation: generation)
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "X", role: "user", entryUuid: "old")),
+            from: fixture.routes[0], generation: generation)
+        #expect(pendingTexts(fixture, fixture.ids.a) == ["X"])
+
+        var payload = try #require(try JSONSerialization.jsonObject(
+            with: FixtureConformanceTests.fixture("transcript_load_complete")) as? [String: Any])
+        payload["sessionId"] = sid
+        let complete = try JSONDecoder().decode(TranscriptLoadCompleteMessage.self,
+            from: JSONSerialization.data(withJSONObject: payload))
+        store.receive(.transcriptComplete(complete), from: fixture.routes[0], generation: generation)
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "X", role: "user", entryUuid: "live")),
+            from: fixture.routes[0], generation: generation)
+        #expect(pendingTexts(fixture, fixture.ids.a).isEmpty)
+    }
+
+    @Test func anExpiredBubbleLeavesObservedStateWithoutOtherActivity() async throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store
+        store.outgoingLifetime = 0.15
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: fixture.sessionID)
+        store.trackOutgoing(key: key, id: "m1", content: "stuck")
+        #expect(store.outgoingBySession[key]?.items.count == 1)
+        var polls = 0
+        while store.outgoingBySession[key]?.items.isEmpty == false, polls < 200 {
+            try await Task.sleep(for: .milliseconds(10))
+            polls += 1
+        }
+        #expect(store.outgoingBySession[key]?.items.isEmpty ?? true)
+    }
+
+    @Test func aKilledSessionDropsItsPendingMessagesButNotAnotherSessions() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        let killed = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let other = store.sessionKey(machineID: fixture.ids.b, sessionID: sid)
+        store.trackOutgoing(key: killed, id: "m1", content: "a")
+        store.trackOutgoing(key: other, id: "m2", content: "b")
+        store.sessionByKillRequest["kill-1"] = killed
+        var payload = try #require(try JSONSerialization.jsonObject(
+            with: FixtureConformanceTests.fixture("kill_session_response")) as? [String: Any])
+        payload["requestId"] = "kill-1"
+        let response = try JSONDecoder().decode(KillSessionResponseMessage.self,
+            from: JSONSerialization.data(withJSONObject: payload))
+        let generation = try #require(store.connectionGenerations[fixture.routes[0]])
+        store.receive(.killSessionResponse(response), from: fixture.routes[0], generation: generation)
+        #expect(pendingTexts(fixture, fixture.ids.a).isEmpty)
+        #expect(pendingTexts(fixture, fixture.ids.b) == ["b"])
     }
 }

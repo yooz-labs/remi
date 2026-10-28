@@ -385,6 +385,18 @@ private struct FeedLine: View {
                 .padding(.vertical, RemiTheme.Spacing.xxs)
                 .background(RemiTheme.Color.attentionWash, in: .rect(cornerRadius: RemiTheme.Radius.compact))
                 .frame(maxWidth: .infinity, alignment: .trailing)
+        case .pending(_, let text, _):
+            Text(text)
+                .font(.callout)
+                .lineLimit(3)
+                .padding(.horizontal, RemiTheme.Spacing.xs)
+                .padding(.vertical, RemiTheme.Spacing.xxs)
+                .overlay {
+                    RoundedRectangle(cornerRadius: RemiTheme.Radius.compact)
+                        .stroke(RemiTheme.Color.attention.opacity(0.7), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .accessibilityLabel("Your message, not confirmed yet")
         case .agent(_, let text):
             Text(text)
                 .font(.callout)

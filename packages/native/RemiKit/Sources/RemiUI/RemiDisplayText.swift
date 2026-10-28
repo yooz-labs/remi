@@ -16,6 +16,7 @@ public extension RemiTranscriptEntry {
     var escapedForDisplay: RemiTranscriptEntry {
         switch self {
         case .user(let id, let text): .user(id: id, text: RemiDisplayText.escape(text))
+        case .pending(let id, let text, let state): .pending(id: id, text: RemiDisplayText.escape(text), state: state)
         case .agent(let id, let text): .agent(id: id, text: RemiDisplayText.escape(text))
         case .error(let id, let text): .error(id: id, text: RemiDisplayText.escape(text))
         case .tool(let id, let name, let summary):
