@@ -313,4 +313,13 @@ import Testing
         #expect(RemiBoardOrder.feed(entries, size: .large).last?.id == "e29")
         #expect(RemiBoardOrder.feed([], size: .regular).isEmpty)
     }
+
+    @Test func aNegativeStoredSlotIsClampedAndNeverTraps() {
+        let state = RemiBoardState(storage: "{\"pinnedSlots\":{\"k\":-3},\"sizes\":{}}")
+        #expect(state.slot(of: "k") == 0)
+        let sessions = [session("a"), session("b")]
+        var hostile = RemiBoardState()
+        hostile.pin("m\u{1F}b", atSlot: 0)
+        #expect(RemiBoardOrder.arrange(sessions, state: hostile, interactions: [:], held: ["m\u{1F}a": -5], now: now).count == 2)
+    }
 }

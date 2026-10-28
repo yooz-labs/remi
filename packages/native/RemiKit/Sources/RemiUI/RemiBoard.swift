@@ -50,6 +50,8 @@ public struct RemiBoardState: Codable, Equatable, Sendable {
               let decoded = try? JSONDecoder().decode(Self.self, from: data)
         else { return }
         self = decoded
+        // A hand-edited or damaged value must not make a slot negative.
+        pinnedSlots = pinnedSlots.mapValues { max(0, $0) }
     }
 
     public var storageValue: String {
@@ -136,9 +138,9 @@ public enum RemiBoardOrder {
         let byKey = Dictionary(uniqueKeysWithValues: sessions.map { (key(for: $0), $0) })
 
         var wanted: [(key: String, slot: Int)] = []
-        for (key, slot) in held where byKey[key] != nil { wanted.append((key, slot)) }
+        for (key, slot) in held where byKey[key] != nil { wanted.append((key, max(0, slot))) }
         for key in state.pinnedKeys where byKey[key] != nil && held[key] == nil {
-            wanted.append((key, state.slot(of: key) ?? 0))
+            wanted.append((key, max(0, state.slot(of: key) ?? 0)))
         }
         wanted.sort { ($0.slot, $0.key) < ($1.slot, $1.key) }
 
