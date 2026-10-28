@@ -480,10 +480,21 @@ struct MacLiveRootView: View {
         showingNewSession = true
     }
 
+    /// Connected machines whose session list has loaded and has had the grace period to settle,
+    /// the ones whose missing sessions really are gone.
+    private var settledMachineIDs: Set<String> {
+        let now = Date()
+        return Set(store.machines.filter {
+            $0.status == .connected && $0.hasLoadedSessions
+                && RemiLastThreads.isSettled(connectedAt: connectedAt[$0.id], now: now)
+        }.map(\.id))
+    }
+
     private var boardDetail: some View {
         MacCommandCenter(
             sessions: allSessions,
             machines: machineSummaries,
+            settledMachines: settledMachineIDs,
             questions: allQuestions,
             transcript: boardEntries,
             onAnswer: { answerFromInbox(machineID: $0, sessionID: $1, questionID: $2, value: $3) },

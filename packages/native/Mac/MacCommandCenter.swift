@@ -10,6 +10,10 @@ import SwiftUI
 struct MacCommandCenter: View {
     let sessions: [RemiSessionSummary]
     let machines: [RemiMachineSummary]
+    /// Machines that are connected, have loaded their session list and have had time for the
+    /// per-session daemons to be listed too. Only these may have a pin pruned: a machine that
+    /// just reconnected lists no sessions yet, and that is not the sessions being gone.
+    let settledMachines: Set<String>
     let questions: [RemiQuestionCardModel]
     /// The latest conversation entries of a session, for its tile.
     let transcript: (RemiSessionSummary) -> [RemiTranscriptEntry]
@@ -29,6 +33,7 @@ struct MacCommandCenter: View {
     @State private var onlyNeedsYou = false
     @State private var showFinished = false
     @FocusState private var focus: String?
+    @State private var focusTask: Task<Void, Never>?
 
     private let spacing = RemiTheme.Spacing.s
     private let margin = RemiTheme.Spacing.m
@@ -46,18 +51,14 @@ struct MacCommandCenter: View {
         }
         .onAppear(perform: loadBoard)
         .onChange(of: sessions.map(RemiBoardOrder.key(for:))) { pruneBoard() }
-        .onChange(of: connectedMachines) { pruneBoard() }
-    }
-
-    private var connectedMachines: Set<String> {
-        Set(machines.filter { $0.reachability == .connected }.map(\.id))
+        .onChange(of: settledMachines) { pruneBoard() }
     }
 
     /// Forgets pins and sizes of sessions a connected machine no longer lists. Every session
     /// counts as live here, finished ones too, so showing them again finds their pins.
     private func pruneBoard() {
         let live = Set(sessions.map(RemiBoardOrder.key(for:)))
-        if board.prune(live: live, connectedMachines: connectedMachines) { saveBoard() }
+        if board.prune(live: live, connectedMachines: settledMachines) { saveBoard() }
         // A draft or a recent interaction of a session that is gone would linger for good.
         drafts = drafts.filter { live.contains($0.key) }
         interactions = interactions.filter { live.contains($0.key) }
@@ -151,7 +152,7 @@ struct MacCommandCenter: View {
         // Only tiles on screen with a composer count: a draft left on a hidden or finished
         // tile must not freeze the board.
         let composerKeys = Set(filtered.filter(\.isLive).map(RemiBoardOrder.key(for:)))
-        let writing = RemiBoardOrder.isWriting(hasFocus: focus != nil, drafts: drafts, composerKeys: composerKeys)
+        let writing = RemiBoardOrder.isWriting(hasFocus: focus.map { composerKeys.contains($0) } ?? false, drafts: drafts, composerKeys: composerKeys)
         let held = writing ? RemiBoardOrder.held(from: shownOrder) : [:]
         return RemiBoardOrder.arrange(filtered, state: board, interactions: interactions, held: held, now: now)
     }
@@ -205,8 +206,10 @@ struct MacCommandCenter: View {
     private func focusNext(after key: String, in liveOrder: [String], reader: ScrollViewProxy) {
         guard let next = RemiBoardOrder.next(after: key, in: liveOrder) else { return }
         reader.scrollTo(next, anchor: .center)
-        Task {
-            try? await Task.sleep(for: .milliseconds(60))
+        // A second send inside the wait replaces the first, so the earlier one cannot overwrite it.
+        focusTask?.cancel()
+        focusTask = Task {
+            guard (try? await Task.sleep(for: .milliseconds(60))) != nil else { return }
             focus = next
         }
     }
@@ -284,6 +287,7 @@ struct MacCommandCenter: View {
     MacCommandCenter(
         sessions: RemiPreviewData.sessions,
         machines: RemiPreviewData.machines,
+        settledMachines: [],
         questions: [],
         transcript: { _ in [.agent(id: "a", text: "Running the tests."), .tool(id: "t", name: "Bash", summary: "swift test")] },
         onAnswer: { _, _, _, _ in },
