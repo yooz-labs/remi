@@ -358,6 +358,9 @@ public final class MachineStore {
     public private(set) var transcriptRouteGenerations: [MachineSessionKey: UUID] = [:]
     /// Sessions whose transcript has been requested and has not finished arriving (#1602).
     public private(set) var transcriptsLoading: Set<MachineSessionKey> = []
+    /// Loads that began with a transcript already published: a refresh, where only a new entry
+    /// id is genuinely new. A load without it is a first load, and every entry it delivers is replay.
+    @ObservationIgnored private var transcriptLoadHadHistory: Set<MachineSessionKey> = []
     public private(set) var sessionViewsBySession: [MachineSessionKey: [SessionViewMeta]] = [:]
     public private(set) var recentRepositoriesByMachine: [String: [RecentRepository]] = [:]
     public private(set) var latestError: ErrorMessage?
@@ -1663,6 +1666,11 @@ public final class MachineStore {
             sessionId: sessionId
         )
         transcriptsLoading.insert(key)
+        if transcriptsBySession[key]?.isEmpty == false {
+            transcriptLoadHadHistory.insert(key)
+        } else {
+            transcriptLoadHadHistory.remove(key)
+        }
         if let previous = transcriptLoadTimers[key] { transcriptKeyByRequest[previous.requestID] = nil }
         transcriptLoadTimers[key]?.task.cancel()
         transcriptKeyByRequest[request.id] = key
@@ -1690,6 +1698,7 @@ public final class MachineStore {
         transcriptLoadTimers.removeValue(forKey: key)?.task.cancel()
         transcriptKeyByRequest = transcriptKeyByRequest.filter { $0.value != key }
         transcriptsLoading.remove(key)
+        transcriptLoadHadHistory.remove(key)
     }
 
     nonisolated static let transcriptLoadTimeout: Duration = .seconds(45)
@@ -2411,11 +2420,11 @@ public final class MachineStore {
             let key = MachineSessionKey(machineID: machines[index].id, sessionID: message.sessionId)
             var transcript = transcriptsBySession[key, default: []]
             let isNewEntry = !transcript.contains { $0.entryUuid == message.entryUuid }
-            // A first load of an empty transcript replays history, so a match there proves nothing.
+            // A first load (no transcript published when it began) replays history, so a match there proves nothing.
             // A refresh (a transcript already published) delivers only genuinely new entries.
             // A "sending" entry is confirmable on purpose: if the echo beats the send's return,
             // markSent finds no entry and does nothing.
-            let replayingHistory = transcriptsLoading.contains(key) && transcript.isEmpty
+            let replayingHistory = transcriptsLoading.contains(key) && !transcriptLoadHadHistory.contains(key)
             if isNewEntry, message.role == "user", !replayingHistory {
                 outgoingBySession[key]?.confirm(transcriptContent: message.content)
             }
