@@ -142,7 +142,7 @@ public struct RemiBoardTile<Question: View>: View {
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
-                    ForEach(shown) { entry in FeedLine(entry: entry) }
+                    ForEach(shown) { entry in FeedLine(entry: entry.escapedForDisplay) }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
