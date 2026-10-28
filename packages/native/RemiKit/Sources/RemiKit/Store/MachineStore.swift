@@ -1818,7 +1818,7 @@ public final class MachineStore {
         trackOutgoing(key: key, id: message.id, content: content)
         do {
             try await connection.send(message)
-            outgoingBySession[key]?.markSent(id: message.id)
+            markOutgoingSent(key: key, id: message.id)
             return true
         } catch {
             // The bubble goes so the composer's draft is not shown twice. If the connection
@@ -1833,6 +1833,12 @@ public final class MachineStore {
     /// message to the connection. Internal so tests can drive the receive path without a live socket.
     func trackOutgoing(key: MachineSessionKey, id: String, content: String) {
         outgoingBySession[key, default: OutgoingMessages()].add(id: id, content: content)
+    }
+
+    /// Marks a tracked message as handed to the connection. A no-op when the entry is already
+    /// gone (confirmed by the transcript before the send returned), which is harmless.
+    func markOutgoingSent(key: MachineSessionKey, id: String) {
+        outgoingBySession[key]?.markSent(id: id)
     }
 
     public func terminateSession(machineID: String, sessionId: String) {
