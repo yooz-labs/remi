@@ -79,4 +79,12 @@ import Testing
         threads.prune(keepingMachines: [])
         #expect(threads == RemiLastThreads())
     }
+
+    @Test func onlyTheExactAutomaticSelectionIsSkipped() {
+        let auto: (machineID: String, sessionID: String)? = (machineID: "a", sessionID: "a-1")
+        #expect(!RemiLastThreads.shouldRecord(machineID: "a", sessionID: "a-1", autoSelected: auto))
+        #expect(RemiLastThreads.shouldRecord(machineID: "a", sessionID: "a-2", autoSelected: auto))
+        #expect(RemiLastThreads.shouldRecord(machineID: "b", sessionID: "a-1", autoSelected: auto))
+        #expect(RemiLastThreads.shouldRecord(machineID: "a", sessionID: "a-1", autoSelected: nil))
+    }
 }

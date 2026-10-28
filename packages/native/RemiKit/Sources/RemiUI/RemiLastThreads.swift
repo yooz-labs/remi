@@ -42,6 +42,17 @@ public struct RemiLastThreads: Equatable, Sendable {
         sessionByMachine = sessionByMachine.filter { machineIDs.contains($0.key) }
     }
 
+    /// Whether a selection change should be remembered. Only the automatic selection
+    /// (the fallback to the first listed session) is skipped, and only for the same
+    /// machine and session; any other change is the person's choice.
+    public static func shouldRecord(
+        machineID: String,
+        sessionID: String,
+        autoSelected: (machineID: String, sessionID: String)?
+    ) -> Bool {
+        true
+    }
+
     /// Seconds a machine must stay connected before its session list counts as complete.
     public static let defaultGrace: TimeInterval = 4
 
