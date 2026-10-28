@@ -110,9 +110,12 @@ public enum RemiBoardOrder {
         held: [String: Int],
         now: Date
     ) -> [RemiSessionSummary] {
+        // The same key twice (a list that repeats a session) shows once, the first copy.
+        var seen = Set<String>()
+        let sessions = sessions.filter { seen.insert(key(for: $0)).inserted }
         let count = sessions.count
         guard count > 0 else { return [] }
-        let byKey = Dictionary(sessions.map { (key(for: $0), $0) }, uniquingKeysWith: { first, _ in first })
+        let byKey = Dictionary(uniqueKeysWithValues: sessions.map { (key(for: $0), $0) })
 
         var wanted: [(key: String, slot: Int)] = []
         for (key, slot) in held where byKey[key] != nil { wanted.append((key, slot)) }
@@ -123,16 +126,24 @@ public enum RemiBoardOrder {
 
         var slots = [RemiSessionSummary?](repeating: nil, count: count)
         var placed = Set<String>()
+        // Pass one: each tile takes its slot, or the next free one after it. A tile whose slot
+        // is past the end, or with no free slot after it, waits for pass two.
+        var overflow: [String] = []
         for item in wanted {
             guard let session = byKey[item.key] else { continue }
-            var index = min(item.slot, count - 1)
-            if slots[index] != nil {
-                // Take the next free slot forward, else the nearest one behind.
-                index = (index..<count).first { slots[$0] == nil } ?? (0..<index).last { slots[$0] == nil } ?? index
+            if item.slot < count, let index = (item.slot..<count).first(where: { slots[$0] == nil }) {
+                slots[index] = session
+                placed.insert(item.key)
+            } else {
+                overflow.append(item.key)
             }
-            guard slots[index] == nil else { continue }
+        }
+        // Pass two: those tiles fill the last free places, the last of them in the last place,
+        // so they keep the order they had.
+        for key in overflow.reversed() {
+            guard let session = byKey[key], let index = slots.indices.last(where: { slots[$0] == nil }) else { continue }
             slots[index] = session
-            placed.insert(item.key)
+            placed.insert(key)
         }
 
         var rest = sessions.filter { !placed.contains(key(for: $0)) }
