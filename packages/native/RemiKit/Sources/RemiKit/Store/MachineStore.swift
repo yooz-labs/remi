@@ -2458,6 +2458,7 @@ public final class MachineStore {
                 machines[index].sessionActivity[sessionId] = nil
                 machines[index].questions.removeAll { $0.sessionId == sessionId }
                 transcriptsBySession[killedKey] = nil
+                outgoingBySession[killedKey] = nil
                 transcriptRouteGenerations[killedKey] = nil
                 sessionViewsBySession[killedKey] = nil
                 routeBySession[killedKey] = nil
