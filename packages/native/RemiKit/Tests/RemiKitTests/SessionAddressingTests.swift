@@ -300,6 +300,33 @@ struct SessionAddressingTests {
         #expect(pendingTexts(fixture, fixture.ids.a).isEmpty)
     }
 
+    @Test func aLaterReplayedEntryDuringTheFirstLoadDoesNotConfirmEither() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        store.ownedTranscriptSend = { _ in }
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let generation = try #require(store.connectionGenerations[fixture.routes[0]])
+        store.trackOutgoing(key: key, id: "m1", content: "X")
+        store.loadTranscript(machineID: fixture.ids.a, sessionId: sid)
+        // The replay arrives in order: an assistant entry first, then an old user entry with the same text.
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "hi", role: "assistant", entryUuid: "a1")),
+            from: fixture.routes[0], generation: generation)
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "X", role: "user", entryUuid: "old")),
+            from: fixture.routes[0], generation: generation)
+        #expect(pendingTexts(fixture, fixture.ids.a) == ["X"])
+
+        var payload = try #require(try JSONSerialization.jsonObject(
+            with: FixtureConformanceTests.fixture("transcript_load_complete")) as? [String: Any])
+        payload["sessionId"] = sid
+        let complete = try JSONDecoder().decode(TranscriptLoadCompleteMessage.self,
+            from: JSONSerialization.data(withJSONObject: payload))
+        store.receive(.transcriptComplete(complete), from: fixture.routes[0], generation: generation)
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "X", role: "user", entryUuid: "live")),
+            from: fixture.routes[0], generation: generation)
+        #expect(pendingTexts(fixture, fixture.ids.a).isEmpty)
+    }
+
     @Test func aKilledSessionDropsItsPendingMessagesButNotAnotherSessions() throws {
         let fixture = try twoMachines()
         defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
