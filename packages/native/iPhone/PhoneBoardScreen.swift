@@ -48,6 +48,7 @@ struct PhoneBoardScreen: View {
     @State private var loadedAt: [String: Date] = [:]
     @State private var graceTick = 0
     @FocusState private var focus: String?
+    @State private var focusTask: Task<Void, Never>?
 
     private var density: RemiTileSize { RemiTileSize.phoneDensity(stored: densityStorage) }
 
@@ -107,7 +108,19 @@ struct PhoneBoardScreen: View {
     private func content(now: Date) -> some View {
         let ordered = arranged(now: now)
         let order = ordered.map(RemiBoardOrder.key(for:))
-        return ScrollView {
+        // The cursor goes only to a tile with a working composer, and in the compact density
+        // there are none.
+        let liveOrder = density.showsComposer ? ordered.filter(\.isLive).map(RemiBoardOrder.key(for:)) : []
+        return ScrollViewReader { reader in
+            boardScroll(ordered: ordered, order: order, liveOrder: liveOrder, reader: reader)
+        }
+        .onChange(of: order, initial: true) { _, keys in shownOrder = keys }
+    }
+
+    private func boardScroll(
+        ordered: [RemiSessionSummary], order: [String], liveOrder: [String], reader: ScrollViewProxy
+    ) -> some View {
+        ScrollView {
             LazyVStack(spacing: RemiTheme.Spacing.s) {
                 if let errorMessage {
                     RemiFeedbackBanner(message: errorMessage, tone: .error, onDismiss: onDismissError)
@@ -120,7 +133,10 @@ struct PhoneBoardScreen: View {
                 if ordered.isEmpty {
                     emptyState
                 } else {
-                    ForEach(ordered) { session in tile(session, order: order) }
+                    ForEach(ordered) { session in
+                        tile(session, order: order, liveOrder: liveOrder, reader: reader)
+                            .id(RemiBoardOrder.key(for: session))
+                    }
                 }
             }
             .padding(RemiTheme.Spacing.m)
@@ -128,7 +144,19 @@ struct PhoneBoardScreen: View {
             .animation(RemiTheme.Motion.standard, value: order)
         }
         .scrollDismissesKeyboard(.interactively)
-        .onChange(of: order, initial: true) { _, keys in shownOrder = keys }
+    }
+
+    /// Moves the cursor to the next live tile: scrolls it into view first, because a lazy stack
+    /// has not built a tile that is off screen, then focuses it once it exists.
+    private func focusNext(after key: String, in liveOrder: [String], reader: ScrollViewProxy) {
+        guard let next = RemiBoardOrder.next(after: key, in: liveOrder) else { return }
+        reader.scrollTo(next, anchor: .center)
+        // A second send inside the wait replaces the first, so the earlier one cannot overwrite it.
+        focusTask?.cancel()
+        focusTask = Task {
+            guard (try? await Task.sleep(for: .milliseconds(60))) != nil else { return }
+            focus = next
+        }
     }
 
     private var filtered: [RemiSessionSummary] {
@@ -152,7 +180,9 @@ struct PhoneBoardScreen: View {
         return RemiBoardOrder.arrange(filtered, state: board, interactions: interactions, held: held, now: now)
     }
 
-    private func tile(_ session: RemiSessionSummary, order: [String]) -> some View {
+    private func tile(
+        _ session: RemiSessionSummary, order: [String], liveOrder: [String], reader: ScrollViewProxy
+    ) -> some View {
         let key = RemiBoardOrder.key(for: session)
         let waiting = questions.first {
             $0.machineID == session.machineID && $0.sessionID == session.id && $0.state == .pending
@@ -172,7 +202,7 @@ struct PhoneBoardScreen: View {
                 if sent {
                     interactions[key] = Date()
                     // Straight on to the next card, so a run of commands is type, send, type.
-                    focus = RemiBoardOrder.next(after: key, in: order)
+                    focusNext(after: key, in: liveOrder, reader: reader)
                 }
                 return sent
             },
