@@ -45,10 +45,19 @@ struct MacCommandCenter: View {
             }
         }
         .onAppear(perform: loadBoard)
-        .onChange(of: sessions.map(RemiBoardOrder.key(for:))) { _, keys in
-            board.prune(keeping: Set(keys))
-            saveBoard()
-        }
+        .onChange(of: sessions.map(RemiBoardOrder.key(for:))) { pruneBoard() }
+        .onChange(of: connectedMachines) { pruneBoard() }
+    }
+
+    private var connectedMachines: Set<String> {
+        Set(machines.filter { $0.reachability == .connected }.map(\.id))
+    }
+
+    /// Forgets pins and sizes of sessions a connected machine no longer lists. Every session
+    /// counts as live here, finished ones too, so showing them again finds their pins.
+    private func pruneBoard() {
+        let live = Set(sessions.map(RemiBoardOrder.key(for:)))
+        if board.prune(live: live, connectedMachines: connectedMachines) { saveBoard() }
     }
 
     // MARK: filtering

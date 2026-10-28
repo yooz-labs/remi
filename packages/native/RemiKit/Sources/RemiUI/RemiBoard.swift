@@ -73,14 +73,19 @@ public struct RemiBoardState: Codable, Equatable, Sendable {
         pinnedSlots[key] = slot
     }
 
-    /// Stub until the pruning change lands.
+    /// Forgets tiles for sessions that no longer exist. An entry goes only when its machine is
+    /// connected (so its list is current) and its key is not in `live`; a machine that is
+    /// reconnecting lists nothing for a while, and that must not unpin its tiles.
+    /// Returns whether anything was removed.
     @discardableResult
-    public mutating func prune(live: Set<String>, connectedMachines: Set<String>) -> Bool { false }
-
-    /// Forgets tiles for sessions that no longer exist.
-    public mutating func prune(keeping live: Set<String>) {
-        pinnedSlots = pinnedSlots.filter { live.contains($0.key) }
-        sizes = sizes.filter { live.contains($0.key) }
+    public mutating func prune(live: Set<String>, connectedMachines: Set<String>) -> Bool {
+        func gone(_ key: String) -> Bool {
+            connectedMachines.contains(RemiBoardOrder.machineID(ofKey: key)) && !live.contains(key)
+        }
+        let before = (pinnedSlots.count, sizes.count)
+        pinnedSlots = pinnedSlots.filter { !gone($0.key) }
+        sizes = sizes.filter { !gone($0.key) }
+        return before != (pinnedSlots.count, sizes.count)
     }
 }
 
@@ -102,8 +107,10 @@ public enum RemiBoardOrder {
         "\(session.machineID)\u{1F}\(session.id)"
     }
 
-    /// Stub until the pruning change lands.
-    public static func machineID(ofKey key: String) -> String { "" }
+    /// The machine a ``key(for:)`` belongs to; a string that is not a key is returned whole.
+    public static func machineID(ofKey key: String) -> String {
+        key.split(separator: "\u{1F}", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? key
+    }
 
     /// The board's order. Pinned tiles keep their slots, and so do `held` tiles (one whose
     /// composer is in use keeps the slot it has now, so it never jumps under the cursor).
