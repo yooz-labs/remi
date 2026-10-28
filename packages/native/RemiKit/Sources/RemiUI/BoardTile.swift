@@ -25,6 +25,10 @@ public struct RemiBoardTile<Question: View>: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var sendFailed = false
+    /// A send is in flight: a second Return before it returns must not send the text again.
+    @State private var sending = false
+    /// Grows the tile's fixed heights with the reader's text size, so large type is not clipped.
+    @ScaledMetric(relativeTo: .body) private var heightScale: CGFloat = 1
     /// The question's natural height, so its area is as tall as it needs up to a cap.
     @State private var questionHeight: CGFloat = 0
 
@@ -39,7 +43,7 @@ public struct RemiBoardTile<Question: View>: View {
         focus: FocusState<String?>.Binding,
         onOpen: @escaping () -> Void,
         onSend: @escaping (String) async -> Bool,
-        onSetSize: @escaping (RemiTileSize) -> Void,
+        onSetSize: @escaping (RemiTileSize) -> Void = { _ in },
         onTogglePin: @escaping () -> Void,
         dragPayload: String? = nil,
         question: Question? = nil
@@ -61,7 +65,14 @@ public struct RemiBoardTile<Question: View>: View {
     }
 
     private var needsYou: Bool { session.status == .needsYou }
-    private var canSend: Bool { session.isLive && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var canSend: Bool {
+        session.isLive && !sending && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var tileHeight: CGFloat { size.estimatedHeight * heightScale }
+    /// A waiting tile with its question on it grows to the question's content instead of
+    /// holding the size's height, which a long question could overflow.
+    private var growsToContent: Bool { needsYou && question != nil }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
@@ -73,7 +84,7 @@ public struct RemiBoardTile<Question: View>: View {
         }
         .padding(RemiTheme.Spacing.s)
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .frame(height: size.estimatedHeight)
+        .modifier(TileHeight(height: tileHeight, growsToContent: growsToContent))
         .background(tileBackground, in: .rect(cornerRadius: RemiTheme.Radius.control))
         .overlay { border }
         .contextMenu { menu }
@@ -132,13 +143,16 @@ public struct RemiBoardTile<Question: View>: View {
     @ViewBuilder private var conversation: some View {
         let shown = RemiBoardOrder.feed(entries, size: size)
         if shown.isEmpty {
-            Text(emptyConversationText)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .lineLimit(size.messageLines)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .contentShape(.rect)
-                .onTapGesture(perform: onOpen)
+            Button(action: onOpen) {
+                Text(emptyConversationText)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(size.messageLines)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Opens the whole conversation")
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
@@ -173,22 +187,27 @@ public struct RemiBoardTile<Question: View>: View {
                     .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { questionHeight = $0 }
             }
             .scrollBounceBehavior(.basedOnSize)
-            .frame(height: min(max(questionHeight, 1), size == .compact ? 180 : 260))
+            .frame(height: min(max(questionHeight, 1), (size == .compact ? 180 : 260) * heightScale))
             if session.openQuestionCount > 1 {
                 Text("\(session.openQuestionCount - 1) more waiting. Open the conversation to see them.")
                     .font(RemiTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
             }
         } else if needsYou {
-            Label(
-                session.openQuestionCount > 1 ? "\(session.openQuestionCount) questions waiting" : "Waiting for you",
-                systemImage: "questionmark.bubble.fill"
-            )
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(RemiTheme.Color.attentionInk)
-            .padding(.horizontal, RemiTheme.Spacing.xs)
-            .padding(.vertical, RemiTheme.Spacing.xxs)
-            .background(RemiTheme.Color.attention, in: Capsule())
+            Button(action: onOpen) {
+                Label(
+                    session.openQuestionCount > 1 ? "\(session.openQuestionCount) questions waiting" : "Waiting for you",
+                    systemImage: "questionmark.bubble.fill"
+                )
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(RemiTheme.Color.attentionInk)
+                .padding(.horizontal, RemiTheme.Spacing.xs)
+                .padding(.vertical, RemiTheme.Spacing.xxs)
+                .background(RemiTheme.Color.attention, in: Capsule())
+                .contentShape(.capsule)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Opens the whole conversation")
         }
     }
 
@@ -219,6 +238,10 @@ public struct RemiBoardTile<Question: View>: View {
             Button(action: send) {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.title3)
+                    #if os(iOS)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(.rect)
+                    #endif
             }
             .buttonStyle(.plain)
             .foregroundStyle(canSend ? AnyShapeStyle(RemiTheme.Color.activityDot) : AnyShapeStyle(.tertiary))
@@ -283,29 +306,37 @@ public struct RemiBoardTile<Question: View>: View {
     }
 
     private var accessibilityLabel: String {
-        var parts = [session.name, session.machineName]
-        if needsYou { parts.append("needs you") }
+        var parts = [session.name, session.machineName, session.project]
+        if needsYou {
+            parts.append(
+                session.openQuestionCount > 1 ? "needs you, \(session.openQuestionCount) questions" : "needs you"
+            )
+        }
         return parts.joined(separator: ", ")
     }
 
     private func send() {
         guard canSend else { return }
         let text = draft
+        sending = true
         Task {
-            if await onSend(text) {
-                sendFailed = false
-                draft = ""
-            } else {
-                sendFailed = true
-            }
+            let sent = await onSend(text)
+            sending = false
+            sendFailed = !sent
+            // Text typed while the send was in flight is not the sent text; keep it.
+            if sent, draft == text { draft = "" }
         }
     }
 }
 
 /// A border that slowly swells and fades, for a tile that needs the person.
 private struct BreathingBorder: View {
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+        // 20 frames a second is smooth enough for a slow swell, and the clock stops while the
+        // window is not the active scene.
+        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: scenePhase != .active)) { timeline in
             let phase = timeline.date.timeIntervalSinceReferenceDate
             let wave = (sin(phase * 2 * .pi / 2.8) + 1) / 2
             RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
@@ -327,7 +358,7 @@ public extension RemiBoardTile where Question == EmptyView {
         focus: FocusState<String?>.Binding,
         onOpen: @escaping () -> Void,
         onSend: @escaping (String) async -> Bool,
-        onSetSize: @escaping (RemiTileSize) -> Void,
+        onSetSize: @escaping (RemiTileSize) -> Void = { _ in },
         onTogglePin: @escaping () -> Void,
         dragPayload: String? = nil
     ) {
@@ -374,6 +405,20 @@ private struct FeedLine: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// The tile's height: fixed, or a minimum when the content (a question) may need more.
+private struct TileHeight: ViewModifier {
+    let height: CGFloat
+    let growsToContent: Bool
+
+    func body(content: Content) -> some View {
+        if growsToContent {
+            content.frame(minHeight: height)
+        } else {
+            content.frame(height: height)
         }
     }
 }
