@@ -220,12 +220,9 @@ struct SessionAddressingTests {
         let fixture = try twoMachines()
         defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
         let sent = await fixture.store.sendChat(machineID: fixture.ids.a, sessionId: fixture.sessionID, content: "hello")
-        if !sent {
-            #expect(pendingTexts(fixture, fixture.ids.a).isEmpty)
-            #expect(fixture.store.latestOperationError == "Message not sent. Check the connection and try again.")
-        } else {
-            #expect(fixture.store.outgoingMessages(machineID: fixture.ids.a, sessionID: fixture.sessionID).map(\.delivery) == [.sent])
-        }
+        #expect(!sent)
+        #expect(pendingTexts(fixture, fixture.ids.a).isEmpty)
+        #expect(fixture.store.latestOperationError == "Message not sent. Check the connection and try again.")
     }
 
     @Test func aTrackedMessageStartsSendingAndBecomesSent() throws {
