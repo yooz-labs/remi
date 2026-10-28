@@ -70,4 +70,17 @@ import Testing
     @Test @MainActor func theComposerNoticeSaysTheDraftIsKept() {
         #expect(RemiSessionInteractionBar.failureMessage.contains("draft is still here"))
     }
+
+    @Test func enablingAssistiveTechnologyChangesTheTaskAndPreventsDismissal() {
+        typealias TaskID = RemiSessionInteractionBar.FailureNoticeTaskID
+        let waiting = TaskID(failureCount: 1, voiceOverEnabled: false, switchControlEnabled: false)
+        #expect(waiting.permitsDismissal)
+        for accessible in [
+            TaskID(failureCount: 1, voiceOverEnabled: true, switchControlEnabled: false),
+            TaskID(failureCount: 1, voiceOverEnabled: false, switchControlEnabled: true)
+        ] {
+            #expect(accessible != waiting)
+            #expect(!accessible.permitsDismissal)
+        }
+    }
 }
