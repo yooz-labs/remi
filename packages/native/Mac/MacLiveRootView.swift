@@ -161,7 +161,7 @@ struct MacLiveRootView: View {
                             initialQuestionID: notificationDestination?.questionID,
                             transcriptForView: { transcript(machineID: session.machineID, sessionID: $0) },
                             isLoadingTranscript: { store.isLoadingTranscript(machineID: session.machineID, sessionID: $0) },
-                            onSelectView: { store.loadTranscript(machineID: session.machineID, sessionId: $0) },
+                            onSelectView: { store.ensureTranscript(machineID: session.machineID, sessionId: $0) },
                             onAnswer: { questionId, value in
                                 store.answer(
                                     machineID: session.machineID,
@@ -218,7 +218,7 @@ struct MacLiveRootView: View {
                             sessionID: session.id
                         ))
                         .task(id: store.transcriptRouteGeneration(machineID: session.machineID, sessionID: session.id)) {
-                            store.loadTranscript(machineID: session.machineID, sessionId: session.id)
+                            store.ensureTranscript(machineID: session.machineID, sessionId: session.id)
                         }
                     } else if notificationDestination != nil {
                         ContentUnavailableView(
@@ -256,7 +256,9 @@ struct MacLiveRootView: View {
             MachineConfigurationStore.shared.saveProfiles(profiles)
             relayNotifications.reconcileEndpoints()
         }
+        .onChange(of: store.machines.map(\.status)) { _, _ in store.warmActiveTranscripts() }
         .onChange(of: navigationSnapshot, initial: true) { _, _ in
+            store.warmActiveTranscripts()
             reconcileNavigation()
             validateColumnLayout()
             pruneDrafts()
@@ -423,7 +425,7 @@ struct MacLiveRootView: View {
         selectedMachineID = destination.machineID
         selectedSessionID = destination.sessionID
         preferredCompactColumn = .detail
-        store.loadTranscript(machineID: destination.machineID, sessionId: destination.agentID ?? destination.sessionID)
+        store.ensureTranscript(machineID: destination.machineID, sessionId: destination.agentID ?? destination.sessionID)
     }
 
     /// Opens a card's conversation: switches machine and session by their qualified key, and
@@ -440,7 +442,7 @@ struct MacLiveRootView: View {
         selectedMachineID = target.machineID
         selectedSessionID = target.sessionID
         preferredCompactColumn = .detail
-        store.loadTranscript(
+        store.ensureTranscript(
             machineID: target.machineID,
             sessionId: target.conversationID ?? target.sessionID
         )

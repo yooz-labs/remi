@@ -95,6 +95,9 @@ struct PhoneLiveRootView: View {
             shell.clearFilter()
             pairingAttemptID = nil
         }
+        .onChange(of: store.machines.map { "\($0.id)|\($0.status)|\($0.activeSessions.map(\.sessionId))" }, initial: true) { _, _ in
+            store.warmActiveTranscripts()
+        }
         .onChange(of: store.machines.map(\.id), initial: true) { _, ids in
             shell.machinesChanged(ids: ids)
         }
@@ -395,13 +398,13 @@ struct PhoneLiveRootView: View {
     }
 
     private func selectSession(_ session: RemiSessionSummary) {
-        store.loadTranscript(machineID: session.machineID, sessionId: session.id)
+        store.ensureTranscript(machineID: session.machineID, sessionId: session.id)
         shell.selectSession(machineKey: session.machineID, sessionID: session.id)
     }
 
     /// Navigates to the conversation of `target` and focuses its question. It never answers.
     private func openQuestionSession(_ target: RemiInboxPresentation.OpenTarget, questionID: String) {
-        store.loadTranscript(machineID: target.machineID, sessionId: target.sessionID)
+        store.ensureTranscript(machineID: target.machineID, sessionId: target.sessionID)
         // Opening a subagent conversation of the session already on screen changes the
         // route's conversation id on purpose (the screen must show that conversation); the
         // same route is a no-op.
@@ -857,7 +860,7 @@ struct PhoneLiveRootView: View {
             initialConversationID: route.conversationID,
             initialQuestionID: focus,
             transcriptForView: { transcript(machineID: session.machineID, sessionID: $0) },
-            onSelectView: { store.loadTranscript(machineID: session.machineID, sessionId: $0) },
+            onSelectView: { store.ensureTranscript(machineID: session.machineID, sessionId: $0) },
             onAnswer: { answer(machineID: session.machineID, sessionId: session.id, questionId: $0, value: $1) },
             onSubmit: { submit(machineID: session.machineID, sessionId: session.id, questionId: $0, values: $1) },
             onCancel: { cancel(machineID: session.machineID, sessionId: session.id, questionId: $0) },
@@ -872,7 +875,7 @@ struct PhoneLiveRootView: View {
         )
         .id(route)
         .task(id: store.transcriptRouteGeneration(machineID: session.machineID, sessionID: route.conversationID ?? session.id)) {
-            store.loadTranscript(machineID: session.machineID, sessionId: route.conversationID ?? session.id)
+            store.ensureTranscript(machineID: session.machineID, sessionId: route.conversationID ?? session.id)
         }
         .onChange(of: shell.pendingFocus, initial: true) { _, _ in
             guard shell.focusQuestionID(for: route) != nil else { return }
