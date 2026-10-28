@@ -26,13 +26,29 @@ enum RemiComposerSubmission {
 }
 
 public struct RemiSessionInteractionBar: View {
+    struct FailureNoticeTaskID: Equatable {
+        let failureCount: Int
+        let voiceOverEnabled: Bool
+        let switchControlEnabled: Bool
+
+        var permitsDismissal: Bool { !voiceOverEnabled && !switchControlEnabled }
+    }
+
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+    @Environment(\.accessibilitySwitchControlEnabled) private var switchControlEnabled
     @Binding private var draft: String
     private let state: RemiSessionInteractionState
     private let onSend: (String) async -> Bool
     private let onInterrupt: (() -> Void)?
     @State private var isSending = false
     @State private var sendFailed = false
+    /// Counts failures, so a second one restarts the notice's timer.
+    @State private var sendFailureCount = 0
+
+    /// How long the "not sent" notice stays before it clears itself. The draft is untouched, and
+    /// the notice can be dismissed sooner.
+    public static let failureNoticeDuration: Duration = .seconds(12)
 
     public init(
         draft: Binding<String>,
@@ -50,17 +66,24 @@ public struct RemiSessionInteractionBar: View {
         Group {
             switch state {
             case .liveMain(let promptWaiting):
-                RemiComposer(
-                    text: $draft,
-                    promptWaiting: promptWaiting,
-                    isSending: isSending,
-                    onSend: sendDraft,
-                    onInterrupt: onInterrupt
-                )
-                if sendFailed {
-                    Label("Message wasn’t sent. Your draft is still here.", systemImage: "exclamationmark.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                // One stack, so the banner sits under the composer and the bar's padding, column and
+                // material apply to the pair once.
+                VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
+                    RemiComposer(
+                        text: $draft,
+                        promptWaiting: promptWaiting,
+                        isSending: isSending,
+                        onSend: sendDraft,
+                        onInterrupt: onInterrupt
+                    )
+                    if sendFailed {
+                        RemiFeedbackBanner(
+                            message: Self.failureMessage,
+                            tone: .error,
+                            onDismiss: { sendFailed = false }
+                        )
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    }
                 }
             case .liveSubagent:
                 readOnlyLabel(
@@ -82,6 +105,30 @@ public struct RemiSessionInteractionBar: View {
         // (read-only notes, the send-failure caption) keeps the bar material so it stays legible
         // over transcript content scrolling underneath.
         .background(floatsOverTranscript ? AnyShapeStyle(.clear) : barMaterial)
+        .animation(RemiTheme.Motion.quick, value: sendFailed)
+        // Said once when it appears, so VoiceOver does not depend on landing on the banner.
+        .onChange(of: sendFailureCount) { _, _ in
+            AccessibilityNotification.Announcement(Self.failureMessage).post()
+        }
+        // Clears itself; a new failure restarts the wait. A dismiss or a send clears the flag, so
+        // the timer finds nothing left to do. Not while VoiceOver or Switch Control is on: those
+        // users may need longer than any fixed time to reach it, and Dismiss is there.
+        .task(id: failureNoticeTaskID) {
+            guard sendFailed, failureNoticeTaskID.permitsDismissal else { return }
+            try? await Task.sleep(for: Self.failureNoticeDuration)
+            guard !Task.isCancelled else { return }
+            sendFailed = false
+        }
+    }
+
+    static let failureMessage = "Message wasn’t sent. Your draft is still here."
+
+    private var failureNoticeTaskID: FailureNoticeTaskID {
+        FailureNoticeTaskID(
+            failureCount: sendFailureCount,
+            voiceOverEnabled: voiceOverEnabled,
+            switchControlEnabled: switchControlEnabled
+        )
     }
 
     private var floatsOverTranscript: Bool {
@@ -112,6 +159,7 @@ public struct RemiSessionInteractionBar: View {
                 draft = ""
             } else {
                 sendFailed = true
+                sendFailureCount += 1
             }
             isSending = false
         }
