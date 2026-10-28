@@ -3,11 +3,37 @@ import Foundation
 
 /// How much of a session a board tile shows.
 public enum RemiTileSize: String, Codable, CaseIterable, Sendable {
+    /// One line under the title, no composer: the phone's compact density.
+    case row
     case compact, regular, large
+
+    /// The densities the phone offers, like a mail list's compact, medium and long.
+    public static let phoneDensities: [RemiTileSize] = [.row, .regular, .large]
+
+    public var densityTitle: String {
+        switch self {
+        case .row: "Compact"
+        case .compact: "Small"
+        case .regular: "Medium"
+        case .large: "Long"
+        }
+    }
+
+    /// The density saved earlier, or Medium when there is none or it cannot be read.
+    public init(storedDensity: String) {
+        self = Self(rawValue: storedDensity) ?? .regular
+    }
+
+    /// Whether the tile shows the conversation, as opposed to a single line.
+    public var showsFeed: Bool { self != .row }
+
+    /// Whether the tile has a field to type into.
+    public var showsComposer: Bool { self != .row }
 
     /// About how tall the tile is, for packing columns before it is laid out.
     public var estimatedHeight: CGFloat {
         switch self {
+        case .row: 96
         case .compact: 260
         case .regular: 420
         case .large: 640
@@ -17,6 +43,7 @@ public enum RemiTileSize: String, Codable, CaseIterable, Sendable {
     /// How many of the latest conversation entries the tile keeps ready to show.
     public var feedEntries: Int {
         switch self {
+        case .row: 1
         case .compact: 4
         case .regular: 8
         case .large: 16
@@ -26,6 +53,7 @@ public enum RemiTileSize: String, Codable, CaseIterable, Sendable {
     /// Lines of the latest message the tile shows.
     public var messageLines: Int {
         switch self {
+        case .row: 1
         case .compact: 2
         case .regular: 6
         case .large: 16
