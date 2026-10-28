@@ -2411,7 +2411,12 @@ public final class MachineStore {
             let key = MachineSessionKey(machineID: machines[index].id, sessionID: message.sessionId)
             var transcript = transcriptsBySession[key, default: []]
             let isNewEntry = !transcript.contains { $0.entryUuid == message.entryUuid }
-            if isNewEntry, message.role == "user" {
+            // A first load of an empty transcript replays history, so a match there proves nothing.
+            // A refresh (a transcript already published) delivers only genuinely new entries.
+            // A "sending" entry is confirmable on purpose: if the echo beats the send's return,
+            // markSent finds no entry and does nothing.
+            let replayingHistory = transcriptsLoading.contains(key) && transcript.isEmpty
+            if isNewEntry, message.role == "user", !replayingHistory {
                 outgoingBySession[key]?.confirm(transcriptContent: message.content)
             }
             transcript.removeAll { $0.entryUuid == message.entryUuid }
