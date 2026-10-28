@@ -42,9 +42,12 @@ public struct RemiLastThreads: Equatable, Sendable {
         sessionByMachine = sessionByMachine.filter { machineIDs.contains($0.key) }
     }
 
+    /// Seconds a machine must stay connected before its session list counts as complete.
+    public static let defaultGrace: TimeInterval = 4
+
     /// Whether a machine has been connected long enough for its session list to be complete.
     /// A machine that is not connected (`connectedAt` nil) is never settled.
-    public static func isSettled(connectedAt: Date?, now: Date, grace: TimeInterval = 4) -> Bool {
+    public static func isSettled(connectedAt: Date?, now: Date, grace: TimeInterval = defaultGrace) -> Bool {
         guard let connectedAt else { return false }
         return now.timeIntervalSince(connectedAt) >= grace
     }

@@ -15,9 +15,14 @@ struct MacLiveRootView: View {
     @State private var draftBox = MacDraftBox()
     @State private var draftFlush: Task<Void, Never>?
     @State private var showingInbox = false
-    /// A hub lists its sessions before its per-session daemons do; until this is true a
-    /// remembered thread missing from the list is waited for, not replaced.
-    @State private var restoreGraceOver = false
+    /// When each currently connected machine connected. A hub lists its sessions before its
+    /// per-session daemons do, so until a machine has been connected for the grace period a
+    /// remembered thread missing from its list is waited for, not replaced.
+    @State private var connectedAt: [String: Date] = [:]
+    /// Bumped when a machine's grace period ends, to run `reconcileNavigation` then.
+    @State private var graceTick = 0
+    /// The session `reconcileNavigation` chose as a fallback; `onChange` skips recording it.
+    @State private var autoSelectedSessionID: String?
     @State private var showingNewSession = false
     @State private var newSessionMachineID: String?
     @State private var newSessionRepository: String?
@@ -252,11 +257,30 @@ struct MacLiveRootView: View {
         .task {
             restoreColumnLayout()
             reconcileNavigation()
-            try? await Task.sleep(for: .seconds(4))
-            restoreGraceOver = true
+        }
+        .task(id: GraceWindow(connectedAt: connectedAt, tick: graceTick)) {
+            let now = Date()
+            let ends = connectedAt.values
+                .map { $0.addingTimeInterval(RemiLastThreads.defaultGrace) }
+                .filter { $0 > now }
+            guard let earliest = ends.min() else { return }
+            guard (try? await Task.sleep(for: .seconds(earliest.timeIntervalSince(now)))) != nil
+            else { return }
+            graceTick += 1
+            reconcileNavigation()
+        }
+        .onChange(of: connectedMachineIDs, initial: true) { _, ids in
+            let now = Date()
+            var next: [String: Date] = [:]
+            for id in ids { next[id] = connectedAt[id] ?? now }
+            connectedAt = next
             reconcileNavigation()
         }
         .onChange(of: selectedSessionID) { _, sessionID in
+            if autoSelectedSessionID == sessionID {
+                autoSelectedSessionID = nil
+                return
+            }
             var threads = RemiLastThreads(storage: lastThreadsStorage)
             threads.remember(machineID: selectedMachineID, sessionID: sessionID)
             lastThreadsStorage = threads.storageValue
@@ -534,6 +558,7 @@ struct MacLiveRootView: View {
         Binding(
             get: { selectedSessionID.isEmpty ? nil : selectedSessionID },
             set: {
+                autoSelectedSessionID = nil
                 selectedSessionID = $0 ?? ""
                 preferredCompactColumn = selectedSessionID.isEmpty ? .content : .detail
                 if pendingResume?.machineID != selectedMachineID
@@ -543,6 +568,15 @@ struct MacLiveRootView: View {
                 notificationDestination = nil
             }
         )
+    }
+
+    private var connectedMachineIDs: [String] {
+        store.machines.filter { $0.status == .connected }.map(\.id)
+    }
+
+    private func isSettled(_ machine: MachineState?) -> Bool {
+        guard let machine else { return false }
+        return RemiLastThreads.isSettled(connectedAt: connectedAt[machine.id], now: Date())
     }
 
     private var navigationSnapshot: [[String]] {
@@ -575,9 +609,12 @@ struct MacLiveRootView: View {
             machineID: selectedMachineID,
             current: selectedSessionID,
             available: selectedMachine?.sessions.map(\.sessionId) ?? [],
-            settled: restoreGraceOver && selectedMachine?.status == .connected
+            settled: isSettled(selectedMachine)
         ) {
-        case .open(let sessionID), .fallback(let sessionID): selectedSessionID = sessionID
+        case .open(let sessionID): selectedSessionID = sessionID
+        case .fallback(let sessionID):
+            if sessionID != selectedSessionID { autoSelectedSessionID = sessionID }
+            selectedSessionID = sessionID
         case .clear: selectedSessionID = ""
         case .wait: break
         }
@@ -2433,3 +2470,10 @@ private var workspacePreviewSessions: [RemiSessionSummary] {
     return draft
 }
 #endif
+
+/// The state a grace-period task is keyed on, so it restarts when a machine connects,
+/// disconnects, or a grace period ends.
+private struct GraceWindow: Hashable {
+    let connectedAt: [String: Date]
+    let tick: Int
+}
