@@ -367,7 +367,15 @@ struct MacLiveRootView: View {
                     showingJump = false
                     switch result {
                     case .session(let session): openFromBoard(session)
-                    case .question(_, let owner): if let owner { openFromBoard(owner) }
+                    case .question(let card, _):
+                        // The same path as the Inbox, so the card is focused, and the owner
+                        // session need not be in the list.
+                        openFromInbox(
+                            RemiInboxPresentation.OpenTarget(
+                                machineID: card.machineID, sessionID: card.sessionID, conversationID: card.agentID
+                            ),
+                            questionID: card.questionID
+                        )
                     }
                 },
                 onClose: { showingJump = false }
