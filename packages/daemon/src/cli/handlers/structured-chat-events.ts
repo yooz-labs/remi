@@ -8,6 +8,7 @@ import {
   connectionDeviceIdentityInsideLock,
   connectionDeviceKey,
 } from '../../auth/relay-chat-authority';
+import type { AnswerCommit, AnswerCommitResult } from '../../harness/decision';
 import { SubmissionSequence } from '../../harness/submission-sequence';
 import type { HarnessSession, HarnessStructuredChat } from '../../harness/types';
 import type { SecurePushAuthority, SecurePushStore } from '../../notifications/secure-push-store';
@@ -146,6 +147,29 @@ export class StructuredChatService {
     } catch {
       return null;
     }
+  }
+
+  /** Async question answers reuse this exact signed-device/attachment/runtime authority. */
+  decisionCommit(id: UUID, sessionId: UUID): AnswerCommit | null {
+    const original = this.capture(id, sessionId);
+    if (!original) return null;
+    return <T>(effect: () => T): AnswerCommitResult<T> => {
+      let invoked = false;
+      try {
+        return this.host.identityStore.withAuthorizationEpochNonblocking(
+          original.publicKey,
+          (grant) => {
+            if (!same(original, this.authority(id, sessionId, grant))) return { kind: 'refused' };
+            invoked = true;
+            return { kind: 'committed', value: effect() };
+          },
+          false,
+        );
+      } catch (error) {
+        if (invoked) throw error;
+        return { kind: 'refused' };
+      }
+    };
   }
 
   /** Hold the original grant through the operation's synchronous effect/delivery. */

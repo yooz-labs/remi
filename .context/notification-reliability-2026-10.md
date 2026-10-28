@@ -10,7 +10,7 @@ Five load-bearing facts were checked against source and live diagnostics on 2026
 2. `cli.ts` creates `SecurePushService` only with relay configuration, a signing identity and a push secret. The running host logs contain the explicit missing-secret refusal. A freshly opened terminal does not necessarily have the hub's provider credential.
 3. `NotificationDispatcher.computeDelivery` suppresses non-held question pushes for any attached client. #1674 removes that gate without changing subscription validity, device preferences, deduplication, token pruning or authorization.
 4. The native NSE copies the signed capsule body directly. The Foundation Models summarizer is used by local alerts only. #1674 bounds previews for questions that already require the app and preserves the complete ask supporting a one-tap permission.
-5. `RemiPushStore.verifyAction` checks displayed text and category against the reopened signed capsule. `NativePushActionPolicy` supports only verified Yes/No and session-rule Yes/Always/No shapes. The full-detail guard deliberately excludes truncated commands and plans. Subscriptions currently have a 24-hour lease by default, with durable expiry markers; registration lifetime and authorization are separate policies.
+5. `RemiPushStore.verifyAction` checks displayed text and category against the reopened signed capsule. `NativePushActionPolicy` supports only verified Yes/No and session-rule Yes/Always/No shapes. The full-detail guard deliberately excludes truncated commands and plans. At initial diagnosis the default lease was 24 hours; the approved #1679 change sets a 30-day default while preserving durable expiry markers. Registration lifetime and authorization remain separate policies.
 
 Local diagnostics are not signed-phone or Watch acceptance. This work does not treat an APNs 2xx response as proof of handset delivery.
 
@@ -30,7 +30,7 @@ Use the existing encrypted v2 channel for token registration and background answ
 
 Advertise the host's notification service and readiness through a reviewed optional capability/descriptor contract. An authenticated direct client can request notification-only enrollment for its existing key, then complete the existing encrypted handshake for registration. OS permission plus completed pairing initiates registration automatically; per-host/device settings can mute or disable it. Show registering, enabled, needs host setup, denied, expired and failed states instead of treating permission as delivery readiness. A missing provider credential is an explicit host setup problem. Sessions should use the hub-owned notification service rather than requiring every terminal to inherit a deployment secret; the local submission path must require actual loopback capability and bind the event to the verified child runtime.
 
-Persistent subscription is the proposed default for an explicitly paired device: retain registration until notification disablement, host/device removal, token invalidation, key change or authorization revocation. Retain epoch/version floors and revocation checks. Do not implement persistence by refreshing timestamps, reviving expired subscription epochs or weakening existing checks. Existing leased registrations retain their semantics until a fresh explicit registration migrates them. This policy requires owner approval.
+The owner approved notification-only enrollment after pairing and OS permission, then selected automatic renewal during authenticated active use with an explicit Continue/Revoke choice after 30 days inactive. Push does not require a foreground socket. Disablement, host/device removal, token invalidation, key change and authorization revocation stop delivery. Retain epoch/version floors and durable expiry markers; only a fresh explicitly consented registration replaces an expired epoch. The earlier indefinite-persistence proposal is superseded by this policy (#1677).
 
 Presentation is separate from authority. Target a body of at most 160 characters and action titles of at most 32. Use exact known meanings such as Allow once and Deny for a fully represented, verified binary permission. Preserve actual option values and signed content identity. A generated or truncated summary must never support a new one-tap allow or standing grant. Requests whose meaning does not fit get Review request, opening the full current card. Short generic choices require a reviewed signed category/answer contract; do not infer them from option position or ask a model to invent their meanings. Plans and multi-question forms open the app. Optional on-device model summaries always have a bounded deterministic fallback and never alter answers.
 
@@ -40,7 +40,7 @@ Expected backend changes:
 
 - `packages/shared/src/protocol.ts`, protocol capability/fixture definitions, and the relay v2 payload schemas: the reviewed notification descriptor, scoped enrollment request/result and any signed review-action shape.
 - `packages/daemon/src/remote/hub-relay.ts`, `relay-device-store.ts`, `native-answer-ledger.ts`, and enrollment storage: notification-only admission and operation allowlist.
-- `packages/daemon/src/notifications/secure-push-store.ts`, `secure-push-contexts.ts`, `secure-push-service.ts`, and `cli.ts`: persistent-registration policy, host readiness and capability-proved child delivery through the hub.
+- `packages/daemon/src/notifications/secure-push-store.ts`, `secure-push-contexts.ts`, `secure-push-service.ts`, and `cli.ts`: active renewal/inactive consent, host readiness and capability-proved child delivery through the hub.
 
 Expected native changes:
 
@@ -72,10 +72,10 @@ The owner provides or configures the existing Worker push secret through the hos
 
 One lead implements phases sequentially; at most one fresh reviewer per PR, up to four reviewers total. No account-backed model turns, live permission answers, production deployment or app publication are part of automated diagnostics.
 
-## Open judgment calls
+## Approved decisions
 
-- Approve notification-only relay enrollment automatically after completed host pairing and OS notification permission, without adding a foreground relay route.
-- Approve persistent notification registration until explicit disablement, invalidation or revocation, rather than the current 24-hour default lease. Existing expired epochs are never revived.
+- Enable notification-only relay enrollment automatically after completed host pairing and OS notification permission, without adding a foreground relay route.
+- Renew automatically during authenticated active use, ask Continue/Revoke after 30 days inactive, and never silently revive an expired epoch.
 - Keep one-tap allow limited to a fully represented verified request; long/complex requests get a short Review request action. Do not turn a summary into permission to execute unseen details.
 - Keep the provider credential on the hub and add a capability-proved local child submission path, rather than distributing that credential to every new terminal.
 

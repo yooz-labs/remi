@@ -95,6 +95,9 @@ struct PhoneLiveRootView: View {
             shell.clearFilter()
             pairingAttemptID = nil
         }
+        .onChange(of: store.machines.map { "\($0.id)|\($0.status)|\($0.activeSessions.map(\.sessionId))" }, initial: true) { _, _ in
+            store.warmActiveTranscripts()
+        }
         .onChange(of: store.machines.map(\.id), initial: true) { _, ids in
             shell.machinesChanged(ids: ids)
         }
@@ -108,6 +111,17 @@ struct PhoneLiveRootView: View {
             } else if case .relayNotification = activeSheet {
                 activeSheet = nil
             }
+        }
+        .onChange(of: relayNotifications.notificationSessionNavigation, initial: true) { _, destination in
+            guard let destination else { return }
+            guard store.notificationSessionDestination == destination else {
+                relayNotifications.consumeNotificationSessionNavigation(destination); return
+            }
+            activeSheet = nil
+            shell.openFromNotification(route: PhoneSessionRoute(machineKey: destination.machineID,
+                sessionID: destination.sessionID), questionID: nil)
+            relayNotifications.consumeNotificationSessionNavigation(destination)
+            relayNotifications.closeNotification()
         }
         .onChange(of: activeSheet?.id) { old, new in
             // However the panel went away (swipe, Close, another sheet), tell the store.
@@ -321,11 +335,39 @@ struct PhoneLiveRootView: View {
     @ViewBuilder
     private func destinationContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
         switch shell.destination {
+        case .board:
+            boardContent(sessions: sessions, machines: machines)
         case .inbox:
             inboxContent(sessions: sessions, machines: machines)
         case .session(let route):
             sessionContent(route, sessions: sessions)
         }
+    }
+
+    private func boardContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
+        PhoneBoardScreen(
+            sessions: sessions,
+            machines: machines,
+            loadedMachines: Set(store.machines.filter { $0.status == .connected && $0.hasLoadedSessions }.map(\.id)),
+            questions: allQuestions,
+            errorMessage: store.latestOperationError ?? store.latestError?.message,
+            noticeMessage: store.latestOperationNotice ?? relayNotifications.notice ?? store.relayNotificationNotice,
+            transcript: boardEntries,
+            onAnswer: { answer(machineID: $0, sessionId: $1, questionId: $2, value: $3) },
+            onSubmit: { submit(machineID: $0, sessionId: $1, questionId: $2, values: $3) },
+            onCancel: { cancel(machineID: $0, sessionId: $1, questionId: $2) },
+            onOpen: selectSession,
+            onSend: { session, content in
+                await sendChat(machineID: session.machineID, sessionId: session.id, content: content)
+            },
+            canCreateSession: !availableSessionMachines.isEmpty,
+            onNewSession: { activeSheet = .newSession(machineID: nil, repository: nil) },
+            onPresentPairing: { activeSheet = .pairing },
+            onPresentPreferences: { activeSheet = .preferences },
+            onManageMachines: { activeSheet = .machines },
+            onDismissError: store.clearLatestError,
+            onDismissNotice: dismissNotice
+        )
     }
 
     private func inboxContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
@@ -363,6 +405,7 @@ struct PhoneLiveRootView: View {
             onManageMachines: { present(.machines) },
             onResumeSession: resumeSession,
             onNewSessionHere: { present(.newSession(machineID: $0, repository: $1)) },
+            onSelectBoard: { shell.select(.board) },
             onSelectInbox: { shell.select(.inbox) },
             onSelectSession: selectSession,
             onNewSession: { present(.newSession(machineID: shell.filteredMachineKey, repository: nil)) },
@@ -384,13 +427,13 @@ struct PhoneLiveRootView: View {
     }
 
     private func selectSession(_ session: RemiSessionSummary) {
-        store.loadTranscript(machineID: session.machineID, sessionId: session.id)
+        store.ensureTranscript(machineID: session.machineID, sessionId: session.id)
         shell.selectSession(machineKey: session.machineID, sessionID: session.id)
     }
 
     /// Navigates to the conversation of `target` and focuses its question. It never answers.
     private func openQuestionSession(_ target: RemiInboxPresentation.OpenTarget, questionID: String) {
-        store.loadTranscript(machineID: target.machineID, sessionId: target.sessionID)
+        store.ensureTranscript(machineID: target.machineID, sessionId: target.sessionID)
         // Opening a subagent conversation of the session already on screen changes the
         // route's conversation id on purpose (the screen must show that conversation); the
         // same route is a no-op.
@@ -422,7 +465,12 @@ struct PhoneLiveRootView: View {
         case .preferences:
             PhonePreferencesSheet(publicIdentity: store.publicIdentity)
         case .relayNotification:
-            RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification)
+            RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification) { destination in
+                relayNotifications.closeNotification()
+                activeSheet = nil
+                shell.openFromNotification(route: PhoneSessionRoute(machineKey: destination.machineID,
+                    sessionID: destination.sessionID), questionID: nil)
+            }
                 .presentationSizing(.form)
         case .machines:
             PhoneMachinesSheet(
@@ -436,7 +484,9 @@ struct PhoneLiveRootView: View {
                 onSetConnectionPreference: { store.setConnectionPreference($1, for: $0) },
                 onEnableRelayNotifications: relayNotifications.enable,
                 onDone: { activeSheet = nil },
-                pairingContent: { close in pairingScreen(onDone: close) }
+                pairingContent: { close in pairingScreen(onDone: close) },
+                notificationStates: store.pairedNotificationStates,
+                onRevokeNotifications: relayNotifications.revoke
             )
             .presentationSizing(.form)
         }
@@ -656,6 +706,19 @@ struct PhoneLiveRootView: View {
     }
 
     private func transcript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
+        // Pending entries follow every confirmed entry, so an agent reply that arrives before
+        // the echo of an earlier message shows above that message.
+        confirmedTranscript(machineID: machineID, sessionID: sessionID)
+            + pendingEntries(machineID: machineID, sessionID: sessionID)
+    }
+
+    private func pendingEntries(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
+        store.outgoingMessages(machineID: machineID, sessionID: sessionID).map {
+            RemiTranscriptEntry.pending(id: "pending-\($0.id)", text: $0.content, state: $0.delivery == .sending ? .sending : .sent)
+        }
+    }
+
+    private func confirmedTranscript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
         (store.transcriptsBySession[store.sessionKey(machineID: machineID, sessionID: sessionID)] ?? []).compactMap { message in
             let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if !content.isEmpty {
@@ -673,6 +736,13 @@ struct PhoneLiveRootView: View {
                 summary: String(summary.prefix(240))
             )
         }
+    }
+
+    /// The latest of a session's conversation for its card on the board: the latest 24
+    /// confirmed entries, then the messages not confirmed yet.
+    private func boardEntries(_ session: RemiSessionSummary) -> [RemiTranscriptEntry] {
+        Array(confirmedTranscript(machineID: session.machineID, sessionID: session.id).suffix(24))
+            + pendingEntries(machineID: session.machineID, sessionID: session.id)
     }
 
     private func answer(machineID: String, sessionId: String, questionId: String, value: String) {
@@ -839,13 +909,13 @@ struct PhoneLiveRootView: View {
             initialConversationID: route.conversationID,
             initialQuestionID: focus,
             transcriptForView: { transcript(machineID: session.machineID, sessionID: $0) },
-            onSelectView: { store.loadTranscript(machineID: session.machineID, sessionId: $0) },
+            onSelectView: { store.ensureTranscript(machineID: session.machineID, sessionId: $0) },
             onAnswer: { answer(machineID: session.machineID, sessionId: session.id, questionId: $0, value: $1) },
             onSubmit: { submit(machineID: session.machineID, sessionId: session.id, questionId: $0, values: $1) },
             onCancel: { cancel(machineID: session.machineID, sessionId: session.id, questionId: $0) },
             onSend: { await sendChat(machineID: session.machineID, sessionId: session.id, content: $0) },
             onTerminate: { store.terminateSession(machineID: session.machineID, sessionId: session.id) },
-            onClose: { shell.select(.inbox) },
+            onClose: { shell.select(.board) },
             focusQuestionRequest: focus,
             restoredState: sessionViewStates.state(for: session.key),
             onViewStateChange: { state in sessionViewStates.update(session.key) { $0 = state } },
@@ -854,7 +924,7 @@ struct PhoneLiveRootView: View {
         )
         .id(route)
         .task(id: store.transcriptRouteGeneration(machineID: session.machineID, sessionID: route.conversationID ?? session.id)) {
-            store.loadTranscript(machineID: session.machineID, sessionId: route.conversationID ?? session.id)
+            store.ensureTranscript(machineID: session.machineID, sessionId: route.conversationID ?? session.id)
         }
         .onChange(of: shell.pendingFocus, initial: true) { _, _ in
             guard shell.focusQuestionID(for: route) != nil else { return }

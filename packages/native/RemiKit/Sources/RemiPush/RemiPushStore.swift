@@ -23,11 +23,13 @@ public struct PushMachineTrust: Sendable, Equatable {
     public let machinePublicKey: Data
     public let origin: String
     public let relayURL: String
+    public let notificationOnly: Bool
     public let authority: PushDeviceAuthority
     fileprivate init(_ value: NativePushState.MachineTrust) throws {
-        guard let route = value.relayUrl else { throw RemiPushError.unavailable }
+        guard let route = value.relayUrl ?? value.notificationRelayUrl else { throw RemiPushError.unavailable }
         room = value.rid; machinePublicKey = value.machinePublicKey
         origin = value.endpoint; relayURL = route; authority = .init(value.authority)
+        notificationOnly = value.relayUrl == nil
     }
 }
 
@@ -81,7 +83,10 @@ public struct VerifiedPushNotification: @unchecked Sendable {
             options = value.options.map { .init(value: $0.value, label: $0.label, isYes: $0.isYes,
                 isNo: $0.isNo, description: $0.description, standingGrant: $0.standingGrant?.rawValue) }
         case .informational(let value):
-            kind = .information; title = PushDisplayText.escape(value.title); body = PushDisplayText.escape(value.body)
+            // An app-only question still needs attention. Classification uses signed
+            // content kind, never an outer APNs hint or a summary's wording (#1681).
+            kind = push.record.kind == NativePushCodec.Kind.question.byte ? .question : .information
+            title = PushDisplayText.escape(value.title); body = PushDisplayText.escape(value.body)
             sessionID = value.sessionId; questionID = nil; runtimeInstance = nil; category = "none"; options = []
         case .dismiss:
             kind = .dismiss; title = ""; body = ""; sessionID = nil; questionID = nil
@@ -192,12 +197,19 @@ public final class RemiPushStore: @unchecked Sendable {
     }
     public func machine(room: Data) throws -> PushMachineTrust? { try state.machineTrust(rid: room).map(PushMachineTrust.init) }
     public func completedMachines() throws -> [PushMachineTrust] { try state.completedMachineTrusts().map(PushMachineTrust.init) }
+    public func notificationMachines() throws -> [PushMachineTrust] { try state.notificationMachineTrusts().map(PushMachineTrust.init) }
     public func commitMachine(room: Data, machinePublicKey: Data, origin: String, relayURL: String,
                               authority: PushDeviceAuthority, generation: Int64) throws {
         try state.installMachineTrust(.init(rid: room, machinePublicKey: machinePublicKey, endpoint: origin,
             authority: authority.native, relayUrl: relayURL), generation: generation)
     }
     public func forgetMachine(room: Data) throws { try state.forgetMachine(rid: room) }
+    /// Authenticated direct bootstrap supplies this route, independently of foreground routing.
+    public func commitNotificationMachine(room: Data, machinePublicKey: Data, origin: String, relayURL: String,
+                                          authority: PushDeviceAuthority, generation: Int64) throws {
+        try state.installMachineTrust(.init(rid: room, machinePublicKey: machinePublicKey, endpoint: origin,
+            authority: authority.native, notificationRelayUrl: relayURL), generation: generation)
+    }
     public func recipient(createIfMissing: Bool = false) throws -> PushRegistrationRecipient? {
         let key = try createIfMissing ? keys.loadOrCreate() : keys.load()
         return key.map { .init(publicKey: $0.publicKey, keyVersion: $0.keyVersion) }
@@ -223,6 +235,7 @@ public final class RemiPushStore: @unchecked Sendable {
             // Verified alerts can intentionally have no actions when publication
             // fails or the signed shape/protection policy requires the app.
             if content.categoryIdentifier.isEmpty { return true }
+            if content.categoryIdentifier == Self.foregroundCategoryIdentifier(for: opened) { return true }
             guard let actions = try actionSet(for: opened) else { return false }
             return Data(content.categoryIdentifier.utf8) == Data(actions.categoryIdentifier.utf8)
         } catch { return false }

@@ -59,6 +59,11 @@ import {
   decodeImageStagingFrame,
   encodeImageStagingFrame,
 } from './image-staging.ts';
+import {
+  type NotificationHostRequest,
+  type NotificationHostResponse,
+  isValidNotificationHostMessage,
+} from './notification-host.ts';
 import { PROTOCOL_VERSION } from './protocol-version.ts';
 import type {
   AnswerResultMessage,
@@ -197,6 +202,8 @@ export interface ProtocolMessageMap {
   image_upload_refused: ImageUploadRefused;
 
   native_answer: NativeAnswerMessage;
+  notification_host_request: NotificationHostRequest;
+  notification_host_response: NotificationHostResponse;
   secure_push_register_request: SecurePushRegisterRequestMessage;
   secure_push_register_response: SecurePushRegisterResponseMessage;
   secure_push_unregister_request: SecurePushUnregisterRequestMessage;
@@ -353,6 +360,8 @@ export const MESSAGE_DIRECTION = {
   image_upload_refused: 'd2c',
 
   native_answer: 'c2d',
+  notification_host_request: 'c2d',
+  notification_host_response: 'd2c',
   secure_push_register_request: 'c2d',
   secure_push_register_response: 'd2c',
   secure_push_unregister_request: 'c2d',
@@ -1767,6 +1776,9 @@ export function isValidMessage(value: unknown): value is ProtocolMessage {
       return false;
     }
   }
+
+  if (obj['type'] === 'notification_host_request' || obj['type'] === 'notification_host_response')
+    return isValidNotificationHostMessage(obj);
 
   // The subscription responses have no other validator on their way to a client (#1200).
   if (

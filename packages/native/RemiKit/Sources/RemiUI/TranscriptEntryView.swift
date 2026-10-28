@@ -20,6 +20,8 @@ public struct RemiTranscriptEntryView: View {
         Group {
             switch entry {
             case .user(_, let text): TranscriptMessage(text: text, role: .user, forceExpanded: isSearchMatch)
+            case .pending(_, let text, let state):
+                TranscriptMessage(text: text, role: .user, forceExpanded: isSearchMatch, pending: state)
             case .agent(_, let text): TranscriptMessage(text: text, role: .agent, forceExpanded: isSearchMatch)
             case .tool(_, let name, let summary): TranscriptToolEntry(name: name, summary: summary)
             case .error(_, let text): TranscriptErrorEntry(text: text)
@@ -39,6 +41,21 @@ public struct RemiTranscriptEntryView: View {
     }
 }
 
+/// The delivery state of a not-yet-confirmed message, for VoiceOver. The label already says
+/// "not confirmed yet", so the value is only the state. A confirmed bubble gets no value.
+private struct PendingDeliveryValue: ViewModifier {
+    let pending: RemiOutgoingState?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let pending {
+            content.accessibilityValue(pending == .sending ? "Sending" : "Sent")
+        } else {
+            content
+        }
+    }
+}
+
 private struct TranscriptMessage: View {
     enum Role { case user, agent }
 
@@ -48,12 +65,15 @@ private struct TranscriptMessage: View {
     let role: Role
     /// A search match is never hidden inside a collapsed message.
     let forceExpanded: Bool
+    /// Set for a message you sent that the conversation does not show yet.
+    let pending: RemiOutgoingState?
     private let collapse: RemiMessageCollapse
 
-    init(text: String, role: Role, forceExpanded: Bool = false) {
+    init(text: String, role: Role, forceExpanded: Bool = false, pending: RemiOutgoingState? = nil) {
         self.text = text
         self.role = role
         self.forceExpanded = forceExpanded
+        self.pending = pending
         collapse = RemiMessageCollapse(text: text)
     }
 
@@ -78,7 +98,18 @@ private struct TranscriptMessage: View {
                 .overlay {
                     if role == .user {
                         RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
-                            .stroke(RemiTheme.Color.attention.opacity(0.28), lineWidth: 1)
+                            .stroke(
+                                RemiTheme.Color.attention.opacity(pending == nil ? 0.28 : 0.7),
+                                style: StrokeStyle(lineWidth: 1, dash: pending == nil ? [] : [4, 3])
+                            )
+                            .allowsHitTesting(false)
+                    }
+                }
+                .background {
+                    if pending != nil {
+                        HatchPattern()
+                            .stroke(RemiTheme.Color.attention.opacity(0.18), lineWidth: 1)
+                            .clipShape(.rect(cornerRadius: RemiTheme.Radius.control))
                             .allowsHitTesting(false)
                     }
                 }
@@ -87,13 +118,19 @@ private struct TranscriptMessage: View {
                     maxWidth: dynamicTypeSize.isAccessibilitySize ? .infinity : messageMaximumWidth,
                     alignment: role == .user ? .trailing : .leading
                 )
+            if let pending {
+                Text(pending == .sending ? "Sending" : "Sent, not shown in the conversation yet")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if collapse.isCollapsible, !forceExpanded {
                 expandButton
             }
         }
         .frame(maxWidth: .infinity, alignment: role == .user ? .trailing : .leading)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(role == .user ? "Your message" : "Agent response")
+        .accessibilityLabel(role == .user ? (pending == nil ? "Your message" : "Your message, not confirmed yet") : "Agent response")
+        .modifier(PendingDeliveryValue(pending: pending))
     }
 
     private var expandButton: some View {
@@ -279,5 +316,20 @@ public struct RemiTranscriptRowsView<EntryContent: View>: View {
                 }
             }
         }
+    }
+}
+
+/// Diagonal hatching that fills whatever shape it is drawn in.
+private struct HatchPattern: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let step: CGFloat = 7
+        var x = -rect.height
+        while x < rect.width {
+            path.move(to: CGPoint(x: x, y: rect.height))
+            path.addLine(to: CGPoint(x: x + rect.height, y: 0))
+            x += step
+        }
+        return path
     }
 }

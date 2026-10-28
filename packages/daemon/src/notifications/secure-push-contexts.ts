@@ -94,6 +94,8 @@ export interface SecurePushEvent {
   readonly eventId?: string;
   readonly title?: string;
   readonly body?: string;
+  /** A concise preview never authorizes an answer over its omitted details (#1681). */
+  readonly reviewOnly?: boolean;
   readonly question?: Question;
 }
 export interface SecurePushContext {
@@ -261,6 +263,7 @@ export class SecurePushContexts {
           !oversizeMeaning(qMeaning) &&
           validity.kind !== 'closed' &&
           category &&
+          event.reviewOnly !== true &&
           !current.questions &&
           !current.options.some(
             (o) => o.sessionGrant || o.standingGrant === 'setMode' || o.standingGrant === 'session',

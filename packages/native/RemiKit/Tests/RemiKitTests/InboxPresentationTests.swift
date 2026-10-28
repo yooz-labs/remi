@@ -228,4 +228,10 @@ import Testing
         #expect(RemiMacSidebarSelection.machine("m1").machineID == "m1")
         #expect(RemiMacSidebarSelection.inbox.machineID == nil)
     }
+
+    @Test func theBoardIsHighlightedOverTheInboxAndTheMachine() {
+        #expect(RemiMacSidebarSelection.resolve(showsInbox: false, machineID: "m1", showsBoard: true) == .board)
+        #expect(RemiMacSidebarSelection.resolve(showsInbox: true, machineID: "m1", showsBoard: true) == .board)
+        #expect(RemiMacSidebarSelection.board.machineID == nil)
+    }
 }

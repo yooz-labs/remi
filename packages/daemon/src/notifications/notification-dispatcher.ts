@@ -294,11 +294,15 @@ export function buildPushText(
 export function buildSecurePushText(
   sessionName: string,
   question: Question,
-): { title: string; body: string } {
+): { title: string; body: string; reviewOnly?: true } {
   const ask = normalizeNotificationText(question.text) || 'Allow this action?';
   const detail = question.detail === undefined ? '' : normalizeNotificationText(question.detail);
   const title = `${sessionName}: question`;
-  if (pushCategoryFor(question) === undefined || question.questions !== undefined) {
+  if (
+    pushCategoryFor(question) === undefined ||
+    question.questions !== undefined ||
+    Array.from(ask).length > 160
+  ) {
     let preview = ask;
     if (question.kind === 'plan_approval') {
       preview = 'Plan ready for review. Open Remi to approve or keep planning.';
@@ -306,8 +310,9 @@ export function buildSecurePushText(
       const count = question.questions.length;
       preview = `${count} ${count === 1 ? 'question needs' : 'questions need'} your input. Open Remi to review.`;
     }
-    const body = preview.length <= 160 ? preview : `${preview.slice(0, 157).trimEnd()}...`;
-    return { title, body };
+    const points = Array.from(preview);
+    const body = points.length <= 160 ? preview : `${points.slice(0, 157).join('').trimEnd()}...`;
+    return { title, body, reviewOnly: true };
   }
   return {
     title,

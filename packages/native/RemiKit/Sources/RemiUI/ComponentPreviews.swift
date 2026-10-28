@@ -49,6 +49,8 @@ private struct SupportingComponentsGallery: View {
                     ForEach(RemiPreviewData.transcript) { entry in
                         RemiTranscriptEntryView(entry: entry)
                     }
+                    RemiTranscriptEntryView(entry: .pending(id: "p1", text: "Run the tests again.", state: .sent))
+                    RemiTranscriptEntryView(entry: .pending(id: "p2", text: "And then update the changelog.", state: .sending))
                     RemiTranscriptEntryView(entry: .error(id: "error", text: "The connection closed before the answer was delivered."))
                 }
 
