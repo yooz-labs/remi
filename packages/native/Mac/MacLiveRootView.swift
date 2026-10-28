@@ -305,6 +305,8 @@ struct MacLiveRootView: View {
                   case .admitted(let profileID) = result.phase else { return }
             showingInbox = false
             selectedMachineID = profileID
+            selectedSessionID = ""
+            pendingResume = nil
             pairingAttemptID = nil
         }
         .sheet(isPresented: $showingAddMachine) {
@@ -541,7 +543,7 @@ struct MacLiveRootView: View {
     private var navigationSnapshot: [[String]] {
         store.machines.map { machine in
             [machine.id, machine.hasLoadedSessions ? "loaded" : "loading"]
-                + machine.activeSessions.map(\.sessionId)
+                + machine.sessions.map(\.sessionId)
         }
     }
 
