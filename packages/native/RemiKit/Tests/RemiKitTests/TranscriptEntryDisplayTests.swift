@@ -10,8 +10,8 @@ import Testing
         #expect(RemiTranscriptEntry.agent(id: "2", text: hostile).escapedForDisplay == .agent(id: "2", text: escaped))
         #expect(RemiTranscriptEntry.error(id: "3", text: hostile).escapedForDisplay == .error(id: "3", text: escaped))
         #expect(
-            RemiTranscriptEntry.tool(id: "4", name: "Ba\u{202E}sh", summary: hostile).escapedForDisplay
-                == .tool(id: "4", name: "Ba\\u202Esh", summary: escaped)
+            RemiTranscriptEntry.tool(id: "4", name: "Bash\u{202E}", summary: hostile).escapedForDisplay
+                == .tool(id: "4", name: "Bash\\u202E", summary: escaped)
         )
     }
 
