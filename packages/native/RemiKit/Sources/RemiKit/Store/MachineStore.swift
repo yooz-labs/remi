@@ -351,11 +351,18 @@ public final class MachineStore {
     func ownedStartApprovalPolling(_ endpoint: MachineEndpoint) { startApprovalPolling(for: endpoint) }
     #endif
     public private(set) var transcriptsBySession: [MachineSessionKey: [TranscriptContentMessage]] = [:]
+    /// Messages sent from this app that a session's transcript does not show yet.
+    public private(set) var outgoingBySession: [MachineSessionKey: OutgoingMessages] = [:]
     /// A selected conversation reloads when its owning socket becomes ready or reconnects.
     /// The routing table itself is not observable; a task keyed only by session id misses this.
     public private(set) var transcriptRouteGenerations: [MachineSessionKey: UUID] = [:]
     /// Sessions whose transcript has been requested and has not finished arriving (#1602).
     public private(set) var transcriptsLoading: Set<MachineSessionKey> = []
+    /// Loads that began with a transcript already published: a refresh, where only a new entry
+    /// id is genuinely new. A load without it is a first load, and every entry it delivers is replay.
+    /// How long a pending message shows; tests shorten it.
+    @ObservationIgnored var outgoingLifetime: TimeInterval = OutgoingMessages.lifetime
+    @ObservationIgnored private var transcriptLoadHadHistory: Set<MachineSessionKey> = []
     public private(set) var sessionViewsBySession: [MachineSessionKey: [SessionViewMeta]] = [:]
     public private(set) var recentRepositoriesByMachine: [String: [RecentRepository]] = [:]
     public private(set) var latestError: ErrorMessage?
@@ -1545,6 +1552,7 @@ public final class MachineStore {
         terminalViews = terminalViews.filter { !keyMachineIDs.contains($0.key.machineID) }
         fileDownloads = fileDownloads.filter { !keyMachineIDs.contains($0.key.machineID) }
         transcriptsBySession = transcriptsBySession.filter { !keyMachineIDs.contains($0.key.machineID) }
+        outgoingBySession = outgoingBySession.filter { !keyMachineIDs.contains($0.key.machineID) }
         transcriptStaging = transcriptStaging.filter { !keyMachineIDs.contains($0.key.machineID) }
         transcriptLoadedOn = transcriptLoadedOn.filter { !keyMachineIDs.contains($0.key.machineID) }
         sessionViewsBySession = sessionViewsBySession.filter { !keyMachineIDs.contains($0.key.machineID) }
@@ -1678,6 +1686,11 @@ public final class MachineStore {
             sessionId: sessionId
         )
         transcriptsLoading.insert(key)
+        if transcriptsBySession[key]?.isEmpty == false {
+            transcriptLoadHadHistory.insert(key)
+        } else {
+            transcriptLoadHadHistory.remove(key)
+        }
         if let route = routeBySession[key] { transcriptLoadStartedOn[key] = connectionGenerations[route] }
         if let previous = transcriptLoadTimers[key] { transcriptKeyByRequest[previous.requestID] = nil }
         transcriptLoadTimers[key]?.task.cancel()
@@ -1713,6 +1726,19 @@ public final class MachineStore {
             transcriptLoadedOn[key] = generation
         }
         transcriptsLoading.remove(key)
+        transcriptLoadHadHistory.remove(key)
+    }
+
+    /// A new user entry with the text of a message sent from here confirms that message.
+    /// A first load (no transcript published when it began) replays history, so a match there
+    /// proves nothing; a refresh of a published transcript delivers only genuinely new entries.
+    /// A "sending" entry is confirmable on purpose: if the echo beats the send's return,
+    /// markSent finds no entry and does nothing.
+    private func confirmOutgoing(_ message: TranscriptContentMessage, existing: [TranscriptContentMessage], key: MachineSessionKey) {
+        guard message.role == "user", !existing.contains(where: { $0.entryUuid == message.entryUuid }) else { return }
+        let replayingHistory = transcriptsLoading.contains(key) && !transcriptLoadHadHistory.contains(key)
+        guard !replayingHistory else { return }
+        outgoingBySession[key]?.confirm(transcriptContent: message.content)
     }
 
     /// An entry replaces the one with its id (and moves to the end, where a streaming update belongs),
@@ -1880,9 +1906,14 @@ public final class MachineStore {
         } onCancel: { permit.replace() }
     }
 
+    public func outgoingMessages(machineID: String, sessionID: String) -> [OutgoingMessage] {
+        outgoingBySession[sessionKey(machineID: machineID, sessionID: sessionID)]?.visible() ?? []
+    }
+
     @discardableResult
     public func sendChat(machineID: String, sessionId: String, content: String, claudeSessionId: String? = nil) async -> Bool {
-        guard let connection = connection(for: sessionKey(machineID: machineID, sessionID: sessionId)) else {
+        let key = sessionKey(machineID: machineID, sessionID: sessionId)
+        guard let connection = connection(for: key) else {
             latestOperationError = "Cannot send message: this session is unavailable."
             return false
         }
@@ -1893,13 +1924,38 @@ public final class MachineStore {
             content: content,
             claudeSessionId: claudeSessionId
         )
+        trackOutgoing(key: key, id: message.id, content: content)
         do {
             try await connection.send(message)
+            markOutgoingSent(key: key, id: message.id)
             return true
         } catch {
+            // The bubble goes so the composer's draft is not shown twice. If the connection
+            // failed after the daemon already received the message, the text can still arrive.
+            outgoingBySession[key]?.remove(id: message.id)
             latestOperationError = "Message not sent. Check the connection and try again."
             return false
         }
+    }
+
+    /// Puts a sent message in the session's outbox, as `sendChat` does before it hands the
+    /// message to the connection. Internal so tests can drive the receive path without a live socket.
+    func trackOutgoing(key: MachineSessionKey, id: String, content: String) {
+        outgoingBySession[key, default: OutgoingMessages(expiry: outgoingLifetime)].add(id: id, content: content)
+        // Expiry must change observed state, or the bubble stays on screen until something else does.
+        let delay = outgoingLifetime + 1
+        Task { [weak self] in
+            guard (try? await Task.sleep(for: .seconds(delay))) != nil else { return }
+            guard let self, outgoingBySession[key] != nil else { return }
+            outgoingBySession[key]?.removeExpired()
+            if outgoingBySession[key]?.items.isEmpty == true { outgoingBySession[key] = nil }
+        }
+    }
+
+    /// Marks a tracked message as handed to the connection. A no-op when the entry is already
+    /// gone (confirmed by the transcript before the send returned), which is harmless.
+    func markOutgoingSent(key: MachineSessionKey, id: String) {
+        outgoingBySession[key]?.markSent(id: id)
     }
 
     public func terminateSession(machineID: String, sessionId: String) {
@@ -2472,10 +2528,12 @@ public final class MachineStore {
             let key = MachineSessionKey(machineID: machines[index].id, sessionID: message.sessionId)
             if transcriptsLoading.contains(key) {
                 var staged = transcriptStaging[key] ?? transcriptsBySession[key] ?? []
+                confirmOutgoing(message, existing: staged, key: key)
                 Self.apply(message, to: &staged)
                 transcriptStaging[key] = staged
             } else {
                 var transcript = transcriptsBySession[key, default: []]
+                confirmOutgoing(message, existing: transcript, key: key)
                 Self.apply(message, to: &transcript)
                 transcriptsBySession[key] = transcript
             }
@@ -2515,6 +2573,7 @@ public final class MachineStore {
                 machines[index].sessionActivity[sessionId] = nil
                 machines[index].questions.removeAll { $0.sessionId == sessionId }
                 transcriptsBySession[killedKey] = nil
+                outgoingBySession[killedKey] = nil
                 transcriptRouteGenerations[killedKey] = nil
                 sessionViewsBySession[killedKey] = nil
                 routeBySession[killedKey] = nil
