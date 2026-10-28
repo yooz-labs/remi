@@ -10,9 +10,9 @@ import Testing
             identity: ClientIdentity(), clientVersion: "test", clientId: "test-client")
     }
 
-    /// Waits until `condition` holds, up to two seconds, so the tests do not depend on one fixed
-    /// sleep being long enough on a busy machine.
-    @MainActor private func waitUntil(timeout: Duration = .seconds(2), _ condition: () -> Bool) async {
+    /// Hosted integration fixtures can occupy the main actor for over six seconds. Allow a
+    /// bounded scheduling margin while still requiring the real expiry task to clear the error.
+    @MainActor private func waitUntil(timeout: Duration = .seconds(15), _ condition: () -> Bool) async {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while !condition(), ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(10))
@@ -35,7 +35,7 @@ import Testing
         try? await Task.sleep(for: .milliseconds(300))
         #expect(store.latestOperationError == "second")
         // And its own timer does clear it.
-        await waitUntil(timeout: .seconds(4)) { store.latestOperationError == nil }
+        await waitUntil { store.latestOperationError == nil }
         #expect(store.latestOperationError == nil)
     }
 
@@ -47,7 +47,7 @@ import Testing
         // A second failure must not be wiped by the first failure's timer...
         #expect(store.latestOperationError == "Message not sent.")
         // ...and still clears when its own wait is over.
-        await waitUntil(timeout: .seconds(4)) { store.latestOperationError == nil }
+        await waitUntil { store.latestOperationError == nil }
         #expect(store.latestOperationError == nil)
     }
 
@@ -69,5 +69,18 @@ import Testing
 
     @Test @MainActor func theComposerNoticeSaysTheDraftIsKept() {
         #expect(RemiSessionInteractionBar.failureMessage.contains("draft is still here"))
+    }
+
+    @Test func enablingAssistiveTechnologyChangesTheTaskAndPreventsDismissal() {
+        typealias TaskID = RemiSessionInteractionBar.FailureNoticeTaskID
+        let waiting = TaskID(failureCount: 1, voiceOverEnabled: false, switchControlEnabled: false)
+        #expect(waiting.permitsDismissal)
+        for accessible in [
+            TaskID(failureCount: 1, voiceOverEnabled: true, switchControlEnabled: false),
+            TaskID(failureCount: 1, voiceOverEnabled: false, switchControlEnabled: true)
+        ] {
+            #expect(accessible != waiting)
+            #expect(!accessible.permitsDismissal)
+        }
     }
 }

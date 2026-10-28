@@ -26,6 +26,14 @@ enum RemiComposerSubmission {
 }
 
 public struct RemiSessionInteractionBar: View {
+    struct FailureNoticeTaskID: Equatable {
+        let failureCount: Int
+        let voiceOverEnabled: Bool
+        let switchControlEnabled: Bool
+
+        var permitsDismissal: Bool { !voiceOverEnabled && !switchControlEnabled }
+    }
+
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @Environment(\.accessibilitySwitchControlEnabled) private var switchControlEnabled
@@ -105,8 +113,8 @@ public struct RemiSessionInteractionBar: View {
         // Clears itself; a new failure restarts the wait. A dismiss or a send clears the flag, so
         // the timer finds nothing left to do. Not while VoiceOver or Switch Control is on: those
         // users may need longer than any fixed time to reach it, and Dismiss is there.
-        .task(id: sendFailureCount) {
-            guard sendFailed, !voiceOverEnabled, !switchControlEnabled else { return }
+        .task(id: failureNoticeTaskID) {
+            guard sendFailed, failureNoticeTaskID.permitsDismissal else { return }
             try? await Task.sleep(for: Self.failureNoticeDuration)
             guard !Task.isCancelled else { return }
             sendFailed = false
@@ -114,6 +122,14 @@ public struct RemiSessionInteractionBar: View {
     }
 
     static let failureMessage = "Message wasn’t sent. Your draft is still here."
+
+    private var failureNoticeTaskID: FailureNoticeTaskID {
+        FailureNoticeTaskID(
+            failureCount: sendFailureCount,
+            voiceOverEnabled: voiceOverEnabled,
+            switchControlEnabled: switchControlEnabled
+        )
+    }
 
     private var floatsOverTranscript: Bool {
         guard !reduceTransparency, !sendFailed else { return false }
