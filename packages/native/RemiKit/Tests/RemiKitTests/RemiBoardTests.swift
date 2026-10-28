@@ -235,6 +235,23 @@ import Testing
         #expect(RemiBoardOrder.held(from: []).isEmpty)
     }
 
+    // MARK: drag payload
+
+    @Test func aDragPayloadRoundTripsToItsKey() {
+        let key = RemiBoardOrder.key(for: session("s", machine: "m"))
+        #expect(RemiBoardOrder.key(fromPayload: RemiBoardOrder.payload(for: key)) == key)
+    }
+
+    @Test func textThatIsNotATilePayloadIsRejected() {
+        #expect(RemiBoardOrder.key(fromPayload: "just some selected text") == nil)
+        #expect(RemiBoardOrder.key(fromPayload: "m\u{1F}s") == nil)
+        #expect(RemiBoardOrder.key(fromPayload: "") == nil)
+    }
+
+    @Test func anEmptyKeyInAPayloadIsRejected() {
+        #expect(RemiBoardOrder.key(fromPayload: RemiBoardOrder.payload(for: "")) == nil)
+    }
+
     // MARK: next tile
 
     @Test func afterSendingFocusMovesToTheNextTileAndWrapsAround() {

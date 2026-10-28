@@ -185,6 +185,12 @@ public enum RemiBoardOrder {
         Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
+    /// Stub until the drag change lands.
+    public static func payload(for key: String) -> String { "" }
+
+    /// Stub until the drag change lands.
+    public static func key(fromPayload payload: String) -> String? { nil }
+
     /// The sessions the board shows. Finished sessions stay off it (they are one search or the
     /// machine's list away) unless `showFinished` asks for them.
     public static func visible(
