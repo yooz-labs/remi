@@ -83,4 +83,15 @@ import Testing
         let confirmed = outgoing.confirm(transcriptContent: "x", now: start.addingTimeInterval(301))
         #expect(!confirmed)
     }
+
+    @Test func removeExpiredDropsOnlyTheExpiredEntries() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        var outgoing = OutgoingMessages()
+        outgoing.add(id: "1", content: "old", now: start)
+        outgoing.add(id: "2", content: "new", now: start.addingTimeInterval(200))
+        outgoing.removeExpired(now: start.addingTimeInterval(299))
+        #expect(outgoing.items.map(\.id) == ["1", "2"])
+        outgoing.removeExpired(now: start.addingTimeInterval(300))
+        #expect(outgoing.items.map(\.id) == ["2"])
+    }
 }

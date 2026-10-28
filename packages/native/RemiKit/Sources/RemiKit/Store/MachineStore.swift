@@ -360,6 +360,8 @@ public final class MachineStore {
     public private(set) var transcriptsLoading: Set<MachineSessionKey> = []
     /// Loads that began with a transcript already published: a refresh, where only a new entry
     /// id is genuinely new. A load without it is a first load, and every entry it delivers is replay.
+    /// How long a pending message shows; tests shorten it.
+    @ObservationIgnored var outgoingLifetime: TimeInterval = OutgoingMessages.lifetime
     @ObservationIgnored private var transcriptLoadHadHistory: Set<MachineSessionKey> = []
     public private(set) var sessionViewsBySession: [MachineSessionKey: [SessionViewMeta]] = [:]
     public private(set) var recentRepositoriesByMachine: [String: [RecentRepository]] = [:]
@@ -1841,7 +1843,7 @@ public final class MachineStore {
     /// Puts a sent message in the session's outbox, as `sendChat` does before it hands the
     /// message to the connection. Internal so tests can drive the receive path without a live socket.
     func trackOutgoing(key: MachineSessionKey, id: String, content: String) {
-        outgoingBySession[key, default: OutgoingMessages()].add(id: id, content: content)
+        outgoingBySession[key, default: OutgoingMessages(expiry: outgoingLifetime)].add(id: id, content: content)
     }
 
     /// Marks a tracked message as handed to the connection. A no-op when the entry is already

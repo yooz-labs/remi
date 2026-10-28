@@ -32,7 +32,10 @@ public struct OutgoingMessages: Sendable, Equatable {
 
     public private(set) var items: [OutgoingMessage] = []
 
-    public init() {}
+    /// How long an entry shows; `lifetime` unless a test shortens it.
+    public let expiry: TimeInterval
+
+    public init(expiry: TimeInterval = OutgoingMessages.lifetime) { self.expiry = expiry }
 
     public mutating func add(id: String, content: String, now: Date = Date()) {
         dropExpired(now: now)
@@ -42,7 +45,11 @@ public struct OutgoingMessages: Sendable, Equatable {
 
     /// The entries younger than `lifetime`, oldest first.
     public func visible(now: Date = Date()) -> [OutgoingMessage] {
-        items.filter { now.timeIntervalSince($0.createdAt) < Self.lifetime }
+        items.filter { now.timeIntervalSince($0.createdAt) < expiry }
+    }
+
+    /// Drops the expired entries so the change is visible to whoever observes the outbox.
+    public mutating func removeExpired(now: Date = Date()) {
     }
 
     private mutating func dropExpired(now: Date) {

@@ -327,6 +327,22 @@ struct SessionAddressingTests {
         #expect(pendingTexts(fixture, fixture.ids.a).isEmpty)
     }
 
+    @Test func anExpiredBubbleLeavesObservedStateWithoutOtherActivity() async throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store
+        store.outgoingLifetime = 0.15
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: fixture.sessionID)
+        store.trackOutgoing(key: key, id: "m1", content: "stuck")
+        #expect(store.outgoingBySession[key]?.items.count == 1)
+        var polls = 0
+        while store.outgoingBySession[key]?.items.isEmpty == false, polls < 200 {
+            try await Task.sleep(for: .milliseconds(10))
+            polls += 1
+        }
+        #expect(store.outgoingBySession[key]?.items.isEmpty ?? true)
+    }
+
     @Test func aKilledSessionDropsItsPendingMessagesButNotAnotherSessions() throws {
         let fixture = try twoMachines()
         defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
