@@ -322,4 +322,50 @@ import Testing
         hostile.pin("m\u{1F}b", atSlot: 0)
         #expect(RemiBoardOrder.arrange(sessions, state: hostile, interactions: [:], held: ["m\u{1F}a": -5], now: now).count == 2)
     }
+
+    // MARK: phone density
+
+    @Test func aRowIsTheCompactPhoneDensityAndShowsNoFeedOrComposer() {
+        #expect(RemiTileSize.row.estimatedHeight < RemiTileSize.compact.estimatedHeight)
+        #expect(!RemiTileSize.row.showsComposer)
+        #expect(!RemiTileSize.row.showsFeed)
+        for size in [RemiTileSize.compact, .regular, .large] {
+            #expect(size.showsComposer)
+            #expect(size.showsFeed)
+        }
+    }
+
+    @Test func thePhoneOffersCompactMediumAndLong() {
+        #expect(RemiTileSize.phoneDensities == [.row, .regular, .large])
+        #expect(RemiTileSize.phoneDensities.map(\.densityTitle) == ["Compact", "Medium", "Long"])
+        #expect(RemiTileSize(storedDensity: "nonsense") == .regular)
+        #expect(RemiTileSize(storedDensity: RemiTileSize.large.rawValue) == .large)
+    }
+
+    @Test func aSavedDensityTheMacOnlyOffersFallsBackToMedium() {
+        for stored in ["row", "regular", "large"] {
+            #expect(RemiTileSize.phoneDensity(stored: stored) == RemiTileSize(rawValue: stored))
+        }
+        #expect(RemiTileSize.phoneDensity(stored: "compact") == .regular)
+        #expect(RemiTileSize.phoneDensity(stored: "nonsense") == .regular)
+        #expect(RemiTileSize.phoneDensity(stored: "") == .regular)
+    }
+
+    @Test func aStoredSizeSurvivesAnOlderBoardWithoutRows() {
+        // A board saved before `row` existed still decodes.
+        #expect(RemiBoardState(storage: "{\"pinnedSlots\":{\"k\":1},\"sizes\":{\"k\":\"large\"}}").size(for: "k") == .large)
+    }
+
+    @Test func unsentDraftsOfAMachineThatIsNotSettledAreKept() {
+        let a = RemiBoardOrder.key(for: session("a", machine: "one"))
+        let b = RemiBoardOrder.key(for: session("b", machine: "two"))
+        let gone = RemiBoardOrder.key(for: session("gone", machine: "one"))
+        let drafts = [a: "keep", b: "keep too", gone: "lost"]
+        // Machine one is settled and no longer lists "gone": its draft goes. Machine two is not
+        // settled, so its sessions missing from a reconnecting list keep their drafts.
+        let kept = RemiBoardOrder.keeping(drafts, live: [a], settledMachines: ["one"])
+        #expect(kept == [a: "keep", b: "keep too"])
+        #expect(RemiBoardOrder.keeping(drafts, live: [a, b, gone], settledMachines: ["one", "two"]) == drafts)
+        #expect(RemiBoardOrder.keeping(drafts, live: [], settledMachines: []) == drafts)
+    }
 }

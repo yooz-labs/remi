@@ -3,11 +3,43 @@ import Foundation
 
 /// How much of a session a board tile shows.
 public enum RemiTileSize: String, Codable, CaseIterable, Sendable {
+    /// One line under the title, no composer: the phone's compact density.
+    case row
     case compact, regular, large
+
+    /// The densities the phone offers, like a mail list's compact, medium and long.
+    public static let phoneDensities: [RemiTileSize] = [.row, .regular, .large]
+
+    public var densityTitle: String {
+        switch self {
+        case .row: "Compact"
+        case .compact: "Small"
+        case .regular: "Medium"
+        case .large: "Long"
+        }
+    }
+
+    /// The density saved earlier, or Medium when there is none or it cannot be read.
+    public init(storedDensity: String) {
+        self = Self(rawValue: storedDensity) ?? .regular
+    }
+
+    /// The phone's density for a saved value: Medium for anything the phone does not offer.
+    public static func phoneDensity(stored: String) -> RemiTileSize {
+        let size = RemiTileSize(storedDensity: stored)
+        return phoneDensities.contains(size) ? size : .regular
+    }
+
+    /// Whether the tile shows the conversation, as opposed to a single line.
+    public var showsFeed: Bool { self != .row }
+
+    /// Whether the tile has a field to type into.
+    public var showsComposer: Bool { self != .row }
 
     /// About how tall the tile is, for packing columns before it is laid out.
     public var estimatedHeight: CGFloat {
         switch self {
+        case .row: 96
         case .compact: 260
         case .regular: 420
         case .large: 640
@@ -17,6 +49,7 @@ public enum RemiTileSize: String, Codable, CaseIterable, Sendable {
     /// How many of the latest conversation entries the tile keeps ready to show.
     public var feedEntries: Int {
         switch self {
+        case .row: 1
         case .compact: 4
         case .regular: 8
         case .large: 16
@@ -26,6 +59,7 @@ public enum RemiTileSize: String, Codable, CaseIterable, Sendable {
     /// Lines of the latest message the tile shows.
     public var messageLines: Int {
         switch self {
+        case .row: 1
         case .compact: 2
         case .regular: 6
         case .large: 16
@@ -115,6 +149,15 @@ public enum RemiBoardOrder {
     /// The machine a ``key(for:)`` belongs to; a string that is not a key is returned whole.
     public static func machineID(ofKey key: String) -> String {
         key.split(separator: "\u{1F}", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? key
+    }
+
+    /// The entries of a per-tile dictionary (drafts, interactions) that should stay. A tile's entry
+    /// goes only when its session is gone from a machine that has settled: while a machine
+    /// reconnects its sessions may not be listed yet, and an unsent draft must not be lost for that.
+    public static func keeping<Value>(
+        _ entries: [String: Value], live: Set<String>, settledMachines: Set<String>
+    ) -> [String: Value] {
+        entries.filter { live.contains($0.key) || !settledMachines.contains(machineID(ofKey: $0.key)) }
     }
 
     /// The board's order. Pinned tiles keep their slots, and so do `held` tiles (one whose

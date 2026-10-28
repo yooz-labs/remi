@@ -335,11 +335,39 @@ struct PhoneLiveRootView: View {
     @ViewBuilder
     private func destinationContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
         switch shell.destination {
+        case .board:
+            boardContent(sessions: sessions, machines: machines)
         case .inbox:
             inboxContent(sessions: sessions, machines: machines)
         case .session(let route):
             sessionContent(route, sessions: sessions)
         }
+    }
+
+    private func boardContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
+        PhoneBoardScreen(
+            sessions: sessions,
+            machines: machines,
+            loadedMachines: Set(store.machines.filter { $0.status == .connected && $0.hasLoadedSessions }.map(\.id)),
+            questions: allQuestions,
+            errorMessage: store.latestOperationError ?? store.latestError?.message,
+            noticeMessage: store.latestOperationNotice ?? relayNotifications.notice ?? store.relayNotificationNotice,
+            transcript: boardEntries,
+            onAnswer: { answer(machineID: $0, sessionId: $1, questionId: $2, value: $3) },
+            onSubmit: { submit(machineID: $0, sessionId: $1, questionId: $2, values: $3) },
+            onCancel: { cancel(machineID: $0, sessionId: $1, questionId: $2) },
+            onOpen: selectSession,
+            onSend: { session, content in
+                await sendChat(machineID: session.machineID, sessionId: session.id, content: content)
+            },
+            canCreateSession: !availableSessionMachines.isEmpty,
+            onNewSession: { activeSheet = .newSession(machineID: nil, repository: nil) },
+            onPresentPairing: { activeSheet = .pairing },
+            onPresentPreferences: { activeSheet = .preferences },
+            onManageMachines: { activeSheet = .machines },
+            onDismissError: store.clearLatestError,
+            onDismissNotice: dismissNotice
+        )
     }
 
     private func inboxContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
@@ -377,6 +405,7 @@ struct PhoneLiveRootView: View {
             onManageMachines: { present(.machines) },
             onResumeSession: resumeSession,
             onNewSessionHere: { present(.newSession(machineID: $0, repository: $1)) },
+            onSelectBoard: { shell.select(.board) },
             onSelectInbox: { shell.select(.inbox) },
             onSelectSession: selectSession,
             onNewSession: { present(.newSession(machineID: shell.filteredMachineKey, repository: nil)) },
@@ -677,13 +706,16 @@ struct PhoneLiveRootView: View {
     }
 
     private func transcript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
-        let confirmed = confirmedTranscript(machineID: machineID, sessionID: sessionID)
         // Pending entries follow every confirmed entry, so an agent reply that arrives before
         // the echo of an earlier message shows above that message.
-        let pending = store.outgoingMessages(machineID: machineID, sessionID: sessionID).map {
+        confirmedTranscript(machineID: machineID, sessionID: sessionID)
+            + pendingEntries(machineID: machineID, sessionID: sessionID)
+    }
+
+    private func pendingEntries(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
+        store.outgoingMessages(machineID: machineID, sessionID: sessionID).map {
             RemiTranscriptEntry.pending(id: "pending-\($0.id)", text: $0.content, state: $0.delivery == .sending ? .sending : .sent)
         }
-        return confirmed + pending
     }
 
     private func confirmedTranscript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
@@ -704,6 +736,13 @@ struct PhoneLiveRootView: View {
                 summary: String(summary.prefix(240))
             )
         }
+    }
+
+    /// The latest of a session's conversation for its card on the board: the latest 24
+    /// confirmed entries, then the messages not confirmed yet.
+    private func boardEntries(_ session: RemiSessionSummary) -> [RemiTranscriptEntry] {
+        Array(confirmedTranscript(machineID: session.machineID, sessionID: session.id).suffix(24))
+            + pendingEntries(machineID: session.machineID, sessionID: session.id)
     }
 
     private func answer(machineID: String, sessionId: String, questionId: String, value: String) {
@@ -876,7 +915,7 @@ struct PhoneLiveRootView: View {
             onCancel: { cancel(machineID: session.machineID, sessionId: session.id, questionId: $0) },
             onSend: { await sendChat(machineID: session.machineID, sessionId: session.id, content: $0) },
             onTerminate: { store.terminateSession(machineID: session.machineID, sessionId: session.id) },
-            onClose: { shell.select(.inbox) },
+            onClose: { shell.select(.board) },
             focusQuestionRequest: focus,
             restoredState: sessionViewStates.state(for: session.key),
             onViewStateChange: { state in sessionViewStates.update(session.key) { $0 = state } },

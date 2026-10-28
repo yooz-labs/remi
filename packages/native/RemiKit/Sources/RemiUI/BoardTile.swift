@@ -1,5 +1,29 @@
 import SwiftUI
 
+/// Options a screen can set on a tile without the tile knowing the screen.
+public struct RemiBoardTileExtras {
+    /// The sizes the tile's menu offers; empty when the screen sets one density for every tile.
+    public var sizeChoices: [RemiTileSize]
+    /// What a long press previews, on platforms that have one.
+    public var preview: (() -> AnyView)?
+    /// A height for tiles that show the conversation, in place of the size's own
+    /// ``RemiTileSize/estimatedHeight``. The size's heights (420 and 640) are made for the Mac's
+    /// wide columns; a phone's one narrow column wraps text more and wants shorter cards (240
+    /// and 440), so the phone screen sets its own. The tile scales it with the text size like
+    /// its own heights, and a waiting question still grows the tile past it.
+    public var height: CGFloat?
+
+    public init(
+        sizeChoices: [RemiTileSize] = [.compact, .regular, .large],
+        height: CGFloat? = nil,
+        preview: (() -> AnyView)? = nil
+    ) {
+        self.sizeChoices = sizeChoices
+        self.height = height
+        self.preview = preview
+    }
+}
+
 /// One session on the command center board: what it is, what it last said, whether it needs
 /// the person, and a line to answer it from in place.
 public struct RemiBoardTile<Question: View>: View {
@@ -22,6 +46,7 @@ public struct RemiBoardTile<Question: View>: View {
     private let dragPayload: String?
     /// The session's waiting question, answered on the tile. Nil shows the plain notice.
     private let question: Question?
+    private let extras: RemiBoardTileExtras
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var sendFailed = false
@@ -46,7 +71,8 @@ public struct RemiBoardTile<Question: View>: View {
         onSetSize: @escaping (RemiTileSize) -> Void = { _ in },
         onTogglePin: @escaping () -> Void,
         dragPayload: String? = nil,
-        question: Question? = nil
+        question: Question? = nil,
+        extras: RemiBoardTileExtras = RemiBoardTileExtras()
     ) {
         self.session = session
         self.tileKey = tileKey
@@ -62,6 +88,7 @@ public struct RemiBoardTile<Question: View>: View {
         self.onTogglePin = onTogglePin
         self.dragPayload = dragPayload
         self.question = question
+        self.extras = extras
     }
 
     private var needsYou: Bool { session.status == .needsYou }
@@ -69,7 +96,10 @@ public struct RemiBoardTile<Question: View>: View {
         session.isLive && !sending && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var tileHeight: CGFloat { size.estimatedHeight * heightScale }
+    /// Nil for a compact row, which is as tall as its line.
+    private var tileHeight: CGFloat? {
+        size.showsFeed ? (extras.height ?? size.estimatedHeight) * heightScale : nil
+    }
     /// A waiting tile with its question on it grows to the question's content instead of
     /// holding the size's height, which a long question could overflow.
     private var growsToContent: Bool { needsYou && question != nil }
@@ -77,17 +107,21 @@ public struct RemiBoardTile<Question: View>: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
             draggable(header)
-            conversation
-            waitingQuestion
-            footer
-            quickComposer
+            if size.showsFeed {
+                conversation
+                waitingQuestion
+                footer
+            } else {
+                rowSummary
+            }
+            if size.showsComposer { quickComposer }
         }
         .padding(RemiTheme.Spacing.s)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .modifier(TileHeight(height: tileHeight, growsToContent: growsToContent))
         .background(tileBackground, in: .rect(cornerRadius: RemiTheme.Radius.control))
         .overlay { border }
-        .contextMenu { menu }
+        .modifier(TileMenu(menu: menu, preview: extras.preview))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityLabel)
     }
@@ -172,6 +206,33 @@ public struct RemiBoardTile<Question: View>: View {
         }
     }
 
+    /// The one line a compact row shows: the question notice, else the latest thing said.
+    @ViewBuilder private var rowSummary: some View {
+        if needsYou {
+            waitingNotice
+        } else {
+            Button(action: onOpen) {
+                Text(latestLine)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Opens the whole conversation")
+        }
+    }
+
+    /// The latest entry as one escaped line; a not-yet-confirmed message reads like a sent one.
+    private var latestLine: String {
+        switch entries.last?.escapedForDisplay {
+        case .user(_, let text), .pending(_, let text, _), .agent(_, let text), .error(_, let text): text
+        case .tool(_, let name, let summary): "\(name) \(summary)"
+        case nil: RemiDisplayText.escape(emptyConversationText)
+        }
+    }
+
     private var emptyConversationText: String {
         if let message = session.lastMessage, !message.isEmpty { return message }
         return session.isLive ? "Waiting for the conversation…" : "This session has finished."
@@ -194,21 +255,26 @@ public struct RemiBoardTile<Question: View>: View {
                     .foregroundStyle(.secondary)
             }
         } else if needsYou {
-            Button(action: onOpen) {
-                Label(
-                    session.openQuestionCount > 1 ? "\(session.openQuestionCount) questions waiting" : "Waiting for you",
-                    systemImage: "questionmark.bubble.fill"
-                )
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(RemiTheme.Color.attentionInk)
-                .padding(.horizontal, RemiTheme.Spacing.xs)
-                .padding(.vertical, RemiTheme.Spacing.xxs)
-                .background(RemiTheme.Color.attention, in: Capsule())
-                .contentShape(.capsule)
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Opens the whole conversation")
+            waitingNotice
         }
+    }
+
+    /// The plain notice, a button that opens the conversation to answer there.
+    private var waitingNotice: some View {
+        Button(action: onOpen) {
+            Label(
+                session.openQuestionCount > 1 ? "\(session.openQuestionCount) questions waiting" : "Waiting for you",
+                systemImage: "questionmark.bubble.fill"
+            )
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(RemiTheme.Color.attentionInk)
+            .padding(.horizontal, RemiTheme.Spacing.xs)
+            .padding(.vertical, RemiTheme.Spacing.xxs)
+            .background(RemiTheme.Color.attention, in: Capsule())
+            .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens the whole conversation")
     }
 
     @ViewBuilder private var footer: some View {
@@ -256,10 +322,12 @@ public struct RemiBoardTile<Question: View>: View {
     @ViewBuilder private var menu: some View {
         Button("Open conversation", systemImage: "arrow.up.forward.app", action: onOpen)
         Divider()
-        Picker("Size", selection: Binding(get: { size }, set: onSetSize)) {
-            Text("Compact").tag(RemiTileSize.compact)
-            Text("Regular").tag(RemiTileSize.regular)
-            Text("Large").tag(RemiTileSize.large)
+        if !extras.sizeChoices.isEmpty {
+            Picker("Size", selection: Binding(get: { size }, set: onSetSize)) {
+                ForEach(extras.sizeChoices, id: \.self) { choice in
+                    Text(choice.densityTitle).tag(choice)
+                }
+            }
         }
         Button(
             isPinned ? "Unpin from its place" : "Pin to its place",
@@ -312,6 +380,9 @@ public struct RemiBoardTile<Question: View>: View {
                 session.openQuestionCount > 1 ? "needs you, \(session.openQuestionCount) questions" : "needs you"
             )
         }
+        if !size.showsFeed, !needsYou {
+            parts.append(latestLine)
+        }
         return parts.joined(separator: ", ")
     }
 
@@ -326,6 +397,24 @@ public struct RemiBoardTile<Question: View>: View {
             // Text typed while the send was in flight is not the sent text; keep it.
             if sent, draft == text { draft = "" }
         }
+    }
+}
+
+/// The tile's long-press menu, with a preview where the platform has one.
+private struct TileMenu<Items: View>: ViewModifier {
+    let menu: Items
+    let preview: (() -> AnyView)?
+
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        if let preview {
+            content.contextMenu { menu } preview: { preview() }
+        } else {
+            content.contextMenu { menu }
+        }
+        #else
+        content.contextMenu { menu }
+        #endif
     }
 }
 
@@ -360,13 +449,14 @@ public extension RemiBoardTile where Question == EmptyView {
         onSend: @escaping (String) async -> Bool,
         onSetSize: @escaping (RemiTileSize) -> Void = { _ in },
         onTogglePin: @escaping () -> Void,
-        dragPayload: String? = nil
+        dragPayload: String? = nil,
+        extras: RemiBoardTileExtras = RemiBoardTileExtras()
     ) {
         self.init(
             session: session, tileKey: tileKey, size: size, isPinned: isPinned,
             pendingMessageCount: pendingMessageCount, entries: entries, draft: draft, focus: focus,
             onOpen: onOpen, onSend: onSend, onSetSize: onSetSize, onTogglePin: onTogglePin,
-            dragPayload: dragPayload, question: nil
+            dragPayload: dragPayload, question: nil, extras: extras
         )
     }
 }
@@ -421,16 +511,54 @@ private struct FeedLine: View {
     }
 }
 
-/// The tile's height: fixed, or a minimum when the content (a question) may need more.
+/// The tile's height: fixed, a minimum when the content (a question) may need more, or none
+/// for a compact row.
 private struct TileHeight: ViewModifier {
-    let height: CGFloat
+    let height: CGFloat?
     let growsToContent: Bool
 
     func body(content: Content) -> some View {
-        if growsToContent {
-            content.frame(minHeight: height)
+        if let height {
+            if growsToContent {
+                content.frame(minHeight: height)
+            } else {
+                content.frame(height: height)
+            }
         } else {
-            content.frame(height: height)
+            content
         }
+    }
+}
+
+/// What a long press on a tile previews: the session and the latest of its conversation.
+public struct RemiBoardPreview: View {
+    private let session: RemiSessionSummary
+    private let entries: [RemiTranscriptEntry]
+
+    public init(session: RemiSessionSummary, entries: [RemiTranscriptEntry]) {
+        self.session = session
+        self.entries = entries
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(session.name).font(.headline).lineLimit(1)
+                Text([session.machineName, session.project].joined(separator: " · "))
+                    .font(RemiTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Divider()
+            if entries.isEmpty {
+                Text(RemiDisplayText.escape(session.lastMessage ?? "Nothing said yet."))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(entries.suffix(12)) { entry in FeedLine(entry: entry.escapedForDisplay) }
+            }
+        }
+        .padding(RemiTheme.Spacing.m)
+        .frame(maxWidth: 340, alignment: .topLeading)
     }
 }
