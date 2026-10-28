@@ -204,4 +204,28 @@ import Testing
         #expect(RemiBoardOrder.feed(entries, size: .large).last?.id == "e29")
         #expect(RemiBoardOrder.feed([], size: .regular).isEmpty)
     }
+
+    // MARK: phone density
+
+    @Test func aRowIsTheCompactPhoneDensityAndShowsNoFeedOrComposer() {
+        #expect(RemiTileSize.row.estimatedHeight < RemiTileSize.compact.estimatedHeight)
+        #expect(!RemiTileSize.row.showsComposer)
+        #expect(!RemiTileSize.row.showsFeed)
+        for size in [RemiTileSize.compact, .regular, .large] {
+            #expect(size.showsComposer)
+            #expect(size.showsFeed)
+        }
+    }
+
+    @Test func thePhoneOffersCompactMediumAndLong() {
+        #expect(RemiTileSize.phoneDensities == [.row, .regular, .large])
+        #expect(RemiTileSize.phoneDensities.map(\.densityTitle) == ["Compact", "Medium", "Long"])
+        #expect(RemiTileSize(storedDensity: "nonsense") == .regular)
+        #expect(RemiTileSize(storedDensity: RemiTileSize.large.rawValue) == .large)
+    }
+
+    @Test func aStoredSizeSurvivesAnOlderBoardWithoutRows() {
+        // A board saved before `row` existed still decodes.
+        #expect(RemiBoardState(storage: "{\"pinnedSlots\":{\"k\":1},\"sizes\":{\"k\":\"large\"}}").size(for: "k") == .large)
+    }
 }
