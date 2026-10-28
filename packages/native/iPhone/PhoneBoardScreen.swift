@@ -37,10 +37,7 @@ struct PhoneBoardScreen: View {
     @State private var showFinished = false
     @FocusState private var focus: String?
 
-    private var density: RemiTileSize {
-        let stored = RemiTileSize(storedDensity: densityStorage)
-        return RemiTileSize.phoneDensities.contains(stored) ? stored : .regular
-    }
+    private var density: RemiTileSize { RemiTileSize.phoneDensity(stored: densityStorage) }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { timeline in
