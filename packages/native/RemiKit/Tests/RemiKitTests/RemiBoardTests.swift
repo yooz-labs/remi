@@ -342,6 +342,15 @@ import Testing
         #expect(RemiTileSize(storedDensity: RemiTileSize.large.rawValue) == .large)
     }
 
+    @Test func aSavedDensityTheMacOnlyOffersFallsBackToMedium() {
+        for stored in ["row", "regular", "large"] {
+            #expect(RemiTileSize.phoneDensity(stored: stored) == RemiTileSize(rawValue: stored))
+        }
+        #expect(RemiTileSize.phoneDensity(stored: "compact") == .regular)
+        #expect(RemiTileSize.phoneDensity(stored: "nonsense") == .regular)
+        #expect(RemiTileSize.phoneDensity(stored: "") == .regular)
+    }
+
     @Test func aStoredSizeSurvivesAnOlderBoardWithoutRows() {
         // A board saved before `row` existed still decodes.
         #expect(RemiBoardState(storage: "{\"pinnedSlots\":{\"k\":1},\"sizes\":{\"k\":\"large\"}}").size(for: "k") == .large)

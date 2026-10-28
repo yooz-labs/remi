@@ -24,6 +24,11 @@ public enum RemiTileSize: String, Codable, CaseIterable, Sendable {
         self = Self(rawValue: storedDensity) ?? .regular
     }
 
+    /// The phone's density for a saved value: Medium for anything the phone does not offer.
+    public static func phoneDensity(stored: String) -> RemiTileSize {
+        RemiTileSize(storedDensity: stored)
+    }
+
     /// Whether the tile shows the conversation, as opposed to a single line.
     public var showsFeed: Bool { self != .row }
 
