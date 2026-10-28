@@ -281,6 +281,7 @@ struct PhoneBoardScreen: View {
                 }
             }
         }
+        .scrollBounceBehavior(.basedOnSize)
     }
 
     private func chip(
@@ -293,7 +294,7 @@ struct PhoneBoardScreen: View {
             }
             .font(.subheadline.weight(selected ? .semibold : .regular))
             .padding(.horizontal, RemiTheme.Spacing.s)
-            .frame(minHeight: RemiTheme.Size.minimumTapTarget - 8)
+            .frame(minHeight: RemiTheme.Size.minimumTapTarget)
             .background(
                 selected ? AnyShapeStyle(RemiTheme.Color.attention.opacity(0.35))
                     : highlight ? AnyShapeStyle(RemiTheme.Color.attention.opacity(0.18))
