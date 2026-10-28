@@ -20,7 +20,12 @@ struct PhoneBoardScreen: View {
     let onCancel: (String, String, String) -> Void
     let onOpen: (RemiSessionSummary) -> Void
     let onSend: (RemiSessionSummary, String) async -> Bool
+    /// Whether a connected machine can start a session; without one the plus gives way to Add
+    /// machine, as on the Inbox.
+    let canCreateSession: Bool
     let onNewSession: () -> Void
+    let onPresentPairing: () -> Void
+    let onPresentPreferences: () -> Void
     let onManageMachines: () -> Void
     let onDismissError: () -> Void
     let onDismissNotice: () -> Void
@@ -47,8 +52,13 @@ struct PhoneBoardScreen: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) { densityMenu }
             ToolbarItem(placement: .topBarTrailing) {
-                Button("New session", systemImage: "plus", action: onNewSession)
+                if canCreateSession {
+                    Button("New session", systemImage: "plus", action: onNewSession)
+                } else {
+                    Button("Add machine", systemImage: "desktopcomputer.and.arrow.down", action: onPresentPairing)
+                }
             }
+            ToolbarItem(placement: .topBarTrailing) { overflowMenu }
         }
         .onAppear(perform: loadBoard)
         .onChange(of: sessions.map(RemiBoardOrder.key(for:))) { _, keys in
@@ -156,6 +166,17 @@ struct PhoneBoardScreen: View {
         }
     }
 
+    private var overflowMenu: some View {
+        Menu {
+            if canCreateSession {
+                Button("Add machine", systemImage: "desktopcomputer.and.arrow.down", action: onPresentPairing)
+            }
+            Button("Preferences", systemImage: "gearshape", action: onPresentPreferences)
+        } label: {
+            Label("More", systemImage: "ellipsis.circle")
+        }
+    }
+
     private var liveSessions: [RemiSessionSummary] { sessions.filter(\.isLive) }
     private var finishedCount: Int { sessions.count { !$0.isLive } }
     private var needsYouCount: Int { sessions.count { $0.status == .needsYou } }
@@ -209,7 +230,26 @@ struct PhoneBoardScreen: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    private var emptyState: some View {
+    @ViewBuilder private var emptyState: some View {
+        if machines.isEmpty {
+            FirstRunScreen(onAddMachine: onPresentPairing)
+        } else if !canCreateSession && !onlyNeedsYou {
+            ContentUnavailableView {
+                Label("No machine is connected", systemImage: "desktopcomputer.trianglebadge.exclamationmark")
+            } description: {
+                Text("Sessions appear here once a machine connects. You can also add another machine.")
+            } actions: {
+                Button("Add a machine", systemImage: "desktopcomputer.and.arrow.down", action: onPresentPairing)
+                    .buttonStyle(.glassProminent)
+                    .controlSize(.large)
+            }
+            .padding(.top, RemiTheme.Spacing.xl)
+        } else {
+            noSessionsState
+        }
+    }
+
+    private var noSessionsState: some View {
         ContentUnavailableView(
             onlyNeedsYou ? "Nothing needs you" : "No active sessions",
             systemImage: onlyNeedsYou ? "checkmark.circle" : "rectangle.3.group",
@@ -251,7 +291,10 @@ struct PhoneBoardScreen: View {
             onCancel: { _, _, _ in },
             onOpen: { _ in },
             onSend: { _, _ in true },
+            canCreateSession: true,
             onNewSession: {},
+            onPresentPairing: {},
+            onPresentPreferences: {},
             onManageMachines: {},
             onDismissError: {},
             onDismissNotice: {}

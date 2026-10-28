@@ -359,7 +359,10 @@ struct PhoneLiveRootView: View {
             onSend: { session, content in
                 await sendChat(machineID: session.machineID, sessionId: session.id, content: content)
             },
+            canCreateSession: !availableSessionMachines.isEmpty,
             onNewSession: { activeSheet = .newSession(machineID: nil, repository: nil) },
+            onPresentPairing: { activeSheet = .pairing },
+            onPresentPreferences: { activeSheet = .preferences },
             onManageMachines: { activeSheet = .machines },
             onDismissError: store.clearLatestError,
             onDismissNotice: dismissNotice
