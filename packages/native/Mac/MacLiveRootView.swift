@@ -930,6 +930,8 @@ struct MacLiveRootView: View {
 
     private func transcript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
         let confirmed = confirmedTranscript(machineID: machineID, sessionID: sessionID)
+        // Pending entries follow every confirmed entry, so an agent reply that arrives before
+        // the echo of an earlier message shows above that message.
         let pending = store.outgoingMessages(machineID: machineID, sessionID: sessionID).map {
             RemiTranscriptEntry.pending(id: "pending-\($0.id)", text: $0.content, state: $0.delivery == .sending ? .sending : .sent)
         }

@@ -115,6 +115,7 @@ private struct TranscriptMessage: View {
         .frame(maxWidth: .infinity, alignment: role == .user ? .trailing : .leading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(role == .user ? (pending == nil ? "Your message" : "Your message, not confirmed yet") : "Agent response")
+        .accessibilityValue(pending.map { $0 == .sending ? "Sending" : "Sent, not shown in the conversation yet" } ?? "")
     }
 
     private var expandButton: some View {
