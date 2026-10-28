@@ -13,6 +13,7 @@ public struct OutgoingMessage: Identifiable, Sendable, Equatable {
     public let id: String
     public let content: String
     public var delivery: Delivery
+    public let createdAt: Date
 }
 
 /// The messages one session is still waiting to see in its transcript, oldest first.
@@ -25,13 +26,27 @@ public struct OutgoingMessages: Sendable, Equatable {
     /// A stuck connection cannot grow the queue without bound; the oldest entries drop first.
     public static let limit = 50
 
+    /// The daemon can rewrite a message (a slash command expanded, an attachment marker added)
+    /// so the transcript never matches it; such an entry stops showing after this many seconds.
+    public static let lifetime: TimeInterval = 300
+
     public private(set) var items: [OutgoingMessage] = []
 
     public init() {}
 
-    public mutating func add(id: String, content: String) {
-        items.append(OutgoingMessage(id: id, content: content, delivery: .sending))
+    public mutating func add(id: String, content: String, now: Date = Date()) {
+        dropExpired(now: now)
+        items.append(OutgoingMessage(id: id, content: content, delivery: .sending, createdAt: now))
         if items.count > Self.limit { items.removeFirst(items.count - Self.limit) }
+    }
+
+    /// The entries younger than `lifetime`, oldest first.
+    public func visible(now: Date = Date()) -> [OutgoingMessage] {
+        items.filter { now.timeIntervalSince($0.createdAt) < Self.lifetime }
+    }
+
+    private mutating func dropExpired(now: Date) {
+        items = visible(now: now)
     }
 
     public mutating func markSent(id: String) {
@@ -45,7 +60,8 @@ public struct OutgoingMessages: Sendable, Equatable {
 
     /// Removes the oldest entry whose text matches a new transcript user entry.
     @discardableResult
-    public mutating func confirm(transcriptContent: String) -> Bool {
+    public mutating func confirm(transcriptContent: String, now: Date = Date()) -> Bool {
+        dropExpired(now: now)
         let text = transcriptContent.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let index = items.firstIndex(where: {
             $0.content.trimmingCharacters(in: .whitespacesAndNewlines) == text

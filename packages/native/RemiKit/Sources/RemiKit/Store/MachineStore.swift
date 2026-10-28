@@ -1798,7 +1798,7 @@ public final class MachineStore {
     }
 
     public func outgoingMessages(machineID: String, sessionID: String) -> [OutgoingMessage] {
-        outgoingBySession[sessionKey(machineID: machineID, sessionID: sessionID)]?.items ?? []
+        outgoingBySession[sessionKey(machineID: machineID, sessionID: sessionID)]?.visible() ?? []
     }
 
     @discardableResult
