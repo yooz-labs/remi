@@ -80,6 +80,7 @@ import Testing
         let start = Date(timeIntervalSince1970: 1_000)
         var outgoing = OutgoingMessages()
         outgoing.add(id: "1", content: "x", now: start)
-        #expect(!outgoing.confirm(transcriptContent: "x", now: start.addingTimeInterval(301)))
+        let confirmed = outgoing.confirm(transcriptContent: "x", now: start.addingTimeInterval(301))
+        #expect(!confirmed)
     }
 }
