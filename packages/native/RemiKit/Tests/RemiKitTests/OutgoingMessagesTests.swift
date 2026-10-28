@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import RemiKit
 
@@ -50,5 +51,35 @@ import Testing
         for index in 0..<(OutgoingMessages.limit + 5) { outgoing.add(id: "\(index)", content: "m\(index)") }
         #expect(outgoing.items.count == OutgoingMessages.limit)
         #expect(outgoing.items.last?.id == "\(OutgoingMessages.limit + 4)")
+    }
+
+    @Test func anEntryIsVisibleOnlyForItsLifetime() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        var outgoing = OutgoingMessages()
+        outgoing.add(id: "1", content: "old", now: start)
+        outgoing.add(id: "2", content: "new", now: start.addingTimeInterval(200))
+        #expect(OutgoingMessages.lifetime == 300)
+        #expect(outgoing.visible(now: start.addingTimeInterval(299)).map(\.id) == ["1", "2"])
+        #expect(outgoing.visible(now: start.addingTimeInterval(300)).map(\.id) == ["2"])
+        #expect(outgoing.visible(now: start.addingTimeInterval(501)).isEmpty)
+    }
+
+    @Test func addAndConfirmDropExpiredEntries() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        var outgoing = OutgoingMessages()
+        outgoing.add(id: "1", content: "stale", now: start)
+        outgoing.add(id: "2", content: "fresh", now: start.addingTimeInterval(400))
+        #expect(outgoing.items.map(\.id) == ["2"])
+        outgoing.add(id: "3", content: "later", now: start.addingTimeInterval(450))
+        let confirmed = outgoing.confirm(transcriptContent: "nothing", now: start.addingTimeInterval(800))
+        #expect(!confirmed)
+        #expect(outgoing.items.isEmpty)
+    }
+
+    @Test func anExpiredEntryIsNotConfirmed() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        var outgoing = OutgoingMessages()
+        outgoing.add(id: "1", content: "x", now: start)
+        #expect(!outgoing.confirm(transcriptContent: "x", now: start.addingTimeInterval(301)))
     }
 }
