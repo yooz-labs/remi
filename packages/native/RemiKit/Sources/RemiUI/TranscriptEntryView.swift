@@ -41,6 +41,21 @@ public struct RemiTranscriptEntryView: View {
     }
 }
 
+/// The delivery state of a not-yet-confirmed message, for VoiceOver. The label already says
+/// "not confirmed yet", so the value is only the state. A confirmed bubble gets no value.
+private struct PendingDeliveryValue: ViewModifier {
+    let pending: RemiOutgoingState?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let pending {
+            content.accessibilityValue(pending == .sending ? "Sending" : "Sent")
+        } else {
+            content
+        }
+    }
+}
+
 private struct TranscriptMessage: View {
     enum Role { case user, agent }
 
@@ -115,7 +130,7 @@ private struct TranscriptMessage: View {
         .frame(maxWidth: .infinity, alignment: role == .user ? .trailing : .leading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(role == .user ? (pending == nil ? "Your message" : "Your message, not confirmed yet") : "Agent response")
-        .accessibilityValue(pending.map { $0 == .sending ? "Sending" : "Sent, not shown in the conversation yet" } ?? "")
+        .modifier(PendingDeliveryValue(pending: pending))
     }
 
     private var expandButton: some View {
