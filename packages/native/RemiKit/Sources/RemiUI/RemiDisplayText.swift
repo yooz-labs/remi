@@ -8,3 +8,8 @@ import RemiPush
 public enum RemiDisplayText {
     public static func escape(_ text: String) -> String { PushDisplayText.escape(text) }
 }
+
+public extension RemiTranscriptEntry {
+    /// Stub until the escaping change lands.
+    var escapedForDisplay: RemiTranscriptEntry { self }
+}
