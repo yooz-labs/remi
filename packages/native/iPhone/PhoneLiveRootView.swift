@@ -702,33 +702,43 @@ struct PhoneLiveRootView: View {
     }
 
     private func transcript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
-        (store.transcriptsBySession[store.sessionKey(machineID: machineID, sessionID: sessionID)] ?? [])
-            .compactMap(transcriptEntry)
+        // Pending entries follow every confirmed entry, so an agent reply that arrives before
+        // the echo of an earlier message shows above that message.
+        confirmedTranscript(machineID: machineID, sessionID: sessionID)
+            + pendingEntries(machineID: machineID, sessionID: sessionID)
     }
 
-    /// The latest of a session's conversation, for its card on the board.
-    private func boardEntries(_ session: RemiSessionSummary) -> [RemiTranscriptEntry] {
-        (store.transcriptsBySession[store.sessionKey(machineID: session.machineID, sessionID: session.id)] ?? [])
-            .suffix(60)
-            .compactMap(transcriptEntry)
-    }
-
-    private func transcriptEntry(_ message: TranscriptContentMessage) -> RemiTranscriptEntry? {
-        let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !content.isEmpty {
-            return message.role == "user"
-                ? .user(id: message.entryUuid, text: content)
-                : .agent(id: message.entryUuid, text: content)
+    private func pendingEntries(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
+        store.outgoingMessages(machineID: machineID, sessionID: sessionID).map {
+            RemiTranscriptEntry.pending(id: "pending-\($0.id)", text: $0.content, state: $0.delivery == .sending ? .sending : .sent)
         }
-        guard let tool = message.contentBlocks?.first(where: {
-            $0.type == "tool_use" || $0.type == "tool_result"
-        }) else { return nil }
-        let summary = tool.toolInput ?? tool.toolOutput ?? ""
-        return .tool(
-            id: message.entryUuid,
-            name: tool.toolName ?? "Tool",
-            summary: String(summary.prefix(240))
-        )
+    }
+
+    private func confirmedTranscript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
+        (store.transcriptsBySession[store.sessionKey(machineID: machineID, sessionID: sessionID)] ?? []).compactMap { message in
+            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !content.isEmpty {
+                return message.role == "user"
+                    ? .user(id: message.entryUuid, text: content)
+                    : .agent(id: message.entryUuid, text: content)
+            }
+            guard let tool = message.contentBlocks?.first(where: {
+                $0.type == "tool_use" || $0.type == "tool_result"
+            }) else { return nil }
+            let summary = tool.toolInput ?? tool.toolOutput ?? ""
+            return .tool(
+                id: message.entryUuid,
+                name: tool.toolName ?? "Tool",
+                summary: String(summary.prefix(240))
+            )
+        }
+    }
+
+    /// The latest of a session's conversation for its card on the board: the latest 24
+    /// confirmed entries, then the messages not confirmed yet.
+    private func boardEntries(_ session: RemiSessionSummary) -> [RemiTranscriptEntry] {
+        Array(confirmedTranscript(machineID: session.machineID, sessionID: session.id).suffix(24))
+            + pendingEntries(machineID: session.machineID, sessionID: session.id)
     }
 
     private func answer(machineID: String, sessionId: String, questionId: String, value: String) {

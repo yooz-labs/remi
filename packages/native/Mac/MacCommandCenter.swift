@@ -10,6 +10,10 @@ import SwiftUI
 struct MacCommandCenter: View {
     let sessions: [RemiSessionSummary]
     let machines: [RemiMachineSummary]
+    /// Machines that are connected, have loaded their session list and have had time for the
+    /// per-session daemons to be listed too. Only these may have a pin pruned: a machine that
+    /// just reconnected lists no sessions yet, and that is not the sessions being gone.
+    let settledMachines: Set<String>
     let questions: [RemiQuestionCardModel]
     /// The latest conversation entries of a session, for its tile.
     let transcript: (RemiSessionSummary) -> [RemiTranscriptEntry]
@@ -29,6 +33,7 @@ struct MacCommandCenter: View {
     @State private var onlyNeedsYou = false
     @State private var showFinished = false
     @FocusState private var focus: String?
+    @State private var focusTask: Task<Void, Never>?
 
     private let spacing = RemiTheme.Spacing.s
     private let margin = RemiTheme.Spacing.m
@@ -45,10 +50,18 @@ struct MacCommandCenter: View {
             }
         }
         .onAppear(perform: loadBoard)
-        .onChange(of: sessions.map(RemiBoardOrder.key(for:))) { _, keys in
-            board.prune(keeping: Set(keys))
-            saveBoard()
-        }
+        .onChange(of: sessions.map(RemiBoardOrder.key(for:))) { pruneBoard() }
+        .onChange(of: settledMachines) { pruneBoard() }
+    }
+
+    /// Forgets pins and sizes of sessions a connected machine no longer lists. Every session
+    /// counts as live here, finished ones too, so showing them again finds their pins.
+    private func pruneBoard() {
+        let live = Set(sessions.map(RemiBoardOrder.key(for:)))
+        if board.prune(live: live, connectedMachines: settledMachines) { saveBoard() }
+        // A draft or a recent interaction of a session that is gone would linger for good.
+        drafts = drafts.filter { live.contains($0.key) }
+        interactions = interactions.filter { live.contains($0.key) }
     }
 
     // MARK: filtering
@@ -136,15 +149,28 @@ struct MacCommandCenter: View {
     // MARK: board
 
     private func arranged(now: Date) -> [RemiSessionSummary] {
-        let writing = focus != nil || drafts.values.contains { !$0.isEmpty }
-        let held: [String: Int] = writing
-            ? Dictionary(uniqueKeysWithValues: shownOrder.enumerated().map { ($1, $0) })
-            : [:]
+        // Only tiles on screen with a composer count: a draft left on a hidden or finished
+        // tile must not freeze the board.
+        let composerKeys = Set(filtered.filter(\.isLive).map(RemiBoardOrder.key(for:)))
+        let writing = RemiBoardOrder.isWriting(hasFocus: focus.map { composerKeys.contains($0) } ?? false, drafts: drafts, composerKeys: composerKeys)
+        let held = writing ? RemiBoardOrder.held(from: shownOrder) : [:]
         return RemiBoardOrder.arrange(filtered, state: board, interactions: interactions, held: held, now: now)
+    }
+
+    /// A tile and the key that identifies it. Columns hold these and are keyed by the key, so a
+    /// tile's own state (a failed send, the question's height, focus) stays with the session
+    /// when the order changes, instead of staying with a position.
+    private struct BoardItem: Identifiable {
+        let key: String
+        let session: RemiSessionSummary
+        var id: String { key }
     }
 
     private func boardScroll(now: Date) -> some View {
         let ordered = arranged(now: now)
+        let orderedKeys = ordered.map(RemiBoardOrder.key(for:))
+        // The cursor goes only to a tile with a working composer.
+        let liveKeys = ordered.filter(\.isLive).map(RemiBoardOrder.key(for:))
         return GeometryReader { proxy in
             let count = RemiBoardOrder.columnCount(width: proxy.size.width - 2 * margin, spacing: spacing)
             let packed = RemiBoardOrder.columns(
@@ -152,24 +178,45 @@ struct MacCommandCenter: View {
                 count: count,
                 spacing: spacing
             )
-            ScrollView {
-                HStack(alignment: .top, spacing: spacing) {
-                    ForEach(packed.indices, id: \.self) { column in
-                        LazyVStack(spacing: spacing) {
-                            ForEach(packed[column], id: \.self) { index in
-                                tile(ordered[index], order: ordered.map(RemiBoardOrder.key(for:)))
+            let columns = packed.map { column in
+                column.map { BoardItem(key: orderedKeys[$0], session: ordered[$0]) }
+            }
+            ScrollViewReader { reader in
+                ScrollView {
+                    HStack(alignment: .top, spacing: spacing) {
+                        ForEach(columns.indices, id: \.self) { column in
+                            LazyVStack(spacing: spacing) {
+                                ForEach(columns[column]) { item in
+                                    tile(item.session, order: orderedKeys, liveOrder: liveKeys, reader: reader)
+                                        .id(item.key)
+                                }
                             }
                         }
                     }
+                    .padding(margin)
+                    .animation(RemiTheme.Motion.standard, value: orderedKeys)
                 }
-                .padding(margin)
-                .animation(RemiTheme.Motion.standard, value: ordered.map(RemiBoardOrder.key(for:)))
             }
-            .onChange(of: ordered.map(RemiBoardOrder.key(for:)), initial: true) { _, keys in shownOrder = keys }
+            .onChange(of: orderedKeys, initial: true) { _, keys in shownOrder = keys }
         }
     }
 
-    private func tile(_ session: RemiSessionSummary, order: [String]) -> some View {
+    /// Moves the cursor to the next live tile: scrolls it into view first, because a lazy
+    /// column has not built a tile that is off screen, then focuses it once it exists.
+    private func focusNext(after key: String, in liveOrder: [String], reader: ScrollViewProxy) {
+        guard let next = RemiBoardOrder.next(after: key, in: liveOrder) else { return }
+        reader.scrollTo(next, anchor: .center)
+        // A second send inside the wait replaces the first, so the earlier one cannot overwrite it.
+        focusTask?.cancel()
+        focusTask = Task {
+            guard (try? await Task.sleep(for: .milliseconds(60))) != nil else { return }
+            focus = next
+        }
+    }
+
+    private func tile(
+        _ session: RemiSessionSummary, order: [String], liveOrder: [String], reader: ScrollViewProxy
+    ) -> some View {
         let key = RemiBoardOrder.key(for: session)
         let waiting = questions.first {
             $0.machineID == session.machineID && $0.sessionID == session.id && $0.state == .pending
@@ -188,7 +235,7 @@ struct MacCommandCenter: View {
                 if sent {
                     interactions[key] = Date()
                     // Straight on to the next tile, so a run of commands is type, Return, type.
-                    focus = RemiBoardOrder.next(after: key, in: order)
+                    focusNext(after: key, in: liveOrder, reader: reader)
                 }
                 return sent
             },
@@ -204,6 +251,7 @@ struct MacCommandCenter: View {
                 }
                 saveBoard()
             },
+            dragPayload: RemiBoardOrder.payload(for: key),
             question: waiting.map { card in
                 RemiQuestionCard(
                     model: card,
@@ -213,9 +261,11 @@ struct MacCommandCenter: View {
                 )
             }
         )
-        .draggable(key)
         .dropDestination(for: String.self) { dropped, _ in
-            guard let moved = dropped.first, moved != key else { return false }
+            // Only a tile's own payload moves anything, and only a tile still on the board.
+            guard let payload = dropped.first, let moved = RemiBoardOrder.key(fromPayload: payload),
+                  moved != key, order.contains(moved)
+            else { return false }
             board.move(moved, onto: key, in: order)
             saveBoard()
             return true
@@ -237,6 +287,7 @@ struct MacCommandCenter: View {
     MacCommandCenter(
         sessions: RemiPreviewData.sessions,
         machines: RemiPreviewData.machines,
+        settledMachines: [],
         questions: [],
         transcript: { _ in [.agent(id: "a", text: "Running the tests."), .tool(id: "t", name: "Bash", summary: "swift test")] },
         onAnswer: { _, _, _, _ in },

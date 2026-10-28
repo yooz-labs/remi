@@ -104,6 +104,34 @@ import Testing
         #expect(result.count == 3)
     }
 
+    @Test func twoSessionsWithTheSameKeyShowOnceAndKeepTheFirst() {
+        let first = session("a", .working)
+        let second = session("a", .idle)
+        let result = RemiBoardOrder.arrange(
+            [first, session("b"), second], state: RemiBoardState(), interactions: [:], held: [:], now: now
+        )
+        #expect(result.count == 2)
+        #expect(result.filter { $0.id == "a" }.map(\.status) == [.working])
+    }
+
+    @Test func slotsPastTheEndKeepTheirRelativeOrder() {
+        let sessions = [session("a"), session("b"), session("c")]
+        var state = RemiBoardState()
+        state.pin(RemiBoardOrder.key(for: sessions[0]), atSlot: 9)
+        state.pin(RemiBoardOrder.key(for: sessions[1]), atSlot: 10)
+        #expect(order(sessions, state: state) == ["c", "a", "b"])
+    }
+
+    @Test func aHeldTileThatDisappearedIsSkippedAndANewTileFillsItsPlace() {
+        let sessions = [session("a", .working), session("new", .needsYou), session("c", .idle)]
+        let held = [
+            RemiBoardOrder.key(for: session("gone")): 0,
+            RemiBoardOrder.key(for: sessions[0]): 1,
+            RemiBoardOrder.key(for: sessions[2]): 2,
+        ]
+        #expect(order(sessions, held: held) == ["new", "a", "c"])
+    }
+
     @Test func movingATileOntoAnotherTakesItsPlaceAndPinsIt() {
         let sessions = [session("a", .needsYou), session("b", .working), session("c", .idle)]
         var state = RemiBoardState()
@@ -147,15 +175,88 @@ import Testing
         #expect(RemiBoardState(storage: "") == RemiBoardState())
     }
 
-    @Test func pruningForgetsSessionsThatAreGone() {
+    @Test func aConnectedMachinesMissingSessionIsPruned() {
+        let gone = RemiBoardOrder.key(for: session("gone", machine: "one"))
+        let kept = RemiBoardOrder.key(for: session("kept", machine: "one"))
         var state = RemiBoardState()
-        state.pin("gone", atSlot: 0)
-        state.setSize(.large, for: "gone")
-        state.pin("kept", atSlot: 1)
-        state.prune(keeping: ["kept"])
-        #expect(!state.isPinned("gone"))
-        #expect(state.size(for: "gone") == .regular)
-        #expect(state.isPinned("kept"))
+        state.pin(gone, atSlot: 0)
+        state.setSize(.large, for: gone)
+        state.pin(kept, atSlot: 1)
+        let changed = state.prune(live: [kept], connectedMachines: ["one"])
+        #expect(changed)
+        #expect(!state.isPinned(gone))
+        #expect(state.size(for: gone) == .regular)
+        #expect(state.isPinned(kept))
+    }
+
+    @Test func aDisconnectedMachinesEntriesStayWhileItsListIsMissing() {
+        let away = RemiBoardOrder.key(for: session("away", machine: "two"))
+        var state = RemiBoardState()
+        state.pin(away, atSlot: 0)
+        state.setSize(.large, for: away)
+        let changed = state.prune(live: [], connectedMachines: ["one"])
+        #expect(!changed)
+        #expect(state.isPinned(away))
+        #expect(state.size(for: away) == .large)
+    }
+
+    @Test func pruningNothingReportsNoChange() {
+        var state = RemiBoardState()
+        let changed = state.prune(live: [], connectedMachines: ["one"])
+        #expect(!changed)
+    }
+
+    @Test func aKeyNamesItsMachine() {
+        let key = RemiBoardOrder.key(for: session("s", machine: "box"))
+        #expect(RemiBoardOrder.machineID(ofKey: key) == "box")
+        #expect(RemiBoardOrder.machineID(ofKey: "no-separator") == "no-separator")
+    }
+
+    // MARK: writing
+
+    @Test func aFocusedComposerMeansWriting() {
+        #expect(RemiBoardOrder.isWriting(hasFocus: true, drafts: [:], composerKeys: []))
+    }
+
+    @Test func aDraftOnAShownTileMeansWriting() {
+        #expect(RemiBoardOrder.isWriting(hasFocus: false, drafts: ["a": "hi"], composerKeys: ["a", "b"]))
+    }
+
+    @Test func aDraftOfATileNotOnScreenDoesNotFreezeTheBoard() {
+        #expect(!RemiBoardOrder.isWriting(hasFocus: false, drafts: ["gone": "hi"], composerKeys: ["a"]))
+    }
+
+    @Test func emptyDraftsAreNotWriting() {
+        #expect(!RemiBoardOrder.isWriting(hasFocus: false, drafts: ["a": ""], composerKeys: ["a"]))
+    }
+
+    @Test func heldSlotsFollowTheShownOrderEvenWithARepeatedKey() {
+        #expect(RemiBoardOrder.held(from: ["a", "b", "a", "c"]) == ["a": 0, "b": 1, "c": 3])
+        #expect(RemiBoardOrder.held(from: []).isEmpty)
+    }
+
+    // MARK: drag payload
+
+    @Test func aDragPayloadRoundTripsToItsKey() {
+        let key = RemiBoardOrder.key(for: session("s", machine: "m"))
+        #expect(RemiBoardOrder.key(fromPayload: RemiBoardOrder.payload(for: key)) == key)
+    }
+
+    @Test func textThatIsNotATilePayloadIsRejected() {
+        #expect(RemiBoardOrder.key(fromPayload: "just some selected text") == nil)
+        #expect(RemiBoardOrder.key(fromPayload: "m\u{1F}s") == nil)
+        #expect(RemiBoardOrder.key(fromPayload: "") == nil)
+    }
+
+    @Test func anEmptyKeyInAPayloadIsRejected() {
+        #expect(RemiBoardOrder.key(fromPayload: RemiBoardOrder.payload(for: "")) == nil)
+    }
+
+    @Test func activityDatesReadWithAndWithoutFractionalSeconds() {
+        #expect(RemiBoardOrder.activityDate("2026-10-28T10:00:00Z") == Date(timeIntervalSince1970: 1_793_181_600))
+        #expect(RemiBoardOrder.activityDate("2026-10-28T10:00:00.500Z") == Date(timeIntervalSince1970: 1_793_181_600.5))
+        #expect(RemiBoardOrder.activityDate("yesterday") == nil)
+        #expect(RemiBoardOrder.activityDate(nil) == nil)
     }
 
     // MARK: next tile
@@ -165,6 +266,14 @@ import Testing
         #expect(RemiBoardOrder.next(after: "c", in: ["a", "b", "c"]) == "a")
         #expect(RemiBoardOrder.next(after: "a", in: ["a"]) == nil)
         #expect(RemiBoardOrder.next(after: "x", in: ["a", "b"]) == "a")
+    }
+
+    @Test func theNextTileComesFromTheOrderTheCallerGivesSoFinishedOnesCanBeLeftOut() {
+        // The board passes only the live tiles; "done" is not in the list, so it is never next.
+        #expect(RemiBoardOrder.next(after: "a", in: ["a", "c"]) == "c")
+        #expect(RemiBoardOrder.next(after: "c", in: ["a", "c"]) == "a")
+        // Sending from a tile that has since left the list goes to the first live tile.
+        #expect(RemiBoardOrder.next(after: "done", in: ["a", "c"]) == "a")
     }
 
     @Test func tilesPackIntoTheShortestColumnInReadingOrder() {
@@ -203,6 +312,15 @@ import Testing
         #expect(RemiBoardOrder.feed(entries, size: .large).first?.id == "e\(30 - RemiTileSize.large.feedEntries)")
         #expect(RemiBoardOrder.feed(entries, size: .large).last?.id == "e29")
         #expect(RemiBoardOrder.feed([], size: .regular).isEmpty)
+    }
+
+    @Test func aNegativeStoredSlotIsClampedAndNeverTraps() {
+        let state = RemiBoardState(storage: "{\"pinnedSlots\":{\"k\":-3},\"sizes\":{}}")
+        #expect(state.slot(of: "k") == 0)
+        let sessions = [session("a"), session("b")]
+        var hostile = RemiBoardState()
+        hostile.pin("m\u{1F}b", atSlot: 0)
+        #expect(RemiBoardOrder.arrange(sessions, state: hostile, interactions: [:], held: ["m\u{1F}a": -5], now: now).count == 2)
     }
 
     // MARK: phone density

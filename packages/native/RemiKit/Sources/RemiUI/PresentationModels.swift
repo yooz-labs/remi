@@ -250,21 +250,29 @@ public struct RemiMachineSummary: Identifiable, Sendable, Equatable {
     }
 }
 
+/// How far a message you sent has got, before the conversation shows it.
+public enum RemiOutgoingState: Sendable, Equatable {
+    case sending
+    /// Handed to the connection; not yet in the conversation. It does not mean it was read.
+    case sent
+}
+
 public enum RemiTranscriptEntry: Identifiable, Sendable, Equatable {
     case user(id: String, text: String)
+    case pending(id: String, text: String, state: RemiOutgoingState)
     case agent(id: String, text: String)
     case tool(id: String, name: String, summary: String)
     case error(id: String, text: String)
 
     public var id: String {
         switch self {
-        case .user(let id, _), .agent(let id, _), .tool(let id, _, _), .error(let id, _): id
+        case .user(let id, _), .pending(let id, _, _), .agent(let id, _), .tool(let id, _, _), .error(let id, _): id
         }
     }
 
     public var searchableText: String {
         switch self {
-        case .user(_, let text), .agent(_, let text), .error(_, let text):
+        case .user(_, let text), .pending(_, let text, _), .agent(_, let text), .error(_, let text):
             text
         case .tool(_, let name, let summary):
             "\(name)\n\(summary)"
@@ -273,7 +281,7 @@ public enum RemiTranscriptEntry: Identifiable, Sendable, Equatable {
 
     public var copyText: String {
         switch self {
-        case .user(_, let text), .agent(_, let text), .error(_, let text):
+        case .user(_, let text), .pending(_, let text, _), .agent(_, let text), .error(_, let text):
             text
         case .tool(_, let name, let summary):
             "\(name)\n\(summary)"

@@ -55,8 +55,7 @@ struct PhoneBoardScreen: View {
         }
         .onAppear(perform: loadBoard)
         .onChange(of: sessions.map(RemiBoardOrder.key(for:))) { _, keys in
-            board.prune(keeping: Set(keys))
-            saveBoard()
+            if board.prune(live: Set(keys), connectedMachines: []) { saveBoard() }
         }
     }
 
@@ -124,7 +123,6 @@ struct PhoneBoardScreen: View {
                 }
                 return sent
             },
-            onSetSize: { _ in },
             onTogglePin: {
                 if board.isPinned(key) {
                     board.unpin(key)

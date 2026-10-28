@@ -8,6 +8,7 @@ struct MacLiveRootView: View {
 
     @AppStorage("remi.mac.selected-machine") private var selectedMachineID = ""
     @AppStorage("remi.mac.selected-session") private var selectedSessionID = ""
+    @AppStorage("remi.mac.last-threads") private var lastThreadsStorage = ""
     @SceneStorage("remi.mac.column-layout") private var columnLayoutStorage = ""
     @SceneStorage("remi.mac.drafts") private var draftsStorage = ""
     @Environment(\.scenePhase) private var scenePhase
@@ -16,6 +17,14 @@ struct MacLiveRootView: View {
     @State private var showingInbox = false
     /// The command center is the landing view; leaving it for a conversation is remembered.
     @AppStorage("remi.mac.shows-board") private var showingBoard = true
+    /// When each currently connected machine connected. A hub lists its sessions before its
+    /// per-session daemons do, so until a machine has been connected for the grace period a
+    /// remembered thread missing from its list is waited for, not replaced.
+    @State private var connectedAt: [String: Date] = [:]
+    /// Bumped when a machine's grace period ends, to run `reconcileNavigation` then.
+    @State private var graceTick = 0
+    /// The session `reconcileNavigation` chose as a fallback; `onChange` skips recording it.
+    @State private var autoSelected: (machineID: String, sessionID: String)?
     @State private var showingNewSession = false
     @State private var showingJump = false
     @State private var newSessionMachineID: String?
@@ -263,6 +272,42 @@ struct MacLiveRootView: View {
             restoreColumnLayout()
             reconcileNavigation()
         }
+        .task(id: GraceWindow(connectedAt: connectedAt, tick: graceTick)) {
+            let now = Date()
+            let ends = connectedAt.values
+                .map { $0.addingTimeInterval(RemiLastThreads.defaultGrace) }
+                .filter { $0 > now }
+            guard let earliest = ends.min() else { return }
+            guard (try? await Task.sleep(for: .seconds(earliest.timeIntervalSince(now)))) != nil
+            else { return }
+            graceTick += 1
+            reconcileNavigation()
+        }
+        .onChange(of: connectedMachineIDs, initial: true) { _, ids in
+            let now = Date()
+            var next: [String: Date] = [:]
+            for id in ids { next[id] = connectedAt[id] ?? now }
+            connectedAt = next
+            reconcileNavigation()
+        }
+        .onChange(of: selectedSessionID) { _, sessionID in
+            // The flag never outlives the next selection change, whatever the outcome.
+            let auto = autoSelected
+            autoSelected = nil
+            guard RemiLastThreads.shouldRecord(
+                machineID: selectedMachineID, sessionID: sessionID, autoSelected: auto
+            ) else { return }
+            var threads = RemiLastThreads(storage: lastThreadsStorage)
+            threads.remember(machineID: selectedMachineID, sessionID: sessionID)
+            lastThreadsStorage = threads.storageValue
+        }
+        .onChange(of: store.machines.map(\.id), initial: true) { _, machineIDs in
+            // The store can fill asynchronously: an empty list must never wipe the memory.
+            guard !machineIDs.isEmpty else { return }
+            var threads = RemiLastThreads(storage: lastThreadsStorage)
+            threads.prune(keepingMachines: Set(machineIDs))
+            lastThreadsStorage = threads.storageValue
+        }
         .onChange(of: currentColumnLayout) { _, layout in
             columnLayoutStorage = layout.storageValue
         }
@@ -310,6 +355,8 @@ struct MacLiveRootView: View {
             showingInbox = false
             showingBoard = false
             selectedMachineID = profileID
+            selectedSessionID = ""
+            pendingResume = nil
             pairingAttemptID = nil
         }
         .sheet(isPresented: $showingJump) {
@@ -320,7 +367,15 @@ struct MacLiveRootView: View {
                     showingJump = false
                     switch result {
                     case .session(let session): openFromBoard(session)
-                    case .question(_, let owner): if let owner { openFromBoard(owner) }
+                    case .question(let card, _):
+                        // The same path as the Inbox, so the card is focused, and the owner
+                        // session need not be in the list.
+                        openFromInbox(
+                            RemiInboxPresentation.OpenTarget(
+                                machineID: card.machineID, sessionID: card.sessionID, conversationID: card.agentID
+                            ),
+                            questionID: card.questionID
+                        )
                     }
                 },
                 onClose: { showingJump = false }
@@ -425,10 +480,21 @@ struct MacLiveRootView: View {
         showingNewSession = true
     }
 
+    /// Connected machines whose session list has loaded and has had the grace period to settle,
+    /// the ones whose missing sessions really are gone.
+    private var settledMachineIDs: Set<String> {
+        let now = Date()
+        return Set(store.machines.filter {
+            $0.status == .connected && $0.hasLoadedSessions
+                && RemiLastThreads.isSettled(connectedAt: connectedAt[$0.id], now: now)
+        }.map(\.id))
+    }
+
     private var boardDetail: some View {
         MacCommandCenter(
             sessions: allSessions,
             machines: machineSummaries,
+            settledMachines: settledMachineIDs,
             questions: allQuestions,
             transcript: boardEntries,
             onAnswer: { answerFromInbox(machineID: $0, sessionID: $1, questionID: $2, value: $3) },
@@ -611,6 +677,7 @@ struct MacLiveRootView: View {
         Binding(
             get: { selectedSessionID.isEmpty ? nil : selectedSessionID },
             set: {
+                autoSelected = nil
                 selectedSessionID = $0 ?? ""
                 preferredCompactColumn = selectedSessionID.isEmpty ? .content : .detail
                 if pendingResume?.machineID != selectedMachineID
@@ -622,10 +689,19 @@ struct MacLiveRootView: View {
         )
     }
 
+    private var connectedMachineIDs: [String] {
+        store.machines.filter { $0.status == .connected }.map(\.id)
+    }
+
+    private func isSettled(_ machine: MachineState?) -> Bool {
+        guard let machine else { return false }
+        return RemiLastThreads.isSettled(connectedAt: connectedAt[machine.id], now: Date())
+    }
+
     private var navigationSnapshot: [[String]] {
         store.machines.map { machine in
             [machine.id, machine.hasLoadedSessions ? "loaded" : "loading"]
-                + machine.activeSessions.map(\.sessionId)
+                + machine.sessions.map(\.sessionId)
         }
     }
 
@@ -648,9 +724,22 @@ struct MacLiveRootView: View {
             selectedMachineID = store.machines.first?.id ?? ""
         }
         guard selectedMachine?.hasLoadedSessions == true else { return }
-        let sessionIDs = selectedMachine?.sessions.map(\.sessionId) ?? []
-        if !sessionIDs.contains(selectedSessionID) {
-            selectedSessionID = sessionIDs.first ?? ""
+        switch RemiLastThreads(storage: lastThreadsStorage).resolve(
+            machineID: selectedMachineID,
+            current: selectedSessionID,
+            available: selectedMachine?.sessions.map(\.sessionId) ?? [],
+            settled: isSettled(selectedMachine)
+        ) {
+        case .open(let sessionID): selectedSessionID = sessionID
+        case .fallback(let sessionID):
+            if sessionID != selectedSessionID {
+                autoSelected = (machineID: selectedMachineID, sessionID: sessionID)
+            }
+            selectedSessionID = sessionID
+        case .clear:
+            autoSelected = nil
+            selectedSessionID = ""
+        case .wait: break
         }
         preferredCompactColumn = RemiMacCompactDestination.resolve(
             hasMachine: selectedMachine != nil,
@@ -1029,15 +1118,29 @@ struct MacLiveRootView: View {
     }
 
     private func transcript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
+        let confirmed = confirmedTranscript(machineID: machineID, sessionID: sessionID)
+        // Pending entries follow every confirmed entry, so an agent reply that arrives before
+        // the echo of an earlier message shows above that message.
+        return confirmed + pendingEntries(machineID: machineID, sessionID: sessionID)
+    }
+
+    private func confirmedTranscript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
         (store.transcriptsBySession[store.sessionKey(machineID: machineID, sessionID: sessionID)] ?? [])
             .compactMap(transcriptEntry)
     }
 
+    private func pendingEntries(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
+        store.outgoingMessages(machineID: machineID, sessionID: sessionID).map {
+            RemiTranscriptEntry.pending(id: "pending-\($0.id)", text: $0.content, state: $0.delivery == .sending ? .sending : .sent)
+        }
+    }
+
     /// The latest of a session's conversation, for its tile on the board.
     private func boardEntries(_ session: RemiSessionSummary) -> [RemiTranscriptEntry] {
-        (store.transcriptsBySession[store.sessionKey(machineID: session.machineID, sessionID: session.id)] ?? [])
+        let confirmed = (store.transcriptsBySession[store.sessionKey(machineID: session.machineID, sessionID: session.id)] ?? [])
             .suffix(60)
             .compactMap(transcriptEntry)
+        return confirmed + pendingEntries(machineID: session.machineID, sessionID: session.id)
     }
 
     private func transcriptEntry(_ message: TranscriptContentMessage) -> RemiTranscriptEntry? {
@@ -2518,3 +2621,10 @@ private var workspacePreviewSessions: [RemiSessionSummary] {
     return draft
 }
 #endif
+
+/// The state a grace-period task is keyed on, so it restarts when a machine connects,
+/// disconnects, or a grace period ends.
+private struct GraceWindow: Hashable {
+    let connectedAt: [String: Date]
+    let tick: Int
+}
