@@ -35,6 +35,9 @@ public enum RemiTileSize: String, Codable, CaseIterable, Sendable {
 
 /// What the person arranged on the command center board: tiles they pinned to a slot, and
 /// the size each tile has. Everything else is ordered automatically (``RemiBoardOrder``).
+///
+/// A slot is an index into the list as the board showed it, after any machine or "needs you"
+/// filter. A pin made under a filter means a place in that filtered list, not in the full one.
 public struct RemiBoardState: Codable, Equatable, Sendable {
     private var pinnedSlots: [String: Int] = [:]
     private var sizes: [String: RemiTileSize] = [:]
@@ -116,7 +119,8 @@ public enum RemiBoardOrder {
     /// composer is in use keeps the slot it has now, so it never jumps under the cursor).
     /// The rest are ordered by how much they need the person: a question first, then a tile
     /// the person typed into recently, then working, idle and offline; newer activity first
-    /// within each, then by name.
+    /// within each, then by name. A pinned or held slot is an index into `sessions` as passed
+    /// (already filtered); one past the end takes a place from the end, in its relative order.
     public static func arrange(
         _ sessions: [RemiSessionSummary],
         state: RemiBoardState,
