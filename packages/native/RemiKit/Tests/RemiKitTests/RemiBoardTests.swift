@@ -212,6 +212,29 @@ import Testing
         #expect(RemiBoardOrder.machineID(ofKey: "no-separator") == "no-separator")
     }
 
+    // MARK: writing
+
+    @Test func aFocusedComposerMeansWriting() {
+        #expect(RemiBoardOrder.isWriting(hasFocus: true, drafts: [:], composerKeys: []))
+    }
+
+    @Test func aDraftOnAShownTileMeansWriting() {
+        #expect(RemiBoardOrder.isWriting(hasFocus: false, drafts: ["a": "hi"], composerKeys: ["a", "b"]))
+    }
+
+    @Test func aDraftOfATileNotOnScreenDoesNotFreezeTheBoard() {
+        #expect(!RemiBoardOrder.isWriting(hasFocus: false, drafts: ["gone": "hi"], composerKeys: ["a"]))
+    }
+
+    @Test func emptyDraftsAreNotWriting() {
+        #expect(!RemiBoardOrder.isWriting(hasFocus: false, drafts: ["a": ""], composerKeys: ["a"]))
+    }
+
+    @Test func heldSlotsFollowTheShownOrderEvenWithARepeatedKey() {
+        #expect(RemiBoardOrder.held(from: ["a", "b", "a", "c"]) == ["a": 0, "b": 1, "c": 3])
+        #expect(RemiBoardOrder.held(from: []).isEmpty)
+    }
+
     // MARK: next tile
 
     @Test func afterSendingFocusMovesToTheNextTileAndWrapsAround() {

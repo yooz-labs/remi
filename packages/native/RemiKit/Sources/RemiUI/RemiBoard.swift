@@ -173,6 +173,12 @@ public enum RemiBoardOrder {
         return slots.compactMap { $0 }
     }
 
+    /// Stub until the writing change lands.
+    public static func isWriting(hasFocus: Bool, drafts: [String: String], composerKeys: Set<String>) -> Bool { false }
+
+    /// Stub until the writing change lands.
+    public static func held(from order: [String]) -> [String: Int] { [:] }
+
     /// The sessions the board shows. Finished sessions stay off it (they are one search or the
     /// machine's list away) unless `showFinished` asks for them.
     public static func visible(
