@@ -173,11 +173,17 @@ public enum RemiBoardOrder {
         return slots.compactMap { $0 }
     }
 
-    /// Stub until the writing change lands.
-    public static func isWriting(hasFocus: Bool, drafts: [String: String], composerKeys: Set<String>) -> Bool { false }
+    /// Whether the person is writing, so the board should hold still: a composer has focus, or
+    /// a tile that is on screen with a composer has text waiting. A draft of a tile that is
+    /// gone or hidden does not count.
+    public static func isWriting(hasFocus: Bool, drafts: [String: String], composerKeys: Set<String>) -> Bool {
+        hasFocus || drafts.contains { composerKeys.contains($0.key) && !$0.value.isEmpty }
+    }
 
-    /// Stub until the writing change lands.
-    public static func held(from order: [String]) -> [String: Int] { [:] }
+    /// The slot each shown tile holds while the person writes; a repeated key keeps its first.
+    public static func held(from order: [String]) -> [String: Int] {
+        Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+    }
 
     /// The sessions the board shows. Finished sessions stay off it (they are one search or the
     /// machine's list away) unless `showFinished` asks for them.

@@ -58,6 +58,9 @@ struct MacCommandCenter: View {
     private func pruneBoard() {
         let live = Set(sessions.map(RemiBoardOrder.key(for:)))
         if board.prune(live: live, connectedMachines: connectedMachines) { saveBoard() }
+        // A draft or a recent interaction of a session that is gone would linger for good.
+        drafts = drafts.filter { live.contains($0.key) }
+        interactions = interactions.filter { live.contains($0.key) }
     }
 
     // MARK: filtering
@@ -145,10 +148,11 @@ struct MacCommandCenter: View {
     // MARK: board
 
     private func arranged(now: Date) -> [RemiSessionSummary] {
-        let writing = focus != nil || drafts.values.contains { !$0.isEmpty }
-        let held: [String: Int] = writing
-            ? Dictionary(uniqueKeysWithValues: shownOrder.enumerated().map { ($1, $0) })
-            : [:]
+        // Only tiles on screen with a composer count: a draft left on a hidden or finished
+        // tile must not freeze the board.
+        let composerKeys = Set(filtered.filter(\.isLive).map(RemiBoardOrder.key(for:)))
+        let writing = RemiBoardOrder.isWriting(hasFocus: focus != nil, drafts: drafts, composerKeys: composerKeys)
+        let held = writing ? RemiBoardOrder.held(from: shownOrder) : [:]
         return RemiBoardOrder.arrange(filtered, state: board, interactions: interactions, held: held, now: now)
     }
 
