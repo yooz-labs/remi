@@ -217,6 +217,7 @@ struct MacCommandCenter: View {
                 }
                 saveBoard()
             },
+            dragPayload: RemiBoardOrder.payload(for: key),
             question: waiting.map { card in
                 RemiQuestionCard(
                     model: card,
@@ -226,9 +227,11 @@ struct MacCommandCenter: View {
                 )
             }
         )
-        .draggable(key)
         .dropDestination(for: String.self) { dropped, _ in
-            guard let moved = dropped.first, moved != key else { return false }
+            // Only a tile's own payload moves anything, and only a tile still on the board.
+            guard let payload = dropped.first, let moved = RemiBoardOrder.key(fromPayload: payload),
+                  moved != key, order.contains(moved)
+            else { return false }
             board.move(moved, onto: key, in: order)
             saveBoard()
             return true

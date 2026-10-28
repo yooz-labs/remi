@@ -16,6 +16,10 @@ public struct RemiBoardTile<Question: View>: View {
     private let onSend: (String) async -> Bool
     private let onSetSize: (RemiTileSize) -> Void
     private let onTogglePin: () -> Void
+    /// What dragging the tile's header carries (``RemiBoardOrder/payload(for:)``); nil makes the
+    /// tile not draggable. Only the header drags, so selecting and dragging text in the
+    /// conversation and the composer keep working.
+    private let dragPayload: String?
     /// The session's waiting question, answered on the tile. Nil shows the plain notice.
     private let question: Question?
 
@@ -37,6 +41,7 @@ public struct RemiBoardTile<Question: View>: View {
         onSend: @escaping (String) async -> Bool,
         onSetSize: @escaping (RemiTileSize) -> Void,
         onTogglePin: @escaping () -> Void,
+        dragPayload: String? = nil,
         question: Question? = nil
     ) {
         self.session = session
@@ -51,6 +56,7 @@ public struct RemiBoardTile<Question: View>: View {
         self.onSend = onSend
         self.onSetSize = onSetSize
         self.onTogglePin = onTogglePin
+        self.dragPayload = dragPayload
         self.question = question
     }
 
@@ -59,7 +65,7 @@ public struct RemiBoardTile<Question: View>: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
-            header
+            draggable(header)
             conversation
             waitingQuestion
             footer
@@ -76,6 +82,14 @@ public struct RemiBoardTile<Question: View>: View {
     }
 
     // MARK: parts
+
+    @ViewBuilder private func draggable<Content: View>(_ content: Content) -> some View {
+        if let dragPayload {
+            content.draggable(dragPayload)
+        } else {
+            content
+        }
+    }
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: RemiTheme.Spacing.xs) {
@@ -314,13 +328,14 @@ public extension RemiBoardTile where Question == EmptyView {
         onOpen: @escaping () -> Void,
         onSend: @escaping (String) async -> Bool,
         onSetSize: @escaping (RemiTileSize) -> Void,
-        onTogglePin: @escaping () -> Void
+        onTogglePin: @escaping () -> Void,
+        dragPayload: String? = nil
     ) {
         self.init(
             session: session, tileKey: tileKey, size: size, isPinned: isPinned,
             pendingMessageCount: pendingMessageCount, entries: entries, draft: draft, focus: focus,
             onOpen: onOpen, onSend: onSend, onSetSize: onSetSize, onTogglePin: onTogglePin,
-            question: nil
+            dragPayload: dragPayload, question: nil
         )
     }
 }

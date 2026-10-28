@@ -185,11 +185,18 @@ public enum RemiBoardOrder {
         Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
-    /// Stub until the drag change lands.
-    public static func payload(for key: String) -> String { "" }
+    private static let payloadPrefix = "remi-board-tile:"
 
-    /// Stub until the drag change lands.
-    public static func key(fromPayload payload: String) -> String? { nil }
+    /// What a tile drags: its key behind a prefix, so a drop can tell a tile from any other
+    /// text (selected text dragged out of a composer, say).
+    public static func payload(for key: String) -> String { payloadPrefix + key }
+
+    /// The key a drag payload carries, or nil for text that is not a tile payload.
+    public static func key(fromPayload payload: String) -> String? {
+        guard payload.hasPrefix(payloadPrefix) else { return nil }
+        let key = String(payload.dropFirst(payloadPrefix.count))
+        return key.isEmpty ? nil : key
+    }
 
     /// The sessions the board shows. Finished sessions stay off it (they are one search or the
     /// machine's list away) unless `showFinished` asks for them.
