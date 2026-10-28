@@ -252,6 +252,13 @@ import Testing
         #expect(RemiBoardOrder.key(fromPayload: RemiBoardOrder.payload(for: "")) == nil)
     }
 
+    @Test func activityDatesReadWithAndWithoutFractionalSeconds() {
+        #expect(RemiBoardOrder.activityDate("2026-10-28T10:00:00Z") == Date(timeIntervalSince1970: 1_793_181_600))
+        #expect(RemiBoardOrder.activityDate("2026-10-28T10:00:00.500Z") == Date(timeIntervalSince1970: 1_793_181_600.5))
+        #expect(RemiBoardOrder.activityDate("yesterday") == nil)
+        #expect(RemiBoardOrder.activityDate(nil) == nil)
+    }
+
     // MARK: next tile
 
     @Test func afterSendingFocusMovesToTheNextTileAndWrapsAround() {
@@ -259,6 +266,14 @@ import Testing
         #expect(RemiBoardOrder.next(after: "c", in: ["a", "b", "c"]) == "a")
         #expect(RemiBoardOrder.next(after: "a", in: ["a"]) == nil)
         #expect(RemiBoardOrder.next(after: "x", in: ["a", "b"]) == "a")
+    }
+
+    @Test func theNextTileComesFromTheOrderTheCallerGivesSoFinishedOnesCanBeLeftOut() {
+        // The board passes only the live tiles; "done" is not in the list, so it is never next.
+        #expect(RemiBoardOrder.next(after: "a", in: ["a", "c"]) == "c")
+        #expect(RemiBoardOrder.next(after: "c", in: ["a", "c"]) == "a")
+        // Sending from a tile that has since left the list goes to the first live tile.
+        #expect(RemiBoardOrder.next(after: "done", in: ["a", "c"]) == "a")
     }
 
     @Test func tilesPackIntoTheShortestColumnInReadingOrder() {

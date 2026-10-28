@@ -253,13 +253,19 @@ public enum RemiBoardOrder {
         }
     }
 
+    // `ISO8601DateFormatter` is documented thread-safe for date(from:) and is never mutated
+    // after these initializers, so sharing the two instances across threads is sound. Building
+    // one per call was costly inside sort comparators.
+    private nonisolated(unsafe) static let plainFormatter = ISO8601DateFormatter()
+    private nonisolated(unsafe) static let fractionalFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
     /// A session's `lastActivity` as a date, or nil when it has none or cannot be read.
     public static func activityDate(_ value: String?) -> Date? {
         guard let value else { return nil }
-        let plain = ISO8601DateFormatter()
-        if let parsed = plain.date(from: value) { return parsed }
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fractional.date(from: value)
+        return plainFormatter.date(from: value) ?? fractionalFormatter.date(from: value)
     }
 }
