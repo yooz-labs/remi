@@ -261,6 +261,11 @@ struct MacLiveRootView: View {
             threads.remember(machineID: selectedMachineID, sessionID: sessionID)
             lastThreadsStorage = threads.storageValue
         }
+        .onChange(of: store.machines.map(\.id)) { _, machineIDs in
+            var threads = RemiLastThreads(storage: lastThreadsStorage)
+            threads.prune(keepingMachines: Set(machineIDs))
+            lastThreadsStorage = threads.storageValue
+        }
         .onChange(of: currentColumnLayout) { _, layout in
             columnLayoutStorage = layout.storageValue
         }
