@@ -55,9 +55,11 @@ struct MacJumpPalette: View {
                 ScrollView {
                     LazyVStack(spacing: 2) {
                         ForEach(Array(shown.enumerated()), id: \.element.id) { index, result in
-                            row(result, isHighlighted: index == highlighted)
-                                .id(result.id)
-                                .onTapGesture { onChoose(result) }
+                            Button { onChoose(result) } label: {
+                                row(result, isHighlighted: index == highlighted)
+                            }
+                            .buttonStyle(.plain)
+                            .id(result.id)
                         }
                     }
                     .padding(RemiTheme.Spacing.xs)
