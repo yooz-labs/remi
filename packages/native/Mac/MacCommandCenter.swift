@@ -156,8 +156,20 @@ struct MacCommandCenter: View {
         return RemiBoardOrder.arrange(filtered, state: board, interactions: interactions, held: held, now: now)
     }
 
+    /// A tile and the key that identifies it. Columns hold these and are keyed by the key, so a
+    /// tile's own state (a failed send, the question's height, focus) stays with the session
+    /// when the order changes, instead of staying with a position.
+    private struct BoardItem: Identifiable {
+        let key: String
+        let session: RemiSessionSummary
+        var id: String { key }
+    }
+
     private func boardScroll(now: Date) -> some View {
         let ordered = arranged(now: now)
+        let orderedKeys = ordered.map(RemiBoardOrder.key(for:))
+        // The cursor goes only to a tile with a working composer.
+        let liveKeys = ordered.filter(\.isLive).map(RemiBoardOrder.key(for:))
         return GeometryReader { proxy in
             let count = RemiBoardOrder.columnCount(width: proxy.size.width - 2 * margin, spacing: spacing)
             let packed = RemiBoardOrder.columns(
@@ -165,24 +177,43 @@ struct MacCommandCenter: View {
                 count: count,
                 spacing: spacing
             )
-            ScrollView {
-                HStack(alignment: .top, spacing: spacing) {
-                    ForEach(packed.indices, id: \.self) { column in
-                        LazyVStack(spacing: spacing) {
-                            ForEach(packed[column], id: \.self) { index in
-                                tile(ordered[index], order: ordered.map(RemiBoardOrder.key(for:)))
+            let columns = packed.map { column in
+                column.map { BoardItem(key: orderedKeys[$0], session: ordered[$0]) }
+            }
+            ScrollViewReader { reader in
+                ScrollView {
+                    HStack(alignment: .top, spacing: spacing) {
+                        ForEach(columns.indices, id: \.self) { column in
+                            LazyVStack(spacing: spacing) {
+                                ForEach(columns[column]) { item in
+                                    tile(item.session, order: orderedKeys, liveOrder: liveKeys, reader: reader)
+                                        .id(item.key)
+                                }
                             }
                         }
                     }
+                    .padding(margin)
+                    .animation(RemiTheme.Motion.standard, value: orderedKeys)
                 }
-                .padding(margin)
-                .animation(RemiTheme.Motion.standard, value: ordered.map(RemiBoardOrder.key(for:)))
             }
-            .onChange(of: ordered.map(RemiBoardOrder.key(for:)), initial: true) { _, keys in shownOrder = keys }
+            .onChange(of: orderedKeys, initial: true) { _, keys in shownOrder = keys }
         }
     }
 
-    private func tile(_ session: RemiSessionSummary, order: [String]) -> some View {
+    /// Moves the cursor to the next live tile: scrolls it into view first, because a lazy
+    /// column has not built a tile that is off screen, then focuses it once it exists.
+    private func focusNext(after key: String, in liveOrder: [String], reader: ScrollViewProxy) {
+        guard let next = RemiBoardOrder.next(after: key, in: liveOrder) else { return }
+        reader.scrollTo(next, anchor: .center)
+        Task {
+            try? await Task.sleep(for: .milliseconds(60))
+            focus = next
+        }
+    }
+
+    private func tile(
+        _ session: RemiSessionSummary, order: [String], liveOrder: [String], reader: ScrollViewProxy
+    ) -> some View {
         let key = RemiBoardOrder.key(for: session)
         let waiting = questions.first {
             $0.machineID == session.machineID && $0.sessionID == session.id && $0.state == .pending
@@ -201,7 +232,7 @@ struct MacCommandCenter: View {
                 if sent {
                     interactions[key] = Date()
                     // Straight on to the next tile, so a run of commands is type, Return, type.
-                    focus = RemiBoardOrder.next(after: key, in: order)
+                    focusNext(after: key, in: liveOrder, reader: reader)
                 }
                 return sent
             },
