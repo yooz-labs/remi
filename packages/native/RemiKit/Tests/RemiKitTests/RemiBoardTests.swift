@@ -355,4 +355,17 @@ import Testing
         // A board saved before `row` existed still decodes.
         #expect(RemiBoardState(storage: "{\"pinnedSlots\":{\"k\":1},\"sizes\":{\"k\":\"large\"}}").size(for: "k") == .large)
     }
+
+    @Test func unsentDraftsOfAMachineThatIsNotSettledAreKept() {
+        let a = RemiBoardOrder.key(for: session("a", machine: "one"))
+        let b = RemiBoardOrder.key(for: session("b", machine: "two"))
+        let gone = RemiBoardOrder.key(for: session("gone", machine: "one"))
+        let drafts = [a: "keep", b: "keep too", gone: "lost"]
+        // Machine one is settled and no longer lists "gone": its draft goes. Machine two is not
+        // settled, so its sessions missing from a reconnecting list keep their drafts.
+        let kept = RemiBoardOrder.keeping(drafts, live: [a], settledMachines: ["one"])
+        #expect(kept == [a: "keep", b: "keep too"])
+        #expect(RemiBoardOrder.keeping(drafts, live: [a, b, gone], settledMachines: ["one", "two"]) == drafts)
+        #expect(RemiBoardOrder.keeping(drafts, live: [], settledMachines: []) == drafts)
+    }
 }

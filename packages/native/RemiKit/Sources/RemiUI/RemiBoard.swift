@@ -151,6 +151,15 @@ public enum RemiBoardOrder {
         key.split(separator: "\u{1F}", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? key
     }
 
+    /// The entries of a per-tile dictionary (drafts, interactions) that should stay. A tile's entry
+    /// goes only when its session is gone from a machine that has settled: while a machine
+    /// reconnects its sessions may not be listed yet, and an unsent draft must not be lost for that.
+    public static func keeping<Value>(
+        _ entries: [String: Value], live: Set<String>, settledMachines: Set<String>
+    ) -> [String: Value] {
+        entries.filter { live.contains($0.key) || !settledMachines.contains(machineID(ofKey: $0.key)) }
+    }
+
     /// The board's order. Pinned tiles keep their slots, and so do `held` tiles (one whose
     /// composer is in use keeps the slot it has now, so it never jumps under the cursor).
     /// The rest are ordered by how much they need the person: a question first, then a tile
