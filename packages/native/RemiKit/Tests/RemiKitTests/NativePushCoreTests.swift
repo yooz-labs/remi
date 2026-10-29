@@ -86,6 +86,40 @@ struct OwnedPushContext: Sendable {
 }
 
 struct NativePushCoreTests {
+    @Test func notificationOnlyTrustOpensVerifiedPushWithoutForegroundRelay() throws {
+        let oracle = try NativePushOracle.load("push-vectors.json")
+        let vector = try #require((oracle["cases"] as? [[String: Any]])?.first(where: { $0["name"] as? String == "question" }))
+        let content = try #require(vector["content"] as? [String: Any])
+        let full = try OwnedPushContext(vector: vector, oracle: oracle)
+        let notificationOnly = try OwnedPushContext(vector: vector, oracle: oracle)
+        defer { try? full.cleanup(); try? notificationOnly.cleanup() }
+        let carrier = try OwnedPushContext.carrier(vector)
+        let fullOpened = try full.store.open(carrier: carrier, now: 1_700_000_001)
+        #expect(!fullOpened.machine.notificationOnly)
+
+        try notificationOnly.store.forgetMachine(room: notificationOnly.room)
+        try notificationOnly.store.commitNotificationMachine(room: notificationOnly.room,
+            machinePublicKey: RelayCrypto.unb64(#require(content["machinePublicKey"] as? String)),
+            origin: "https://relay.example.invalid", relayURL: "wss://relay.example.invalid",
+            authority: notificationOnly.authority, generation: notificationOnly.generation)
+        #expect(try notificationOnly.store.machine(room: notificationOnly.room)?.notificationOnly == true)
+        #expect(try notificationOnly.store.completedMachines().isEmpty)
+
+        let invalid = try OwnedPushContext.resealed(vector, oracle: oracle,
+            payload: RelayOracle.hex(#require(vector["payloadHex"] as? String)), corruptSignature: true)
+        #expect(throws: (any Error).self) { try notificationOnly.store.open(carrier: invalid, now: 1_700_000_001) }
+        let opened = try notificationOnly.store.open(carrier: carrier, now: 1_700_000_001)
+        #expect(opened.machine.notificationOnly)
+        #expect(opened.contentDigest == fullOpened.contentDigest)
+        #expect(opened.questionID == fullOpened.questionID)
+        try notificationOnly.store.recheck(opened, now: 1_700_000_001)
+        #expect(try notificationOnly.store.open(carrier: carrier, now: 1_700_000_001).contentDigest == opened.contentDigest)
+        #expect(throws: (any Error).self) { try notificationOnly.store.open(carrier: carrier, now: opened.expiresAt) }
+        try notificationOnly.store.forgetMachine(room: notificationOnly.room)
+        #expect(throws: (any Error).self) { try notificationOnly.store.recheck(opened, now: 1_700_000_001) }
+        #expect(throws: (any Error).self) { try notificationOnly.store.open(carrier: carrier, now: 1_700_000_001) }
+    }
+
     @Test func sharedFacadeOpensAllTenReviewedOriginalCapsules() throws {
         let oracle = try NativePushOracle.load("push-vectors.json")
         let vectors = try #require(oracle["cases"] as? [[String: Any]])

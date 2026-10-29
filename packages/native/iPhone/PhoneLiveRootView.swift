@@ -117,9 +117,10 @@ struct PhoneLiveRootView: View {
             guard store.notificationSessionDestination == destination else {
                 relayNotifications.consumeNotificationSessionNavigation(destination); return
             }
+            let questionID = store.notificationQuestionID(for: destination)
             activeSheet = nil
             shell.openFromNotification(route: PhoneSessionRoute(machineKey: destination.machineID,
-                sessionID: destination.sessionID), questionID: nil)
+                sessionID: destination.sessionID), questionID: questionID)
             relayNotifications.consumeNotificationSessionNavigation(destination)
             relayNotifications.closeNotification()
         }
@@ -466,10 +467,12 @@ struct PhoneLiveRootView: View {
             PhonePreferencesSheet(publicIdentity: store.publicIdentity)
         case .relayNotification:
             RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification) { destination in
+                guard store.notificationSessionDestination == destination else { return }
+                let questionID = store.notificationQuestionID(for: destination)
                 relayNotifications.closeNotification()
                 activeSheet = nil
                 shell.openFromNotification(route: PhoneSessionRoute(machineKey: destination.machineID,
-                    sessionID: destination.sessionID), questionID: nil)
+                    sessionID: destination.sessionID), questionID: questionID)
             }
                 .presentationSizing(.form)
         case .machines:
