@@ -52,6 +52,8 @@ public final class NativeRelayNotifications {
     #if DEBUG
     @ObservationIgnored private var ownedTesting = false
     @ObservationIgnored private var ownedSession: URLSession?
+    @ObservationIgnored private var ownedNotificationAuthorization: Bool?
+    @ObservationIgnored private var ownedAPNsEnvironment: String?
     @ObservationIgnored public var ownedBeforeActionSend: (@Sendable (String) async throws -> Void)?
     #endif
     @ObservationIgnored private var foreground = false
@@ -108,18 +110,22 @@ public final class NativeRelayNotifications {
     /// This entry point never reads configured app groups or standard preferences.
     public init(ownedPushStore: RemiPushStore, ownedIdentityStore: ClientIdentityStore,
                 defaultsSuite: String, ownedSession: URLSession? = nil,
-                ownedForegroundEndpoints: [MachineEndpoint]? = nil) throws {
+                ownedForegroundEndpoints: [MachineEndpoint]? = nil,
+                ownedNotificationAuthorization: Bool? = nil, ownedAPNsEnvironment: String? = nil) throws {
         let prefix = "live.yooz.remi.tests.notifications."
         guard ownedPushStore.isOwnedTestStore,
               ownedIdentityStore.isOwnedTestIdentity(for: ownedPushStore),
               defaultsSuite.hasPrefix(prefix),
               UUID(uuidString: String(defaultsSuite.dropFirst(prefix.count))) != nil,
-              let defaults = UserDefaults(suiteName: defaultsSuite) else { throw RemiPushError.invalid }
+              let defaults = UserDefaults(suiteName: defaultsSuite),
+              ownedAPNsEnvironment == nil || ownedAPNsEnvironment == "sandbox" else { throw RemiPushError.invalid }
         preferences = defaults
         pushStore = ownedPushStore
         identityStore = ownedIdentityStore
         ownedTesting = true
         self.ownedSession = ownedSession
+        self.ownedNotificationAuthorization = ownedNotificationAuthorization
+        self.ownedAPNsEnvironment = ownedAPNsEnvironment
         intentKey = "remi.relay.notification-intent.owned"
         intents = Set((defaults.stringArray(forKey: intentKey) ?? []).prefix(128))
         disabledHosts = Set((defaults.stringArray(forKey: intentKey + ".disabled") ?? []).prefix(128))
@@ -384,11 +390,24 @@ public final class NativeRelayNotifications {
         let epoch = lifecycle
         tokenTask?.cancel()
         tokenTask = Task { [weak self, weak current] in
-            guard let self, let current,
-                  let environment = await RemiPushStore.runtimeAPNsEnvironment(stillCurrent: { [weak self, weak current] in
+            guard let self, let current else { return }
+            let environment: String?
+            #if DEBUG
+            if self.ownedTesting, let owned = self.ownedAPNsEnvironment {
+                environment = owned
+            } else {
+                environment = await RemiPushStore.runtimeAPNsEnvironment(stillCurrent: { [weak self, weak current] in
+                    guard let self, let current else { return false }
+                    return self.isCurrent(current, epoch) && self.latestToken == token && !Task.isCancelled
+                })
+            }
+            #else
+            environment = await RemiPushStore.runtimeAPNsEnvironment(stillCurrent: { [weak self, weak current] in
                       guard let self, let current else { return false }
                       return self.isCurrent(current, epoch) && self.latestToken == token && !Task.isCancelled
-                  }), self.isCurrent(current, epoch), self.latestToken == token, !Task.isCancelled else { return }
+                  })
+            #endif
+            guard let environment, self.isCurrent(current, epoch), self.latestToken == token, !Task.isCancelled else { return }
             current.updateRelayPushToken(token, environment: environment)
             self.tokenEnvironment = environment
             self.lastRegistrations.removeAll()
@@ -553,8 +572,18 @@ public final class NativeRelayNotifications {
     }
     private func refreshPairedNotifications() async {
         guard foreground, let current = store, !enabling else { return }
+        let allowed: Bool
+        #if DEBUG
+        if ownedTesting, let owned = ownedNotificationAuthorization {
+            allowed = owned
+        } else {
+            let settings = await UNUserNotificationCenter.current().notificationSettings()
+            allowed = settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
+        }
+        #else
         let settings = await UNUserNotificationCenter.current().notificationSettings()
-        let allowed = settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
+        allowed = settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
+        #endif
         guard foreground, store === current, !Task.isCancelled else { return }
         for machine in current.machines where machine.status == .connected {
             let host = machine.id, endpoint = machine.endpoint

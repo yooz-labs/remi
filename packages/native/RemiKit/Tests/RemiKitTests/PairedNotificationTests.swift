@@ -195,6 +195,68 @@ struct PairedNotificationTests {
 
 @MainActor struct PairedNotificationSourceTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_NOTIFICATION_SOURCE_ROOT"] != nil))
+    func coordinatorAutomaticallyRefreshesDirectPreferences() async throws {
+        let fixture = try NotificationFixture(root: #require(ProcessInfo.processInfo.environment["REMI_NOTIFICATION_SOURCE_ROOT"]))
+        let context = try OwnedIdentityContext(); defer { try? context.cleanup() }
+        let identity = try context.store.loadOrCreate()
+        let suite = "live.yooz.remi.tests.notifications.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var coordinator: NativeRelayNotifications?
+        do {
+            let ready = try await fixture.next()
+            let port = try #require(ready["directPort"] as? Int)
+            let key = try #require(ready["machineKey"] as? String)
+            try fixture.send(["kind": "authorize", "publicKey": identity.publicKeyBase64, "full": "no"])
+            #expect(try await fixture.next()["kind"] as? String == "authorized")
+            let endpoint = MachineEndpoint(host: "127.0.0.1", port: port, expectedPublicKey: key)
+            let session = URLSession(configuration: .ephemeral,
+                delegate: try OwnedRelayCA(path: #require(ready["ca"] as? String)), delegateQueue: nil)
+            defer { session.invalidateAndCancel() }
+            let current = try NativeRelayNotifications(ownedPushStore: context.push, ownedIdentityStore: context.store,
+                defaultsSuite: suite, ownedSession: session, ownedForegroundEndpoints: [endpoint],
+                ownedNotificationAuthorization: true, ownedAPNsEnvironment: "sandbox")
+            coordinator = current
+            let store = try #require(current.store)
+            current.activate()
+            current.acceptPushToken(Data(repeating: 0xab, count: 32))
+            let connected = ContinuousClock.now.advanced(by: .seconds(10))
+            while store.machines[0].status != .connected {
+                try #require(.now < connected); try await Task.sleep(for: .milliseconds(20))
+            }
+            store.setConnectionPreference(.localOnly, for: endpoint)
+            let stable = ContinuousClock.now.advanced(by: .seconds(10))
+            while store.machines[0].status != .connected {
+                try #require(.now < stable); try await Task.sleep(for: .milliseconds(20))
+            }
+            let generations = store.connectionGenerations
+            func waitFor(_ expected: [String: Bool]) async throws {
+                let deadline = ContinuousClock.now.advanced(by: .seconds(8))
+                while .now < deadline {
+                    try fixture.send(["kind": "state", "expectedToken": String(repeating: "ab", count: 32)])
+                    let actual = try await fixture.next()
+                    if actual["tokenMatches"] as? Bool == true, actual["pushPrefs"] as? [String: Bool] == expected { return }
+                    try await Task.sleep(for: .milliseconds(150))
+                }
+                Issue.record("Automatic registration did not reach the requested preference snapshot")
+                throw RemiPushError.unavailable
+            }
+            try await waitFor(["questions": true, "turnComplete": false, "harnessDenied": false, "turnFailed": false])
+            defaults.set(false, forKey: NativeNotificationPreferences.questionsKey)
+            defaults.set(true, forKey: NativeNotificationPreferences.turnCompleteKey)
+            current.notificationPreferencesDidChange()
+            try await waitFor(["questions": false, "turnComplete": true, "harnessDenied": false, "turnFailed": false])
+            defaults.set(true, forKey: NativeNotificationPreferences.questionsKey)
+            defaults.set(false, forKey: NativeNotificationPreferences.turnCompleteKey)
+            current.notificationPreferencesDidChange()
+            try await waitFor(["questions": true, "turnComplete": false, "harnessDenied": false, "turnFailed": false])
+            #expect(store.connectionGenerations == generations)
+            #expect(store.machines[0].endpoint == endpoint && store.machines[0].connectionPreference == .localOnly)
+            current.background(); try await fixture.stop()
+        } catch { coordinator?.background(); try? await fixture.stop(); throw error }
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_NOTIFICATION_SOURCE_ROOT"] != nil))
     func fullRelayUpdatesPreferencesWithoutReplacingForegroundRoute() async throws {
         let fixture = try NotificationFixture(root: #require(ProcessInfo.processInfo.environment["REMI_NOTIFICATION_SOURCE_ROOT"]))
         let context = try OwnedIdentityContext(); defer { try? context.cleanup() }
