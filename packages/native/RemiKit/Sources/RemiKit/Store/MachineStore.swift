@@ -772,6 +772,11 @@ public final class MachineStore {
               }) else { return nil }
         return sessionKey(machineID: machine.id, sessionID: session)
     }
+    /// A question focus comes from the same current capsule as the destination.
+    public func notificationQuestionID(for destination: MachineSessionKey) -> String? {
+        guard notificationSessionDestination == destination else { return nil }
+        return verifiedRelayNotification?.questionID
+    }
     public var relayNotificationChoices: [VerifiedPushOption] {
         verifiedRelayNotification.map(NativeAnswerProof.choices) ?? []
     }
