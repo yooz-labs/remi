@@ -7,6 +7,33 @@ import UserNotifications
 @testable import RemiKit
 
 struct NativePushActionTests {
+    @Test func foregroundPreferencesUseVerifiedKindAndRefuseFallbacks() throws {
+        let oracle = try NativePushOracle.load("push-vectors.json")
+        let vectors = try #require(oracle["cases"] as? [[String: Any]])
+        for name in ["question", "informational-question-no-authority", "turn_complete", "subagent_alert", "harness_denied", "turn_failed"] {
+            let vector = try #require(vectors.first(where: { $0["name"] as? String == name }))
+            let context = try OwnedPushContext(vector: vector, oracle: oracle)
+            defer { try? context.cleanup() }
+            let payload = try RelayOracle.hex(#require(vector["payloadHex"] as? String))
+            let carrier = try OwnedPushContext.resealed(vector, oracle: oracle, payload: payload,
+                now: UInt64(Date().timeIntervalSince1970))
+            let opened = try context.store.open(carrier: carrier)
+            let content = UNMutableNotificationContent()
+            content.title = opened.title; content.body = opened.body
+            content.userInfo = ["remiPush": try JSONSerialization.jsonObject(with: carrier)]
+            #expect(!context.store.allowsPresentation(content, policy: .selected(questions: false, turnComplete: false)))
+            let questionsOnly = context.store.allowsPresentation(content, policy: .selected(questions: true, turnComplete: false))
+            let turnsOnly = context.store.allowsPresentation(content, policy: .selected(questions: false, turnComplete: true))
+            #expect(questionsOnly == ["question", "informational-question-no-authority", "subagent_alert"].contains(name))
+            #expect(turnsOnly == ["turn_complete", "subagent_alert"].contains(name))
+            content.title = "Remi needs your attention"
+            content.body = "Open Remi to view this notification."
+            #expect(!context.store.allowsPresentation(content, policy: .selected(questions: true, turnComplete: true)))
+            content.userInfo = ["remiPush": ["v": 2]]
+            #expect(!context.store.allowsPresentation(content, policy: .selected(questions: true, turnComplete: true)))
+        }
+    }
+
     func inputs(category: String = "REMI_YN", change: String? = nil) throws -> (OwnedPushContext, Data) {
         let oracle = try NativePushOracle.load("push-vectors.json")
         let vector = try #require((oracle["cases"] as? [[String: Any]])?.first)

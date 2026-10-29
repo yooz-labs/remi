@@ -5,6 +5,30 @@ import Testing
 @testable import RemiKit
 
 struct PairedNotificationTests {
+    @MainActor @Test func preferencesSurviveCoordinatorRestart() throws {
+        let context = try OwnedIdentityContext(); defer { try? context.cleanup() }
+        _ = try context.store.loadOrCreate()
+        let suite = "live.yooz.remi.tests.notifications.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(false, forKey: NativeNotificationPreferences.questionsKey)
+        defaults.set(true, forKey: NativeNotificationPreferences.turnCompleteKey)
+        let first = try NativeRelayNotifications(ownedPushStore: context.push, ownedIdentityStore: context.store,
+            defaultsSuite: suite, ownedForegroundEndpoints: [])
+        first.activate()
+        #expect(first.store?.notificationPreferences == .init(questions: false, turnComplete: true))
+        defaults.set(true, forKey: NativeNotificationPreferences.questionsKey)
+        defaults.set(false, forKey: NativeNotificationPreferences.turnCompleteKey)
+        first.notificationPreferencesDidChange()
+        #expect(first.store?.notificationPreferences == .init())
+        first.background()
+        let restored = try NativeRelayNotifications(ownedPushStore: context.push, ownedIdentityStore: context.store,
+            defaultsSuite: suite, ownedForegroundEndpoints: [])
+        restored.activate()
+        #expect(restored.store?.notificationPreferences == .init())
+        restored.background()
+    }
+
     @MainActor @Test func anEmptyForegroundSceneRequestsItsTokenWithoutWaitingForTheFirstHost() throws {
         let context = try OwnedIdentityContext(); defer { try? context.cleanup() }
         _ = try context.store.loadOrCreate()
@@ -129,9 +153,9 @@ struct PairedNotificationTests {
         let log = directory.appendingPathComponent("stderr.log")
         FileManager.default.createFile(atPath: log.path, contents: nil, attributes: [.posixPermissions: 0o600])
         process.standardError = try FileHandle(forWritingTo: log)
-        try process.run()
         guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else { throw RemiPushError.unavailable }
         guard fcntl(output.fileHandleForReading.fileDescriptor, F_SETFL, O_NONBLOCK) != -1 else { throw RemiPushError.unavailable }
+        try process.run()
     }
     func send(_ value: [String: String]) throws { try input.fileHandleForWriting.write(contentsOf: JSONSerialization.data(withJSONObject: value) + Data([10])) }
     func next() async throws -> [String: Any] {
@@ -152,14 +176,92 @@ struct PairedNotificationTests {
     func stop() async throws {
         try? send(["kind": "stop"])
         let until = ContinuousClock.now.advanced(by: .seconds(10))
-        while process.isRunning, .now < until { try await Task.sleep(for: .milliseconds(20)) }
-        if process.isRunning { process.terminate() }
+        while process.isRunning, .now < until { try? await Task.sleep(for: .milliseconds(20)) }
+        if process.isRunning {
+            process.terminate()
+            let terminated = ContinuousClock.now.advanced(by: .seconds(3))
+            while process.isRunning, .now < terminated { try? await Task.sleep(for: .milliseconds(20)) }
+        }
+        if process.isRunning {
+            Darwin.kill(process.processIdentifier, SIGKILL)
+            let killed = ContinuousClock.now.advanced(by: .seconds(3))
+            while process.isRunning, .now < killed { try? await Task.sleep(for: .milliseconds(20)) }
+        }
         #expect(!process.isRunning && process.terminationStatus == 0)
+        guard !process.isRunning else { throw RemiPushError.unavailable }
         try FileManager.default.removeItem(at: directory)
     }
 }
 
 @MainActor struct PairedNotificationSourceTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_NOTIFICATION_SOURCE_ROOT"] != nil))
+    func fullRelayUpdatesPreferencesWithoutReplacingForegroundRoute() async throws {
+        let fixture = try NotificationFixture(root: #require(ProcessInfo.processInfo.environment["REMI_NOTIFICATION_SOURCE_ROOT"]))
+        let context = try OwnedIdentityContext(); defer { try? context.cleanup() }
+        let identity = try context.store.loadOrCreate()
+        var store: MachineStore?
+        do {
+            let ready = try await fixture.next()
+            let encodedKey = try #require(ready["machineKey"] as? String)
+            let key = try #require(Data(base64Encoded: encodedKey))
+            let relayURL = try #require(ready["relayUrl"] as? String)
+            let port = try #require(URLComponents(string: relayURL)?.port)
+            try fixture.send(["kind": "authorize", "publicKey": identity.publicKeyBase64, "full": "yes"])
+            #expect(try await fixture.next()["kind"] as? String == "authorized")
+            try fixture.send(["kind": "prepare_relay", "publicKey": identity.publicKeyBase64])
+            #expect(try await fixture.next()["kind"] as? String == "relay-enrolled")
+            let pin = try RelayMachinePin(relayURL: relayURL, machinePublicKey: RelayCrypto.b64(key))
+            let endpoint = MachineEndpoint(host: "127.0.0.1", port: port, relayPin: pin)
+            let room = RelayCrypto.room(key)
+            let authority = identity.pushAuthority
+            let generation = try context.push.generation()
+            try context.push.commitMachine(room: room, machinePublicKey: key,
+                origin: "https://127.0.0.1:\(port)", relayURL: relayURL, authority: authority, generation: generation)
+            let profile = MachineRouteProfile(machineID: RelayCrypto.hex(room), routes: [endpoint],
+                connectionPreference: .relayOnly, machinePublicKey: RelayCrypto.b64(key))
+            let current = MachineStore(profiles: [profile], identity: identity, clientVersion: "owned-relay-preferences",
+                clientId: UUID().uuidString.lowercased(), pushStore: context.push)
+            store = current
+            let session = URLSession(configuration: .ephemeral, delegate: try OwnedRelayCA(path: #require(ready["ca"] as? String)), delegateQueue: nil)
+            defer { session.invalidateAndCancel() }
+            current.useOwnedTestSession(session)
+            #expect(current.restoreRelayNotificationIntent(on: endpoint))
+            current.updateRelayPushToken(Data(repeating: 0xab, count: 32), environment: "sandbox")
+            current.start()
+            let until = ContinuousClock.now.advanced(by: .seconds(12))
+            while current.machines[0].status != .connected || current.pairedNotificationState(for: endpoint) != .registered {
+                guard .now < until else {
+                    try fixture.send(["kind": "state", "expectedToken": String(repeating: "ab", count: 32)])
+                    let diagnostic = try await fixture.next()
+                    Issue.record("Owned relay log: \(diagnostic["relayLogs"] ?? "none")")
+                    Issue.record("Owned application hello count: \(diagnostic["relayHelloCount"] ?? 0)")
+                    Issue.record("Owned relay status: \(current.machines[0].status), registration: \(String(describing: current.pairedNotificationState(for: endpoint))), notice: \(current.relayNotificationNotice ?? "none")")
+                    throw RemiPushError.unavailable
+                }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            let connections = current.connectionGenerations
+            try fixture.send(["kind": "state", "expectedToken": String(repeating: "ab", count: 32)])
+            let initial = try await fixture.next()
+            #expect((initial["relayHelloCount"] as? Int ?? 0) >= 2)
+            #expect(initial["pushPrefs"] as? [String: Bool] == ["questions": true, "turnComplete": false,
+                "harnessDenied": false, "turnFailed": false])
+            current.updateNotificationPreferences(.init(questions: false, turnComplete: true))
+            let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+            var actual: [String: Bool]?
+            while .now < deadline {
+                try fixture.send(["kind": "state", "expectedToken": String(repeating: "ab", count: 32)])
+                actual = try await fixture.next()["pushPrefs"] as? [String: Bool]
+                if actual == ["questions": false, "turnComplete": true, "harnessDenied": false, "turnFailed": false] { break }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            #expect(actual == ["questions": false, "turnComplete": true, "harnessDenied": false, "turnFailed": false])
+            #expect(current.connectionGenerations == connections)
+            #expect(current.machines[0].endpoint == endpoint && current.machines[0].connectionPreference == .relayOnly)
+            current.stop(); try await fixture.stop()
+        } catch { store?.stop(); try? await fixture.stop(); throw error }
+    }
+
     @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_NOTIFICATION_SOURCE_ROOT"] != nil), arguments: [false, true])
     func actualDirectBootstrapRegistersThroughEncryptedScopeAndRequiresContinue(fullEnrollment: Bool) async throws {
         let fixture = try NotificationFixture(root: #require(ProcessInfo.processInfo.environment["REMI_NOTIFICATION_SOURCE_ROOT"]))
@@ -193,6 +295,29 @@ struct PairedNotificationTests {
             #expect(current.machines[0].routes == [endpoint])
             #expect(current.machines[0].connectionPreference == .localOnly)
             #expect(try context.push.completedMachines().isEmpty)
+            try fixture.send(["kind": "state", "expectedToken": String(repeating: "ab", count: 32)])
+            let initial = try await fixture.next()
+            #expect(initial["pushPrefs"] as? [String: Bool] == ["questions": true, "turnComplete": false,
+                "harnessDenied": false, "turnFailed": false])
+            current.updateNotificationPreferences(.init(questions: false, turnComplete: true))
+            await current.registerPairedNotifications(on: endpoint)
+            try fixture.send(["kind": "state", "expectedToken": String(repeating: "ab", count: 32)])
+            let changed = try await fixture.next()
+            #expect(changed["pushPrefs"] as? [String: Bool] == ["questions": false, "turnComplete": true,
+                "harnessDenied": false, "turnFailed": false])
+            #expect(current.machines[0].routes == [endpoint] && current.machines[0].connectionPreference == .localOnly)
+
+            try fixture.send(["kind": "pause_enable"]); _ = try await fixture.next()
+            let older = Task { await current.registerPairedNotifications(on: endpoint) }
+            #expect(try await fixture.next()["kind"] as? String == "host-waiting")
+            current.updateNotificationPreferences(.init())
+            try fixture.send(["kind": "release_enable"]); _ = try await fixture.next()
+            await older.value
+            await current.registerPairedNotifications(on: endpoint)
+            try fixture.send(["kind": "state", "expectedToken": String(repeating: "ab", count: 32)])
+            let latest = try await fixture.next()
+            #expect(latest["pushPrefs"] as? [String: Bool] == ["questions": true, "turnComplete": false,
+                "harnessDenied": false, "turnFailed": false])
             current.updateRelayPushToken(Data(repeating: 0xcd, count: 32), environment: "sandbox")
             await current.registerPairedNotifications(on: endpoint)
             try fixture.send(["kind": "state", "expectedToken": String(repeating: "cd", count: 32)])

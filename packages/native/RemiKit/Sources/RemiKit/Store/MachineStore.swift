@@ -386,6 +386,7 @@ public final class MachineStore {
     @ObservationIgnored private var pushEnabled: Set<String> = []
     @ObservationIgnored private var suspendedRelayRooms: Set<Data> = []
     @ObservationIgnored private var tokenRegistration: (token: String, environment: String)?
+    @ObservationIgnored private(set) var notificationPreferences = NativeNotificationPreferences()
     @ObservationIgnored private let registrationEpoch = RelayRegistrationEpoch()
     @ObservationIgnored private let answerEpoch = RelayRegistrationEpoch()
     @ObservationIgnored private let presentationEpoch = RelayRegistrationEpoch()
@@ -596,7 +597,7 @@ public final class MachineStore {
             guard let trust = try pushStore.machine(room: room) else { throw RemiPushError.changed }
             let registered = try await PairedNotificationRegistration.register(pin: pin, identity: identity,
                 pushStore: pushStore, token: tokenRegistration.token, environment: tokenRegistration.environment,
-                renewExpired: continueAfterInactivity, validate: {
+                renewExpired: continueAfterInactivity, pushPreferences: notificationPreferences, validate: {
                     try validate()
                     try validateConnection()
                     guard try pushStore.machine(room: room) == trust else { throw RemiPushError.changed }
@@ -687,6 +688,19 @@ public final class MachineStore {
         } catch { return false }
     }
 
+    /// A preference update invalidates older in-flight registrations and uses only
+    /// currently enabled relay channels. Direct hosts are refreshed by the owner.
+    public func updateNotificationPreferences(_ preferences: NativeNotificationPreferences) {
+        guard notificationPreferences != preferences else { return }
+        notificationPreferences = preferences
+        registrationEpoch.replace()
+        for endpoint in machines.map(\.endpoint) where pushEnabled.contains(endpoint.id) {
+            if let generation = connectionGenerations[endpoint] {
+                Task { await registerRelayToken(on: endpoint, generation: generation) }
+            }
+        }
+    }
+
     /// OS delegates provide the token; environment is resolved from actual runtime
     /// entitlements before this call. No bundle-name or configuration inference.
     public func updateRelayPushToken(_ token: Data, environment: String) {
@@ -717,6 +731,7 @@ public final class MachineStore {
                 timestamp: Date().ISO8601Format(), token: tokenRegistration.token, environment: tokenRegistration.environment,
                 pushPublicKey: RelayCrypto.b64(recipient.publicKey), keyVersion: recipient.keyVersion)
             request.renewExpired = pushRenewalIntents.remove(endpoint) != nil
+            request.pushPrefs = notificationPreferences
             let response = try await connection.exchange(request, id: request.id,
                 expected: .push(type: "secure_push_register_response", keyVersion: recipient.keyVersion),
                 until: .now.advanced(by: .seconds(10)), validate: validate)

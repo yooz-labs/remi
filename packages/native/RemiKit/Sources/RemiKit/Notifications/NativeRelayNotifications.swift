@@ -194,6 +194,7 @@ public final class NativeRelayNotifications {
             }
         }
         guard let store else { return }
+        store.updateNotificationPreferences(NativeNotificationPreferences.read(from: preferences))
         let alreadyStarted = started
         startForegroundStoreIfNeeded()
         // Mac background entry keeps its menu-bar transports alive. Returning
@@ -244,6 +245,15 @@ public final class NativeRelayNotifications {
 
     public func clearNotice() {
         notice = nil
+    }
+
+    /// Persisted choices are only preferences; existing machine trust and
+    /// connection policy remain the authority for each registration.
+    public func notificationPreferencesDidChange() {
+        store?.updateNotificationPreferences(NativeNotificationPreferences.read(from: preferences))
+        // A connected direct host should receive the new snapshot on the next
+        // bounded refresh rather than waiting for the normal renewal interval.
+        lastRegistrations.removeAll()
     }
 
     public func hasRelayNotificationIntent(for endpoint: MachineEndpoint) -> Bool {
@@ -499,7 +509,9 @@ public final class NativeRelayNotifications {
     public nonisolated static func allowsPresentation(_ content: UNNotificationContent) -> Bool {
         guard content.userInfo["remiPush"] != nil,
               let push = try? RemiPushStore.configured() else { return false }
-        return push.allowsPresentation(content)
+        let preferences = NativeNotificationPreferences.read(from: .standard)
+        return push.allowsPresentation(content, policy: .selected(questions: preferences.questions,
+            turnComplete: preferences.turnComplete))
     }
 
     public nonisolated static func receiveDismiss(carrier: Data?, completion: @escaping @Sendable (Bool?) -> Void) {
