@@ -3,6 +3,7 @@ import Foundation
 import Security
 import Testing
 import UserNotifications
+import RemiUI
 @testable import RemiPush
 @testable import RemiKit
 
@@ -155,6 +156,41 @@ struct NativePushActionTests {
         }
     }
 
+    @MainActor @Test func notificationOnlyQuestionNavigatesToItsPairedSession() throws {
+        let (context, carrier) = try inputs(); defer { try? context.cleanup() }
+        let fullTrust = try #require(try context.store.machine(room: context.room))
+        try context.store.forgetMachine(room: context.room)
+        try context.store.commitNotificationMachine(room: context.room, machinePublicKey: fullTrust.machinePublicKey,
+            origin: fullTrust.origin, relayURL: fullTrust.relayURL, authority: context.authority, generation: context.generation)
+        let endpoint = MachineEndpoint(host: "review.example", port: 18790,
+            expectedPublicKey: fullTrust.machinePublicKey.base64EncodedString())
+        let profile = MachineRouteProfile(machineID: RelayCrypto.hex(context.room), routes: [endpoint],
+            connectionPreference: .localOnly, machinePublicKey: RelayCrypto.b64(fullTrust.machinePublicKey))
+        let store = MachineStore(profiles: [profile], identity: ClientIdentity(), clientVersion: "owned-notification-navigation",
+            clientId: UUID().uuidString.lowercased(), pushStore: context.store)
+        store.openRelayNotification(carrier: carrier)
+        let opened = try #require(store.verifiedRelayNotification)
+        let destination = try #require(store.notificationSessionDestination)
+        #expect(opened.machine.notificationOnly)
+        #expect(store.relayNotificationNotice == nil)
+        #expect(store.relayNotificationChoices.count == 2)
+        #expect(destination.machineID == store.machines[0].id)
+        #expect(destination.sessionID == opened.sessionID)
+        #expect(store.machines[0].connectionPreference == .localOnly)
+        #expect(store.machines[0].routes == [endpoint])
+        #expect(try context.store.completedMachines().isEmpty)
+        var shell = PhoneShellState()
+        let route = PhoneSessionRoute(machineKey: destination.machineID, sessionID: destination.sessionID)
+        let questionID = try #require(opened.questionID)
+        #expect(store.notificationQuestionID(for: destination) == questionID)
+        shell.openFromNotification(route: route, questionID: store.notificationQuestionID(for: destination))
+        #expect(shell.focusQuestionID(for: route) == questionID)
+        let wrongSession = MachineSessionKey(machineID: destination.machineID, sessionID: "another-session")
+        #expect(store.notificationQuestionID(for: wrongSession) == nil)
+        try context.store.forgetMachine(room: context.room)
+        #expect(store.notificationQuestionID(for: destination) == nil)
+    }
+
     @MainActor @Test func reviewNavigationRequiresAnExistingMatchingMachineAndCurrentTrust() throws {
         let (context, carrier) = try inputs(change: "appOnly"); defer { try? context.cleanup() }
         let trust = try #require(try context.store.machine(room: context.room))
@@ -168,6 +204,7 @@ struct NativePushActionTests {
         let destination = try #require(store.notificationSessionDestination)
         #expect(destination.machineID == store.machines[0].id)
         #expect(destination.sessionID == store.verifiedRelayNotification?.sessionID)
+        #expect(store.notificationQuestionID(for: destination) == nil)
         #expect(store.machines[0].connectionPreference == .localOnly)
         let otherKey = ClientIdentity().publicKeyRaw
         let otherProfile = MachineRouteProfile(machineID: RelayCrypto.hex(RelayCrypto.room(otherKey)),
