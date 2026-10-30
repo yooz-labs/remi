@@ -11,8 +11,8 @@ struct MacCommandCenter: View {
     let sessions: [RemiSessionSummary]
     let machines: [RemiMachineSummary]
     /// Machines that are connected, have loaded their session list and have had time for the
-    /// per-session daemons to be listed too. Only these may have a pin pruned: a machine that
-    /// just reconnected lists no sessions yet, and that is not the sessions being gone.
+    /// per-session daemons to be listed too. Only these may have layout state pruned: a machine
+    /// that just reconnected lists no sessions yet, and that is not the sessions being gone.
     let settledMachines: Set<String>
     let questions: [RemiQuestionCardModel]
     /// The latest conversation entries of a session, for its tile.
@@ -32,6 +32,7 @@ struct MacCommandCenter: View {
     @State private var machineFilter: String?
     @State private var onlyNeedsYou = false
     @State private var showFinished = false
+    @State private var gesturePreview: BoardGesturePreview?
     @FocusState private var focus: String?
     @State private var focusTask: Task<Void, Never>?
 
@@ -54,8 +55,8 @@ struct MacCommandCenter: View {
         .onChange(of: settledMachines) { pruneBoard() }
     }
 
-    /// Forgets pins and sizes of sessions a connected machine no longer lists. Every session
-    /// counts as live here, finished ones too, so showing them again finds their pins.
+    /// Forgets layout state of sessions a settled machine no longer lists. Every session counts
+    /// as live here, finished ones too, so showing them again finds their saved layout.
     private func pruneBoard() {
         let live = Set(sessions.map(RemiBoardOrder.key(for:)))
         if board.prune(live: live, connectedMachines: settledMachines) { saveBoard() }
@@ -108,6 +109,13 @@ struct MacCommandCenter: View {
                 Divider().frame(height: 16)
                 chip("Finished", count: finishedCount, selected: showFinished) { showFinished.toggle() }
             }
+            Button("Reset layout", systemImage: "arrow.uturn.backward") {
+                board.resetLayout()
+                gesturePreview = nil
+                saveBoard()
+            }
+            .buttonStyle(.borderless)
+            .help("Return all cards to the automatic layout")
         }
     }
 
@@ -148,61 +156,142 @@ struct MacCommandCenter: View {
 
     // MARK: board
 
-    private func arranged(now: Date) -> [RemiSessionSummary] {
+    private func boardOrder(now: Date) -> (all: [RemiSessionSummary], visible: [RemiSessionSummary], held: [String: Int]) {
         // Only tiles on screen with a composer count: a draft left on a hidden or finished
         // tile must not freeze the board.
         let composerKeys = Set(filtered.filter(\.isLive).map(RemiBoardOrder.key(for:)))
         let writing = RemiBoardOrder.isWriting(hasFocus: focus.map { composerKeys.contains($0) } ?? false, drafts: drafts, composerKeys: composerKeys)
         let held = writing ? RemiBoardOrder.held(from: shownOrder) : [:]
-        return RemiBoardOrder.arrange(filtered, state: board, interactions: interactions, held: held, now: now)
+        let all = RemiBoardOrder.arrange(sessions, state: board, interactions: interactions, held: held, now: now)
+        let visibleKeys = Set(filtered.map(RemiBoardOrder.key(for:)))
+        return (all, all.filter { visibleKeys.contains(RemiBoardOrder.key(for: $0)) }, held)
     }
 
-    /// A tile and the key that identifies it. Columns hold these and are keyed by the key, so a
-    /// tile's own state (a failed send, the question's height, focus) stays with the session
-    /// when the order changes, instead of staying with a position.
+    /// A tile and its stable machine/session key. The canvas keeps each tile's local state with
+    /// that identity as ordering changes, instead of attaching it to a screen position.
     private struct BoardItem: Identifiable {
         let key: String
         let session: RemiSessionSummary
+        let frame: RemiBoardFrame
         var id: String { key }
     }
 
+    private enum BoardGestureKind: Equatable { case move, resize }
+
+    private struct BoardGesturePreview: Equatable {
+        let key: String
+        let kind: BoardGestureKind
+        let start: RemiBoardFrame
+        let proposed: RemiBoardFrame
+        let lastValid: RemiBoardFrame
+        let isValid: Bool
+    }
+
     private func boardScroll(now: Date) -> some View {
-        let ordered = arranged(now: now)
-        let orderedKeys = ordered.map(RemiBoardOrder.key(for:))
-        // The cursor goes only to a tile with a working composer.
-        let liveKeys = ordered.filter(\.isLive).map(RemiBoardOrder.key(for:))
-        return GeometryReader { proxy in
-            let count = RemiBoardOrder.columnCount(width: proxy.size.width - 2 * margin, spacing: spacing)
-            let packed = RemiBoardOrder.columns(
-                heights: ordered.map { board.size(for: RemiBoardOrder.key(for: $0)).estimatedHeight },
-                count: count,
-                spacing: spacing
-            )
-            let columns = packed.map { column in
-                column.map { BoardItem(key: orderedKeys[$0], session: ordered[$0]) }
-            }
-            ScrollViewReader { reader in
-                ScrollView {
-                    HStack(alignment: .top, spacing: spacing) {
-                        ForEach(columns.indices, id: \.self) { column in
-                            LazyVStack(spacing: spacing) {
-                                ForEach(columns[column]) { item in
-                                    tile(item.session, order: orderedKeys, liveOrder: liveKeys, reader: reader)
-                                        .id(item.key)
-                                }
-                            }
-                        }
-                    }
-                    .padding(margin)
-                    .animation(RemiTheme.Motion.standard, value: orderedKeys)
-                }
-            }
-            .onChange(of: orderedKeys, initial: true) { _, keys in shownOrder = keys }
+        GeometryReader { proxy in
+            boardViewport(size: proxy.size, now: now)
         }
     }
 
-    /// Moves the cursor to the next live tile: scrolls it into view first, because a lazy
-    /// column has not built a tile that is off screen, then focuses it once it exists.
+    private func boardViewport(size: CGSize, now: Date) -> some View {
+        let ordering = boardOrder(now: now)
+        let allKeys = ordering.all.map(RemiBoardOrder.key(for:))
+        let orderedKeys = ordering.visible.map(RemiBoardOrder.key(for:))
+        // The cursor goes only to a tile with a working composer.
+        let liveKeys = ordering.visible.filter(\.isLive).map(RemiBoardOrder.key(for:))
+        let frames = RemiBoardOrder.layout(
+            sessions,
+            state: board,
+            interactions: interactions,
+            held: ordering.held,
+            now: now,
+            viewportWidth: size.width,
+            spacing: spacing,
+            margin: margin
+        )
+        let items = ordering.visible.compactMap { session -> BoardItem? in
+            let key = RemiBoardOrder.key(for: session)
+            guard let frame = frames[key] else { return nil }
+            return BoardItem(key: key, session: session, frame: frame)
+        }
+        var canvasFrames = Dictionary(uniqueKeysWithValues: items.map { ($0.key, $0.frame) })
+        if let preview = gesturePreview {
+            let frame = preview.proposed
+            if frame.x.isFinite && frame.y.isFinite && frame.width.isFinite && frame.height.isFinite {
+                canvasFrames["__gesture-preview__"] = RemiBoardFrame(
+                    x: min(max(frame.x, 0), RemiBoardFrame.maximumCoordinate),
+                    y: min(max(frame.y, 0), RemiBoardFrame.maximumCoordinate),
+                    width: min(max(frame.width, RemiBoardFrame.minimumWidth), RemiBoardFrame.maximumWidth),
+                    height: min(max(frame.height, RemiBoardFrame.minimumHeight), RemiBoardFrame.maximumHeight)
+                )
+            }
+        }
+        let canvasSize = RemiBoardOrder.canvasSize(visibleFrames: canvasFrames, viewport: size, margin: margin)
+
+        return ScrollViewReader { reader in
+            ScrollView([.horizontal, .vertical]) {
+                boardCanvas(
+                    items: items,
+                    frames: frames,
+                    canvasSize: canvasSize,
+                    order: orderedKeys,
+                    liveOrder: liveKeys,
+                    reader: reader
+                )
+            }
+            .scrollIndicators(.visible)
+        }
+        .onChange(of: allKeys, initial: true) { _, keys in shownOrder = keys }
+    }
+
+    private func boardCanvas(
+        items: [BoardItem],
+        frames: [String: RemiBoardFrame],
+        canvasSize: CGSize,
+        order: [String],
+        liveOrder: [String],
+        reader: ScrollViewProxy
+    ) -> some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(items) { item in
+                tile(
+                    item.session,
+                    frame: item.frame,
+                    frames: frames,
+                    order: order,
+                    liveOrder: liveOrder,
+                    reader: reader
+                )
+                .id(item.key)
+                .offset(x: item.frame.x, y: item.frame.y)
+            }
+            if let gesturePreview {
+                gestureOutline(gesturePreview)
+            }
+        }
+        .frame(width: canvasSize.width, height: canvasSize.height, alignment: .topLeading)
+    }
+
+    private func gestureOutline(_ preview: BoardGesturePreview) -> some View {
+        RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
+            .fill((preview.isValid ? RemiTheme.Color.activityDot : Color.red).opacity(0.08))
+            .overlay {
+                RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
+                    .stroke(
+                        preview.isValid ? RemiTheme.Color.activityDot : Color.red,
+                        style: StrokeStyle(lineWidth: 2, dash: [6, 4])
+                    )
+            }
+            .frame(width: preview.proposed.width, height: preview.proposed.height)
+            .offset(
+                x: min(max(preview.proposed.x, 0), RemiBoardFrame.maximumCoordinate),
+                y: min(max(preview.proposed.y, 0), RemiBoardFrame.maximumCoordinate)
+            )
+            .accessibilityHidden(true)
+            .allowsHitTesting(false)
+    }
+
+    /// Moves the cursor to the next live tile, scrolling it into view before moving focus.
     private func focusNext(after key: String, in liveOrder: [String], reader: ScrollViewProxy) {
         guard let next = RemiBoardOrder.next(after: key, in: liveOrder) else { return }
         reader.scrollTo(next, anchor: .center)
@@ -215,12 +304,28 @@ struct MacCommandCenter: View {
     }
 
     private func tile(
-        _ session: RemiSessionSummary, order: [String], liveOrder: [String], reader: ScrollViewProxy
+        _ session: RemiSessionSummary,
+        frame: RemiBoardFrame,
+        frames: [String: RemiBoardFrame],
+        order: [String],
+        liveOrder: [String],
+        reader: ScrollViewProxy
     ) -> some View {
         let key = RemiBoardOrder.key(for: session)
         let waiting = questions.first {
             $0.machineID == session.machineID && $0.sessionID == session.id && $0.state == .pending
         }
+        let placement = RemiBoardTilePlacement(
+            size: CGSize(width: frame.width, height: frame.height),
+            onMoveDrag: { translation, ended in
+                updateGesture(key: key, kind: .move, translation: translation, ended: ended, frames: frames)
+            },
+            onResizeDrag: { translation, ended in
+                updateGesture(key: key, kind: .resize, translation: translation, ended: ended, frames: frames)
+            },
+            onMoveBy: { nudge(key: key, kind: .move, by: $0, frames: frames) },
+            onResizeBy: { nudge(key: key, kind: .resize, by: $0, frames: frames) }
+        )
         return RemiBoardTile(
             session: session,
             tileKey: key,
@@ -251,7 +356,6 @@ struct MacCommandCenter: View {
                 }
                 saveBoard()
             },
-            dragPayload: RemiBoardOrder.payload(for: key),
             question: waiting.map { card in
                 RemiQuestionCard(
                     model: card,
@@ -259,16 +363,48 @@ struct MacCommandCenter: View {
                     onSubmit: { onSubmit(card.machineID, card.sessionID, card.questionID, $0) },
                     onCancel: { onCancel(card.machineID, card.sessionID, card.questionID) }
                 )
-            }
+            },
+            extras: RemiBoardTileExtras(placement: placement)
         )
-        .dropDestination(for: String.self) { dropped, _ in
-            // Only a tile's own payload moves anything, and only a tile still on the board.
-            guard let payload = dropped.first, let moved = RemiBoardOrder.key(fromPayload: payload),
-                  moved != key, order.contains(moved)
-            else { return false }
-            board.move(moved, onto: key, in: order)
-            saveBoard()
-            return true
+    }
+
+    private func nudge(
+        key: String,
+        kind: BoardGestureKind,
+        by delta: CGSize,
+        frames: [String: RemiBoardFrame]
+    ) {
+        guard let start = frames[key] else { return }
+        let proposal = kind == .move ? start.moved(by: delta) : start.resized(by: delta)
+        guard RemiBoardOrder.canPlace(proposal, for: key, in: frames), board.setFrame(proposal, for: key) else { return }
+        saveBoard()
+    }
+
+    private func updateGesture(
+        key: String,
+        kind: BoardGestureKind,
+        translation: CGSize,
+        ended: Bool,
+        frames: [String: RemiBoardFrame]
+    ) {
+        let active = gesturePreview.flatMap { $0.key == key && $0.kind == kind ? $0 : nil }
+        guard let start = active?.start ?? frames[key] else { return }
+        let proposed = kind == .move ? start.moved(by: translation) : start.resized(by: translation)
+        let isValid = RemiBoardOrder.canPlace(proposed, for: key, in: frames)
+        let lastValid = isValid ? proposed : (active?.lastValid ?? start)
+
+        if ended {
+            if lastValid != start, board.setFrame(lastValid, for: key) { saveBoard() }
+            gesturePreview = nil
+        } else {
+            gesturePreview = BoardGesturePreview(
+                key: key,
+                kind: kind,
+                start: start,
+                proposed: proposed,
+                lastValid: lastValid,
+                isValid: isValid
+            )
         }
     }
 
@@ -283,18 +419,51 @@ struct MacCommandCenter: View {
     private func saveBoard() { boardStorage = board.storageValue }
 }
 
-#Preview("Board") {
-    MacCommandCenter(
-        sessions: RemiPreviewData.sessions,
-        machines: RemiPreviewData.machines,
-        settledMachines: [],
-        questions: [],
-        transcript: { _ in [.agent(id: "a", text: "Running the tests."), .tool(id: "t", name: "Bash", summary: "swift test")] },
-        onAnswer: { _, _, _, _ in },
-        onSubmit: { _, _, _, _ in },
-        onCancel: { _, _, _ in },
-        onOpen: { _ in },
-        onSend: { _, _ in true }
-    )
-    .frame(width: 1_100, height: 760)
+private struct MacBoardPreviewScene: View {
+    var width: CGFloat = 1_100
+    var height: CGFloat = 760
+    var colorScheme: ColorScheme = .light
+    var dynamicTypeSize: DynamicTypeSize = .large
+
+    var body: some View {
+        MacCommandCenter(
+            sessions: RemiPreviewData.sessions,
+            machines: RemiPreviewData.machines,
+            settledMachines: [],
+            questions: [RemiQuestionCardModel(
+                id: "board-preview-question",
+                kind: .permission,
+                text: "Allow the test runner to update the native UI snapshots?",
+                detail: "The command will update the checked in preview snapshots for the Mac Board.",
+                machineID: "studio",
+                machineName: "Studio",
+                sessionID: "1",
+                sessionName: "Native iOS",
+                options: [
+                    RemiQuestionOption(id: "yes", label: "Yes", role: .allow, isRecommended: true),
+                    RemiQuestionOption(id: "no", label: "No", role: .deny),
+                ]
+            )],
+            transcript: { _ in
+                [
+                    .user(id: "u", text: "Run the suite and report any failures."),
+                    .agent(id: "a", text: "The focused suite is green. I am checking the native views next."),
+                    .tool(id: "t", name: "Bash", summary: "swift test --filter RemiBoardTests"),
+                ]
+            },
+            onAnswer: { _, _, _, _ in },
+            onSubmit: { _, _, _, _ in },
+            onCancel: { _, _, _ in },
+            onOpen: { _ in },
+            onSend: { _, _ in true }
+        )
+        .frame(width: width, height: height)
+        .preferredColorScheme(colorScheme)
+        .environment(\.dynamicTypeSize, dynamicTypeSize)
+    }
 }
+
+#Preview("Board · Standard · Light") { MacBoardPreviewScene() }
+#Preview("Board · Narrow · Light") { MacBoardPreviewScene(width: 760) }
+#Preview("Board · Standard · Dark") { MacBoardPreviewScene(colorScheme: .dark) }
+#Preview("Board · Accessibility") { MacBoardPreviewScene(dynamicTypeSize: .accessibility5) }

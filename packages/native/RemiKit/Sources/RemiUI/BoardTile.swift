@@ -1,5 +1,29 @@
 import SwiftUI
 
+/// Optional direct-manipulation controls for a tile on the Mac command center.
+/// The phone does not set these, so its card layout and gestures remain unchanged.
+public struct RemiBoardTilePlacement {
+    public var size: CGSize
+    public var onMoveDrag: (_ translation: CGSize, _ ended: Bool) -> Void
+    public var onResizeDrag: (_ translation: CGSize, _ ended: Bool) -> Void
+    public var onMoveBy: (CGSize) -> Void
+    public var onResizeBy: (CGSize) -> Void
+
+    public init(
+        size: CGSize,
+        onMoveDrag: @escaping (_ translation: CGSize, _ ended: Bool) -> Void,
+        onResizeDrag: @escaping (_ translation: CGSize, _ ended: Bool) -> Void,
+        onMoveBy: @escaping (CGSize) -> Void,
+        onResizeBy: @escaping (CGSize) -> Void
+    ) {
+        self.size = size
+        self.onMoveDrag = onMoveDrag
+        self.onResizeDrag = onResizeDrag
+        self.onMoveBy = onMoveBy
+        self.onResizeBy = onResizeBy
+    }
+}
+
 /// Options a screen can set on a tile without the tile knowing the screen.
 public struct RemiBoardTileExtras {
     /// The sizes the tile's menu offers; empty when the screen sets one density for every tile.
@@ -12,15 +36,19 @@ public struct RemiBoardTileExtras {
     /// and 440), so the phone screen sets its own. The tile scales it with the text size like
     /// its own heights, and a waiting question still grows the tile past it.
     public var height: CGFloat?
+    /// Set only by the Mac board for continuous sizing and direct-manipulation affordances.
+    public var placement: RemiBoardTilePlacement?
 
     public init(
         sizeChoices: [RemiTileSize] = [.compact, .regular, .large],
         height: CGFloat? = nil,
-        preview: (() -> AnyView)? = nil
+        preview: (() -> AnyView)? = nil,
+        placement: RemiBoardTilePlacement? = nil
     ) {
         self.sizeChoices = sizeChoices
         self.height = height
         self.preview = preview
+        self.placement = placement
     }
 }
 
@@ -56,6 +84,14 @@ public struct RemiBoardTile<Question: View>: View {
     @ScaledMetric(relativeTo: .body) private var heightScale: CGFloat = 1
     /// The question's natural height, so its area is as tall as it needs up to a cap.
     @State private var questionHeight: CGFloat = 0
+    @State private var moveHovered = false
+    @State private var resizeHovered = false
+    @FocusState private var focusedPlacementControl: PlacementControl?
+
+    private enum PlacementControl: Hashable {
+        case move
+        case resize
+    }
 
     public init(
         session: RemiSessionSummary,
@@ -98,7 +134,8 @@ public struct RemiBoardTile<Question: View>: View {
 
     /// Nil for a compact row, which is as tall as its line.
     private var tileHeight: CGFloat? {
-        size.showsFeed ? (extras.height ?? size.estimatedHeight) * heightScale : nil
+        if let placement = extras.placement { return placement.size.height }
+        return size.showsFeed ? (extras.height ?? size.estimatedHeight) * heightScale : nil
     }
     /// A waiting tile with its question on it grows to the question's content instead of
     /// holding the size's height, which a long question could overflow.
@@ -106,7 +143,11 @@ public struct RemiBoardTile<Question: View>: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
-            draggable(header)
+            if extras.placement == nil {
+                draggable(header)
+            } else {
+                header
+            }
             if size.showsFeed {
                 conversation
                 waitingQuestion
@@ -117,10 +158,14 @@ public struct RemiBoardTile<Question: View>: View {
             if size.showsComposer { quickComposer }
         }
         .padding(RemiTheme.Spacing.s)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .modifier(TileHeight(height: tileHeight, growsToContent: growsToContent))
+        .modifier(BoardTileSizing(
+            placement: extras.placement,
+            height: tileHeight,
+            growsToContent: growsToContent
+        ))
         .background(tileBackground, in: .rect(cornerRadius: RemiTheme.Radius.control))
         .overlay { border }
+        .overlay(alignment: .topTrailing) { resizeHandle }
         .modifier(TileMenu(menu: menu, preview: extras.preview))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityLabel)
@@ -170,6 +215,7 @@ public struct RemiBoardTile<Question: View>: View {
                     .monospacedDigit()
                     .lineLimit(1)
             }
+            if extras.placement != nil { movementGrip }
         }
     }
 
@@ -242,13 +288,22 @@ public struct RemiBoardTile<Question: View>: View {
     /// a cap and scrolls beyond that, so a long question cannot push the conversation away.
     @ViewBuilder private var waitingQuestion: some View {
         if needsYou, let question {
-            ScrollView {
-                question
-                    .frame(maxWidth: .infinity)
-                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { questionHeight = $0 }
+            if extras.placement != nil {
+                ScrollView {
+                    question.frame(maxWidth: .infinity)
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(minHeight: 1, maxHeight: .infinity)
+                .layoutPriority(1)
+            } else {
+                ScrollView {
+                    question
+                        .frame(maxWidth: .infinity)
+                        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { questionHeight = $0 }
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(height: min(max(questionHeight, 1), (size == .compact ? 180 : 260) * heightScale))
             }
-            .scrollBounceBehavior(.basedOnSize)
-            .frame(height: min(max(questionHeight, 1), (size == .compact ? 180 : 260) * heightScale))
             if session.openQuestionCount > 1 {
                 Text("\(session.openQuestionCount - 1) more waiting. Open the conversation to see them.")
                     .font(RemiTheme.Typography.metadata)
@@ -317,6 +372,7 @@ public struct RemiBoardTile<Question: View>: View {
         .padding(.horizontal, RemiTheme.Spacing.xs)
         .padding(.vertical, RemiTheme.Spacing.xs)
         .background(.background.opacity(0.7), in: .rect(cornerRadius: RemiTheme.Radius.compact))
+        .layoutPriority(extras.placement == nil ? 0 : 2)
     }
 
     @ViewBuilder private var menu: some View {
@@ -334,6 +390,86 @@ public struct RemiBoardTile<Question: View>: View {
             systemImage: isPinned ? "pin.slash" : "pin",
             action: onTogglePin
         )
+        if let placement = extras.placement {
+            Divider()
+            Button("Move left", systemImage: "arrow.left") { placement.onMoveBy(CGSize(width: -24, height: 0)) }
+            Button("Move right", systemImage: "arrow.right") { placement.onMoveBy(CGSize(width: 24, height: 0)) }
+            Button("Move up", systemImage: "arrow.up") { placement.onMoveBy(CGSize(width: 0, height: -24)) }
+            Button("Move down", systemImage: "arrow.down") { placement.onMoveBy(CGSize(width: 0, height: 24)) }
+            Divider()
+            Button("Widen", systemImage: "arrow.right.to.line") { placement.onResizeBy(CGSize(width: 24, height: 0)) }
+            Button("Narrow", systemImage: "arrow.left.to.line") { placement.onResizeBy(CGSize(width: -24, height: 0)) }
+            Button("Make taller", systemImage: "arrow.down.to.line") { placement.onResizeBy(CGSize(width: 0, height: 24)) }
+            Button("Make shorter", systemImage: "arrow.up.to.line") { placement.onResizeBy(CGSize(width: 0, height: -24)) }
+        }
+    }
+
+    @ViewBuilder private var movementGrip: some View {
+        if let placement = extras.placement {
+            Button { placement.onMoveBy(CGSize(width: 24, height: 0)) } label: {
+                Image(systemName: "circle.grid.3x3.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+                    .background(
+                        moveHovered || focusedPlacementControl == .move
+                            ? RemiTheme.Color.attention.opacity(0.2)
+                            : RemiTheme.Color.surface.opacity(0.78),
+                        in: Circle()
+                    )
+                    .overlay { Circle().stroke(RemiTheme.Color.hairline, lineWidth: 1) }
+            }
+            .buttonStyle(.plain)
+            .focused($focusedPlacementControl, equals: .move)
+            .onHover { moveHovered = $0 }
+            .accessibilityLabel("Move tile")
+            .accessibilityHint("Drag to move. Use the arrow keys to move by 24 points.")
+            .accessibilityAction(named: "Move left") { placement.onMoveBy(CGSize(width: -24, height: 0)) }
+            .accessibilityAction(named: "Move right") { placement.onMoveBy(CGSize(width: 24, height: 0)) }
+            .accessibilityAction(named: "Move up") { placement.onMoveBy(CGSize(width: 0, height: -24)) }
+            .accessibilityAction(named: "Move down") { placement.onMoveBy(CGSize(width: 0, height: 24)) }
+            .onKeyPress(.leftArrow) { placement.onMoveBy(CGSize(width: -24, height: 0)); return .handled }
+            .onKeyPress(.rightArrow) { placement.onMoveBy(CGSize(width: 24, height: 0)); return .handled }
+            .onKeyPress(.upArrow) { placement.onMoveBy(CGSize(width: 0, height: -24)); return .handled }
+            .onKeyPress(.downArrow) { placement.onMoveBy(CGSize(width: 0, height: 24)); return .handled }
+            .gesture(DragGesture(minimumDistance: 3).onChanged { placement.onMoveDrag($0.translation, false) }
+                .onEnded { placement.onMoveDrag($0.translation, true) })
+        }
+    }
+
+    @ViewBuilder private var resizeHandle: some View {
+        if let placement = extras.placement {
+            Button { placement.onResizeBy(CGSize(width: 24, height: 24)) } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(resizeHovered || focusedPlacementControl == .resize
+                        ? RemiTheme.Color.attentionInk : .secondary)
+                    .frame(width: 26, height: 26)
+                    .background(
+                        resizeHovered || focusedPlacementControl == .resize
+                            ? RemiTheme.Color.attention.opacity(0.85)
+                            : RemiTheme.Color.surface,
+                        in: Circle()
+                    )
+                    .overlay { Circle().stroke(RemiTheme.Color.hairline, lineWidth: 1) }
+            }
+            .buttonStyle(.plain)
+            .focused($focusedPlacementControl, equals: .resize)
+            .onHover { resizeHovered = $0 }
+            .offset(x: 7, y: -7)
+            .accessibilityLabel("Resize tile")
+            .accessibilityHint("Drag right to widen and down to make taller. Use the arrow keys to resize by 24 points.")
+            .accessibilityAction(named: "Narrow") { placement.onResizeBy(CGSize(width: -24, height: 0)) }
+            .accessibilityAction(named: "Widen") { placement.onResizeBy(CGSize(width: 24, height: 0)) }
+            .accessibilityAction(named: "Make shorter") { placement.onResizeBy(CGSize(width: 0, height: -24)) }
+            .accessibilityAction(named: "Make taller") { placement.onResizeBy(CGSize(width: 0, height: 24)) }
+            .onKeyPress(.leftArrow) { placement.onResizeBy(CGSize(width: -24, height: 0)); return .handled }
+            .onKeyPress(.rightArrow) { placement.onResizeBy(CGSize(width: 24, height: 0)); return .handled }
+            .onKeyPress(.upArrow) { placement.onResizeBy(CGSize(width: 0, height: -24)); return .handled }
+            .onKeyPress(.downArrow) { placement.onResizeBy(CGSize(width: 0, height: 24)); return .handled }
+            .gesture(DragGesture(minimumDistance: 3).onChanged { placement.onResizeDrag($0.translation, false) }
+                .onEnded { placement.onResizeDrag($0.translation, true) })
+        }
     }
 
     // MARK: look
@@ -513,6 +649,22 @@ private struct FeedLine: View {
 
 /// The tile's height: fixed, a minimum when the content (a question) may need more, or none
 /// for a compact row.
+private struct BoardTileSizing: ViewModifier {
+    let placement: RemiBoardTilePlacement?
+    let height: CGFloat?
+    let growsToContent: Bool
+
+    func body(content: Content) -> some View {
+        if let placement {
+            content.frame(width: placement.size.width, height: placement.size.height, alignment: .topLeading)
+        } else {
+            content
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .modifier(TileHeight(height: height, growsToContent: growsToContent))
+        }
+    }
+}
+
 private struct TileHeight: ViewModifier {
     let height: CGFloat?
     let growsToContent: Bool

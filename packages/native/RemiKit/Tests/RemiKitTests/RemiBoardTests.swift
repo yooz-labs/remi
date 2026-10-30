@@ -323,6 +323,162 @@ import Testing
         #expect(RemiBoardOrder.arrange(sessions, state: hostile, interactions: [:], held: ["m\u{1F}a": -5], now: now).count == 2)
     }
 
+    // MARK: Mac freeform layout
+
+    @Test func aLegacyBoardKeepsItsPinsAndPresetHeightsWhenPlacedAutomatically() {
+        let a = session("a")
+        let b = session("b")
+        let aKey = RemiBoardOrder.key(for: a)
+        let bKey = RemiBoardOrder.key(for: b)
+        let state = RemiBoardState(storage: "{\"pinnedSlots\":{\"m\\u001fb\":0},\"sizes\":{\"m\\u001fb\":\"large\"}}")
+        let frames = RemiBoardOrder.layout([a, b], state: state, interactions: [:], now: now, viewportWidth: 350)
+
+        #expect(state.slot(of: bKey) == 0)
+        #expect(state.size(for: bKey) == .large)
+        #expect(state.frame(for: aKey) == nil)
+        #expect(frames[bKey]?.height == 640)
+        #expect((frames[aKey]?.y ?? 0) >= (frames[bKey]?.maxY ?? 0))
+        #expect(!state.storageValue.contains("\"frames\""))
+    }
+
+    @Test func malformedFramesAreIgnoredPerTileWithoutLosingLegacyState() {
+        let storage = #"{"pinnedSlots":{"legacy":2},"sizes":{"legacy":"large"},"frames":{"valid":{"x":12,"y":18,"width":340,"height":260},"small":{"x":0,"y":0,"width":120,"height":260},"negative":{"x":-1,"y":0,"width":340,"height":260},"wrongType":{"x":"bad","y":0,"width":340,"height":260},"nonfinite":{"x":1e400,"y":0,"width":340,"height":260}}}"#
+        let state = RemiBoardState(storage: storage)
+
+        #expect(state.slot(of: "legacy") == 2)
+        #expect(state.size(for: "legacy") == .large)
+        #expect(state.frame(for: "valid") == RemiBoardFrame(x: 12, y: 18, width: 340, height: 260))
+        #expect(state.frame(for: "small") == nil)
+        #expect(state.frame(for: "negative") == nil)
+        #expect(state.frame(for: "wrongType") == nil)
+        #expect(state.frame(for: "nonfinite") == nil)
+    }
+
+    @Test func explicitFramesRoundTripAndOnlyValidFramesAreStored() {
+        var state = RemiBoardState()
+        let frame = RemiBoardFrame(x: 52, y: 88, width: 480, height: 360)
+
+        let accepted = state.setFrame(frame, for: "tile")
+        let rejected = state.setFrame(RemiBoardFrame(x: -1, y: 0, width: 340, height: 260), for: "bad")
+        #expect(accepted)
+        #expect(!rejected)
+        #expect(RemiBoardState(storage: state.storageValue).frame(for: "tile") == frame)
+        #expect(RemiBoardState(storage: state.storageValue).frame(for: "bad") == nil)
+    }
+
+    @Test func resizingClampsBothDimensionsAndMovesCannotCrossTheOrigin() {
+        let frame = RemiBoardFrame(x: 0, y: 0, width: 340, height: 260)
+        let smaller = frame.resized(by: CGSize(width: -5_000, height: -5_000))
+        let larger = frame.resized(by: CGSize(width: 5_000, height: 5_000))
+
+        #expect(smaller == frame)
+        #expect(larger.width == RemiBoardFrame.maximumWidth)
+        #expect(larger.height == RemiBoardFrame.maximumHeight)
+        #expect(!frame.moved(by: CGSize(width: -1, height: 0)).isValid)
+        #expect(!frame.moved(by: CGSize(width: 0, height: -1)).isValid)
+        #expect(!RemiBoardFrame(x: 100_000, y: 0, width: 340, height: 260).isValid)
+    }
+
+    @Test func tilesWithTheSameSessionIdOnDifferentMachinesGetSeparateFrames() {
+        let sessions = [session("same", machine: "one"), session("same", machine: "two")]
+        let frames = RemiBoardOrder.layout(sessions, state: RemiBoardState(), interactions: [:], now: now, viewportWidth: 900)
+        let firstKey = RemiBoardOrder.key(for: sessions[0])
+        let secondKey = RemiBoardOrder.key(for: sessions[1])
+
+        #expect(firstKey != secondKey)
+        #expect(frames[firstKey] != nil)
+        #expect(frames[secondKey] != nil)
+        #expect(frames[firstKey] != frames[secondKey])
+    }
+
+    @Test func layoutPreventsOverlapAndTouchingFramesRemainValid() {
+        let sessions = [session("a"), session("b"), session("c"), session("d")]
+        var state = RemiBoardState()
+        let firstFrameStored = state.setFrame(RemiBoardFrame(x: 16, y: 16, width: 520, height: 300), for: "m\u{1F}a")
+        // A second valid saved frame overlaps the first. Layout keeps the first and places this
+        // tile automatically, repairing the collision in the rendered board without dropping state.
+        let secondFrameStored = state.setFrame(RemiBoardFrame(x: 200, y: 80, width: 420, height: 360), for: "m\u{1F}b")
+        #expect(firstFrameStored)
+        #expect(secondFrameStored)
+        let frames = RemiBoardOrder.layout(sessions, state: state, interactions: [:], now: now, viewportWidth: 900)
+        let placed = Array(frames.values)
+        for left in placed.indices {
+            for right in placed.indices where right > left {
+                #expect(!placed[left].intersects(placed[right]))
+            }
+        }
+
+        let touching = RemiBoardFrame(x: 356, y: 16, width: 340, height: 260)
+        #expect(!RemiBoardFrame(x: 16, y: 16, width: 340, height: 260).intersects(touching))
+    }
+
+    @Test func hiddenAndDisconnectedFramesReserveSpaceForNewAndReturningSessions() {
+        let returning = session("returning", machine: "one")
+        let other = session("other", machine: "one")
+        let key = RemiBoardOrder.key(for: returning)
+        let stored = RemiBoardFrame(x: 700, y: 120, width: 460, height: 340)
+        var state = RemiBoardState()
+        let storedFrame = state.setFrame(stored, for: key)
+        #expect(storedFrame)
+
+        let before = RemiBoardOrder.layout([returning, other], state: state, interactions: [:], now: now, viewportWidth: 700)
+        let newSession = session("new", machine: "one")
+        let withNew = RemiBoardOrder.layout([returning, other, newSession], state: state, interactions: [:], now: now, viewportWidth: 700)
+        #expect(withNew[key] == stored)
+        #expect(withNew[RemiBoardOrder.key(for: newSession)] != nil)
+        #expect(!withNew[RemiBoardOrder.key(for: newSession)]!.intersects(stored))
+
+        // A filter hides the tile at render time, while the full layout still contains its frame.
+        let filtered = RemiBoardOrder.visible([returning, other, newSession], machineID: "one", onlyNeedsYou: true, showFinished: false)
+        #expect(filtered.isEmpty)
+        let afterFilter = RemiBoardOrder.layout([returning, other, newSession], state: state, interactions: [:], now: now, viewportWidth: 500)
+        #expect(afterFilter[key] == withNew[key])
+
+        let preservedWhileDisconnected = state.prune(live: [RemiBoardOrder.key(for: other)], connectedMachines: [])
+        #expect(!preservedWhileDisconnected)
+        #expect(state.frame(for: key) == stored)
+        let reconnected = RemiBoardOrder.layout([returning, other], state: state, interactions: [:], now: now, viewportWidth: 500)
+        #expect(reconnected[key] == before[key])
+    }
+
+    @Test func narrowViewportsDoNotChangeSavedPositionsAndCanvasIncludesVisibleBounds() {
+        let tile = session("saved")
+        let key = RemiBoardOrder.key(for: tile)
+        let frame = RemiBoardFrame(x: 1_400, y: 1_100, width: 500, height: 400)
+        var state = RemiBoardState()
+        let storedFrame = state.setFrame(frame, for: key)
+        #expect(storedFrame)
+        let wide = RemiBoardOrder.layout([tile], state: state, interactions: [:], now: now, viewportWidth: 1_600)
+        let narrow = RemiBoardOrder.layout([tile], state: state, interactions: [:], now: now, viewportWidth: 500)
+        let canvas = RemiBoardOrder.canvasSize(visibleFrames: [key: frame], viewport: CGSize(width: 500, height: 300))
+
+        #expect(wide[key] == frame)
+        #expect(narrow[key] == frame)
+        #expect(canvas.width >= frame.maxX + 16)
+        #expect(canvas.height >= frame.maxY + 16)
+    }
+
+    @Test func resetRestoresAutomaticLayoutAndPruningIncludesFrames() {
+        let gone = RemiBoardOrder.key(for: session("gone", machine: "one"))
+        var state = RemiBoardState()
+        state.pin(gone, atSlot: 1)
+        state.setSize(.large, for: gone)
+        let storedGoneFrame = state.setFrame(RemiBoardFrame(x: 100, y: 100, width: 400, height: 400), for: gone)
+        let pruned = state.prune(live: [], connectedMachines: ["one"])
+        #expect(storedGoneFrame)
+        #expect(pruned)
+        #expect(state.frame(for: gone) == nil)
+
+        state.pin("manual", atSlot: 0)
+        state.setSize(.large, for: "manual")
+        let storedManualFrame = state.setFrame(RemiBoardFrame(x: 100, y: 100, width: 400, height: 400), for: "manual")
+        #expect(storedManualFrame)
+        state.resetLayout()
+        #expect(state.pinnedKeys.isEmpty)
+        #expect(state.size(for: "manual") == .regular)
+        #expect(state.frame(for: "manual") == nil)
+    }
+
     // MARK: phone density
 
     @Test func aRowIsTheCompactPhoneDensityAndShowsNoFeedOrComposer() {

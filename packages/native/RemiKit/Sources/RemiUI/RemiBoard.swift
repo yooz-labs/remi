@@ -1,6 +1,65 @@
 import CoreGraphics
 import Foundation
 
+/// A tile's position and size on the Mac command center's freeform canvas.
+///
+/// Frames are stored only after a person moves or resizes a tile. Automatic placements are
+/// derived from the current session order, so older board values remain readable and new
+/// sessions still get a useful default layout.
+public struct RemiBoardFrame: Codable, Equatable, Sendable {
+    public static let minimumWidth: CGFloat = 340
+    public static let minimumHeight: CGFloat = 260
+    public static let maximumWidth: CGFloat = 1_200
+    public static let maximumHeight: CGFloat = 1_000
+    /// A stored coordinate beyond this point is treated as damaged rather than expanding the canvas.
+    public static let maximumCoordinate: CGFloat = 100_000
+
+    public var x: CGFloat
+    public var y: CGFloat
+    public var width: CGFloat
+    public var height: CGFloat
+
+    public init(x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat) {
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+    }
+
+    public var maxX: CGFloat { x + width }
+    public var maxY: CGFloat { y + height }
+
+    /// Whether this frame is safe to display or persist.
+    public var isValid: Bool {
+        x.isFinite && y.isFinite && width.isFinite && height.isFinite
+            && x >= 0 && y >= 0 && x <= Self.maximumCoordinate && y <= Self.maximumCoordinate
+            && width >= Self.minimumWidth && width <= Self.maximumWidth
+            && height >= Self.minimumHeight && height <= Self.maximumHeight
+            && maxX.isFinite && maxY.isFinite
+            && maxX <= Self.maximumCoordinate && maxY <= Self.maximumCoordinate
+    }
+
+    /// A proposed move. The caller validates the result so a drag can show an invalid preview.
+    public func moved(by translation: CGSize) -> Self {
+        Self(x: x + translation.width, y: y + translation.height, width: width, height: height)
+    }
+
+    /// A proposed resize, keeping the top-left corner fixed and clamping both dimensions.
+    public func resized(by translation: CGSize) -> Self {
+        Self(
+            x: x,
+            y: y,
+            width: min(max(width + translation.width, Self.minimumWidth), Self.maximumWidth),
+            height: min(max(height + translation.height, Self.minimumHeight), Self.maximumHeight)
+        )
+    }
+
+    /// Cards may touch, but any positive-area intersection is a collision.
+    public func intersects(_ other: Self) -> Bool {
+        x < other.maxX && maxX > other.x && y < other.maxY && maxY > other.y
+    }
+}
+
 /// How much of a session a board tile shows.
 public enum RemiTileSize: String, Codable, CaseIterable, Sendable {
     /// One line under the title, no composer: the phone's compact density.
@@ -67,16 +126,66 @@ public enum RemiTileSize: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// What the person arranged on the command center board: tiles they pinned to a slot, and
-/// the size each tile has. Everything else is ordered automatically (``RemiBoardOrder``).
+/// What the person arranged on a board: legacy pinned slots and sizes, plus explicit Mac frames.
+/// Automatic positions are computed by ``RemiBoardOrder`` and are not written to storage.
 ///
 /// A slot is an index into the list as the board showed it, after any machine or "needs you"
 /// filter. A pin made under a filter means a place in that filtered list, not in the full one.
 public struct RemiBoardState: Codable, Equatable, Sendable {
     private var pinnedSlots: [String: Int] = [:]
     private var sizes: [String: RemiTileSize] = [:]
+    private var frames: [String: RemiBoardFrame] = [:]
+
+    private enum CodingKeys: String, CodingKey {
+        case pinnedSlots
+        case sizes
+        case frames
+    }
 
     public init() {}
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        pinnedSlots = Self.decodeValues(Int.self, in: container, forKey: .pinnedSlots)
+            .mapValues { max(0, $0) }
+        sizes = Self.decodeValues(RemiTileSize.self, in: container, forKey: .sizes)
+        // Decode each frame independently. One bad tile must not discard valid frames, pins or
+        // preset sizes from the rest of the stored board.
+        frames = Self.decodeValues(RemiBoardFrame.self, in: container, forKey: .frames)
+            .filter { $0.value.isValid }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(pinnedSlots, forKey: .pinnedSlots)
+        try container.encode(sizes, forKey: .sizes)
+        if !frames.isEmpty { try container.encode(frames, forKey: .frames) }
+    }
+
+    private struct DynamicCodingKey: CodingKey {
+        let stringValue: String
+        let intValue: Int? = nil
+
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
+    }
+
+    private static func decodeValues<Value: Decodable>(
+        _ type: Value.Type,
+        in container: KeyedDecodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) -> [String: Value] {
+        guard let values = try? container.nestedContainer(keyedBy: DynamicCodingKey.self, forKey: key) else {
+            return [:]
+        }
+        var decoded: [String: Value] = [:]
+        for valueKey in values.allKeys {
+            if let value = try? values.decode(type, forKey: valueKey) {
+                decoded[valueKey.stringValue] = value
+            }
+        }
+        return decoded
+    }
 
     /// Reads the value written by `storageValue`; anything unreadable is an empty board.
     public init(storage: String) {
@@ -102,6 +211,26 @@ public struct RemiBoardState: Codable, Equatable, Sendable {
     public func size(for key: String) -> RemiTileSize { sizes[key] ?? .regular }
     public mutating func setSize(_ size: RemiTileSize, for key: String) { sizes[key] = size }
 
+    public var savedFrames: [String: RemiBoardFrame] { frames }
+    public func frame(for key: String) -> RemiBoardFrame? { frames[key] }
+
+    /// Stores a frame only when it is finite, in bounds, and within the supported dimensions.
+    @discardableResult
+    public mutating func setFrame(_ frame: RemiBoardFrame, for key: String) -> Bool {
+        guard frame.isValid, !key.isEmpty else { return false }
+        frames[key] = frame
+        return true
+    }
+
+    public mutating func clearFrame(for key: String) { frames[key] = nil }
+
+    /// Clears manual frames and legacy pins/sizes to restore the automatic layout.
+    public mutating func resetLayout() {
+        pinnedSlots.removeAll()
+        sizes.removeAll()
+        frames.removeAll()
+    }
+
     /// Drops a tile onto another's place: it takes that slot and is pinned there, and the
     /// pinned tiles at or after the slot shift one place on.
     public mutating func move(_ key: String, onto target: String, in order: [String]) {
@@ -121,16 +250,18 @@ public struct RemiBoardState: Codable, Equatable, Sendable {
         func gone(_ key: String) -> Bool {
             connectedMachines.contains(RemiBoardOrder.machineID(ofKey: key)) && !live.contains(key)
         }
-        let before = (pinnedSlots.count, sizes.count)
+        let before = (pinnedSlots.count, sizes.count, frames.count)
         pinnedSlots = pinnedSlots.filter { !gone($0.key) }
         sizes = sizes.filter { !gone($0.key) }
-        return before != (pinnedSlots.count, sizes.count)
+        frames = frames.filter { !gone($0.key) }
+        return before != (pinnedSlots.count, sizes.count, frames.count)
     }
 }
 
 /// Columns, automatic order and focus order for the command center board.
 public enum RemiBoardOrder {
     public static let maximumColumns = 6
+    public static let defaultTileWidth = RemiBoardFrame.minimumWidth
     /// A tile typed into this recently rises, the way a session that just asked a question does.
     public static let interactionWindow: TimeInterval = 15 * 60
 
@@ -276,6 +407,96 @@ public enum RemiBoardOrder {
             filled[column] += height + spacing
         }
         return result
+    }
+
+    /// Places sessions on a two-dimensional canvas. Saved frames, including hidden sessions and
+    /// sessions missing from an unsettled machine, reserve their space before automatic tiles are
+    /// placed. Legacy pins still determine the initial automatic order and preset sizes determine
+    /// their initial heights.
+    public static func layout(
+        _ sessions: [RemiSessionSummary],
+        state: RemiBoardState,
+        interactions: [String: Date],
+        held: [String: Int] = [:],
+        now: Date,
+        viewportWidth: CGFloat,
+        spacing: CGFloat = 12,
+        margin: CGFloat = 16
+    ) -> [String: RemiBoardFrame] {
+        let ordered = arrange(sessions, state: state, interactions: interactions, held: held, now: now)
+        let orderedKeys = ordered.map(key(for:))
+        let orderRank = Dictionary(uniqueKeysWithValues: orderedKeys.enumerated().map { ($1, $0) })
+        let savedKeys = state.savedFrames.keys.sorted {
+            (orderRank[$0] ?? .max, $0) < (orderRank[$1] ?? .max, $1)
+        }
+
+        var result: [String: RemiBoardFrame] = [:]
+        var occupied: [RemiBoardFrame] = []
+        for savedKey in savedKeys {
+            guard let frame = state.frame(for: savedKey), frame.isValid,
+                  !occupied.contains(where: { frame.intersects($0) })
+            else { continue }
+            result[savedKey] = frame
+            occupied.append(frame)
+        }
+
+        let availableWidth = max(0, viewportWidth - 2 * margin)
+        let columnCount = Self.columnCount(
+            width: availableWidth,
+            minimumTile: defaultTileWidth,
+            spacing: spacing
+        )
+        var columnBottoms = [CGFloat](repeating: margin, count: columnCount)
+
+        for session in ordered {
+            let tileKey = key(for: session)
+            guard result[tileKey] == nil else { continue }
+            let width = defaultTileWidth
+            let height = max(RemiBoardFrame.minimumHeight, state.size(for: tileKey).estimatedHeight)
+            var candidates: [(frame: RemiBoardFrame, column: Int)] = []
+            for column in columnBottoms.indices {
+                let x = margin + CGFloat(column) * (width + spacing)
+                var y = columnBottoms[column]
+                var frame = RemiBoardFrame(x: x, y: y, width: width, height: height)
+                while frame.isValid {
+                    let collisions = occupied.filter { frame.intersects($0) }
+                    guard !collisions.isEmpty else { break }
+                    y = collisions.map(\.maxY).max()! + spacing
+                    frame = RemiBoardFrame(x: x, y: y, width: width, height: height)
+                }
+                if frame.isValid { candidates.append((frame, column)) }
+            }
+            guard let placement = candidates.min(by: {
+                ($0.frame.y, $0.frame.x) < ($1.frame.y, $1.frame.x)
+            }) else { continue }
+            result[tileKey] = placement.frame
+            occupied.append(placement.frame)
+            columnBottoms[placement.column] = placement.frame.maxY + spacing
+        }
+        return result
+    }
+
+    /// The canvas fits every visible frame and at least the current viewport.
+    public static func canvasSize(
+        visibleFrames: [String: RemiBoardFrame],
+        viewport: CGSize,
+        margin: CGFloat = 16
+    ) -> CGSize {
+        let width = visibleFrames.values.map(\.maxX).max().map { $0 + margin } ?? viewport.width
+        let height = visibleFrames.values.map(\.maxY).max().map { $0 + margin } ?? viewport.height
+        return CGSize(width: max(viewport.width, width), height: max(viewport.height, height))
+    }
+
+    /// Whether a proposed frame can be placed without crossing the origin or overlapping any
+    /// other saved or automatic tile.
+    public static func canPlace(
+        _ proposal: RemiBoardFrame,
+        for key: String,
+        in frames: [String: RemiBoardFrame]
+    ) -> Bool {
+        proposal.isValid && !frames.contains { entry in
+            entry.key != key && proposal.intersects(entry.value)
+        }
     }
 
     /// The tile to move the cursor to after sending from `key`, wrapping at the end.
