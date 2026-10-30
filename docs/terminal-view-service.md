@@ -107,8 +107,9 @@ service case. Its failed manifest remains preserved; the corrected copy verifies
 the actual shared package against measured source hashes before qualification.
 The genuine old hosted soak remains bound to
 head `760c8585` and base `ef6938e9`: 3,660,026 ms and 62 probes. It qualifies
-no new merge. No push, hosted run, fresh final-head 61-minute soak or final PR
-merge occurred in this local integration phase. Those gates remain required,
+no new merge. At this local qualification checkpoint, the branch had not been
+pushed and no hosted run, fresh final-head 61-minute soak or final PR merge had
+occurred. Those gates remain required after this checkpoint,
 with the owner's reserved final merge decision. Review had already converged
 through two rounds; this work performs narrow integration verification only.
 `terminal_view` remains unadvertised and B4/caller/rendered/signed/deployed/provider

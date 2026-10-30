@@ -253,7 +253,7 @@
     "native rendered/signed-device/deployed/provider acceptance remains separate"
   ],
   "review": "full and fix-only delta rounds already complete; narrow merge/conflict driver verification only; no third review",
-  "actionsNotTaken": [
+  "actionsNotTakenAtLocalQualificationCheckpoint": [
     "push",
     "PR merge",
     "terminal_view advertisement",
