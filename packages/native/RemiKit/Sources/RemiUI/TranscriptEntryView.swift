@@ -7,6 +7,8 @@ import UIKit
 #endif
 
 public struct RemiTranscriptEntryView: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    private let copyPayload: String?
     private let dismissOutgoing: ((String) -> Void)?
     private let entry: RemiTranscriptEntry
     private let isSearchMatch: Bool
@@ -14,11 +16,13 @@ public struct RemiTranscriptEntryView: View {
 
     public init(
         entry: RemiTranscriptEntry,
+        copyText: String? = nil,
         onDismissOutgoing: ((String) -> Void)? = nil,
         isSearchMatch: Bool = false,
         isSelectedSearchMatch: Bool = false
     ) {
         self.entry = entry
+        self.copyPayload = copyText
         self.dismissOutgoing = onDismissOutgoing
         self.isSearchMatch = isSearchMatch
         self.isSelectedSearchMatch = isSelectedSearchMatch
@@ -31,8 +35,8 @@ public struct RemiTranscriptEntryView: View {
             case .pending(let id, let text, let state):
                 VStack(alignment: .trailing, spacing: RemiTheme.Spacing.xs) {
                     TranscriptMessage(text: text, role: .user, forceExpanded: isSearchMatch, pending: state)
-                    HStack {
-                        Button("Copy message", systemImage: "doc.on.doc") { copy(text) }
+                    outcomeActionsLayout {
+                        Button("Copy message", systemImage: "doc.on.doc") { copy(copyPayload ?? text) }
                         if let dismissOutgoing {
                             Button("Dismiss outcome", systemImage: "xmark") { dismissOutgoing(id) }
                                 .accessibilityHint("Removes this local outcome. Does not cancel or resend input.")
@@ -40,7 +44,7 @@ public struct RemiTranscriptEntryView: View {
                     }
                     .buttonStyle(.bordered)
                     .frame(minHeight: RemiTheme.Size.minimumTapTarget)
-                    Text("Kept until dismissed. Limit: 50 outcomes per session.")
+                    Text(RemiOutgoingState.retentionNotice)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -62,6 +66,14 @@ public struct RemiTranscriptEntryView: View {
         }
         .accessibilityValue(isSelectedSearchMatch ? "Selected search result" : "")
     }
+    private var outcomeActionsLayout: AnyLayout {
+        if dynamicTypeSize.isAccessibilitySize {
+            AnyLayout(VStackLayout(alignment: .trailing))
+        } else {
+            AnyLayout(HStackLayout())
+        }
+    }
+
     private func copy(_ text: String) {
         #if os(macOS)
         NSPasteboard.general.clearContents()

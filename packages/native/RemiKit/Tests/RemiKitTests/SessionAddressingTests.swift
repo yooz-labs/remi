@@ -266,7 +266,7 @@ struct SessionAddressingTests {
             from: source.endpoint, generation: source.connection)
         #expect(store.outgoingBySession[key]?.items.first?.delivery == .sending)
         #expect(store.latestError?.code == "RELAY_DELIVERY_FAILED")
-        store.dismissOutgoing(machineID: fixture.ids.a, sessionID: sid, messageID: "m1")
+        store.dismissOutgoing(presentationID: try #require(store.outgoingBySession[key]?.items.first?.presentationID))
         store.trackOutgoing(key: key, id: "m1", content: "new intent", origin: replacement)
         store.receive(.error(try refusal(session: sid), chatOrigin: source.socket), from: source.endpoint, generation: source.connection)
         #expect(store.outgoingBySession[key]?.items.first?.delivery == .sending)
@@ -294,9 +294,11 @@ struct SessionAddressingTests {
         store.trackOutgoing(key: key, id: "m1", content: "hello", origin: try origin(fixture))
         try await Task.sleep(for: .milliseconds(60))
         #expect(store.outgoingBySession[key]?.items.first?.delivery == .uncertain)
-        store.dismissOutgoing(machineID: fixture.ids.b, sessionID: fixture.sessionID, messageID: "m1")
+        let groupID = try #require(store.outgoingBySession[key]?.items.first?.groupID)
+        let wrong = OutgoingGroupID(profile: OutgoingProfileScope(profileLifetime: UUID(), authenticatedAuthority: nil), sessionID: fixture.sessionID)
+        store.dismissOutgoing(groupID: wrong, messageID: "m1")
         #expect(store.outgoingBySession[key]?.items.count == 1)
-        store.dismissOutgoing(machineID: fixture.ids.a, sessionID: fixture.sessionID, messageID: "m1")
+        store.dismissOutgoing(groupID: groupID, messageID: "m1")
         #expect(store.outgoingBySession[key] == nil)
     }
     @Test func replayUpdatesAndRepeatedTextAllPreserveEveryIntent() throws {
@@ -342,7 +344,8 @@ struct SessionAddressingTests {
         #expect(store.removeMachine(fixture.routes[0]))
         #expect(store.outgoingHistory.first { $0.key == a }?.messages.first?.content == "A recovery")
         #expect(store.outgoingHistory.first { $0.key == a }?.messages.first?.delivery == .uncertain)
-        store.dismissOutgoing(machineID: fixture.ids.b, sessionID: sid, messageID: "same-message")
+        let groupB = try #require(store.outgoingHistory.first { $0.key == b })
+        store.dismissOutgoing(groupID: groupB.id, messageID: "same-message")
         #expect(store.outgoingHistory.map(\.key) == [a])
         #expect(store.outgoingHistory.first?.messages.first?.content == "A recovery")
     }
@@ -350,32 +353,33 @@ struct SessionAddressingTests {
     @Test func globalRowAndSessionLimitsRefuseWithoutEviction() throws {
         let store = MachineStore(endpoints: [], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
         let source = OutgoingOrigin(endpoint: MachineEndpoint(host: "127.0.0.1", port: 18790), connection: UUID(), socket: UUID())
+        let scope = OutgoingProfileScope(profileLifetime: UUID(), authenticatedAuthority: nil)
         for index in 0..<MachineStore.outgoingRowLimit {
             let key = MachineSessionKey(machineID: "owned-machine", sessionID: "session-\(index / 50)")
-            let tracked = store.trackOutgoing(key: key, id: "m-\(index)", content: "retained", origin: source)
+            let tracked = store.trackOutgoing(key: key, id: "m-\(index)", content: "retained", origin: source, scope: scope)
             #expect(tracked)
         }
         let overflow = store.trackOutgoing(key: MachineSessionKey(machineID: "owned-machine", sessionID: "new"),
-            id: "overflow", content: "draft", origin: source)
+            id: "overflow", content: "draft", origin: source, scope: scope)
         #expect(!overflow)
         #expect(store.outgoingCount == 512)
         #expect(store.outgoingHistory.flatMap(\.messages).contains { $0.id == "m-0" })
         for group in store.outgoingHistory {
             for message in group.messages {
-                store.dismissOutgoing(machineID: group.key.machineID, sessionID: group.key.sessionID, messageID: message.id)
+                store.dismissOutgoing(groupID: group.id, messageID: message.id)
             }
         }
         for index in 0..<MachineStore.outgoingSessionLimit {
             let tracked = store.trackOutgoing(key: MachineSessionKey(machineID: "owned-machine", sessionID: "session-\(index)"),
-                id: "m", content: "retained", origin: source)
+                id: "m", content: "retained", origin: source, scope: scope)
             #expect(tracked)
         }
         let extra = MachineSessionKey(machineID: "owned-machine", sessionID: "session-65")
-        let sessionOverflow = store.trackOutgoing(key: extra, id: "m", content: "draft", origin: source)
+        let sessionOverflow = store.trackOutgoing(key: extra, id: "m", content: "draft", origin: source, scope: scope)
         #expect(!sessionOverflow)
         #expect(store.outgoingHistory.count == 64)
-        store.dismissOutgoing(machineID: "owned-machine", sessionID: "session-0", messageID: "m")
-        let afterDismiss = store.trackOutgoing(key: extra, id: "m", content: "explicit new intent", origin: source)
+        store.dismissOutgoing(groupID: OutgoingGroupID(profile: scope, sessionID: "session-0"), messageID: "m")
+        let afterDismiss = store.trackOutgoing(key: extra, id: "m", content: "explicit new intent", origin: source, scope: scope)
         #expect(afterDismiss)
         #expect(store.outgoingHistory.count == 64)
     }

@@ -25,7 +25,8 @@ struct DeliverySourceTests {
         let identity = ClientIdentity()
         let peer = Process()
         let own = try OwnedRecoveryFixture.configure(peer, script: script,
-            arguments: [mode, identity.publicIdentity.publicKey])
+            arguments: [mode, identity.publicIdentity.publicKey],
+            bunExecutable: ProcessInfo.processInfo.environment["REMI_DELIVERY_BUN"])
         let output = Pipe(), input = Pipe()
         let log = own.appendingPathComponent("source.log")
         FileManager.default.createFile(atPath: log.path, contents: nil)
@@ -122,8 +123,9 @@ struct DeliverySourceTests {
                 #expect(active.machines.isEmpty)
                 #expect(active.outgoingHistory.first?.key == key)
                 #expect(active.outgoingHistory.first?.messages.first?.content == "owned inert input")
-                active.dismissOutgoing(machineID: machine, sessionID: session,
-                    messageID: try #require(active.outgoingHistory.first?.messages.first?.id))
+                let retained = try #require(active.outgoingHistory.first)
+                active.dismissOutgoing(groupID: retained.id,
+                    messageID: try #require(retained.messages.first?.id))
                 #expect(active.outgoingHistory.first?.messages.count == 49)
             }
             print("Owned delivery \(mode): one input; retained \(expected); log \(log.path)")

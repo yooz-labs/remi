@@ -254,6 +254,7 @@ public struct RemiMachineSummary: Identifiable, Sendable, Equatable {
 /// A local delivery outcome. None of these states proves harness acceptance (#1710).
 public enum RemiOutgoingState: Sendable, Equatable, CaseIterable {
     case sending, handedOff, refused, uncertain
+    public static let retentionNotice = "Available while Remi is running; copy before closing."
 
     public init(delivery: OutgoingMessage.Delivery) {
         self = switch delivery {

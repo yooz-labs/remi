@@ -233,8 +233,7 @@ struct MacLiveRootView: View {
                                 )
                             },
                             onDismissOutgoing: { id in
-                                store.dismissOutgoing(machineID: session.machineID, sessionID: session.id,
-                                    messageID: String(id.dropFirst("pending-".count)))
+                                store.dismissOutgoing(presentationID: id)
                             },
                             onResume: session.canResume ? { resume(session) } : nil,
                             onTerminate: { store.terminateSession(machineID: session.machineID, sessionId: session.id) },
@@ -429,7 +428,7 @@ struct MacLiveRootView: View {
         }
         .sheet(isPresented: $showingMessageOutcomes) {
             RemiOutgoingHistoryView(groups: store.outgoingHistory) { key, id in
-                store.dismissOutgoing(machineID: key.machineID, sessionID: key.sessionID, messageID: id)
+                store.dismissOutgoing(groupID: key, messageID: id)
             }
             .frame(minWidth: 480, minHeight: 400)
         }
@@ -1156,7 +1155,7 @@ struct MacLiveRootView: View {
             case .refused: .refused
             case .uncertain: .uncertain
             }
-            return RemiTranscriptEntry.pending(id: "pending-\($0.id)", text: $0.content, state: state)
+            return RemiTranscriptEntry.pending(id: $0.presentationID, text: $0.content, state: state)
         }
     }
 

@@ -7,13 +7,35 @@ public struct OutgoingOrigin: Sendable, Equatable {
     public let socket: UUID
 }
 
+/// A profile namespace never survives Forget as the current namespace. The authority is set
+/// only from an authenticated Hello, not a saved pin, descriptor, name or address (#1710).
+public struct OutgoingProfileScope: Hashable, Sendable {
+    public let id: UUID
+    let profileLifetime: UUID
+    let authenticatedAuthority: Data?
+
+    init(profileLifetime: UUID, authenticatedAuthority: Data?) {
+        id = UUID()
+        self.profileLifetime = profileLifetime
+        self.authenticatedAuthority = authenticatedAuthority
+    }
+}
+
+public struct OutgoingGroupID: Hashable, Sendable {
+    public let profile: OutgoingProfileScope
+    public let sessionID: String
+}
+
 /// Context retained only in memory so an ended or removed session's input remains recoverable.
 public struct OutgoingMessageGroup: Identifiable, Sendable {
+    public let id: OutgoingGroupID
+    /// Captured display context only. Address reuse does not authorize lookup or dismissal.
     public let key: MachineSessionKey
     public let machineName: String
     public let sessionName: String
     public let messages: [OutgoingMessage]
-    public var id: MachineSessionKey { key }
+    public let isCurrentProfile: Bool
+    public let remainingSessionCapacity: Int
 }
 
 /// An explicit message intent. Transport handoff never proves agent acceptance.
@@ -30,6 +52,13 @@ public struct OutgoingMessage: Identifiable, Sendable, Equatable {
     public var delivery: Delivery
     public let createdAt: Date
     public let origin: OutgoingOrigin
+    public let groupID: OutgoingGroupID?
+
+    /// An opaque UI identity, including the immutable group. Never parsed as routing authority.
+    public var presentationID: String {
+        guard let groupID else { return "pending-\(id)" }
+        return "pending:\(groupID.profile.id):\(groupID.sessionID.utf8.count):\(groupID.sessionID):\(id)"
+    }
 }
 
 /// Bounded, memory-only intent history for one machine/session. Only explicit dismissal removes
@@ -38,11 +67,12 @@ public struct OutgoingMessages: Sendable, Equatable {
     public static let limit = 50
     public private(set) var items: [OutgoingMessage] = []
     public init() {}
+    init(retainedItems: [OutgoingMessage]) { items = retainedItems }
 
     @discardableResult
-    public mutating func add(id: String, content: String, origin: OutgoingOrigin, now: Date = Date()) -> Bool {
+    public mutating func add(id: String, content: String, origin: OutgoingOrigin, groupID: OutgoingGroupID? = nil, now: Date = Date()) -> Bool {
         guard items.count < Self.limit, !items.contains(where: { $0.id == id }) else { return false }
-        items.append(OutgoingMessage(id: id, content: content, delivery: .sending, createdAt: now, origin: origin))
+        items.append(OutgoingMessage(id: id, content: content, delivery: .sending, createdAt: now, origin: origin, groupID: groupID))
         return true
     }
 

@@ -351,20 +351,40 @@ public final class MachineStore {
     func ownedStartApprovalPolling(_ endpoint: MachineEndpoint) { startApprovalPolling(for: endpoint) }
     #endif
     public private(set) var transcriptsBySession: [MachineSessionKey: [TranscriptContentMessage]] = [:]
-    /// Messages sent from this app that a session's transcript does not show yet.
-    public private(set) var outgoingBySession: [MachineSessionKey: OutgoingMessages] = [:]
-    @ObservationIgnored private var outgoingLabels: [MachineSessionKey: (machine: String, session: String)] = [:]
+    /// Retained storage is indexed by an immutable profile namespace, never host:port (#1710).
+    private var outgoingByGroup: [OutgoingGroupID: OutgoingMessages] = [:]
+    @ObservationIgnored private var outgoingLabels: [OutgoingGroupID: (key: MachineSessionKey, machine: String, session: String)] = [:]
+    @ObservationIgnored private var outgoingProfileScopes: [UUID: OutgoingProfileScope] = [:]
+    @ObservationIgnored private var outgoingAuthenticatedAuthorities: [UUID: Data] = [:]
+    /// Only authenticated, still-configured profiles may inherit these namespaces on a route merge.
+    @ObservationIgnored private var outgoingConsolidatedScopes: [OutgoingProfileScope: Set<OutgoingProfileScope>] = [:]
     public nonisolated static let outgoingRowLimit = 512
     public nonisolated static let outgoingSessionLimit = 64
-    public nonisolated static let outgoingCapacityMessage = "Message outcome storage is full (512 messages across 64 sessions, up to 50 per session). Open Message outcomes to copy or dismiss retained text. Your draft is still here."
+    public nonisolated static let outgoingCapacityMessage = "Message outcome storage is full. Open Message outcomes to copy or dismiss retained text. Your draft is still here."
 
-    public var outgoingCount: Int { outgoingBySession.values.reduce(0) { $0 + $1.items.count } }
+    public var outgoingCount: Int { outgoingByGroup.values.reduce(0) { $0 + $1.items.count } }
+    /// The current profiles' conversation snapshots. Earlier or forgotten profiles are history only.
+    public var outgoingBySession: [MachineSessionKey: OutgoingMessages] {
+        var result: [MachineSessionKey: OutgoingMessages] = [:]
+        for machine in machines {
+            let scopes = currentOutgoingScopes(for: machine)
+            let sessions = Set(outgoingByGroup.keys.filter { scopes.contains($0.profile) }.map(\.sessionID))
+            for session in sessions {
+                let key = MachineSessionKey(machineID: machine.id, sessionID: session)
+                result[key] = OutgoingMessages(retainedItems: outgoingItems(in: scopes, sessionID: session))
+            }
+        }
+        return result
+    }
     public var outgoingHistory: [OutgoingMessageGroup] {
-        outgoingBySession.compactMap { key, messages in
-            guard !messages.items.isEmpty else { return nil }
-            let label = outgoingLabels[key]
-            return OutgoingMessageGroup(key: key, machineName: label?.machine ?? key.machineID,
-                sessionName: label?.session ?? key.sessionID, messages: messages.items)
+        let current = machines.reduce(into: Set<OutgoingProfileScope>()) { $0.formUnion(currentOutgoingScopes(for: $1)) }
+        return outgoingByGroup.compactMap { id, messages in
+            guard !messages.items.isEmpty, let label = outgoingLabels[id] else { return nil }
+            let related = quotaScopes(containing: id.profile)
+            let retained = outgoingItems(in: related, sessionID: id.sessionID).count
+            return OutgoingMessageGroup(id: id, key: label.key, machineName: label.machine,
+                sessionName: label.session, messages: messages.items, isCurrentProfile: current.contains(id.profile),
+                remainingSessionCapacity: max(0, OutgoingMessages.limit - retained))
         }.sorted { ($0.messages.first?.createdAt ?? .distantPast) < ($1.messages.first?.createdAt ?? .distantPast) }
     }
     /// A selected conversation reloads when its owning socket becomes ready or reconnects.
@@ -1528,8 +1548,8 @@ public final class MachineStore {
         }
         for child in endpoints {
             if let generation = connectionGenerations[child] {
-                for key in outgoingBySession.keys {
-                    outgoingBySession[key]?.connectionLost(endpoint: child, connection: generation)
+                for key in outgoingByGroup.keys {
+                    outgoingByGroup[key]?.connectionLost(endpoint: child, connection: generation)
                 }
             }
             if let key = brokerKey(child), let generation = connectionGenerations[child] {
@@ -1566,6 +1586,12 @@ public final class MachineStore {
         }
         for route in configuredRoutes {
             connectedRoutes.remove(route); failedDirectRoutes.remove(route); terminalRootStates[route] = nil
+        }
+        if let removedMachine {
+            let retired = currentOutgoingScopes(for: removedMachine)
+            if let scope = outgoingProfileScopes.removeValue(forKey: removedMachine.pairingLifetime) { outgoingConsolidatedScopes[scope] = nil }
+            outgoingAuthenticatedAuthorities[removedMachine.pairingLifetime] = nil
+            for scope in outgoingConsolidatedScopes.keys { outgoingConsolidatedScopes[scope]?.subtract(retired) }
         }
         machines.removeAll { state in state.routingRoutes.contains(where: { $0.id == endpoint.id }) }
         for route in configuredRoutes { pushEnabled.remove(route.id) }
@@ -1924,6 +1950,9 @@ public final class MachineStore {
             latestOperationError = "Cannot send message: this session is unavailable."
             return false
         }
+        guard let machine = machine(withIdentifier: key.machineID) else { return false }
+        let scope = ensureOutgoingScope(for: machine)
+        let groupID = OutgoingGroupID(profile: scope, sessionID: key.sessionID)
         let origin = OutgoingOrigin(endpoint: endpoint, connection: generation, socket: socket)
         let message = UserInputMessage(
             id: UUID().uuidString.lowercased(),
@@ -1932,20 +1961,28 @@ public final class MachineStore {
             content: content,
             claudeSessionId: claudeSessionId
         )
-        guard trackOutgoing(key: key, id: message.id, content: content, origin: origin) else {
+        guard trackOutgoing(key: key, id: message.id, content: content, origin: origin, scope: scope) else {
             latestOperationError = Self.outgoingCapacityMessage
             return false
         }
         // The transport fences the actual invocation to this concrete socket, including a
         // queued relay send. Returning true transfers draft ownership to this retained row;
         // it is not an acceptance claim and never triggers a retry.
-        switch await connection.sendChat(message, origin: socket) {
+        return recordOutgoingSendResult(await connection.sendChat(message, origin: socket),
+            groupID: groupID, messageID: message.id, origin: origin)
+    }
+
+    /// The result reduces into the namespace captured before invocation, even if routing or the
+    /// configured profile changes while the transport is suspended.
+    func recordOutgoingSendResult(_ result: RemiConnection.ChatSendResult, groupID: OutgoingGroupID,
+                                  messageID: String, origin: OutgoingOrigin) -> Bool {
+        switch result {
         case .handedOff:
-            outgoingBySession[key]?.markHandedOff(id: message.id, origin: origin)
+            outgoingByGroup[groupID]?.markHandedOff(id: messageID, origin: origin)
         case .uncertain:
-            outgoingBySession[key]?.markUncertain(id: message.id, origin: origin)
+            outgoingByGroup[groupID]?.markUncertain(id: messageID, origin: origin)
         case .notInvoked:
-            dismissOutgoing(machineID: key.machineID, sessionID: key.sessionID, messageID: message.id)
+            dismissOutgoing(groupID: groupID, messageID: messageID)
             setTransientOperationError("Message was not handed to the connection. Your draft is still here.")
             return false
         }
@@ -1971,31 +2008,79 @@ public final class MachineStore {
         }
     }
 
+    private func ensureOutgoingScope(for machine: MachineState) -> OutgoingProfileScope {
+        let authority = outgoingAuthenticatedAuthorities[machine.pairingLifetime]
+        if let existing = outgoingProfileScopes[machine.pairingLifetime], existing.authenticatedAuthority == authority { return existing }
+        if let old = outgoingProfileScopes[machine.pairingLifetime] { outgoingConsolidatedScopes[old] = nil }
+        let scope = OutgoingProfileScope(profileLifetime: machine.pairingLifetime, authenticatedAuthority: authority)
+        outgoingProfileScopes[machine.pairingLifetime] = scope
+        return scope
+    }
+
+    private func currentOutgoingScopes(for machine: MachineState) -> Set<OutgoingProfileScope> {
+        guard let own = outgoingProfileScopes[machine.pairingLifetime] else { return [] }
+        return (outgoingConsolidatedScopes[own] ?? []).union([own])
+    }
+
+    private func outgoingItems(in scopes: Set<OutgoingProfileScope>, sessionID: String) -> [OutgoingMessage] {
+        outgoingByGroup.filter { scopes.contains($0.key.profile) && $0.key.sessionID == sessionID }
+            .flatMap { $0.value.items }.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    /// Profiles share a send budget only after actual authenticated route consolidation.
+    /// Existing rows above the merged cap survive; further sends wait for explicit dismissal.
+    private func quotaScopes(containing scope: OutgoingProfileScope) -> Set<OutgoingProfileScope> {
+        var related: Set<OutgoingProfileScope> = [scope]
+        for machine in machines {
+            let current = currentOutgoingScopes(for: machine)
+            if current.contains(scope) { related.formUnion(current) }
+        }
+        return related
+    }
+
     /// Tracks a single explicit intent. No timer, transcript match or reconnect removes it.
+    /// An explicit scope is used by state-only controls without a configured machine.
     @discardableResult
-    func trackOutgoing(key: MachineSessionKey, id: String, content: String, origin: OutgoingOrigin) -> Bool {
-        guard outgoingCount < Self.outgoingRowLimit,
-              outgoingBySession[key] != nil || outgoingBySession.count < Self.outgoingSessionLimit else { return false }
-        guard outgoingBySession[key, default: OutgoingMessages()].add(id: id, content: content, origin: origin) else { return false }
-        if outgoingLabels[key] == nil {
-            let machine = machines.first { $0.id == key.machineID }
-            outgoingLabels[key] = (machine?.displayName ?? key.machineID,
+    func trackOutgoing(key: MachineSessionKey, id: String, content: String, origin: OutgoingOrigin,
+                       scope suppliedScope: OutgoingProfileScope? = nil) -> Bool {
+        let machine = machine(withIdentifier: key.machineID)
+        guard let scope = suppliedScope ?? machine.map({ ensureOutgoingScope(for: $0) }) else { return false }
+        let groupID = OutgoingGroupID(profile: scope, sessionID: key.sessionID)
+        let retained = outgoingItems(in: quotaScopes(containing: scope), sessionID: key.sessionID).count
+        guard outgoingCount < Self.outgoingRowLimit, retained < OutgoingMessages.limit,
+              outgoingByGroup[groupID] != nil || outgoingByGroup.count < Self.outgoingSessionLimit else { return false }
+        guard outgoingByGroup[groupID, default: OutgoingMessages()].add(id: id, content: content, origin: origin, groupID: groupID) else { return false }
+        if outgoingLabels[groupID] == nil {
+            outgoingLabels[groupID] = (key, machine?.displayName ?? key.machineID,
                 machine?.sessions.first { $0.sessionId == key.sessionID }?.name ?? key.sessionID)
         }
         let delay = outgoingUncertaintyDelay
         Task { [weak self] in
             do { try await Task.sleep(for: delay) } catch { return }
-            self?.outgoingBySession[key]?.markUncertain(id: id, origin: origin)
+            self?.outgoingByGroup[groupID]?.markUncertain(id: id, origin: origin)
         }
         return true
     }
 
-    public func dismissOutgoing(machineID: String, sessionID: String, messageID: String) {
-        let key = sessionKey(machineID: machineID, sessionID: sessionID)
-        outgoingBySession[key]?.dismiss(id: messageID)
-        if outgoingBySession[key]?.items.isEmpty == true {
-            outgoingBySession[key] = nil
-            outgoingLabels[key] = nil
+    public func dismissOutgoing(groupID: OutgoingGroupID, messageID: String) {
+        outgoingByGroup[groupID]?.dismiss(id: messageID)
+        if outgoingByGroup[groupID]?.items.isEmpty == true {
+            outgoingByGroup[groupID] = nil
+            outgoingLabels[groupID] = nil
+            if !outgoingByGroup.keys.contains(where: { $0.profile == groupID.profile }) {
+                for scope in outgoingConsolidatedScopes.keys { outgoingConsolidatedScopes[scope]?.remove(groupID.profile) }
+            }
+        }
+    }
+
+    /// Opaque row identity includes its retained group. A stale screen cannot dismiss a new
+    /// profile's message just because it reuses the same endpoint, session or message ID.
+    public func dismissOutgoing(presentationID: String) {
+        for (groupID, messages) in outgoingByGroup {
+            if let message = messages.items.first(where: { $0.presentationID == presentationID }) {
+                dismissOutgoing(groupID: groupID, messageID: message.id)
+                return
+            }
         }
     }
 
@@ -2209,6 +2294,28 @@ public final class MachineStore {
 
         var target = machines[other]
         let source = machines[fallbackIndex]
+        if let sourceKey = outgoingAuthenticatedAuthorities[source.pairingLifetime],
+           outgoingAuthenticatedAuthorities[target.pairingLifetime] == sourceKey {
+            let targetScope = ensureOutgoingScope(for: target)
+            let inherited = currentOutgoingScopes(for: source).filter { candidate in
+                candidate.authenticatedAuthority == sourceKey && outgoingByGroup.keys.contains { $0.profile == candidate }
+            }
+            outgoingConsolidatedScopes[targetScope, default: []].formUnion(inherited)
+        }
+        // A previously unauthenticated target may inherit the live route's identity, but not
+        // its legacy text namespace. This is also needed when a session-list descriptor, rather
+        // than Hello, triggers the route merge. Without two independent proofs, prior groups
+        // remain recoverable only in history.
+        if let sourceKey = outgoingAuthenticatedAuthorities[source.pairingLifetime],
+           outgoingAuthenticatedAuthorities[target.pairingLifetime] != sourceKey {
+            outgoingAuthenticatedAuthorities[target.pairingLifetime] = sourceKey
+            _ = ensureOutgoingScope(for: target)
+        }
+        // The source profile ceases to be configured, but its immutable retained groups survive.
+        if let sourceScope = outgoingProfileScopes.removeValue(forKey: source.pairingLifetime) {
+            outgoingConsolidatedScopes[sourceScope] = nil
+        }
+        outgoingAuthenticatedAuthorities[source.pairingLifetime] = nil
         target.policyOwner = max(target.policyOwner, source.policyOwner)
         for route in source.routes { target.addRoute(route) }
         if target.connectionPreference == .automatic { target.connectionPreference = source.connectionPreference }
@@ -2350,8 +2457,8 @@ public final class MachineStore {
         else { return }
         if case .connected = state {} else {
             panesConnectionLost(endpoint)
-            for key in outgoingBySession.keys {
-                outgoingBySession[key]?.connectionLost(endpoint: endpoint, connection: generation)
+            for key in outgoingByGroup.keys {
+                outgoingByGroup[key]?.connectionLost(endpoint: endpoint, connection: generation)
             }
         }
         if case .connected = state {} else {
@@ -2477,12 +2584,16 @@ public final class MachineStore {
                   pending.sessionId == result.sessionId, pending.questionId == result.questionId else { return }
             finishAnswer(result.requestId, outcome: result.outcome)
         case .hello(let acknowledgment, let authority):
+            outgoingAuthenticatedAuthorities[machines[index].pairingLifetime] = authority
+            _ = ensureOutgoingScope(for: machines[index])
             if endpoint == parent { connectedRoutes.insert(endpoint) }
             if let descriptor = acknowledgment.machine {
                 index = consolidateRoute(endpoint, parent: parent, descriptor: descriptor, fallbackIndex: index)
                 machines[index].apply(descriptor)
             }
             if let authority { machines[index].bindAuthenticatedPublicKey(authority) }
+            outgoingAuthenticatedAuthorities[machines[index].pairingLifetime] = authority
+            _ = ensureOutgoingScope(for: machines[index])
             publishPolicy(machineIndex: index)
             retireDisallowedRoutes(machineIndex: index)
             guard machines[index].connectionPreference.permits(parent) else { return }
@@ -2613,7 +2724,12 @@ public final class MachineStore {
             }
             if response.success {
                 if let route = routeBySession[killedKey], let generation = connectionGenerations[route] {
-                    outgoingBySession[killedKey]?.connectionLost(endpoint: route, connection: generation)
+                    if let machine = machine(withIdentifier: killedKey.machineID) {
+                        let scopes = currentOutgoingScopes(for: machine)
+                        for groupID in outgoingByGroup.keys where scopes.contains(groupID.profile) && groupID.sessionID == killedKey.sessionID {
+                            outgoingByGroup[groupID]?.connectionLost(endpoint: route, connection: generation)
+                        }
+                    }
                 }
                 let sessionId = killedKey.sessionID
                 machines[index].sessions.removeAll { $0.sessionId == sessionId }
@@ -2631,9 +2747,10 @@ public final class MachineStore {
             }
         case .error(let error, let socket):
             if let socket, case .string(let sessionID)? = error.details?["sessionId"] {
-                let key = MachineSessionKey(machineID: machines[index].id, sessionID: sessionID)
-                outgoingBySession[key]?.receive(error, sessionID: sessionID,
-                    origin: OutgoingOrigin(endpoint: endpoint, connection: generation, socket: socket))
+                let origin = OutgoingOrigin(endpoint: endpoint, connection: generation, socket: socket)
+                for groupID in outgoingByGroup.keys where groupID.sessionID == sessionID {
+                    outgoingByGroup[groupID]?.receive(error, sessionID: sessionID, origin: origin)
+                }
             }
             // A hub announcing that it is closing is expected, not an error: the machine's own
             // offline row says what the person needs to know (#1603).
