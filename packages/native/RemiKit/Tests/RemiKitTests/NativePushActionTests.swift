@@ -3,6 +3,7 @@ import Foundation
 import Security
 import Testing
 import UserNotifications
+import RemiUI
 @testable import RemiPush
 @testable import RemiKit
 
@@ -32,20 +33,22 @@ struct NativePushActionTests {
             }
             if change == "missingStandingScope" { standing["description"] = NSNull() }
             payload["options"] = category == "REMI_YNA" ? [yes, standing, no] : [yes, no]
+            if change == "appOnly" {
+                payload = ["type": "informational", "actionable": false, "sessionId": try #require(payload["sessionId"]),
+                    "title": try #require(payload["title"]), "body": "A request needs your review."]
+            }
             let carrier = try OwnedPushContext.resealed(vector, oracle: oracle,
                 payload: JSONSerialization.data(withJSONObject: payload), now: UInt64(Date().timeIntervalSince1970))
             return (context, carrier)
         } catch { try? context.cleanup(); throw error }
     }
 
-    @Test func daemonStandingGrantShapeKeepsItsFullSignedTitleAndRequiresUnlock() throws {
+    @Test func longStandingGrantStaysWholeInAppAndRequiresReview() throws {
         let (context, carrier) = try inputs(category: "REMI_YNA", change: "daemonStanding")
         defer { try? context.cleanup() }
         let opened = try context.store.open(carrier: carrier)
-        let set = try #require(try context.store.actionSet(for: opened))
-        let standing = try #require(set.actions.first { $0.value == "always" })
-        #expect(standing.title == "Yes, allow x for this session")
-        #expect(standing.authenticationRequired)
+        #expect(try context.store.actionSet(for: opened) == nil)
+        #expect(opened.nativeAnswerChoices.first(where: { $0.value == "always" })?.label == "Yes, allow x for this session")
         #expect(opened.nativeAnswerChoices.count == 3)
     }
     static func content(_ notification: VerifiedPushNotification, set: VerifiedPushActionSet) throws -> UNMutableNotificationContent {
@@ -61,14 +64,15 @@ struct NativePushActionTests {
         let (context, carrier) = try inputs(category: category); defer { try? context.cleanup() }
         let opened = try context.store.open(carrier: carrier)
         let set = try #require(try context.store.actionSet(for: opened))
-        let tuple = try RelayCrypto.tuple(Data("remi-native-v2 actions".utf8), opened.machine.room,
+        let tuple = try RelayCrypto.tuple(Data("remi-native-v2 short-actions".utf8), opened.machine.room,
             opened.machine.machinePublicKey, opened.machine.authority.publicKey,
             Data(opened.machine.authority.revision.utf8), opened.contentDigest)
         let digest = RelayCrypto.hex(Data(SHA256.hash(data: tuple)))
         #expect(set.categoryIdentifier == NativePushActionPolicy.prefix + String(opened.expiresAt) + "." + digest)
         #expect(set.actions.count == (category == "REMI_YNA" ? 3 : 2))
         #expect(set.actions.first?.value == "no")
-        #expect(set.actions.first?.title == "No" && set.actions.first?.authenticationRequired == false)
+        #expect(set.actions.first?.title == "Deny" && set.actions.first?.authenticationRequired == false)
+        #expect(set.actions.first(where: { $0.value == "yes" })?.title == "Allow once")
         #expect(Set(set.actions.map(\.identifier)).count == set.actions.count)
         #expect(set.actions.allSatisfy { $0.identifier.hasPrefix(set.categoryIdentifier + ".a.") })
         if category == "REMI_YNA" {
@@ -107,9 +111,111 @@ struct NativePushActionTests {
         let opened = try context.store.open(carrier: carrier)
         let set = try context.store.actionSet(for: opened)
         if change == "boundary" {
-            let yes = try #require(set?.actions.first { $0.value == "yes" })
-            #expect(yes.title == String(repeating: "Y", count: 80))
+            #expect(set == nil)
+            let yes = try #require(opened.nativeAnswerChoices.first { $0.value == "yes" })
+            #expect(yes.label == String(repeating: "Y", count: 80))
         } else { #expect(set == nil) }
+    }
+
+    @Test func reviewIsAnExplicitForegroundOpenAndCanNeverVerifyAsAnAnswer() throws {
+        let (context, carrier) = try inputs(change: "long"); defer { try? context.cleanup() }
+        let opened = try context.store.open(carrier: carrier)
+        let category = RemiPushStore.reviewCategory
+        #expect(category.actions.count == 1)
+        #expect(category.actions[0].title == "Review request")
+        #expect(category.actions[0].options == [.foreground])
+        let content = UNMutableNotificationContent()
+        content.title = opened.title; content.body = opened.body
+        content.categoryIdentifier = category.identifier
+        content.userInfo = ["remiPush": try JSONSerialization.jsonObject(with: carrier)]
+        #expect(context.store.allowsPresentation(content))
+        #expect(throws: (any Error).self) {
+            try context.store.verifyAction(content: content, identifier: RemiPushStore.reviewActionIdentifier)
+        }
+        #expect(RemiPushStore.isSecureNotification(content: content, identifier: RemiPushStore.reviewActionIdentifier))
+        content.body += " forged"
+        #expect(!context.store.allowsPresentation(content))
+        try context.store.forgetMachine(room: context.room)
+        #expect(!context.store.allowsPresentation(content))
+    }
+
+    @Test func signedAppOnlyQuestionsKeepTheirImportanceWithoutAnswerAuthority() throws {
+        let (context, carrier) = try inputs(change: "appOnly"); defer { try? context.cleanup() }
+        let opened = try context.store.open(carrier: carrier)
+        #expect(opened.kind == .question)
+        #expect(RemiPushPresentation.importance(for: opened.kind) == .question)
+        #expect(opened.questionID == nil && opened.nativeAnswerChoices.isEmpty)
+        #expect(try context.store.actionSet(for: opened) == nil)
+        let content = UNMutableNotificationContent()
+        content.title = opened.title; content.body = opened.body
+        content.categoryIdentifier = RemiPushStore.reviewCategoryIdentifier
+        content.userInfo = ["remiPush": try JSONSerialization.jsonObject(with: carrier)]
+        #expect(context.store.allowsPresentation(content))
+        #expect(throws: (any Error).self) {
+            try context.store.verifyAction(content: content, identifier: RemiPushStore.reviewActionIdentifier)
+        }
+    }
+
+    @MainActor @Test func notificationOnlyQuestionNavigatesToItsPairedSession() throws {
+        let (context, carrier) = try inputs(); defer { try? context.cleanup() }
+        let fullTrust = try #require(try context.store.machine(room: context.room))
+        try context.store.forgetMachine(room: context.room)
+        try context.store.commitNotificationMachine(room: context.room, machinePublicKey: fullTrust.machinePublicKey,
+            origin: fullTrust.origin, relayURL: fullTrust.relayURL, authority: context.authority, generation: context.generation)
+        let endpoint = MachineEndpoint(host: "review.example", port: 18790,
+            expectedPublicKey: fullTrust.machinePublicKey.base64EncodedString())
+        let profile = MachineRouteProfile(machineID: RelayCrypto.hex(context.room), routes: [endpoint],
+            connectionPreference: .localOnly, machinePublicKey: RelayCrypto.b64(fullTrust.machinePublicKey))
+        let store = MachineStore(profiles: [profile], identity: ClientIdentity(), clientVersion: "owned-notification-navigation",
+            clientId: UUID().uuidString.lowercased(), pushStore: context.store)
+        store.openRelayNotification(carrier: carrier)
+        let opened = try #require(store.verifiedRelayNotification)
+        let destination = try #require(store.notificationSessionDestination)
+        #expect(opened.machine.notificationOnly)
+        #expect(store.relayNotificationNotice == nil)
+        #expect(store.relayNotificationChoices.count == 2)
+        #expect(destination.machineID == store.machines[0].id)
+        #expect(destination.sessionID == opened.sessionID)
+        #expect(store.machines[0].connectionPreference == .localOnly)
+        #expect(store.machines[0].routes == [endpoint])
+        #expect(try context.store.completedMachines().isEmpty)
+        var shell = PhoneShellState()
+        let route = PhoneSessionRoute(machineKey: destination.machineID, sessionID: destination.sessionID)
+        let questionID = try #require(opened.questionID)
+        #expect(store.notificationQuestionID(for: destination) == questionID)
+        shell.openFromNotification(route: route, questionID: store.notificationQuestionID(for: destination))
+        #expect(shell.focusQuestionID(for: route) == questionID)
+        let wrongSession = MachineSessionKey(machineID: destination.machineID, sessionID: "another-session")
+        #expect(store.notificationQuestionID(for: wrongSession) == nil)
+        try context.store.forgetMachine(room: context.room)
+        #expect(store.notificationQuestionID(for: destination) == nil)
+    }
+
+    @MainActor @Test func reviewNavigationRequiresAnExistingMatchingMachineAndCurrentTrust() throws {
+        let (context, carrier) = try inputs(change: "appOnly"); defer { try? context.cleanup() }
+        let trust = try #require(try context.store.machine(room: context.room))
+        let endpoint = MachineEndpoint(host: "review.example", port: 18790, expectedPublicKey: trust.machinePublicKey.base64EncodedString())
+        let profile = MachineRouteProfile(machineID: RelayCrypto.hex(context.room), routes: [endpoint],
+            connectionPreference: .localOnly, machinePublicKey: RelayCrypto.b64(trust.machinePublicKey))
+        // Navigation does not read or use a device signing key; no connection is started.
+        let store = MachineStore(profiles: [profile], identity: ClientIdentity(), clientVersion: "owned-review-navigation",
+            clientId: UUID().uuidString.lowercased(), pushStore: context.store)
+        store.openRelayNotification(carrier: carrier)
+        let destination = try #require(store.notificationSessionDestination)
+        #expect(destination.machineID == store.machines[0].id)
+        #expect(destination.sessionID == store.verifiedRelayNotification?.sessionID)
+        #expect(store.notificationQuestionID(for: destination) == nil)
+        #expect(store.machines[0].connectionPreference == .localOnly)
+        let otherKey = ClientIdentity().publicKeyRaw
+        let otherProfile = MachineRouteProfile(machineID: RelayCrypto.hex(RelayCrypto.room(otherKey)),
+            routes: [MachineEndpoint(host: "other.example", port: 18790, expectedPublicKey: otherKey.base64EncodedString())],
+            machinePublicKey: RelayCrypto.b64(otherKey))
+        let wrong = MachineStore(profiles: [otherProfile], identity: ClientIdentity(), clientVersion: "owned-review-navigation",
+            clientId: UUID().uuidString.lowercased(), pushStore: context.store)
+        wrong.openRelayNotification(carrier: carrier)
+        #expect(wrong.notificationSessionDestination == nil)
+        try context.store.forgetMachine(room: context.room)
+        #expect(store.notificationSessionDestination == nil)
     }
 
     @Test func shippingSnapshotPreservesExactUntrustedOSValues() throws {

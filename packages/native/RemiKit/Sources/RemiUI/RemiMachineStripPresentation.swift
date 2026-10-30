@@ -180,13 +180,6 @@ public enum RemiMachineStripPresentation {
         row.machineID ?? problems(in: machines).first?.machine.id
     }
 
-    /// What a machine menu announces: "Machine Studio, connected, 2 waiting, selected".
-    /// Nil `selected` reads as no machine chosen.
-    public static func menuAccessibilityLabel(selected: RemiMachineSummary?, label: String? = nil) -> String {
-        guard let selected else { return "Machine, none selected" }
-        return "Machine \(accessibilityLabel(for: selected, label: label)), selected"
-    }
-
     /// "Studio Mac, connected, 2 waiting". `label` replaces the name when machines share one.
     public static func accessibilityLabel(for machine: RemiMachineSummary, label: String? = nil) -> String {
         var label = "\(label ?? machine.name), \(dotStyle(for: machine.reachability).accessibilityWord)"

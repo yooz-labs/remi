@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.8.2-dev.23'; // REMI_COMPILED_VERSION
+      return '0.8.3-dev.10'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.8.2-dev.23'; // REMI_COMPILED_VERSION
+    return '0.8.3-dev.10'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -131,6 +131,7 @@ import {
   generateId,
   now,
 } from '@remi/shared';
+import { type NotificationHostRequest, createNotificationHostResponse } from '@remi/shared';
 import { BROWSER_LINKS_CAPABILITY } from '@remi/shared/browser-links';
 import { AdapterRegistry, TelegramAdapter, WebSocketAdapter } from './adapters/index.ts';
 import type { WebSocketAdapterConfig } from './adapters/websocket-adapter.ts';
@@ -263,9 +264,14 @@ import {
   legacyPushFields,
 } from './notifications/legacy-push-policy.ts';
 import {
+  LocalPushForwardService,
+  localHubPushForwarder,
+} from './notifications/local-push-forward.ts';
+import {
   type NotificationDispatcher,
   drainPushDeliveries,
 } from './notifications/notification-dispatcher.ts';
+import { NotificationHostService } from './notifications/notification-host-service.ts';
 import { isLegacyPushRetired, sendPushTrigger } from './notifications/push-client.ts';
 import {
   SecurePushContexts,
@@ -501,10 +507,10 @@ const cliHost = parsedArgs.host;
 const cliDir = parsedArgs.dir;
 const cliRecent = parsedArgs.recent;
 const cliPushSecret = parsedArgs.pushSecret ?? process.env['REMI_PUSH_SECRET'];
-// A session daemon this process spawns copies process.env (`spawnDaemon`), never
-// the parent's argv, so a secret given as `--push-secret` must reach children
-// through the environment, which `ps` does not show to other users. Without
-// this a hub started with the flag spawned children that could not push (#1200).
+// Legacy-compatible children still need the environment form, never a secret
+// in their argv (#1200). Once secure push activates, spawnRemiDaemon removes it
+// and those children use the hub sender (#1679). Same-user environment access
+// remains the known boundary in #1252; PTYs separately strip Remi credentials.
 if (parsedArgs.pushSecret !== undefined) process.env['REMI_PUSH_SECRET'] = parsedArgs.pushSecret;
 const cliOrphanTimeout = parsedArgs.orphanTimeout;
 const claudeArgs = [...parsedArgs.claudeArgs];
@@ -1184,6 +1190,8 @@ const securePushContexts = new SecurePushContexts({
 const securePushRuntimes = new Map<UUID, SecurePushRuntime>();
 let securePushService: SecurePushService | undefined;
 let nativeAnswerLedger: NativeAnswerLedger | undefined;
+let notificationHostService: NotificationHostService | undefined;
+let localPushForwardService: LocalPushForwardService | undefined;
 let imageStagingService: ImageStagingService | undefined;
 let imageInsertionCoordinator: ImageInsertionCoordinator | undefined;
 let structuredChatService: StructuredChatService | undefined;
@@ -1200,6 +1208,7 @@ const capabilitiesForConnection = (id: UUID): readonly string[] => [
     ? [IMAGE_STAGING_CAPABILITY, ...(imageInsertionCoordinator ? [IMAGE_INSERTION_CAPABILITY] : [])]
     : []),
   ...(structuredChatService?.isAvailable(id) ? [STRUCTURED_CHAT_CAPABILITY] : []),
+  ...(notificationHostService?.isAvailable(id) ? ['notifications'] : []),
 ];
 function securePushForSession(sessionId: UUID): SecureSessionPush | undefined {
   const runtime = securePushRuntimes.get(sessionId);
@@ -1877,6 +1886,7 @@ async function createNewSession(
 ): Promise<PTYSession> {
   const runtime = securePushContexts.begin(sessionId);
   securePushRuntimes.set(sessionId, runtime);
+  liveSessionsRegistry.setNotificationRuntime(sessionId, runtime.instance);
   try {
     fileDownloadSessionHost?.beginSession(sessionId, workingDirectory);
     const { messageApi, sendAndRecord, notifications } = createMessageApiForSession(
@@ -2176,6 +2186,10 @@ const inputHandlers: InputHandlers = createInputHandlers({
   // prompt through its hook. One helper, shared with the tests, like
   // trackerScreenDeps below.
   ...gateAnswerDeps((sessionId) => harnessSessions.get(sessionId)?.decisions),
+  prepareAnswerCommit: (connectionId, sessionId, questionId) =>
+    harnessSessions.get(sessionId)?.decisions.requiresAnswerCommit?.(questionId)
+      ? (structuredChatService?.decisionCommit(connectionId, sessionId) ?? null)
+      : undefined,
   // #1155: the chat guard reads the one "a prompt is up" signal Stop reads.
   ...promptUpWiring,
   // #1177: a Codex session takes no typed chat (its TUI cannot be read), whatever
@@ -2755,6 +2769,24 @@ let sharedEvents = {
   ...inputHandlers,
   onNativeAnswer: (_connectionId: UUID, message: import('@remi/shared').NativeAnswerMessage) =>
     nativeAnswerLedger?.answer(message) ?? Promise.resolve('stale' as const),
+  onLocalPushForward: (request: Request) =>
+    localPushForwardService?.handle(request) ??
+    Promise.resolve(new Response('Unavailable', { status: 503 })),
+  onNotificationHostRequest: (connectionId: UUID, message: NotificationHostRequest) => {
+    const operation =
+      notificationHostService?.handle(connectionId, message) ??
+      Promise.resolve({ success: false as const, error: 'UNSUPPORTED' as const });
+    void operation
+      .then((result) =>
+        registry.sendRaw(connectionId, createNotificationHostResponse(message.id, result)),
+      )
+      .catch(() =>
+        registry.sendRaw(
+          connectionId,
+          createNotificationHostResponse(message.id, { success: false, error: 'STORE_ERROR' }),
+        ),
+      );
+  },
   ...sessionHandlers,
   ...connectionHandlers,
   ...transcriptHandlers,
@@ -3053,7 +3085,7 @@ if (TELEGRAM_ENABLED && TELEGRAM_TOKEN) {
 // Session children and wrappers never own a room. The hub starts it only after PID ownership.
 if (serveMode && relayWanted && !authenticator)
   console.error('Relay startup refused: enable authentication before using --relay.');
-if (relayWanted && relayIdentity) {
+if ((relayWanted || !serveMode) && relayIdentity) {
   const audience = relaySecurePushAudience(cliSignalingUrl ?? remiConfig.network.signaling_url);
   if (audience === null) {
     logError('[SecurePush] unsupported signaling URL; secure push requires a root origin');
@@ -3064,18 +3096,47 @@ if (relayWanted && relayIdentity) {
         new Uint8Array(Buffer.from(relayIdentity.publicKeyRaw, 'base64')),
       );
       const store = new SecurePushStore(REMI_DIR, relayTrust, 64, { leaseMs: pushLeaseMs });
-      // #1200: the Worker refuses a /v2/push submit without its per-deployment secret, so without
-      // one there is no service to build; say so once, never print the value.
+      // Sessions can delegate sealed submissions to the configured local hub
+      // without inheriting its provider credential (#1679).
       const pushSecret = cliPushSecret?.trim();
-      if (pushSecret) {
+      const forward =
+        !serveMode && !pushSecret
+          ? localHubPushForwarder({
+              directory: REMI_DIR,
+              registry: liveSessionsRegistry,
+              port: () => PORT,
+              runtime: () => {
+                const id = getPrimarySessionId();
+                return id ? securePushRuntimes.get(id) : undefined;
+              },
+            })
+          : undefined;
+      const rid = Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex');
+      if (pushSecret || forward) {
         securePushService = new SecurePushService({
           store,
-          transport: new SecurePushTransport({ store, signer, audience, pushSecret }),
+          transport: new SecurePushTransport({
+            store,
+            signer,
+            audience,
+            ...(pushSecret ? { pushSecret } : {}),
+            ...(forward ? { forward } : {}),
+          }),
           contexts: securePushContexts,
           machinePublicKey: relayV2.b64u(signer.publicKey),
-          rid: Buffer.from(await relayV2.ridOf(signer.publicKey)).toString('hex'),
+          rid,
           log: (outcome) => log(`[SecurePush] ${outcome}`),
         });
+        if (serveMode && pushSecret)
+          localPushForwardService = new LocalPushForwardService({
+            subscriptions: store,
+            registry: liveSessionsRegistry,
+            audience,
+            rid,
+            machinePublicKey: relayV2.b64u(signer.publicKey),
+            pushSecret,
+            log: (outcome) => log(`[LocalPush] ${outcome}`),
+          });
       } else {
         logError(
           '[SecurePush] disabled: set --push-secret or REMI_PUSH_SECRET to the Worker PUSH_SECRET',
@@ -3095,6 +3156,33 @@ if (relayWanted && relayIdentity) {
       logError(`[SecurePush] initialization refused (${initFailureClass(error)})`);
     }
   }
+}
+
+// A direct signature identifies the paired device; capability-only utility peers
+// cannot select another device or bootstrap a notification enrollment.
+if (serveMode && authenticator) {
+  notificationHostService = new NotificationHostService({
+    directory: REMI_DIR,
+    trust: relayTrust,
+    subscriptions: relayChildAuthority,
+    relay: () => hubRelay,
+    senderReady: () => securePushService !== undefined,
+    relayUrl: cliSignalingUrl ?? remiConfig.network.signaling_url,
+    client: (id) => {
+      const adapter = registry.getAdapter('websocket');
+      if (!(adapter instanceof WebSocketAdapter)) return null;
+      const connection = adapter.getDirectConnection(id);
+      const publicKey = connection?.connectionClientPublicKey;
+      if (!connection || !publicKey || connection.connectionState !== 'connected') return null;
+      return {
+        publicKey,
+        isCurrent: () =>
+          adapter.getDirectConnection(id) === connection &&
+          connection.connectionState === 'connected' &&
+          connection.connectionClientPublicKey === publicKey,
+      };
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------

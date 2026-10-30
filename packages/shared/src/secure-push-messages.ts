@@ -11,7 +11,8 @@ export type SecurePushSubscriptionError =
   | 'INVALID_SUBSCRIPTION'
   | 'STALE_KEY_VERSION'
   | 'CAPACITY'
-  | 'STORE_ERROR';
+  | 'STORE_ERROR'
+  | 'RENEWAL_REQUIRED';
 export interface SecurePushRegistration {
   readonly token: string;
   readonly environment: ApnsEnvironment;
@@ -23,6 +24,8 @@ export interface SecurePushRegisterRequestMessage extends SecurePushRegistration
   readonly type: 'secure_push_register_request';
   readonly id: UUID;
   readonly timestamp: Timestamp;
+  /** Explicit foreground Continue; automatic registration must leave this absent. */
+  readonly renewExpired?: boolean;
 }
 export type SecurePushRegisterResult =
   | { readonly success: true; readonly keyVersion: number }
@@ -49,9 +52,11 @@ export type SecurePushUnregisterResponseMessage = {
 } & SecurePushUnregisterResult;
 export function createSecurePushRegisterRequest(
   r: SecurePushRegistration,
+  renewExpired = false,
 ): SecurePushRegisterRequestMessage {
   return {
     type: 'secure_push_register_request',
+    ...(renewExpired ? { renewExpired: true } : {}),
     id: generateId(),
     timestamp: now(),
     token: r.token,
@@ -99,6 +104,7 @@ const ERRORS: readonly SecurePushSubscriptionError[] = [
   'STALE_KEY_VERSION',
   'CAPACITY',
   'STORE_ERROR',
+  'RENEWAL_REQUIRED',
 ];
 const BASE = ['type', 'id', 'timestamp'];
 const hasExactly = (o: Record<string, unknown>, required: string[]) =>

@@ -32,6 +32,7 @@ const GOLDEN_KEYS = [
   // Explicit R6 signed-proof event, added to the original 13 (#1201).
   'onImageUpload',
   'onNativeAnswer',
+  'onNotificationHostRequest',
   'onUserInput',
   'onAnswer',
   'onBulletExpandRequest',
@@ -94,9 +95,9 @@ test('the file download semantic event crosses the actual generic pick/bind forw
 });
 
 describe('CLIENT_MESSAGE_EVENT_KEYS', () => {
-  test('has exactly 21 entries with no duplicates', () => {
-    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(21);
-    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(21);
+  test('has exactly 22 entries with no duplicates', () => {
+    expect(CLIENT_MESSAGE_EVENT_KEYS.length).toBe(22);
+    expect(new Set(CLIENT_MESSAGE_EVENT_KEYS).size).toBe(22);
   });
 
   test('is exactly the golden key set, no more, no fewer', () => {

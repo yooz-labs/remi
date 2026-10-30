@@ -84,7 +84,11 @@ struct MacSessionDetail: View {
                 onCopyID: { copyToPasteboard(session.id) },
                 onCopyDirectory: { copyToPasteboard(session.projectPath) },
                 onResume: onResume,
-                onTerminate: { confirmingTermination = true }
+                onTerminate: { confirmingTermination = true },
+                canJumpToFirst: firstActivityID != nil && firstActivityID.map(displayRowID) != visibleEntryID,
+                canJumpToLatest: latestActivityID != nil && !followsLatest,
+                onJumpToFirst: jumpToFirstActivity,
+                onJumpToLatest: jumpToLatestActivity
             )
             if !views.isEmpty {
                 MacConversationPicker(views: views, selectedViewID: $selectedViewID)
@@ -244,6 +248,16 @@ struct MacSessionDetail: View {
         // the conversation, so the session list's own search field keeps Command-F when the
         // list has focus. The toolbar's search button works regardless of focus.
         .focusedValue(
+            \.macConversations,
+            views.isEmpty ? nil : MacConversationActions(move: { offset in
+                selectedViewID = RemiConversationSelection.shiftedViewID(
+                    selectedViewID: selectedViewID,
+                    views: views,
+                    offset: offset
+                )
+            })
+        )
+        .focusedValue(
             \.macFind,
             RemiMacCommandAvailability.canFind(
                 hasOpenConversation: true,
@@ -268,8 +282,6 @@ struct MacSessionDetail: View {
     @ViewBuilder
     private var transcriptToolbarButtons: some View {
         if !visibleTranscript.isEmpty || !visibleQuestions.isEmpty {
-            firstActivityButton
-            latestActivityButton
             searchButton
         }
     }
@@ -304,32 +316,20 @@ struct MacSessionDetail: View {
         searchFocusRequest += 1
     }
 
-    private var latestActivityButton: some View {
-        Button("Jump to latest activity", systemImage: "arrow.down.to.line") {
-            focusedQuestionID = nil
-            accessibilityQuestionID = nil
-            resetReview()
-            followsLatest = true
-            latestScrollRequest += 1
-        }
-        .labelStyle(.iconOnly)
-        .keyboardShortcut(.downArrow, modifiers: .command)
-        .disabled(latestActivityID == nil || followsLatest)
-        .help("Jump to latest activity (Command-↓)")
+    private func jumpToLatestActivity() {
+        focusedQuestionID = nil
+        accessibilityQuestionID = nil
+        resetReview()
+        followsLatest = true
+        latestScrollRequest += 1
     }
 
-    private var firstActivityButton: some View {
-        Button("Jump to first activity", systemImage: "arrow.up.to.line") {
-            guard let firstActivityID else { return }
-            followsLatest = false
-            withAnimation(.easeInOut(duration: 0.2)) {
-                visibleEntryID = displayRowID(firstActivityID)
-            }
+    private func jumpToFirstActivity() {
+        guard let firstActivityID else { return }
+        followsLatest = false
+        withAnimation(.easeInOut(duration: 0.2)) {
+            visibleEntryID = displayRowID(firstActivityID)
         }
-        .labelStyle(.iconOnly)
-        .keyboardShortcut(.upArrow, modifiers: .command)
-        .disabled(firstActivityID == nil || firstActivityID.map(displayRowID) == visibleEntryID)
-        .help("Jump to first activity (Command-↑)")
     }
 
     /// The entries the transcript groups and the ones it must keep visible (search matches).
@@ -481,109 +481,72 @@ struct MacSessionDetail: View {
     }
 }
 
+/// The conversations of the open session as tabs: Main, then every active subagent, so what is
+/// running is one click away. Finished subagents are in the "Earlier" menu; the one that is open
+/// always stays a tab. Previous and Next Conversation are in the Go menu.
 private struct MacConversationPicker: View {
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let views: [SessionViewMeta]
     @Binding var selectedViewID: String
 
     var body: some View {
-        let layout = dynamicTypeSize.isAccessibilitySize
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: RemiTheme.Spacing.xs))
-            : AnyLayout(HStackLayout(alignment: .center, spacing: RemiTheme.Spacing.s))
+        ViewThatFits(in: .horizontal) {
+            tabs
+                .fixedSize(horizontal: true, vertical: false)
+            // Many active subagents: the same tabs, scrolling, with no scroll bar.
+            ScrollView(.horizontal) { tabs }
+                .scrollIndicators(.never)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Conversations")
+    }
 
-        layout {
-            Menu {
+    private var tabs: some View {
+        HStack(spacing: RemiTheme.Spacing.xs) {
+            RemiConversationChip(
+                title: "Main",
+                systemImage: "bubble.left.fill",
+                active: true,
+                selected: selectedViewID.isEmpty,
+                compact: true
+            ) { selectedViewID = "" }
+
+            ForEach(conversations.tabs) { view in
+                RemiConversationChip(
+                    title: conversations.title(for: view),
+                    systemImage: "person.2.fill",
+                    active: view.active,
+                    selected: selectedViewID == view.agentId,
+                    compact: true
+                ) { selectedViewID = view.agentId }
+            }
+
+            if !conversations.earlier.isEmpty {
+                earlierMenu
+            }
+        }
+    }
+
+    private var conversations: RemiConversationTabs {
+        RemiConversationTabs(views: views, selectedViewID: selectedViewID)
+    }
+
+    private var earlierMenu: some View {
+        Menu {
+            ForEach(conversations.earlier) { view in
                 Button {
-                    selectedViewID = ""
+                    selectedViewID = view.agentId
                 } label: {
-                    Label("Main", systemImage: selectedViewID.isEmpty ? "checkmark" : "bubble.left.fill")
-                }
-                if !views.isEmpty { Divider() }
-                ForEach(views) { view in
-                    Button {
-                        selectedViewID = view.agentId
-                    } label: {
-                        Label(
-                            RemiConversationSelection.title(for: view, among: views),
-                            systemImage: selectedViewID == view.agentId ? "checkmark" : "person.2.fill"
-                        )
-                    }
-                }
-            } label: {
-                Label("Choose conversation", systemImage: "bubble.left.and.bubble.right")
-                    .labelStyle(.iconOnly)
-                    .frame(minWidth: RemiTheme.Size.minimumTapTarget)
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .help("Choose a main or subagent conversation")
-
-            ScrollView(.horizontal) {
-                HStack(spacing: RemiTheme.Spacing.xs) {
-                    RemiConversationChip(
-                        title: "Main",
-                        systemImage: "bubble.left.fill",
-                        active: true,
-                        selected: selectedViewID.isEmpty
-                    ) { selectedViewID = "" }
-
-                    ForEach(views) { view in
-                        RemiConversationChip(
-                            title: RemiConversationSelection.title(for: view, among: views),
-                            systemImage: "person.2.fill",
-                            active: view.active,
-                            selected: selectedViewID == view.agentId
-                        ) { selectedViewID = view.agentId }
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-            .scrollIndicators(.hidden)
-
-            GlassEffectContainer(spacing: RemiTheme.Spacing.xxs) {
-                HStack(spacing: RemiTheme.Spacing.xxs) {
-                    conversationNavigationButton(
-                        title: "Previous conversation",
-                        systemImage: "chevron.left",
-                        key: .leftArrow,
-                        offset: -1
-                    )
-                    conversationNavigationButton(
-                        title: "Next conversation",
-                        systemImage: "chevron.right",
-                        key: .rightArrow,
-                        offset: 1
-                    )
+                    Label(conversations.title(for: view), systemImage: "person.2.fill")
                 }
             }
-        }
-    }
-
-    private func conversationNavigationButton(
-        title: LocalizedStringKey,
-        systemImage: String,
-        key: KeyEquivalent,
-        offset: Int
-    ) -> some View {
-        Button {
-            selectConversation(offsetBy: offset)
         } label: {
-            Label(title, systemImage: systemImage)
-                .labelStyle(.iconOnly)
-                .frame(minWidth: RemiTheme.Size.minimumTapTarget)
+            Text("Earlier \(conversations.earlier.count)")
+                .font(.caption.weight(.semibold))
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
-        .keyboardShortcut(key, modifiers: [.command, .option])
-        .help(title)
-    }
-
-    private func selectConversation(offsetBy offset: Int) {
-        selectedViewID = RemiConversationSelection.shiftedViewID(
-            selectedViewID: selectedViewID,
-            views: views,
-            offset: offset
-        )
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Finished subagent conversations")
     }
 }
 
@@ -640,6 +603,10 @@ private struct MacSessionToolbarHeader: View {
     let onCopyDirectory: () -> Void
     let onResume: (() -> Void)?
     let onTerminate: () -> Void
+    let canJumpToFirst: Bool
+    let canJumpToLatest: Bool
+    let onJumpToFirst: () -> Void
+    let onJumpToLatest: () -> Void
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
@@ -698,6 +665,13 @@ private struct MacSessionToolbarHeader: View {
                 .help("Resume this session")
             }
             Menu {
+                // Not toolbar buttons or Command-arrow shortcuts: those moved the text cursor in
+                // the message field.
+                Button("Jump to first activity", systemImage: "arrow.up.to.line", action: onJumpToFirst)
+                    .disabled(!canJumpToFirst)
+                Button("Jump to latest activity", systemImage: "arrow.down.to.line", action: onJumpToLatest)
+                    .disabled(!canJumpToLatest)
+                Divider()
                 Button("Copy session ID", systemImage: "doc.on.doc", action: onCopyID)
                 Button("Copy directory", systemImage: "folder", action: onCopyDirectory)
                 if session.canTerminate {
@@ -731,6 +705,32 @@ private struct MacSessionToolbarHeader: View {
         .foregroundStyle(.secondary)
     }
 }
+
+#if DEBUG
+private struct MacConversationTabsPreview: View {
+    let views: [SessionViewMeta]
+    @State private var selectedViewID = ""
+
+    var body: some View {
+        MacConversationPicker(views: views, selectedViewID: $selectedViewID)
+            .padding()
+            .frame(width: 520)
+    }
+}
+
+#Preview("Conversation tabs") {
+    VStack(alignment: .leading, spacing: 24) {
+        MacConversationTabsPreview(views: [
+            SessionViewMeta(agentId: "a1", agentType: "general-purpose", active: true),
+            SessionViewMeta(agentId: "a2", agentType: "general-purpose", active: true),
+            SessionViewMeta(agentId: "a3", agentType: "Explore", active: false),
+            SessionViewMeta(agentId: "a4", agentType: "code-reviewer", active: false),
+        ])
+        MacConversationTabsPreview(views: [])
+    }
+    .padding()
+}
+#endif
 
 #if DEBUG
 #Preview("Subagent conversations") {

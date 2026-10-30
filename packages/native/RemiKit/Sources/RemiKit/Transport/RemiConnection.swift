@@ -95,6 +95,7 @@ public enum RemiInboundEvent: Sendable, Equatable {
     case resumeSessionResponse(ResumeSessionResponseMessage)
     case killSessionResponse(KillSessionResponseMessage)
     case sessionUpdate(SessionUpdateMessage)
+    case remiStatus(RemiStatusMessage)
     case error(ErrorMessage)
     case relayReady
     case answerResult(AnswerResultMessage)
@@ -164,6 +165,7 @@ public actor RemiConnection {
     private var pendingAuthentication: PendingAuthentication?
     /// The key that authenticated this direct connection. Relay authority comes from the pin.
     private var authenticatedServerPublicKey: Data?
+    private let notificationAuthorityEpoch = RelayRegistrationEpoch()
     private var applicationAdmitted = false
     private var relayHelloBuffer = RelayHelloBuffer()
     private var initialDirectHelloPending = false
@@ -221,6 +223,19 @@ public actor RemiConnection {
     func configureOneShot() throws {
         guard !shouldRun else { throw RelayFailure.state }
         singleAttempt = true; applicationHello = false
+    }
+
+    /// The live direct handshake supplies bootstrap authority, never response fields.
+    func notificationHostKey() throws -> Data {
+        guard configuration.relayPin == nil, applicationAdmitted,
+              case .connected = state, let key = authenticatedServerPublicKey else { throw RelayFailure.closed }
+        return key
+    }
+
+    func notificationHostPermit() throws -> (Data, @Sendable () throws -> Void) {
+        let key = try notificationHostKey()
+        let epoch = notificationAuthorityEpoch, captured = epoch.capture()
+        return (key, { guard epoch.matches(captured) else { throw RelayFailure.closed } })
     }
     #if DEBUG
     nonisolated var ownedExpectedMachineID: String? { expectedMachineID }
@@ -656,6 +671,8 @@ public actor RemiConnection {
             ))
         case "session_update":
             eventHandler(.sessionUpdate(try decoder.decode(SessionUpdateMessage.self, from: data)))
+        case "remi_status":
+            eventHandler(.remiStatus(try decoder.decode(RemiStatusMessage.self, from: data)))
         case "error":
             let message = try decoder.decode(ErrorMessage.self, from: data)
             // Direct Hello also supports auth-disabled hubs. An authenticated hub
@@ -675,6 +692,12 @@ public actor RemiConnection {
                 finishRPC(result.requestId, result: .success(.answer(result)))
             }
             eventHandler(.answerResult(result))
+        case "notification_host_response":
+            guard configuration.relayPin == nil, applicationAdmitted else { throw RelayFailure.malformed }
+            let result = try NotificationHostResponse.decode(data)
+            if let pending = rpcWaiters[result.requestId], case .notificationHost = pending.expected {
+                finishRPC(result.requestId, result: .success(.notificationHost(result)))
+            }
         case "secure_push_register_response", "secure_push_unregister_response":
             let result = try RelayPushResponse.decode(data)
             if let pending = rpcWaiters[result.requestId], case .push(let type, let version) = pending.expected,
@@ -715,6 +738,7 @@ public actor RemiConnection {
     }
 
     private func closeSocket() {
+        notificationAuthorityEpoch.replace()
         ready = false
         let waiting = readyWaiters; readyWaiters.removeAll()
         for waiter in waiting.values { waiter.resume(throwing: RelayFailure.closed) }

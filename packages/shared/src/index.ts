@@ -300,6 +300,7 @@ export { isSmallOrderPublicKey } from './ed25519-public-key.ts';
 export * from './relay-messages.ts';
 
 export * from './secure-push-messages.ts';
+export * from './notification-host.ts';
 
 // Authenticated direct image staging (#1170, ADR 0041).
 export * from './image-staging.ts';

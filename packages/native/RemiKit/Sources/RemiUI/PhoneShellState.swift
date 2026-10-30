@@ -30,6 +30,8 @@ public struct PhoneSessionRoute: Hashable, Sendable {
 }
 
 public enum PhoneShellDestination: Hashable, Sendable {
+    /// Every active session as a card: the landing view.
+    case board
     case inbox
     case session(PhoneSessionRoute)
 }
@@ -67,7 +69,7 @@ public struct PhoneShellState: Equatable, Sendable {
     public var pendingResume: ResumeSessionKey?
 
     public init(
-        destination: PhoneShellDestination = .inbox,
+        destination: PhoneShellDestination = .board,
         isDrawerOpen: Bool = false,
         pendingFocus: PhoneQuestionFocus? = nil,
         drawerFilter: PhoneDrawerFilter = .all
@@ -163,11 +165,11 @@ public struct PhoneShellState: Equatable, Sendable {
     }
 
     /// The route to leave when it disappears. The caller owns the grace period (it shows
-    /// a Reconnecting placeholder first); this goes to the Inbox only when the current
+    /// a Reconnecting placeholder first); this goes to the board only when the current
     /// destination is exactly this route, machine included.
     public mutating func sessionVanished(_ route: PhoneSessionRoute) {
         guard destination == .session(route) else { return }
-        destination = .inbox
+        destination = .board
     }
 
     public mutating func openDrawer() { isDrawerOpen = true }

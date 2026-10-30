@@ -49,6 +49,8 @@ private struct SupportingComponentsGallery: View {
                     ForEach(RemiPreviewData.transcript) { entry in
                         RemiTranscriptEntryView(entry: entry)
                     }
+                    RemiTranscriptEntryView(entry: .pending(id: "p1", text: "Run the tests again.", state: .sent))
+                    RemiTranscriptEntryView(entry: .pending(id: "p2", text: "And then update the changelog.", state: .sending))
                     RemiTranscriptEntryView(entry: .error(id: "error", text: "The connection closed before the answer was delivered."))
                 }
 
@@ -220,4 +222,18 @@ private struct ToolRunGallery: View {
     PreviewQuestionCard(model: RemiPreviewData.questionStates[2])
         .padding(RemiTheme.Spacing.m)
 }
+
+private struct StatusBadgeGallery: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: RemiTheme.Spacing.s) {
+            ForEach([RemiSessionStatus.needsYou, .working, .idle, .connecting, .offline], id: \.self) { status in
+                RemiStatusBadge(status: status)
+            }
+        }
+        .padding()
+    }
+}
+
+#Preview("Status badges · Light") { StatusBadgeGallery().preferredColorScheme(.light) }
+#Preview("Status badges · Dark") { StatusBadgeGallery().preferredColorScheme(.dark) }
 #endif

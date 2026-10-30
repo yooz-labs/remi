@@ -21,12 +21,13 @@ The person is busy elsewhere; the app's job is to tell them what needs them, let
 ## The Mac app (Conductor-like)
 
 - **The main window has three columns:**
-  - machines, each with its repositories;
-  - the sessions of the selection, with status and the worktree or branch;
-  - the session itself.
+  - machines, with the Inbox above them;
+  - the sessions of the selected machine, grouped by workspace (the project folder): active workspaces first, then the rest under "Recent". Clicking a closed workspace opens it and shows its latest session (the most urgent, then the most recent), clicking an open one closes it, and the workspace row is never highlighted; under its sessions are a New session button and a more-actions menu. A filter shows all, needs you, live or stored sessions;
+  - the session itself, with its conversations (Main and subagents) as small pills above the transcript.
+- **Controls:** the toolbars carry only what applies to what is open. Everything else is a menu command with a shortcut (new session, add machine, show or hide the columns, focus the conversation, previous and next session, conversation and machine). Jump to the first or latest activity is in the session's actions menu.
 - **The session view:** the transcript (agent messages, tool calls as compact chips that expand; a run of 3 or more is one row, "12 tool calls", that opens in place; the newest entry and search matches stay out of groups), the open cards inline, and a composer at the bottom.
 - **New session sheet:** pick the machine, repository, a new branch (the hub makes its worktree; starting in an existing worktree means picking its directory), harness (Claude Code, Codex) and model. The hub creates the worktree (`create_session_request.workspace`, #1236) when it lists the `workspaces` capability; for a hub that does not, the sheet starts a session in a directory.
-- **Menu bar extra:** a glanceable count of cards that need the person, and the list of them. It stays.
+- **Menu bar extra:** a glanceable count of cards that need the person, and the list of them. It stays. Its icon is the "r" in a square, one color: a thin outlined square with a filled "r" while nothing waits, and a filled square with the "r" knocked out while something does (the same pair as Transit's "t"), with the count beside it.
 - **Notifications:** native, grouped by machine. A card's notification opens it in place.
   Short, fully displayed one-time Yes/No requests also offer those choices in the
   notification on an unlocked Mac, without bringing the main window forward.
@@ -46,6 +47,7 @@ The person is busy elsewhere; the app's job is to tell them what needs them, let
   Notes about requests resolved elsewhere can still show below.
 - **Sessions live in a left drawer,** reached by an edge swipe or a button at the top left.
   The drawer groups them Needs you, Active and Recent, and each row names its project and its machine.
+  A running session wears the same faint-green Working badge as on the Mac (a dot at accessibility text sizes), and a long press on a row opens a small menu beside the row (to its right, over the detail pane, in a wide window): New session here and Resume, the project's other sessions on that machine (most recent first, a running one says so in words), and the copy actions. It is drawn by the root, not the system context menu, whose submenu stacked over the list.
   Search lives in the drawer; the Inbox has none.
   The machine strip in the drawer is a temporary filter: it narrows the list of sessions and never the Inbox or notifications.
   The Inbox has no persisted machine selection; it always spans every machine.
@@ -109,7 +111,7 @@ These are built once and used by both apps:
   - transport (local, direct, relay);
   - the person's own name for it.
 - **Transcript entries:** user message, agent message (Markdown), tool call chip, error.
-- **Composer:** text, send, interrupt (Esc), and the "a prompt is waiting" refusal (`PROMPT_WAITING`), shown as an explanation rather than an error.
+- **Composer:** text, send (on the Mac, Return sends and Shift+Return starts a new line), interrupt (Esc), and the "a prompt is waiting" refusal (`PROMPT_WAITING`), shown as an explanation rather than an error.
 
 ## States every screen handles
 

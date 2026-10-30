@@ -64,23 +64,41 @@ final class PhoneNotificationDelegate: NSObject, UIApplicationDelegate, UNUserNo
 
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse
-    ) async {
-        if RemiPushStore.isSecureNotification(content: response.notification.request.content, identifier: response.actionIdentifier) {
-            if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
-                let carrier = NativeRelayNotifications.carrier(from: response.notification.request.content.userInfo)
-                await NativeRelayNotifications.shared.openDefaultTap(carrier: carrier)
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping @Sendable () -> Void
+    ) {
+        // UIKit updates its snapshot when this completion runs. The Swift async
+        // delegate bridge can invoke it on a worker after the method returns.
+        let action: PhoneNotificationResponse
+        let content = response.notification.request.content
+        if RemiPushStore.isSecureNotification(content: content, identifier: response.actionIdentifier) {
+            if response.actionIdentifier == UNNotificationDefaultActionIdentifier ||
+                RemiPushStore.isForegroundNotificationAction(response.actionIdentifier) {
+                action = .open(NativeRelayNotifications.carrier(from: content.userInfo))
             } else if response.actionIdentifier != UNNotificationDismissActionIdentifier {
-                let delivery = NativeRelayActionDelivery(content: response.notification.request.content,
-                    identifier: response.actionIdentifier)
-                _ = await NativeRelayNotifications.shared.receiveAction(delivery)
-            }
-            return
+                action = .answer(NativeRelayActionDelivery(content: content, identifier: response.actionIdentifier))
+            } else { action = .none }
+        } else if let destination = PhoneNotificationCoordinator.destination(from: content.userInfo) {
+            action = .navigate(destination)
+        } else { action = .none }
+        NotificationResponseCompletion.perform({ await action.handle() }, completion: completionHandler)
+    }
+}
+
+private enum PhoneNotificationResponse: Sendable {
+    case open(Data?)
+    case answer(NativeRelayActionDelivery)
+    case navigate(RemiNavigationDestination)
+    case none
+
+    @MainActor
+    func handle() async {
+        switch self {
+        case .open(let carrier): NativeRelayNotifications.shared.openDefaultTap(carrier: carrier)
+        case .answer(let delivery): _ = await NativeRelayNotifications.shared.receiveAction(delivery)
+        case .navigate(let destination): PhoneNotificationRouter.shared.destination = destination
+        case .none: break
         }
-        guard let destination = PhoneNotificationCoordinator.destination(
-            from: response.notification.request.content.userInfo
-        ) else { return }
-        await MainActor.run { PhoneNotificationRouter.shared.destination = destination }
     }
 }
 
@@ -98,6 +116,14 @@ private final class PhoneBackgroundFetchCompletion {
 }
 
 enum PhoneNotificationCoordinator {
+    /// Hands the sounds setting to the notification service extension, which cannot read the
+    /// app's own defaults. Called at launch, so a setting made before the extension read it still
+    /// reaches it.
+    static func shareSoundsPreference() {
+        RemiPushPresentation.shareSoundsPreference(
+            soundsEnabled, with: UserDefaults(suiteName: RemiPushPresentation.sharedDefaultsSuite))
+    }
+
     static func requestAuthorization() async -> NotificationAuthorizationState {
         guard notificationsEnabled else { return await authorizationState() }
         _ = try? await UNUserNotificationCenter.current()
@@ -131,9 +157,8 @@ enum PhoneNotificationCoordinator {
         content.title = title
         content.body = summarizedBody
         content.userInfo = destinationUserInfo(destination)
-        if soundsEnabled {
-            content.sound = .default
-        }
+        RemiPushPresentation.apply(
+            .question, sessionID: destination.sessionID, sound: soundsEnabled, to: content)
         let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
         try? await UNUserNotificationCenter.current().add(request)
     }

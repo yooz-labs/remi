@@ -7,9 +7,9 @@ import Testing
         PhoneSessionRoute(machineKey: machine, sessionID: id, conversationID: conversation)
     }
 
-    @Test func startsOnInboxWithClosedDrawer() {
+    @Test func startsOnTheBoardWithClosedDrawer() {
         let state = PhoneShellState()
-        #expect(state.destination == .inbox)
+        #expect(state.destination == .board)
         #expect(!state.isDrawerOpen)
         #expect(state.pendingFocus == nil)
         #expect(state.selectedRoute == nil)
@@ -45,10 +45,10 @@ import Testing
         #expect(state.pendingFocus == nil)
     }
 
-    @Test func vanishedRouteFallsBackToInbox() {
+    @Test func vanishedRouteFallsBackToTheBoard() {
         var state = PhoneShellState(destination: .session(route("s1")))
         state.sessionVanished(route("s1"))
-        #expect(state.destination == .inbox)
+        #expect(state.destination == .board)
     }
 
     @Test func vanishedOtherRouteIsIgnored() {
@@ -56,9 +56,9 @@ import Testing
         state.sessionVanished(route("s1", machine: "m2"))
         state.sessionVanished(route("s2", machine: "m1"))
         #expect(state.destination == .session(route("s1", machine: "m1")))
-        var inbox = PhoneShellState()
-        inbox.sessionVanished(route("s1"))
-        #expect(inbox.destination == .inbox)
+        var board = PhoneShellState()
+        board.sessionVanished(route("s1"))
+        #expect(board.destination == .board)
     }
 
     @Test func drawerToggles() {
@@ -168,7 +168,7 @@ import Testing
         state.beginResume(resumeKey)
         let landed = state.landResume(ResumeSessionKey(machineID: "m1", sessionID: "other"), at: route("new"))
         #expect(!landed)
-        #expect(state.destination == .inbox)
+        #expect(state.destination == .board)
         #expect(state.pendingResume == resumeKey)
     }
 
@@ -220,5 +220,15 @@ import Testing
         var state = PhoneShellState(destination: .session(route("s1")))
         state.openFromNotification(route: route("s1", conversation: "agent"), questionID: nil)
         #expect(state.destination == .session(route("s1", conversation: "agent")))
+    }
+
+    @Test func theBoardAndTheInboxAreBothPlacesToGo() {
+        var state = PhoneShellState()
+        state.select(.inbox)
+        #expect(state.destination == .inbox)
+        state.openDrawer()
+        state.select(.board)
+        #expect(state.destination == .board)
+        #expect(!state.isDrawerOpen)
     }
 }
