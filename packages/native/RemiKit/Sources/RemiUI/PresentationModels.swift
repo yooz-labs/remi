@@ -1,4 +1,5 @@
 import Foundation
+import RemiKit
 import RemiPush
 
 public enum RemiQuestionState: Sendable, Equatable {
@@ -250,11 +251,36 @@ public struct RemiMachineSummary: Identifiable, Sendable, Equatable {
     }
 }
 
-/// How far a message you sent has got, before the conversation shows it.
-public enum RemiOutgoingState: Sendable, Equatable {
-    case sending
-    /// Handed to the connection; not yet in the conversation. It does not mean it was read.
-    case sent
+/// A local delivery outcome. None of these states proves harness acceptance (#1710).
+public enum RemiOutgoingState: Sendable, Equatable, CaseIterable {
+    case sending, handedOff, refused, uncertain
+
+    public init(delivery: OutgoingMessage.Delivery) {
+        self = switch delivery {
+        case .sending: .sending
+        case .handedOff: .handedOff
+        case .refused: .refused
+        case .uncertain: .uncertain
+        }
+    }
+
+    public var title: String {
+        switch self {
+        case .sending: "Sending"
+        case .handedOff: "Handed to connection"
+        case .refused: "Message refused"
+        case .uncertain: "Delivery uncertain"
+        }
+    }
+
+    public var guidance: String {
+        switch self {
+        case .sending: "Waiting for the connection."
+        case .handedOff: "Agent acceptance is unconfirmed. Check the session before sending again."
+        case .refused: "The daemon refused this input. Inspect the terminal or waiting prompt before sending again."
+        case .uncertain: "Some or all input may have arrived. Inspect the terminal and conversation before sending again."
+        }
+    }
 }
 
 public enum RemiTranscriptEntry: Identifiable, Sendable, Equatable {

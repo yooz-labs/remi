@@ -1,17 +1,25 @@
 import Foundation
 import SwiftUI
+#if os(macOS)
+import AppKit
+#elseif os(iOS)
+import UIKit
+#endif
 
 public struct RemiTranscriptEntryView: View {
+    private let dismissOutgoing: ((String) -> Void)?
     private let entry: RemiTranscriptEntry
     private let isSearchMatch: Bool
     private let isSelectedSearchMatch: Bool
 
     public init(
         entry: RemiTranscriptEntry,
+        onDismissOutgoing: ((String) -> Void)? = nil,
         isSearchMatch: Bool = false,
         isSelectedSearchMatch: Bool = false
     ) {
         self.entry = entry
+        self.dismissOutgoing = onDismissOutgoing
         self.isSearchMatch = isSearchMatch
         self.isSelectedSearchMatch = isSelectedSearchMatch
     }
@@ -20,8 +28,23 @@ public struct RemiTranscriptEntryView: View {
         Group {
             switch entry {
             case .user(_, let text): TranscriptMessage(text: text, role: .user, forceExpanded: isSearchMatch)
-            case .pending(_, let text, let state):
-                TranscriptMessage(text: text, role: .user, forceExpanded: isSearchMatch, pending: state)
+            case .pending(let id, let text, let state):
+                VStack(alignment: .trailing, spacing: RemiTheme.Spacing.xs) {
+                    TranscriptMessage(text: text, role: .user, forceExpanded: isSearchMatch, pending: state)
+                    HStack {
+                        Button("Copy message", systemImage: "doc.on.doc") { copy(text) }
+                        if let dismissOutgoing {
+                            Button("Dismiss outcome", systemImage: "xmark") { dismissOutgoing(id) }
+                                .accessibilityHint("Removes this local outcome. Does not cancel or resend input.")
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+                    Text("Kept until dismissed. Limit: 50 outcomes per session.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
             case .agent(_, let text): TranscriptMessage(text: text, role: .agent, forceExpanded: isSearchMatch)
             case .tool(_, let name, let summary): TranscriptToolEntry(name: name, summary: summary)
             case .error(_, let text): TranscriptErrorEntry(text: text)
@@ -39,6 +62,15 @@ public struct RemiTranscriptEntryView: View {
         }
         .accessibilityValue(isSelectedSearchMatch ? "Selected search result" : "")
     }
+    private func copy(_ text: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        #elseif os(iOS)
+        UIPasteboard.general.string = text
+        #endif
+    }
+
 }
 
 /// The delivery state of a not-yet-confirmed message, for VoiceOver. The label already says
@@ -49,7 +81,7 @@ private struct PendingDeliveryValue: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
         if let pending {
-            content.accessibilityValue(pending == .sending ? "Sending" : "Sent")
+            content.accessibilityValue(pending.title)
         } else {
             content
         }
@@ -119,7 +151,9 @@ private struct TranscriptMessage: View {
                     alignment: role == .user ? .trailing : .leading
                 )
             if let pending {
-                Text(pending == .sending ? "Sending" : "Sent, not shown in the conversation yet")
+                Text(pending.title)
+                    .font(.caption.weight(.semibold))
+                Text(pending.guidance)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

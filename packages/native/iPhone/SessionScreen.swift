@@ -17,6 +17,7 @@ struct SessionScreen: View {
     let onSubmit: (String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (String) -> Void
     let onSend: (String) async -> Bool
+    let onDismissOutgoing: (String) -> Void
     let onTerminate: () -> Void
     let onClose: () -> Void
     let focusQuestionRequest: String?
@@ -59,6 +60,7 @@ struct SessionScreen: View {
         onSubmit: @escaping (String, [RemiQuestionStepSelection]) -> Void = { _, _ in },
         onCancel: @escaping (String) -> Void = { _ in },
         onSend: @escaping (String) async -> Bool = { _ in true },
+        onDismissOutgoing: @escaping (String) -> Void = { _ in },
         onTerminate: @escaping () -> Void = {},
         onClose: @escaping () -> Void = {},
         focusQuestionRequest: String? = nil,
@@ -96,6 +98,7 @@ struct SessionScreen: View {
         self.onSubmit = onSubmit
         self.onCancel = onCancel
         self.onSend = onSend
+        self.onDismissOutgoing = onDismissOutgoing
         self.onTerminate = onTerminate
         self.onClose = onClose
         self.focusQuestionRequest = focusQuestionRequest
@@ -224,6 +227,7 @@ struct SessionScreen: View {
                             ) { entry in
                                 RemiTranscriptEntryView(
                                     entry: entry,
+                                    onDismissOutgoing: onDismissOutgoing,
                                     isSearchMatch: matchingEntryIDs.contains(entry.id),
                                     isSelectedSearchMatch: reviewState.selectedEntryID == entry.id
                                 )
