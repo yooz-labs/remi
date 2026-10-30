@@ -157,6 +157,55 @@ import Testing
         #expect(order(sessions, state: state).first == "a")
     }
 
+    @Test func pinningFromAFilterUsesFullOrderAndPreservesOtherPinsAndDrafts() {
+        let sessions = [
+            session("external-question", .needsYou, machine: "two"),
+            session("target", .working, machine: "one"),
+            session("existing-pin", .idle, machine: "one"),
+        ]
+        let target = RemiBoardOrder.key(for: sessions[1])
+        let existingPin = RemiBoardOrder.key(for: sessions[2])
+        let liveKeys = Set(sessions.map(RemiBoardOrder.key(for:)))
+        let draft = [target: "unsent draft"]
+        var state = RemiBoardState()
+        state.pin(existingPin, atSlot: 2)
+
+        let initial = RemiBoardOrder.arrange(sessions, state: state, interactions: [:], held: [:], now: now)
+        let initialKeys = initial.map(RemiBoardOrder.key(for:))
+        let initialFrames = RemiBoardOrder.layout(
+            sessions, state: state, interactions: [:], now: now, viewportWidth: 700
+        )
+        let filtered = RemiBoardOrder.visible(sessions, machineID: "one", onlyNeedsYou: false, showFinished: false)
+        let filteredKeys = RemiBoardOrder.arrange(filtered, state: state, interactions: [:], held: [:], now: now)
+            .map(RemiBoardOrder.key(for:))
+        #expect(filteredKeys.first == target)
+        #expect(initialKeys.firstIndex(of: target) == 1)
+
+        // MacCommandCenter pins against its full canvas order even while only machine one is shown.
+        state.pin(target, atSlot: initialKeys.firstIndex(of: target) ?? 0)
+        let afterPin = RemiBoardOrder.arrange(sessions, state: state, interactions: [:], held: [:], now: now)
+        #expect(afterPin.map(RemiBoardOrder.key(for:)) == initialKeys)
+        let heldDraftOrder = RemiBoardOrder.held(from: initialKeys)
+        #expect(RemiBoardOrder.arrange(sessions, state: state, interactions: [:], held: heldDraftOrder, now: now)
+            .map(RemiBoardOrder.key(for:)) == initialKeys)
+        let afterPinFrames = RemiBoardOrder.layout(
+            sessions, state: state, interactions: [:], now: now, viewportWidth: 700
+        )
+        #expect(afterPinFrames[target] == initialFrames[target])
+        #expect(afterPinFrames[existingPin] == initialFrames[existingPin])
+        #expect(state.slot(of: existingPin) == 2)
+        #expect(state.slot(of: target) == 1)
+        #expect(RemiBoardOrder.keeping(draft, live: liveKeys, settledMachines: ["one", "two"]) == draft)
+
+        state.unpin(target)
+        #expect(state.slot(of: existingPin) == 2)
+        #expect(RemiBoardOrder.arrange(sessions, state: state, interactions: [:], held: [:], now: now)
+            .map(RemiBoardOrder.key(for:)) == initialKeys)
+        #expect(RemiBoardOrder.layout(sessions, state: state, interactions: [:], now: now, viewportWidth: 700)[existingPin]
+            == initialFrames[existingPin])
+        #expect(RemiBoardOrder.keeping(draft, live: liveKeys, settledMachines: ["one", "two"]) == draft)
+    }
+
     // MARK: state
 
     @Test func sizesDefaultToRegularAndAreRemembered() {

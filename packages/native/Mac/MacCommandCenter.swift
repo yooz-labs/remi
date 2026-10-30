@@ -234,7 +234,9 @@ struct MacCommandCenter: View {
                     items: items,
                     frames: frames,
                     canvasSize: canvasSize,
-                    order: orderedKeys,
+                    // Pin slots are stored against the same full order that lays out the canvas,
+                    // so pinning from a filtered view cannot reposition a tile when the filter clears.
+                    order: allKeys,
                     liveOrder: liveKeys,
                     reader: reader
                 )
