@@ -44,14 +44,36 @@ struct DeliveryPresentationTests {
         let store = MachineStore(endpoints: [], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
         let key = MachineSessionKey(machineID: "removed-machine\u{202E}", sessionID: fixture.sessionId)
         let origin = OutgoingOrigin(endpoint: MachineEndpoint(host: "127.0.0.1", port: 18790), connection: UUID(), socket: UUID())
-        store.trackOutgoing(key: key, id: "fixture", content: fixture.content, origin: origin)
+        store.trackOutgoing(key: key, id: "fixture", content: fixture.content, origin: origin,
+            scope: OutgoingProfileScope(profileLifetime: UUID(), authenticatedAuthority: nil))
         #expect(store.machines.isEmpty)
         let groups = store.outgoingHistory
         #expect(groups.first?.key == key)
         #expect(!RemiDisplayText.escape(key.machineID).contains("\u{202E}"))
-        let copy = try #require(groups.first?.messages.first?.content)
-        #expect(RemiTranscriptEntry.pending(id: "fixture", text: copy, state: .uncertain).copyText == fixture.content)
+        let message = try #require(groups.first?.messages.first)
+        let row = RemiOutgoingHistoryRow(message: message)
+        #expect(row.copyText == fixture.content)
 
+
+    }
+
+    @Test func productionHistoryProjectionCopiesOriginalCarriageReturnAndJoinerScalars() throws {
+        let fixture = try JSONDecoder().decode(TranscriptContentMessage.self,
+            from: FixtureConformanceTests.fixture("transcript_content"))
+        let original = fixture.content + "\r\njoined\u{200D}text"
+        let store = MachineStore(endpoints: [], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
+        let key = MachineSessionKey(machineID: "removed-owned-machine", sessionID: fixture.sessionId)
+        let origin = OutgoingOrigin(endpoint: MachineEndpoint(host: "127.0.0.1", port: 18790), connection: UUID(), socket: UUID())
+        let scope = OutgoingProfileScope(profileLifetime: UUID(), authenticatedAuthority: nil)
+        store.trackOutgoing(key: key, id: "fixture", content: original, origin: origin, scope: scope)
+        let group = try #require(store.outgoingHistory.first)
+        // This is the same projection used by RemiOutgoingHistoryView, including its copy override.
+        let row = RemiOutgoingHistoryRow(message: try #require(group.messages.first))
+        #expect(row.entry.searchableText == RemiDisplayText.escape(original))
+        #expect(row.entry.searchableText != original)
+        #expect(row.copyText.unicodeScalars.map(\.value) == original.unicodeScalars.map(\.value))
+        #expect(Array(row.copyText.utf8) == Array(original.utf8))
+        #expect(group.messages.first?.content == original)
     }
 
     @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_DELIVERY_RENDER_DIR"] != nil,
@@ -62,9 +84,10 @@ struct DeliveryPresentationTests {
         let store = MachineStore(endpoints: [], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
         let key = MachineSessionKey(machineID: "removed-owned-machine", sessionID: fixture.sessionId)
         let origin = OutgoingOrigin(endpoint: MachineEndpoint(host: "127.0.0.1", port: 18790), connection: UUID(), socket: UUID())
-        store.trackOutgoing(key: key, id: "fixture", content: fixture.content, origin: origin)
+        store.trackOutgoing(key: key, id: "fixture", content: fixture.content, origin: origin,
+            scope: OutgoingProfileScope(profileLifetime: UUID(), authenticatedAuthority: nil))
         let view = RemiOutgoingHistoryView(groups: store.outgoingHistory) { key, id in
-            store.dismissOutgoing(machineID: key.machineID, sessionID: key.sessionID, messageID: id)
+            store.dismissOutgoing(groupID: key, messageID: id)
         }.frame(width: 390, height: 900)
         let start = ContinuousClock.now
         let pulse = Task { @MainActor in

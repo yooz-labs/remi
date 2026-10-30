@@ -386,10 +386,9 @@ public actor RemiConnection {
         } catch { return attempt.invoked ? .uncertain : .notInvoked }
     }
 
-    private func validateChatAttempt(_ attempt: ChatAttempt?) throws {
+    private func validateChatOrigin(_ attempt: ChatAttempt?) throws {
         guard let attempt else { return }
         guard applicationAdmitted, chatSocketID == attempt.origin else { throw RelayFailure.closed }
-        attempt.invoked = true
     }
 
     private func deliver(_ data: Data, validateBeforeSend: (@Sendable () throws -> Void)?,
@@ -404,6 +403,9 @@ public actor RemiConnection {
                 await prior?.value
                 guard self.socket === socket, let channel = self.relayChannel else { throw RelayFailure.closed }
                 try validateBeforeSend?()
+                // A stale local intent is not a failure of this replacement channel. Reject
+                // before sealing consumes its sequence, outside the transport-failure catch.
+                try validateChatOrigin(chatAttempt)
                 let frame: Data
                 do { frame = try channel.seal(data) }
                 catch {
@@ -414,7 +416,8 @@ public actor RemiConnection {
                     throw error
                 }
                 do {
-                    try validateChatAttempt(chatAttempt)
+                    // No await separates the queue-time origin check, seal and invocation.
+                    chatAttempt?.invoked = true
                     try await socket.send(.data(frame))
                 } catch {
                     channel.fail()
@@ -430,7 +433,8 @@ public actor RemiConnection {
         } else {
             guard applicationAdmitted else { throw RelayFailure.closed }
             try validateBeforeSend?()
-            try validateChatAttempt(chatAttempt)
+            try validateChatOrigin(chatAttempt)
+            chatAttempt?.invoked = true
             try await socket.send(.data(data))
         }
     }

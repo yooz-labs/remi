@@ -478,7 +478,7 @@ struct PhoneLiveRootView: View {
                 .presentationSizing(.form)
         case .messageOutcomes:
             RemiOutgoingHistoryView(groups: store.outgoingHistory) { key, id in
-                store.dismissOutgoing(machineID: key.machineID, sessionID: key.sessionID, messageID: id)
+                store.dismissOutgoing(groupID: key, messageID: id)
             }
         case .preferences:
             PhonePreferencesSheet(publicIdentity: store.publicIdentity)
@@ -740,7 +740,7 @@ struct PhoneLiveRootView: View {
             case .refused: .refused
             case .uncertain: .uncertain
             }
-            return RemiTranscriptEntry.pending(id: "pending-\($0.id)", text: $0.content, state: state)
+            return RemiTranscriptEntry.pending(id: $0.presentationID, text: $0.content, state: state)
         }
     }
 
@@ -941,8 +941,7 @@ struct PhoneLiveRootView: View {
             onCancel: { cancel(machineID: session.machineID, sessionId: session.id, questionId: $0) },
             onSend: { await sendChat(machineID: session.machineID, sessionId: session.id, content: $0) },
             onDismissOutgoing: { id in
-                store.dismissOutgoing(machineID: session.machineID, sessionID: session.id,
-                    messageID: String(id.dropFirst("pending-".count)))
+                store.dismissOutgoing(presentationID: id)
             },
             onTerminate: { store.terminateSession(machineID: session.machineID, sessionId: session.id) },
             onClose: { shell.select(.board) },
