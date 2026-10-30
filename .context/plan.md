@@ -40,6 +40,13 @@ resource/quota/held-No cells with causal controls. The fixed-delta review is
 complete; merge requires final-head hosted checks and the actual relay soak.
 B4 encrypted routing and the qualified caller precede capability advertisement.
 Original failures remain recorded; see the service report for scope and controls.
+Develop integration (2026-10-30) retains the three isolated CI workers and current
+worker/controller/cleanup caps. Fresh local source/static/actual-lease and six-cell
+compiled/resource/held-No controls pass on measured tree `a8812f4fb03bd3e815fea691a447368400f59858`
+and source manifest `85c4b21df442df772fb8b7d4d269e804d71bb52b7e90e29eae9c4afdee9ec505`; the exact receipt
+is in `docs/terminal-view-service-integration-qualification.json`. No push or PR
+merge occurred. Fresh final-head hosted checks and the actual 61-minute same-child
+soak remain required; the old hosted soak is historical evidence only.
 Transferred-media preview cleanup uses the owner-confirmed oldest-cache eviction
 when full, preserving explicit Save/export and host source files.
 

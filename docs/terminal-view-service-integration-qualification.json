@@ -1,0 +1,264 @@
+{
+  "status": "passed-local-integration-only",
+  "serviceHeadBeforeMerge": "760c858566132ecbc2e1899e886755091dda1fa1",
+  "localMergeCommit": "13f38e37ae3459703faa9baaebd669291a197fc7",
+  "measuredIntegrationTree": "a8812f4fb03bd3e815fea691a447368400f59858",
+  "developParent": "7f5dd87a13b7f350969987edd806db6c284b2474",
+  "sourceManifestSha256": "85c4b21df442df772fb8b7d4d269e804d71bb52b7e90e29eae9c4afdee9ec505",
+  "sourceScope": "current integrated source graph; private raw evidence preserved; no hosted or release acceptance",
+  "runner": {
+    "files": 518,
+    "lanes": [1, 350, 167],
+    "omitted": 0,
+    "duplicates": 0,
+    "workerCapsMs": [300000, 1200000, 1200000],
+    "controllerMs": 1320000,
+    "cleanupReserveMs": 10000,
+    "coverageThresholdPercent": 60,
+    "architecture": "three isolated hosted VMs; no individual worker publishes a threshold"
+  },
+  "source": {
+    "casesPerPin": 321,
+    "assertions": {
+      "1311": 3522,
+      "142": 3517
+    },
+    "ciComponentCasesPerPin": 41,
+    "existingPlatformSkipsPerPin": 1,
+    "ciComponentAssertions": {
+      "1311": 361,
+      "142": 367
+    },
+    "typeConfigurations": 5,
+    "lintErrors": 0,
+    "lintWarnings": 68,
+    "realLeases": {
+      "1311": {
+        "status": "passed",
+        "version": "1.3.11",
+        "revision": "af24e281ebacd6ac77c0f14b4206599cf4ae1c9f",
+        "elapsedMonotonicMs": 300051.892041,
+        "oldViewOutcome": "expired",
+        "explicitOpenCreatedFreshView": true,
+        "scope": "real five-minute source signed-WSS lease; no compiled/service-resource or hardware acceptance"
+      },
+      "142": {
+        "status": "passed",
+        "version": "1.4.2",
+        "revision": "744846f844374847c902b5e7fd59b4342a51ef99",
+        "elapsedMonotonicMs": 300053.16099999996,
+        "oldViewOutcome": "expired",
+        "explicitOpenCreatedFreshView": true,
+        "scope": "real five-minute source signed-WSS lease; no compiled/service-resource or hardware acceptance"
+      }
+    }
+  },
+  "compiled": {
+    "freshCells": 6,
+    "cells": [
+      {
+        "pin": "1311",
+        "target": "bun-darwin-arm64",
+        "binaryHashes": {
+          "resource": "1a4b5b7e8642daa762ed0dd89d268e6a9308f2253cfc9464c3ff55adb42d26ae",
+          "combined": "ed3c2ac8fa999b8377670d6b8eba75e67a2eca202fa621316428fb059e9918ca",
+          "held": "7df81a1c4a66e7a639490bca5ea3479a3aa82c522311d1dbec0566680a185c3e",
+          "quota": "17d703431814ec25851538af271eb99f535d1e184fea156299eacea9e19e096e"
+        },
+        "oneModelProfiles": 4,
+        "combinedProfiles": 2,
+        "reservationGroups": 30,
+        "migrationGroups": 5,
+        "heldScenarios": 4
+      },
+      {
+        "pin": "1311",
+        "target": "bun-linux-arm64",
+        "binaryHashes": {
+          "resource": "472e3fd717da142bb831cd5c66b5103d83be9e8fc230d4acbe2dc59038d40356",
+          "combined": "8af1ec684028ed1442088283c6ece330a21022e900ab043e322caf1e81750498",
+          "held": "cd5230cff029ee37274c8814e06b3c1b5f0a49f6396d08e9b3483eac94084c46",
+          "quota": "752d79dfb56707fb3ee16a26cacf86cef8bf7051104f9c0d65842e324a092a94"
+        },
+        "oneModelProfiles": 4,
+        "combinedProfiles": 2,
+        "reservationGroups": 30,
+        "migrationGroups": 5,
+        "heldScenarios": 4
+      },
+      {
+        "pin": "1311",
+        "target": "bun-linux-x64",
+        "binaryHashes": {
+          "resource": "c28a4e57d3b7289a28b97af03638c3cee28e947bf3fbc8c25c2d91bc0197075c",
+          "combined": "ee7ecd4b797b8f9775e9d99e48560465b6f61e1eee37f8f46ec2477efa8430d7",
+          "held": "f1af61ecd8da487c54f86cf2a5c40dd28f7151613c9d6889fa86d57808883e06",
+          "quota": "53e4daa8591c18dca918a6245f862b487b60de92c4b94404f20e32d9d0081233"
+        },
+        "oneModelProfiles": 4,
+        "combinedProfiles": 2,
+        "reservationGroups": 30,
+        "migrationGroups": 5,
+        "heldScenarios": 4
+      },
+      {
+        "pin": "142",
+        "target": "bun-darwin-arm64",
+        "binaryHashes": {
+          "resource": "4bf1d37e899904be5ca56cdfb88c20eeb1b4b71e2ce972a87e696dda6e4b0863",
+          "combined": "1751f226376355e756f931545188b110f2461f42379d02b2c7f1c890cfc68aad",
+          "held": "0d268a01f4e620bcd3fd7dc7715bf908d51dc52be37fd76bb445b78e4158e52c",
+          "quota": "16582df54177e7ee8e0817b9ced8f16110643b6ef8089c849493a7ffa682eaa9"
+        },
+        "oneModelProfiles": 4,
+        "combinedProfiles": 2,
+        "reservationGroups": 30,
+        "migrationGroups": 5,
+        "heldScenarios": 4
+      },
+      {
+        "pin": "142",
+        "target": "bun-linux-arm64",
+        "binaryHashes": {
+          "resource": "bb88cae21d108f311e5825db4d43f5599f216007e1c7b9c459bc2f440ed7f892",
+          "combined": "33e6677dee006098c4c717c5e0c60a3e4da06d1bf1a953a86e38c71bff82ac19",
+          "held": "bd134d735385ab9dfd39a0fdcaf369b831dbcb293ab0993311e02d2cec954590",
+          "quota": "51dec130d71de5259209ce588ea874fe8243f67f12dd6e48fdb1d8b92c95dd1b"
+        },
+        "oneModelProfiles": 4,
+        "combinedProfiles": 2,
+        "reservationGroups": 30,
+        "migrationGroups": 5,
+        "heldScenarios": 4
+      },
+      {
+        "pin": "142",
+        "target": "bun-linux-x64",
+        "binaryHashes": {
+          "resource": "ee7f07d6eb2c257b606554b3767f2f46f556ad9074fd337aabdf72561cf9ca0a",
+          "combined": "d75518c9fb0c2fe61cc7bfd808cc17246ce00b67c844aa5cef82f48ef98061e3",
+          "held": "6f180a6610a212be5329ecfa23b315a029237f4a6aaf642320c7753735173f3a",
+          "quota": "3e5a9ec9c6cf1240f8aa6686c4bf8ea89df6a0d9da0abd28a5e8029d3f3fab86"
+        },
+        "oneModelProfiles": 4,
+        "combinedProfiles": 2,
+        "reservationGroups": 30,
+        "migrationGroups": 5,
+        "heldScenarios": 4
+      }
+    ],
+    "maximumOneModelBytes": 1465480,
+    "oneModelBudgetBytes": 4194304,
+    "maximumCombinedBytes": 2517770,
+    "combinedBudgetBytes": 8388608,
+    "normalNoRangeMs": [0.6968340000000808, 52.43666699999994],
+    "blockingControlRangeMs": [1252.1122510000005, 1286.6050830000004],
+    "heldNoLimitMs": 1000,
+    "blockingControlMinimumMs": 1250,
+    "actualPtyInputBytes": 0,
+    "expectedNegativeFailures": 18,
+    "sourceGuardControls": {
+      "receipt": "guard-controls-result.json",
+      "sha256": "908be68fac80b572b9a27f2153c048b132a20f25f1bbc6e7521896aee6b4c4a6"
+    },
+    "wrongOwnerControls": {
+      "receipt": "wrong-owner-controls-result.json",
+      "sha256": "b8bbecf603474ddab8c4238829f523696dc9b1d2b3aa8e1d8814e5abed8bb894"
+    },
+    "limitsUnchanged": {
+      "modelBytes": 4194304,
+      "models": 8,
+      "homeBytes": 33554432,
+      "heldNoMs": 1000,
+      "blockingControlMinMs": 1250,
+      "containerMemoryBytes": 536870912,
+      "containerPids": 128
+    },
+    "finiteRetainedStateIsNotOsOrRssCeiling": true
+  },
+  "oldHostedSoak": {
+    "producer": {
+      "attempt": 1,
+      "base": "ef6938e971fae66363e531bf76646bc35cc602d8",
+      "branch": "feature/issue-1643-terminal-service",
+      "checkout": "678e35eb2777ee989b82b2588fa07a3a4925b289",
+      "environment": {
+        "ImageOS": "ubuntu24",
+        "ImageVersion": "20261023.334.3",
+        "RUNNER_ARCH": "X64",
+        "RUNNER_OS": "Linux",
+        "bun": "1.3.11"
+      },
+      "head": "760c858566132ecbc2e1899e886755091dda1fa1",
+      "kind": "merge",
+      "parents": [
+        "ef6938e971fae66363e531bf76646bc35cc602d8",
+        "760c858566132ecbc2e1899e886755091dda1fa1"
+      ],
+      "policy": "ce5e31fa1735898b1d26fe4129c666f897b2f74fab3177b756d74ded80815049",
+      "pr": 1655,
+      "producer": "actual-soak",
+      "repository": "yooz-labs/remi",
+      "repository_id": 1141381238,
+      "run": 40130541231,
+      "schema": 1,
+      "tree": "59c577d1fa3e9a1bc2945e0e3ca9cee59785e0b7",
+      "workflow_id": 379391096
+    },
+    "measured": {
+      "elapsedMs": 3660026.111684,
+      "probes": 62,
+      "maxReplyMs": 8.565267999889329,
+      "roomBoots": 62,
+      "observedBinaryFrames": 248,
+      "observedBytes": 99266,
+      "heldDenials": 2
+    },
+    "scope": "historical old-head/base only"
+  },
+  "preservedFailures": [
+    "attempt-1: 320 pass/1 stale merged cardinality assertion failure",
+    "attempt-2-interrupted: incomplete mechanical edit caught; owned group terminated; no pass",
+    "matrix-attempt-1-source-copy-failure: historical copied harness omitted existing relative shared dependency; no service case executed; exact copied shared package then qualified",
+    "all earlier campaigns remain unchanged"
+  ],
+  "sourceHashes": {
+    "packages/daemon/src/cli.ts": "9437c375464fd903770d7684b7a92d6e88e8ac83597c0d7b7546e7a943937743",
+    "packages/daemon/src/server/client-message-events.ts": "e6631df8160a3c2b5ea1ed6f690e47ad0184379fac9d3cea5f9dc9682f3fc146",
+    "packages/daemon/src/server/connection.ts": "1c1ee721390c27d1261acf8e9e6aefed8ea3091f96dd45c8ddbea58a49b9e234",
+    "packages/daemon/src/server/websocket-server.ts": "e701faa7d26bd8929216c0d8d217af07c0822e054bc0161a5045c5f3baddbe53",
+    "packages/daemon/src/terminal/view-service.ts": "8aacc6cb88335af5622a662d6d6bd34370fccea08dc26c5979e899a7114418f7",
+    "packages/daemon/src/terminal/send-slot.ts": "be1211b0c4db29d21526d2230ce3e48b2702b677a6535ea6191fc446a350454d",
+    "packages/daemon/src/terminal/ingress.ts": "dce0018944bbb87373c7cbdc07cb2098cb7de3c8f6371be1f50afdb293fd3992",
+    "packages/daemon/src/terminal/reservations.ts": "8fef414ad445e20d1a5e50a2fdc54cc75bc8c482d85a40155ecac83a6a64e617",
+    "packages/daemon/src/auth/identity-store.ts": "7b331c3b484dfbfe206fc0d59031e8ea9aafe32d530b073d0d39848666e0dd6f",
+    "packages/daemon/src/auth/relay-chat-authority.ts": "deabb1127d178fef44cd70c2fdb177846eb7c03cf17934c7f400e203c91329f8",
+    "packages/daemon/src/session/session-registry.ts": "846241f9f3c3b8fac8e4143e0e17a9b12c140f207f831df6ad649c204bbd70ab",
+    "packages/daemon/src/session/session-binding-store.ts": "487dfee139242bbb60f758c7253744acd0dd4059b7c27085d01f10561bb24dad",
+    "scripts/ci/run-bun-test-batches.ts": "925a0850a464730924a77a8a8cf8a9b4ceb993af16d105c718d0d15ea53a211a",
+    "packages/daemon/tests/ci/run-bun-test-batches.test.ts": "88c5d7087cb59b7367e6068c49c3d4b53bc9e7b07694c030dd56efba75030a24",
+    "packages/daemon/tests/server/client-message-events.test.ts": "5d4884a1ce0dc8e2863fd51e7a0397977201b121b5fdca3ba37c70522c34a148"
+  },
+  "privateEvidence": {
+    "directory": ".claude/worktrees/terminal-integration-20261030",
+    "localValidationSha256": "7ae8646db9a5c1a636e4faef66ad009272f3e65af654ffd216a49671d3c9122d",
+    "compiledValidationSha256": "a9b5d0c339fa16a1f6d127b113eedfe90dd8533877810e376c5af4ddadec8aa1",
+    "auditSha256": "fb8a836d1c713c43d095041d21f8a53a53d289a3aabdc7564bb49babc00d6c5a"
+  },
+  "remaining": [
+    "all required exact-final-head/base hosted checks including three workers and validated aggregate",
+    "fresh exact-final-head/base same-attached-child/client 61 actual minute relay soak",
+    "reserved owner final merge authorization",
+    "B4 encrypted semantic route and qualified production caller before terminal_view advertisement",
+    "native rendered/signed-device/deployed/provider acceptance remains separate"
+  ],
+  "review": "full and fix-only delta rounds already complete; narrow merge/conflict driver verification only; no third review",
+  "actionsNotTaken": [
+    "push",
+    "PR merge",
+    "terminal_view advertisement",
+    "deployment",
+    "signing",
+    "provider or personal hub changes"
+  ]
+}

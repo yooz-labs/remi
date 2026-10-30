@@ -70,7 +70,51 @@ bodies, or add them to replay or push. The separate existing opt-in
 this service does not disable that diagnostic. Current grant/binding/runtime/attachment or
 capture loss retires the old view. No old incarnation follows a new grant.
 
-## Current expanded qualification
+## Develop integration (2026-10-30)
+
+The [integration receipt](terminal-view-service-integration-qualification.json)
+records local qualification after merging develop `7f5dd87a`
+into the existing service branch without rewriting history. The single runner
+conflict retains the current three isolated workers, five-minute target and
+twenty-minute cohort caps, twenty-two-minute controller, ten-second cleanup
+reserve and unchanged coverage/source/ownership/cleanup guards. An actual
+before/after comparison preserves all 518 files in lanes 1/350/167 without
+omissions or duplicates. The merged event golden set contains both new events;
+its stale cardinality and unique-count assertions now require exactly 22.
+Measurements pin integration tree `a8812f4fb03bd3e815fea691a447368400f59858` and exact
+source manifest `85c4b21df442df772fb8b7d4d269e804d71bb52b7e90e29eae9c4afdee9ec505`; per-cell binary hashes are in the receipt.
+The local merge commit is `13f38e37ae3459703faa9baaebd669291a197fc7`; later documentation changes do not
+extend these results into hosted or deployed acceptance.
+
+Both Bun pins pass 321 source cases (3,522/3,517 assertions), the focused CI
+controls and fresh actual five-minute signed-WSS leases. All five TypeScript
+configurations and static gates pass; lint retains zero errors/68 warnings.
+All six supported compiled cells were rebuilt and rerun with fresh owned test
+TLS material. Each passes four one-model profiles, two combined two-owner/eight-view
+profiles, 30 reservation and five migration groups, and four held-No scenarios.
+Maximum one-model retained increment is 1,465,480/4,194,304 bytes;
+maximum combined sum is 2,517,770/8,388,608 bytes. Normal No is
+0.697–52.437 ms against 1,000 ms; deliberate blocking is
+1252.112–1286.605 ms and crosses that same gate. All 18
+compiled input/parser negatives, both actual wrong-owner negatives and both
+pins' original/restored runtime/grant-effect causal controls behave as required.
+Actual PTY input remains zero; approved budgets and allowances remain unchanged.
+
+The first merged source failure and interrupted preparation attempt remain
+preserved; neither was regraded. A first copied causal-control harness omitted
+an existing relative shared dependency and failed module loading before any
+service case. Its failed manifest remains preserved; the corrected copy verifies
+the actual shared package against measured source hashes before qualification.
+The genuine old hosted soak remains bound to
+head `760c8585` and base `ef6938e9`: 3,660,026 ms and 62 probes. It qualifies
+no new merge. No push, hosted run, fresh final-head 61-minute soak or final PR
+merge occurred in this local integration phase. Those gates remain required,
+with the owner's reserved final merge decision. Review had already converged
+through two rounds; this work performs narrow integration verification only.
+`terminal_view` remains unadvertised and B4/caller/rendered/signed/deployed/provider
+acceptance remains separate.
+
+## Pre-integration expanded qualification (2026-10-24)
 
 The [expanded receipt](terminal-view-service-expanded-qualification.json) records
 320 passing source cases on each Mac Bun pin (3,509/3,504 parent
@@ -140,7 +184,7 @@ PR #1655 for current merge state. B4 encrypted routing and a qualified productio
 caller precede capability advertisement. Rendered native, signed hardware,
 deployed Worker and provider acceptance remain separate. #1595 stays open.
 
-## Hosted suite budget correction
+## Historical hosted suite budget correction
 
 The final backend run passed the actual 61-minute relay gate, but its complete
 Test cohort reached the old 20-minute child cap with 10,472 passing cases, no
