@@ -196,7 +196,6 @@ struct MacCommandCenter: View {
     private func boardViewport(size: CGSize, now: Date) -> some View {
         let ordering = boardOrder(now: now)
         let allKeys = ordering.all.map(RemiBoardOrder.key(for:))
-        let orderedKeys = ordering.visible.map(RemiBoardOrder.key(for:))
         // The cursor goes only to a tile with a working composer.
         let liveKeys = ordering.visible.filter(\.isLive).map(RemiBoardOrder.key(for:))
         let frames = RemiBoardOrder.layout(
