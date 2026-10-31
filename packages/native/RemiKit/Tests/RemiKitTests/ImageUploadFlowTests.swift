@@ -38,7 +38,9 @@ import Testing
     @Test func correlatedUploadAndExplicitInsertion() throws {
         var flow = try begin()
         #expect(flow.receive(accepted(), now: 1, nextID: { chunkID }, timestamp: time) == [.read(offset: 0, count: 4)])
-        let chunk = try #require(flow.supplyChunk(Data([1, 2, 3, 4]), requestID: chunkID, timestamp: time, now: 2))
+        #expect(flow.knownPartialExpiry == expiry)
+        let maybeChunk = flow.supplyChunk(Data([1, 2, 3, 4]), requestID: chunkID, timestamp: time, now: 2)
+        let chunk = try #require(maybeChunk)
         guard case .chunk(let sent) = chunk else { Issue.record("expected chunk"); return }
         #expect(sent.seq == 0 && sent.data == "AQIDBA" && sent.transferId == transfer)
         let ack = ImageUploadMessage.chunkAck(ImageUploadChunkAck(header: header(hostID), requestId: chunkID,
@@ -51,12 +53,16 @@ import Testing
             byteLength: 4, mediaType: .png, digest: digest))
         #expect(flow.receive(result, now: 4, nextID: { cancelID }, timestamp: time).isEmpty)
         #expect(flow.status == .staged(expiry: artifactExpiry))
-        let insertion = try #require(flow.addToDraft(requestID: insertID, timestamp: time, now: 5))
+        #expect(flow.knownStagedExpiry == artifactExpiry)
+        let maybeInsertion = flow.addToDraft(requestID: insertID, timestamp: time, now: 5)
+        let insertion = try #require(maybeInsertion)
         guard case .request(let request) = insertion else { Issue.record("expected insertion request"); return }
         #expect(request.artifactId == artifact && request.header.id == insertID)
         flow.receiveInsertion(.result(ImageInsertResult(header: header(hostID), requestId: insertID, outcome: .inserted)), now: 6)
         #expect(flow.status == .inserted(expiry: artifactExpiry))
         #expect(flow.addToDraft(requestID: cancelID, timestamp: time, now: 7) == nil)
+        flow.tick(now: ImageUploadFlow.stagedLifetime)
+        #expect(flow.status == .insertedExpired(expiry: artifactExpiry))
     }
 
     @Test func wrongCorrelationDoesNotAdvanceOrRetireThePendingRequest() throws {
@@ -66,7 +72,8 @@ import Testing
                              nextID: { chunkID }, timestamp: time).isEmpty)
         #expect(flow.status == .awaitingAcceptance)
         #expect(flow.receive(accepted(), now: 2, nextID: { chunkID }, timestamp: time) == [.read(offset: 0, count: 4)])
-        _ = try #require(flow.supplyChunk(Data([1, 2, 3, 4]), requestID: chunkID, timestamp: time, now: 3))
+        let maybeChunk = flow.supplyChunk(Data([1, 2, 3, 4]), requestID: chunkID, timestamp: time, now: 3)
+        _ = try #require(maybeChunk)
         let wrongTransfer = ImageUploadMessage.chunkAck(ImageUploadChunkAck(header: header(hostID), requestId: chunkID,
             transferId: artifact, seq: 0, receivedBytes: 4))
         #expect(flow.receive(wrongTransfer, now: 4, nextID: { completeID }, timestamp: time).isEmpty)
@@ -95,23 +102,106 @@ import Testing
         _ = flow.cancel(requestID: cancelID, timestamp: time, now: 1)
         flow.tick(now: 16)
         #expect(flow.status == .uncertain(.partialCleanup))
+        #expect(flow.knownPartialExpiry == nil)
         #expect(flow.receive(accepted(), now: 17, nextID: { chunkID }, timestamp: time).isEmpty)
     }
 
     @Test func lostInsertionReceiptCannotTriggerASecondEffect() throws {
         var flow = try begin()
         _ = flow.receive(accepted(), now: 1, nextID: { chunkID }, timestamp: time)
-        _ = try #require(flow.supplyChunk(Data([1, 2, 3, 4]), requestID: chunkID, timestamp: time, now: 2))
+        let maybeChunk = flow.supplyChunk(Data([1, 2, 3, 4]), requestID: chunkID, timestamp: time, now: 2)
+        _ = try #require(maybeChunk)
         _ = flow.receive(.chunkAck(ImageUploadChunkAck(header: header(hostID), requestId: chunkID,
             transferId: transfer, seq: 0, receivedBytes: 4)), now: 3, nextID: { completeID }, timestamp: time)
         _ = flow.receive(.result(ImageUploadResult(header: header(hostID), requestId: completeID,
             transferId: transfer, artifactId: artifact, artifactExpiresAt: artifactExpiry,
             byteLength: 4, mediaType: .png, digest: digest)), now: 4, nextID: { cancelID }, timestamp: time)
-        _ = try #require(flow.addToDraft(requestID: insertID, timestamp: time, now: 5))
+        let maybeInsertion = flow.addToDraft(requestID: insertID, timestamp: time, now: 5)
+        _ = try #require(maybeInsertion)
         flow.tick(now: 21)
         #expect(flow.status == .uncertain(.insertion))
         #expect(flow.addToDraft(requestID: cancelID, timestamp: time, now: 22) == nil)
         flow.receiveInsertion(.result(ImageInsertResult(header: header(hostID), requestId: insertID, outcome: .inserted)), now: 23)
         #expect(flow.status == .uncertain(.insertion))
+    }
+
+    @Test func stopAndWaitRequiresExactCumulativeAcknowledgment() throws {
+        let bytes = Data(repeating: 7, count: ImageStagingLimits.chunkBytes + 1)
+        let largeDigest = WireGuards.encodeBase64URL(Data(SHA256.hash(data: bytes)))
+        let request = ImageUploadBegin(header: header(beginID),
+            binding: AttachedBinding(harness: .claude, harnessSessionId: "owned-thread"),
+            mediaType: .jpeg, byteLength: bytes.count, digest: largeDigest)
+        var flow = try ImageUploadFlow(begin: request, now: 0)
+        let firstRead = flow.receive(accepted(), now: 1, nextID: { chunkID }, timestamp: time)
+        #expect(firstRead == [.read(offset: 0, count: ImageStagingLimits.chunkBytes)])
+        let firstChunk = flow.supplyChunk(bytes.prefix(ImageStagingLimits.chunkBytes), requestID: chunkID,
+                                          timestamp: time, now: 2)
+        #expect(firstChunk != nil)
+        let firstAck = ImageUploadMessage.chunkAck(ImageUploadChunkAck(header: header(hostID), requestId: chunkID,
+            transferId: transfer, seq: 0, receivedBytes: ImageStagingLimits.chunkBytes))
+        #expect(flow.receive(firstAck, now: 3, nextID: { completeID }, timestamp: time)
+                == [.read(offset: ImageStagingLimits.chunkBytes, count: 1)])
+        #expect(flow.receive(firstAck, now: 4, nextID: { completeID }, timestamp: time).isEmpty)
+        let secondChunk = flow.supplyChunk(Data([7]), requestID: completeID, timestamp: time, now: 5)
+        #expect(secondChunk != nil)
+        let wrongCount = ImageUploadMessage.chunkAck(ImageUploadChunkAck(header: header(hostID), requestId: completeID,
+            transferId: transfer, seq: 1, receivedBytes: ImageStagingLimits.chunkBytes))
+        #expect(flow.receive(wrongCount, now: 6, nextID: { cancelID }, timestamp: time).isEmpty)
+        #expect(flow.status == .uncertain(.partialCleanup))
+    }
+
+    @Test func aRequestIdentifierCannotBeReusedForAChunk() throws {
+        var flow = try begin()
+        _ = flow.receive(accepted(), now: 1, nextID: { chunkID }, timestamp: time)
+        let reused = flow.supplyChunk(Data([1, 2, 3, 4]), requestID: beginID, timestamp: time, now: 2)
+        #expect(reused == nil)
+        #expect(flow.status == .uncertain(.partialCleanup))
+    }
+
+    @Test func eachNewOperationGetsItsOwnDeadline() throws {
+        var flow = try begin()
+        _ = flow.receive(accepted(), now: 14, nextID: { chunkID }, timestamp: time)
+        let afterBeginDeadline = flow.supplyChunk(Data([1, 2, 3, 4]), requestID: chunkID, timestamp: time, now: 20)
+        #expect(afterBeginDeadline != nil)
+        flow.tick(now: 35)
+        #expect(flow.status == .uncertain(.partialCleanup))
+    }
+
+    @Test func backwardTimeCannotExtendTransferAuthority() throws {
+        var flow = try begin()
+        _ = flow.receive(accepted(), now: 5, nextID: { chunkID }, timestamp: time)
+        let result = flow.supplyChunk(Data([1, 2, 3, 4]), requestID: chunkID, timestamp: time, now: 4)
+        #expect(result == nil)
+        #expect(flow.status == .uncertain(.partialCleanup))
+        #expect(flow.knownPartialExpiry == expiry)
+    }
+
+    @Test func unavailableBeginRefusalDoesNotClaimCleanup() throws {
+        var flow = try begin()
+        let refusal = ImageUploadMessage.refused(ImageUploadRefused(header: header(hostID),
+            requestId: beginID, operation: .begin, code: .unavailable))
+        _ = flow.receive(refusal, now: 1, nextID: { chunkID }, timestamp: time)
+        #expect(flow.status == .refused(.unavailable, remoteCleanupUnconfirmed: true))
+    }
+
+    @Test func lostCompletionAndRacingCancelNeverClaimRemoteDeletion() throws {
+        var flow = try begin()
+        _ = flow.receive(accepted(), now: 1, nextID: { chunkID }, timestamp: time)
+        _ = flow.supplyChunk(Data([1, 2, 3, 4]), requestID: chunkID, timestamp: time, now: 2)
+        _ = flow.receive(.chunkAck(ImageUploadChunkAck(header: header(hostID), requestId: chunkID,
+            transferId: transfer, seq: 0, receivedBytes: 4)), now: 3, nextID: { completeID }, timestamp: time)
+        let cancel = flow.cancel(requestID: cancelID, timestamp: time, now: 4)
+        guard case .cancel = cancel else { Issue.record("expected cancellation request"); return }
+        let staged = ImageUploadMessage.result(ImageUploadResult(header: header(hostID), requestId: completeID,
+            transferId: transfer, artifactId: artifact, artifactExpiresAt: artifactExpiry,
+            byteLength: 4, mediaType: .png, digest: digest))
+        _ = flow.receive(staged, now: 5, nextID: { insertID }, timestamp: time)
+        #expect(flow.knownStagedExpiry == artifactExpiry)
+        let cancelRefusal = ImageUploadMessage.refused(ImageUploadRefused(header: header(hostID),
+            requestId: cancelID, operation: .cancel, code: .conflict))
+        _ = flow.receive(cancelRefusal, now: 6, nextID: { insertID }, timestamp: time)
+        #expect(flow.status == .uncertain(.stagedRetention))
+        #expect(flow.knownStagedExpiry == artifactExpiry)
+        #expect(flow.addToDraft(requestID: insertID, timestamp: time, now: 7) == nil)
     }
 }
