@@ -123,13 +123,19 @@ import Testing
     @Test func journalOwnerPersistsReservationAndRetiresInterruptedCopy() throws {
         try withStore { _, disk in
             try disk.initializeIfProvenFresh(ImageRecoveryLedger().encodeJournal(secret: secret))
-            let owner = try ImageRecoveryJournal(disk: disk, secret: secret)
-            let id = try owner.reserveCopy()
-            try owner.registerSnapshot(id, device: 42, inode: 1234)
+            let id: UUID = try {
+                let claim = try disk.claimOwner()
+                let owner = try ImageRecoveryJournal(disk: disk, secret: secret, claim: claim)
+                #expect(throws: (any Error).self) { try ImageRecoveryJournal(disk: disk, secret: secret, claim: claim) }
+                let id = try owner.reserveCopy()
+                try owner.registerSnapshot(id, device: 42, inode: 1234)
+                return id
+            }()
             let onDisk = try ImageRecoveryLedger.restoreJournal(disk.load(), secret: secret)
             #expect(onDisk.needsRewrite)
             #expect(onDisk.ledger.localSnapshotID == id)
-            let reopened = try ImageRecoveryJournal(disk: disk, secret: secret)
+            let claim = try disk.claimOwner()
+            let reopened = try ImageRecoveryJournal(disk: disk, secret: secret, claim: claim)
             #expect(reopened.snapshot.localSnapshotID == id)
             let rewritten = try ImageRecoveryLedger.restoreJournal(disk.load(), secret: secret)
             #expect(!rewritten.needsRewrite)
@@ -138,8 +144,6 @@ import Testing
                 binding: AttachedBinding(harness: .claude, harnessSessionId: "owned-thread"),
                 imageDigest: Data(repeating: 0x52, count: 32))
             #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try reopened.finishCopy(id, fingerprint: identity) }
-            #expect(throws: (any Error).self) { try owner.finishCopy(id, fingerprint: identity) }
-            #expect(throws: (any Error).self) { try owner.finishCopy(id, fingerprint: identity) }
         }
     }
 
@@ -147,7 +151,8 @@ import Testing
         try withStore { root, disk in
             let initial = try ImageRecoveryLedger().encodeJournal(secret: secret)
             try disk.initializeIfProvenFresh(initial)
-            let owner = try ImageRecoveryJournal(disk: disk, secret: secret)
+            let claim = try disk.claimOwner()
+            let owner = try ImageRecoveryJournal(disk: disk, secret: secret, claim: claim)
             let journal = root.appendingPathComponent(".image-journal")
             try Data("corrupt".utf8).write(to: journal)
             #expect(throws: (any Error).self) { try owner.reserveCopy() }
@@ -160,7 +165,8 @@ import Testing
     @Test func snapshotDescriptorIdentityMustBePersistedBeforeCopyFinalization() throws {
         try withStore { _, disk in
             try disk.initializeIfProvenFresh(ImageRecoveryLedger().encodeJournal(secret: secret))
-            let owner = try ImageRecoveryJournal(disk: disk, secret: secret)
+            let claim = try disk.claimOwner()
+            let owner = try ImageRecoveryJournal(disk: disk, secret: secret, claim: claim)
             let id = try owner.reserveCopy()
             let fingerprint = try ImageRecoveryFingerprint.make(secret: secret, machineKey: Data(repeating: 0x42, count: 32),
                 sessionID: "00112233-4455-4677-8899-aabbccddeeff",
@@ -173,6 +179,19 @@ import Testing
             #expect(restored.ledger.records.first?.snapshotIdentity?.inode == 1234)
             #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try owner.registerSnapshot(id, device: 42, inode: 1235) }
             try owner.finishCopy(id, fingerprint: fingerprint)
+        }
+    }
+
+    @Test func aClaimFromAnotherRootCannotOwnTheJournal() throws {
+        try withStore { _, first in
+            try first.initializeIfProvenFresh(ImageRecoveryLedger().encodeJournal(secret: secret))
+            let claim = try first.claimOwner()
+            try withStore { _, second in
+                try second.initializeIfProvenFresh(ImageRecoveryLedger().encodeJournal(secret: secret))
+                #expect(throws: ImageRecoveryJournal.Failure.invalidClaim) {
+                    try ImageRecoveryJournal(disk: second, secret: secret, claim: claim)
+                }
+            }
         }
     }
     #endif

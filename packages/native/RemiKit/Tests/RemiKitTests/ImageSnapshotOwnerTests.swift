@@ -26,7 +26,8 @@ import Testing
         let lease = try ImageDirectoryLease(parent: parentFD, rootName: "images", directory: rootFD)
         let disk = ImageJournalDisk(lease: lease, secret: secret)
         try disk.initializeIfProvenFresh(ImageRecoveryLedger().encodeJournal(secret: secret))
-        let journal = try ImageRecoveryJournal(disk: disk, secret: secret)
+        let claim = try disk.claimOwner()
+        let journal = try ImageRecoveryJournal(disk: disk, secret: secret, claim: claim)
         let owner = ImageSnapshotOwner(lease: lease, journal: journal)
         try body(root, input, source, journal, owner)
     }

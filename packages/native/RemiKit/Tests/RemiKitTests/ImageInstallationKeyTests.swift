@@ -201,8 +201,10 @@ private final class BlockingImageCopy: @unchecked Sendable {
 
     @Test func reopensInterruptedReservationWithoutRestoringCopyAuthority() throws {
         try withStore { _, lease, store, _ in
-            let first = try ImageInstallationOwner.open(lease: lease, keys: store)
-            let id = try first.journal.reserveCopy()
+            let id: UUID = try {
+                let first = try ImageInstallationOwner.open(lease: lease, keys: store)
+                return try first.journal.reserveCopy()
+            }()
             let reopened = try ImageInstallationOwner.open(lease: lease, keys: store)
             #expect(reopened.journal.snapshot.localSnapshotID == id)
             #expect(reopened.journal.snapshot.records.first?.exposure == .copyOrphaned)
@@ -215,7 +217,7 @@ private final class BlockingImageCopy: @unchecked Sendable {
         try withStore { _, lease, store, _ in
             var first: ImageInstallationOwner? = try ImageInstallationOwner.open(lease: lease, keys: store)
             #expect(first != nil)
-            #expect(throws: (any Error).self) { try ImageInstallationOwner.open(lease: lease, keys: store) }
+            #expect(throws: ImageDirectoryLease.Failure.busy) { try ImageInstallationOwner.open(lease: lease, keys: store) }
             first = nil
             let reopened = try ImageInstallationOwner.open(lease: lease, keys: store)
             #expect(reopened.journal.snapshot.records.isEmpty)
@@ -228,7 +230,7 @@ private final class BlockingImageCopy: @unchecked Sendable {
             var retained: ImageSnapshotOwner? = first?.snapshots
             #expect(retained != nil)
             first = nil
-            #expect(throws: (any Error).self) { try ImageInstallationOwner.open(lease: lease, keys: store) }
+            #expect(throws: ImageDirectoryLease.Failure.busy) { try ImageInstallationOwner.open(lease: lease, keys: store) }
             retained = nil
             let reopened = try ImageInstallationOwner.open(lease: lease, keys: store)
             #expect(reopened.journal.snapshot.records.isEmpty)
@@ -250,7 +252,7 @@ private final class BlockingImageCopy: @unchecked Sendable {
             defer { if !completed { active.resume.signal(); _ = active.finished.wait(timeout: .now() + 5) } }
             try #require(active.reached.wait(timeout: .now() + 5) == .success)
             first = nil
-            #expect(throws: (any Error).self) { try ImageInstallationOwner.open(lease: lease, keys: store) }
+            #expect(throws: ImageDirectoryLease.Failure.busy) { try ImageInstallationOwner.open(lease: lease, keys: store) }
             active.resume.signal()
             try #require(active.finished.wait(timeout: .now() + 5) == .success)
             completed = true
@@ -266,9 +268,12 @@ private final class BlockingImageCopy: @unchecked Sendable {
             let fd = open(selected.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
             guard fd >= 0 else { throw POSIXError(.EIO) }
             defer { close(fd) }
-            let first = try ImageInstallationOwner.open(lease: lease, keys: store)
-            let id = try first.journal.reserveCopy()
-            _ = try first.snapshots.capture(id: id, source: fd)
+            let id: UUID = try {
+                let first = try ImageInstallationOwner.open(lease: lease, keys: store)
+                let id = try first.journal.reserveCopy()
+                _ = try first.snapshots.capture(id: id, source: fd)
+                return id
+            }()
             let reopened = try ImageInstallationOwner.open(lease: lease, keys: store)
             #expect(reopened.journal.snapshot.records.first?.exposure == .copyOrphaned)
             #expect(reopened.journal.snapshot.localSnapshotID == id)
@@ -287,9 +292,12 @@ private final class BlockingImageCopy: @unchecked Sendable {
             let fd = open(selected.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
             guard fd >= 0 else { throw POSIXError(.EIO) }
             defer { close(fd) }
-            let first = try ImageInstallationOwner.open(lease: lease, keys: store)
-            let id = try first.journal.reserveCopy()
-            _ = try first.snapshots.capture(id: id, source: fd)
+            let id: UUID = try {
+                let first = try ImageInstallationOwner.open(lease: lease, keys: store)
+                let id = try first.journal.reserveCopy()
+                _ = try first.snapshots.capture(id: id, source: fd)
+                return id
+            }()
             let original = root.appendingPathComponent("image-\(id.uuidString.lowercased())")
             let moved = root.appendingPathComponent("moved-file")
             #expect(rename(original.path, moved.path) == 0)
@@ -367,8 +375,11 @@ private final class BlockingImageCopy: @unchecked Sendable {
             #expect(chmod(marker.path, 0o600) == 0)
             let disk = ImageJournalDisk(lease: lease, secret: pending.secret)
             try disk.initializeIfProvenFresh(ImageRecoveryLedger().encodeJournal(secret: pending.secret))
-            let owner = try ImageRecoveryJournal(disk: disk, secret: pending.secret)
-            _ = try owner.reserveCopy()
+            try {
+                let claim = try disk.claimOwner()
+                let owner = try ImageRecoveryJournal(disk: disk, secret: pending.secret, claim: claim)
+                _ = try owner.reserveCopy()
+            }()
             #expect(throws: ImageInstallationOwner.Failure.recoveryRequired) { try ImageInstallationOwner.open(lease: lease, keys: store) }
             #expect(try store.load() == pending)
         }

@@ -64,7 +64,8 @@ func run() throws {
     let disk = ImageJournalDisk(lease: lease, secret: secret)
     if mode == "crash" {
         try disk.initializeIfProvenFresh(ImageRecoveryLedger().encodeJournal(secret: secret))
-        let journal = try ImageRecoveryJournal(disk: disk, secret: secret)
+        let claim = try disk.claimOwner()
+        let journal = try ImageRecoveryJournal(disk: disk, secret: secret, claim: claim)
         let owner = ImageSnapshotOwner(lease: lease, journal: journal)
         let id = try journal.reserveCopy()
         if stage == "reserved" { try markAndDie(marker) }
@@ -90,7 +91,8 @@ func run() throws {
         throw FixtureError.arguments
     }
     guard mode == "recover", FileManager.default.fileExists(atPath: marker.path) else { throw FixtureError.arguments }
-    let journal = try ImageRecoveryJournal(disk: disk, secret: secret)
+    let claim = try disk.claimOwner()
+    let journal = try ImageRecoveryJournal(disk: disk, secret: secret, claim: claim)
     let records = journal.snapshot.records
     try verify(records.count == 1)
     let record = records[0]
