@@ -9,9 +9,11 @@ private actor ImageSocketObservations {
     private var unsupportedImage = false
     private var rejected = false
     private var reachabilityFallback = false
+    private var receivedSessions = false
 
     func event(_ event: RemiInboundEvent) {
         if case .hello = event { admitted = true }
+        if case .sessions = event { receivedSessions = true }
         if case .transcript(let message) = event, message.content.utf8.count > WireJSON.maxFrameBytes {
             receivedLargeTranscript = true
         }
@@ -24,9 +26,15 @@ private actor ImageSocketObservations {
         if case .retrying = state { reachabilityFallback = true }
     }
 
-    func snapshot() -> (admitted: Bool, transcript: Bool, unsupported: Bool, rejected: Bool, fallback: Bool) {
-        (admitted, receivedLargeTranscript, unsupportedImage, rejected, reachabilityFallback)
+    func snapshot() -> (admitted: Bool, transcript: Bool, unsupported: Bool, rejected: Bool, fallback: Bool, sessions: Bool) {
+        (admitted, receivedLargeTranscript, unsupportedImage, rejected, reachabilityFallback, receivedSessions)
     }
+}
+
+private struct GenericImageFrame: Encodable, Sendable {
+    let type: String
+    let id: String
+    let timestamp: String
 }
 
 /// Runs the actual native receive path against an authenticated-key-pinned, loopback-only
@@ -48,6 +56,44 @@ private actor ImageSocketObservations {
         let frame = #"{"type":"transcript_content","padding":""# + String(repeating: "x", count: WireJSON.maxFrameBytes) +
             #"","type":"image_upload_result"}"#
         try await exercise(Data(frame.utf8), expectTranscript: false)
+    }
+
+    @Test func genericSendCannotBypassTheImageRouteGuard() async throws {
+        let peer = try OwnedAnswerPeer(mode: "image-ingress")
+        peer.start()
+        var connection: RemiConnection?
+        do {
+            let port = try await peer.waitForPort()
+            let observations = ImageSocketObservations()
+            let client = RemiConnection(configuration: .init(url: try #require(URL(string: "ws://127.0.0.1:\(port)/ws")),
+                clientVersion: "owned", clientId: "owned", expectedServerPublicKey: peer.pinnedPublicKey),
+                identity: ClientIdentity(), stateHandler: { state in Task { await observations.state(state) } },
+                eventHandler: { event in Task { await observations.event(event) } })
+            connection = client
+            await client.start()
+            let helloDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while ContinuousClock.now < helloDeadline {
+                if await observations.snapshot().admitted { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(await observations.snapshot().admitted)
+            for type in ["image_upload_begin", "image_insert_request"] {
+                let frame = GenericImageFrame(type: type, id: UUID().uuidString.lowercased(), timestamp: Date().ISO8601Format())
+                await #expect(throws: PaneTransportBlocked.self) { try await client.send(frame) }
+            }
+            try await client.send(SessionListRequestMessage(id: UUID().uuidString.lowercased(), timestamp: Date().ISO8601Format()))
+            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while ContinuousClock.now < deadline {
+                if await observations.snapshot().sessions { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(await observations.snapshot().sessions)
+            #expect(peer.snapshot().images == 0)
+            await client.stop()
+        } catch {
+            await connection?.stop(); #expect(await peer.stop()); throw error
+        }
+        #expect(await peer.stop())
     }
 
     private func exercise(_ payload: Data, expectTranscript: Bool) async throws {

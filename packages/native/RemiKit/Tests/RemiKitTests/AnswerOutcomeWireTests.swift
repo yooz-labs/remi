@@ -32,6 +32,7 @@ final class OwnedAnswerPeer: @unchecked Sendable {
     private var connection: NWConnection?
     private var answerCount = 0
     private var resultCount = 0
+    private var imageCount = 0
     let sessionID: String
     let questionID: String
 
@@ -77,10 +78,10 @@ final class OwnedAnswerPeer: @unchecked Sendable {
 
     var pinnedPublicKey: String { publicKey.base64EncodedString() }
     func snapshot() -> (port: UInt16?, ended: Bool, failure: PeerError?, answers: Int, results: Int,
-                        rejected: Bool, connectionReady: Bool, connectionEnded: Bool) {
+                        rejected: Bool, connectionReady: Bool, connectionEnded: Bool, images: Int) {
         lock.lock(); defer { lock.unlock() }
         return (port, listenerEnded && connectionEnded, failure, answerCount, resultCount, inputRejected,
-                connectionReady, connectionEnded)
+                connectionReady, connectionEnded, imageCount)
     }
 
     func start() {
@@ -222,7 +223,10 @@ final class OwnedAnswerPeer: @unchecked Sendable {
                       let questionID = object["questionId"] as? String else { connection.cancel(); return }
                 self.lock.lock(); self.answerCount += 1; self.lock.unlock()
                 self.sendAnswer(requestID: requestID, sessionID: sessionID, questionID: questionID, on: connection)
-            default: break
+            default:
+                if type.utf8.starts(with: "image_upload_".utf8) || type.utf8.starts(with: "image_insert_".utf8) {
+                    self.lock.lock(); self.imageCount += 1; self.lock.unlock()
+                }
             }
             self.receive(on: connection)
         }
