@@ -1,0 +1,100 @@
+import Foundation
+import Testing
+import UserNotifications
+@testable import RemiKit
+
+@Suite(.serialized) @MainActor struct LocalNoticeRecoveryTests {
+    private func request(_ marker: LocalNoticeMarker, title: String = "Synthetic", secure: Bool = false) throws -> UNNotificationRequest {
+        let content = UNMutableNotificationContent()
+        content.title = title; content.body = "Synthetic local request"
+        if secure { content.categoryIdentifier = "remi.secure.v2.synthetic" }
+        content.userInfo = try marker.userInfo()
+        return UNNotificationRequest(identifier: marker.systemIdentifier, content: content, trigger: nil)
+    }
+    private func create(_ ledger: LocalNoticeLedger, owner: Data, question: Data,
+                        keys: LocalNoticeKeys, settle: Bool) throws -> (LocalNoticeLedger.Ticket, LocalNoticeMarker) {
+        try ledger.createOwner(owner)
+        let ticket = try ledger.prepare(owner: owner, question: question)
+        try ledger.beginAdd(ticket)
+        if settle { try ledger.settle(ticket, succeeded: true) }
+        return (ticket, try keys.marker(requestID: ticket.requestID, owner: owner,
+                                       sequence: ticket.sequence, question: question))
+    }
+    private func setup() throws -> (URL, LocalNoticeKeys, LocalNoticeLedger,
+                                     LocalNoticeLedger.Ticket, LocalNoticeMarker,
+                                     LocalNoticeLedger.Ticket, LocalNoticeMarker) {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("remi-local-review-\(UUID())")
+        let keys = try LocalNoticeKeys(root: Data(repeating: 43, count: 32))
+        let first = try keys.ownerIndex(runtimeOwner: UUID()), second = try keys.ownerIndex(runtimeOwner: UUID())
+        let q1 = try keys.questionIndex(owner: first, sessionID: "same", questionID: "same")
+        let q2 = try keys.questionIndex(owner: second, sessionID: "same", questionID: "same")
+        let original = try LocalNoticeLedger(directory: dir)
+        let (one, markerOne) = try create(original, owner: first, question: q1, keys: keys, settle: true)
+        let (two, markerTwo) = try create(original, owner: second, question: q2, keys: keys, settle: false)
+        original.close()
+        return (dir, keys, try LocalNoticeLedger(directory: dir), one, markerOne, two, markerTwo)
+    }
+
+    @Test func reviewWithoutConfirmationChangesNothing() throws {
+        let (dir, keys, ledger, one, markerOne, two, markerTwo) = try setup()
+        defer { ledger.close(); try? FileManager.default.removeItem(at: dir) }
+        var removed: [[String]] = []
+        let recovery = LocalNoticeRecovery(ledger: ledger, keys: keys) { removed.append($0) }
+        let entries: [LocalNoticeRecovery.Entry] = [
+            .init(request: try request(markerOne), deliveredAt: Date(timeIntervalSince1970: 10)),
+            .init(request: try request(markerTwo), deliveredAt: nil),
+        ]
+        let candidates = try recovery.review(entries)
+        #expect(candidates.count == 2); #expect(removed.isEmpty)
+        #expect(try ledger.record(one).activity == .active)
+        #expect(try ledger.record(two).activity == .active)
+    }
+
+    @Test func exactHistoricalSelectionCannotTouchAnotherOrSecureCollision() throws {
+        let (dir, keys, ledger, one, markerOne, two, markerTwo) = try setup()
+        defer { ledger.close(); try? FileManager.default.removeItem(at: dir) }
+        var removed: [[String]] = []
+        let recovery = LocalNoticeRecovery(ledger: ledger, keys: keys) { removed.append($0) }
+        let entries: [LocalNoticeRecovery.Entry] = [
+            .init(request: try request(markerOne), deliveredAt: nil),
+            .init(request: try request(markerTwo), deliveredAt: nil),
+            .init(request: try request(markerTwo, secure: true), deliveredAt: nil),
+        ]
+        let candidates = try recovery.review(entries)
+        #expect(candidates.count == 1)
+        let selected = try #require(candidates.first)
+        try recovery.confirm(selected, current: entries)
+        #expect(removed == [[markerOne.systemIdentifier]])
+        #expect(try ledger.classify(markerOne, keys: keys, systemIdentifier: markerOne.systemIdentifier) == .retired)
+        #expect(try ledger.record(two).activity == .active)
+        #expect(throws: LocalNoticeError.changed) { try ledger.record(one) }
+    }
+
+    @Test func changedDisplayOrSecureReplacementInvalidatesSelection() throws {
+        let (dir, keys, ledger, one, markerOne, _, _) = try setup()
+        defer { ledger.close(); try? FileManager.default.removeItem(at: dir) }
+        var removed: [[String]] = []
+        let recovery = LocalNoticeRecovery(ledger: ledger, keys: keys) { removed.append($0) }
+        let original: [LocalNoticeRecovery.Entry] = [.init(request: try request(markerOne), deliveredAt: nil)]
+        let candidates = try recovery.review(original), selected = try #require(candidates.first)
+        let changed: [LocalNoticeRecovery.Entry] = [.init(request: try request(markerOne, title: "Different"), deliveredAt: nil)]
+        #expect(throws: LocalNoticeError.changed) { try recovery.confirm(selected, current: changed) }
+        let secure: [LocalNoticeRecovery.Entry] = [.init(request: try request(markerOne, secure: true), deliveredAt: nil)]
+        #expect(throws: LocalNoticeError.changed) { try recovery.confirm(selected, current: secure) }
+        #expect(removed.isEmpty); #expect(try ledger.record(one).activity == .active)
+    }
+
+    @Test func confirmedUncertainRequestRetainsItsTrackingDebt() throws {
+        let (dir, keys, ledger, _, _, two, markerTwo) = try setup()
+        defer { ledger.close(); try? FileManager.default.removeItem(at: dir) }
+        var removed: [[String]] = []
+        let recovery = LocalNoticeRecovery(ledger: ledger, keys: keys) { removed.append($0) }
+        let entries: [LocalNoticeRecovery.Entry] = [.init(request: try request(markerTwo), deliveredAt: nil)]
+        let candidates = try recovery.review(entries), selected = try #require(candidates.first)
+        try recovery.confirm(selected, current: entries)
+        #expect(removed == [[markerTwo.systemIdentifier]])
+        let record = try ledger.record(two)
+        #expect(record.activity == .invalidated); #expect(record.effect == .crashUncertain)
+        #expect(try ledger.counts().uncertain == 1)
+    }
+}
