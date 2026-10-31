@@ -230,4 +230,55 @@ import Testing
         #expect(ledger.records.isEmpty)
         #expect(!ledger.hasAggregateUnconfirmedCleanup)
     }
+
+    @Test func authenticatedJournalRestoresInFlightInsertionAsUncertain() throws {
+        var ledger = ImageRecoveryLedger()
+        let id = try ledger.reserve(try fingerprint())
+        try ledger.markPartialPossible(id)
+        try ledger.rememberPartialExpiry(id, expiry: "2026-10-30T12:05:00.000Z")
+        try ledger.markStagingPossible(id)
+        try ledger.markStaged(id, expiry: "2026-10-31T12:00:00.000Z")
+        try ledger.requestStagedLocalCleanup(id)
+        try ledger.confirmOwnedSnapshotDeleted(id)
+        try ledger.markInsertionPossible(id)
+        let bytes = try ledger.encodeJournal(secret: secret)
+        let restored = try ImageRecoveryLedger.restoreJournal(bytes, secret: secret)
+        #expect(restored.needsRewrite)
+        #expect(restored.ledger.localSnapshotID == nil)
+        #expect(restored.ledger.records.first?.exposure == .insertionUncertain(expiry: "2026-10-31T12:00:00.000Z"))
+        #expect(restored.ledger.records.first?.knownPartialExpiry == "2026-10-30T12:05:00.000Z")
+        #expect(throws: ImageRecoveryLedger.Failure.sameImageInsertionUncertain) {
+            var copy = restored.ledger
+            _ = try copy.reserve(fingerprint())
+        }
+    }
+
+    @Test func restartNeverRestoresAStagedArtifactsSocketAuthority() throws {
+        var ledger = ImageRecoveryLedger()
+        let id = try ledger.reserve(try fingerprint())
+        try ledger.markPartialPossible(id)
+        try ledger.markStagingPossible(id)
+        try ledger.markStaged(id, expiry: "2026-10-31T12:00:00.000Z")
+        try ledger.requestStagedLocalCleanup(id)
+        try ledger.confirmOwnedSnapshotDeleted(id)
+        let restored = try ImageRecoveryLedger.restoreJournal(ledger.encodeJournal(secret: secret), secret: secret)
+        #expect(restored.needsRewrite)
+        #expect(restored.ledger.records.first?.exposure == .stagedOrphaned(expiry: "2026-10-31T12:00:00.000Z"))
+        var recovered = restored.ledger
+        #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try recovered.markInsertionPossible(id) }
+    }
+
+    @Test func journalRejectsTamperingWrongKeyAndOversizedInput() throws {
+        var ledger = ImageRecoveryLedger()
+        let id = try ledger.reserve(try fingerprint())
+        try ledger.markPartialPossible(id)
+        let bytes = try ledger.encodeJournal(secret: secret)
+        let text = try #require(String(data: bytes, encoding: .utf8))
+        #expect(text.contains("\"aggregate\":false"))
+        let changed = Data(text.replacingOccurrences(of: "\"aggregate\":false", with: "\"aggregate\":true").utf8)
+        #expect(throws: (any Error).self) { try ImageRecoveryLedger.restoreJournal(changed, secret: secret) }
+        #expect(throws: (any Error).self) { try ImageRecoveryLedger.restoreJournal(bytes, secret: Data(repeating: 0x33, count: 32)) }
+        #expect(throws: (any Error).self) { try ImageRecoveryLedger.restoreJournal(Data(bytes.dropLast()), secret: secret) }
+        #expect(throws: (any Error).self) { try ImageRecoveryLedger.restoreJournal(Data(repeating: 0x20, count: 16_385), secret: secret) }
+    }
 }
