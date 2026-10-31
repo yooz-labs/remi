@@ -23,6 +23,32 @@ import Testing
         #expect(try fingerprint() == fingerprint())
     }
 
+    @Test func invalidInputsCannotFormARecoveryIdentity() {
+        let binding = AttachedBinding(harness: .claude, harnessSessionId: "owned-thread")
+        for input in [Data(), Data(repeating: 1, count: 31), Data(repeating: 1, count: 33)] {
+            #expect(throws: (any Error).self) {
+                try ImageRecoveryFingerprint.make(secret: input, machineKey: key, sessionID: session,
+                    binding: binding, imageDigest: digest)
+            }
+            #expect(throws: (any Error).self) {
+                try ImageRecoveryFingerprint.make(secret: secret, machineKey: input, sessionID: session,
+                    binding: binding, imageDigest: digest)
+            }
+            #expect(throws: (any Error).self) {
+                try ImageRecoveryFingerprint.make(secret: secret, machineKey: key, sessionID: session,
+                    binding: binding, imageDigest: input)
+            }
+        }
+        #expect(throws: (any Error).self) {
+            try ImageRecoveryFingerprint.make(secret: secret, machineKey: key, sessionID: session.uppercased(),
+                binding: binding, imageDigest: digest)
+        }
+        #expect(throws: (any Error).self) {
+            try ImageRecoveryFingerprint.make(secret: secret, machineKey: key, sessionID: session,
+                binding: AttachedBinding(harness: .codex, harnessSessionId: "owned-thread"), imageDigest: digest)
+        }
+    }
+
     @Test func localAbandonmentKeepsUnconfirmedRemoteState() throws {
         var ledger = ImageRecoveryLedger()
         let id = try ledger.reserve(try fingerprint())
@@ -88,6 +114,29 @@ import Testing
         #expect(ledger.records.count == ImageRecoveryLedger.maximumRecords)
     }
 
+    @Test func allUncertainInsertionsFailClosedAtCapacity() throws {
+        var ledger = ImageRecoveryLedger()
+        var ids: [UUID] = []
+        for n in 0..<ImageRecoveryLedger.maximumRecords {
+            let id = try ledger.reserve(fingerprint(image: Data(repeating: UInt8(n), count: 32)))
+            try ledger.markPartialPossible(id)
+            try ledger.markStagingPossible(id)
+            try ledger.markStaged(id, expiry: "2026-10-31T12:00:00.000Z")
+            try ledger.requestStagedLocalCleanup(id)
+            try ledger.confirmOwnedSnapshotDeleted(id)
+            try ledger.markInsertionPossible(id)
+            ids.append(id)
+        }
+        #expect(throws: ImageRecoveryLedger.Failure.recordCapacity) {
+            _ = try ledger.reserve(fingerprint(image: Data(repeating: 0xee, count: 32)))
+        }
+        #expect(throws: ImageRecoveryLedger.Failure.insertionMayHaveOccurred) {
+            try ledger.compactNoInsertion(ids[0], confirmed: true)
+        }
+        #expect(ledger.records.count == ImageRecoveryLedger.maximumRecords)
+        #expect(!ledger.hasAggregateUnconfirmedCleanup)
+    }
+
     @Test func anUnverifiedDeletionCannotReleaseTheLocalSlot() throws {
         var ledger = ImageRecoveryLedger()
         let id = try ledger.reserve(try fingerprint())
@@ -96,5 +145,26 @@ import Testing
             _ = try ledger.reserve(fingerprint(image: Data(repeating: 0x53, count: 32)))
         }
         #expect(ledger.localSnapshotID == id)
+    }
+
+    @Test func confirmedHostCancellationAndOwnedLocalDeletionClearTheRecord() throws {
+        var ledger = ImageRecoveryLedger()
+        let id = try ledger.reserve(try fingerprint())
+        try ledger.markPartialPossible(id)
+        try ledger.confirmRemoteCancellation(id)
+        #expect(ledger.records.count == 1) // Local bytes still need verified removal.
+        try ledger.requestLocalAbandonment(id, confirmed: true)
+        try ledger.confirmOwnedSnapshotDeleted(id)
+        #expect(ledger.records.isEmpty)
+        #expect(!ledger.hasAggregateUnconfirmedCleanup)
+    }
+
+    @Test func noRemoteEffectRequiresNoRemoteCleanupWarning() throws {
+        var ledger = ImageRecoveryLedger()
+        let id = try ledger.reserve(try fingerprint())
+        try ledger.requestLocalAbandonment(id, confirmed: true)
+        try ledger.confirmOwnedSnapshotDeleted(id)
+        #expect(ledger.records.isEmpty)
+        #expect(!ledger.hasAggregateUnconfirmedCleanup)
     }
 }
