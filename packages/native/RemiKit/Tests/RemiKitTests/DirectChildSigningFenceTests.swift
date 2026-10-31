@@ -8,15 +8,32 @@ import Testing
 private final class FenceThreadProbe: @unchecked Sendable {
     private let lock = NSLock()
     let release = DispatchSemaphore(value: 0)
+    let enteredGate = DispatchSemaphore(value: 0)
+    let retiringGate = DispatchSemaphore(value: 0)
+    let retiredGate = DispatchSemaphore(value: 0)
+    let cancellationReady = DispatchSemaphore(value: 0)
     private var entered = false
     private var retiring = false
     private var retired = false
     private var finished = false
+    private var readyForCancellation = false
+    private var cancelled = false
+    private var coordinator: Thread?
     private var response: AuthResponseMessage?
 
-    func markEntered() { lock.lock(); entered = true; lock.unlock() }
-    func markRetiring() { lock.lock(); retiring = true; lock.unlock() }
-    func markRetired() { lock.lock(); retired = true; lock.unlock() }
+    func markEntered() { lock.lock(); entered = true; lock.unlock(); enteredGate.signal() }
+    func markRetiring() { lock.lock(); retiring = true; lock.unlock(); retiringGate.signal() }
+    func markRetired() { lock.lock(); retired = true; lock.unlock(); retiredGate.signal() }
+    func markCancellationReady() {
+        lock.lock(); readyForCancellation = true; lock.unlock(); cancellationReady.signal()
+    }
+    func mayCancel() -> Bool { lock.lock(); defer { lock.unlock() }; return readyForCancellation }
+    func cancelAndRelease() {
+        lock.lock(); cancelled = true; lock.unlock(); release.signal()
+    }
+    func isCancelled() -> Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+    func setCoordinator(_ thread: Thread) { lock.lock(); coordinator = thread; lock.unlock() }
+    func coordinatorFinished() -> Bool { lock.lock(); defer { lock.unlock() }; return coordinator?.isFinished == true }
     func finish(_ value: AuthResponseMessage?) {
         lock.lock(); response = value; finished = true; lock.unlock()
     }
@@ -43,7 +60,7 @@ struct DirectChildSigningFenceTests {
         return condition()
     }
 
-    private struct WorkerResult {
+    private struct WorkerResult: Sendable {
         let entered: Bool
         let retireStarted: Bool
         let retiredWhileHeld: Bool?
@@ -52,45 +69,116 @@ struct DirectChildSigningFenceTests {
 
     private func runWorkers(fence: DirectChildSigningFence, client: ClientIdentity,
                             server: ClientIdentity, challenge: AuthChallengeMessage,
-                            probe: FenceThreadProbe, mutant: Bool) async -> WorkerResult {
-        let signer = Thread {
-            do {
-                let result = try fence.withSigning {
-                    probe.markEntered()
-                    guard probe.release.wait(timeout: .now() + 3) == .success else { throw RelayFailure.closed }
-                    return try AuthenticationHandshake.response(to: challenge, identity: client, expectedServerPublicKey: server.publicKeyBase64)
+                            probe: FenceThreadProbe, mutant: Bool,
+                            ownedDelayAfterEntryMilliseconds: Int = 0,
+                            waitForCancellation: Bool = false) async -> WorkerResult {
+        // This task only starts the owned coordinator and awaits its completion.
+        // The coordinator, not a Swift cooperative task, releases the held signer.
+        let work = Task {
+            await withCheckedContinuation { continuation in
+                let coordinator = Thread {
+                    // These Thread values stay local to the coordinator that starts
+                    // and observes them; only their Sendable inputs cross into it.
+                    let signer = Thread {
+                        do {
+                            let result = try fence.withSigning {
+                                probe.markEntered()
+                                probe.release.wait()
+                                return try AuthenticationHandshake.response(to: challenge, identity: client,
+                                    expectedServerPublicKey: server.publicKeyBase64)
+                            }
+                            probe.finish(result.0)
+                        } catch { probe.finish(nil) }
+                    }
+                    signer.name = "remi-owned-fence-signer"
+                    let retire = Thread {
+                        probe.markRetiring()
+                        if !mutant { fence.retire() }
+                        probe.markRetired()
+                    }
+                    retire.name = "remi-owned-fence-retire"
+                    defer { probe.release.signal() }
+                    signer.start()
+                    let entered = probe.enteredGate.wait(timeout: .now() + 3) == .success
+                    var retireStarted = false
+                    var retireLaunched = false
+                    var retiredWhileHeld: Bool?
+                    if entered && !probe.isCancelled() {
+                        retireLaunched = true
+                        retire.start()
+                        retireStarted = probe.retiringGate.wait(timeout: .now() + 3) == .success
+                        if retireStarted && !probe.isCancelled() {
+                            // The mutant must actually complete while held; the real
+                            // revoker must remain held through the observation.
+                            let observation: DispatchTime = mutant
+                                ? .now() + .seconds(3) : .now() + .milliseconds(50)
+                            retiredWhileHeld = probe.retiredGate.wait(timeout: observation) == .success
+                            if waitForCancellation {
+                                probe.markCancellationReady()
+                                // Only the independent cancellation thread signals release.
+                                // Bounded failure cleanup still releases the signer below.
+                                let deadline = DispatchTime.now().uptimeNanoseconds + 3_000_000_000
+                                while !probe.isCancelled() && DispatchTime.now().uptimeNanoseconds < deadline {
+                                    Thread.sleep(forTimeInterval: 0.005)
+                                }
+                            }
+                        }
+                    }
+                    // Wake a cancellation helper even when setup failed.
+                    if waitForCancellation && !probe.mayCancel() { probe.cancellationReady.signal() }
+                    probe.release.signal()
+                    let deadline = DispatchTime.now().uptimeNanoseconds + 4_000_000_000
+                    var signStopped = signer.isFinished
+                    var retireStopped = !retireLaunched
+                    if retireLaunched { retireStopped = retire.isFinished }
+                    while (!signStopped || !retireStopped) && DispatchTime.now().uptimeNanoseconds < deadline {
+                        Thread.sleep(forTimeInterval: 0.005)
+                        signStopped = signer.isFinished
+                        if retireLaunched { retireStopped = retire.isFinished }
+                    }
+                    let stopped = signStopped && retireStopped
+                    continuation.resume(returning: WorkerResult(
+                        entered: entered, retireStarted: retireStarted,
+                        retiredWhileHeld: retiredWhileHeld, stopped: stopped))
                 }
-                probe.finish(result.0)
-            } catch { probe.finish(nil) }
-        }
-        signer.name = "remi-owned-fence-signer"
-        let retire = Thread {
-            probe.markRetiring()
-            if !mutant { fence.retire() }
-            probe.markRetired()
-        }
-        retire.name = "remi-owned-fence-retire"
-        return await withTaskCancellationHandler {
-            signer.start()
-            let entered = await waitUntil { probe.snapshot().entered }
-            var retireStarted = false
-            var retireLaunched = false
-            var retiredWhileHeld: Bool?
-            if entered && !Task.isCancelled {
-                retireLaunched = true
-                retire.start()
-                retireStarted = await waitUntil { probe.snapshot().retiring }
-                if retireStarted && !Task.isCancelled {
-                    await delay(milliseconds: 50)
-                    retiredWhileHeld = probe.snapshot().retired
-                }
+                coordinator.name = "remi-owned-fence-coordinator"
+                probe.setCoordinator(coordinator)
+                coordinator.start()
             }
-            probe.release.signal()
-            let stopped = await waitUntil({ signer.isFinished && (!retireLaunched || retire.isFinished) }, seconds: 4)
-            return WorkerResult(entered: entered, retireStarted: retireStarted,
-                                retiredWhileHeld: retiredWhileHeld, stopped: stopped)
+        }
+        return await withTaskCancellationHandler {
+            if ownedDelayAfterEntryMilliseconds > 0 {
+                // Delays the async observer, never the coordinator that owns release.
+                _ = await waitUntil { probe.snapshot().entered }
+                await delay(milliseconds: ownedDelayAfterEntryMilliseconds)
+            }
+            let result = await work.value
+            let coordinatorStopped = await waitUntil({ probe.coordinatorFinished() }, seconds: 4)
+            return WorkerResult(entered: result.entered, retireStarted: result.retireStarted,
+                                retiredWhileHeld: result.retiredWhileHeld,
+                                stopped: result.stopped && coordinatorStopped)
         } onCancel: {
-            probe.release.signal()
+            probe.cancelAndRelease()
+            work.cancel()
+        }
+    }
+
+    @Test func testControlDelayCannotCauseSignerToEscapeBeforeRetirement() async throws {
+        let fence = DirectChildSigningFence(), client = ClientIdentity(), server = ClientIdentity()
+        let frame = try challenge(for: server), probe = FenceThreadProbe()
+        let result = await runWorkers(fence: fence, client: client, server: server, challenge: frame,
+                                      probe: probe, mutant: false, ownedDelayAfterEntryMilliseconds: 3500)
+        #expect(result.entered && result.retireStarted && result.stopped)
+        #expect(result.retiredWhileHeld == false)
+        let response = try #require(probe.snapshot().response)
+        let signature = try #require(Data(base64Encoded: response.signature))
+        let key = try Curve25519.Signing.PublicKey(rawRepresentation: client.publicKeyRaw)
+        #expect(key.isValidSignature(signature, for: Data(repeating: 37, count: 32)))
+        #expect(throws: (any Error).self) {
+            try fence.withSigning {
+                try AuthenticationHandshake.response(to: frame, identity: client,
+                    expectedServerPublicKey: server.publicKeyBase64)
+            }
         }
     }
 
@@ -130,13 +218,23 @@ struct DirectChildSigningFenceTests {
         let fence = DirectChildSigningFence(), client = ClientIdentity(), server = ClientIdentity()
         let frame = try challenge(for: server), probe = FenceThreadProbe()
         let task = Task {
-            await runWorkers(fence: fence, client: client, server: server, challenge: frame, probe: probe, mutant: false)
+            await runWorkers(fence: fence, client: client, server: server, challenge: frame,
+                             probe: probe, mutant: false, waitForCancellation: true)
         }
-        let reached = await waitUntil { probe.snapshot().retiring }
-        if !reached { task.cancel() }
-        #expect(reached, "The cancellation test must reach a revoker blocked behind the signer")
-        task.cancel()
+        let canceller = Thread {
+            if probe.cancellationReady.wait(timeout: .now() + 10) == .success && probe.mayCancel() {
+                task.cancel()
+            } else {
+                probe.cancelAndRelease()
+            }
+        }
+        canceller.name = "remi-owned-fence-canceller"
+        canceller.start()
         let result = await task.value
+        let cancellerStopped = await waitUntil({ canceller.isFinished }, seconds: 4)
+        #expect(probe.mayCancel() && result.retiredWhileHeld == false,
+                "Cancellation must reach a revoker blocked behind the signer")
+        #expect(cancellerStopped, "The owned cancellation thread must finish")
         #expect(result.stopped, "Cancellation must release and observe every owned thread")
         #expect(probe.snapshot().finished && probe.snapshot().retired)
     }
