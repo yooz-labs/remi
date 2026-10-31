@@ -17,6 +17,34 @@ import UserNotifications
 
     /// If the scan is too large, malformed, or storage fails, no removal is issued.
     func reconcile(_ requests: [UNNotificationRequest]) throws {
+        var protected = try Self.inspectInventory(requests)
+        var candidates: [(LocalNoticeMarker, String)] = []
+        for request in requests {
+            // This path submits immediate local requests only. Remote or other triggered
+            // requests, including secure categories, are never local cleanup authority.
+            guard !protected.contains(request.identifier), request.identifier.hasPrefix("remi.local.v1.") else { continue }
+            guard request.trigger == nil, !RemiPushStore.isSecureNotification(content: request.content),
+                  let marker = try? LocalNoticeMarker.parse(userInfo: request.content.userInfo)
+            else { protected.insert(request.identifier); continue }
+            switch try ledger.classify(marker, keys: keys, systemIdentifier: request.identifier) {
+            case .retired, .invalidated: candidates.append((marker, request.identifier))
+            case .currentActive, .historicalActive, .unknown, .quarantined: protected.insert(request.identifier)
+            }
+        }
+        // A later marker in the same scan may have quarantined its owner. Check every
+        // candidate again after the complete scan before authorizing any removal.
+        var removable = Set<String>()
+        for (marker, identifier) in candidates where !protected.contains(identifier) {
+            switch try ledger.classify(marker, keys: keys, systemIdentifier: identifier) {
+            case .retired, .invalidated: removable.insert(identifier)
+            case .currentActive, .historicalActive, .unknown, .quarantined: break
+            }
+        }
+        if !removable.isEmpty { remove(removable.sorted()) }
+    }
+
+    /// Bounded scan shared by automatic cleanup and explicitly selected recovery.
+    static func inspectInventory(_ requests: [UNNotificationRequest]) throws -> Set<String> {
         guard requests.count <= Self.maximumRequests else { throw LocalNoticeError.capacity }
         var remaining = Self.maximumMetadataBytes
         for request in requests {
@@ -24,37 +52,15 @@ import UserNotifications
             try Self.consume(request.content.title, remaining: &remaining)
             try Self.consume(request.content.subtitle, remaining: &remaining)
             try Self.consume(request.content.body, remaining: &remaining)
+            try Self.consume(request.content.categoryIdentifier, remaining: &remaining)
+            try Self.consume(request.content.threadIdentifier, remaining: &remaining)
             try Self.consume(request.content.userInfo, remaining: &remaining)
         }
         // Removal is identifier-based, so a same-ID remote or non-immediate request protects
         // that ID even if a separately observed local request otherwise qualifies.
-        let protected = Set(requests.filter {
+        return Set(requests.filter {
             $0.trigger != nil || RemiPushStore.isSecureNotification(content: $0.content)
         }.map(\.identifier))
-        var candidates: [(LocalNoticeMarker, String)] = []
-        for request in requests {
-            // This path submits immediate local requests only. Remote or other triggered
-            // requests, including anything with remiPush, are never local cleanup authority.
-            guard !protected.contains(request.identifier), request.trigger == nil,
-                  !RemiPushStore.isSecureNotification(content: request.content),
-                  request.identifier.hasPrefix("remi.local.v1."),
-                  let marker = try? LocalNoticeMarker.parse(userInfo: request.content.userInfo)
-            else { continue }
-            switch try ledger.classify(marker, keys: keys, systemIdentifier: request.identifier) {
-            case .retired, .invalidated: candidates.append((marker, request.identifier))
-            case .currentActive, .historicalActive, .unknown, .quarantined: break
-            }
-        }
-        // A later marker in the same scan may have quarantined its owner. Check every
-        // candidate again after the complete scan before authorizing any removal.
-        var removable = Set<String>()
-        for (marker, identifier) in candidates {
-            switch try ledger.classify(marker, keys: keys, systemIdentifier: identifier) {
-            case .retired, .invalidated: removable.insert(identifier)
-            case .currentActive, .historicalActive, .unknown, .quarantined: break
-            }
-        }
-        if !removable.isEmpty { remove(removable.sorted()) }
     }
 
     /// Walk only bounded property-list metadata, without serializing an unbounded OS array.

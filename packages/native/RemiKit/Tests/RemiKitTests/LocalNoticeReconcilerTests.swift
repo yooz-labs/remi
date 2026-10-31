@@ -29,6 +29,8 @@ import UserNotifications
         try ledger.invalidate(collided); try ledger.retire(collided)
         let secure = try ledger.prepare(owner: oldOwner, question: question)
         try ledger.invalidate(secure); try ledger.retire(secure)
+        let unrelated = try ledger.prepare(owner: oldOwner, question: question)
+        try ledger.invalidate(unrelated); try ledger.retire(unrelated)
         ledger.close()
         ledger = try LocalNoticeLedger(directory: dir)
         defer { ledger.close() }
@@ -40,11 +42,15 @@ import UserNotifications
                                              sequence: collided.sequence, question: question)
         let secureMarker = try keys.marker(requestID: secure.requestID, owner: oldOwner,
                                           sequence: secure.sequence, question: question)
+        let unrelatedMarker = try keys.marker(requestID: unrelated.requestID, owner: oldOwner,
+                                              sequence: unrelated.sequence, question: question)
+        let otherLocal = UNNotificationRequest(identifier: unrelatedMarker.systemIdentifier,
+                                               content: UNMutableNotificationContent(), trigger: nil)
         var removals: [[String]] = []
         let reconciler = LocalNoticeReconciler(ledger: ledger, keys: keys) { removals.append($0) }
         try reconciler.reconcile([request(oldMarker), request(retiredMarker), request(collidedMarker),
                                   request(collidedMarker, extraRemote: true), request(secureMarker),
-                                  request(secureMarker, secureCategory: true)])
+                                  request(secureMarker, secureCategory: true), request(unrelatedMarker), otherLocal])
         #expect(removals == [[retiredMarker.systemIdentifier]])
         #expect(try ledger.classify(oldMarker, keys: keys, systemIdentifier: oldMarker.systemIdentifier) == .historicalActive)
         #expect(try ledger.record(active).effect == .crashUncertain)

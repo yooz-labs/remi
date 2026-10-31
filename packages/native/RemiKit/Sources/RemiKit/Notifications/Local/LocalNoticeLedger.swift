@@ -284,6 +284,42 @@ final class LocalNoticeLedger: @unchecked Sendable {
         }
     }
 
+    /// Verify a currently visible historical request without associating its owner with any profile.
+    /// A visible PREPARED request contradicts the durable add boundary and quarantines that owner.
+    func selectableHistoricalTicket(_ marker: LocalNoticeMarker, keys: LocalNoticeKeys,
+                                    systemIdentifier: String) throws -> Ticket? {
+        try withLock {
+            guard try classify(marker, keys: keys, systemIdentifier: systemIdentifier) == .historicalActive else { return nil }
+            let ticket = Ticket(requestID: marker.requestID, owner: marker.ownerIndex,
+                                question: marker.questionIndex, sequence: marker.sequence)
+            let record = try exact(ticket)
+            switch record.effect {
+            case .settledSuccess, .settledError, .crashUncertain: return ticket
+            case .prepared, .adding:
+                try quarantine(marker.ownerIndex)
+                throw LocalNoticeError.corrupt
+            }
+        }
+    }
+
+    /// The caller has revalidated one explicitly confirmed, currently visible local request.
+    /// No historical owner is adopted, and an uncertain add remains tracked after removal.
+    func invalidateSelectedHistorical(_ marker: LocalNoticeMarker, keys: LocalNoticeKeys,
+                                      systemIdentifier: String) throws -> Record {
+        try withLock {
+            guard let ticket = try selectableHistoricalTicket(marker, keys: keys, systemIdentifier: systemIdentifier)
+            else { throw LocalNoticeError.changed }
+            return try transaction {
+                let record = try exact(ticket), owner = try ownerState(ticket.owner)
+                guard !currentOwners.contains(ticket.owner), !owner.quarantined, record.activity == .active,
+                      [.settledSuccess, .settledError, .crashUncertain].contains(record.effect)
+                else { throw LocalNoticeError.changed }
+                try update(ticket, sql: "UPDATE ticket SET activity=2 WHERE id=?1")
+                return try exact(ticket)
+            }
+        }
+    }
+
     /// Current-process forget may retire exactly this owner; historical owners are not matched by endpoint/key.
     func invalidateOwner(_ owner: Data) throws {
         try withLock {

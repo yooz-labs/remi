@@ -81,6 +81,10 @@ import UserNotifications
         #expect(throws: LocalNoticeError.changed) { try recovery.confirm(selected, current: changed) }
         let secure: [LocalNoticeRecovery.Entry] = [.init(request: try request(markerOne, secure: true), deliveredAt: nil)]
         #expect(throws: LocalNoticeError.changed) { try recovery.confirm(selected, current: secure) }
+        let unrelated = UNNotificationRequest(identifier: markerOne.systemIdentifier,
+                                              content: UNMutableNotificationContent(), trigger: nil)
+        let collision = original + [LocalNoticeRecovery.Entry(request: unrelated, deliveredAt: nil)]
+        #expect(throws: LocalNoticeError.changed) { try recovery.confirm(selected, current: collision) }
         #expect(removed.isEmpty); #expect(try ledger.record(one).activity == .active)
     }
 
@@ -96,5 +100,42 @@ import UserNotifications
         let record = try ledger.record(two)
         #expect(record.activity == .invalidated); #expect(record.effect == .crashUncertain)
         #expect(try ledger.counts().uncertain == 1)
+    }
+
+    @Test func oversizedReviewDoesNotDeleteOrChangeHistoricalRequests() throws {
+        let (dir, keys, ledger, one, markerOne, _, _) = try setup()
+        defer { ledger.close(); try? FileManager.default.removeItem(at: dir) }
+        var removed: [[String]] = []
+        let recovery = LocalNoticeRecovery(ledger: ledger, keys: keys) { removed.append($0) }
+        let big = UNMutableNotificationContent()
+        big.body = String(repeating: "x", count: LocalNoticeReconciler.maximumMetadataBytes + 1)
+        let entries: [LocalNoticeRecovery.Entry] = [
+            .init(request: try request(markerOne), deliveredAt: nil),
+            .init(request: UNNotificationRequest(identifier: "synthetic-big", content: big, trigger: nil), deliveredAt: nil),
+        ]
+        #expect(throws: LocalNoticeError.capacity) { try recovery.review(entries) }
+        #expect(removed.isEmpty); #expect(try ledger.record(one).activity == .active)
+    }
+
+    @Test func visiblePreparedMarkerQuarantinesItsHistoricalOwner() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("remi-local-review-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let keys = try LocalNoticeKeys(root: Data(repeating: 44, count: 32))
+        let owner = try keys.ownerIndex(runtimeOwner: UUID())
+        let question = try keys.questionIndex(owner: owner, sessionID: "synthetic", questionID: "q")
+        let original = try LocalNoticeLedger(directory: dir)
+        try original.createOwner(owner)
+        let ticket = try original.prepare(owner: owner, question: question)
+        let marker = try keys.marker(requestID: ticket.requestID, owner: owner,
+                                     sequence: ticket.sequence, question: question)
+        original.close()
+        let ledger = try LocalNoticeLedger(directory: dir)
+        defer { ledger.close() }
+        var removed: [[String]] = []
+        let recovery = LocalNoticeRecovery(ledger: ledger, keys: keys) { removed.append($0) }
+        let entries: [LocalNoticeRecovery.Entry] = [.init(request: try request(marker), deliveredAt: nil)]
+        #expect(throws: LocalNoticeError.corrupt) { try recovery.review(entries) }
+        #expect(removed.isEmpty)
+        #expect(try ledger.classify(marker, keys: keys, systemIdentifier: marker.systemIdentifier) == .quarantined)
     }
 }
