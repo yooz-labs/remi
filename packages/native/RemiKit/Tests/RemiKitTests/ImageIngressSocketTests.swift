@@ -81,6 +81,9 @@ private struct GenericImageFrame: Encodable, Sendable {
                 let frame = GenericImageFrame(type: type, id: UUID().uuidString.lowercased(), timestamp: Date().ISO8601Format())
                 await #expect(throws: PaneTransportBlocked.self) { try await client.send(frame) }
             }
+            let chat = UserInputMessage(id: UUID().uuidString.lowercased(), timestamp: Date().ISO8601Format(),
+                sessionId: peer.sessionID, content: #"A quoted "type":"image_upload_begin" is ordinary text"#)
+            try await client.send(chat)
             try await client.send(SessionListRequestMessage(id: UUID().uuidString.lowercased(), timestamp: Date().ISO8601Format()))
             let deadline = ContinuousClock.now.advanced(by: .seconds(5))
             while ContinuousClock.now < deadline {
@@ -89,6 +92,7 @@ private struct GenericImageFrame: Encodable, Sendable {
             }
             #expect(await observations.snapshot().sessions)
             #expect(peer.snapshot().images == 0)
+            #expect(peer.snapshot().inputs == 1)
             await client.stop()
         } catch {
             await connection?.stop(); #expect(await peer.stop()); throw error
