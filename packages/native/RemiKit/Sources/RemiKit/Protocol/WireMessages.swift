@@ -1,5 +1,12 @@
 import Foundation
 
+/// The complete `answer_result` outcome vocabulary in the shared protocol.
+enum AnswerResultWireOutcome: String {
+    case delivered, stale, uncertain, conflict, busy
+    case staleBinding = "stale-binding"
+    case sessionNotFound = "session-not-found"
+}
+
 /// Receipt of a semantic answer is distinct from its outcome (#1242, relay R3).
 public struct AnswerResultMessage: Decodable, Sendable, Equatable {
     public let type: String
