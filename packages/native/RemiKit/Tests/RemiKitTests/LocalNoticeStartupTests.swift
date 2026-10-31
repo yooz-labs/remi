@@ -197,5 +197,20 @@ import Testing
         }
         #expect(keychain.adds == 0)
         #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("local-notifications.sqlite").path))
+        keychain.readStatus = errSecSuccess; keychain.stored = Data(repeating: 53, count: 32)
+        #expect(throws: LocalNoticeBootstrap.Failure.recoveryRequired) {
+            try LocalNoticeStartup.openRecovery(directory: dir, keyStore: keyStore, operations: keychain.operations,
+                                               protectedDataAvailable: true, remove: { _ in })
+        }
+        #expect(keychain.adds == 0)
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("local-notifications.sqlite").path))
+        let empty = dir.appendingPathComponent("local-notifications.sqlite")
+        try Data().write(to: empty)
+        #expect(throws: LocalNoticeBootstrap.Failure.recoveryRequired) {
+            try LocalNoticeStartup.openRecovery(directory: dir, keyStore: keyStore, operations: keychain.operations,
+                                               protectedDataAvailable: true, remove: { _ in })
+        }
+        #expect(try Data(contentsOf: empty).isEmpty)
+        #expect(keychain.adds == 0)
     }
 }

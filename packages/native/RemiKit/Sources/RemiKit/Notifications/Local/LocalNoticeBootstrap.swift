@@ -68,17 +68,17 @@ enum LocalNoticeBootstrap {
             do { root = try keyStore.createAfterFreshInstallOrConfirmedReset(operations: operations) }
             catch LocalNoticeKeyError.locked { throw Failure.locked }
             catch { throw Failure.unavailable }
-            return try makeReady(directory: directory, root: root, needsSentinel: true)
+            return try makeReady(directory: directory, root: root, needsSentinel: true, createIfMissing: true)
         } catch LocalNoticeKeyError.corrupt { throw Failure.recoveryRequired }
         catch { throw Failure.unavailable }
         // A key left by an interrupted first launch can create the first journal only if
         // no sentinel or local marker indicates prior state. No older notification is adopted.
         if !journalExists && (hasSentinel || hasMarkers) { throw Failure.recoveryRequired }
-        return try makeReady(directory: directory, root: root, needsSentinel: !hasSentinel)
+        return try makeReady(directory: directory, root: root, needsSentinel: !hasSentinel, createIfMissing: !journalExists)
     }
 
-    private static func makeReady(directory: URL, root: Data, needsSentinel: Bool) throws -> Ready {
-        do { return Ready(keys: try LocalNoticeKeys(root: root), ledger: try LocalNoticeLedger(directory: directory), needsSentinel: needsSentinel) }
+    private static func makeReady(directory: URL, root: Data, needsSentinel: Bool, createIfMissing: Bool) throws -> Ready {
+        do { return Ready(keys: try LocalNoticeKeys(root: root), ledger: try LocalNoticeLedger(directory: directory, createIfMissing: createIfMissing), needsSentinel: needsSentinel) }
         catch LocalNoticeError.corrupt { throw Failure.recoveryRequired }
         catch { throw Failure.unavailable }
     }

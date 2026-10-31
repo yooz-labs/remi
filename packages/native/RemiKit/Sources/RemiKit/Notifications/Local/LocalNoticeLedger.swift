@@ -39,7 +39,7 @@ final class LocalNoticeLedger: @unchecked Sendable {
     /// Historical indexes survive restart for cleanup, but are never adopted as current authority.
     private var currentOwners: Set<Data> = []
 
-    init(directory: URL) throws {
+    init(directory: URL, createIfMissing: Bool = true) throws {
         guard directory.isFileURL else { throw LocalNoticeError.invalid }
         self.file = directory.appendingPathComponent("local-notifications.sqlite")
         let fm = FileManager.default
@@ -48,6 +48,7 @@ final class LocalNoticeLedger: @unchecked Sendable {
             if lstat(directory.path, &initial) == 0 {
                 guard (initial.st_mode & S_IFMT) == S_IFDIR, initial.st_uid == getuid() else { throw LocalNoticeError.unavailable }
             } else if errno == ENOENT {
+                guard createIfMissing else { throw LocalNoticeError.unavailable }
                 try fm.createDirectory(at: directory, withIntermediateDirectories: true,
                     attributes: Self.protection(mode: 0o700))
             } else { throw LocalNoticeError.unavailable }
@@ -74,8 +75,10 @@ final class LocalNoticeLedger: @unchecked Sendable {
             guard fstat(ownerLock, &lockStat) == 0, (lockStat.st_mode & S_IFMT) == S_IFREG,
                   lockStat.st_uid == getuid(), fchmod(ownerLock, S_IRUSR | S_IWUSR) == 0 else { throw LocalNoticeError.unavailable }
             try Self.checkExistingFile(file)
+            if !createIfMissing { try checkExistingDatabaseHeader() }
             try verifyDirectory()
-            let status = sqlite3_open_v2(file.path, &database, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW, nil)
+            let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW | (createIfMissing ? SQLITE_OPEN_CREATE : 0)
+            let status = sqlite3_open_v2(file.path, &database, flags, nil)
             guard status == SQLITE_OK else { throw Self.sqliteError(status) }
             try verifyDirectory()
             try fm.setAttributes(Self.protection(mode: 0o600), ofItemAtPath: file.path)
@@ -89,6 +92,7 @@ final class LocalNoticeLedger: @unchecked Sendable {
             try transaction(checkBudget: false) {
                 let version = try integer("PRAGMA user_version"), application = try integer("PRAGMA application_id")
                 if version == 0 && application == 0 {
+                    guard createIfMissing else { throw LocalNoticeError.corrupt }
                     guard try integer("SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'") == 0 else { throw LocalNoticeError.corrupt }
                     try execute("CREATE TABLE owner (id BLOB PRIMARY KEY CHECK(length(id)=32), highwater INTEGER NOT NULL CHECK(highwater>=0), retired INTEGER NOT NULL CHECK(retired IN(0,1)), quarantined INTEGER NOT NULL CHECK(quarantined IN(0,1)))")
                     try execute("CREATE TABLE ticket (id TEXT PRIMARY KEY CHECK(length(id)=36), owner BLOB NOT NULL REFERENCES owner(id), question BLOB NOT NULL CHECK(length(question)=32), seq INTEGER NOT NULL CHECK(seq>0), effect INTEGER NOT NULL CHECK(effect BETWEEN 1 AND 5), activity INTEGER NOT NULL CHECK(activity IN(1,2)), removal INTEGER NOT NULL CHECK(removal IN(0,1)), UNIQUE(owner,seq))")
@@ -146,6 +150,20 @@ final class LocalNoticeLedger: @unchecked Sendable {
         if lstat(file.path, &info) == 0 {
             guard (info.st_mode & S_IFMT) == S_IFREG, info.st_uid == getuid() else { throw LocalNoticeError.unavailable }
         } else if errno != ENOENT { throw LocalNoticeError.unavailable }
+    }
+
+    /// Recovery must not initialize an absent or empty file before detecting prior-state loss.
+    private func checkExistingDatabaseHeader() throws {
+        let descriptor = openat(directoryFD, "local-notifications.sqlite", O_RDONLY | O_NOFOLLOW)
+        guard descriptor >= 0 else { throw LocalNoticeError.unavailable }
+        defer { Darwin.close(descriptor) }
+        var info = stat(), bytes = [UInt8](repeating: 0, count: 16)
+        guard fstat(descriptor, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_uid == getuid() else {
+            throw LocalNoticeError.unavailable
+        }
+        let count = bytes.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress, $0.count) }
+        guard count >= 0 else { throw LocalNoticeError.unavailable }
+        guard count == 16, bytes == Array("SQLite format 3\0".utf8) else { throw LocalNoticeError.corrupt }
     }
 
     func createOwner(_ owner: Data) throws {
