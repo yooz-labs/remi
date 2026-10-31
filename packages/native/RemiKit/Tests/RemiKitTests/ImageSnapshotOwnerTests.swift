@@ -48,6 +48,50 @@ import Testing
         }
     }
 
+    @Test func uploadReaderHashesExactChunksAndBlocksCleanupUntilClosed() throws {
+        let bytes = Data(repeating: 0x52, count: 70_001)
+        try withFixture(bytes) { _, _, source, journal, owner in
+            let id = try journal.reserveCopy()
+            let captured = try owner.capture(id: id, source: source)
+            let fingerprint = try ImageRecoveryFingerprint.make(secret: secret, machineKey: Data(repeating: 0x42, count: 32),
+                sessionID: "00112233-4455-4677-8899-aabbccddeeff",
+                binding: AttachedBinding(harness: .claude, harnessSessionId: "owned-thread"), imageDigest: captured.digest)
+            try journal.finishCopy(id, fingerprint: fingerprint)
+            let reader = try owner.openUploadReader(id: id, byteCount: captured.byteCount, digest: captured.digest)
+            #expect(throws: ImageRecoveryJournal.Failure.readerActive) { try owner.abandon(id: id, confirmed: true) }
+            var returned = Data()
+            while returned.count < bytes.count {
+                returned.append(try reader.read(offset: returned.count, count: min(ImageStagingLimits.chunkBytes, bytes.count - returned.count)))
+            }
+            try reader.finish()
+            #expect(returned == bytes)
+            try owner.abandon(id: id, confirmed: true)
+            #expect(journal.snapshot.localSnapshotID == nil)
+        }
+    }
+
+    @Test func uploadReaderRefusesChangedBytesAndReleasesCleanupClaim() throws {
+        let bytes = Data(repeating: 0x11, count: 100)
+        try withFixture(bytes) { root, _, source, journal, owner in
+            let id = try journal.reserveCopy()
+            let captured = try owner.capture(id: id, source: source)
+            let fingerprint = try ImageRecoveryFingerprint.make(secret: secret, machineKey: Data(repeating: 0x42, count: 32),
+                sessionID: "00112233-4455-4677-8899-aabbccddeeff",
+                binding: AttachedBinding(harness: .claude, harnessSessionId: "owned-thread"), imageDigest: captured.digest)
+            try journal.finishCopy(id, fingerprint: fingerprint)
+            let reader = try owner.openUploadReader(id: id, byteCount: captured.byteCount, digest: captured.digest)
+            let snapshot = root.appendingPathComponent("image-\(id.uuidString.lowercased())")
+            let fd = open(snapshot.path, O_WRONLY | O_CLOEXEC | O_NOFOLLOW)
+            guard fd >= 0 else { throw POSIXError(.EIO) }
+            var value: UInt8 = 0x22
+            #expect(pwrite(fd, &value, 1, 0) == 1)
+            close(fd)
+            _ = try reader.read(offset: 0, count: bytes.count)
+            #expect(throws: ImageSnapshotReader.Failure.integrity) { try reader.finish() }
+            try owner.abandon(id: id, confirmed: true)
+        }
+    }
+
     @Test func selectedFileIsCopiedWhileItsOpenedDescriptorIsHeld() throws {
         let bytes = Data(repeating: 0x42, count: 75_000)
         try withFixture(bytes) { root, input, _, journal, owner in
