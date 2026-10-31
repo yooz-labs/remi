@@ -19,7 +19,7 @@ import UserNotifications
 }
 
 @Suite(.serialized) @MainActor struct NativeLocalNotificationOwnerTests {
-    private func fixture(uncertain: Bool = false) async throws -> (URL, String, UserDefaults, OwnedStartupKeychain,
+    private func fixture(uncertain: Bool = false, pendingForget: Bool = false) async throws -> (URL, String, UserDefaults, OwnedStartupKeychain,
         OwnedOwnerInventory, LocalNoticeInventoryRecord, NativeLocalNotificationOwner, () -> [[String]]) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("remi-local-owner-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -41,6 +41,10 @@ import UserNotifications
         try ready.ledger.beginAdd(ticket)
         if !uncertain { try ready.ledger.settle(ticket, succeeded: true) }
         let marker = try keys.marker(requestID: ticket.requestID, owner: owner, sequence: ticket.sequence, question: question)
+        if pendingForget {
+            let unassigned = try keys.ownerIndex(runtimeOwner: UUID())
+            try ready.ledger.createOwner(unassigned); try ready.ledger.invalidateOwner(unassigned)
+        }
         ready.ledger.close()
         let content = UNMutableNotificationContent(); content.title = "Synthetic"; content.body = "Synthetic request"
         content.userInfo = try marker.userInfo()
@@ -112,5 +116,28 @@ import UserNotifications
         #expect(await owner.confirmAbandoningDebt(confirmation) == .completed)
         #expect(removals().isEmpty)
         #expect(await owner.confirmAbandoningDebt(confirmation) == .changed)
+    }
+
+    @Test func pendingForgetStillAllowsScopedReviewWithoutScheduling() async throws {
+        let (dir, name, defaults, _, _, _, owner, removals) = try await fixture(pendingForget: true)
+        defer { owner.stop(); defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: dir) }
+        await owner.start()
+        #expect(owner.phase == .pendingForget(1))
+        let alerts = try await owner.reviewEarlierAlerts()
+        #expect(alerts.count == 1); #expect(removals().isEmpty)
+    }
+
+    @Test func stopDuringStartupCannotLeaveReviewAuthorityOrRotateKey() async throws {
+        let (dir, name, defaults, keychain, os, _, owner, removals) = try await fixture()
+        defer { owner.stop(); defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: dir) }
+        os.hold = true
+        let startup = Task { await owner.start() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while os.pending == nil || os.delivered == nil {
+            guard ContinuousClock.now < deadline else { throw LocalNoticeError.unavailable }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        owner.stop(); os.release(); await startup.value
+        #expect(owner.phase == .idle); #expect(keychain.adds == 1); #expect(removals().isEmpty)
     }
 }
