@@ -528,6 +528,19 @@ import Testing
         #expect(RemiTileSize.boardDensity(forHeight: small.height) == .compact)
     }
 
+    @Test func gesturePreviewKeepsNewCardsAndClearsWhenItsOwnerDisappears() {
+        let a = RemiBoardFrame(x: 16, y: 16, width: 340, height: 300)
+        let b = RemiBoardFrame(x: 368, y: 16, width: 340, height: 300)
+        let moved = a.moved(by: CGSize(width: 24, height: 0))
+        let current = ["a": a, "b": b]
+        let preview = ["a": moved]
+        let active = RemiBoardOrder.displayedFrames(current, preview: preview, owner: "a", visibleKeys: ["a", "b"])
+        #expect(active["a"] == moved && active["b"] == b)
+        #expect(RemiBoardOrder.displayedFrames(current, preview: preview, owner: "a", visibleKeys: ["b"]) == current)
+        #expect(RemiBoardOrder.displayedFrames(["b": b], preview: preview, owner: "a", visibleKeys: ["b"]) == ["b": b])
+        #expect(RemiBoardOrder.displayedFrames(current, preview: nil, owner: nil, visibleKeys: ["a", "b"]) == current)
+    }
+
     @Test func movementClampsAtCanvasOriginAndSnapsToTheGridOnRelease() {
         let start = RemiBoardFrame(x: 73, y: 79, width: 420, height: 360)
         let moved = start.constrainedMove(by: CGSize(width: -200, height: 30))
