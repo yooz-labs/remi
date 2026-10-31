@@ -520,6 +520,12 @@ public actor RemiConnection {
     }
 
     private func handle(_ data: Data, on task: URLSessionWebSocketTask) async throws {
+        // Inspect oversized envelopes in place before the general decoder can allocate a
+        // large image-family object. This is a protocol violation, not reachability failure:
+        // never use it to trigger a route fallback. URLSession has already received the frame;
+        // the image feature remains blocked until the socket-level resource gate is qualified.
+        do { _ = try ImageIngressPreflight.classify(data) }
+        catch { throw RemiConnectionError.malformedMessage }
         let envelope = try decoder.decode(Envelope.self, from: data)
         if configuration.relayPin != nil && ["auth_challenge", "auth_result", "raw_pty_output", "terminal_resize"].contains(envelope.type) {
             throw RelayFailure.type
