@@ -27,10 +27,11 @@ struct DirectChildKeyIntegrationTests {
         return try JSONSerialization.data(withJSONObject: value)
     }
 
-    @Test(arguments: ["discovery-matching", "discovery-wrong", "create-matching", "create-wrong", "resume-matching", "resume-wrong", "discovery-legacy", "childfirst-legacy"])
+    @Test(arguments: ["discovery-matching", "discovery-wrong", "create-matching", "create-wrong", "resume-matching", "resume-wrong", "discovery-legacy", "childfirst-legacy", "earlydiscovery-wrong", "earlycreate-wrong", "earlydiscovery-matching", "earlycreate-matching", "earlydiscovery-legacy"])
     func childUsesAuthenticatedParentKey(_ scenario: String) async throws {
         let pieces = scenario.split(separator: "-")
         let action = String(pieces[0]), mode = String(pieces[1])
+        let early = action.hasPrefix("early")
         let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Integration/direct-child-key-peer.ts")
         let peer = Process(), input = Pipe(), output = Pipe()
@@ -48,6 +49,7 @@ struct DirectChildKeyIntegrationTests {
             if !peer.isRunning { try? FileManager.default.removeItem(at: folder) }
         }
         var store: MachineStore?
+        let parentHelloGate = OwnedChildSignGate()
         do {
             var line = Data()
             for try await byte in output.fileHandleForReading.bytes { if byte == 10 { break }; line.append(byte) }
@@ -67,6 +69,7 @@ struct DirectChildKeyIntegrationTests {
                 subject = MachineStore(profiles: [profile], identity: ClientIdentity(), clientVersion: "test", clientId: "owned")
             }
             store = subject
+            if early { subject.ownedBeforeParentHello = { await parentHelloGate.hold() } }
             subject.start()
             let activeRoot = try #require(subject.machines.first?.endpoint)
             let rootDeadline = ContinuousClock.now.advanced(by: .seconds(5))
@@ -74,12 +77,16 @@ struct DirectChildKeyIntegrationTests {
                 try await Task.sleep(for: .milliseconds(10))
             }
             try #require(subject.machines.first?.status == .connected, "Real root must authenticate before dispatch")
+            if early {
+                while !(await parentHelloGate.entered) && ContinuousClock.now < rootDeadline { try await Task.sleep(for: .milliseconds(10)) }
+                try #require(await parentHelloGate.entered, "Verified parent Hello must be held before Store processing")
+            }
             let rootGeneration = try #require(subject.connectionGenerations[activeRoot])
             switch action {
-            case "discovery", "childfirst":
+            case "discovery", "childfirst", "earlydiscovery":
                 let response = try JSONDecoder().decode(SessionListResponse.self, from: fixture("session_list_response", port: childPort))
                 subject.receive(.sessions(response), from: activeRoot, generation: rootGeneration)
-            case "create":
+            case "create", "earlycreate":
                 let response = try JSONDecoder().decode(CreateSessionResponseMessage.self, from: fixture("create_session_response", port: childPort))
                 subject.receive(.createSessionResponse(response), from: activeRoot, generation: rootGeneration)
             case "resume":
@@ -92,6 +99,13 @@ struct DirectChildKeyIntegrationTests {
             let statsFile = folder.appendingPathComponent("stats.json")
             func stats() throws -> [String: Int] {
                 try #require(JSONSerialization.jsonObject(with: Data(contentsOf: statsFile)) as? [String: Int])
+            }
+            if early {
+                try await Task.sleep(for: .milliseconds(150))
+                if mode == "wrong" {
+                    #expect(try stats()["childAuth"] == 0, "A delayed parent Hello must not let a wrong child obtain a signature")
+                }
+                await parentHelloGate.open()
             }
             let deadline = ContinuousClock.now.advanced(by: .seconds(5))
             while ContinuousClock.now < deadline {
@@ -122,6 +136,7 @@ struct DirectChildKeyIntegrationTests {
             }
             subject.stop()
         } catch {
+            await parentHelloGate.open()
             store?.stop()
             await cleanup()
             throw error

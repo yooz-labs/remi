@@ -341,6 +341,7 @@ public final class MachineStore {
     var ownedPairingCoordinator: PairingAttemptCoordinator? { pairingCoordinator }
     @ObservationIgnored var ownedBeforeRecoveryAdmission: (@MainActor () async -> Void)?
     @ObservationIgnored var ownedBeforeChildSignature: (@Sendable () async throws -> Void)?
+    @ObservationIgnored var ownedBeforeParentHello: (@Sendable () async -> Void)?
     var ownedRecoveryCoordinator: MachineRecoveryCoordinator? { recoveryCoordinator }
     func ownedConnectionID(_ endpoint: MachineEndpoint) -> ObjectIdentifier? { connections[endpoint].map(ObjectIdentifier.init) }
     private(set) var ownedSessionListReceipts: Set<String> = []
@@ -2160,6 +2161,9 @@ public final class MachineStore {
         let generation = UUID()
         let trustIntent = pushTrustIntents.contains(endpoint)
         let pushGeneration = try? pushStore?.generation()
+        #if DEBUG
+        let beforeParentHello = ownedBeforeParentHello
+        #endif
         connectionGenerations[endpoint] = generation
         parentByConnection[endpoint] = parent
         if let childFence, let parentGeneration {
@@ -2194,6 +2198,9 @@ public final class MachineStore {
             },
             eventHandler: { [weak self] event in
                 Task { @MainActor [weak self] in
+                    #if DEBUG
+                    if endpoint == parent, case .hello = event { await beforeParentHello?() }
+                    #endif
                     self?.receive(event, from: endpoint, generation: generation)
                 }
             }
