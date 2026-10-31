@@ -440,19 +440,18 @@ import Testing
         #expect(frames[firstKey] != frames[secondKey])
     }
 
-    @Test func manuallyOverlappingCardsKeepTheirPositionsAndAutomaticCardsAvoidThem() throws {
+    @Test func savedOverlappingCardsAreReflowedWithoutCoveringOthers() throws {
         let sessions = [session("a"), session("b"), session("c"), session("d")]
         var state = RemiBoardState()
         let firstFrameStored = state.setFrame(RemiBoardFrame(x: 16, y: 16, width: 520, height: 300), for: "m\u{1F}a")
-        // Manual cards behave like windows and may intentionally overlap.
+        // A saved overlap can arise from an older layout; make both cards visible.
         let secondFrameStored = state.setFrame(RemiBoardFrame(x: 200, y: 80, width: 420, height: 360), for: "m\u{1F}b")
         #expect(firstFrameStored)
         #expect(secondFrameStored)
         let frames = RemiBoardOrder.layout(sessions, state: state, interactions: [:], now: now, viewportWidth: 900)
         let first = try #require(frames["m\u{1F}a"])
         let second = try #require(frames["m\u{1F}b"])
-        #expect(first.intersects(second))
-        #expect(second == state.frame(for: "m\u{1F}b"))
+        #expect(!first.intersects(second))
         for key in ["m\u{1F}c", "m\u{1F}d"] {
             let automatic = try #require(frames[key])
             #expect(!automatic.intersects(first))
@@ -461,6 +460,40 @@ import Testing
 
         let touching = RemiBoardFrame(x: 356, y: 16, width: 340, height: 260)
         #expect(!RemiBoardFrame(x: 16, y: 16, width: 340, height: 260).intersects(touching))
+    }
+
+    @Test func movingOrGrowingACardMakesRoomWithoutMovingUnrelatedCards() throws {
+        let a = RemiBoardFrame(x: 16, y: 16, width: 340, height: 300)
+        let b = RemiBoardFrame(x: 368, y: 16, width: 340, height: 300)
+        let unrelated = RemiBoardFrame(x: 1_500, y: 16, width: 340, height: 300)
+        let start = ["a": a, "b": b, "c": unrelated]
+        let proposed = a.constrainedMove(by: CGSize(width: 200, height: 0))
+        let moved = try #require(RemiBoardOrder.reflow(moving: "a", to: proposed, in: start))
+        #expect(moved["a"] == proposed)
+        #expect(moved["b"]?.x == proposed.maxX + 12)
+        #expect(moved["c"] == unrelated)
+        let movedA = try #require(moved["a"])
+        let movedB = try #require(moved["b"])
+        #expect(!movedA.intersects(movedB))
+
+        let grown = a.resized(by: CGSize(width: 140, height: 0))
+        let resized = try #require(RemiBoardOrder.reflow(moving: "a", to: grown, in: start))
+        #expect(resized["a"] == grown)
+        #expect(resized["b"]?.x == grown.maxX + 12)
+        #expect(resized["c"] == unrelated)
+    }
+
+    @Test func reflowDoesNotPlaceDisplacedNeighborsOnAnotherCard() throws {
+        let a = RemiBoardFrame(x: 16, y: 16, width: 340, height: 300)
+        let b = RemiBoardFrame(x: 368, y: 16, width: 340, height: 300)
+        let c = RemiBoardFrame(x: 720, y: 16, width: 340, height: 300)
+        let proposed = a.constrainedMove(by: CGSize(width: 200, height: 0))
+        let frames = try #require(RemiBoardOrder.reflow(moving: "a", to: proposed, in: ["a": a, "b": b, "c": c]))
+        let placed = Array(frames.values)
+        for i in placed.indices {
+            for j in placed.indices where j > i { #expect(!placed[i].intersects(placed[j])) }
+        }
+        #expect(frames["c"] == c)
     }
 
     @Test func movementClampsAtCanvasOriginAndSnapsToTheGridOnRelease() {
