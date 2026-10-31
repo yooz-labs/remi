@@ -98,5 +98,14 @@ import Testing
             #expect(throws: (any Error).self) { try disk.load() }
             #expect(throws: (any Error).self) { try disk.replace(expected: valid, with: valid) }
         }
+        try withStore { root, disk in
+            let valid = try ImageRecoveryLedger().encodeJournal(secret: secret)
+            try disk.initializeIfProvenFresh(valid)
+            let journal = root.appendingPathComponent(".image-journal")
+            try Data("corrupt".utf8).write(to: journal)
+            #expect(throws: (any Error).self) { try disk.replace(expected: valid, with: valid) }
+            try valid.write(to: journal)
+            #expect(throws: (any Error).self) { try disk.load() }
+        }
     }
 }
