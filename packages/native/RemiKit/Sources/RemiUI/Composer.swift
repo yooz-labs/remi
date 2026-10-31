@@ -17,9 +17,9 @@ public extension EnvironmentValues {
 
 /// The message field and its action button.
 ///
-/// `LeadingAccessory` is the seam for future attach controls (images, files). It is empty
-/// today, and nothing is drawn for it until a feature backs it. A future accessory should be
-/// a control as tall as the field (see `RemiTheme.Size.minimumTapTarget`) so the row stays aligned.
+/// `LeadingAccessory` is the seam for controls beside the field. The shared session bar uses
+/// it to explain that image attachments are currently unavailable. Accessories should be as
+/// tall as the field (see `RemiTheme.Size.minimumTapTarget`) so the row stays aligned.
 public struct RemiComposer<LeadingAccessory: View>: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
