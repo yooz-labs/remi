@@ -3,95 +3,89 @@ import Testing
 @testable import RemiKit
 
 @Suite struct OutgoingMessagesTests {
-    @Test func aNewMessageIsSendingThenSent() {
-        var outgoing = OutgoingMessages()
-        outgoing.add(id: "1", content: "hello")
-        #expect(outgoing.items.map(\.delivery) == [.sending])
-        outgoing.markSent(id: "1")
-        #expect(outgoing.items.map(\.delivery) == [.sent])
+    let origin = OutgoingOrigin(endpoint: MachineEndpoint(host: "127.0.0.1", port: 18790), connection: UUID(), socket: UUID())
+
+    private func error(_ code: String, session: String? = "session", message: String? = "m1", partial: JSONValue? = nil) throws -> ErrorMessage {
+        var value = try #require(try JSONSerialization.jsonObject(with: FixtureConformanceTests.fixture("error")) as? [String: Any])
+        value["code"] = code
+        var details: [String: JSONValue] = [:]
+        if let session { details["sessionId"] = .string(session) }
+        if let message { details["messageId"] = .string(message) }
+        if let partial { details["inputMayBePartial"] = partial }
+        value["details"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(details))
+        return try JSONDecoder().decode(ErrorMessage.self, from: JSONSerialization.data(withJSONObject: value))
     }
 
-    @Test func twoPendingMessagesBothStayVisibleInOrder() {
-        var outgoing = OutgoingMessages()
-        outgoing.add(id: "1", content: "first")
-        outgoing.markSent(id: "1")
-        outgoing.add(id: "2", content: "second")
-        #expect(outgoing.items.map(\.content) == ["first", "second"])
+    @Test func handoffNeverOverridesARefusalRacingTheSendReturn() throws {
+        var messages = OutgoingMessages()
+        messages.add(id: "m1", content: "hello", origin: origin)
+        messages.receive(try error("PROMPT_WAITING"), sessionID: "session", origin: origin)
+        messages.markHandedOff(id: "m1", origin: origin)
+        messages.markUncertain(id: "m1", origin: origin)
+        #expect(messages.items.map(\.delivery) == [.refused])
     }
 
-    @Test func aTranscriptEntryConfirmsOnlyTheOldestMatch() {
-        var outgoing = OutgoingMessages()
-        outgoing.add(id: "1", content: "yes")
-        outgoing.add(id: "2", content: "yes")
-        let first = outgoing.confirm(transcriptContent: "  yes\n")
-        #expect(first)
-        #expect(outgoing.items.map(\.id) == ["2"])
-        let second = outgoing.confirm(transcriptContent: "yes")
-        #expect(second)
-        #expect(outgoing.items.isEmpty)
+    @Test(arguments: ["PROMPT_WAITING", "SESSION_NOT_FOUND", "STALE_BINDING"])
+    func exactRefusalAfterHandoff(_ code: String) throws {
+        var messages = OutgoingMessages()
+        messages.add(id: "m1", content: "hello", origin: origin)
+        messages.markHandedOff(id: "m1", origin: origin)
+        messages.receive(try error(code), sessionID: "session", origin: origin)
+        #expect(messages.items.map(\.delivery) == [.refused])
     }
 
-    @Test func anUnrelatedTranscriptEntryConfirmsNothing() {
-        var outgoing = OutgoingMessages()
-        outgoing.add(id: "1", content: "run the tests")
-        let confirmed = outgoing.confirm(transcriptContent: "something else")
-        #expect(!confirmed)
-        #expect(outgoing.items.count == 1)
+    @Test(arguments: ["PROMPT_WAITING", "SESSION_NOT_FOUND", "STALE_BINDING", "INPUT_NOT_DELIVERED", "UNKNOWN"])
+    func partialWritesAlwaysStayUncertain(_ code: String) throws {
+        var messages = OutgoingMessages()
+        messages.add(id: "m1", content: "hello", origin: origin)
+        messages.receive(try error(code, partial: .bool(true)), sessionID: "session", origin: origin)
+        #expect(messages.items.map(\.delivery) == [.uncertain])
     }
 
-    @Test func aFailedSendIsRemoved() {
-        var outgoing = OutgoingMessages()
-        outgoing.add(id: "1", content: "a")
-        outgoing.remove(id: "1")
-        #expect(outgoing.items.isEmpty)
+    @Test func missingMessageIDAndUnknownCodeCannotProveRefusal() throws {
+        var messages = OutgoingMessages()
+        messages.add(id: "m1", content: "hello", origin: origin)
+        messages.receive(try error("PROMPT_WAITING", message: nil), sessionID: "session", origin: origin)
+        #expect(messages.items.map(\.delivery) == [.sending])
+        messages.receive(try error("INPUT_NOT_DELIVERED"), sessionID: "session", origin: origin)
+        #expect(messages.items.map(\.delivery) == [.uncertain])
     }
 
-    @Test func theQueueIsBoundedSoAStuckConnectionCannotGrowIt() {
-        var outgoing = OutgoingMessages()
-        for index in 0..<(OutgoingMessages.limit + 5) { outgoing.add(id: "\(index)", content: "m\(index)") }
-        #expect(outgoing.items.count == OutgoingMessages.limit)
-        #expect(outgoing.items.last?.id == "\(OutgoingMessages.limit + 4)")
+    @Test func mismatchedSessionMessageOrSocketCannotMutateIntent() throws {
+        var messages = OutgoingMessages()
+        messages.add(id: "m1", content: "hello", origin: origin)
+        messages.receive(try error("PROMPT_WAITING", session: "other"), sessionID: "session", origin: origin)
+        messages.receive(try error("PROMPT_WAITING", message: "other"), sessionID: "session", origin: origin)
+        messages.receive(try error("PROMPT_WAITING"), sessionID: "session", origin:
+            OutgoingOrigin(endpoint: origin.endpoint, connection: origin.connection, socket: UUID()))
+        messages.receive(try error("PROMPT_WAITING", session: nil), sessionID: "session", origin: origin)
+        #expect(messages.items.map(\.delivery) == [.sending])
     }
 
-    @Test func anEntryIsVisibleOnlyForItsLifetime() {
-        let start = Date(timeIntervalSince1970: 1_000)
-        var outgoing = OutgoingMessages()
-        outgoing.add(id: "1", content: "old", now: start)
-        outgoing.add(id: "2", content: "new", now: start.addingTimeInterval(200))
-        #expect(OutgoingMessages.lifetime == 300)
-        #expect(outgoing.visible(now: start.addingTimeInterval(299)).map(\.id) == ["1", "2"])
-        #expect(outgoing.visible(now: start.addingTimeInterval(300)).map(\.id) == ["2"])
-        #expect(outgoing.visible(now: start.addingTimeInterval(501)).isEmpty)
+    @Test func fiftyUnresolvedMessagesBlockNewIntentUntilExplicitDismissal() {
+        var messages = OutgoingMessages()
+        for index in 0..<OutgoingMessages.limit {
+            let added = messages.add(id: "\(index)", content: "hello", origin: origin, now: .distantPast)
+            #expect(added)
+            messages.markUncertain(id: "\(index)", origin: origin)
+        }
+        let overflow = messages.add(id: "overflow", content: "draft", origin: origin)
+        #expect(!overflow)
+        #expect(messages.items.count == 50)
+        #expect(messages.items.first?.id == "0")
+        messages.dismiss(id: "0")
+        let afterDismiss = messages.add(id: "new", content: "draft", origin: origin)
+        #expect(afterDismiss)
+        #expect(messages.items.last?.id == "new")
     }
 
-    @Test func addAndConfirmDropExpiredEntries() {
-        let start = Date(timeIntervalSince1970: 1_000)
-        var outgoing = OutgoingMessages()
-        outgoing.add(id: "1", content: "stale", now: start)
-        outgoing.add(id: "2", content: "fresh", now: start.addingTimeInterval(400))
-        #expect(outgoing.items.map(\.id) == ["2"])
-        outgoing.add(id: "3", content: "later", now: start.addingTimeInterval(450))
-        let confirmed = outgoing.confirm(transcriptContent: "nothing", now: start.addingTimeInterval(800))
-        #expect(!confirmed)
-        #expect(outgoing.items.isEmpty)
-    }
-
-    @Test func anExpiredEntryIsNotConfirmed() {
-        let start = Date(timeIntervalSince1970: 1_000)
-        var outgoing = OutgoingMessages()
-        outgoing.add(id: "1", content: "x", now: start)
-        let confirmed = outgoing.confirm(transcriptContent: "x", now: start.addingTimeInterval(301))
-        #expect(!confirmed)
-    }
-
-    @Test func removeExpiredDropsOnlyTheExpiredEntries() {
-        let start = Date(timeIntervalSince1970: 1_000)
-        var outgoing = OutgoingMessages()
-        outgoing.add(id: "1", content: "old", now: start)
-        outgoing.add(id: "2", content: "new", now: start.addingTimeInterval(200))
-        outgoing.removeExpired(now: start.addingTimeInterval(299))
-        #expect(outgoing.items.map(\.id) == ["1", "2"])
-        outgoing.removeExpired(now: start.addingTimeInterval(300))
-        #expect(outgoing.items.map(\.id) == ["2"])
+    @Test func connectionLossNeverClearsOrReplaysAndPreservesRefusal() throws {
+        var messages = OutgoingMessages()
+        messages.add(id: "m1", content: "hello", origin: origin)
+        messages.add(id: "m2", content: "hello", origin: origin)
+        messages.receive(try error("PROMPT_WAITING"), sessionID: "session", origin: origin)
+        messages.connectionLost(endpoint: origin.endpoint, connection: origin.connection)
+        #expect(messages.items.map(\.delivery) == [.refused, .uncertain])
+        #expect(messages.items.map(\.content) == ["hello", "hello"])
     }
 }
