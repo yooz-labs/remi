@@ -46,5 +46,16 @@ import Testing
             #expect(fstat(file, &metadata) == 0 && metadata.st_size == 0)
         }
     }
+
+    @Test func refusesAFileThatAlreadyContainsBytes() throws {
+        try withFixture { root, _, file, name, lease in
+            try ImageFileProtection.prepareRoot(lease: lease, rootURL: root)
+            var byte: UInt8 = 7
+            #expect(write(file, &byte, 1) == 1)
+            #expect(throws: (any Error).self) { try ImageFileProtection.apply(lease: lease, rootURL: root, name: name, descriptor: file) }
+            var metadata = stat()
+            #expect(fstat(file, &metadata) == 0 && metadata.st_size == 1)
+        }
+    }
 }
 #endif
