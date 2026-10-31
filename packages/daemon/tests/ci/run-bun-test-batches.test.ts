@@ -14,10 +14,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import {
+  CONTROLLER_MS,
   TARGET,
   aggregateWorkers,
   caseMultiset,
   discoverTests,
+  laneDeadlineMs,
   parseCases,
   partitionTests,
   prepareSuite,
@@ -133,6 +135,24 @@ test('partition includes target once and every other file exactly once', () => {
   expect(lanes.flat()).toEqual(complete);
   for (const files of [[], [TARGET], [TARGET, TARGET], ['other.test.ts']])
     expect(() => partitionTests(files)).toThrow();
+});
+
+test('lane budgets retain the controller ceiling and reserved cleanup at every boundary', () => {
+  expect(CONTROLLER_MS).toBe(22 * 60_000);
+  for (const elapsed of [0, 1000, 300_000, CONTROLLER_MS - 10_001]) {
+    expect(laneDeadlineMs(0, elapsed)).toBeLessThanOrEqual(300_000);
+    for (const index of [0, 1, 2]) {
+      expect(laneDeadlineMs(index, elapsed)).toBeGreaterThan(0);
+      expect(laneDeadlineMs(index, elapsed)).toBe(
+        Math.min(index === 0 ? 300_000 : 1_200_000, CONTROLLER_MS - elapsed - 10_000),
+      );
+      expect(elapsed + laneDeadlineMs(index, elapsed) + 10_000).toBeLessThanOrEqual(CONTROLLER_MS);
+    }
+  }
+  for (const index of [0, 1, 2])
+    for (const elapsed of [-1, Number.NaN, Number.POSITIVE_INFINITY, CONTROLLER_MS - 10_000])
+      expect(() => laneDeadlineMs(index, elapsed)).toThrow();
+  for (const index of [-1, 0.5, 3, Number.NaN]) expect(() => laneDeadlineMs(index, 0)).toThrow();
 });
 
 test('actual Bun reporter C0 titles retain reported bytes and separate hook assertion accounting', async () => {
@@ -384,6 +404,11 @@ test('actual controller publishes ONLY a complete validated summary, preserving 
   expect(evidence.files).toBe(2);
   expect(evidence.cases).toHaveLength(2);
   expect(evidence.assertions).toBe(2);
+  const budget = JSON.parse(readFileSync(path.join(directory, 'rest-1/budget.json'), 'utf8'));
+  expect(budget.deadlineMs).toBe(20 * 60_000);
+  expect(budget.elapsedMs + budget.deadlineMs + budget.cleanupReserveMs).toBeLessThanOrEqual(
+    CONTROLLER_MS,
+  );
   await expect(runSuite(home, directory, summary)).rejects.toThrow();
 });
 
@@ -465,6 +490,17 @@ test('actual partial workers cannot publish coverage; aggregate requires every s
       JSON.parse(readFileSync(path.join(input, `worker-${index}`, name, 'worker.json'), 'utf8'))
         .home,
   );
+  for (const [index, name] of ['target', 'rest-1', 'rest-2'].entries()) {
+    const budget = JSON.parse(
+      readFileSync(path.join(input, `worker-${index}`, name, 'budget.json'), 'utf8'),
+    );
+    expect(budget.controllerMs).toBe(CONTROLLER_MS);
+    expect(budget.cleanupReserveMs).toBe(10_000);
+    expect(budget.deadlineMs).toBe(index === 0 ? 300_000 : 1_200_000);
+    expect(budget.elapsedMs + budget.deadlineMs + budget.cleanupReserveMs).toBeLessThanOrEqual(
+      CONTROLLER_MS,
+    );
+  }
   expect(new Set(workerHomes).size).toBe(3);
   for (const workerHome of workerHomes) expect(existsSync(workerHome)).toBe(false);
   // This owned component control runs serially on one machine. The production

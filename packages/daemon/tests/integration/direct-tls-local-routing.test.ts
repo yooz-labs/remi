@@ -58,12 +58,19 @@ async function capture(stream: ReadableStream<Uint8Array>, log: { text: string }
     log.text += decoder.decode(chunk.value);
   }
 }
-function spawn(f: Fixture, args: string[], tty = false, env: Record<string, string> = {}) {
+function spawn(
+  f: Fixture,
+  args: string[],
+  tty = false,
+  env: Record<string, string> = {},
+  preload?: string,
+) {
   const log = { text: '' };
   const agents = installOnce(f);
   const options = { cwd: f.work, env: { ...f.env, ...agents.env, ...env } };
+  const launch = [process.execPath, ...(preload ? ['--preload', preload] : []), CLI, ...args];
   const proc = tty
-    ? Bun.spawn([process.execPath, CLI, ...args], {
+    ? Bun.spawn(launch, {
         ...options,
         terminal: {
           cols: 160,
@@ -73,7 +80,7 @@ function spawn(f: Fixture, args: string[], tty = false, env: Record<string, stri
           },
         },
       })
-    : Bun.spawn([process.execPath, CLI, ...args], {
+    : Bun.spawn(launch, {
         ...options,
         stdin: 'ignore',
         stdout: 'pipe',
@@ -650,10 +657,30 @@ async function barrier(f: Fixture, wrapper: boolean, exhaust = false, tls = true
   processes.push({ proc: writer, log: { text: '' } });
   const selectedDirectory = join(f.work, 'selected-directory');
   fs.mkdirSync(selectedDirectory);
+  const gracefulReady = wrapper ? join(f.directory, 'wrapper-signal-ready') : null;
+  const preload = wrapper ? join(f.directory, 'observe-wrapper-ready.ts') : undefined;
+  if (preload && gracefulReady) {
+    // A published TLS listener precedes wrapper startup. Observe the actual
+    // installed shutdown handler before this test asks cleanup to use it.
+    fs.writeFileSync(
+      preload,
+      `import * as fs from 'node:fs';
+const on=process.on;process.on=function(event,handler,...rest){
+ const result=Reflect.apply(on,this,[event,handler,...rest]);
+ if(event==='SIGTERM'&&Function.prototype.toString.call(handler).includes('ptySession.signal')){
+  fs.writeFileSync(${JSON.stringify(`${gracefulReady}.next`)},JSON.stringify({pid:process.pid,installed:process.listeners('SIGTERM').includes(handler)}),{mode:0o600});
+  fs.renameSync(${JSON.stringify(`${gracefulReady}.next`)},${JSON.stringify(gracefulReady)});
+ }return result;
+};`,
+      { mode: 0o600 },
+    );
+  }
   const p = spawn(
     f,
     wrapper ? ['--dir', selectedDirectory] : ['serve', '--dir', selectedDirectory],
     wrapper,
+    {},
+    preload,
   );
   await poll(() => fs.existsSync(ready), 'actual startup capability read');
   for (let i = 0; i < (exhaust ? 20 : 1); i++)
@@ -670,12 +697,12 @@ async function barrier(f: Fixture, wrapper: boolean, exhaust = false, tls = true
   await writer.exited;
   fs.rmSync(fifo);
   fs.writeFileSync(fifo, 'owned-barrier-capability', { mode: 0o600 });
-  return { p, base };
+  return { p, base, gracefulReady };
 }
 for (const wrapper of [false, true])
   test(`${wrapper ? 'wrapper' : 'daemon'} real port reselection reuses loaded TLS and config-relative paths`, async () => {
     const f = fixture();
-    const { p, base } = await barrier(f, wrapper);
+    const { p, base, gracefulReady } = await barrier(f, wrapper);
     await poll(
       () =>
         readLocalDaemonEndpoint(base + 1, { home: f.home }).kind === 'found' ||
@@ -683,6 +710,13 @@ for (const wrapper of [false, true])
       'TLS reselection',
     );
     expect(p.proc.exitCode).toBeNull();
+    if (gracefulReady) {
+      await poll(() => fs.existsSync(gracefulReady), 'actual wrapper shutdown handler installed');
+      expect(JSON.parse(fs.readFileSync(gracefulReady, 'utf8'))).toEqual({
+        pid: p.proc.pid,
+        installed: true,
+      });
+    }
     expect(
       (await fetch(`https://127.0.0.1:${base + 1}/health`, { tls: { ca: f.ca } })).status,
     ).toBe(200);

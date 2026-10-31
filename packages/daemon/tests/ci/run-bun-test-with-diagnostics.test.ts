@@ -481,19 +481,46 @@ test('preserves a nonzero child exit code', async () => {
   expect(err.text()).toBe('');
 });
 
-test('samples topology before a delayed header and continues recording after it', async () => {
+test('samples topology before a controlled header and continues recording after it', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'remi-ci-quiet-'));
+  const headerRelease = path.join(directory, 'release-header');
+  const exitRelease = path.join(directory, 'release-exit');
+  let lineBuffer = '';
+  let beforeSamples = 0;
   const out = sink();
-  const err = sink();
+  const err = sink((chunk) => {
+    lineBuffer += chunk.toString('utf8');
+    for (;;) {
+      const end = lineBuffer.indexOf('\n');
+      if (end < 0) break;
+      const line = lineBuffer.slice(0, end);
+      lineBuffer = lineBuffer.slice(end + 1);
+      if (!line.startsWith('[ci-test-diagnostic] ')) continue;
+      const sample = JSON.parse(line.slice('[ci-test-diagnostic] '.length));
+      if (sample.lastTestFile === null && sample.quietMs >= 40 && ++beforeSamples >= 2)
+        writeFileSync(headerRelease, 'release');
+      if (sample.lastTestFile === 'packages/daemon/tests/cli/quiet.test.ts' && sample.quietMs >= 40)
+        writeFileSync(exitRelease, 'release');
+    }
+  });
   const stdoutPayload = 'quiet-child-stdout\n';
   const stderrPayload = 'packages/daemon/tests/cli/quiet.test.ts:\nquiet-child-stderr\n';
-  const code = `await Bun.sleep(180); process.stdout.write(${JSON.stringify(stdoutPayload)}); process.stderr.write(${JSON.stringify(stderrPayload)}); await Bun.sleep(180);`;
-  const result = await runChild(bun(code), {
-    stdout: out.stream,
-    stderr: err.stream,
-    diagnosticAfterMs: 40,
-    diagnosticEveryMs: 40,
-    timeoutMs: 2_000,
-  });
+  // Advance only after the intended diagnostics were actually observed. A fixed
+  // sleep can emit the header during an asynchronous pre-header process sample,
+  // correctly producing a current-header record whose quietMs is zero.
+  const code = `const fs=require('node:fs'); while(!fs.existsSync(${JSON.stringify(headerRelease)})) await Bun.sleep(5); process.stdout.write(${JSON.stringify(stdoutPayload)}); process.stderr.write(${JSON.stringify(stderrPayload)}); while(!fs.existsSync(${JSON.stringify(exitRelease)})) await Bun.sleep(5);`;
+  let result: Awaited<ReturnType<typeof runChild>>;
+  try {
+    result = await runChild(bun(code), {
+      stdout: out.stream,
+      stderr: err.stream,
+      diagnosticAfterMs: 40,
+      diagnosticEveryMs: 40,
+      timeoutMs: 2_000,
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
   const diagnosticLines = err
     .text()
     .split('\n')
@@ -501,10 +528,13 @@ test('samples topology before a delayed header and continues recording after it'
   const records = diagnosticLines.map((line) =>
     JSON.parse(line.slice('[ci-test-diagnostic] '.length)),
   );
-  const beforeHeaderRecords = records.filter((sample) => sample.lastTestFile === null);
+  const beforeHeaderRecords = records.filter(
+    (sample) => sample.lastTestFile === null && sample.quietMs >= 40,
+  );
   const topologyRecord = records.find((sample) => sample.process.waitTopology);
   const record = records.find(
-    (sample) => sample.lastTestFile === 'packages/daemon/tests/cli/quiet.test.ts',
+    (sample) =>
+      sample.lastTestFile === 'packages/daemon/tests/cli/quiet.test.ts' && sample.quietMs >= 40,
   );
 
   expect(result.exitCode).toBe(0);
