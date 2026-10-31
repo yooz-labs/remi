@@ -61,10 +61,14 @@ import Testing
         try withDirectory { url, directory in
             let lease = try ImageDirectoryLease(directory: directory)
             let name = url.appendingPathComponent(".image-lock")
-            #expect(unlink(name.path) == 0)
+            let saved = url.appendingPathComponent("saved-lock")
+            #expect(rename(name.path, saved.path) == 0)
             let replacement = open(name.path, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
             #expect(replacement >= 0)
             if replacement >= 0 { close(replacement) }
+            #expect(throws: (any Error).self) { try lease.verifyIdentity() }
+            #expect(unlink(name.path) == 0)
+            #expect(rename(saved.path, name.path) == 0)
             #expect(throws: (any Error).self) { try lease.verifyIdentity() }
         }
     }
