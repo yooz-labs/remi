@@ -2,6 +2,7 @@
 """Run real RemiKit image process-death controls on synthetic private files (macOS)."""
 
 import argparse
+import os
 from pathlib import Path
 import shutil
 import signal
@@ -11,7 +12,26 @@ import tempfile
 
 
 def run(command: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, text=True, capture_output=True, timeout=timeout, check=False)
+    process = subprocess.Popen(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               start_new_session=True)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # The new session contains only this fixture's owned command and its descendants.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired as error:
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
+            raise RuntimeError("An owned fixture descendant did not exit after timeout.") from error
+        raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 def main() -> int:
