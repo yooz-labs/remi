@@ -20,6 +20,17 @@ import Testing
         try body(root, ImageJournalDisk(lease: lease, secret: secret))
     }
 
+    #if os(iOS)
+    @Test func iOSJournalRefusesUntilProtectionIsQualified() throws {
+        try withStore { root, disk in
+            let bytes = try ImageRecoveryLedger().encodeJournal(secret: secret)
+            #expect(throws: ImageJournalDisk.Failure.unavailable) { try disk.initializeIfProvenFresh(bytes) }
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".image-journal").path))
+        }
+    }
+    #endif
+
+    #if os(macOS)
     @Test func atomicReplacementRejectsStaleRevision() throws {
         try withStore { _, disk in
             var ledger = ImageRecoveryLedger()
@@ -164,4 +175,5 @@ import Testing
             try owner.finishCopy(id, fingerprint: fingerprint)
         }
     }
+    #endif
 }

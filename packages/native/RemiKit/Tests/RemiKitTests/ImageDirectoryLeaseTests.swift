@@ -18,6 +18,7 @@ import Testing
         try body(url, parent, descriptor)
     }
 
+    #if os(macOS)
     @Test func lockIsExclusiveAcrossProcessesAndReleasesOnClose() throws {
         try withDirectory { url, parent, directory in
             var lease: ImageDirectoryLease? = try ImageDirectoryLease(parent: parent, rootName: url.lastPathComponent, directory: directory)
@@ -37,6 +38,7 @@ import Testing
             #expect(try childAcquiresLock())
         }
     }
+    #endif
 
     @Test func refusesSymlinkOrHardlinkLockWithoutAlteringIt() throws {
         try withDirectory { url, parent, directory in

@@ -4,6 +4,7 @@ import Foundation
 import Testing
 @testable import RemiKit
 
+#if os(macOS)
 /// Real synthetic files only. iOS data protection, provider lifetimes and the full cleanup
 /// owner are separate gates; these tests do not authorize an image transport.
 @Suite struct ImageSnapshotOwnerTests {
@@ -134,3 +135,4 @@ import Testing
         }
     }
 }
+#endif
