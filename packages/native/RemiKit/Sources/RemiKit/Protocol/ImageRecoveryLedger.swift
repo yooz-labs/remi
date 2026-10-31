@@ -100,13 +100,6 @@ struct ImageRecoveryLedger: Sendable {
     /// unconfirmed. This warning is not a host quota, a count, or a deletion receipt.
     private(set) var hasAggregateUnconfirmedCleanup = false
 
-    mutating func reserve(_ fingerprint: ImageRecoveryFingerprint) throws -> UUID {
-        try checkFingerprint(fingerprint)
-        let id = try reserveCopy()
-        try finishCopy(id, fingerprint: fingerprint)
-        return id
-    }
-
     /// Reserve a durable local slot before copying any bytes or knowing the image digest.
     mutating func reserveCopy() throws -> UUID {
         guard localSnapshotID == nil else { throw Failure.localSlotBusy }
