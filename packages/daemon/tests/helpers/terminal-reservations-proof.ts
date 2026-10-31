@@ -124,8 +124,8 @@ export async function runTerminalReservationProof(command: readonly string[]): P
   };
   try {
     await scenario('model budget and exact owner', (root, state) => {
-      const ids = Array.from({ length: 32 }, () => state.reserveModel(randomUUID()));
-      code(() => state.reserveModel(randomUUID()), 'busy', '33rd model refused');
+      const ids = Array.from({ length: 8 }, () => state.reserveModel(randomUUID()));
+      code(() => state.reserveModel(randomUUID()), 'busy', 'ninth model refused');
       const foreign = TerminalReservations.open(root);
       assert.equal(foreign.release(ids[0] ?? ''), false, 'foreign release cannot free a model');
       code(
@@ -202,7 +202,7 @@ export async function runTerminalReservationProof(command: readonly string[]): P
       );
     });
     await scenario('independent homes', async (_root, state) => {
-      for (let i = 0; i < 32; i++) state.reserveModel(randomUUID());
+      for (let i = 0; i < 8; i++) state.reserveModel(randomUUID());
       await scenario('second home admission', (_other, other) => {
         assert(other.reserveModel(randomUUID()));
       });
@@ -223,8 +223,8 @@ export async function runTerminalReservationProof(command: readonly string[]): P
           assert.equal(result.pid, child.pid);
           return result.ids;
         });
-        assert.equal(rows.length, 32, 'concurrent owners fill exactly 32 model slots');
-        assert.equal(new Set(rows).size, 32, 'concurrent reservation IDs are unique');
+        assert.equal(rows.length, 8, 'concurrent owners fill exactly eight model slots');
+        assert.equal(new Set(rows).size, 8, 'concurrent reservation IDs are unique');
         assert.equal(
           state.release(rows[0] ?? ''),
           false,
@@ -235,7 +235,7 @@ export async function runTerminalReservationProof(command: readonly string[]): P
         for (const { prefix } of actors) fs.writeFileSync(`${prefix}.go`, 'release');
         for (const { child } of actors) await reap(child);
       }
-      for (let i = 0; i < 32; i++)
+      for (let i = 0; i < 8; i++)
         assert(state.reserveModel(randomUUID()), 'proved dead owner reclaimed');
       code(() => state.reserveModel(randomUUID()), 'busy', 'recovered budget remains bounded');
     });
@@ -283,13 +283,13 @@ export async function runTerminalReservationProof(command: readonly string[]): P
       'duplicate member': (r) =>
         fs.writeFileSync(
           ledger(r),
-          fs.readFileSync(ledger(r), 'utf8').replace('"version":1', '"version":1,"version":1'),
+          fs.readFileSync(ledger(r), 'utf8').replace('"version":2', '"version":2,"version":2'),
         ),
       'malformed JSON': (r) => fs.writeFileSync(ledger(r), '{'),
       'unknown field': (r) =>
         fs.writeFileSync(
           ledger(r),
-          fs.readFileSync(ledger(r), 'utf8').replace('"version":1', '"extra":0,"version":1'),
+          fs.readFileSync(ledger(r), 'utf8').replace('"version":2', '"extra":0,"version":2'),
         ),
       'duplicate row': (r) => {
         const value = JSON.parse(fs.readFileSync(ledger(r), 'utf8'));
