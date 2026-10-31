@@ -40,6 +40,9 @@ import RemiPush
         do {
             try Task.checkCancellation()
             guard protectedDataAvailable() else { throw LocalNoticeBootstrap.Failure.locked }
+            // A prior-process pending owner cannot be matched to any current profile. Until
+            // an explicit recovery resolves that ambiguity, do not mint new local authority.
+            guard try opened.ledger.pendingForgetOwners().isEmpty else { throw LocalNoticeBootstrap.Failure.pendingForget }
             try sentinel.establish()
             let reconciler = LocalNoticeReconciler(ledger: opened.ledger, keys: opened.keys, remove: notificationBoundary.remove)
             try reconciler.reconcile(snapshot.entries)

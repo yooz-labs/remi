@@ -6,7 +6,7 @@ import RemiPush
 enum LocalNoticeBootstrap {
     enum Sentinel: Equatable { case absent, present, invalid }
     enum Inventory { case noLocalMarkers, localMarkersPresent, unavailable }
-    enum Failure: Error, Equatable { case locked, recoveryRequired, unavailable, capacity }
+    enum Failure: Error, Equatable { case locked, recoveryRequired, unavailable, capacity, pendingForget }
     /// Production callers use only this OS-provided app-container location, never a wire or project path.
     static func appPrivateDirectory() throws -> URL {
         #if os(iOS)
