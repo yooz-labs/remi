@@ -4,7 +4,8 @@ import Foundation
 /// Disk primitive only. A future owner must prove a genuinely fresh installation before
 /// initialization, retain the installation Keychain key, apply iOS complete protection and
 /// backup exclusion before storing content, and reconcile owned snapshot files. A failed
-/// operation is not proof of either a successful commit or remote cleanup.
+/// operation is not proof of either a successful commit or remote cleanup. The future
+/// owner must also serialize access and propagate retirement to all aliases of the lease.
 final class ImageJournalDisk {
     enum Failure: Error, Equatable { case unavailable, invalid, stale }
 
