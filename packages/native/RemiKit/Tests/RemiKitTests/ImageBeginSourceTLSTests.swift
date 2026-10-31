@@ -32,6 +32,7 @@ private actor OwnedImageSendGate {
         let own = try OwnedRecoveryFixture.configure(process, script: script,
             arguments: [identity.publicIdentity.publicKey], bunExecutable: ProcessInfo.processInfo.environment["REMI_DELIVERY_BUN"])
         let input = Pipe(), output = Pipe()
+        guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else { throw POSIXError(.EIO) }
         let log = own.appendingPathComponent("image-staging-source.log")
         FileManager.default.createFile(atPath: log.path, contents: nil)
         let errors = try FileHandle(forWritingTo: log)
@@ -47,7 +48,7 @@ private actor OwnedImageSendGate {
         func stop() async {
             await connection?.stop()
             testSession?.invalidateAndCancel()
-            try? input.fileHandleForWriting.write(contentsOf: Data("stop\n".utf8))
+            if process.isRunning { try? input.fileHandleForWriting.write(contentsOf: Data("stop\n".utf8)) }
             try? input.fileHandleForWriting.close()
             let deadline = ContinuousClock.now.advanced(by: .seconds(8))
             while process.isRunning, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(20)) }
@@ -121,6 +122,7 @@ private actor OwnedImageSendGate {
             arguments: ["image-tls", identity.publicIdentity.publicKey],
             bunExecutable: ProcessInfo.processInfo.environment["REMI_DELIVERY_BUN"])
         let input = Pipe(), output = Pipe()
+        guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else { throw POSIXError(.EIO) }
         let log = own.appendingPathComponent("image-tls-source.log")
         FileManager.default.createFile(atPath: log.path, contents: nil)
         let errors = try FileHandle(forWritingTo: log)
@@ -136,7 +138,7 @@ private actor OwnedImageSendGate {
         func stop() async {
             await connection?.stop()
             testSession?.invalidateAndCancel()
-            try? input.fileHandleForWriting.write(contentsOf: Data("stop\n".utf8))
+            if process.isRunning { try? input.fileHandleForWriting.write(contentsOf: Data("stop\n".utf8)) }
             try? input.fileHandleForWriting.close()
             let deadline = ContinuousClock.now.advanced(by: .seconds(5))
             while process.isRunning, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(20)) }

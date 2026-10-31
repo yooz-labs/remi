@@ -1,6 +1,6 @@
 /** Owned WSS source adapter, actual image staging service and an inert cat PTY. */
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,7 +19,7 @@ import { ImageStagingService } from '../../../../daemon/src/tunnel/image-staging
 const clientKey = process.argv[2];
 if (!clientKey) throw new Error('owned client public key required');
 console.log = (...args) => console.error(...args);
-const home = mkdtempSync(join(tmpdir(), 'remi-image-source-'));
+const home = mkdtempSync(join(realpathSync(tmpdir()), 'remi-image-source-'));
 const auth = new IdentityStore(join(home, 'auth'));
 await auth.generate();
 await auth.addAuthorizedKey(clientKey, 'owned-image-test');
