@@ -20,6 +20,15 @@ import Testing
     }
 }
 
+@MainActor private final class HeldStartupInventory {
+    var pending: (@Sendable (LocalNoticeInventory.Batch) -> Void)?
+    var delivered: (@Sendable (LocalNoticeInventory.Batch) -> Void)?
+    var boundary: LocalNoticeInventory.Boundary {
+        .init(pending: { [self] _, callback in pending = callback },
+              delivered: { [self] _, callback in delivered = callback })
+    }
+}
+
 @Suite(.serialized) @MainActor struct LocalNoticeStartupTests {
     private func resources() throws -> (URL, String, UserDefaults) {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("remi-local-startup-\(UUID())")
@@ -80,5 +89,61 @@ import Testing
         defer { ready.ledger.close() }
         #expect(keychain.adds == 1); #expect(sentinel.read() == .present)
         #expect(try ready.ledger.counts().tickets == 0)
+    }
+
+    @Test func protectedDataLossDuringInventoryCannotCreateAKey() async throws {
+        let (dir, name, defaults) = try resources(); defer { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: dir) }
+        let keychain = OwnedStartupKeychain()
+        var unlocked = true
+        let reader = LocalNoticeInventory(boundary: boundary(onRead: { unlocked = false }))
+        do {
+            _ = try await LocalNoticeStartup.open(directory: dir, sentinel: .init(defaults: defaults, domainName: name),
+                keyStore: .init(service: "synthetic", account: "startup"), operations: keychain.operations,
+                inventory: reader, protectedDataAvailable: { unlocked }, notificationBoundary: notificationBoundary())
+            Issue.record("Protected-data loss must prevent startup")
+        } catch let error as LocalNoticeBootstrap.Failure { #expect(error == .locked) }
+        #expect(keychain.adds == 0)
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("local-notifications.sqlite").path))
+    }
+
+    @Test func failedSentinelFlushCanRetryWithoutRotatingTheKey() async throws {
+        let (dir, name, defaults) = try resources(); defer { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: dir) }
+        let keychain = OwnedStartupKeychain()
+        var flushWorks = false
+        let sentinel = LocalNoticeSentinel(defaults: defaults, domainName: name, flush: { _ in flushWorks })
+        let reader = LocalNoticeInventory(boundary: boundary())
+        do {
+            _ = try await LocalNoticeStartup.open(directory: dir, sentinel: sentinel,
+                keyStore: .init(service: "synthetic", account: "startup"), operations: keychain.operations,
+                inventory: reader, protectedDataAvailable: { true }, notificationBoundary: notificationBoundary())
+            Issue.record("Failed sentinel flush must prevent startup")
+        } catch let error as LocalNoticeBootstrap.Failure { #expect(error == .unavailable) }
+        let firstKey = try #require(keychain.stored)
+        flushWorks = true
+        let ready = try await LocalNoticeStartup.open(directory: dir, sentinel: sentinel,
+            keyStore: .init(service: "synthetic", account: "startup"), operations: keychain.operations,
+            inventory: reader, protectedDataAvailable: { true }, notificationBoundary: notificationBoundary())
+        defer { ready.ledger.close() }
+        #expect(keychain.adds == 1); #expect(keychain.stored == firstKey); #expect(sentinel.read() == .present)
+    }
+
+    @Test func cancelledInventoryCannotLaterCreateAKey() async throws {
+        let (dir, name, defaults) = try resources(); defer { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: dir) }
+        let keychain = OwnedStartupKeychain(), os = HeldStartupInventory()
+        let reader = LocalNoticeInventory(boundary: os.boundary, timeout: .seconds(1))
+        let task = Task { try await LocalNoticeStartup.open(directory: dir, sentinel: .init(defaults: defaults, domainName: name),
+            keyStore: .init(service: "synthetic", account: "startup"), operations: keychain.operations,
+            inventory: reader, protectedDataAvailable: { true }, notificationBoundary: notificationBoundary()) }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while os.pending == nil || os.delivered == nil {
+            guard ContinuousClock.now < deadline else { throw LocalNoticeError.unavailable }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        task.cancel()
+        do { _ = try await task.value; Issue.record("Cancelled startup must not succeed") }
+        catch is CancellationError { }
+        os.pending?(.pending([])); os.delivered?(.delivered([]))
+        #expect(keychain.adds == 0)
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("local-notifications.sqlite").path))
     }
 }
