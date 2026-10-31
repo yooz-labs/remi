@@ -107,10 +107,18 @@ public struct RemiBoardFrame: Codable, Equatable, Sendable {
         }
         let right = snap(maxX, candidates: xs, minimum: x + Self.minimumWidth,
                          maximum: min(x + Self.maximumWidth, Self.maximumCoordinate))
+        let presets = [RemiTileSize.compact, .regular, .large].map(\.estimatedHeight)
+        let nearbyPreset = presets.filter { abs($0 - height) <= 10 }.min { abs($0 - height) < abs($1 - height) }
         if topRight {
+            if let preset = nearbyPreset, preset <= maxY {
+                return Self(x: x, y: maxY - preset, width: right - x, height: preset)
+            }
             let top = snap(y, candidates: ys, minimum: max(0, maxY - Self.maximumHeight),
                            maximum: maxY - Self.minimumHeight)
             return Self(x: x, y: top, width: right - x, height: maxY - top)
+        }
+        if let preset = nearbyPreset, y + preset <= Self.maximumCoordinate {
+            return Self(x: x, y: y, width: right - x, height: preset)
         }
         let bottom = snap(maxY, candidates: ys, minimum: y + Self.minimumHeight,
                           maximum: min(y + Self.maximumHeight, Self.maximumCoordinate))

@@ -270,8 +270,36 @@ struct MacCommandCenter: View {
                 .animation(gesturePreview?.key == item.key ? nil : .easeOut(duration: 0.15), value: item.frame)
                 .simultaneousGesture(TapGesture().onEnded { frontTile = item.key })
             }
+            if let gesturePreview, gesturePreview.kind != .move {
+                resizePreview(gesturePreview, frames: frames)
+                    .zIndex(2)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
         }
         .frame(width: canvasSize.width, height: canvasSize.height, alignment: .topLeading)
+    }
+
+    private func resizePreview(_ preview: BoardGesturePreview, frames: [String: RemiBoardFrame]) -> some View {
+        let others = frames.filter { $0.key != preview.key }.map(\.value)
+        let target = preview.proposed.snappedResize(topRight: preview.kind == .resizeTopRight,
+                                                    otherFrames: others, gap: spacing, margin: margin)
+        let preset = [RemiTileSize.compact, .regular, .large]
+            .first { abs($0.estimatedHeight - preview.proposed.height) <= 10 }
+        let size = "\(Int(preview.proposed.width.rounded())) × \(Int(preview.proposed.height.rounded()))"
+        let label = preset.map { "\(size) · \($0.densityTitle)" } ?? size
+        return RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
+            .stroke(RemiTheme.Color.activityDot, style: StrokeStyle(lineWidth: 2, dash: [5, 3]))
+            .overlay(alignment: preview.kind == .resizeTopRight ? .topTrailing : .bottomTrailing) {
+                Text(label)
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.regularMaterial, in: Capsule())
+                    .offset(x: -6, y: preview.kind == .resizeTopRight ? 6 : -6)
+            }
+            .frame(width: target.width, height: target.height)
+            .offset(x: target.x, y: target.y)
     }
 
     /// Moves the cursor to the next live tile, scrolling it into view before moving focus.
