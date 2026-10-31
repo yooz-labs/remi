@@ -16,6 +16,15 @@ import Testing
             binding: AttachedBinding(harness: .claude, harnessSessionId: binding), imageDigest: image ?? digest)
     }
 
+    // Tests that start after snapshot validation use a value copy to keep failed setup atomic.
+    private func reserve(_ ledger: inout ImageRecoveryLedger, _ fingerprint: ImageRecoveryFingerprint) throws -> UUID {
+        var candidate = ledger
+        let id = try candidate.reserveCopy()
+        try candidate.finishCopy(id, fingerprint: fingerprint)
+        ledger = candidate
+        return id
+    }
+
     @Test func scopesUseExactUtf8RatherThanCanonicalStringEquality() throws {
         let composed = "\u{00e9}"
         let decomposed = "e\u{0301}"
@@ -52,7 +61,7 @@ import Testing
 
     @Test func localAbandonmentKeepsUnconfirmedRemoteState() throws {
         var ledger = ImageRecoveryLedger()
-        let id = try ledger.reserve(try fingerprint())
+        let id = try reserve(&ledger, try fingerprint())
         try ledger.markPartialPossible(id)
         #expect(throws: ImageRecoveryLedger.Failure.consentRequired) {
             try ledger.requestLocalAbandonment(id, confirmed: false)
@@ -70,7 +79,7 @@ import Testing
 
     @Test func stagedCleanupPrecedesInsertionAndUncertainFenceIsNotEvicted() throws {
         var ledger = ImageRecoveryLedger()
-        let first = try ledger.reserve(try fingerprint())
+        let first = try reserve(&ledger, try fingerprint())
         try ledger.markPartialPossible(first)
         try ledger.markStagingPossible(first)
         try ledger.markStaged(first, expiry: "2026-10-31T12:00:00.000Z")
@@ -78,11 +87,11 @@ import Testing
         try ledger.requestStagedLocalCleanup(first)
         try ledger.confirmOwnedSnapshotDeleted(first)
         #expect(throws: ImageRecoveryLedger.Failure.stagedActionOutstanding) {
-            _ = try ledger.reserve(fingerprint(image: Data(repeating: 0x53, count: 32)))
+            _ = try reserve(&ledger, fingerprint(image: Data(repeating: 0x53, count: 32)))
         }
         try ledger.markInsertionPossible(first)
         #expect(throws: ImageRecoveryLedger.Failure.insertionInFlight) {
-            _ = try ledger.reserve(fingerprint(image: Data(repeating: 0x53, count: 32)))
+            _ = try reserve(&ledger, fingerprint(image: Data(repeating: 0x53, count: 32)))
         }
         try ledger.markInsertionUncertain(first)
         #expect(throws: ImageRecoveryLedger.Failure.insertionMayHaveOccurred) {
@@ -92,9 +101,9 @@ import Testing
             try ledger.compactNoInsertion(first, confirmed: true)
         }
         #expect(throws: ImageRecoveryLedger.Failure.sameImageInsertionUncertain) {
-            _ = try ledger.reserve(fingerprint())
+            _ = try reserve(&ledger, fingerprint())
         }
-        let other = try ledger.reserve(fingerprint(image: Data(repeating: 0x53, count: 32)))
+        let other = try reserve(&ledger, fingerprint(image: Data(repeating: 0x53, count: 32)))
         #expect(other != first)
         #expect(ledger.records.count == 2)
         #expect(!ledger.hasAggregateUnconfirmedCleanup)
@@ -102,7 +111,7 @@ import Testing
 
     @Test func confirmedInsertionRequiresExplicitAcknowledgmentBeforeSameImageCanBeSelectedAgain() throws {
         var ledger = ImageRecoveryLedger()
-        let first = try ledger.reserve(try fingerprint())
+        let first = try reserve(&ledger, try fingerprint())
         try ledger.markPartialPossible(first)
         try ledger.markStagingPossible(first)
         try ledger.markStaged(first, expiry: "2026-10-31T12:00:00.000Z")
@@ -111,19 +120,19 @@ import Testing
         try ledger.markInsertionPossible(first)
         try ledger.confirmInsertion(first)
         #expect(throws: ImageRecoveryLedger.Failure.sameImageAlreadyInserted) {
-            _ = try ledger.reserve(fingerprint())
+            _ = try reserve(&ledger, fingerprint())
         }
         #expect(throws: ImageRecoveryLedger.Failure.consentRequired) {
             try ledger.compactConfirmedInsertion(first, confirmed: false)
         }
         try ledger.compactConfirmedInsertion(first, confirmed: true)
         #expect(ledger.hasAggregateUnconfirmedCleanup) // This never claims host deletion.
-        _ = try ledger.reserve(fingerprint())
+        _ = try reserve(&ledger, fingerprint())
     }
 
     @Test func preEffectRefusalCannotRetryWithoutOriginalSocketRevalidation() throws {
         var ledger = ImageRecoveryLedger()
-        let id = try ledger.reserve(try fingerprint())
+        let id = try reserve(&ledger, try fingerprint())
         try ledger.markPartialPossible(id)
         try ledger.markStagingPossible(id)
         try ledger.markStaged(id, expiry: "2026-10-31T12:00:00.000Z")
@@ -133,7 +142,7 @@ import Testing
         try ledger.recordInsertionRefusal(id)
         #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try ledger.markInsertionPossible(id) }
         #expect(throws: ImageRecoveryLedger.Failure.stagedActionOutstanding) {
-            _ = try ledger.reserve(fingerprint(image: Data(repeating: 0x53, count: 32)))
+            _ = try reserve(&ledger, fingerprint(image: Data(repeating: 0x53, count: 32)))
         }
         try ledger.compactNoInsertion(id, confirmed: true)
         #expect(ledger.hasAggregateUnconfirmedCleanup)
@@ -141,7 +150,7 @@ import Testing
 
     @Test func lateReceiptCannotEraseAnUncertainFence() throws {
         var ledger = ImageRecoveryLedger()
-        let id = try ledger.reserve(try fingerprint())
+        let id = try reserve(&ledger, try fingerprint())
         try ledger.markPartialPossible(id)
         try ledger.markStagingPossible(id)
         try ledger.markStaged(id, expiry: "2026-10-31T12:00:00.000Z")
@@ -152,14 +161,14 @@ import Testing
         #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try ledger.confirmInsertion(id) }
         #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try ledger.recordInsertionRefusal(id) }
         #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try ledger.compactConfirmedInsertion(id, confirmed: true) }
-        #expect(throws: ImageRecoveryLedger.Failure.sameImageInsertionUncertain) { _ = try ledger.reserve(fingerprint()) }
+        #expect(throws: ImageRecoveryLedger.Failure.sameImageInsertionUncertain) { _ = try reserve(&ledger, fingerprint()) }
     }
 
     @Test func capacityIsBoundedAndOnlyExplicitSafeCompactionFreesASlot() throws {
         var ledger = ImageRecoveryLedger()
         var ids: [UUID] = []
         for n in 0..<ImageRecoveryLedger.maximumRecords {
-            let id = try ledger.reserve(fingerprint(image: Data(repeating: UInt8(n), count: 32)))
+            let id = try reserve(&ledger, fingerprint(image: Data(repeating: UInt8(n), count: 32)))
             try ledger.markPartialPossible(id)
             try ledger.requestLocalAbandonment(id, confirmed: true)
             try ledger.confirmOwnedSnapshotDeleted(id)
@@ -167,13 +176,13 @@ import Testing
         }
         #expect(ledger.records.count == ImageRecoveryLedger.maximumRecords)
         #expect(throws: ImageRecoveryLedger.Failure.recordCapacity) {
-            _ = try ledger.reserve(fingerprint(image: Data(repeating: 0xee, count: 32)))
+            _ = try reserve(&ledger, fingerprint(image: Data(repeating: 0xee, count: 32)))
         }
         #expect(throws: ImageRecoveryLedger.Failure.consentRequired) { try ledger.compactNoInsertion(ids[0], confirmed: false) }
         #expect(ledger.records.count == ImageRecoveryLedger.maximumRecords)
         try ledger.compactNoInsertion(ids[0], confirmed: true)
         #expect(ledger.hasAggregateUnconfirmedCleanup)
-        _ = try ledger.reserve(fingerprint(image: Data(repeating: 0xee, count: 32)))
+        _ = try reserve(&ledger, fingerprint(image: Data(repeating: 0xee, count: 32)))
         #expect(ledger.records.count == ImageRecoveryLedger.maximumRecords)
     }
 
@@ -181,7 +190,7 @@ import Testing
         var ledger = ImageRecoveryLedger()
         var ids: [UUID] = []
         for n in 0..<ImageRecoveryLedger.maximumRecords {
-            let id = try ledger.reserve(fingerprint(image: Data(repeating: UInt8(n), count: 32)))
+            let id = try reserve(&ledger, fingerprint(image: Data(repeating: UInt8(n), count: 32)))
             try ledger.markPartialPossible(id)
             try ledger.markStagingPossible(id)
             try ledger.markStaged(id, expiry: "2026-10-31T12:00:00.000Z")
@@ -192,7 +201,7 @@ import Testing
             ids.append(id)
         }
         #expect(throws: ImageRecoveryLedger.Failure.recordCapacity) {
-            _ = try ledger.reserve(fingerprint(image: Data(repeating: 0xee, count: 32)))
+            _ = try reserve(&ledger, fingerprint(image: Data(repeating: 0xee, count: 32)))
         }
         #expect(throws: ImageRecoveryLedger.Failure.insertionMayHaveOccurred) {
             try ledger.compactNoInsertion(ids[0], confirmed: true)
@@ -203,17 +212,17 @@ import Testing
 
     @Test func anUnverifiedDeletionCannotReleaseTheLocalSlot() throws {
         var ledger = ImageRecoveryLedger()
-        let id = try ledger.reserve(try fingerprint())
+        let id = try reserve(&ledger, try fingerprint())
         #expect(throws: ImageRecoveryLedger.Failure.cleanupNotRequested) { try ledger.confirmOwnedSnapshotDeleted(id) }
         #expect(throws: ImageRecoveryLedger.Failure.localSlotBusy) {
-            _ = try ledger.reserve(fingerprint(image: Data(repeating: 0x53, count: 32)))
+            _ = try reserve(&ledger, fingerprint(image: Data(repeating: 0x53, count: 32)))
         }
         #expect(ledger.localSnapshotID == id)
     }
 
     @Test func confirmedHostCancellationAndOwnedLocalDeletionClearTheRecord() throws {
         var ledger = ImageRecoveryLedger()
-        let id = try ledger.reserve(try fingerprint())
+        let id = try reserve(&ledger, try fingerprint())
         try ledger.markPartialPossible(id)
         try ledger.confirmRemoteCancellation(id)
         #expect(ledger.records.count == 1) // Local bytes still need verified removal.
@@ -225,7 +234,7 @@ import Testing
 
     @Test func noRemoteEffectRequiresNoRemoteCleanupWarning() throws {
         var ledger = ImageRecoveryLedger()
-        let id = try ledger.reserve(try fingerprint())
+        let id = try reserve(&ledger, try fingerprint())
         try ledger.requestLocalAbandonment(id, confirmed: true)
         try ledger.confirmOwnedSnapshotDeleted(id)
         #expect(ledger.records.isEmpty)
@@ -234,7 +243,7 @@ import Testing
 
     @Test func authenticatedJournalRestoresInFlightInsertionAsUncertain() throws {
         var ledger = ImageRecoveryLedger()
-        let id = try ledger.reserve(try fingerprint())
+        let id = try reserve(&ledger, try fingerprint())
         try ledger.markPartialPossible(id)
         try ledger.rememberPartialExpiry(id, expiry: "2026-10-30T12:05:00.000Z")
         try ledger.markStagingPossible(id)
@@ -250,20 +259,20 @@ import Testing
         #expect(restored.ledger.records.first?.knownPartialExpiry == "2026-10-30T12:05:00.000Z")
         #expect(throws: ImageRecoveryLedger.Failure.sameImageInsertionUncertain) {
             var copy = restored.ledger
-            _ = try copy.reserve(fingerprint())
+            _ = try reserve(&copy, fingerprint())
         }
         let rewritten = try restored.ledger.encodeJournal(secret: secret)
         let second = try ImageRecoveryLedger.restoreJournal(rewritten, secret: secret)
         #expect(!second.needsRewrite)
         #expect(throws: ImageRecoveryLedger.Failure.sameImageInsertionUncertain) {
             var copy = second.ledger
-            _ = try copy.reserve(fingerprint())
+            _ = try reserve(&copy, fingerprint())
         }
     }
 
     @Test func restartNeverRestoresAStagedArtifactsSocketAuthority() throws {
         var ledger = ImageRecoveryLedger()
-        let id = try ledger.reserve(try fingerprint())
+        let id = try reserve(&ledger, try fingerprint())
         try ledger.markPartialPossible(id)
         try ledger.markStagingPossible(id)
         try ledger.markStaged(id, expiry: "2026-10-31T12:00:00.000Z")
@@ -279,7 +288,7 @@ import Testing
     @Test func restartNeverContinuesAnUnfinishedTransfer() throws {
         for completeMayHaveEntered in [false, true] {
             var ledger = ImageRecoveryLedger()
-            let id = try ledger.reserve(try fingerprint())
+            let id = try reserve(&ledger, try fingerprint())
             try ledger.markPartialPossible(id)
             try ledger.rememberPartialExpiry(id, expiry: "2026-10-30T12:05:00.000Z")
             if completeMayHaveEntered { try ledger.markStagingPossible(id) }
@@ -297,7 +306,7 @@ import Testing
 
     @Test func restartCannotSendAnIncompletePreparedSnapshot() throws {
         var ledger = ImageRecoveryLedger()
-        let id = try ledger.reserve(try fingerprint())
+        let id = try reserve(&ledger, try fingerprint())
         let restored = try ImageRecoveryLedger.restoreJournal(ledger.encodeJournal(secret: secret), secret: secret)
         var recovered = restored.ledger
         #expect(restored.needsRewrite)
@@ -333,7 +342,7 @@ import Testing
 
     @Test func finalizingCopyStillRespectsExistingUncertainInsertionFence() throws {
         var ledger = ImageRecoveryLedger()
-        let first = try ledger.reserve(try fingerprint())
+        let first = try reserve(&ledger, try fingerprint())
         try ledger.markPartialPossible(first)
         try ledger.markStagingPossible(first)
         try ledger.markStaged(first, expiry: "2026-10-31T12:00:00.000Z")
@@ -355,11 +364,11 @@ import Testing
         try copying.requestLocalAbandonment(copy, confirmed: true)
         #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try copying.finishCopy(copy, fingerprint: fingerprint()) }
         var prepared = ImageRecoveryLedger()
-        let ready = try prepared.reserve(try fingerprint())
+        let ready = try reserve(&prepared, try fingerprint())
         try prepared.requestLocalAbandonment(ready, confirmed: true)
         #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try prepared.markPartialPossible(ready) }
         var partial = ImageRecoveryLedger()
-        let started = try partial.reserve(try fingerprint())
+        let started = try reserve(&partial, try fingerprint())
         try partial.markPartialPossible(started)
         try partial.requestLocalAbandonment(started, confirmed: true)
         #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try partial.markStagingPossible(started) }
@@ -367,7 +376,7 @@ import Testing
 
     @Test func journalRejectsTamperingWrongKeyAndOversizedInput() throws {
         var ledger = ImageRecoveryLedger()
-        let id = try ledger.reserve(try fingerprint())
+        let id = try reserve(&ledger, try fingerprint())
         try ledger.markPartialPossible(id)
         let bytes = try ledger.encodeJournal(secret: secret)
         let text = try #require(String(data: bytes, encoding: .utf8))
@@ -382,7 +391,7 @@ import Testing
     @Test func journalRestoresMaximumUncertainFencesWithoutEviction() throws {
         var ledger = ImageRecoveryLedger()
         for n in 0..<ImageRecoveryLedger.maximumRecords {
-            let id = try ledger.reserve(fingerprint(image: Data(repeating: UInt8(n), count: 32)))
+            let id = try reserve(&ledger, fingerprint(image: Data(repeating: UInt8(n), count: 32)))
             try ledger.markPartialPossible(id)
             try ledger.markStagingPossible(id)
             try ledger.markStaged(id, expiry: "2026-10-31T12:00:00.000Z")
@@ -397,7 +406,7 @@ import Testing
         #expect(restored.ledger.records.count == ImageRecoveryLedger.maximumRecords)
         #expect(throws: ImageRecoveryLedger.Failure.recordCapacity) {
             var copy = restored.ledger
-            _ = try copy.reserve(fingerprint(image: Data(repeating: 0xee, count: 32)))
+            _ = try reserve(&copy, fingerprint(image: Data(repeating: 0xee, count: 32)))
         }
     }
 
