@@ -99,6 +99,40 @@ struct SessionAddressingTests {
         #expect(store.transcriptsBySession[keyB]?.map(\.content) == ["from B"])
     }
 
+    @Test func sameQuestionIDInDifferentSessionsDoesNotReplaceAnotherCard() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store
+        let original = try #require(store.machines.first { $0.id == fixture.ids.a }?.questions.first)
+        var raw = try #require(try JSONSerialization.jsonObject(
+            with: FixtureConformanceTests.fixture("question")) as? [String: Any])
+        let secondSession = "00000000-0000-4000-8000-00000000b002"
+        raw["sessionId"] = secondSession
+        let second = try JSONDecoder().decode(QuestionMessage.self,
+            from: JSONSerialization.data(withJSONObject: raw))
+        #expect(second.question.id == original.question.id)
+        let generation = try #require(store.connectionGenerations[fixture.routes[0]])
+        store.receive(.question(second), from: fixture.routes[0], generation: generation)
+
+        let a = try #require(store.machines.first { $0.id == fixture.ids.a })
+        let b = try #require(store.machines.first { $0.id == fixture.ids.b })
+        #expect(Set(a.questions.filter { $0.question.id == original.question.id }.map(\.sessionId)) ==
+                Set([original.sessionId, secondSession]))
+        #expect(b.questions.contains { $0.sessionId == original.sessionId && $0.question.id == original.question.id })
+
+        let resolution: [String: Any] = ["type": "question_resolved", "id": UUID().uuidString,
+            "timestamp": "2026-10-31T00:00:00.000Z", "sessionId": secondSession,
+            "questionId": second.question.id, "reason": "answered"]
+        let resolved = try JSONDecoder().decode(QuestionResolvedMessage.self,
+            from: JSONSerialization.data(withJSONObject: resolution))
+        store.receive(.questionResolved(resolved), from: fixture.routes[0], generation: generation)
+        let afterA = try #require(store.machines.first { $0.id == fixture.ids.a })
+        let afterB = try #require(store.machines.first { $0.id == fixture.ids.b })
+        #expect(afterA.questions.contains { $0.sessionId == original.sessionId && $0.question.id == original.question.id })
+        #expect(!afterA.questions.contains { $0.sessionId == secondSession && $0.question.id == original.question.id })
+        #expect(afterB.questions.contains { $0.sessionId == original.sessionId && $0.question.id == original.question.id })
+    }
+
     @Test func sameSessionIDOnTwoMachinesIsAddressedIndependently() async throws {
         let first = try listener(), second = try listener()
         defer { Darwin.close(first.0); Darwin.close(second.0) }
