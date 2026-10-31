@@ -19,6 +19,15 @@ enum ImageIngressPreflight {
         }
     }
 
+    /// Probe locally JSONEncoder-produced output without decoding or copying message bodies.
+    /// Encoder output is valid JSON; an ambiguous top-level type is nevertheless refused.
+    static func outgoingIsImage(_ data: Data) throws -> Bool {
+        try data.withUnsafeBytes { bytes in
+            var scanner = Scanner(bytes: bytes)
+            return try scanner.scanOutgoing()
+        }
+    }
+
     private struct Scanner {
         private static let maxDepth = 512
         private static let typeKey: [UInt8] = Array("type".utf8)
@@ -67,6 +76,73 @@ enum ImageIngressPreflight {
                 try take(0x2c) // ,
                 whitespace()
             }
+        }
+
+        /// Unlike inbound traffic, this input was produced by JSONEncoder. Nested containers
+        /// can therefore be skipped with a depth counter rather than a bounded validation stack.
+        mutating func scanOutgoing() throws -> Bool {
+            whitespace()
+            guard peek == 0x7b else { return false }
+            index += 1
+            whitespace()
+            if peek == 0x7d {
+                index += 1
+                whitespace()
+                guard index == bytes.count else { throw WireFrameError.malformedJSON }
+                return false
+            }
+            var foundType = false
+            var image = false
+            while true {
+                let key = try string(limit: Self.typeKey.count)
+                whitespace()
+                try take(0x3a)
+                whitespace()
+                if key.prefixIsASCII, key.length == Self.typeKey.count, key.prefix == Self.typeKey {
+                    guard !foundType else { throw WireFrameError.malformedJSON }
+                    foundType = true
+                    if peek == 0x22 {
+                        let type = try string(limit: max(Self.uploadPrefix.count, Self.insertPrefix.count))
+                        image = type.prefixIsASCII &&
+                            (type.prefix.starts(with: Self.uploadPrefix) || type.prefix.starts(with: Self.insertPrefix))
+                    } else {
+                        try skipEncoderValue()
+                    }
+                } else {
+                    try skipEncoderValue()
+                }
+                whitespace()
+                if peek == 0x7d {
+                    index += 1
+                    whitespace()
+                    guard index == bytes.count else { throw WireFrameError.malformedJSON }
+                    return image
+                }
+                try take(0x2c)
+                whitespace()
+            }
+        }
+
+        private mutating func skipEncoderValue() throws {
+            guard let first = peek else { throw WireFrameError.malformedJSON }
+            if first == 0x22 { _ = try string(limit: 0); return }
+            if first == 0x7b || first == 0x5b {
+                var depth = 0
+                while let byte = peek {
+                    if byte == 0x22 { _ = try string(limit: 0); continue }
+                    index += 1
+                    if byte == 0x7b || byte == 0x5b { depth += 1 }
+                    if byte == 0x7d || byte == 0x5d {
+                        depth -= 1
+                        if depth == 0 { return }
+                    }
+                }
+                throw WireFrameError.malformedJSON
+            }
+            let start = index
+            while let byte = peek, byte != 0x2c, byte != 0x7d,
+                  byte != 0x20, byte != 0x09, byte != 0x0a, byte != 0x0d { index += 1 }
+            guard index > start else { throw WireFrameError.malformedJSON }
         }
 
         private var peek: UInt8? { index < bytes.count ? bytes[index] : nil }
