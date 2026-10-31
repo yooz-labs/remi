@@ -194,21 +194,7 @@ public struct RemiBoardTile<Question: View>: View {
                 .fill(dotColor)
                 .frame(width: RemiTheme.Size.statusDot, height: RemiTheme.Size.statusDot)
                 .accessibilityHidden(true)
-            Button(action: onOpen) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(session.name)
-                        .font(.headline)
-                        .lineLimit(1)
-                    Text(subtitle)
-                        .font(RemiTheme.Typography.metadata)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Opens the whole conversation")
+            headerTitle
             if isPinned {
                 Image(systemName: "pin.fill")
                     .font(.caption2)
@@ -223,6 +209,31 @@ public struct RemiBoardTile<Question: View>: View {
                     .lineLimit(1)
             }
             if extras.placement != nil { movementGrip }
+        }
+    }
+
+    private var headerTitleContent: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(session.name).font(.headline).lineLimit(1)
+            Text(subtitle).font(RemiTheme.Typography.metadata).foregroundStyle(.secondary).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(.rect)
+    }
+
+    @ViewBuilder private var headerTitle: some View {
+        if extras.placement != nil {
+            headerTitleContent
+                .onTapGesture(perform: onOpen)
+                .focusable()
+                .onKeyPress(.return) { onOpen(); return .handled }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { onOpen() }
+                .accessibilityHint("Opens the whole conversation")
+        } else {
+            Button(action: onOpen) { headerTitleContent }
+                .buttonStyle(.plain)
+                .accessibilityHint("Opens the whole conversation")
         }
     }
 
@@ -413,8 +424,7 @@ public struct RemiBoardTile<Question: View>: View {
 
     @ViewBuilder private var movementGrip: some View {
         if let placement = extras.placement {
-            Button {} label: {
-                Image(systemName: "circle.grid.3x3.fill")
+            Image(systemName: "circle.grid.3x3.fill")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .frame(width: 28, height: 28)
@@ -424,11 +434,12 @@ public struct RemiBoardTile<Question: View>: View {
                             : Color.clear,
                         in: Circle()
                     )
-            }
-            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .focusable()
             .focused($focusedPlacementControl, equals: .move)
             .onHover { moveHovered = $0 }
             .accessibilityLabel("Move tile")
+            .accessibilityAddTraits(.isButton)
             .accessibilityHint("Drag to move. Use the arrow keys to move by 24 points.")
             .accessibilityAction(named: "Move left") { placement.onMoveBy(CGSize(width: -24, height: 0)) }
             .accessibilityAction(named: "Move right") { placement.onMoveBy(CGSize(width: 24, height: 0)) }
@@ -444,24 +455,23 @@ public struct RemiBoardTile<Question: View>: View {
     @ViewBuilder private func resizeHandle(top: Bool) -> some View {
         if let placement = extras.placement {
             let control: PlacementControl = top ? .resizeTop : .resizeBottom
-            Button {} label: {
-                BoardResizeCorner(top: top)
+            BoardResizeCorner(top: top)
                     .stroke(style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
-                    .foregroundStyle(hoveredResize == control || focusedPlacementControl == control
-                        ? RemiTheme.Color.attentionInk : .secondary)
+                    .foregroundStyle(needsYou ? RemiTheme.Color.attention : RemiTheme.Color.hairline)
                     .frame(width: 15, height: 15)
                     .frame(width: 26, height: 26)
                     .background(
                         hoveredResize == control || focusedPlacementControl == control
-                            ? RemiTheme.Color.attention.opacity(0.85)
+                            ? RemiTheme.Color.attention.opacity(0.18)
                             : Color.clear,
                         in: Circle()
                     )
-            }
-            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .focusable()
             .focused($focusedPlacementControl, equals: control)
             .onHover { hovering in hoveredResize = hovering ? control : nil }
             .accessibilityLabel("Resize tile")
+            .accessibilityAddTraits(.isButton)
             .accessibilityHint(top
                 ? "Drag up and right to enlarge. Use the arrow keys to resize by 24 points."
                 : "Drag down and right to enlarge. Use the arrow keys to resize by 24 points.")
@@ -658,7 +668,7 @@ private struct FeedLine: View {
     }
 }
 
-/// Two inset curves hint at the rounded window corner without a persistent button chrome.
+/// One inset curve echoes the tile border without a persistent button chrome.
 private struct BoardResizeCorner: Shape {
     let top: Bool
 
@@ -667,12 +677,13 @@ private struct BoardResizeCorner: Shape {
         func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
             CGPoint(x: rect.minX + x, y: top ? rect.minY + y : rect.maxY - y)
         }
-        for inset: CGFloat in [2, 5] {
-            path.move(to: point(2, inset))
-            path.addLine(to: point(8, inset))
-            path.addQuadCurve(to: point(15 - inset, 7), control: point(15 - inset, inset))
-            path.addLine(to: point(15 - inset, 13))
-        }
+        let inset: CGFloat = 4.5
+        let cornerX = 15 - inset
+        let bendY = inset + 4
+        path.move(to: point(cornerX - 6, inset))
+        path.addLine(to: point(cornerX - 4, inset))
+        path.addQuadCurve(to: point(cornerX, bendY), control: point(cornerX, inset))
+        path.addLine(to: point(cornerX, bendY + 4))
         return path
     }
 }
