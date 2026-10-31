@@ -47,6 +47,16 @@ final class ImageRecoveryJournal {
         try transition { try $0.finishCopy(id, fingerprint: fingerprint) }
     }
 
+    func requestLocalAbandonment(_ id: UUID, confirmed: Bool) throws {
+        try transition { try $0.requestLocalAbandonment(id, confirmed: confirmed) }
+    }
+
+    /// Only the filesystem owner may call this after proving the owned entry is absent and
+    /// synchronizing its directory. The transition never proves remote deletion.
+    func confirmOwnedSnapshotDeleted(_ id: UUID) throws {
+        try transition { try $0.confirmOwnedSnapshotDeleted(id) }
+    }
+
     private func transition<T>(_ apply: (inout ImageRecoveryLedger) throws -> T) throws -> T {
         guard !retired else { throw Failure.retired }
         var candidate = snapshot

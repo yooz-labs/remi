@@ -100,6 +100,7 @@ import Testing
             let moved = root.appendingPathComponent("unrelated-owned-file")
             #expect(rename(snapshot.path, moved.path) == 0)
             try Data([3, 2, 1]).write(to: snapshot)
+            #expect(chmod(snapshot.path, 0o600) == 0)
             #expect(throws: (any Error).self) { try owner.abandon(id: id, confirmed: true) }
             #expect(try Data(contentsOf: snapshot) == Data([3, 2, 1]))
             #expect(try Data(contentsOf: moved) == Data([7, 8, 9]))
