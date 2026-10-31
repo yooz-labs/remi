@@ -1,7 +1,8 @@
 import Foundation
 
 /// Classifies oversized inbound envelopes before the general JSON decoder (#1313).
-/// Small frames still go through the existing decoder and the image family's strict codec.
+/// Small frames still reach the existing decoder. The connection does not yet dispatch image
+/// replies to the strict image codec; that remains a prerequisite for the transfer owner.
 /// A large image frame, or a large frame whose top-level type cannot be identified safely,
 /// is refused. The scanner does not build a JSON object; Data may materialize a contiguous view.
 enum ImageIngressPreflight {
