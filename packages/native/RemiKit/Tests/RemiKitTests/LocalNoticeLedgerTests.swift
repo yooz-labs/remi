@@ -79,6 +79,39 @@ import Testing
         #expect(try ledger.classify(marker, keys: keys, systemIdentifier: marker.systemIdentifier) == .currentActive)
     }
 
+    @Test func interruptedForgetIsDurableAndCannotBeAdoptedByAnotherProcess() throws {
+        let dir = try directory(), keys = try LocalNoticeKeys(root: Data(repeating: 36, count: 32))
+        let (oldOwner, oldQuestion) = try indexes(keys), (otherOwner, otherQuestion) = try indexes(keys)
+        var ledger: LocalNoticeLedger? = try LocalNoticeLedger(directory: dir)
+        defer { ledger?.close(); try? FileManager.default.removeItem(at: dir) }
+        try ledger?.createOwner(oldOwner); try ledger?.createOwner(otherOwner)
+        let current = try #require(ledger)
+        let old = try current.prepare(owner: oldOwner, question: oldQuestion)
+        let other = try current.prepare(owner: otherOwner, question: otherQuestion)
+        try current.invalidateOwner(oldOwner)
+        #expect(try current.pendingForgetOwners() == [oldOwner])
+        #expect(try current.record(old).activity == .invalidated)
+        #expect(try current.record(other).activity == .active)
+        current.close(); ledger = nil
+        let restarted = try LocalNoticeLedger(directory: dir)
+        defer { restarted.close() }
+        #expect(try restarted.pendingForgetOwners() == [oldOwner])
+        #expect(throws: LocalNoticeError.changed) { try restarted.finishForget(oldOwner) }
+        #expect(try restarted.pendingForgetOwners() == [oldOwner])
+        #expect(try restarted.record(other).activity == .active)
+    }
+
+    @Test func currentOwnerForgetCanCompleteOnlyOnce() throws {
+        let dir = try directory(), keys = try LocalNoticeKeys(root: Data(repeating: 37, count: 32))
+        let (owner, _) = try indexes(keys), ledger = try LocalNoticeLedger(directory: dir)
+        defer { ledger.close(); try? FileManager.default.removeItem(at: dir) }
+        try ledger.createOwner(owner); try ledger.invalidateOwner(owner)
+        #expect(try ledger.pendingForgetOwners() == [owner])
+        try ledger.finishForget(owner)
+        #expect(try ledger.pendingForgetOwners().isEmpty)
+        #expect(throws: LocalNoticeError.changed) { try ledger.finishForget(owner) }
+    }
+
     @Test func retirementCompactsThousandsWithoutCrossingLiveHole() throws {
         let dir = try directory()
         let keys = try LocalNoticeKeys(root: Data(repeating: 10, count: 32)), (owner, question) = try indexes(keys)
