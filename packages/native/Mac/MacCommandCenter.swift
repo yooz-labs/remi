@@ -53,6 +53,9 @@ struct MacCommandCenter: View {
         .onAppear(perform: loadBoard)
         .onChange(of: sessions.map(RemiBoardOrder.key(for:))) { pruneBoard() }
         .onChange(of: settledMachines) { pruneBoard() }
+        .onChange(of: filtered.map(RemiBoardOrder.key(for:))) { _, visible in
+            if let preview = gesturePreview, !visible.contains(preview.key) { gesturePreview = nil }
+        }
         .task {
             while !Task.isCancelled {
                 boardNow = Date()
@@ -214,7 +217,10 @@ struct MacCommandCenter: View {
             spacing: spacing,
             margin: margin
         )
-        let displayFrames = gesturePreview?.frames ?? frames
+        let displayFrames = RemiBoardOrder.displayedFrames(
+            frames, preview: gesturePreview?.frames, owner: gesturePreview?.key,
+            visibleKeys: Set(ordering.visible.map(RemiBoardOrder.key(for:)))
+        )
         let items = ordering.visible.compactMap { session -> BoardItem? in
             let key = RemiBoardOrder.key(for: session)
             guard let frame = displayFrames[key] else { return nil }
@@ -343,13 +349,17 @@ struct MacCommandCenter: View {
             onResizeTopRightDrag: { translation, ended in
                 updateGesture(key: key, kind: .resizeTopRight, translation: translation, ended: ended, frames: frames)
             },
+            onCancelDrag: {
+                if gesturePreview?.key == key { gesturePreview = nil }
+            },
             onMoveBy: { nudge(key: key, kind: .move, by: $0, frames: frames) },
             onResizeBy: { nudge(key: key, kind: .resize, by: $0, frames: frames) }
         )
         return RemiBoardTile(
             session: session,
             tileKey: key,
-            size: board.size(for: key),
+            size: board.frame(for: key) != nil || gesturePreview?.key == key
+                ? RemiTileSize.boardDensity(forHeight: frame.height) : board.size(for: key),
             isPinned: board.isPinned(key),
             entries: transcript(session),
             draft: Binding(get: { drafts[key] ?? "" }, set: { drafts[key] = $0 }),
@@ -371,7 +381,7 @@ struct MacCommandCenter: View {
                     resized.height = min(max(size.estimatedHeight, RemiBoardFrame.minimumHeight),
                                          RemiBoardFrame.maximumCoordinate - current.y)
                     if let adjusted = RemiBoardOrder.reflow(moving: key, to: resized, in: frames, spacing: spacing) {
-                        persistLayout(adjusted)
+                        persistLayout(adjusted, previous: frames, moving: key)
                     }
                 }
                 saveBoard()
@@ -406,12 +416,11 @@ struct MacCommandCenter: View {
         let proposal = kind == .move ? start.constrainedMove(by: delta) : start.resized(by: delta)
         guard let adjusted = RemiBoardOrder.reflow(moving: key, to: proposal, in: frames, spacing: spacing) else { return }
         frontTile = key
-        persistLayout(adjusted)
+        persistLayout(adjusted, previous: frames, moving: key)
     }
 
-    private func persistLayout(_ frames: [String: RemiBoardFrame]) {
-        for (key, frame) in frames { _ = board.setFrame(frame, for: key) }
-        saveBoard()
+    private func persistLayout(_ adjusted: [String: RemiBoardFrame], previous: [String: RemiBoardFrame], moving key: String) {
+        if board.applyReflow(adjusted, previous: previous, moving: key) { saveBoard() }
     }
 
     private func updateGesture(
@@ -438,9 +447,9 @@ struct MacCommandCenter: View {
                 : proposed.snappedResize(topRight: kind == .resizeTopRight, otherFrames: others, gap: spacing, margin: margin)
             if snapped != start {
                 if let adjusted = RemiBoardOrder.reflow(moving: key, to: snapped, in: frames, spacing: spacing) {
-                    persistLayout(adjusted)
+                    persistLayout(adjusted, previous: frames, moving: key)
                 } else if let previous = active?.frames {
-                    persistLayout(previous)
+                    persistLayout(previous, previous: frames, moving: key)
                 }
             }
             gesturePreview = nil

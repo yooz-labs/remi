@@ -7,6 +7,7 @@ public struct RemiBoardTilePlacement {
     public var onMoveDrag: (_ translation: CGSize, _ ended: Bool) -> Void
     public var onResizeDrag: (_ translation: CGSize, _ ended: Bool) -> Void
     public var onResizeTopRightDrag: (_ translation: CGSize, _ ended: Bool) -> Void
+    public var onCancelDrag: () -> Void
     public var onMoveBy: (CGSize) -> Void
     public var onResizeBy: (CGSize) -> Void
 
@@ -15,6 +16,7 @@ public struct RemiBoardTilePlacement {
         onMoveDrag: @escaping (_ translation: CGSize, _ ended: Bool) -> Void,
         onResizeDrag: @escaping (_ translation: CGSize, _ ended: Bool) -> Void,
         onResizeTopRightDrag: @escaping (_ translation: CGSize, _ ended: Bool) -> Void,
+        onCancelDrag: @escaping () -> Void,
         onMoveBy: @escaping (CGSize) -> Void,
         onResizeBy: @escaping (CGSize) -> Void
     ) {
@@ -22,6 +24,7 @@ public struct RemiBoardTilePlacement {
         self.onMoveDrag = onMoveDrag
         self.onResizeDrag = onResizeDrag
         self.onResizeTopRightDrag = onResizeTopRightDrag
+        self.onCancelDrag = onCancelDrag
         self.onMoveBy = onMoveBy
         self.onResizeBy = onResizeBy
     }
@@ -89,6 +92,7 @@ public struct RemiBoardTile<Question: View>: View {
     @State private var questionHeight: CGFloat = 0
     @State private var moveHovered = false
     @State private var hoveredResize: PlacementControl?
+    @GestureState private var placementDragging = false
     @FocusState private var focusedPlacementControl: PlacementControl?
 
     private enum PlacementControl: Hashable {
@@ -151,6 +155,7 @@ public struct RemiBoardTile<Question: View>: View {
             } else if let placement = extras.placement {
                 header.contentShape(Rectangle())
                     .simultaneousGesture(DragGesture(minimumDistance: 3, coordinateSpace: .global)
+                        .updating($placementDragging) { _, active, _ in active = true }
                         .onChanged { placement.onMoveDrag($0.translation, false) }
                         .onEnded { placement.onMoveDrag($0.translation, true) })
             }
@@ -176,6 +181,10 @@ public struct RemiBoardTile<Question: View>: View {
         .modifier(TileMenu(menu: menu, preview: extras.preview))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityLabel)
+        .onChange(of: placementDragging) { _, active in
+            if !active { extras.placement?.onCancelDrag() }
+        }
+        .onDisappear { extras.placement?.onCancelDrag() }
     }
 
     // MARK: parts
@@ -227,6 +236,7 @@ public struct RemiBoardTile<Question: View>: View {
                 .onTapGesture(perform: onOpen)
                 .focusable()
                 .onKeyPress(.return) { onOpen(); return .handled }
+                .onKeyPress(.space) { onOpen(); return .handled }
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { onOpen() }
                 .accessibilityHint("Opens the whole conversation")
@@ -483,7 +493,9 @@ public struct RemiBoardTile<Question: View>: View {
             .onKeyPress(.rightArrow) { placement.onResizeBy(CGSize(width: 24, height: 0)); return .handled }
             .onKeyPress(.upArrow) { placement.onResizeBy(CGSize(width: 0, height: -24)); return .handled }
             .onKeyPress(.downArrow) { placement.onResizeBy(CGSize(width: 0, height: 24)); return .handled }
-            .gesture(DragGesture(minimumDistance: 3, coordinateSpace: .global).onChanged {
+            .gesture(DragGesture(minimumDistance: 3, coordinateSpace: .global)
+                .updating($placementDragging) { _, active, _ in active = true }
+                .onChanged {
                 if top { placement.onResizeTopRightDrag($0.translation, false) }
                 else { placement.onResizeDrag($0.translation, false) }
             }.onEnded {

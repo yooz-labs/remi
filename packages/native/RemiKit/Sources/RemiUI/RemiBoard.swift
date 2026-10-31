@@ -176,6 +176,14 @@ public enum RemiTileSize: String, Codable, CaseIterable, Sendable {
         }
     }
 
+    /// Match the content density to a manually sized Mac Board card.
+    public static func boardDensity(forHeight height: CGFloat) -> Self {
+        guard height.isFinite else { return .regular }
+        if height < (compact.estimatedHeight + regular.estimatedHeight) / 2 { return .compact }
+        if height < (regular.estimatedHeight + large.estimatedHeight) / 2 { return .regular }
+        return .large
+    }
+
     /// How many of the latest conversation entries the tile keeps ready to show.
     public var feedEntries: Int {
         switch self {
@@ -293,6 +301,18 @@ public struct RemiBoardState: Codable, Equatable, Sendable {
     }
 
     public mutating func clearFrame(for key: String) { frames[key] = nil }
+
+    /// Persist the operated card and only the neighbors actually displaced by its reflow.
+    @discardableResult
+    public mutating func applyReflow(_ adjusted: [String: RemiBoardFrame],
+                                     previous: [String: RemiBoardFrame], moving key: String) -> Bool {
+        guard adjusted[key] != nil, Set(adjusted.keys) == Set(previous.keys),
+              adjusted.allSatisfy({ !$0.key.isEmpty && $0.value.isValid }) else { return false }
+        for (item, frame) in adjusted where item == key || previous[item] != frame {
+            frames[item] = frame
+        }
+        return true
+    }
 
     /// Clears manual frames and legacy pins/sizes to restore the automatic layout.
     public mutating func resetLayout() {
@@ -567,6 +587,15 @@ public enum RemiBoardOrder {
             occupied.append(placed)
         }
         return result
+    }
+
+    /// Overlay a live gesture on current frames without hiding newly arrived cards.
+    public static func displayedFrames(_ current: [String: RemiBoardFrame], preview: [String: RemiBoardFrame]?,
+                                       owner: String?, visibleKeys: Set<String>) -> [String: RemiBoardFrame] {
+        guard let owner, visibleKeys.contains(owner), current[owner] != nil, let preview else { return current }
+        var displayed = current
+        for (key, frame) in preview where current[key] != nil { displayed[key] = frame }
+        return displayed
     }
 
     /// Find the nearest open position along a horizontal or vertical axis. Each step jumps
