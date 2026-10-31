@@ -4,7 +4,7 @@ import Testing
 @testable import RemiPush
 @testable import RemiKit
 
-@MainActor private final class OwnedStartupKeychain {
+@MainActor final class OwnedStartupKeychain {
     var readStatus: OSStatus = errSecItemNotFound
     var stored: Data?
     var reads = 0, adds = 0
@@ -20,7 +20,7 @@ import Testing
     }
 }
 
-@MainActor private final class HeldStartupInventory {
+@MainActor final class HeldStartupInventory {
     var pending: (@Sendable (LocalNoticeInventory.Batch) -> Void)?
     var delivered: (@Sendable (LocalNoticeInventory.Batch) -> Void)?
     var boundary: LocalNoticeInventory.Boundary {
