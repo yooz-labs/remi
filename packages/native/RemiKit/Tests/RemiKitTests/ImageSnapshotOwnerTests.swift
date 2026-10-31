@@ -82,6 +82,31 @@ import Testing
         }
     }
 
+    @Test func selectedFileModifiedDuringCopyIsRefusedAndRetainedForCleanup() throws {
+        let original = Data(repeating: 0x31, count: 70_000)
+        try withFixture(original) { root, input, _, journal, owner in
+            let id = try journal.reserveCopy()
+            var modified = false
+            #expect(throws: (any Error).self) {
+                try owner.captureSelectedFile(id: id, url: input) {
+                    if !modified {
+                        let writer = open(input.path, O_WRONLY | O_CLOEXEC | O_NOFOLLOW)
+                        if writer >= 0 {
+                            var byte: UInt8 = 0x55
+                            modified = pwrite(writer, &byte, 1, 0) == 1
+                            close(writer)
+                        }
+                    }
+                    return false
+                }
+            }
+            #expect(modified)
+            #expect(journal.snapshot.localSnapshotID == id)
+            #expect(journal.snapshot.records.first?.snapshotIdentity != nil)
+            #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("image-\(id.uuidString.lowercased())").path))
+        }
+    }
+
     @Test func selectedSymlinkAndRemoteURLAreRefusedWithoutReadingTarget() throws {
         try withFixture(Data([1, 2, 3])) { root, input, _, journal, owner in
             let id = try journal.reserveCopy()
