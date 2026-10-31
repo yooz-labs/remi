@@ -22,7 +22,10 @@ import Testing
         let account = UUID().uuidString
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service, kSecAttrAccount as String: account]
-        defer { SecItemDelete(query as CFDictionary) }
+        defer {
+            let status = SecItemDelete(query as CFDictionary)
+            #expect(status == errSecSuccess || status == errSecItemNotFound)
+        }
         let lease = try ImageDirectoryLease(parent: parentFD, rootName: "images", directory: rootFD)
         // The unsigned fixture redirects only the OS boundary to a UUID-owned Keychain slot;
         // signed app-group and ThisDeviceOnly behavior still require device acceptance.
