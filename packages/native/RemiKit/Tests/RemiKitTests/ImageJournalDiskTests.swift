@@ -126,6 +126,8 @@ import Testing
                 binding: AttachedBinding(harness: .claude, harnessSessionId: "owned-thread"),
                 imageDigest: Data(repeating: 0x52, count: 32))
             #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try reopened.finishCopy(id, fingerprint: identity) }
+            #expect(throws: (any Error).self) { try owner.finishCopy(id, fingerprint: identity) }
+            #expect(throws: (any Error).self) { try owner.finishCopy(id, fingerprint: identity) }
         }
     }
 
