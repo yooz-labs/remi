@@ -213,6 +213,32 @@ import Testing
         }
     }
 
+    @Test func recordedStagingCleansLocalCopyBeforeInsertionTransition() throws {
+        let bytes = Data([7, 8, 9])
+        try withFixture(bytes) { root, _, source, journal, owner in
+            let id = try journal.reserveCopy()
+            _ = try owner.capture(id: id, source: source)
+            let fingerprint = try ImageRecoveryFingerprint.make(secret: secret, machineKey: Data(repeating: 0x42, count: 32),
+                sessionID: "00112233-4455-4677-8899-aabbccddeeff",
+                binding: AttachedBinding(harness: .claude, harnessSessionId: "owned-thread"),
+                imageDigest: Data(SHA256.hash(data: bytes)))
+            try journal.finishCopy(id, fingerprint: fingerprint)
+            #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try owner.clearAfterStaging(id: id) }
+            try journal.markPartialPossible(id)
+            try journal.markStagingPossible(id)
+            try journal.markStaged(id, expiry: "2026-11-01T00:00:00.000Z")
+            #expect(throws: ImageRecoveryLedger.Failure.localSnapshotStillPresent) { try journal.markInsertionPossible(id) }
+            try owner.clearAfterStaging(id: id)
+            let snapshot = root.appendingPathComponent("image-\(id.uuidString.lowercased())")
+            #expect(!FileManager.default.fileExists(atPath: snapshot.path))
+            #expect(journal.snapshot.localSnapshotID == nil)
+            #expect(journal.snapshot.records.first?.exposure == .staged(expiry: "2026-11-01T00:00:00.000Z"))
+            #expect(!journal.snapshot.hasAggregateUnconfirmedCleanup)
+            try journal.markInsertionPossible(id)
+            #expect(journal.snapshot.records.first?.exposure == .insertionInFlight(expiry: "2026-11-01T00:00:00.000Z"))
+        }
+    }
+
     @Test func cleanupRefusesAReplacementAndPreservesBothFiles() throws {
         try withFixture(Data([7, 8, 9])) { root, _, source, journal, owner in
             let id = try journal.reserveCopy()
