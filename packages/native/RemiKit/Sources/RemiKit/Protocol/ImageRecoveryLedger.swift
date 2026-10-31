@@ -84,6 +84,11 @@ struct ImageRecoveryLedger: Sendable {
         case insertionRefusedAwaitingOrigin(expiry: String)
     }
 
+    struct SnapshotIdentity: Sendable, Equatable {
+        let device: UInt64
+        let inode: UInt64
+    }
+
     struct Record: Sendable, Equatable {
         let id: UUID
         fileprivate(set) var fingerprint: ImageRecoveryFingerprint?
@@ -92,6 +97,7 @@ struct ImageRecoveryLedger: Sendable {
         fileprivate(set) var cleanupRequested = false
         fileprivate(set) var remoteCancellationConfirmed = false
         fileprivate(set) var knownPartialExpiry: String?
+        fileprivate(set) var snapshotIdentity: SnapshotIdentity?
     }
 
     private(set) var records: [Record] = []
@@ -125,11 +131,21 @@ struct ImageRecoveryLedger: Sendable {
         throw Failure.identityCollision
     }
 
+    /// Persist the identity of the exclusively created owned file before writing its bytes.
+    /// The filesystem owner must verify the descriptor and its directory entry itself.
+    mutating func registerSnapshot(_ id: UUID, device: UInt64, inode: UInt64) throws {
+        let index = try recordIndex(id)
+        guard records[index].exposure == .copyReserved, records[index].localSnapshotPresent,
+              !records[index].cleanupRequested, records[index].snapshotIdentity == nil,
+              device > 0, inode > 0 else { throw Failure.invalidTransition }
+        records[index].snapshotIdentity = SnapshotIdentity(device: device, inode: inode)
+    }
+
     /// Called only after a bounded, durable snapshot has been hashed and validated.
     mutating func finishCopy(_ id: UUID, fingerprint: ImageRecoveryFingerprint) throws {
         let index = try recordIndex(id)
         guard records[index].exposure == .copyReserved, records[index].localSnapshotPresent,
-              !records[index].cleanupRequested else { throw Failure.invalidTransition }
+              records[index].snapshotIdentity != nil, !records[index].cleanupRequested else { throw Failure.invalidTransition }
         try checkFingerprint(fingerprint)
         records[index].fingerprint = fingerprint
         records[index].exposure = .prepared
@@ -239,6 +255,7 @@ struct ImageRecoveryLedger: Sendable {
         guard records[index].cleanupRequested, records[index].localSnapshotPresent,
               localSnapshotID == id else { throw Failure.cleanupNotRequested }
         records[index].localSnapshotPresent = false
+        records[index].snapshotIdentity = nil
         records[index].cleanupRequested = false
         localSnapshotID = nil
         if records[index].exposure == .copyReserved || records[index].exposure == .copyOrphaned ||
@@ -301,6 +318,8 @@ struct ImageRecoveryLedger: Sendable {
                 ("image", record.fingerprint.map { .string(WireGuards.encodeBase64URL($0.image)) } ?? .null),
                 ("exposure", .string(name)), ("expiry", expiry.map(WireJSON.string) ?? .null),
                 ("partialExpiry", record.knownPartialExpiry.map(WireJSON.string) ?? .null),
+                ("fileDevice", record.snapshotIdentity.map { .string(String($0.device)) } ?? .null),
+                ("fileInode", record.snapshotIdentity.map { .string(String($0.inode)) } ?? .null),
                 ("local", .bool(record.localSnapshotPresent)), ("cleanup", .bool(record.cleanupRequested)),
                 ("remoteCancelled", .bool(record.remoteCancellationConfirmed)),
             ])
@@ -345,7 +364,7 @@ struct ImageRecoveryLedger: Sendable {
         var ids = Set<UUID>()
         var needsRewrite = false
         for raw in rawRecords {
-            let entry = try WireFields(raw, keys: ["id", "scope", "image", "exposure", "expiry", "partialExpiry",
+            let entry = try WireFields(raw, keys: ["id", "scope", "image", "exposure", "expiry", "partialExpiry", "fileDevice", "fileInode",
                                                    "local", "cleanup", "remoteCancelled"])
             let textID = try entry.uuid4("id")
             guard let id = UUID(uuidString: textID), ids.insert(id).inserted else {
@@ -364,11 +383,18 @@ struct ImageRecoveryLedger: Sendable {
             let name = try entry.string("exposure")
             let expiry = try optionalTimestamp(entry, "expiry")
             let partialExpiry = try optionalTimestamp(entry, "partialExpiry")
+            let device = try optionalIdentifier(entry, "fileDevice")
+            let inode = try optionalIdentifier(entry, "fileInode")
+            let snapshotIdentity: SnapshotIdentity?
+            if let device, let inode { snapshotIdentity = SnapshotIdentity(device: device, inode: inode) }
+            else if device == nil && inode == nil { snapshotIdentity = nil }
+            else { throw WireFrameError.invalid("snapshot") }
             let local = try bool(entry, "local")
             let cleanup = try bool(entry, "cleanup")
             let remoteCancelled = try bool(entry, "remoteCancelled")
             var exposure = try decodeExposure(name, expiry: expiry)
-            guard validRecord(exposure: exposure, fingerprint: fingerprint, partialExpiry: partialExpiry, local: local,
+            guard validRecord(exposure: exposure, fingerprint: fingerprint, snapshotIdentity: snapshotIdentity,
+                              partialExpiry: partialExpiry, local: local,
                               cleanup: cleanup, remoteCancelled: remoteCancelled) else {
                 throw WireFrameError.invalid("record")
             }
@@ -393,7 +419,7 @@ struct ImageRecoveryLedger: Sendable {
             }
             ledger.records.append(Record(id: id, fingerprint: fingerprint,
                 exposure: exposure, localSnapshotPresent: local, cleanupRequested: cleanup,
-                remoteCancellationConfirmed: remoteCancelled, knownPartialExpiry: partialExpiry))
+                remoteCancellationConfirmed: remoteCancelled, knownPartialExpiry: partialExpiry, snapshotIdentity: snapshotIdentity))
         }
         return Restored(ledger: ledger, needsRewrite: needsRewrite)
     }
@@ -413,6 +439,16 @@ struct ImageRecoveryLedger: Sendable {
         switch try fields.raw(name) {
         case .null: return nil
         case .string(let value) where WireGuards.isTimestamp(value): return value
+        default: throw WireFrameError.invalid(name)
+        }
+    }
+
+    private static func optionalIdentifier(_ fields: WireFields, _ name: String) throws -> UInt64? {
+        switch try fields.raw(name) {
+        case .null: return nil
+        case .string(let text):
+            guard let value = UInt64(text), value > 0, String(value) == text else { throw WireFrameError.invalid(name) }
+            return value
         default: throw WireFrameError.invalid(name)
         }
     }
@@ -461,14 +497,16 @@ struct ImageRecoveryLedger: Sendable {
         return build(expiry)
     }
 
-    private static func validRecord(exposure: Exposure, fingerprint: ImageRecoveryFingerprint?, partialExpiry: String?, local: Bool,
+    private static func validRecord(exposure: Exposure, fingerprint: ImageRecoveryFingerprint?, snapshotIdentity: SnapshotIdentity?,
+                                    partialExpiry: String?, local: Bool,
                                     cleanup: Bool, remoteCancelled: Bool) -> Bool {
         if cleanup && !local { return false }
+        if !local && snapshotIdentity != nil { return false }
         switch exposure {
         case .copyReserved, .copyOrphaned:
             return fingerprint == nil && local && !remoteCancelled && partialExpiry == nil
         default:
-            guard fingerprint != nil else { return false }
+            guard fingerprint != nil, !local || snapshotIdentity != nil else { return false }
         }
         if remoteCancelled {
             guard local, (exposure == .partialPossible || exposure == .stagingPossible ||

@@ -20,6 +20,7 @@ import Testing
     private func reserve(_ ledger: inout ImageRecoveryLedger, _ fingerprint: ImageRecoveryFingerprint) throws -> UUID {
         var candidate = ledger
         let id = try candidate.reserveCopy()
+        try candidate.registerSnapshot(id, device: 1, inode: 2)
         try candidate.finishCopy(id, fingerprint: fingerprint)
         ledger = candidate
         return id
@@ -323,6 +324,7 @@ import Testing
         #expect(ledger.localSnapshotID == id)
         #expect(throws: ImageRecoveryLedger.Failure.localSlotBusy) { _ = try ledger.reserveCopy() }
         #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try ledger.markPartialPossible(id) }
+        try ledger.registerSnapshot(id, device: 1, inode: 2)
         try ledger.finishCopy(id, fingerprint: fingerprint())
         try ledger.markPartialPossible(id)
     }
@@ -351,6 +353,7 @@ import Testing
         try ledger.markInsertionPossible(first)
         try ledger.markInsertionUncertain(first)
         let copy = try ledger.reserveCopy()
+        try ledger.registerSnapshot(copy, device: 1, inode: 2)
         #expect(throws: ImageRecoveryLedger.Failure.sameImageInsertionUncertain) { try ledger.finishCopy(copy, fingerprint: fingerprint()) }
         #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try ledger.markPartialPossible(copy) }
         try ledger.requestLocalAbandonment(copy, confirmed: true)
@@ -415,7 +418,8 @@ import Testing
         func record(id: String, exposure: String, expiry: String = "null", local: Bool,
                     cleanup: Bool = false, cancelled: Bool = false) -> String {
             let hash = WireGuards.encodeBase64URL(Data(repeating: 1, count: 32))
-            return "{\"id\":\"\(id)\",\"scope\":\"\(hash)\",\"image\":\"\(hash)\",\"exposure\":\"\(exposure)\",\"expiry\":\(expiry),\"partialExpiry\":null,\"local\":\(local),\"cleanup\":\(cleanup),\"remoteCancelled\":\(cancelled)}"
+            let fileID = local ? "\"1\"" : "null"
+            return "{\"id\":\"\(id)\",\"scope\":\"\(hash)\",\"image\":\"\(hash)\",\"exposure\":\"\(exposure)\",\"expiry\":\(expiry),\"partialExpiry\":null,\"fileDevice\":\(fileID),\"fileInode\":\(fileID),\"local\":\(local),\"cleanup\":\(cleanup),\"remoteCancelled\":\(cancelled)}"
         }
         func journal(_ records: [String]) -> Data {
             let payload = "{\"version\":1,\"aggregate\":false,\"records\":[\(records.joined(separator: ","))]}"

@@ -36,6 +36,12 @@ final class ImageRecoveryJournal {
         try transition { try $0.reserveCopy() }
     }
 
+    /// The caller must open the new file exclusively and verify both the descriptor and its
+    /// entry in the owned directory before recording the identity, and before writing data.
+    func registerSnapshot(_ id: UUID, device: UInt64, inode: UInt64) throws {
+        try transition { try $0.registerSnapshot(id, device: device, inode: inode) }
+    }
+
     /// The caller must first prove that the owned copy is complete, protected and validated.
     func finishCopy(_ id: UUID, fingerprint: ImageRecoveryFingerprint) throws {
         try transition { try $0.finishCopy(id, fingerprint: fingerprint) }

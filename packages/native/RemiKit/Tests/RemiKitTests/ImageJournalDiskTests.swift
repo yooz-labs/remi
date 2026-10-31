@@ -114,6 +114,7 @@ import Testing
             try disk.initializeIfProvenFresh(ImageRecoveryLedger().encodeJournal(secret: secret))
             let owner = try ImageRecoveryJournal(disk: disk, secret: secret)
             let id = try owner.reserveCopy()
+            try owner.registerSnapshot(id, device: 42, inode: 1234)
             let onDisk = try ImageRecoveryLedger.restoreJournal(disk.load(), secret: secret)
             #expect(onDisk.needsRewrite)
             #expect(onDisk.ledger.localSnapshotID == id)
