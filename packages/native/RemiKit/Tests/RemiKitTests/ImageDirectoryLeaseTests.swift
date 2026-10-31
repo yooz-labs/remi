@@ -56,4 +56,16 @@ import Testing
             #expect(throws: (any Error).self) { try ImageDirectoryLease(directory: directory) }
         }
     }
+
+    @Test func replacedLockNameInvalidatesTheLease() throws {
+        try withDirectory { url, directory in
+            let lease = try ImageDirectoryLease(directory: directory)
+            let name = url.appendingPathComponent(".image-lock")
+            #expect(unlink(name.path) == 0)
+            let replacement = open(name.path, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
+            #expect(replacement >= 0)
+            if replacement >= 0 { close(replacement) }
+            #expect(throws: (any Error).self) { try lease.verifyIdentity() }
+        }
+    }
 }
