@@ -13,10 +13,81 @@ private actor DeliverySendGate {
     func release() { released = true }
 }
 
+private actor DeliveryImageObservation {
+    var admitted = false
+    var sessions = false
+    func receive(_ event: RemiInboundEvent) {
+        if case .hello = event { admitted = true }
+        if case .sessions = event { sessions = true }
+    }
+}
+
 @MainActor
 @Suite(.serialized)
 struct DeliverySourceTests {
     private enum Failure: Error { case deadline(String), afterInvocation }
+
+    @Test func realSourceSocketCannotAuthorizeImageBeginOnUnqualifiedRoute() async throws {
+        let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Integration/delivery-source-fixture.ts")
+        let identity = ClientIdentity()
+        let peer = Process()
+        let own = try OwnedRecoveryFixture.configure(peer, script: script,
+            arguments: ["image", identity.publicIdentity.publicKey],
+            bunExecutable: ProcessInfo.processInfo.environment["REMI_DELIVERY_BUN"])
+        let output = Pipe(), input = Pipe()
+        let log = own.appendingPathComponent("image-source.log")
+        FileManager.default.createFile(atPath: log.path, contents: nil)
+        let errors = try FileHandle(forWritingTo: log)
+        peer.standardOutput = output; peer.standardInput = input; peer.standardError = errors
+        try peer.run()
+        let watchdog = Task {
+            try? await Task.sleep(for: .seconds(30))
+            if !Task.isCancelled, peer.isRunning { peer.terminate() }
+        }
+        defer { watchdog.cancel() }
+        var connection: RemiConnection?
+        func stop() async {
+            await connection?.stop()
+            try? input.fileHandleForWriting.write(contentsOf: Data("stop\n".utf8))
+            try? input.fileHandleForWriting.close()
+            let deadline = ContinuousClock.now.advanced(by: .seconds(4))
+            while peer.isRunning, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+            if peer.isRunning { peer.terminate() }
+            let end = ContinuousClock.now.advanced(by: .seconds(2))
+            while peer.isRunning, ContinuousClock.now < end { try? await Task.sleep(for: .milliseconds(20)) }
+            #expect(!peer.isRunning)
+            try? errors.close()
+        }
+        do {
+            let ready = try #require(JSONSerialization.jsonObject(with: await Self.readLine(from: output.fileHandleForReading)) as? [String: Any])
+            let port = try #require(ready["port"] as? Int)
+            let session = try #require(ready["sessionId"] as? String)
+            let publicKey = try #require(ready["publicKey"] as? String)
+            let machineKey = try #require(Data(base64Encoded: publicKey))
+            let observations = DeliveryImageObservation()
+            let client = RemiConnection(configuration: .init(url: try #require(URL(string: "ws://127.0.0.1:\(port)/ws")),
+                clientVersion: "owned", clientId: "owned", expectedServerPublicKey: publicKey), identity: identity,
+                stateHandler: { _ in }, eventHandler: { event in Task { await observations.receive(event) } })
+            connection = client
+            await client.start()
+            try await until("source hello") { await observations.admitted }
+            let header = WireHeader(id: UUID().uuidString.lowercased(), timestamp: "2026-10-31T00:00:00.000Z", sessionId: session)
+            let binding = AttachedBinding(harness: .claude, harnessSessionId: "owned-source-binding")
+            let begin = ImageUploadBegin(header: header, binding: binding, mediaType: .png, byteLength: 3,
+                                         digest: WireGuards.encodeBase64URL(Data(repeating: 1, count: 32)))
+            #expect(await client.imageBeginAuthority(for: begin, machineKey: machineKey) == nil)
+            try await client.send(SessionListRequestMessage(id: UUID().uuidString.lowercased(), timestamp: Date().ISO8601Format()))
+            try await until("source sessions") { await observations.sessions }
+            try input.fileHandleForWriting.write(contentsOf: Data("stats\n".utf8))
+            let stats = try #require(JSONSerialization.jsonObject(with: await Self.readLine(from: output.fileHandleForReading)) as? [String: Any])
+            #expect(stats["images"] as? Int == 0)
+            await stop()
+        } catch {
+            await stop()
+            throw error
+        }
+    }
 
     @Test(arguments: ["refuse", "allow", "partial"])
     func actualSourceInputOutcomesAreRetainedWithoutReplay(_ mode: String) async throws {
