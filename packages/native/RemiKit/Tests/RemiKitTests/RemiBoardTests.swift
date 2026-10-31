@@ -440,25 +440,55 @@ import Testing
         #expect(frames[firstKey] != frames[secondKey])
     }
 
-    @Test func layoutPreventsOverlapAndTouchingFramesRemainValid() {
+    @Test func manuallyOverlappingCardsKeepTheirPositionsAndAutomaticCardsAvoidThem() throws {
         let sessions = [session("a"), session("b"), session("c"), session("d")]
         var state = RemiBoardState()
         let firstFrameStored = state.setFrame(RemiBoardFrame(x: 16, y: 16, width: 520, height: 300), for: "m\u{1F}a")
-        // A second valid saved frame overlaps the first. Layout keeps the first and places this
-        // tile automatically, repairing the collision in the rendered board without dropping state.
+        // Manual cards behave like windows and may intentionally overlap.
         let secondFrameStored = state.setFrame(RemiBoardFrame(x: 200, y: 80, width: 420, height: 360), for: "m\u{1F}b")
         #expect(firstFrameStored)
         #expect(secondFrameStored)
         let frames = RemiBoardOrder.layout(sessions, state: state, interactions: [:], now: now, viewportWidth: 900)
-        let placed = Array(frames.values)
-        for left in placed.indices {
-            for right in placed.indices where right > left {
-                #expect(!placed[left].intersects(placed[right]))
-            }
+        let first = try #require(frames["m\u{1F}a"])
+        let second = try #require(frames["m\u{1F}b"])
+        #expect(first.intersects(second))
+        #expect(second == state.frame(for: "m\u{1F}b"))
+        for key in ["m\u{1F}c", "m\u{1F}d"] {
+            let automatic = try #require(frames[key])
+            #expect(!automatic.intersects(first))
+            #expect(!automatic.intersects(second))
         }
 
         let touching = RemiBoardFrame(x: 356, y: 16, width: 340, height: 260)
         #expect(!RemiBoardFrame(x: 16, y: 16, width: 340, height: 260).intersects(touching))
+    }
+
+    @Test func movementClampsAtCanvasOriginAndSnapsToTheGridOnRelease() {
+        let start = RemiBoardFrame(x: 73, y: 79, width: 420, height: 360)
+        let moved = start.constrainedMove(by: CGSize(width: -200, height: 30))
+        #expect(moved.x == 0)
+        #expect(moved.y == 109)
+        let snapped = start.snappedMove(otherFrames: [])
+        #expect(snapped.x == 64)
+        #expect(snapped.y == 88)
+        #expect(snapped.width == start.width && snapped.height == start.height)
+    }
+
+    @Test func movementSnapsToNearbyCardEdgesBeforeTheGrid() {
+        let neighbor = RemiBoardFrame(x: 16, y: 16, width: 340, height: 420)
+        let near = RemiBoardFrame(x: 371, y: 21, width: 340, height: 300)
+        let snapped = near.snappedMove(otherFrames: [neighbor], gap: 12)
+        #expect(snapped.x == neighbor.maxX + 12)
+        #expect(snapped.y == neighbor.y)
+    }
+
+    @Test func topRightResizeKeepsBottomLeftFixedAndStaysInBounds() {
+        let start = RemiBoardFrame(x: 16, y: 100, width: 400, height: 300)
+        let grown = start.resizedFromTopRight(by: CGSize(width: 40, height: -60))
+        #expect(grown == RemiBoardFrame(x: 16, y: 40, width: 440, height: 360))
+        let clamped = start.resizedFromTopRight(by: CGSize(width: -1_000, height: -1_000))
+        #expect(clamped.x == start.x && clamped.y == 0)
+        #expect(clamped.maxY == start.maxY && clamped.width == RemiBoardFrame.minimumWidth)
     }
 
     @Test func hiddenAndDisconnectedFramesReserveSpaceForNewAndReturningSessions() {
