@@ -1,5 +1,6 @@
 /** Owned source transport/input handlers and real inert cat PTY. No harness or provider runs. */
-import { mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -19,7 +20,7 @@ import { TranscriptDiscovery } from '../../../../daemon/src/transcript/transcrip
 
 const mode = process.argv[2];
 const publicKey = process.argv[3];
-if (!['refuse', 'allow', 'partial', 'image'].includes(mode ?? '') || !publicKey)
+if (!['refuse', 'allow', 'partial', 'image', 'image-tls'].includes(mode ?? '') || !publicKey)
   throw new Error('owned arguments required');
 // Metadata only on stdout; source logger output stays in the retained stderr log.
 console.log = (...args) => console.error(...args);
@@ -29,6 +30,39 @@ await trust.generate();
 await trust.addAuthorizedKey(publicKey, 'owned-delivery-test');
 const identity = await trust.unlock();
 const sessionId = generateId();
+const imageBinding = generateId();
+const certPath = join(directory, 'image-fixture-cert.pem');
+let tls: { key: string; cert: string } | undefined;
+if (mode === 'image-tls') {
+  const configPath = join(directory, 'image-fixture-openssl.cnf');
+  const keyPath = join(directory, 'image-fixture-key.pem');
+  writeFileSync(
+    configPath,
+    '[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=owned-remi-image\n[ext]\nsubjectAltName=IP:127.0.0.1\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,digitalSignature,keyCertSign\nextendedKeyUsage=serverAuth\n',
+    { mode: 0o600 },
+  );
+  execFileSync(
+    '/usr/bin/openssl',
+    [
+      'req',
+      '-x509',
+      '-newkey',
+      'rsa:2048',
+      '-nodes',
+      '-days',
+      '1',
+      '-keyout',
+      keyPath,
+      '-out',
+      certPath,
+      '-config',
+      configPath,
+    ],
+    { stdio: 'ignore' },
+  );
+  chmodSync(keyPath, 0o600);
+  tls = { key: readFileSync(keyPath, 'utf8'), cert: readFileSync(certPath, 'utf8') };
+}
 const registry = new SessionRegistry(
   {},
   { onSessionClosed: (session) => lifecycle?.resolveStopOnClose(session) },
@@ -72,6 +106,7 @@ const server = new WebSocketServer(
   {
     port: 0,
     host: '127.0.0.1',
+    ...(tls && { tls }),
     connection: {
       authenticator: new Authenticator({ identity, identityStore: trust }),
       skipHelloAck: true,
@@ -80,7 +115,18 @@ const server = new WebSocketServer(
   {
     onClientConnect(connection) {
       registry.attachConnection(sessionId, connection.id);
-      connection.send(createHelloAck('owned-delivery-test', sessionId));
+      const ack = createHelloAck(
+        'owned-delivery-test',
+        sessionId,
+        mode === 'image-tls'
+          ? { capabilities: ['image_staging', 'image_insertion'], harness: 'claude' }
+          : {},
+      );
+      connection.send(
+        mode === 'image-tls'
+          ? { ...ack, harnessSessionId: imageBinding, claudeSessionId: imageBinding }
+          : ack,
+      );
     },
     onSessionListRequest(id, request) {
       server.sendTo(id, createSessionListResponse(registry.listSessions(), request));
@@ -122,7 +168,7 @@ const lifecycle = createSessionHandlers({
 });
 await server.start();
 process.stdout.write(
-  `${JSON.stringify({ port: server.port, sessionId, publicKey: identity.publicKeyRaw })}\n`,
+  `${JSON.stringify({ port: server.port, sessionId, publicKey: identity.publicKeyRaw, ...(tls && { certPath, imageBinding }) })}\n`,
 );
 for await (const line of createInterface({ input: process.stdin })) {
   if (line === 'stats')

@@ -168,6 +168,8 @@ public actor RemiConnection {
     private var ownedChatSendReturn: (@Sendable () async throws -> Void)?
     func ownedSetChatSendReturn(_ callback: (@Sendable () async throws -> Void)?) { ownedChatSendReturn = callback }
     private var ownedBeforeH2: (@Sendable () async throws -> Void)?
+    private var ownedImageFixture = false
+    private var ownedImageBeforeSend: (@Sendable () async throws -> Void)?
     #endif
     private var ready = false
     private var readyWaiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
@@ -263,6 +265,17 @@ public actor RemiConnection {
     func useOwnedTestSession(_ session: URLSession) throws {
         guard !shouldRun else { throw RelayFailure.state }
         self.session = session
+    }
+    /// Test-only loopback WSS fixture; no app caller or release build can enable this seam.
+    func enableOwnedImageFixture() throws {
+        guard !shouldRun, configuration.relayPin == nil, configuration.url.scheme == "wss",
+              configuration.url.host == "127.0.0.1", configuration.expectedServerPublicKey != nil,
+              session !== URLSession.shared else { throw RelayFailure.state }
+        ownedImageFixture = true
+    }
+    func ownedSetImageBeforeSend(_ callback: (@Sendable () async throws -> Void)?) throws {
+        guard ownedImageFixture else { throw RelayFailure.state }
+        ownedImageBeforeSend = callback
     }
     func beforeOwnedH2(_ callback: @escaping @Sendable () async throws -> Void) throws {
         guard !shouldRun else { throw RelayFailure.state }; ownedBeforeH2 = callback
@@ -427,7 +440,11 @@ public actor RemiConnection {
     private static let imageIngressQualified = false
 
     func imageBeginAuthority(for begin: ImageUploadBegin, machineKey: Data) -> ImageBeginAuthority? {
-        guard Self.imageIngressQualified, PaneTransportPolicy.current.directSecureTransport,
+        var qualified = Self.imageIngressQualified && PaneTransportPolicy.current.directSecureTransport
+        #if DEBUG
+        qualified = qualified || ownedImageFixture
+        #endif
+        guard qualified,
               configuration.relayPin == nil, configuration.url.scheme == "wss", applicationAdmitted,
               socket != nil, let socketID = chatSocketID, let hello = imageChildHello,
               let pinned = configuration.expectedServerPublicKey, let decoded = Data(base64Encoded: pinned),
@@ -442,7 +459,7 @@ public actor RemiConnection {
         return ImageBeginAuthority(socketID: socketID, machineKey: machineKey, sessionID: sessionID, bindingID: bindingID)
     }
 
-    enum ImageBeginSendResult: Sendable { case notInvoked, handedOff, uncertain }
+    enum ImageBeginSendResult: Sendable, Equatable { case notInvoked, handedOff, uncertain }
     private struct ImageBeginAttempt {
         let begin: ImageUploadBegin
         let authority: ImageBeginAuthority
@@ -456,6 +473,9 @@ public actor RemiConnection {
         do {
             let frame = try ImageUploadMessage.begin(begin).encodedFrame()
             let attempt = ImageBeginAttempt(begin: begin, authority: authority, ticket: ticket)
+            #if DEBUG
+            try await ownedImageBeforeSend?()
+            #endif
             try await deliver(Data(frame.utf8), validateBeforeSend: nil, imageAttempt: attempt)
             return .handedOff
         } catch {
