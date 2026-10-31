@@ -5,6 +5,15 @@ import Testing
 /// The pre-envelope guard must recognize oversized image families without decoding them as
 /// general JSON or rejecting a valid, large transcript on the same connection (#1313).
 @Suite struct ImageIngressPreflightTests {
+    private struct ReusedTypeKey: Encodable {
+        enum Key: String, CodingKey { case type }
+        func encode(to encoder: Encoder) throws {
+            var fields = encoder.container(keyedBy: Key.self)
+            try fields.encode("user_input", forKey: .type)
+            try fields.encode("image_upload_begin", forKey: .type)
+        }
+    }
+
     private func frame(_ prefix: String, _ suffix: String, size: Int) -> Data {
         let padding = size - prefix.utf8.count - suffix.utf8.count
         precondition(padding >= 0)
@@ -91,5 +100,17 @@ import Testing
         let bytes = try JSONEncoder().encode(message)
         let isImage = try ImageIngressPreflight.outgoingIsImage(bytes)
         #expect(!isImage)
+    }
+
+    @Test func encoderKeyReuseCannotHideTheEncodedImageType() throws {
+        let bytes = try JSONEncoder().encode(ReusedTypeKey())
+        do {
+            _ = try WireJSON.parse(bytes)
+            let envelope = try JSONDecoder().decode(Envelope.self, from: bytes)
+            let isImage = try ImageIngressPreflight.outgoingIsImage(bytes)
+            #expect(isImage == envelope.type.utf8.starts(with: "image_upload_".utf8))
+        } catch {
+            #expect(throws: (any Error).self) { try ImageIngressPreflight.outgoingIsImage(bytes) }
+        }
     }
 }
