@@ -35,6 +35,45 @@ struct RemiImageAttachmentNotice {
     mutating func dismiss() { isPresented = false }
 }
 
+/// Shared by chat and Board. This action explains availability and never opens a picker.
+struct RemiImageAttachmentButton: View {
+    var compact = false
+    @ScaledMetric(relativeTo: .body) private var controlSize: CGFloat = RemiTheme.Size.minimumTapTarget
+    @State private var notice = RemiImageAttachmentNotice()
+
+    init(compact: Bool = false) { self.compact = compact }
+
+    private var diameter: CGFloat {
+        #if os(macOS)
+        compact ? controlSize * (28 / RemiTheme.Size.minimumTapTarget) : controlSize
+        #else
+        controlSize
+        #endif
+    }
+
+    var body: some View {
+        Button { notice.explain() } label: {
+            Image(systemName: "paperclip")
+                .font(.body.weight(.semibold))
+                .frame(width: diameter, height: diameter)
+                .contentShape(.circle)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .accessibilityLabel("Image attachments unavailable")
+        .accessibilityHint("Shows why image attachments are unavailable")
+        .help("Image attachments are not available yet")
+        .alert("Image attachments unavailable", isPresented: Binding(
+            get: { notice.isPresented },
+            set: { if !$0 { notice.dismiss() } }
+        )) {
+            Button("OK", role: .cancel) { notice.dismiss() }
+        } message: {
+            Text(RemiImageAttachmentNotice.message)
+        }
+    }
+}
+
 public struct RemiSessionInteractionBar: View {
     struct FailureNoticeTaskID: Equatable {
         let failureCount: Int
@@ -47,14 +86,12 @@ public struct RemiSessionInteractionBar: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @Environment(\.accessibilitySwitchControlEnabled) private var switchControlEnabled
-    @ScaledMetric(relativeTo: .body) private var attachmentSize: CGFloat = RemiTheme.Size.minimumTapTarget
     @Binding private var draft: String
     private let state: RemiSessionInteractionState
     private let onSend: (String) async -> Bool
     private let onInterrupt: (() -> Void)?
     @State private var isSending = false
     @State private var sendFailed = false
-    @State private var imageAttachmentNotice = RemiImageAttachmentNotice()
     /// Counts failures, so a second one restarts the notice's timer.
     @State private var sendFailureCount = 0
 
@@ -88,17 +125,7 @@ public struct RemiSessionInteractionBar: View {
                         onSend: sendDraft,
                         onInterrupt: onInterrupt
                     ) {
-                        Button { imageAttachmentNotice.explain() } label: {
-                            Image(systemName: "paperclip")
-                                .font(.body.weight(.semibold))
-                                .frame(width: attachmentSize, height: attachmentSize)
-                                .contentShape(.circle)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                        .accessibilityLabel("Image attachments unavailable")
-                        .accessibilityHint("Shows why image attachments are unavailable")
-                        .help("Image attachments are not available yet")
+                        RemiImageAttachmentButton()
                     }
                     if sendFailed {
                         RemiFeedbackBanner(
@@ -130,14 +157,6 @@ public struct RemiSessionInteractionBar: View {
         // over transcript content scrolling underneath.
         .background(floatsOverTranscript ? AnyShapeStyle(.clear) : barMaterial)
         .animation(RemiTheme.Motion.quick, value: sendFailed)
-        .alert("Image attachments unavailable", isPresented: Binding(
-            get: { imageAttachmentNotice.isPresented },
-            set: { if !$0 { imageAttachmentNotice.dismiss() } }
-        )) {
-            Button("OK", role: .cancel) { imageAttachmentNotice.dismiss() }
-        } message: {
-            Text(RemiImageAttachmentNotice.message)
-        }
         // Said once when it appears, so VoiceOver does not depend on landing on the banner.
         .onChange(of: sendFailureCount) { _, _ in
             AccessibilityNotification.Announcement(Self.failureMessage).post()

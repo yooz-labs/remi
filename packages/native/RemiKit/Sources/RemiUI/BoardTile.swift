@@ -377,6 +377,7 @@ public struct RemiBoardTile<Question: View>: View {
 
     private var quickComposer: some View {
         HStack(alignment: .bottom, spacing: RemiTheme.Spacing.xs) {
+            if session.isLive { RemiImageAttachmentButton(compact: true) }
             TextField(session.isLive ? "Message" : "Finished", text: $draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...4)
