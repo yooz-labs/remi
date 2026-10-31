@@ -445,10 +445,11 @@ public struct RemiBoardTile<Question: View>: View {
         if let placement = extras.placement {
             let control: PlacementControl = top ? .resizeTop : .resizeBottom
             Button {} label: {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 10, weight: .bold))
+                BoardResizeCorner(top: top)
+                    .stroke(style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
                     .foregroundStyle(hoveredResize == control || focusedPlacementControl == control
                         ? RemiTheme.Color.attentionInk : .secondary)
+                    .frame(width: 15, height: 15)
                     .frame(width: 26, height: 26)
                     .background(
                         hoveredResize == control || focusedPlacementControl == control
@@ -460,7 +461,6 @@ public struct RemiBoardTile<Question: View>: View {
             .buttonStyle(.plain)
             .focused($focusedPlacementControl, equals: control)
             .onHover { hovering in hoveredResize = hovering ? control : nil }
-            .offset(x: 7, y: top ? -7 : 7)
             .accessibilityLabel("Resize tile")
             .accessibilityHint(top
                 ? "Drag up and right to enlarge. Use the arrow keys to resize by 24 points."
@@ -655,6 +655,25 @@ private struct FeedLine: View {
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+/// Two inset curves hint at the rounded window corner without a persistent button chrome.
+private struct BoardResizeCorner: Shape {
+    let top: Bool
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x, y: top ? rect.minY + y : rect.maxY - y)
+        }
+        for inset: CGFloat in [2, 5] {
+            path.move(to: point(2, inset))
+            path.addLine(to: point(8, inset))
+            path.addQuadCurve(to: point(15 - inset, 7), control: point(15 - inset, inset))
+            path.addLine(to: point(15 - inset, 13))
+        }
+        return path
     }
 }
 

@@ -34,6 +34,7 @@ struct MacCommandCenter: View {
     @State private var showFinished = false
     @State private var gesturePreview: BoardGesturePreview?
     @State private var frontTile: String?
+    @State private var boardNow = Date()
     @FocusState private var focus: String?
     @State private var focusTask: Task<Void, Never>?
 
@@ -46,14 +47,19 @@ struct MacCommandCenter: View {
             if filtered.isEmpty {
                 emptyState
             } else {
-                TimelineView(.periodic(from: .now, by: 30)) { timeline in
-                    boardScroll(now: timeline.date)
-                }
+                boardScroll(now: boardNow)
             }
         }
         .onAppear(perform: loadBoard)
         .onChange(of: sessions.map(RemiBoardOrder.key(for:))) { pruneBoard() }
         .onChange(of: settledMachines) { pruneBoard() }
+        .task {
+            while !Task.isCancelled {
+                boardNow = Date()
+                do { try await Task.sleep(for: .seconds(30)) }
+                catch { return }
+            }
+        }
     }
 
     /// Forgets layout state of sessions a settled machine no longer lists. Every session counts
