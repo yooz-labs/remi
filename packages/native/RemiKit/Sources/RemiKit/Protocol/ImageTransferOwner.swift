@@ -11,6 +11,7 @@ final class ImageTransferOwner {
         case sendingChunk, awaitingChunkAck, readyForComplete, completing, awaitingResult
         case staged(expiry: String), stagedCleanupPending(expiry: String)
         case inserting(expiry: String), awaitingInsertion(expiry: String)
+        /// The host reported a reference write; this does not prove Claude consumed the image.
         case inserted(expiry: String), insertedExpired(expiry: String)
         case insertionRefused(ImageInsertionRefusalCode, expiry: String), insertionUncertain(expiry: String)
         case refused(ImageUploadRefusalCode, remoteCleanupUnconfirmed: Bool)
