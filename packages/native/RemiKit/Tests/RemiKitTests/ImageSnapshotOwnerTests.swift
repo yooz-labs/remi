@@ -53,6 +53,7 @@ import Testing
             #expect(symlink(input.path, snapshot.path) == 0)
             #expect(throws: (any Error).self) { try owner.capture(id: id, source: source) }
             #expect(journal.snapshot.records.first?.snapshotIdentity == nil)
+            #expect(throws: (any Error).self) { try owner.abandon(id: id, confirmed: true) }
             #expect(try Data(contentsOf: input) == Data([4, 5, 6]))
             var metadata = stat()
             #expect(lstat(snapshot.path, &metadata) == 0 && (metadata.st_mode & S_IFMT) == S_IFLNK)
@@ -73,6 +74,49 @@ import Testing
             #expect(FileManager.default.fileExists(atPath: snapshot.path))
             #expect(journal.snapshot.records.first?.snapshotIdentity != nil)
             #expect(journal.snapshot.localSnapshotID == id)
+        }
+    }
+
+    @Test func confirmedAbandonmentDeletesOnlyOwnedSnapshot() throws {
+        try withFixture(Data([7, 8, 9])) { root, input, source, journal, owner in
+            let id = try journal.reserveCopy()
+            _ = try owner.capture(id: id, source: source)
+            let snapshot = root.appendingPathComponent("image-\(id.uuidString.lowercased())")
+            #expect(throws: ImageRecoveryLedger.Failure.consentRequired) { try owner.abandon(id: id, confirmed: false) }
+            #expect(FileManager.default.fileExists(atPath: snapshot.path))
+            try owner.abandon(id: id, confirmed: true)
+            #expect(!FileManager.default.fileExists(atPath: snapshot.path))
+            #expect(try Data(contentsOf: input) == Data([7, 8, 9]))
+            #expect(journal.snapshot.records.isEmpty)
+            #expect(journal.snapshot.localSnapshotID == nil)
+        }
+    }
+
+    @Test func cleanupRefusesAReplacementAndPreservesBothFiles() throws {
+        try withFixture(Data([7, 8, 9])) { root, _, source, journal, owner in
+            let id = try journal.reserveCopy()
+            _ = try owner.capture(id: id, source: source)
+            let snapshot = root.appendingPathComponent("image-\(id.uuidString.lowercased())")
+            let moved = root.appendingPathComponent("unrelated-owned-file")
+            #expect(rename(snapshot.path, moved.path) == 0)
+            try Data([3, 2, 1]).write(to: snapshot)
+            #expect(throws: (any Error).self) { try owner.abandon(id: id, confirmed: true) }
+            #expect(try Data(contentsOf: snapshot) == Data([3, 2, 1]))
+            #expect(try Data(contentsOf: moved) == Data([7, 8, 9]))
+            #expect(journal.snapshot.localSnapshotID == id)
+        }
+    }
+
+    @Test func aConfirmedDeletionCanBeRecoveredAfterInterruption() throws {
+        try withFixture(Data([1, 2, 3])) { root, _, source, journal, owner in
+            let id = try journal.reserveCopy()
+            _ = try owner.capture(id: id, source: source)
+            try journal.requestLocalAbandonment(id, confirmed: true)
+            let snapshot = root.appendingPathComponent("image-\(id.uuidString.lowercased())")
+            #expect(unlink(snapshot.path) == 0)
+            try owner.abandon(id: id, confirmed: true)
+            #expect(journal.snapshot.localSnapshotID == nil)
+            #expect(journal.snapshot.records.isEmpty)
         }
     }
 }
