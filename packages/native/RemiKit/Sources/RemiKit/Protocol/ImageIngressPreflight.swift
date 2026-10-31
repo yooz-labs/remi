@@ -3,7 +3,7 @@ import Foundation
 /// Classifies oversized inbound envelopes before the general JSON decoder (#1313).
 /// Small frames still go through the existing decoder and the image family's strict codec.
 /// A large image frame, or a large frame whose top-level type cannot be identified safely,
-/// is refused. The scanner reads the original Data in place and never builds a JSON object.
+/// is refused. The scanner does not build a JSON object; Data may materialize a contiguous view.
 enum ImageIngressPreflight {
     enum Classification: Equatable {
         case bounded
@@ -19,7 +19,7 @@ enum ImageIngressPreflight {
         }
     }
 
-    /// Probe locally JSONEncoder-produced output without decoding or copying message bodies.
+    /// Probe locally JSONEncoder-produced output without building a second JSON object.
     /// Encoder output is valid JSON; an ambiguous top-level type is nevertheless refused.
     static func outgoingIsImage(_ data: Data) throws -> Bool {
         try data.withUnsafeBytes { bytes in
