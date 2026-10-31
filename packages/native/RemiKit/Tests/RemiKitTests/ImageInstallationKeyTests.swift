@@ -358,6 +358,32 @@ private final class BlockingImageCopy: @unchecked Sendable {
         }
     }
 
+    @Test func failedJournalWitnessUpdateRetiresTheOwnerAndBlocksRestart() throws {
+        let system = NativeKeychainOperations.system
+        var operations = system
+        var updates = 0
+        operations.update = { request, attributes in
+            updates += 1
+            if updates == 2 { return errSecInteractionNotAllowed }
+            return system.update(request, attributes)
+        }
+        try withStore(operations: operations) { root, lease, store, _ in
+            let ready: ImageInstallationKeyStore.Record = try {
+                let owner = try ImageInstallationOwner.open(lease: lease, keys: store)
+                let loaded = try store.load()
+                let original = try #require(loaded)
+                #expect(throws: (any Error).self) { try owner.journal.reserveCopy() }
+                #expect(owner.journal.retired)
+                return original
+            }()
+            let journalURL = root.appendingPathComponent(".image-journal")
+            let preserved = try Data(contentsOf: journalURL)
+            #expect(throws: (any Error).self) { try ImageInstallationOwner.open(lease: lease, keys: store) }
+            #expect(try Data(contentsOf: journalURL) == preserved)
+            #expect(try store.load() == ready)
+        }
+    }
+
     @Test func unavailablePromotionLeavesPendingStateAndCanResumeSafely() throws {
         let system = NativeKeychainOperations.system
         var operations = system
