@@ -356,12 +356,27 @@ public actor RemiConnection {
         if let reason = policy.reason(viaRelay: configuration.relayPin != nil) {
             throw PaneTransportBlocked(reason: reason)
         }
-        try await deliver(Data(frame.utf8), validateBeforeSend: nil)
+        let data = Data(frame.utf8)
+        try Self.refuseImageOutsideDedicatedPath(data)
+        try await deliver(data, validateBeforeSend: nil)
     }
 
     public func send<T: Encodable & Sendable>(_ message: T,
         validateBeforeSend: (@Sendable () throws -> Void)? = nil) async throws {
-        try await deliver(try encoder.encode(message), validateBeforeSend: validateBeforeSend)
+        let data = try encoder.encode(message)
+        try Self.refuseImageOutsideDedicatedPath(data)
+        try await deliver(data, validateBeforeSend: validateBeforeSend)
+    }
+
+    /// The generic and pane senders do not own image authority, even if a pane policy is
+    /// mistakenly permissive. A future image sender must use its own qualified boundary.
+    private static func refuseImageOutsideDedicatedPath(_ data: Data) throws {
+        let isImage: Bool
+        do { isImage = try ImageIngressPreflight.outgoingIsImage(data) }
+        catch { throw PaneTransportBlocked(reason: "Cannot safely verify the outgoing message type.") }
+        guard !isImage else {
+            throw PaneTransportBlocked(reason: "Image transfers require an authorized secure session.")
+        }
     }
 
     /// A local socket identity, never a wire field or an authorization grant (#1710).
@@ -564,6 +579,12 @@ public actor RemiConnection {
 
     private func handle(_ data: Data, on task: URLSessionWebSocketTask) async throws {
         guard socket === task else { throw RelayFailure.closed }
+        // Inspect oversized envelopes before the general decoder can allocate a
+        // large image-family object. This is a protocol violation, not reachability failure:
+        // never use it to trigger a route fallback. URLSession has already received the frame;
+        // the image feature remains blocked until the socket-level resource gate is qualified.
+        do { _ = try ImageIngressPreflight.classify(data) }
+        catch { throw RemiConnectionError.malformedMessage }
         let envelope = try decoder.decode(Envelope.self, from: data)
         if configuration.relayPin != nil && ["auth_challenge", "auth_result", "raw_pty_output", "terminal_resize"].contains(envelope.type) {
             throw RelayFailure.type

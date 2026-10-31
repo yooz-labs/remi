@@ -25,6 +25,55 @@ enum RemiComposerSubmission {
     }
 }
 
+/// The image action currently explains its unavailable state; it grants no picker or send
+/// authority. A future transfer owner must replace it only after the secure route is qualified.
+struct RemiImageAttachmentNotice {
+    static let message = "Image attachments are not available yet. Secure image transfer is still being prepared."
+    private(set) var isPresented = false
+
+    mutating func explain() { isPresented = true }
+    mutating func dismiss() { isPresented = false }
+}
+
+/// Shared by chat and Board. This action explains availability and never opens a picker.
+struct RemiImageAttachmentButton: View {
+    var compact = false
+    @ScaledMetric(relativeTo: .body) private var controlSize: CGFloat = RemiTheme.Size.minimumTapTarget
+    @State private var notice = RemiImageAttachmentNotice()
+
+    init(compact: Bool = false) { self.compact = compact }
+
+    private var diameter: CGFloat {
+        #if os(macOS)
+        compact ? controlSize * (28 / RemiTheme.Size.minimumTapTarget) : controlSize
+        #else
+        controlSize
+        #endif
+    }
+
+    var body: some View {
+        Button { notice.explain() } label: {
+            Image(systemName: "paperclip")
+                .font(.body.weight(.semibold))
+                .frame(width: diameter, height: diameter)
+                .contentShape(.circle)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .accessibilityLabel("Image attachments unavailable")
+        .accessibilityHint("Shows why image attachments are unavailable")
+        .help("Image attachments are not available yet")
+        .alert("Image attachments unavailable", isPresented: Binding(
+            get: { notice.isPresented },
+            set: { if !$0 { notice.dismiss() } }
+        )) {
+            Button("OK", role: .cancel) { notice.dismiss() }
+        } message: {
+            Text(RemiImageAttachmentNotice.message)
+        }
+    }
+}
+
 public struct RemiSessionInteractionBar: View {
     struct FailureNoticeTaskID: Equatable {
         let failureCount: Int
@@ -75,7 +124,9 @@ public struct RemiSessionInteractionBar: View {
                         isSending: isSending,
                         onSend: sendDraft,
                         onInterrupt: onInterrupt
-                    )
+                    ) {
+                        RemiImageAttachmentButton()
+                    }
                     if sendFailed {
                         RemiFeedbackBanner(
                             message: Self.failureMessage,

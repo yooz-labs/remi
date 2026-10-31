@@ -36,7 +36,7 @@ public struct PaneTransportPolicy: Sendable, Equatable {
     public static func blockReason(for endpoint: MachineEndpoint) -> String? { current.reason(for: endpoint) }
 }
 
-/// A pane frame was refused before sending because its route cannot carry the family.
+/// A gated frame was refused before sending because its route or message type is unavailable.
 public struct PaneTransportBlocked: Error, Sendable, Equatable {
     public let reason: String
 }

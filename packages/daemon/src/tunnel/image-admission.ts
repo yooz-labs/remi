@@ -1,5 +1,5 @@
-// #1170 internal image header admission; no active transfer caller or full pixel validation.
-// Scratch candidate only. Admission does not prove valid pixels or bounded decoder memory/CPU.
+// #1170 header admission, used by direct image staging before its separate full decode.
+// Admission alone does not validate pixels or establish a decoder memory/CPU bound.
 // Layout references: https://www.w3.org/TR/png-3/#11IHDR
 // JPEG T.81 Annex B: https://www.w3.org/Graphics/JPEG/itu-t81.pdf
 export const MAX_INPUT_BYTES = 10 * 1024 * 1024;
