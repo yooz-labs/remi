@@ -12,6 +12,9 @@ enum PhonePreferenceKey {
 
 struct PhonePreferencesSheet: View {
     let publicIdentity: PublicClientIdentity?
+    let localNoticeOwner: NativeLocalNotificationOwner?
+    let localNoticeSetupFailed: Bool
+    let retryLocalNoticeSetup: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(PhonePreferenceKey.questionNotifications) private var notificationsEnabled = true
@@ -20,9 +23,14 @@ struct PhonePreferencesSheet: View {
     @AppStorage(QuestionNotificationSummarizer.preferenceKey) private var summariesEnabled = true
     @State private var authorizationState = NotificationAuthorizationState.unknown
     @State private var copiedIdentity = false
+    @State private var showingEarlierAlerts = false
 
-    init(publicIdentity: PublicClientIdentity? = nil) {
+    init(publicIdentity: PublicClientIdentity? = nil, localNoticeOwner: NativeLocalNotificationOwner? = nil,
+         localNoticeSetupFailed: Bool = false, retryLocalNoticeSetup: (() -> Void)? = nil) {
         self.publicIdentity = publicIdentity
+        self.localNoticeOwner = localNoticeOwner
+        self.localNoticeSetupFailed = localNoticeSetupFailed
+        self.retryLocalNoticeSetup = retryLocalNoticeSetup
     }
 
     var body: some View {
@@ -69,6 +77,8 @@ struct PhonePreferencesSheet: View {
                             Task { await PhoneNotificationCoordinator.openSystemSettings() }
                         }
                     }
+
+                    localNoticeHistory
                 } header: {
                     Label("Notifications", systemImage: "bell.badge")
                 } footer: {
@@ -123,6 +133,45 @@ struct PhonePreferencesSheet: View {
                 Task { await refreshAuthorizationState() }
             }
             .task { await refreshAuthorizationState() }
+            .sheet(isPresented: $showingEarlierAlerts) {
+                if let localNoticeOwner { PhoneLocalNoticeReviewSheet(owner: localNoticeOwner) }
+            }
+        }
+    }
+
+    @ViewBuilder private var localNoticeHistory: some View {
+        if localNoticeSetupFailed {
+            Label("Earlier alert history is unavailable on this device.", systemImage: "exclamationmark.triangle")
+                .font(.footnote).foregroundStyle(.secondary)
+            if let retryLocalNoticeSetup { Button("Try alert history again", action: retryLocalNoticeSetup) }
+        } else if let owner = localNoticeOwner {
+            switch owner.phase {
+            case .reviewOnly:
+                Button("Review earlier alerts", systemImage: "clock.arrow.circlepath") { showingEarlierAlerts = true }
+            case .pendingForget(let count):
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("An earlier removal needs attention", systemImage: "exclamationmark.triangle")
+                    Text("Remi cannot associate \(count == 1 ? "this earlier alert history" : "these earlier alert histories") with a current machine. Reviewing alerts does not complete the machine removal.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Button("Review earlier alerts", systemImage: "clock.arrow.circlepath") { showingEarlierAlerts = true }
+            case .locked:
+                Label("Unlock this iPhone to review earlier alert history.", systemImage: "lock")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Button("Try alert history again") { Task { await owner.start() } }
+            case .recoveryRequired:
+                Label("Earlier alert history cannot be verified on this device. Your sessions are still available.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Button("Try alert history again") { Task { await owner.start() } }
+            case .unavailable, .capacity:
+                Label("Earlier alert history is unavailable. Your sessions are still available.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Button("Try alert history again") { Task { await owner.start() } }
+            case .idle, .starting:
+                EmptyView()
+            }
         }
     }
 

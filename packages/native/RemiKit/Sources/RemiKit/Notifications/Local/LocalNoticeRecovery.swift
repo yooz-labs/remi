@@ -15,6 +15,7 @@ import Foundation
     struct UnassignedDebt: Equatable {
         fileprivate let ticket: LocalNoticeLedger.Ticket
         let identifierSuffix: String
+        var systemIdentifier: String { "remi.local.v1." + ticket.requestID }
     }
 
     private let ledger: LocalNoticeLedger

@@ -104,18 +104,45 @@ import UserNotifications
         #expect(removals().isEmpty)
     }
 
+    @Test func refreshingReviewRevokesEarlierConfirmation() async throws {
+        let (dir, name, defaults, _, _, _, owner, removals) = try await fixture()
+        defer { owner.stop(); defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: dir) }
+        await owner.start()
+        let first = try await owner.reviewEarlierAlerts(), alert = try #require(first.first)
+        let confirmation = try #require(owner.prepareAlertConfirmation(alert.id))
+        _ = try await owner.reviewEarlierAlerts()
+        #expect(await owner.confirmAlert(confirmation) == .changed)
+        #expect(removals().isEmpty)
+    }
+
     @Test func unseenUncertainDebtNeedsASeparateConfirmationAndDoesNotRemove() async throws {
         let (dir, name, defaults, _, os, _, owner, removals) = try await fixture(uncertain: true)
         defer { owner.stop(); defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: dir) }
         await owner.start()
+        _ = try await owner.reviewEarlierAlerts()
+        #expect(try owner.reviewUnassignedDebt().isEmpty)
+        os.entries = []
+        _ = try await owner.reviewEarlierAlerts()
         let debts = try owner.reviewUnassignedDebt(), debt = try #require(debts.first)
         #expect(debts.count == 1); #expect(debt.identifierSuffix.count >= 8)
         let confirmation = try #require(owner.prepareDebtConfirmation(debt.id))
         #expect(removals().isEmpty)
-        os.entries = []
         #expect(await owner.confirmAbandoningDebt(confirmation) == .completed)
         #expect(removals().isEmpty)
         #expect(await owner.confirmAbandoningDebt(confirmation) == .changed)
+    }
+
+    @Test func earlierDebtConfirmationCannotAbandonARequestThatAppearsLater() async throws {
+        let (dir, name, defaults, _, os, record, owner, removals) = try await fixture(uncertain: true)
+        defer { owner.stop(); defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: dir) }
+        await owner.start()
+        os.entries = []
+        _ = try await owner.reviewEarlierAlerts()
+        let debts = try owner.reviewUnassignedDebt(), debt = try #require(debts.first)
+        let confirmation = try #require(owner.prepareDebtConfirmation(debt.id))
+        os.entries = [record]
+        #expect(await owner.confirmAbandoningDebt(confirmation) == .changed)
+        #expect(removals().isEmpty)
     }
 
     @Test func pendingForgetStillAllowsScopedReviewWithoutScheduling() async throws {
@@ -139,5 +166,47 @@ import UserNotifications
         }
         owner.stop(); os.release(); await startup.value
         #expect(owner.phase == .idle); #expect(keychain.adds == 1); #expect(removals().isEmpty)
+    }
+
+    @Test func callerCancellationStopsStartupWithoutLeavingReviewAuthority() async throws {
+        let (dir, name, defaults, keychain, os, _, owner, removals) = try await fixture()
+        defer { owner.stop(); defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: dir) }
+        os.hold = true
+        let startup = Task { await owner.start() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while os.pending == nil || os.delivered == nil {
+            guard ContinuousClock.now < deadline else { throw LocalNoticeError.unavailable }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        startup.cancel(); await startup.value; os.release()
+        #expect(owner.phase == .idle); #expect(keychain.adds == 1); #expect(removals().isEmpty)
+    }
+
+    @Test func longAlertDisplayIsBoundedWhileConfirmationUsesTheFullSelection() async throws {
+        let (dir, name, defaults, _, os, record, owner, removals) = try await fixture()
+        defer { owner.stop(); defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: dir) }
+        await owner.start()
+        os.entries = [LocalNoticeInventoryRecord(identifier: record.identifier,
+            title: String(repeating: "t", count: 8_000), subtitle: record.subtitle,
+            body: String(repeating: "b", count: 32_000), deliveredAt: record.deliveredAt,
+            protected: record.protected, marker: record.marker, metadataBytes: 40_100)]
+        let alerts = try await owner.reviewEarlierAlerts(), alert = try #require(alerts.first)
+        #expect(alert.title.utf8.count <= 515); #expect(alert.body.utf8.count <= 2_051)
+        let confirmation = try #require(owner.prepareAlertConfirmation(alert.id))
+        #expect(await owner.confirmAlert(confirmation) == .completed)
+        #expect(removals() == [[record.identifier]])
+    }
+
+    @Test func displayTruncationDoesNotSplitUTF8Sequences() async throws {
+        let (dir, name, defaults, _, os, record, owner, _) = try await fixture()
+        defer { owner.stop(); defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: dir) }
+        await owner.start()
+        os.entries = [LocalNoticeInventoryRecord(identifier: record.identifier,
+            title: String(repeating: "🧪", count: 200), subtitle: "",
+            body: String(repeating: "🧪", count: 600), deliveredAt: nil,
+            protected: record.protected, marker: record.marker, metadataBytes: 3_300)]
+        let alerts = try await owner.reviewEarlierAlerts(), alert = try #require(alerts.first)
+        #expect(!alert.title.contains("�")); #expect(!alert.body.contains("�"))
+        #expect(alert.title.hasSuffix("…")); #expect(alert.body.hasSuffix("…"))
     }
 }

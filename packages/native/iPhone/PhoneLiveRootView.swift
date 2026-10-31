@@ -25,6 +25,9 @@ enum PhoneShellSheet: Identifiable {
 
 struct PhoneLiveRootView: View {
     let store: MachineStore
+    var localNoticeOwner: NativeLocalNotificationOwner? = nil
+    var localNoticeSetupFailed = false
+    var retryLocalNoticeSetup: (() -> Void)? = nil
     @State private var knownQuestionIDs: Set<String> = []
     @State private var notificationBaselineEstablished = false
     @State private var questionFeedbackTrigger = 0
@@ -464,7 +467,9 @@ struct PhoneLiveRootView: View {
             pairingScreen { activeSheet = nil }
                 .presentationSizing(.form)
         case .preferences:
-            PhonePreferencesSheet(publicIdentity: store.publicIdentity)
+            PhonePreferencesSheet(publicIdentity: store.publicIdentity, localNoticeOwner: localNoticeOwner,
+                                  localNoticeSetupFailed: localNoticeSetupFailed,
+                                  retryLocalNoticeSetup: retryLocalNoticeSetup)
         case .relayNotification:
             RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification) { destination in
                 guard store.notificationSessionDestination == destination else { return }

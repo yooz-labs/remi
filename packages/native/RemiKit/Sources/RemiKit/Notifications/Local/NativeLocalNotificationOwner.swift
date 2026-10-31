@@ -47,6 +47,7 @@ import UIKit
     @ObservationIgnored private var debtReview = UUID()
     @ObservationIgnored private var alerts: [UUID: LocalNoticeRecovery.Candidate] = [:]
     @ObservationIgnored private var debts: [UUID: LocalNoticeRecovery.UnassignedDebt] = [:]
+    @ObservationIgnored private var reviewedVisibleIDs: Set<String>?
     @ObservationIgnored private var ready: LocalNoticeStartup.Ready?
     @ObservationIgnored private var recoveryAccess: LocalNoticeStartup.RecoveryAccess?
     @ObservationIgnored private var startupTask: Task<LocalNoticeStartup.Ready, any Error>?
@@ -81,16 +82,20 @@ import UIKit
         }
         startupTask = task
         do {
-            let opened = try await task.value
+            let opened = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: { task.cancel() }
             guard epoch == current else { opened.ledger.close(); return }
             startupTask = nil; ready = opened; phase = .reviewOnly
         } catch {
             guard epoch == current else { return }
             startupTask = nil
-            if error as? LocalNoticeBootstrap.Failure == .pendingForget {
+            if error is CancellationError { phase = .idle }
+            else if error as? LocalNoticeBootstrap.Failure == .pendingForget {
                 do {
                     let access = try LocalNoticeStartup.openRecovery(directory: directory, keyStore: keyStore,
                         operations: operations, protectedDataAvailable: protectedDataAvailable(), remove: notificationBoundary.remove)
+                    guard access.pendingForgetCount > 0 else { access.close(); phase = .unavailable; return }
                     recoveryAccess = access; phase = .pendingForget(access.pendingForgetCount)
                 } catch { phase = phaseForFailure(error) }
             } else { phase = phaseForFailure(error) }
@@ -100,21 +105,23 @@ import UIKit
     public func stop() {
         epoch = UUID(); startupTask?.cancel(); startupTask = nil; scanTask?.cancel(); scanTask = nil; scanID = nil
         ready?.ledger.close(); ready = nil; recoveryAccess?.close(); recoveryAccess = nil
-        alerts.removeAll(); debts.removeAll(); alertReview = UUID(); debtReview = UUID(); phase = .idle
+        invalidateReviews(); phase = .idle
     }
 
     /// This does not remove, answer, or associate any alert with a current profile.
     public func reviewEarlierAlerts() async throws -> [EarlierAlert] {
         let current = epoch
         guard currentRecovery != nil else { throw LocalNoticeError.unavailable }
+        invalidateReviews()
         let snapshot = try await readInventory()
         guard current == epoch, let recovery = currentRecovery else { throw LocalNoticeError.changed }
         let candidates = try recovery.review(snapshot.entries)
-        alertReview = UUID(); alerts.removeAll()
+        reviewedVisibleIDs = Set(snapshot.entries.map(\.identifier))
         return candidates.map { candidate in
             let id = UUID(); alerts[id] = candidate
-            return EarlierAlert(id: id, title: candidate.title, subtitle: candidate.subtitle,
-                                body: candidate.body, deliveredAt: candidate.deliveredAt)
+            return EarlierAlert(id: id, title: display(candidate.title, maximumBytes: 512),
+                                subtitle: display(candidate.subtitle, maximumBytes: 512),
+                                body: display(candidate.body, maximumBytes: 2_048), deliveredAt: candidate.deliveredAt)
         }
     }
 
@@ -130,17 +137,17 @@ import UIKit
             let snapshot = try await readInventory()
             guard valid(confirmation), let recovery = currentRecovery else { return .changed }
             try recovery.confirm(candidate, current: snapshot.entries)
-            alerts.removeAll(); alertReview = UUID()
+            invalidateReviews()
             return .completed
         } catch LocalNoticeError.changed {
-            alerts.removeAll(); alertReview = UUID(); return .changed
+            invalidateReviews(); return .changed
         } catch { return valid(confirmation) ? .unavailable : .changed }
     }
 
     /// Unassigned records reveal an opaque suffix only; there is no inferred profile association.
     public func reviewUnassignedDebt() throws -> [UnassignedDebt] {
-        guard let recovery = currentRecovery else { throw LocalNoticeError.unavailable }
-        let candidates = try recovery.unassignedUncertain()
+        guard let recovery = currentRecovery, let visible = reviewedVisibleIDs else { throw LocalNoticeError.unavailable }
+        let candidates = try recovery.unassignedUncertain().filter { !visible.contains($0.systemIdentifier) }
         debtReview = UUID(); debts.removeAll()
         return candidates.map { candidate in
             let id = UUID(); debts[id] = candidate
@@ -160,14 +167,26 @@ import UIKit
             let snapshot = try await readInventory()
             guard valid(confirmation), let recovery = currentRecovery else { return .changed }
             try recovery.abandonUnseen(candidate, current: snapshot.entries)
-            debts.removeAll(); debtReview = UUID()
+            invalidateReviews()
             return .completed
         } catch LocalNoticeError.changed {
-            debts.removeAll(); debtReview = UUID(); return .changed
+            invalidateReviews(); return .changed
         } catch { return valid(confirmation) ? .unavailable : .changed }
     }
 
     private var currentRecovery: LocalNoticeRecovery? { ready?.recovery ?? recoveryAccess?.recovery }
+    private func invalidateReviews() {
+        alerts.removeAll(); debts.removeAll(); reviewedVisibleIDs = nil
+        alertReview = UUID(); debtReview = UUID()
+    }
+    /// Bound UI layout work without weakening full-content revalidation of the stored candidate.
+    private func display(_ value: String, maximumBytes: Int) -> String {
+        var bytes = Array(value.utf8.prefix(maximumBytes + 1))
+        let truncated = bytes.count > maximumBytes
+        if truncated { bytes.removeLast() }
+        while !bytes.isEmpty && String(bytes: bytes, encoding: .utf8) == nil { bytes.removeLast() }
+        return (String(bytes: bytes, encoding: .utf8) ?? "") + (truncated ? "…" : "")
+    }
     private func valid(_ value: AlertConfirmation) -> Bool {
         value.epoch == epoch && value.review == alertReview && alerts[value.id] != nil && currentRecovery != nil
     }
