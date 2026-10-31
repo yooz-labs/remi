@@ -20,7 +20,7 @@ import Testing
         return Data((prefix + String(repeating: "x", count: padding) + suffix).utf8)
     }
 
-    @Test func imageAtLimitCanReachTheStrictCodec() throws {
+    @Test func imageAtLimitPassesPreflight() throws {
         let bytes = frame(#"{"type":"image_upload_result","padding":""#, #""}"#, size: WireJSON.maxFrameBytes)
         #expect(try ImageIngressPreflight.classify(bytes) == .bounded)
     }
