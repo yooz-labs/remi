@@ -8,7 +8,7 @@ import Testing
 /// Every Keychain item and directory here is UUID-owned by this fixture.
 @Suite struct ImageInstallationKeyTests {
     private func withStore(operations: NativeKeychainOperations = .system,
-                           _ body: (URL, ImageInstallationKeyStore, [String: Any]) throws -> Void) throws {
+                           _ body: (URL, ImageDirectoryLease, ImageInstallationKeyStore, [String: Any]) throws -> Void) throws {
         let parent = FileManager.default.temporaryDirectory.appendingPathComponent("remi-image-key-\(UUID().uuidString)")
         let root = parent.appendingPathComponent("images")
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -41,19 +41,19 @@ import Testing
             add: { operations.add(redirected($0), $1) }, update: { operations.update(redirected($0), $1) })
         let store = ImageInstallationKeyStore(lease: lease, accessGroup: "owned-test-group", service: service,
                                               account: account, operations: controlled)
-        try body(root, store, query)
+        try body(root, lease, store, query)
     }
 
     #if os(iOS)
     @Test func iOSCannotCreateImageKeyUntilProtectionIsQualified() throws {
-        try withStore { _, store, _ in
+        try withStore { _, _, store, _ in
             #expect(throws: ImageInstallationKeyStore.Failure.unavailable(errSecNotAvailable)) { try store.beginPending() }
             #expect(try store.load() == nil)
         }
     }
     #else
     @Test func pendingKeyIsCreatedOnceAndNeverRotatedAutomatically() throws {
-        try withStore { _, store, _ in
+        try withStore { _, _, store, _ in
             #expect(try store.load() == nil)
             let first = try store.beginPending()
             #expect(first.phase == .pending)
@@ -65,7 +65,7 @@ import Testing
     }
 
     @Test func existingFilesPreventFreshInstallationWithoutDeletion() throws {
-        try withStore { root, store, _ in
+        try withStore { root, _, store, _ in
             let foreign = root.appendingPathComponent("unrelated")
             let marker = Data([1, 2, 3])
             try marker.write(to: foreign)
@@ -76,7 +76,7 @@ import Testing
     }
 
     @Test func missingKeyWithExistingJournalIsObservedLossNotFreshInstallation() throws {
-        try withStore { root, store, _ in
+        try withStore { root, _, store, _ in
             let journal = root.appendingPathComponent(".image-journal")
             let previousState = Data("prior state".utf8)
             try previousState.write(to: journal)
@@ -88,7 +88,7 @@ import Testing
     }
 
     @Test func corruptExistingKeyIsNeverReplaced() throws {
-        try withStore { _, store, query in
+        try withStore { _, _, store, query in
             let corrupt = Data("not an image key record".utf8)
             var item = query
             item[kSecValueData as String] = corrupt
@@ -109,10 +109,70 @@ import Testing
         var adds = 0
         operations.copyMatching = { _, _ in errSecInteractionNotAllowed }
         operations.add = { _, _ in adds += 1; return errSecSuccess }
-        try withStore(operations: operations) { _, store, _ in
+        try withStore(operations: operations) { _, _, store, _ in
             #expect(throws: ImageInstallationKeyStore.Failure.unavailable(errSecInteractionNotAllowed)) { try store.load() }
             #expect(throws: ImageInstallationKeyStore.Failure.unavailable(errSecInteractionNotAllowed)) { try store.beginPending() }
             #expect(adds == 0)
+        }
+    }
+
+    @Test func freshInstallationIsPromotedOnlyAfterMarkerAndJournalExist() throws {
+        try withStore { root, lease, store, _ in
+            let owner = try ImageInstallationOwner.open(lease: lease, keys: store)
+            let record = try #require(store.load())
+            #expect(record.phase == .ready)
+            #expect(owner.journal.snapshot.records.isEmpty)
+            #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(".image-installation").path))
+            #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(".image-journal").path))
+        }
+    }
+
+    @Test func pendingInitializationCanResumeButUnknownMarkerIsPreserved() throws {
+        try withStore { _, lease, store, _ in
+            let pending = try store.beginPending()
+            let owner = try ImageInstallationOwner.open(lease: lease, keys: store)
+            #expect(owner.journal.snapshot.records.isEmpty)
+            let ready = try #require(store.load())
+            #expect(ready.phase == .ready && ready.installation == pending.installation && ready.secret == pending.secret)
+        }
+        try withStore { root, lease, store, _ in
+            let pending = try store.beginPending()
+            let marker = root.appendingPathComponent(".image-installation")
+            let unknown = Data("unknown".utf8)
+            try unknown.write(to: marker)
+            #expect(throws: (any Error).self) { try ImageInstallationOwner.open(lease: lease, keys: store) }
+            #expect(try store.load() == pending)
+            #expect(try Data(contentsOf: marker) == unknown)
+        }
+    }
+
+    @Test func missingJournalOrKeyAfterInitializationNeverCreatesAReplacement() throws {
+        try withStore { root, lease, store, _ in
+            _ = try ImageInstallationOwner.open(lease: lease, keys: store)
+            let ready = try #require(store.load())
+            #expect(unlink(root.appendingPathComponent(".image-journal").path) == 0)
+            #expect(throws: (any Error).self) { try ImageInstallationOwner.open(lease: lease, keys: store) }
+            #expect(try store.load() == ready)
+            #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(".image-installation").path))
+        }
+        try withStore { root, lease, store, query in
+            _ = try ImageInstallationOwner.open(lease: lease, keys: store)
+            #expect(SecItemDelete(query as CFDictionary) == errSecSuccess)
+            #expect(throws: (any Error).self) { try ImageInstallationOwner.open(lease: lease, keys: store) }
+            #expect(try store.load() == nil)
+            #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(".image-journal").path))
+        }
+    }
+
+    @Test func reopensInterruptedReservationWithoutRestoringCopyAuthority() throws {
+        try withStore { _, lease, store, _ in
+            let first = try ImageInstallationOwner.open(lease: lease, keys: store)
+            let id = try first.journal.reserveCopy()
+            let reopened = try ImageInstallationOwner.open(lease: lease, keys: store)
+            #expect(reopened.journal.snapshot.localSnapshotID == id)
+            #expect(reopened.journal.snapshot.records.first?.exposure == .copyOrphaned)
+            try reopened.snapshots.abandon(id: id, confirmed: true)
+            #expect(reopened.journal.snapshot.records.isEmpty)
         }
     }
     #endif
