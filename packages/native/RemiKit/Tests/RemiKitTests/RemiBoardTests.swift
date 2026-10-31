@@ -491,6 +491,16 @@ import Testing
         #expect(clamped.maxY == start.maxY && clamped.width == RemiBoardFrame.minimumWidth)
     }
 
+    @Test func resizingSnapsItsMovingEdgesAndPreservesTheOppositeCorner() {
+        let frame = RemiBoardFrame(x: 16, y: 101, width: 398, height: 299)
+        let top = frame.snappedResize(topRight: true, otherFrames: [])
+        #expect(top.x == frame.x && top.maxY == frame.maxY)
+        #expect(top.maxX == 424 && top.y == 112)
+        let bottom = frame.snappedResize(topRight: false, otherFrames: [])
+        #expect(bottom.x == frame.x && bottom.y == frame.y)
+        #expect(bottom.maxX == 424 && bottom.maxY == 400)
+    }
+
     @Test func hiddenAndDisconnectedFramesReserveSpaceForNewAndReturningSessions() {
         let returning = session("returning", machine: "one")
         let other = session("other", machine: "one")
