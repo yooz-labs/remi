@@ -54,6 +54,21 @@ final class ImageRecoveryJournal {
         try transition { try $0.finishCopy(id, fingerprint: fingerprint) }
     }
 
+    /// Persist the conservative boundary before the corresponding network effect may enter.
+    func markPartialPossible(_ id: UUID) throws { try transition { try $0.markPartialPossible(id) } }
+    /// Record only the exact deadline from a validated response; never extend it on retry.
+    func rememberPartialExpiry(_ id: UUID, expiry: String) throws { try transition { try $0.rememberPartialExpiry(id, expiry: expiry) } }
+    func markStagingPossible(_ id: UUID) throws { try transition { try $0.markStagingPossible(id) } }
+
+    /// The caller must first validate the result on its original authorized socket.
+    func markStaged(_ id: UUID, expiry: String) throws { try transition { try $0.markStaged(id, expiry: expiry) } }
+
+    func requestStagedLocalCleanup(_ id: UUID) throws { try transition { try $0.requestStagedLocalCleanup(id) } }
+
+    /// The local snapshot must already be removed before insertion can become possible.
+    func markInsertionPossible(_ id: UUID) throws { try transition { try $0.markInsertionPossible(id) } }
+    func markInsertionUncertain(_ id: UUID) throws { try transition { try $0.markInsertionUncertain(id) } }
+
     func requestLocalAbandonment(_ id: UUID, confirmed: Bool) throws {
         try transition { try $0.requestLocalAbandonment(id, confirmed: confirmed) }
     }

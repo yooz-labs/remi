@@ -99,43 +99,61 @@ final class ImageSnapshotOwner {
         #if os(iOS)
         throw Failure.unsupportedProtection
         #else
-        let name = "image-\(id.uuidString.lowercased())"
         try lease.withVerifiedDirectory { directory in
             guard journal.holds(lease) else { throw Failure.invalidReservation }
             try journal.requestLocalAbandonment(id, confirmed: confirmed)
-            guard let record = journal.snapshot.records.first(where: { $0.id == id }),
-                  record.cleanupRequested, record.localSnapshotPresent else { throw Failure.invalidReservation }
-            var entry = stat()
-            if fstatat(directory, name, &entry, AT_SYMLINK_NOFOLLOW) == 0 {
-                guard let identity = record.snapshotIdentity, Self.validFile(entry),
-                      UInt64(UInt32(bitPattern: entry.st_dev)) == identity.device,
-                      UInt64(entry.st_ino) == identity.inode else { throw Failure.unavailable }
-                let fd = openat(directory, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
-                guard fd >= 0 else { throw Failure.unavailable }
-                defer { close(fd) }
-                var descriptor = stat()
-                guard fstat(fd, &descriptor) == 0, Self.validFile(descriptor),
-                      descriptor.st_dev == entry.st_dev, descriptor.st_ino == entry.st_ino,
-                      Self.sameEntry(directory: directory, name: name, descriptor: descriptor),
-                      unlinkat(directory, name, 0) == 0, fsync(directory) == 0 else { throw Failure.unavailable }
-                var removed = stat()
-                guard fstat(fd, &removed) == 0, removed.st_nlink == 0 else { throw Failure.unavailable }
-            } else {
-                guard errno == ENOENT, fsync(directory) == 0 else { throw Failure.unavailable }
-                if let identity = record.snapshotIdentity {
-                    guard try !Self.containsOwnedInode(directory: directory, identity: identity) else {
-                        throw Failure.unavailable
-                    }
-                }
-            }
-            var remaining = stat()
-            guard fstatat(directory, name, &remaining, AT_SYMLINK_NOFOLLOW) != 0, errno == ENOENT else {
-                throw Failure.unavailable
-            }
-            try lease.verifyIdentity()
-            try journal.confirmOwnedSnapshotDeleted(id)
+            try removeOwnedSnapshot(id: id, directory: directory)
         }
         #endif
+    }
+
+    /// The caller must first validate the staging result on its original authorized socket.
+    /// This removes only the local copy; it makes no claim about host retention or deletion.
+    func clearAfterStaging(id: UUID) throws {
+        #if os(iOS)
+        throw Failure.unsupportedProtection
+        #else
+        try lease.withVerifiedDirectory { directory in
+            guard journal.holds(lease) else { throw Failure.invalidReservation }
+            try journal.requestStagedLocalCleanup(id)
+            try removeOwnedSnapshot(id: id, directory: directory)
+        }
+        #endif
+    }
+
+    private func removeOwnedSnapshot(id: UUID, directory: Int32) throws {
+        let name = "image-\(id.uuidString.lowercased())"
+        guard let record = journal.snapshot.records.first(where: { $0.id == id }),
+              record.cleanupRequested, record.localSnapshotPresent else { throw Failure.invalidReservation }
+        var entry = stat()
+        if fstatat(directory, name, &entry, AT_SYMLINK_NOFOLLOW) == 0 {
+            guard let identity = record.snapshotIdentity, Self.validFile(entry),
+                  UInt64(UInt32(bitPattern: entry.st_dev)) == identity.device,
+                  UInt64(entry.st_ino) == identity.inode else { throw Failure.unavailable }
+            let fd = openat(directory, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+            guard fd >= 0 else { throw Failure.unavailable }
+            defer { close(fd) }
+            var descriptor = stat()
+            guard fstat(fd, &descriptor) == 0, Self.validFile(descriptor),
+                  descriptor.st_dev == entry.st_dev, descriptor.st_ino == entry.st_ino,
+                  Self.sameEntry(directory: directory, name: name, descriptor: descriptor),
+                  unlinkat(directory, name, 0) == 0, fsync(directory) == 0 else { throw Failure.unavailable }
+            var removed = stat()
+            guard fstat(fd, &removed) == 0, removed.st_nlink == 0 else { throw Failure.unavailable }
+        } else {
+            guard errno == ENOENT, fsync(directory) == 0 else { throw Failure.unavailable }
+            if let identity = record.snapshotIdentity {
+                guard try !Self.containsOwnedInode(directory: directory, identity: identity) else {
+                    throw Failure.unavailable
+                }
+            }
+        }
+        var remaining = stat()
+        guard fstatat(directory, name, &remaining, AT_SYMLINK_NOFOLLOW) != 0, errno == ENOENT else {
+            throw Failure.unavailable
+        }
+        try lease.verifyIdentity()
+        try journal.confirmOwnedSnapshotDeleted(id)
     }
 
     private static func validFile(_ value: stat) -> Bool {
