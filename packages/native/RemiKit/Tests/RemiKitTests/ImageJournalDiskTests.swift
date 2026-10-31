@@ -108,4 +108,38 @@ import Testing
             #expect(throws: (any Error).self) { try disk.load() }
         }
     }
+
+    @Test func journalOwnerPersistsReservationAndRetiresInterruptedCopy() throws {
+        try withStore { _, disk in
+            try disk.initializeIfProvenFresh(ImageRecoveryLedger().encodeJournal(secret: secret))
+            let owner = try ImageRecoveryJournal(disk: disk, secret: secret)
+            let id = try owner.reserveCopy()
+            let onDisk = try ImageRecoveryLedger.restoreJournal(disk.load(), secret: secret)
+            #expect(onDisk.needsRewrite)
+            #expect(onDisk.ledger.localSnapshotID == id)
+            let reopened = try ImageRecoveryJournal(disk: disk, secret: secret)
+            #expect(reopened.snapshot.localSnapshotID == id)
+            let rewritten = try ImageRecoveryLedger.restoreJournal(disk.load(), secret: secret)
+            #expect(!rewritten.needsRewrite)
+            let identity = try ImageRecoveryFingerprint.make(secret: secret, machineKey: Data(repeating: 0x42, count: 32),
+                sessionID: "00112233-4455-4677-8899-aabbccddeeff",
+                binding: AttachedBinding(harness: .claude, harnessSessionId: "owned-thread"),
+                imageDigest: Data(repeating: 0x52, count: 32))
+            #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try reopened.finishCopy(id, fingerprint: identity) }
+        }
+    }
+
+    @Test func failedDurableTransitionRetiresJournalOwner() throws {
+        try withStore { root, disk in
+            let initial = try ImageRecoveryLedger().encodeJournal(secret: secret)
+            try disk.initializeIfProvenFresh(initial)
+            let owner = try ImageRecoveryJournal(disk: disk, secret: secret)
+            let journal = root.appendingPathComponent(".image-journal")
+            try Data("corrupt".utf8).write(to: journal)
+            #expect(throws: (any Error).self) { try owner.reserveCopy() }
+            try initial.write(to: journal)
+            #expect(throws: (any Error).self) { try owner.reserveCopy() }
+            #expect(owner.snapshot.records.isEmpty)
+        }
+    }
 }
