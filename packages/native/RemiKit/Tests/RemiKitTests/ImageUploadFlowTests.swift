@@ -184,6 +184,46 @@ import Testing
         #expect(flow.status == .refused(.unavailable, remoteCleanupUnconfirmed: true))
     }
 
+    @Test func maximumImageUsesOnlyTheNextBoundedChunk() throws {
+        let chunk = Data(repeating: 7, count: ImageStagingLimits.chunkBytes)
+        var hasher = SHA256()
+        for _ in 0...ImageStagingLimits.maxSequence { hasher.update(data: chunk) }
+        let largeDigest = WireGuards.encodeBase64URL(Data(hasher.finalize()))
+        let request = ImageUploadBegin(header: header(beginID),
+            binding: AttachedBinding(harness: .claude, harnessSessionId: "owned-thread"),
+            mediaType: .jpeg, byteLength: ImageStagingLimits.imageBytes, digest: largeDigest)
+        var flow = try ImageUploadFlow(begin: request, now: 0)
+        var actions = flow.receive(accepted(), now: 1, nextID: { chunkID }, timestamp: time)
+        for seq in 0...ImageStagingLimits.maxSequence {
+            #expect(actions == [.read(offset: seq * ImageStagingLimits.chunkBytes,
+                                      count: ImageStagingLimits.chunkBytes)])
+            let id = String(format: "00000000-0000-4000-8000-%012x", seq + 1)
+            let now = 2 + Double(seq) * 0.01
+            let sent = flow.supplyChunk(chunk, requestID: id, timestamp: time, now: now)
+            #expect(sent != nil)
+            let ack = ImageUploadMessage.chunkAck(ImageUploadChunkAck(header: header(hostID), requestId: id,
+                transferId: transfer, seq: seq, receivedBytes: (seq + 1) * ImageStagingLimits.chunkBytes))
+            actions = flow.receive(ack, now: now + 0.005, nextID: { completeID }, timestamp: time)
+        }
+        guard case .send(.complete(let complete)) = actions.first else { Issue.record("expected final complete"); return }
+        #expect(complete.header.id == completeID && complete.transferId == transfer)
+    }
+
+    @Test func impossibleOrExpiredHostDeadlineCannotCreateAuthority() throws {
+        var flow = try begin()
+        let tooLong = ImageUploadMessage.accepted(ImageUploadAccepted(header: header(hostID), requestId: beginID,
+            transferId: transfer, expiresAt: "2026-10-30T12:05:00.001Z"))
+        #expect(flow.receive(tooLong, now: 1, nextID: { chunkID }, timestamp: time).isEmpty)
+        #expect(flow.status == .uncertain(.partialCleanup))
+
+        var alreadyLate = try begin()
+        let short = ImageUploadMessage.accepted(ImageUploadAccepted(header: header(hostID), requestId: beginID,
+            transferId: transfer, expiresAt: "2026-10-30T12:00:01.000Z"))
+        #expect(alreadyLate.receive(short, now: 2, nextID: { chunkID }, timestamp: time).isEmpty)
+        #expect(alreadyLate.status == .uncertain(.partialCleanup))
+        #expect(alreadyLate.knownPartialExpiry == "2026-10-30T12:00:01.000Z")
+    }
+
     @Test func lostCompletionAndRacingCancelNeverClaimRemoteDeletion() throws {
         var flow = try begin()
         _ = flow.receive(accepted(), now: 1, nextID: { chunkID }, timestamp: time)
