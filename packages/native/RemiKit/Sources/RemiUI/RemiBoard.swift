@@ -44,14 +44,77 @@ public struct RemiBoardFrame: Codable, Equatable, Sendable {
         Self(x: x + translation.width, y: y + translation.height, width: width, height: height)
     }
 
+    /// Keep the whole card on the canvas while allowing direct movement over other cards.
+    public func constrainedMove(by translation: CGSize) -> Self {
+        guard translation.width.isFinite, translation.height.isFinite else { return self }
+        return Self(
+            x: min(max(x + translation.width, 0), Self.maximumCoordinate - width),
+            y: min(max(y + translation.height, 0), Self.maximumCoordinate - height),
+            width: width, height: height
+        )
+    }
+
+    /// Settle onto nearby card edges, or the board grid when no edge is close.
+    public func snappedMove(otherFrames: [Self], gap: CGFloat = 12, grid: CGFloat = 24, margin: CGFloat = 16) -> Self {
+        guard isValid, grid.isFinite, grid > 0, margin.isFinite, gap.isFinite else { return self }
+        let valid = otherFrames.filter(\.isValid)
+        let xs = valid.filter { y <= $0.maxY + gap + 10 && maxY + gap + 10 >= $0.y }
+            .flatMap { [$0.x, $0.maxX + gap, $0.x - gap - width, $0.maxX - width] }
+        let ys = valid.filter { x <= $0.maxX + gap + 10 && maxX + gap + 10 >= $0.x }
+            .flatMap { [$0.y, $0.maxY + gap, $0.y - gap - height, $0.maxY - height] }
+        func snap(_ value: CGFloat, candidates: [CGFloat], maximum: CGFloat) -> CGFloat {
+            let nearby = candidates.filter { $0 >= 0 && $0 <= maximum && abs($0 - value) <= 10 }
+            if let closest = nearby.min(by: { (abs($0 - value), $0) < (abs($1 - value), $1) }) { return closest }
+            return min(max(((value - margin) / grid).rounded() * grid + margin, 0), maximum)
+        }
+        return Self(x: snap(x, candidates: xs, maximum: Self.maximumCoordinate - width),
+                    y: snap(y, candidates: ys, maximum: Self.maximumCoordinate - height),
+                    width: width, height: height)
+    }
+
     /// A proposed resize, keeping the top-left corner fixed and clamping both dimensions.
     public func resized(by translation: CGSize) -> Self {
-        Self(
+        guard translation.width.isFinite, translation.height.isFinite else { return self }
+        return Self(
             x: x,
             y: y,
-            width: min(max(width + translation.width, Self.minimumWidth), Self.maximumWidth),
-            height: min(max(height + translation.height, Self.minimumHeight), Self.maximumHeight)
+            width: min(max(width + translation.width, Self.minimumWidth), min(Self.maximumWidth, Self.maximumCoordinate - x)),
+            height: min(max(height + translation.height, Self.minimumHeight), min(Self.maximumHeight, Self.maximumCoordinate - y))
         )
+    }
+
+    /// A top-right resize keeps the lower-left corner in place, like a window.
+    public func resizedFromTopRight(by translation: CGSize) -> Self {
+        guard translation.width.isFinite, translation.height.isFinite else { return self }
+        let newWidth = min(max(width + translation.width, Self.minimumWidth),
+                           min(Self.maximumWidth, Self.maximumCoordinate - x))
+        let newHeight = min(max(height - translation.height, Self.minimumHeight),
+                            min(Self.maximumHeight, maxY))
+        return Self(x: x, y: maxY - newHeight, width: newWidth, height: newHeight)
+    }
+
+    /// Snap only the moving edges; the opposite corner remains fixed.
+    public func snappedResize(topRight: Bool, otherFrames: [Self], gap: CGFloat = 12,
+                              grid: CGFloat = 24, margin: CGFloat = 16) -> Self {
+        guard isValid, grid.isFinite, grid > 0, margin.isFinite, gap.isFinite else { return self }
+        let valid = otherFrames.filter(\.isValid)
+        let xs = valid.flatMap { [$0.x, $0.maxX, $0.x - gap, $0.maxX + gap] }
+        let ys = valid.flatMap { [$0.y, $0.maxY, $0.y - gap, $0.maxY + gap] }
+        func snap(_ value: CGFloat, candidates: [CGFloat], minimum: CGFloat, maximum: CGFloat) -> CGFloat {
+            let nearby = candidates.filter { $0 >= minimum && $0 <= maximum && abs($0 - value) <= 10 }
+            if let closest = nearby.min(by: { (abs($0 - value), $0) < (abs($1 - value), $1) }) { return closest }
+            return min(max(((value - margin) / grid).rounded() * grid + margin, minimum), maximum)
+        }
+        let right = snap(maxX, candidates: xs, minimum: x + Self.minimumWidth,
+                         maximum: min(x + Self.maximumWidth, Self.maximumCoordinate))
+        if topRight {
+            let top = snap(y, candidates: ys, minimum: max(0, maxY - Self.maximumHeight),
+                           maximum: maxY - Self.minimumHeight)
+            return Self(x: x, y: top, width: right - x, height: maxY - top)
+        }
+        let bottom = snap(maxY, candidates: ys, minimum: y + Self.minimumHeight,
+                          maximum: min(y + Self.maximumHeight, Self.maximumCoordinate))
+        return Self(x: x, y: y, width: right - x, height: bottom - y)
     }
 
     /// Cards may touch, but any positive-area intersection is a collision.
@@ -433,9 +496,7 @@ public enum RemiBoardOrder {
         var result: [String: RemiBoardFrame] = [:]
         var occupied: [RemiBoardFrame] = []
         for savedKey in savedKeys {
-            guard let frame = state.frame(for: savedKey), frame.isValid,
-                  !occupied.contains(where: { frame.intersects($0) })
-            else { continue }
+            guard let frame = state.frame(for: savedKey), frame.isValid else { continue }
             result[savedKey] = frame
             occupied.append(frame)
         }
@@ -485,18 +546,6 @@ public enum RemiBoardOrder {
         let width = visibleFrames.values.map(\.maxX).max().map { $0 + margin } ?? viewport.width
         let height = visibleFrames.values.map(\.maxY).max().map { $0 + margin } ?? viewport.height
         return CGSize(width: max(viewport.width, width), height: max(viewport.height, height))
-    }
-
-    /// Whether a proposed frame can be placed without crossing the origin or overlapping any
-    /// other saved or automatic tile.
-    public static func canPlace(
-        _ proposal: RemiBoardFrame,
-        for key: String,
-        in frames: [String: RemiBoardFrame]
-    ) -> Bool {
-        proposal.isValid && !frames.contains { entry in
-            entry.key != key && proposal.intersects(entry.value)
-        }
     }
 
     /// The tile to move the cursor to after sending from `key`, wrapping at the end.

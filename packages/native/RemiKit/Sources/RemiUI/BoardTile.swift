@@ -6,6 +6,7 @@ public struct RemiBoardTilePlacement {
     public var size: CGSize
     public var onMoveDrag: (_ translation: CGSize, _ ended: Bool) -> Void
     public var onResizeDrag: (_ translation: CGSize, _ ended: Bool) -> Void
+    public var onResizeTopRightDrag: (_ translation: CGSize, _ ended: Bool) -> Void
     public var onMoveBy: (CGSize) -> Void
     public var onResizeBy: (CGSize) -> Void
 
@@ -13,12 +14,14 @@ public struct RemiBoardTilePlacement {
         size: CGSize,
         onMoveDrag: @escaping (_ translation: CGSize, _ ended: Bool) -> Void,
         onResizeDrag: @escaping (_ translation: CGSize, _ ended: Bool) -> Void,
+        onResizeTopRightDrag: @escaping (_ translation: CGSize, _ ended: Bool) -> Void,
         onMoveBy: @escaping (CGSize) -> Void,
         onResizeBy: @escaping (CGSize) -> Void
     ) {
         self.size = size
         self.onMoveDrag = onMoveDrag
         self.onResizeDrag = onResizeDrag
+        self.onResizeTopRightDrag = onResizeTopRightDrag
         self.onMoveBy = onMoveBy
         self.onResizeBy = onResizeBy
     }
@@ -85,12 +88,12 @@ public struct RemiBoardTile<Question: View>: View {
     /// The question's natural height, so its area is as tall as it needs up to a cap.
     @State private var questionHeight: CGFloat = 0
     @State private var moveHovered = false
-    @State private var resizeHovered = false
+    @State private var hoveredResize: PlacementControl?
     @FocusState private var focusedPlacementControl: PlacementControl?
 
     private enum PlacementControl: Hashable {
         case move
-        case resize
+        case resizeTop, resizeBottom
     }
 
     public init(
@@ -145,8 +148,11 @@ public struct RemiBoardTile<Question: View>: View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {
             if extras.placement == nil {
                 draggable(header)
-            } else {
-                header
+            } else if let placement = extras.placement {
+                header.contentShape(Rectangle())
+                    .simultaneousGesture(DragGesture(minimumDistance: 3, coordinateSpace: .global)
+                        .onChanged { placement.onMoveDrag($0.translation, false) }
+                        .onEnded { placement.onMoveDrag($0.translation, true) })
             }
             if size.showsFeed {
                 conversation
@@ -165,7 +171,8 @@ public struct RemiBoardTile<Question: View>: View {
         ))
         .background(tileBackground, in: .rect(cornerRadius: RemiTheme.Radius.control))
         .overlay { border }
-        .overlay(alignment: .topTrailing) { resizeHandle }
+        .overlay(alignment: .topTrailing) { resizeHandle(top: true) }
+        .overlay(alignment: .bottomTrailing) { resizeHandle(top: false) }
         .modifier(TileMenu(menu: menu, preview: extras.preview))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityLabel)
@@ -406,7 +413,7 @@ public struct RemiBoardTile<Question: View>: View {
 
     @ViewBuilder private var movementGrip: some View {
         if let placement = extras.placement {
-            Button { placement.onMoveBy(CGSize(width: 24, height: 0)) } label: {
+            Button {} label: {
                 Image(systemName: "circle.grid.3x3.fill")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
@@ -414,10 +421,9 @@ public struct RemiBoardTile<Question: View>: View {
                     .background(
                         moveHovered || focusedPlacementControl == .move
                             ? RemiTheme.Color.attention.opacity(0.2)
-                            : RemiTheme.Color.surface.opacity(0.78),
+                            : Color.clear,
                         in: Circle()
                     )
-                    .overlay { Circle().stroke(RemiTheme.Color.hairline, lineWidth: 1) }
             }
             .buttonStyle(.plain)
             .focused($focusedPlacementControl, equals: .move)
@@ -432,33 +438,33 @@ public struct RemiBoardTile<Question: View>: View {
             .onKeyPress(.rightArrow) { placement.onMoveBy(CGSize(width: 24, height: 0)); return .handled }
             .onKeyPress(.upArrow) { placement.onMoveBy(CGSize(width: 0, height: -24)); return .handled }
             .onKeyPress(.downArrow) { placement.onMoveBy(CGSize(width: 0, height: 24)); return .handled }
-            .gesture(DragGesture(minimumDistance: 3).onChanged { placement.onMoveDrag($0.translation, false) }
-                .onEnded { placement.onMoveDrag($0.translation, true) })
         }
     }
 
-    @ViewBuilder private var resizeHandle: some View {
+    @ViewBuilder private func resizeHandle(top: Bool) -> some View {
         if let placement = extras.placement {
-            Button { placement.onResizeBy(CGSize(width: 24, height: 24)) } label: {
+            let control: PlacementControl = top ? .resizeTop : .resizeBottom
+            Button {} label: {
                 Image(systemName: "arrow.up.left.and.arrow.down.right")
                     .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(resizeHovered || focusedPlacementControl == .resize
+                    .foregroundStyle(hoveredResize == control || focusedPlacementControl == control
                         ? RemiTheme.Color.attentionInk : .secondary)
                     .frame(width: 26, height: 26)
                     .background(
-                        resizeHovered || focusedPlacementControl == .resize
+                        hoveredResize == control || focusedPlacementControl == control
                             ? RemiTheme.Color.attention.opacity(0.85)
-                            : RemiTheme.Color.surface,
+                            : Color.clear,
                         in: Circle()
                     )
-                    .overlay { Circle().stroke(RemiTheme.Color.hairline, lineWidth: 1) }
             }
             .buttonStyle(.plain)
-            .focused($focusedPlacementControl, equals: .resize)
-            .onHover { resizeHovered = $0 }
-            .offset(x: 7, y: -7)
+            .focused($focusedPlacementControl, equals: control)
+            .onHover { hovering in hoveredResize = hovering ? control : nil }
+            .offset(x: 7, y: top ? -7 : 7)
             .accessibilityLabel("Resize tile")
-            .accessibilityHint("Drag right to widen and down to make taller. Use the arrow keys to resize by 24 points.")
+            .accessibilityHint(top
+                ? "Drag up and right to enlarge. Use the arrow keys to resize by 24 points."
+                : "Drag down and right to enlarge. Use the arrow keys to resize by 24 points.")
             .accessibilityAction(named: "Narrow") { placement.onResizeBy(CGSize(width: -24, height: 0)) }
             .accessibilityAction(named: "Widen") { placement.onResizeBy(CGSize(width: 24, height: 0)) }
             .accessibilityAction(named: "Make shorter") { placement.onResizeBy(CGSize(width: 0, height: -24)) }
@@ -467,8 +473,13 @@ public struct RemiBoardTile<Question: View>: View {
             .onKeyPress(.rightArrow) { placement.onResizeBy(CGSize(width: 24, height: 0)); return .handled }
             .onKeyPress(.upArrow) { placement.onResizeBy(CGSize(width: 0, height: -24)); return .handled }
             .onKeyPress(.downArrow) { placement.onResizeBy(CGSize(width: 0, height: 24)); return .handled }
-            .gesture(DragGesture(minimumDistance: 3).onChanged { placement.onResizeDrag($0.translation, false) }
-                .onEnded { placement.onResizeDrag($0.translation, true) })
+            .gesture(DragGesture(minimumDistance: 3, coordinateSpace: .global).onChanged {
+                if top { placement.onResizeTopRightDrag($0.translation, false) }
+                else { placement.onResizeDrag($0.translation, false) }
+            }.onEnded {
+                if top { placement.onResizeTopRightDrag($0.translation, true) }
+                else { placement.onResizeDrag($0.translation, true) }
+            })
         }
     }
 

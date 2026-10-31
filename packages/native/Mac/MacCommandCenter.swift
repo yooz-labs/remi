@@ -33,6 +33,7 @@ struct MacCommandCenter: View {
     @State private var onlyNeedsYou = false
     @State private var showFinished = false
     @State private var gesturePreview: BoardGesturePreview?
+    @State private var frontTile: String?
     @FocusState private var focus: String?
     @State private var focusTask: Task<Void, Never>?
 
@@ -176,15 +177,13 @@ struct MacCommandCenter: View {
         var id: String { key }
     }
 
-    private enum BoardGestureKind: Equatable { case move, resize }
+    private enum BoardGestureKind: Equatable { case move, resize, resizeTopRight }
 
     private struct BoardGesturePreview: Equatable {
         let key: String
         let kind: BoardGestureKind
         let start: RemiBoardFrame
         let proposed: RemiBoardFrame
-        let lastValid: RemiBoardFrame
-        let isValid: Bool
     }
 
     private func boardScroll(now: Date) -> some View {
@@ -210,7 +209,8 @@ struct MacCommandCenter: View {
         )
         let items = ordering.visible.compactMap { session -> BoardItem? in
             let key = RemiBoardOrder.key(for: session)
-            guard let frame = frames[key] else { return nil }
+            guard let original = frames[key] else { return nil }
+            let frame = gesturePreview.flatMap { $0.key == key ? $0.proposed : nil } ?? original
             return BoardItem(key: key, session: session, frame: frame)
         }
         var canvasFrames = Dictionary(uniqueKeysWithValues: items.map { ($0.key, $0.frame) })
@@ -265,31 +265,11 @@ struct MacCommandCenter: View {
                 )
                 .id(item.key)
                 .offset(x: item.frame.x, y: item.frame.y)
-            }
-            if let gesturePreview {
-                gestureOutline(gesturePreview)
+                .zIndex(frontTile == item.key ? 1 : 0)
+                .simultaneousGesture(TapGesture().onEnded { frontTile = item.key })
             }
         }
         .frame(width: canvasSize.width, height: canvasSize.height, alignment: .topLeading)
-    }
-
-    private func gestureOutline(_ preview: BoardGesturePreview) -> some View {
-        RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
-            .fill((preview.isValid ? RemiTheme.Color.activityDot : Color.red).opacity(0.08))
-            .overlay {
-                RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
-                    .stroke(
-                        preview.isValid ? RemiTheme.Color.activityDot : Color.red,
-                        style: StrokeStyle(lineWidth: 2, dash: [6, 4])
-                    )
-            }
-            .frame(width: preview.proposed.width, height: preview.proposed.height)
-            .offset(
-                x: min(max(preview.proposed.x, 0), RemiBoardFrame.maximumCoordinate),
-                y: min(max(preview.proposed.y, 0), RemiBoardFrame.maximumCoordinate)
-            )
-            .accessibilityHidden(true)
-            .allowsHitTesting(false)
     }
 
     /// Moves the cursor to the next live tile, scrolling it into view before moving focus.
@@ -324,6 +304,9 @@ struct MacCommandCenter: View {
             onResizeDrag: { translation, ended in
                 updateGesture(key: key, kind: .resize, translation: translation, ended: ended, frames: frames)
             },
+            onResizeTopRightDrag: { translation, ended in
+                updateGesture(key: key, kind: .resizeTopRight, translation: translation, ended: ended, frames: frames)
+            },
             onMoveBy: { nudge(key: key, kind: .move, by: $0, frames: frames) },
             onResizeBy: { nudge(key: key, kind: .resize, by: $0, frames: frames) }
         )
@@ -347,6 +330,12 @@ struct MacCommandCenter: View {
             },
             onSetSize: { size in
                 board.setSize(size, for: key)
+                if let current = frames[key] {
+                    var resized = current
+                    resized.height = min(max(size.estimatedHeight, RemiBoardFrame.minimumHeight),
+                                         RemiBoardFrame.maximumCoordinate - current.y)
+                    _ = board.setFrame(resized, for: key)
+                }
                 saveBoard()
             },
             onTogglePin: {
@@ -376,9 +365,19 @@ struct MacCommandCenter: View {
         frames: [String: RemiBoardFrame]
     ) {
         guard let start = frames[key] else { return }
-        let proposal = kind == .move ? start.moved(by: delta) : start.resized(by: delta)
-        guard RemiBoardOrder.canPlace(proposal, for: key, in: frames), board.setFrame(proposal, for: key) else { return }
-        saveBoard()
+        let proposal = kind == .move ? start.constrainedMove(by: delta) : start.resized(by: delta)
+        guard proposal.isValid else { return }
+        frontTile = key
+        persistPlacement(proposal, for: key, frames: frames)
+    }
+
+    private func persistPlacement(_ frame: RemiBoardFrame, for key: String, frames: [String: RemiBoardFrame]) {
+        guard frame.isValid else { return }
+        // A window moved over an automatic card must not make that other card jump away.
+        for (otherKey, otherFrame) in frames where otherKey != key && board.frame(for: otherKey) == nil {
+            _ = board.setFrame(otherFrame, for: otherKey)
+        }
+        if board.setFrame(frame, for: key) { saveBoard() }
     }
 
     private func updateGesture(
@@ -390,21 +389,29 @@ struct MacCommandCenter: View {
     ) {
         let active = gesturePreview.flatMap { $0.key == key && $0.kind == kind ? $0 : nil }
         guard let start = active?.start ?? frames[key] else { return }
-        let proposed = kind == .move ? start.moved(by: translation) : start.resized(by: translation)
-        let isValid = RemiBoardOrder.canPlace(proposed, for: key, in: frames)
-        let lastValid = isValid ? proposed : (active?.lastValid ?? start)
+        let proposed: RemiBoardFrame
+        switch kind {
+        case .move: proposed = start.constrainedMove(by: translation)
+        case .resize: proposed = start.resized(by: translation)
+        case .resizeTopRight: proposed = start.resizedFromTopRight(by: translation)
+        }
+        guard proposed.isValid else { return }
+        frontTile = key
 
         if ended {
-            if lastValid != start, board.setFrame(lastValid, for: key) { saveBoard() }
+            let others = frames.filter { $0.key != key }.map(\.value)
+            let snapped = kind == .move ? proposed.snappedMove(otherFrames: others, gap: spacing, margin: margin)
+                : proposed.snappedResize(topRight: kind == .resizeTopRight, otherFrames: others, gap: spacing, margin: margin)
+            if snapped != start {
+                persistPlacement(snapped, for: key, frames: frames)
+            }
             gesturePreview = nil
         } else {
             gesturePreview = BoardGesturePreview(
                 key: key,
                 kind: kind,
                 start: start,
-                proposed: proposed,
-                lastValid: lastValid,
-                isValid: isValid
+                proposed: proposed
             )
         }
     }
