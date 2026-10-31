@@ -153,7 +153,7 @@ private actor OwnedImageSendGate {
     }
 
     private func withPreparedInstallation(payload: Data, begin: ImageUploadBegin, machineKey: Data,
-                                          _ body: (ImageInstallationOwner, UUID) async throws -> Void) async throws {
+                                          _ body: @MainActor (ImageInstallationOwner, UUID) async throws -> Void) async throws {
         let parent = FileManager.default.temporaryDirectory.appendingPathComponent("remi-image-tls-\(UUID().uuidString)")
         let root = parent.appendingPathComponent("images")
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
