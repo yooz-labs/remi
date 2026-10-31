@@ -80,6 +80,11 @@ final class ImageSnapshotOwner {
                 guard fstat(fd, &removed) == 0, removed.st_nlink == 0 else { throw Failure.unavailable }
             } else {
                 guard errno == ENOENT, fsync(directory) == 0 else { throw Failure.unavailable }
+                if let identity = record.snapshotIdentity {
+                    guard try !Self.containsOwnedInode(directory: directory, identity: identity) else {
+                        throw Failure.unavailable
+                    }
+                }
             }
             var remaining = stat()
             guard fstatat(directory, name, &remaining, AT_SYMLINK_NOFOLLOW) != 0, errno == ENOENT else {
@@ -94,6 +99,36 @@ final class ImageSnapshotOwner {
     private static func validFile(_ value: stat) -> Bool {
         (value.st_mode & S_IFMT) == S_IFREG && value.st_uid == geteuid() && value.st_nlink == 1 &&
             (value.st_mode & 0o7777) == 0o600
+    }
+
+    /// An absent expected name is not a deletion receipt while the recorded inode still
+    /// exists elsewhere in the owned root. Leave it for a separate explicit repair flow.
+    private static func containsOwnedInode(directory: Int32, identity: ImageRecoveryLedger.SnapshotIdentity) throws -> Bool {
+        let scanFD = openat(directory, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        guard scanFD >= 0 else { throw Failure.unavailable }
+        guard let stream = fdopendir(scanFD) else { close(scanFD); throw Failure.unavailable }
+        defer { closedir(stream) }
+        var scanned = 0
+        while true {
+            errno = 0
+            guard let entry = readdir(stream) else {
+                if errno != 0 { throw Failure.unavailable }
+                return false
+            }
+            scanned += 1
+            guard scanned <= 256 else { throw Failure.unavailable }
+            let count = Int(entry.pointee.d_namlen)
+            guard count <= 1023 else { throw Failure.unavailable }
+            let name = withUnsafePointer(to: &entry.pointee.d_name) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: count + 1) { String(cString: $0) }
+            }
+            if name == "." || name == ".." { continue }
+            var metadata = stat()
+            guard fstatat(directory, name, &metadata, AT_SYMLINK_NOFOLLOW) == 0 else { throw Failure.unavailable }
+            if UInt64(UInt32(bitPattern: metadata.st_dev)) == identity.device && UInt64(metadata.st_ino) == identity.inode {
+                return true
+            }
+        }
     }
 
     private static func sameEntry(directory: Int32, name: String, descriptor: stat) -> Bool {
