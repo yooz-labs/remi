@@ -83,4 +83,13 @@ import Testing
         let deepIsImage = try ImageIngressPreflight.outgoingIsImage(deep)
         #expect(!deepIsImage)
     }
+
+    @Test func largeOrdinaryChatRemainsAValidGenericMessage() throws {
+        let message = UserInputMessage(id: UUID().uuidString.lowercased(), timestamp: "2026-10-31T00:00:00.000Z",
+            sessionId: "108a8a9e-912e-4d52-9fdd-913c16654f5c",
+            content: String(repeating: "x", count: 1_000_000) + " image_upload_begin")
+        let bytes = try JSONEncoder().encode(message)
+        let isImage = try ImageIngressPreflight.outgoingIsImage(bytes)
+        #expect(!isImage)
+    }
 }
