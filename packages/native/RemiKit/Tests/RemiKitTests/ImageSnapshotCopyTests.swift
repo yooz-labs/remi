@@ -67,4 +67,43 @@ import Testing
             #expect(!partial.isEmpty && partial.count < 100_000)
         }
     }
+
+    @Test func growingSourceIsStillBounded() throws {
+        try withFiles(Data(repeating: 9, count: ImageStagingLimits.imageBytes)) { source, destination, output in
+            var checks = 0
+            #expect(throws: ImageSnapshotCopy.Failure.tooLarge) {
+                try ImageSnapshotCopy.capture(source: source, destination: destination) {
+                    checks += 1
+                    if checks == 2 {
+                        let sourceURL = output.deletingLastPathComponent().appendingPathComponent("source")
+                        let writer = open(sourceURL.path, O_WRONLY | O_APPEND | O_CLOEXEC)
+                        if writer >= 0 {
+                            var extra: UInt8 = 3
+                            _ = write(writer, &extra, 1)
+                            close(writer)
+                        }
+                    }
+                    return false
+                }
+            }
+            let attributes = try FileManager.default.attributesOfItem(atPath: output.path)
+            let size = try #require(attributes[.size] as? NSNumber)
+            #expect(size.intValue <= ImageStagingLimits.imageBytes)
+        }
+    }
+
+    @Test func refusesHardlinkedOrSpecialModeDestination() throws {
+        try withFiles(Data([1])) { source, destination, output in
+            let alias = output.deletingLastPathComponent().appendingPathComponent("alias")
+            #expect(link(output.path, alias.path) == 0)
+            #expect(throws: ImageSnapshotCopy.Failure.invalidFile) {
+                try ImageSnapshotCopy.capture(source: source, destination: destination)
+            }
+            #expect(unlink(alias.path) == 0)
+            #expect(fchmod(destination, 0o4600) == 0)
+            #expect(throws: ImageSnapshotCopy.Failure.invalidFile) {
+                try ImageSnapshotCopy.capture(source: source, destination: destination)
+            }
+        }
+    }
 }
