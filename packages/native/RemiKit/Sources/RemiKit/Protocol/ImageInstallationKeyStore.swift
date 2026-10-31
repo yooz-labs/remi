@@ -6,8 +6,8 @@ import Security
 import RemiPush
 
 /// Installation witness for the image recovery journal. A pending key alone grants no
-/// authority. The future composed owner must bind a protected marker and an authenticated,
-/// empty journal to the same installation before promoting it or admitting any effect.
+/// authority. The composed owner binds a marker and authenticated empty journal before
+/// promotion, then binds each persisted journal revision before exposing its transition.
 /// A missing item means fresh only when the verified private root is also empty.
 final class ImageInstallationKeyStore {
     static let defaultService = "live.yooz.remi.image-recovery"
@@ -24,6 +24,7 @@ final class ImageInstallationKeyStore {
         let phase: Phase
         let installation: String
         let secret: Data
+        let journalDigest: Data?
     }
 
     private let lease: ImageDirectoryLease
@@ -69,7 +70,7 @@ final class ImageInstallationKeyStore {
             guard try load() == nil else { throw Failure.alreadyExists }
             let key = SymmetricKey(size: .bits256)
             let record = Record(phase: .pending, installation: UUID().uuidString.lowercased(),
-                                secret: key.withUnsafeBytes { Data($0) })
+                                secret: key.withUnsafeBytes { Data($0) }, journalDigest: nil)
             var item = query
             item[kSecValueData as String] = Self.encode(record)
             item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
@@ -93,25 +94,39 @@ final class ImageInstallationKeyStore {
     fileprivate func holds(_ candidate: ImageDirectoryLease) -> Bool { lease === candidate }
 
     /// Only the composed owner in this file can promote after validating the marker and journal.
-    fileprivate func promotePending(_ expected: Record) throws -> Record {
+    fileprivate func promotePending(_ expected: Record, journal: Data) throws -> Record {
         guard expected.phase == .pending, let current = try load(), current == expected else {
             throw Failure.malformed
         }
-        let ready = Record(phase: .ready, installation: expected.installation, secret: expected.secret)
+        let ready = Record(phase: .ready, installation: expected.installation, secret: expected.secret,
+                           journalDigest: Data(SHA256.hash(data: journal)))
+        return try replace(expected, with: ready)
+    }
+
+    fileprivate func advance(_ expected: Record, journal: Data) throws -> Record {
+        guard expected.phase == .ready else { throw Failure.malformed }
+        let next = Record(phase: .ready, installation: expected.installation, secret: expected.secret,
+                          journalDigest: Data(SHA256.hash(data: journal)))
+        return try replace(expected, with: next)
+    }
+
+    private func replace(_ expected: Record, with next: Record) throws -> Record {
+        guard try load() == expected else { throw Failure.malformed }
         var request = query
         let context = LAContext()
         context.interactionNotAllowed = true
         request[kSecUseAuthenticationContext as String] = context
-        let status = operations.update(request as CFDictionary, [kSecValueData as String: Self.encode(ready)] as CFDictionary)
+        let status = operations.update(request as CFDictionary, [kSecValueData as String: Self.encode(next)] as CFDictionary)
         guard status == errSecSuccess else { throw Failure.unavailable(status) }
-        guard try load() == ready else { throw Failure.malformed }
-        return ready
+        guard try load() == next else { throw Failure.malformed }
+        return next
     }
 
     private static func encode(_ record: Record) -> Data {
         let fields: [(String, WireJSON)] = [
-            ("version", .number(1)), ("phase", .string(record.phase == .pending ? "pending" : "ready")),
+            ("version", .number(2)), ("phase", .string(record.phase == .pending ? "pending" : "ready")),
             ("installation", .string(record.installation)), ("key", .string(WireGuards.encodeBase64URL(record.secret))),
+            ("journal", .string(record.journalDigest.map(WireGuards.encodeBase64URL) ?? "")),
         ]
         let object = WireObject(members: fields.map { .init(key: $0.0, value: $0.1) })
         return Data(WireJSON.object(object).serialized().utf8)
@@ -120,8 +135,8 @@ final class ImageInstallationKeyStore {
     private static func decode(_ data: Data) throws -> Record {
         do {
             let fields = try WireFields(WireJSON.parse(data, maxBytes: 512, maxNodes: 16),
-                                        keys: ["version", "phase", "installation", "key"])
-            _ = try fields.integer("version", in: 1...1)
+                                        keys: ["version", "phase", "installation", "key", "journal"])
+            _ = try fields.integer("version", in: 2...2)
             let text = try fields.string("phase")
             let phase: Record.Phase
             if WireGuards.same(text, "pending") { phase = .pending }
@@ -131,7 +146,16 @@ final class ImageInstallationKeyStore {
             guard let secret = WireGuards.decodeBase64URL(try fields.encoded("key", bytes: 32...32)) else {
                 throw Failure.malformed
             }
-            return Record(phase: phase, installation: installation, secret: secret)
+            let journalText = try fields.string("journal")
+            let digest: Data?
+            if phase == .pending {
+                guard journalText.isEmpty else { throw Failure.malformed }
+                digest = nil
+            } else {
+                guard let value = WireGuards.decodeBase64URL(journalText), value.count == 32 else { throw Failure.malformed }
+                digest = value
+            }
+            return Record(phase: phase, installation: installation, secret: secret, journalDigest: digest)
         } catch { throw Failure.malformed }
     }
 
@@ -159,6 +183,30 @@ final class ImageInstallationKeyStore {
             guard WireGuards.same(name, ".") || WireGuards.same(name, "..") ||
                     WireGuards.same(name, ".image-lock") else { throw Failure.notFresh }
         }
+    }
+}
+
+/// The Keychain copy is outside the journal's app-data directory. A mismatch stops recovery;
+/// it never chooses a revision or claims protection across loss of both installation states.
+final class ImageJournalRevision {
+    private let keys: ImageInstallationKeyStore
+    private var record: ImageInstallationKeyStore.Record
+
+    fileprivate init(keys: ImageInstallationKeyStore, record: ImageInstallationKeyStore.Record) {
+        self.keys = keys
+        self.record = record
+    }
+
+    func verify(_ bytes: Data) throws {
+        guard record.phase == .ready, record.journalDigest == Data(SHA256.hash(data: bytes)),
+              try keys.load() == record else { throw ImageInstallationKeyStore.Failure.malformed }
+    }
+
+    /// The file is already durable before this is called. Failure leaves a mismatch and the
+    /// caller retired; no network effect may be exposed by that failed transition.
+    func advance(from old: Data, to next: Data) throws {
+        try verify(old)
+        record = try keys.advance(record, journal: next)
     }
 }
 
@@ -208,7 +256,7 @@ final class ImageInstallationOwner {
                 }
                 try inventory(directory: directory, expected: nil, pending: true)
                 try verifyMarker(directory, installation: key.installation)
-                key = try keys.promotePending(key)
+                key = try keys.promotePending(key, journal: bytes)
             } else {
                 let expected = restored.ledger.localSnapshotID.flatMap { id in
                     restored.ledger.records.first { $0.id == id }
@@ -216,7 +264,8 @@ final class ImageInstallationOwner {
                 try inventory(directory: directory, expected: expected, pending: false)
             }
             guard key.phase == .ready else { throw Failure.recoveryRequired }
-            let journal = try ImageRecoveryJournal(disk: disk, secret: key.secret, claim: claim)
+            let witness = ImageJournalRevision(keys: keys, record: key)
+            let journal = try ImageRecoveryJournal(disk: disk, secret: key.secret, claim: claim, witness: witness)
             return ImageInstallationOwner(journal: journal, snapshots: ImageSnapshotOwner(lease: lease, journal: journal))
         }
         #endif

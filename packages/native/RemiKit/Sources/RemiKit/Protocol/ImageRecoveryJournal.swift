@@ -10,6 +10,7 @@ final class ImageRecoveryJournal {
     private let disk: ImageJournalDisk
     private let claim: ImageDirectoryLease.OwnerClaim
     private let secret: Data
+    private let witness: ImageJournalRevision?
     private var bytes: Data
     private var storedSnapshot: ImageRecoveryLedger
     private var isRetired = false
@@ -19,21 +20,31 @@ final class ImageRecoveryJournal {
 
     /// Restart never revives a pending copy or old socket. The normalized record is made
     /// durable before this object returns; failure cannot be retried through this object.
-    init(disk: ImageJournalDisk, secret: Data, claim: ImageDirectoryLease.OwnerClaim) throws {
+    /// The unbound form is a disk primitive only and cannot authorize a transfer. The composed
+    /// installation owner supplies the Keychain witness before exposing persisted transitions.
+    convenience init(disk: ImageJournalDisk, secret: Data, claim: ImageDirectoryLease.OwnerClaim) throws {
+        try self.init(disk: disk, secret: secret, claim: claim, witness: nil)
+    }
+
+    init(disk: ImageJournalDisk, secret: Data, claim: ImageDirectoryLease.OwnerClaim,
+         witness: ImageJournalRevision?) throws {
         guard disk.accepts(claim) else { throw Failure.invalidClaim }
         try claim.attachJournal()
         let original = try disk.load()
+        try witness?.verify(original)
         let restored = try ImageRecoveryLedger.restoreJournal(original, secret: secret)
         let stored: Data
         if restored.needsRewrite {
             stored = try restored.ledger.encodeJournal(secret: secret)
             try disk.replace(expected: original, with: stored)
+            try witness?.advance(from: original, to: stored)
         } else {
             stored = original
         }
         self.disk = disk
         self.claim = claim
         self.secret = secret
+        self.witness = witness
         self.bytes = stored
         self.storedSnapshot = restored.ledger
     }
@@ -101,6 +112,7 @@ final class ImageRecoveryJournal {
             let next = try candidate.encodeJournal(secret: secret)
             do {
                 try disk.replace(expected: bytes, with: next)
+                try witness?.advance(from: bytes, to: next)
             } catch {
                 isRetired = true
                 throw error
