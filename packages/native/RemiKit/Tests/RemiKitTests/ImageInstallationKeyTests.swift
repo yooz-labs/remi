@@ -5,6 +5,37 @@ import Testing
 @testable import RemiPush
 @testable import RemiKit
 
+private final class BlockingImageCopy: @unchecked Sendable {
+    let owner: ImageSnapshotOwner
+    let id: UUID
+    let source: Int32
+    let reached = DispatchSemaphore(value: 0)
+    let resume = DispatchSemaphore(value: 0)
+    let finished = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var failed = false
+
+    init(owner: ImageSnapshotOwner, id: UUID, source: Int32) {
+        self.owner = owner; self.id = id; self.source = source
+    }
+
+    func run() {
+        defer { finished.signal() }
+        var checks = 0
+        do {
+            _ = try owner.capture(id: id, source: source) {
+                checks += 1
+                if checks == 2 { reached.signal(); resume.wait() }
+                return false
+            }
+        } catch {
+            lock.lock(); failed = true; lock.unlock()
+        }
+    }
+
+    var didFail: Bool { lock.lock(); defer { lock.unlock() }; return failed }
+}
+
 /// Every Keychain item and directory here is UUID-owned by this fixture.
 @Suite struct ImageInstallationKeyTests {
     private func withStore(operations: NativeKeychainOperations = .system,
@@ -201,6 +232,29 @@ import Testing
             retained = nil
             let reopened = try ImageInstallationOwner.open(lease: lease, keys: store)
             #expect(reopened.journal.snapshot.records.isEmpty)
+        }
+    }
+
+    @Test func activeCopyCannotBeReopenedByAnotherOwner() throws {
+        try withStore { root, lease, store, _ in
+            let selected = root.deletingLastPathComponent().appendingPathComponent("selected")
+            try Data(repeating: 7, count: 100_000).write(to: selected)
+            let fd = open(selected.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+            guard fd >= 0 else { throw POSIXError(.EIO) }
+            defer { close(fd) }
+            var first: ImageInstallationOwner? = try ImageInstallationOwner.open(lease: lease, keys: store)
+            let id = try #require(first).journal.reserveCopy()
+            let active = BlockingImageCopy(owner: try #require(first).snapshots, id: id, source: fd)
+            DispatchQueue.global().async { active.run() }
+            var completed = false
+            defer { if !completed { active.resume.signal(); _ = active.finished.wait(timeout: .now() + 5) } }
+            try #require(active.reached.wait(timeout: .now() + 5) == .success)
+            first = nil
+            #expect(throws: (any Error).self) { try ImageInstallationOwner.open(lease: lease, keys: store) }
+            active.resume.signal()
+            try #require(active.finished.wait(timeout: .now() + 5) == .success)
+            completed = true
+            #expect(!active.didFail)
         }
     }
 
