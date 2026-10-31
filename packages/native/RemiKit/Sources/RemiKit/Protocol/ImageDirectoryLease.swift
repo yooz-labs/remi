@@ -73,6 +73,20 @@ final class ImageDirectoryLease {
         }
     }
 
+    /// Synchronous descriptor-relative work only. The owner must confine this lease to a
+    /// single isolation domain and must not let the descriptor escape the closure.
+    func withVerifiedDirectory<T>(_ body: (Int32) throws -> T) throws -> T {
+        try verifyIdentity()
+        do {
+            let value = try body(directory)
+            try verifyIdentity()
+            return value
+        } catch {
+            try? verifyIdentity()
+            throw error
+        }
+    }
+
     private static func validDirectory(_ value: stat) -> Bool {
         (value.st_mode & S_IFMT) == S_IFDIR && value.st_uid == geteuid() && (value.st_mode & 0o7777) == 0o700
     }
