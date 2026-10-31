@@ -39,7 +39,8 @@ import Testing
                 try ImageSnapshotCopy.capture(source: source, destination: destination)
             }
             #expect(FileManager.default.fileExists(atPath: output.path))
-            #expect((try Data(contentsOf: output)).isEmpty)
+            let saved = try Data(contentsOf: output)
+            #expect(saved.isEmpty)
         }
     }
 
