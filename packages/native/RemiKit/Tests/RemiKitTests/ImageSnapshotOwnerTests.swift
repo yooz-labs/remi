@@ -108,6 +108,19 @@ import Testing
         }
     }
 
+    @Test func cleanupDoesNotReleaseTheSlotWhenTheOwnedInodeWasMoved() throws {
+        try withFixture(Data([7, 8, 9])) { root, _, source, journal, owner in
+            let id = try journal.reserveCopy()
+            _ = try owner.capture(id: id, source: source)
+            let snapshot = root.appendingPathComponent("image-\(id.uuidString.lowercased())")
+            let moved = root.appendingPathComponent("moved-file")
+            #expect(rename(snapshot.path, moved.path) == 0)
+            #expect(throws: (any Error).self) { try owner.abandon(id: id, confirmed: true) }
+            #expect(try Data(contentsOf: moved) == Data([7, 8, 9]))
+            #expect(journal.snapshot.localSnapshotID == id)
+        }
+    }
+
     @Test func aConfirmedDeletionCanBeRecoveredAfterInterruption() throws {
         try withFixture(Data([1, 2, 3])) { root, _, source, journal, owner in
             let id = try journal.reserveCopy()
