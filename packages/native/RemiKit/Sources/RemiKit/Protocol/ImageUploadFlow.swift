@@ -43,7 +43,8 @@ struct ImageUploadFlow: Sendable {
     }
 
     enum Action: Equatable, Sendable {
-        /// Read exactly this range from the already-owned immutable local snapshot.
+        /// Read this range from the owned copy. The transfer owner must establish stable bytes
+        /// across validation and transfer; a matching size and timestamp alone cannot do that.
         case read(offset: Int, count: Int)
         case send(ImageUploadMessage)
     }
