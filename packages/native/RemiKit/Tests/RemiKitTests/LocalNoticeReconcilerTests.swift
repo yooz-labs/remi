@@ -4,8 +4,9 @@ import UserNotifications
 @testable import RemiKit
 
 @Suite(.serialized) @MainActor struct LocalNoticeReconcilerTests {
-    private func request(_ marker: LocalNoticeMarker, extraRemote: Bool = false) throws -> UNNotificationRequest {
+    private func request(_ marker: LocalNoticeMarker, extraRemote: Bool = false, secureCategory: Bool = false) throws -> UNNotificationRequest {
         let content = UNMutableNotificationContent()
+        if secureCategory { content.categoryIdentifier = "remi.secure.v2.synthetic" }
         var info = try marker.userInfo()
         if extraRemote { info["remiPush"] = "synthetic" }
         content.userInfo = info
@@ -26,6 +27,8 @@ import UserNotifications
         try ledger.invalidate(retired); try ledger.retire(retired)
         let collided = try ledger.prepare(owner: oldOwner, question: question)
         try ledger.invalidate(collided); try ledger.retire(collided)
+        let secure = try ledger.prepare(owner: oldOwner, question: question)
+        try ledger.invalidate(secure); try ledger.retire(secure)
         ledger.close()
         ledger = try LocalNoticeLedger(directory: dir)
         defer { ledger.close() }
@@ -35,10 +38,13 @@ import UserNotifications
                                             sequence: retired.sequence, question: question)
         let collidedMarker = try keys.marker(requestID: collided.requestID, owner: oldOwner,
                                              sequence: collided.sequence, question: question)
+        let secureMarker = try keys.marker(requestID: secure.requestID, owner: oldOwner,
+                                          sequence: secure.sequence, question: question)
         var removals: [[String]] = []
         let reconciler = LocalNoticeReconciler(ledger: ledger, keys: keys) { removals.append($0) }
         try reconciler.reconcile([request(oldMarker), request(retiredMarker), request(collidedMarker),
-                                  request(collidedMarker, extraRemote: true)])
+                                  request(collidedMarker, extraRemote: true), request(secureMarker),
+                                  request(secureMarker, secureCategory: true)])
         #expect(removals == [[retiredMarker.systemIdentifier]])
         #expect(try ledger.classify(oldMarker, keys: keys, systemIdentifier: oldMarker.systemIdentifier) == .historicalActive)
         #expect(try ledger.record(active).effect == .crashUncertain)
