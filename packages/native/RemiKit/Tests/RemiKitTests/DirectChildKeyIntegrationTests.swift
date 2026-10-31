@@ -27,15 +27,17 @@ struct DirectChildKeyIntegrationTests {
         return try JSONSerialization.data(withJSONObject: value)
     }
 
-    @Test(arguments: ["discovery-matching", "discovery-wrong", "create-matching", "create-wrong", "resume-matching", "resume-wrong", "discovery-legacy", "childfirst-legacy", "earlydiscovery-wrong", "earlycreate-wrong", "earlydiscovery-matching", "earlycreate-matching", "earlydiscovery-legacy"])
+    @Test(arguments: ["discovery-matching", "discovery-wrong", "create-matching", "create-wrong", "resume-matching", "resume-wrong", "discovery-legacy", "childfirst-legacy", "earlydiscovery-wrong", "earlycreate-wrong", "earlydiscovery-matching", "earlycreate-matching", "earlydiscovery-legacy", "waitingdiscovery-matching", "waitingdiscovery-wrong", "waitingcreate-matching", "waitingcreate-wrong", "waitingforget-matching", "stale-matching"])
     func childUsesAuthenticatedParentKey(_ scenario: String) async throws {
         let pieces = scenario.split(separator: "-")
         let action = String(pieces[0]), mode = String(pieces[1])
         let early = action.hasPrefix("early")
+        let waiting = action.hasPrefix("waiting")
         let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Integration/direct-child-key-peer.ts")
         let peer = Process(), input = Pipe(), output = Pipe()
-        let folder = try OwnedRecoveryFixture.configure(peer, script: script, arguments: [mode, "stats.json"])
+        let wireMode = waiting ? (mode == "wrong" ? "rootheld-wrong" : "rootheld") : mode
+        let folder = try OwnedRecoveryFixture.configure(peer, script: script, arguments: [wireMode, "stats.json"])
         peer.standardInput = input; peer.standardOutput = output; peer.standardError = FileHandle.standardError
         try peer.run()
         func cleanup() async {
@@ -72,21 +74,61 @@ struct DirectChildKeyIntegrationTests {
             if early { subject.ownedBeforeParentHello = { await parentHelloGate.hold() } }
             subject.start()
             let activeRoot = try #require(subject.machines.first?.endpoint)
-            let rootDeadline = ContinuousClock.now.advanced(by: .seconds(5))
-            while subject.machines.first?.status != .connected && ContinuousClock.now < rootDeadline {
-                try await Task.sleep(for: .milliseconds(10))
+            let statsFile = folder.appendingPathComponent("stats.json")
+            func stats() throws -> [String: Int] {
+                try #require(JSONSerialization.jsonObject(with: Data(contentsOf: statsFile)) as? [String: Int])
             }
-            try #require(subject.machines.first?.status == .connected, "Real root must authenticate before dispatch")
+            let rootDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+            if waiting {
+                while try stats()["rootHelloHeld", default: 0] == 0 && ContinuousClock.now < rootDeadline {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                try #require(try stats()["rootHelloHeld"] == 1, "The authenticated root Hello must be held on the peer")
+            } else {
+                while subject.machines.first?.status != .connected && ContinuousClock.now < rootDeadline {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                try #require(subject.machines.first?.status == .connected, "Real root must authenticate before dispatch")
+            }
             if early {
                 while !(await parentHelloGate.entered) && ContinuousClock.now < rootDeadline { try await Task.sleep(for: .milliseconds(10)) }
                 try #require(await parentHelloGate.entered, "Verified parent Hello must be held before Store processing")
             }
             let rootGeneration = try #require(subject.connectionGenerations[activeRoot])
-            switch action {
-            case "discovery", "childfirst", "earlydiscovery":
+            if action == "waitingforget" {
                 let response = try JSONDecoder().decode(SessionListResponse.self, from: fixture("session_list_response", port: childPort))
                 subject.receive(.sessions(response), from: activeRoot, generation: rootGeneration)
-            case "create", "earlycreate":
+                #expect(try stats()["childOpens"] == 0)
+                _ = subject.removeMachine(activeRoot)
+                subject.addMachine(activeRoot)
+                try input.fileHandleForWriting.write(contentsOf: Data("release-root\n".utf8))
+                try await Task.sleep(for: .milliseconds(300))
+                #expect(try stats()["childOpens"] == 0, "Forget and re-pair must retire the earlier pending child")
+                #expect(!subject.ownedParentRoutes.keys.contains(where: { $0.port == childPort }))
+                subject.stop()
+                await cleanup()
+                return
+            }
+            if action == "stale" {
+                let oldEpoch = try #require(subject.ownedParentEpoch(activeRoot))
+                subject.ownedResetParentHello(activeRoot)
+                let question = try JSONDecoder().decode(QuestionMessage.self, from: FixtureConformanceTests.fixture("question"))
+                subject.receive(.question(question), from: activeRoot, generation: rootGeneration, callbackEpoch: oldEpoch)
+                #expect(subject.machines.first?.questions.contains(where: { $0.question.id == question.question.id }) == true,
+                    "A delivered question must survive delayed Store dispatch")
+                let response = try JSONDecoder().decode(CreateSessionResponseMessage.self, from: fixture("create_session_response", port: childPort))
+                subject.receive(.createSessionResponse(response), from: activeRoot, generation: rootGeneration, callbackEpoch: oldEpoch)
+                #expect(subject.latestOperationError != nil)
+                #expect(try stats()["childOpens"] == 0)
+                subject.stop()
+                await cleanup()
+                return
+            }
+            switch action {
+            case "discovery", "childfirst", "earlydiscovery", "waitingdiscovery":
+                let response = try JSONDecoder().decode(SessionListResponse.self, from: fixture("session_list_response", port: childPort))
+                subject.receive(.sessions(response), from: activeRoot, generation: rootGeneration)
+            case "create", "earlycreate", "waitingcreate":
                 let response = try JSONDecoder().decode(CreateSessionResponseMessage.self, from: fixture("create_session_response", port: childPort))
                 subject.receive(.createSessionResponse(response), from: activeRoot, generation: rootGeneration)
             case "resume":
@@ -96,9 +138,10 @@ struct DirectChildKeyIntegrationTests {
                 subject.receive(.resumeSessionResponse(response), from: activeRoot, generation: rootGeneration)
             default: Issue.record("Unknown scenario")
             }
-            let statsFile = folder.appendingPathComponent("stats.json")
-            func stats() throws -> [String: Int] {
-                try #require(JSONSerialization.jsonObject(with: Data(contentsOf: statsFile)) as? [String: Int])
+            if waiting {
+                try await Task.sleep(for: .milliseconds(150))
+                #expect(try stats()["childOpens"] == 0, "The child intent must wait until the parent Hello")
+                try input.fileHandleForWriting.write(contentsOf: Data("release-root\n".utf8))
             }
             if early {
                 try await Task.sleep(for: .milliseconds(150))
@@ -144,12 +187,12 @@ struct DirectChildKeyIntegrationTests {
         await cleanup()
     }
 
-    @Test(arguments: ["discovery", "create", "resume"])
+    @Test(arguments: ["discovery", "create", "resume", "pending"])
     func anotherParentCannotReuseChildSocket(_ action: String) async throws {
         let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Integration/direct-child-key-peer.ts")
         let peer = Process(), input = Pipe(), output = Pipe()
-        let folder = try OwnedRecoveryFixture.configure(peer, script: script, arguments: ["matching", "stats.json"])
+        let folder = try OwnedRecoveryFixture.configure(peer, script: script, arguments: [action == "pending" ? "rootheld" : "matching", "stats.json"])
         peer.standardInput = input; peer.standardOutput = output; peer.standardError = FileHandle.standardError
         try peer.run()
         func cleanup() async {
@@ -179,15 +222,31 @@ struct DirectChildKeyIntegrationTests {
             store = subject
             subject.start()
             let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-            while subject.machines.filter({ $0.status == .connected }).count != 2 && ContinuousClock.now < deadline {
+            let expectedConnected = action == "pending" ? 1 : 2
+            while subject.machines.filter({ $0.status == .connected }).count != expectedConnected && ContinuousClock.now < deadline {
                 try await Task.sleep(for: .milliseconds(10))
             }
-            try #require(subject.machines.filter({ $0.status == .connected }).count == 2)
+            try #require(subject.machines.filter({ $0.status == .connected }).count == expectedConnected)
             let owner = try #require(subject.machines.first(where: { $0.endpoint.port == first.port })?.endpoint)
             let other = try #require(subject.machines.first(where: { $0.endpoint.port == second.port })?.endpoint)
             let ownerGeneration = try #require(subject.connectionGenerations[owner])
             let list = try JSONDecoder().decode(SessionListResponse.self, from: fixture("session_list_response", port: childPort))
+            if action == "pending" {
+                let statsFile = folder.appendingPathComponent("stats.json")
+                func rootHeld() throws -> Bool {
+                    let stats = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: statsFile)) as? [String: Int])
+                    return stats["rootHelloHeld"] == 1
+                }
+                while try !rootHeld() && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+                try #require(try rootHeld())
+            }
             subject.receive(.sessions(list), from: owner, generation: ownerGeneration)
+            if action == "pending" {
+                subject.receive(.sessions(list), from: other, generation: try #require(subject.connectionGenerations[other]))
+                #expect(subject.latestOperationError != nil, "Another parent cannot claim a deferred child address")
+                #expect(!subject.ownedParentRoutes.keys.contains(where: { $0.port == childPort }))
+                try input.fileHandleForWriting.write(contentsOf: Data("release-root\n".utf8))
+            }
             while !subject.ownedSessionRoutes.values.contains(where: { $0.port == childPort }) && ContinuousClock.now < deadline {
                 try await Task.sleep(for: .milliseconds(10))
             }
@@ -197,6 +256,7 @@ struct DirectChildKeyIntegrationTests {
             let childGeneration = try #require(subject.connectionGenerations[child])
             let otherGeneration = try #require(subject.connectionGenerations[other])
             switch action {
+            case "pending": break
             case "discovery": subject.receive(.sessions(list), from: other, generation: otherGeneration)
             case "create":
                 let response = try JSONDecoder().decode(CreateSessionResponseMessage.self, from: fixture("create_session_response", port: childPort))

@@ -168,6 +168,7 @@ public actor RemiConnection {
     private let eventHandler: EventHandler
     private let readyHandler: ReadyHandler?
     private var childSigningFence: DirectChildSigningFence?
+    private var childParentAdmission: (DirectParentHelloFence, UUID)?
     private var session = URLSession.shared
     private var singleAttempt = false
     private var applicationHello = true
@@ -247,9 +248,11 @@ public actor RemiConnection {
         singleAttempt = true; applicationHello = false
     }
 
-    func configureChildSigningFence(_ fence: DirectChildSigningFence) throws {
+    func configureChildSigningFence(_ fence: DirectChildSigningFence,
+                                    parent: DirectParentHelloFence?, parentEpoch: UUID?) throws {
         guard !shouldRun else { throw RelayFailure.state }
         childSigningFence = fence
+        if let parent, let parentEpoch { childParentAdmission = (parent, parentEpoch) }
     }
 
     /// The live direct handshake supplies bootstrap authority, never response fields.
@@ -604,7 +607,13 @@ public actor RemiConnection {
                     pairingLabel: self.configuration.pairingLabel
                 )
             }
-            let (response, pending) = try childSigningFence.map { try $0.withSigning(makeResponse) } ?? makeResponse()
+            let signUnderParentAdmission = {
+                if let (parent, epoch) = self.childParentAdmission {
+                    return try parent.withAdmission(epoch, makeResponse)
+                }
+                return try makeResponse()
+            }
+            let (response, pending) = try childSigningFence.map { try $0.withSigning(signUnderParentAdmission) } ?? signUnderParentAdmission()
             pendingAuthentication = pending
             _ = try currentDirectAuthenticationDeadline()
             armDirectDeadline(task, until: authenticationDeadline, opening: false)

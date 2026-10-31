@@ -225,6 +225,7 @@ struct MachineRecoveryIntegrationTests {
         store.start(); defer { store.stop() }
         let root = try #require(store.machines.first?.endpoint)
         let generation = try #require(store.connectionGenerations[root])
+        store.ownedObserveParentHello(root, key: key)
         store.receive(.hello(try fixture("hello_ack_legacy", as: HelloAckMessage.self), authorityPublicKey: key), from: root, generation: generation)
         var payload = try #require(JSONSerialization.jsonObject(with: FixtureConformanceTests.fixture("session_list_response")) as? [String: Any])
         payload["sessions"] = [] as [String]

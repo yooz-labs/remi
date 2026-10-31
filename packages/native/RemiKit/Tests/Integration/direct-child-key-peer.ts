@@ -12,7 +12,10 @@ import { createInterface } from 'node:readline';
 
 const mode = process.argv[2];
 const statsPath = process.argv[3];
-if (!['matching', 'wrong', 'held', 'legacy'].includes(mode) || !statsPath)
+if (
+  !['matching', 'wrong', 'held', 'legacy', 'rootheld', 'rootheld-wrong'].includes(mode) ||
+  !statsPath
+)
   throw new Error('owned test arguments required');
 const raw = (key: ReturnType<typeof generateKeyPairSync>['publicKey']) =>
   key.export({ type: 'spki', format: 'der' }).subarray(-32);
@@ -23,7 +26,7 @@ while (
 ) {
   parent = generateKeyPairSync('ed25519');
 }
-const child = mode === 'wrong' ? generateKeyPairSync('ed25519') : parent;
+const child = mode.endsWith('wrong') ? generateKeyPairSync('ed25519') : parent;
 const otherParent = generateKeyPairSync('ed25519');
 const digest = (key: typeof parent.publicKey) =>
   createHash('sha256').update(raw(key)).digest('hex');
@@ -39,6 +42,7 @@ const stats = {
   childPairing: 0,
   childHello: 0,
   child2Auth: 0,
+  rootHelloHeld: 0,
 };
 const publish = () => {
   writeFileSync(`${statsPath}.tmp`, JSON.stringify(stats));
@@ -46,6 +50,7 @@ const publish = () => {
 };
 publish();
 const heldChallenges: Array<() => void> = [];
+const heldRootHellos: Array<() => void> = [];
 type State = { role: 'root' | 'root2' | 'child' | 'child2'; challenge: Buffer; admitted: boolean };
 function listener(role: State['role']) {
   const key =
@@ -116,7 +121,11 @@ function listener(role: State['role']) {
             stats.childHello++;
             publish();
           }
-          ws.send(JSON.stringify(hello));
+          if (role === 'root' && mode.startsWith('rootheld')) {
+            stats.rootHelloHeld++;
+            publish();
+            heldRootHellos.push(() => ws.send(JSON.stringify(hello)));
+          } else ws.send(JSON.stringify(hello));
         } else if (message.type === 'session_list_request' && ws.data.admitted) {
           ws.send(
             JSON.stringify({
@@ -151,6 +160,7 @@ process.stdout.write(
 try {
   for await (const line of createInterface({ input: process.stdin })) {
     if (line === 'release') for (const challenge of heldChallenges.splice(0)) challenge();
+    if (line === 'release-root') for (const hello of heldRootHellos.splice(0)) hello();
   }
 } finally {
   clearTimeout(deadline);

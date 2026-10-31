@@ -52,4 +52,17 @@ struct DirectChildSigningFenceTests {
             }
         }
     }
+
+    @Test func priorParentSocketCannotAuthorizeAChildAfterReconnect() throws {
+        let parent = DirectParentHelloFence()
+        let old = parent.observeHello(nil)
+        #expect(try parent.withAdmission(old) { true })
+        let fresh = parent.reset()
+        #expect(!parent.isCurrent(old) && parent.isCurrent(fresh))
+        #expect(throws: (any Error).self) { try parent.withAdmission(old) { true } }
+        #expect(throws: (any Error).self) { try parent.withAdmission(fresh) { true } }
+        let admitted = parent.observeHello(Data(repeating: 11, count: 32))
+        #expect(admitted == fresh)
+        #expect(try parent.withAdmission(fresh) { true })
+    }
 }
