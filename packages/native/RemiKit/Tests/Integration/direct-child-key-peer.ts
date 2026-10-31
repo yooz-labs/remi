@@ -21,6 +21,8 @@ if (
     'rootheld',
     'rootheld-wrong',
     'manual-reconnect',
+    'recovery',
+    'recovery-wrong',
   ].includes(mode) ||
   !statsPath
 )
@@ -155,7 +157,14 @@ function listener(role: State['role']) {
             stats.rootHelloHeld++;
             publish();
             heldRootHellos.push(() => ws.send(JSON.stringify(hello)));
-          } else ws.send(JSON.stringify(hello));
+          } else
+            ws.send(
+              JSON.stringify(
+                role === 'root' && mode.startsWith('recovery')
+                  ? { ...hello, sessionId: null }
+                  : hello,
+              ),
+            );
         } else if (message.type === 'session_list_request' && ws.data.admitted) {
           ws.send(
             JSON.stringify({
@@ -174,6 +183,9 @@ const root = listener('root');
 const root2 = listener('root2');
 const childServer = listener('child');
 const child2Server = listener('child2');
+const reserved = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response('owned') });
+const closedPort = reserved.port;
+reserved.stop(true);
 const deadline = setTimeout(() => process.exit(1), 30_000);
 process.stdout.write(
   `${JSON.stringify({
@@ -181,6 +193,7 @@ process.stdout.write(
     root2Port: root2.port,
     childPort: childServer.port,
     child2Port: child2Server.port,
+    closedPort,
     publicKey: raw(parent.publicKey).toString('base64'),
     machineID: digest(parent.publicKey).slice(0, 32),
     otherPublicKey: raw(otherParent.publicKey).toString('base64'),

@@ -444,5 +444,105 @@ struct DirectChildKeyIntegrationTests {
         }
         await cleanup()
     }
+
+    @Test(arguments: ["pairing-stop", "pairing-forget", "pairing-repair", "pairing-live", "pairing-wrong", "recovery-stop", "recovery-forget", "recovery-repair", "recovery-live", "recovery-wrong"])
+    func adoptedParentOwnsChildSigningAcrossRetirement(_ scenario: String) async throws {
+        let pieces = scenario.split(separator: "-")
+        let kind = String(pieces[0]), action = String(pieces[1])
+        let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Integration/direct-child-key-peer.ts")
+        let peer = Process(), input = Pipe(), output = Pipe()
+        let mode = kind == "recovery" ? (action == "wrong" ? "recovery-wrong" : "recovery") : (action == "wrong" ? "wrong" : "matching")
+        let folder = try OwnedRecoveryFixture.configure(peer, script: script, arguments: [mode, "stats.json"])
+        peer.standardInput = input; peer.standardOutput = output; peer.standardError = FileHandle.standardError
+        try peer.run()
+        func cleanup() async {
+            try? input.fileHandleForWriting.close()
+            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while peer.isRunning && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+            if peer.isRunning { peer.terminate() }
+            let end = ContinuousClock.now.advanced(by: .seconds(2))
+            while peer.isRunning && ContinuousClock.now < end { try? await Task.sleep(for: .milliseconds(20)) }
+            #expect(!peer.isRunning)
+            if !peer.isRunning { try? FileManager.default.removeItem(at: folder) }
+        }
+        var store: MachineStore?
+        let gate = OwnedChildSignGate()
+        do {
+            var line = Data()
+            for try await byte in output.fileHandleForReading.bytes { if byte == 10 { break }; line.append(byte) }
+            let info = try #require(JSONSerialization.jsonObject(with: line) as? [String: Any])
+            let rootPort = try #require(info["rootPort"] as? Int), childPort = try #require(info["childPort"] as? Int)
+            let key = try #require(info["publicKey"] as? String), machineID = try #require(info["machineID"] as? String)
+            let endpoint = MachineEndpoint(host: "127.0.0.1", port: rootPort, expectedPublicKey: key)
+            let identity = ClientIdentity()
+            let subject: MachineStore
+            if kind == "pairing" {
+                subject = MachineStore(endpoints: [], identity: identity, clientVersion: "test", clientId: "owned")
+                let expiry = Int(Date().timeIntervalSince1970) + 300
+                let json = "{\"v\":1,\"name\":\"Owned\",\"host\":\"127.0.0.1\",\"port\":\(rootPort),\"key\":\"\(key)\",\"nonce\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"exp\":\(expiry),\"proto\":1}"
+                let encoded = Data(json.utf8).base64EncodedString().replacingOccurrences(of: "+", with: "-")
+                    .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+                let payload = try PairingPayload(scannedValue: "remi://pair#" + encoded)
+                if ["stop", "forget", "repair"].contains(action) { subject.ownedBeforeChildSignature = { await gate.hold() } }
+                _ = subject.beginPairing(payload, label: "Owned")
+            } else {
+                let closed = MachineEndpoint(host: "127.0.0.1", port: try #require(info["closedPort"] as? Int), expectedPublicKey: key)
+                let profile = MachineRouteProfile(machineID: machineID, routes: [closed, endpoint],
+                    machinePublicKey: RelayCrypto.b64(try #require(Data(base64Encoded: key))))
+                subject = MachineStore(profiles: [profile], identity: identity, clientVersion: "test", clientId: "owned")
+                if ["stop", "forget", "repair"].contains(action) { subject.ownedBeforeChildSignature = { await gate.hold() } }
+                try #require(subject.machines.first?.endpoint.port == closed.port, "The real recovery probe must replace the refused configured route")
+                subject.start()
+            }
+            store = subject
+            let deadline = ContinuousClock.now.advanced(by: .seconds(12))
+            while subject.machines.first?.status != .connected && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+            try #require(subject.machines.first?.status == .connected, "Real coordinator must adopt the authenticated parent socket")
+            let root = try #require(subject.machines.first?.endpoint)
+            let generation = try #require(subject.connectionGenerations[root])
+            let rootConnection = try #require(subject.connections[root])
+            if kind == "pairing" {
+                try #require(subject.ownedPairingCoordinator?.ownedAdmittedConfiguration != nil)
+            } else {
+                try #require(subject.ownedRecoveryCoordinator?.ownedAdmittedConnections[generation] == ObjectIdentifier(rootConnection))
+            }
+            let response = try JSONDecoder().decode(SessionListResponse.self, from: fixture("session_list_response", port: childPort))
+            subject.receive(.sessions(response), from: root, generation: generation)
+            let statsFile = folder.appendingPathComponent("stats.json")
+            func stats() throws -> [String: Int] {
+                try #require(JSONSerialization.jsonObject(with: Data(contentsOf: statsFile)) as? [String: Int])
+            }
+            if ["stop", "forget", "repair"].contains(action) {
+                while !(await gate.entered) && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+                try #require(await gate.entered, "The child must have received its challenge before parent retirement")
+                switch action {
+                case "stop": await rootConnection.stop()
+                case "forget": _ = subject.removeMachine(root)
+                case "repair": subject.addMachine(root)
+                default: break
+                }
+                await gate.open()
+            }
+            let end = ContinuousClock.now.advanced(by: .seconds(3))
+            while ContinuousClock.now < end {
+                let current = try stats()
+                if current["childAuth", default: 0] > 0 || (action == "wrong" && subject.machines.first?.sessionConnectionIssue != nil) { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(try stats()["childOpens"] == 1)
+            #expect(try stats()["childAuth"] == (action == "live" ? 1 : 0),
+                "Only a matching child under the current adopted parent can sign")
+            #expect(try stats()["childPairing"] == 0)
+            await gate.open()
+            subject.stop()
+        } catch {
+            await gate.open()
+            store?.stop()
+            await cleanup()
+            throw error
+        }
+        await cleanup()
+    }
 }
 #endif
