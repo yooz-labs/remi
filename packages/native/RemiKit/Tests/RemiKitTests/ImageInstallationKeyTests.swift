@@ -28,6 +28,14 @@ import Testing
         try body(root, store, query)
     }
 
+    #if os(iOS)
+    @Test func iOSCannotCreateImageKeyUntilProtectionIsQualified() throws {
+        try withStore { _, store, _ in
+            #expect(throws: ImageInstallationKeyStore.Failure.unavailable(errSecNotAvailable)) { try store.beginPending() }
+            #expect(try store.load() == nil)
+        }
+    }
+    #else
     @Test func pendingKeyIsCreatedOnceAndNeverRotatedAutomatically() throws {
         try withStore { _, store, _ in
             #expect(try store.load() == nil)
@@ -79,4 +87,5 @@ import Testing
             #expect(adds == 0)
         }
     }
+    #endif
 }
