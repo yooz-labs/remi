@@ -112,14 +112,22 @@ private actor OwnedImageSendGate {
             try await withPreparedInstallation(payload: payload, begin: begin, machineKey: machineKey) { installation, record in
                 let transfer = try ImageTransferOwner(installation: installation, connection: client, recordID: record,
                                                        begin: begin, machineKey: machineKey, now: 0)
-                await transfer.begin()
-                #expect(transfer.state == .awaitingAcceptance)
-                await transfer.begin()
+                let returnGate = OwnedImageSendGate()
+                try await client.ownedSetImageAfterSend { try await returnGate.hold() }
+                let sending = Task { await transfer.begin() }
+                try await until { await returnGate.entered }
+                let current = await client.imageBeginAuthority(for: begin, machineKey: machineKey)
+                let currentAuthority = try #require(current)
+                try await until {
+                    await client.imageBeginProgress(authority: currentAuthority) == .refused(.unavailable, remoteCleanupUnconfirmed: true)
+                }
+                await returnGate.release()
+                await sending.value
+                #expect(transfer.state == .refused(.unavailable, remoteCleanupUnconfirmed: true))
+                await transfer.begin() // Refusal is never automatically replayed.
                 try await until { try await stats(input: input, output: output)["images"] as? Int == 1 }
                 #expect(try await stats(input: input, output: output)["images"] as? Int == 1)
                 #expect(installation.journal.snapshot.records.first?.exposure == .partialPossible)
-                transfer.cancel()
-                #expect(transfer.state == .uncertain)
                 try installation.snapshots.abandon(id: record, confirmed: true)
             }
             await stop()
