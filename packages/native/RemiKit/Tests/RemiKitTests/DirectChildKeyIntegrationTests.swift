@@ -572,5 +572,104 @@ struct DirectChildKeyIntegrationTests {
         }
         await cleanup()
     }
+
+    @Test func retiringOldChildAuthorityMakesOnlyItsHandedOffMessagesUncertain() async throws {
+        let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Integration/direct-child-key-peer.ts")
+        let peer = Process(), input = Pipe(), output = Pipe()
+        let folder = try OwnedRecoveryFixture.configure(peer, script: script, arguments: ["matching", "stats.json"])
+        peer.standardInput = input; peer.standardOutput = output; peer.standardError = FileHandle.standardError
+        try peer.run()
+        func cleanup() async {
+            try? input.fileHandleForWriting.close()
+            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while peer.isRunning && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+            if peer.isRunning { peer.terminate() }
+            let end = ContinuousClock.now.advanced(by: .seconds(2))
+            while peer.isRunning && ContinuousClock.now < end { try? await Task.sleep(for: .milliseconds(20)) }
+            #expect(!peer.isRunning)
+            if !peer.isRunning { try? FileManager.default.removeItem(at: folder) }
+        }
+        let reconnectGate = OwnedChildSignGate()
+        var store: MachineStore?
+        do {
+            var line = Data()
+            for try await byte in output.fileHandleForReading.bytes { if byte == 10 { break }; line.append(byte) }
+            let info = try #require(JSONSerialization.jsonObject(with: line) as? [String: Any])
+            let rootPort = try #require(info["rootPort"] as? Int), childPort = try #require(info["childPort"] as? Int)
+            let key = try #require(info["publicKey"] as? String), machineID = try #require(info["machineID"] as? String)
+            let otherPort = try #require(info["root2Port"] as? Int), otherKeyString = try #require(info["otherPublicKey"] as? String)
+            let otherID = try #require(info["otherMachineID"] as? String)
+            let endpoint = MachineEndpoint(host: "127.0.0.1", port: rootPort, expectedPublicKey: key)
+            let otherEndpoint = MachineEndpoint(host: "127.0.0.1", port: otherPort, expectedPublicKey: otherKeyString)
+            let profile = MachineRouteProfile(machineID: machineID, routes: [endpoint],
+                machinePublicKey: RelayCrypto.b64(try #require(Data(base64Encoded: key))))
+            let otherProfile = MachineRouteProfile(machineID: otherID, routes: [otherEndpoint],
+                machinePublicKey: RelayCrypto.b64(try #require(Data(base64Encoded: otherKeyString))))
+            let subject = MachineStore(profiles: [profile, otherProfile], identity: ClientIdentity(), clientVersion: "test", clientId: "owned")
+            store = subject
+            subject.ownedBeforeParentReconnectState = { await reconnectGate.hold() }
+            subject.start()
+            let deadline = ContinuousClock.now.advanced(by: .seconds(8))
+            while subject.machines.filter({ $0.status == .connected }).count != 2 && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+            try #require(subject.machines.filter({ $0.status == .connected }).count == 2)
+            let root = try #require(subject.machines.first(where: { $0.endpoint.port == rootPort })?.endpoint)
+            let otherRoot = try #require(subject.machines.first(where: { $0.endpoint.port == otherPort })?.endpoint)
+            let rootGeneration = try #require(subject.connectionGenerations[root])
+            let otherGeneration = try #require(subject.connectionGenerations[otherRoot])
+            let rootConnection = try #require(subject.connections[root])
+            let response = try JSONDecoder().decode(SessionListResponse.self, from: fixture("session_list_response", port: childPort))
+            subject.receive(.sessions(response), from: root, generation: rootGeneration)
+            while !subject.ownedSessionRoutes.values.contains(where: { $0.port == childPort }) && ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let child = try #require(subject.ownedParentRoutes.keys.first(where: { $0.port == childPort }))
+            let childGeneration = try #require(subject.connectionGenerations[child])
+            try #require(subject.ownedSessionRoutes.values.contains(child))
+            let statsFile = folder.appendingPathComponent("stats.json")
+            func stats() throws -> [String: Int] {
+                try #require(JSONSerialization.jsonObject(with: Data(contentsOf: statsFile)) as? [String: Int])
+            }
+            let machine = try #require(subject.machines.first(where: { $0.endpoint.port == rootPort })?.id)
+            let otherMachine = try #require(subject.machines.first(where: { $0.endpoint.port == otherPort })?.id)
+            let childKey = subject.sessionKey(machineID: machine, sessionID: "fixture-session-id")
+            let otherKey = subject.sessionKey(machineID: otherMachine, sessionID: "unrelated-session")
+            let otherOrigin = OutgoingOrigin(endpoint: otherRoot, connection: otherGeneration, socket: UUID())
+            try #require(await subject.sendChat(machineID: machine, sessionId: "fixture-session-id", content: "owned child"))
+            while try stats()["childUserInput", default: 0] == 0 && ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            try #require(try stats()["childUserInput"] == 1, "The real child must receive exactly one input before retirement")
+            try #require(subject.trackOutgoing(key: otherKey, id: "other-message", content: "owned other", origin: otherOrigin))
+            let childGroup = try #require(subject.outgoingHistory.first(where: { $0.key == childKey })?.id)
+            let otherGroup = try #require(subject.outgoingHistory.first(where: { $0.key == otherKey })?.id)
+            #expect(subject.outgoingHistory.first(where: { $0.id == childGroup })?.messages.first?.delivery == .handedOff)
+            #expect(subject.recordOutgoingSendResult(.handedOff, groupID: otherGroup, messageID: "other-message", origin: otherOrigin))
+            try input.fileHandleForWriting.write(contentsOf: Data("switch-valid\n".utf8))
+            let reconnectDeadline = ContinuousClock.now.advanced(by: .seconds(8))
+            while ContinuousClock.now < reconnectDeadline {
+                let held = await reconnectGate.entered
+                let hellos = try stats()["rootHello", default: 0]
+                if held && hellos >= 2 && subject.connectionGenerations[child] == nil { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            try #require(await reconnectGate.entered, "Store reconnect-state callback must be held")
+            try #require(try stats()["rootHello", default: 0] >= 2, "The same root must verify its second socket")
+            try #require(subject.ownedConnectionID(root) == ObjectIdentifier(rootConnection))
+            try #require(subject.connectionGenerations[child] == nil, "The old child must be retired by the new parent authority")
+            #expect(childGeneration != rootGeneration)
+            #expect(subject.outgoingHistory.first(where: { $0.id == childGroup })?.messages.first?.delivery == .uncertain)
+            #expect(subject.outgoingHistory.first(where: { $0.id == otherGroup })?.messages.first?.delivery == .handedOff)
+            #expect(try stats()["childUserInput"] == 1, "The input must never be replayed")
+            await reconnectGate.open()
+            subject.stop()
+        } catch {
+            await reconnectGate.open()
+            store?.stop()
+            await cleanup()
+            throw error
+        }
+        await cleanup()
+    }
 }
 #endif

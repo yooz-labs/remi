@@ -25,7 +25,7 @@ private actor RealHubRecorder {
     var authenticatedHello: Bool { connected && authenticatedKey != nil }
 
     var errorCodes: [String] {
-        events.compactMap { if case .error(let error) = $0 { error.code } else { nil } }
+        events.compactMap { if case .error(let error, _) = $0 { error.code } else { nil } }
     }
 
     var receivedSessionList: Bool {

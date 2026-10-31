@@ -59,6 +59,7 @@ const stats = {
   rootHello: 0,
   rootWrongChallenges: 0,
   rootWrongHeld: 0,
+  childUserInput: 0,
 };
 const publish = () => {
   writeFileSync(`${statsPath}.tmp`, JSON.stringify(stats));
@@ -188,6 +189,9 @@ function listener(role: State['role']) {
                   : hello,
               ),
             );
+        } else if (message.type === 'user_input' && role === 'child' && ws.data.admitted) {
+          stats.childUserInput++;
+          publish();
         } else if (message.type === 'session_list_request' && ws.data.admitted) {
           ws.send(
             JSON.stringify({

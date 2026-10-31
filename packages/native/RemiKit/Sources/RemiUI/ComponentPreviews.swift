@@ -49,8 +49,13 @@ private struct SupportingComponentsGallery: View {
                     ForEach(RemiPreviewData.transcript) { entry in
                         RemiTranscriptEntryView(entry: entry)
                     }
-                    RemiTranscriptEntryView(entry: .pending(id: "p1", text: "Run the tests again.", state: .sent))
+                    RemiTranscriptEntryView(entry: .pending(id: "p1", text: "Run the tests again.", state: .handedOff))
                     RemiTranscriptEntryView(entry: .pending(id: "p2", text: "And then update the changelog.", state: .sending))
+                    ForEach(Array(RemiOutgoingState.allCases.enumerated()), id: \.offset) { index, state in
+                        RemiTranscriptEntryView(entry: .pending(id: "delivery-\(index)",
+                            text: RemiPreviewData.transcript.first?.copyText ?? "", state: state),
+                            onDismissOutgoing: { _ in })
+                    }
                     RemiTranscriptEntryView(entry: .error(id: "error", text: "The connection closed before the answer was delivered."))
                 }
 
