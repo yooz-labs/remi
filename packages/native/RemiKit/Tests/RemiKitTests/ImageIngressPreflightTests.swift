@@ -17,7 +17,7 @@ import Testing
     }
 
     @Test func oversizedImageFamiliesAreRefusedBeforeGeneralDecode() {
-        for type in ["image_upload_result", "image_upload_refused", "image_insert_result", "image_upload_future"] {
+        for type in ["image_upload_result", "image_upload_refused", "image_insert_result", "image_upload_future", "image_upload_é"] {
             let bytes = frame(#"{"type":"\#(type)","padding":""#, #""}"#, size: WireJSON.maxFrameBytes + 1)
             #expect(throws: WireFrameError.oversize) { try ImageIngressPreflight.classify(bytes) }
         }
@@ -39,6 +39,18 @@ import Testing
             #expect(try ImageIngressPreflight.classify(bytes) == .nonImage)
             #expect((try JSONSerialization.jsonObject(with: bytes)) is [String: Any])
         }
+    }
+
+    @Test func nestedTypesAndEscapedDelimitersCannotMisclassifyTheEnvelope() throws {
+        let nested = frame(#"{"nested":{"type":"image_upload_result","body":""#,
+                           #" \"quoted\" and } ] ,"},"type":"transcript_content"}"#,
+                           size: WireJSON.maxFrameBytes + 100)
+        #expect(try ImageIngressPreflight.classify(nested) == .nonImage)
+        #expect((try JSONSerialization.jsonObject(with: nested)) is [String: Any])
+        let hidden = frame(#"{"nested":{"type":"transcript_content","body":""#,
+                           #""},"type":"image_insert_result"}"#,
+                           size: WireJSON.maxFrameBytes + 100)
+        #expect(throws: WireFrameError.oversize) { try ImageIngressPreflight.classify(hidden) }
     }
 
     @Test func ambiguousLargeEnvelopesFailClosed() {
