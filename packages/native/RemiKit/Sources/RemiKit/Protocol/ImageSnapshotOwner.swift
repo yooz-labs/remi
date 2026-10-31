@@ -1,0 +1,65 @@
+import Darwin
+import Foundation
+
+/// A narrow snapshot-creation step. The caller must hold the one installation lease, open
+/// the selected file without following links while provider access is valid, and later verify
+/// media and perform descriptor-confined cleanup. This does not authorize a network effect.
+/// iOS is deliberately unavailable until complete file protection and backup exclusion are
+/// implemented and verified before any snapshot bytes are written.
+final class ImageSnapshotOwner {
+    enum Failure: Error, Equatable { case unavailable, unsupportedProtection, invalidReservation }
+
+    private let lease: ImageDirectoryLease
+    private let journal: ImageRecoveryJournal
+
+    init(lease: ImageDirectoryLease, journal: ImageRecoveryJournal) {
+        self.lease = lease
+        self.journal = journal
+    }
+
+    func capture(id: UUID, source: Int32, cancelled: () -> Bool = { false }) throws -> ImageSnapshotCopy.Result {
+        #if os(iOS)
+        throw Failure.unsupportedProtection
+        #else
+        guard !journal.retired, journal.snapshot.localSnapshotID == id,
+              let record = journal.snapshot.records.first(where: { $0.id == id }),
+              record.exposure == .copyReserved, record.snapshotIdentity == nil, !record.cleanupRequested else {
+            throw Failure.invalidReservation
+        }
+        let name = "image-\(id.uuidString.lowercased())"
+        return try lease.withVerifiedDirectory { directory in
+            let fd = openat(directory, name, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
+            guard fd >= 0 else { throw Failure.unavailable }
+            defer { close(fd) }
+            var info = stat()
+            guard fstat(fd, &info) == 0, Self.validFile(info), info.st_size == 0,
+                  Self.sameEntry(directory: directory, name: name, descriptor: info), fsync(directory) == 0 else {
+                throw Failure.unavailable
+            }
+            let device = UInt64(UInt32(bitPattern: info.st_dev))
+            let inode = UInt64(info.st_ino)
+            guard device > 0, inode > 0 else { throw Failure.unavailable }
+            // Persist the new file identity before the first selected byte is written.
+            try journal.registerSnapshot(id, device: device, inode: inode)
+            guard Self.sameEntry(directory: directory, name: name, descriptor: info) else { throw Failure.unavailable }
+            let result = try ImageSnapshotCopy.capture(source: source, destination: fd, cancelled: cancelled)
+            var after = stat()
+            guard fstat(fd, &after) == 0, Self.validFile(after), after.st_size == result.byteCount,
+                  after.st_dev == info.st_dev, after.st_ino == info.st_ino,
+                  Self.sameEntry(directory: directory, name: name, descriptor: after) else { throw Failure.unavailable }
+            return result
+        }
+        #endif
+    }
+
+    private static func validFile(_ value: stat) -> Bool {
+        (value.st_mode & S_IFMT) == S_IFREG && value.st_uid == geteuid() && value.st_nlink == 1 &&
+            (value.st_mode & 0o7777) == 0o600
+    }
+
+    private static func sameEntry(directory: Int32, name: String, descriptor: stat) -> Bool {
+        var entry = stat()
+        guard fstatat(directory, name, &entry, AT_SYMLINK_NOFOLLOW) == 0, validFile(entry) else { return false }
+        return descriptor.st_dev == entry.st_dev && descriptor.st_ino == entry.st_ino
+    }
+}
