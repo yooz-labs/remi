@@ -7,7 +7,7 @@ import Foundation
 /// iOS is deliberately unavailable until complete file protection and a backup-exclusion
 /// request are verified before any snapshot bytes are written. Exclusion is not a guarantee.
 final class ImageSnapshotOwner {
-    enum Failure: Error, Equatable { case unavailable, unsupportedProtection, invalidReservation }
+    enum Failure: Error, Equatable { case unavailable, unsupportedProtection, invalidReservation, sourceChanged }
 
     private let lease: ImageDirectoryLease
     private let journal: ImageRecoveryJournal
@@ -21,7 +21,9 @@ final class ImageSnapshotOwner {
     /// is opened once without following a final symlink; no provider URL is reopened for upload.
     /// A false scope result may also mean the URL needed no scope, so actual access is determined
     /// by opening the file. This is not media validation; the caller must validate the owned copy
-    /// before any send. Invoke it off the UI executor after route admission.
+    /// before any send. The size/mtime check detects ordinary source changes but does not prove
+    /// immutability against a same-authority writer that restores metadata. Invoke it off the UI
+    /// executor after route admission.
     func captureSelectedFile(id: UUID, url: URL, cancelled: () -> Bool = { false }) throws -> ImageSnapshotCopy.Result {
         #if os(iOS)
         throw Failure.unsupportedProtection
@@ -38,11 +40,22 @@ final class ImageSnapshotOwner {
         var info = stat()
         guard fstat(source, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
               info.st_size > 0, info.st_size <= ImageStagingLimits.imageBytes else { throw Failure.unavailable }
-        return try capture(id: id, source: source, cancelled: cancelled)
+        return try captureVerified(id: id, source: source, cancelled: cancelled) {
+            var after = stat()
+            guard fstat(source, &after) == 0, (after.st_mode & S_IFMT) == S_IFREG,
+                  after.st_dev == info.st_dev, after.st_ino == info.st_ino, after.st_size == info.st_size,
+                  after.st_mtimespec.tv_sec == info.st_mtimespec.tv_sec,
+                  after.st_mtimespec.tv_nsec == info.st_mtimespec.tv_nsec else { throw Failure.sourceChanged }
+        }
         #endif
     }
 
     func capture(id: UUID, source: Int32, cancelled: () -> Bool = { false }) throws -> ImageSnapshotCopy.Result {
+        try captureVerified(id: id, source: source, cancelled: cancelled, verifyAfterCopy: {})
+    }
+
+    private func captureVerified(id: UUID, source: Int32, cancelled: () -> Bool,
+                                 verifyAfterCopy: () throws -> Void) throws -> ImageSnapshotCopy.Result {
         #if os(iOS)
         throw Failure.unsupportedProtection
         #else
@@ -73,6 +86,7 @@ final class ImageSnapshotOwner {
                 guard fstat(fd, &after) == 0, Self.validFile(after), after.st_size == result.byteCount,
                       after.st_dev == info.st_dev, after.st_ino == info.st_ino,
                       Self.sameEntry(directory: directory, name: name, descriptor: after) else { throw Failure.unavailable }
+                try verifyAfterCopy()
                 return result
             }
         }
