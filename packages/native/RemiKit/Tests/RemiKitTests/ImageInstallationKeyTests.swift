@@ -119,7 +119,8 @@ import Testing
     @Test func freshInstallationIsPromotedOnlyAfterMarkerAndJournalExist() throws {
         try withStore { root, lease, store, _ in
             let owner = try ImageInstallationOwner.open(lease: lease, keys: store)
-            let record = try #require(store.load())
+            let loaded = try store.load()
+            let record = try #require(loaded)
             #expect(record.phase == .ready)
             #expect(owner.journal.snapshot.records.isEmpty)
             #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(".image-installation").path))
@@ -132,7 +133,8 @@ import Testing
             let pending = try store.beginPending()
             let owner = try ImageInstallationOwner.open(lease: lease, keys: store)
             #expect(owner.journal.snapshot.records.isEmpty)
-            let ready = try #require(store.load())
+            let loaded = try store.load()
+            let ready = try #require(loaded)
             #expect(ready.phase == .ready && ready.installation == pending.installation && ready.secret == pending.secret)
         }
         try withStore { root, lease, store, _ in
@@ -149,7 +151,8 @@ import Testing
     @Test func missingJournalOrKeyAfterInitializationNeverCreatesAReplacement() throws {
         try withStore { root, lease, store, _ in
             _ = try ImageInstallationOwner.open(lease: lease, keys: store)
-            let ready = try #require(store.load())
+            let loaded = try store.load()
+            let ready = try #require(loaded)
             #expect(unlink(root.appendingPathComponent(".image-journal").path) == 0)
             #expect(throws: (any Error).self) { try ImageInstallationOwner.open(lease: lease, keys: store) }
             #expect(try store.load() == ready)
