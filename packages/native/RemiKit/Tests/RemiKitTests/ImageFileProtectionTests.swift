@@ -57,5 +57,20 @@ import Testing
             #expect(fstat(file, &metadata) == 0 && metadata.st_size == 1)
         }
     }
+
+    @Test func verifiesProtectionAgainAfterRename() throws {
+        try withFixture { root, rootFD, file, name, lease in
+            try ImageFileProtection.prepareRoot(lease: lease, rootURL: root)
+            try ImageFileProtection.apply(lease: lease, rootURL: root, name: name, descriptor: file)
+            var byte: UInt8 = 7
+            #expect(write(file, &byte, 1) == 1)
+            #expect(renameat(rootFD, name, rootFD, ".image-journal") == 0)
+            try ImageFileProtection.refreshAfterRename(lease: lease, rootURL: root, name: ".image-journal", descriptor: file)
+            let url = root.appendingPathComponent(".image-journal")
+            let values = try url.resourceValues(forKeys: [.fileProtectionKey, .isExcludedFromBackupKey])
+            #expect(values.fileProtection == .complete)
+            #expect(values.isExcludedFromBackup == true)
+        }
+    }
 }
 #endif
