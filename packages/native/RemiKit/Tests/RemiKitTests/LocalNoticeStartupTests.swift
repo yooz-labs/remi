@@ -168,4 +168,34 @@ import Testing
         #expect(try ledger.pendingForgetOwners() == [owner])
         #expect(keychain.adds == 1)
     }
+
+    @Test func pendingForgetCanOpenRecoveryWithoutRestoringScheduling() async throws {
+        let (dir, name, defaults) = try resources(); defer { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: dir) }
+        let keychain = OwnedStartupKeychain(), sentinel = LocalNoticeSentinel(defaults: defaults, domainName: name)
+        let keyStore = LocalNoticeKeyStore(service: "synthetic", account: "startup")
+        let reader = LocalNoticeInventory(boundary: boundary())
+        let first = try await LocalNoticeStartup.open(directory: dir, sentinel: sentinel, keyStore: keyStore,
+            operations: keychain.operations, inventory: reader, protectedDataAvailable: { true }, notificationBoundary: notificationBoundary())
+        try first.ledger.createOwner(Data(repeating: 52, count: 32))
+        try first.ledger.invalidateOwner(Data(repeating: 52, count: 32))
+        first.ledger.close()
+        var removals: [[String]] = []
+        let access = try LocalNoticeStartup.openRecovery(directory: dir, keyStore: keyStore, operations: keychain.operations,
+            protectedDataAvailable: true, remove: { removals.append($0) })
+        defer { access.close() }
+        #expect(access.pendingForgetCount == 1); #expect(removals.isEmpty)
+        #expect(try access.recovery.unassignedUncertain().isEmpty)
+        #expect(keychain.adds == 1)
+    }
+
+    @Test func recoveryOpeningNeverCreatesMissingKeyOrJournal() throws {
+        let (dir, name, defaults) = try resources(); defer { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: dir) }
+        let keychain = OwnedStartupKeychain(), keyStore = LocalNoticeKeyStore(service: "synthetic", account: "startup")
+        #expect(throws: LocalNoticeBootstrap.Failure.recoveryRequired) {
+            try LocalNoticeStartup.openRecovery(directory: dir, keyStore: keyStore, operations: keychain.operations,
+                                               protectedDataAvailable: true, remove: { _ in })
+        }
+        #expect(keychain.adds == 0)
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("local-notifications.sqlite").path))
+    }
 }
