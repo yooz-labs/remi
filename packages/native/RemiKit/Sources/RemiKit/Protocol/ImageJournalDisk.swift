@@ -54,8 +54,10 @@ final class ImageJournalDisk {
         retired = false
     }
 
-    /// A stale caller cannot replace a later authenticated revision. The root is an
-    /// OS-provided private container serialized by the lease, not an arbitrary project path.
+    /// A stale caller cannot replace a later authenticated revision. This does not establish
+    /// that the replacement is a valid state transition; the owner must enforce and persist
+    /// transitions before effects. The root is an OS-provided private container serialized by
+    /// the lease, not an arbitrary project path.
     func replace(expected: Data, with bytes: Data) throws {
         guard !retired else { throw Failure.unavailable }
         try authenticate(expected)
