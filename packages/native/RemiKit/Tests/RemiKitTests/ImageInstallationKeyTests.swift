@@ -180,6 +180,47 @@ import Testing
         }
     }
 
+    @Test func reopensRegisteredSnapshotAndRequiresExplicitOwnedCleanup() throws {
+        try withStore { root, lease, store, _ in
+            let selected = root.deletingLastPathComponent().appendingPathComponent("selected")
+            let bytes = Data([1, 2, 3, 4])
+            try bytes.write(to: selected)
+            let fd = open(selected.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+            guard fd >= 0 else { throw POSIXError(.EIO) }
+            defer { close(fd) }
+            let first = try ImageInstallationOwner.open(lease: lease, keys: store)
+            let id = try first.journal.reserveCopy()
+            _ = try first.snapshots.capture(id: id, source: fd)
+            let reopened = try ImageInstallationOwner.open(lease: lease, keys: store)
+            #expect(reopened.journal.snapshot.records.first?.exposure == .copyOrphaned)
+            #expect(reopened.journal.snapshot.localSnapshotID == id)
+            #expect(throws: ImageRecoveryLedger.Failure.consentRequired) { try reopened.snapshots.abandon(id: id, confirmed: false) }
+            try reopened.snapshots.abandon(id: id, confirmed: true)
+            #expect(reopened.journal.snapshot.localSnapshotID == nil)
+            #expect(try Data(contentsOf: selected) == bytes)
+        }
+    }
+
+    @Test func movedRegisteredSnapshotPreventsStartupAndIsPreserved() throws {
+        try withStore { root, lease, store, _ in
+            let selected = root.deletingLastPathComponent().appendingPathComponent("selected")
+            let bytes = Data([4, 5, 6])
+            try bytes.write(to: selected)
+            let fd = open(selected.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+            guard fd >= 0 else { throw POSIXError(.EIO) }
+            defer { close(fd) }
+            let first = try ImageInstallationOwner.open(lease: lease, keys: store)
+            let id = try first.journal.reserveCopy()
+            _ = try first.snapshots.capture(id: id, source: fd)
+            let original = root.appendingPathComponent("image-\(id.uuidString.lowercased())")
+            let moved = root.appendingPathComponent("moved-file")
+            #expect(rename(original.path, moved.path) == 0)
+            #expect(throws: ImageInstallationOwner.Failure.recoveryRequired) { try ImageInstallationOwner.open(lease: lease, keys: store) }
+            #expect(try Data(contentsOf: moved) == bytes)
+            #expect(try Data(contentsOf: selected) == bytes)
+        }
+    }
+
     @Test func unavailablePromotionLeavesPendingStateAndCanResumeSafely() throws {
         let system = NativeKeychainOperations.system
         var operations = system
