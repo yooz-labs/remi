@@ -13,7 +13,15 @@ import { createInterface } from 'node:readline';
 const mode = process.argv[2];
 const statsPath = process.argv[3];
 if (
-  !['matching', 'wrong', 'held', 'legacy', 'rootheld', 'rootheld-wrong'].includes(mode) ||
+  ![
+    'matching',
+    'wrong',
+    'held',
+    'legacy',
+    'rootheld',
+    'rootheld-wrong',
+    'manual-reconnect',
+  ].includes(mode) ||
   !statsPath
 )
   throw new Error('owned test arguments required');
@@ -26,7 +34,8 @@ while (
 ) {
   parent = generateKeyPairSync('ed25519');
 }
-const child = mode.endsWith('wrong') ? generateKeyPairSync('ed25519') : parent;
+const child =
+  mode.endsWith('wrong') || mode === 'manual-reconnect' ? generateKeyPairSync('ed25519') : parent;
 const otherParent = generateKeyPairSync('ed25519');
 const digest = (key: typeof parent.publicKey) =>
   createHash('sha256').update(raw(key)).digest('hex');
@@ -43,6 +52,9 @@ const stats = {
   childHello: 0,
   child2Auth: 0,
   rootHelloHeld: 0,
+  rootOpens: 0,
+  rootLegacyHello: 0,
+  rootHello: 0,
 };
 const publish = () => {
   writeFileSync(`${statsPath}.tmp`, JSON.stringify(stats));
@@ -51,6 +63,8 @@ const publish = () => {
 publish();
 const heldChallenges: Array<() => void> = [];
 const heldRootHellos: Array<() => void> = [];
+const rootClosers = new Set<() => void>();
+let reconnectLegacy = false;
 type State = { role: 'root' | 'root2' | 'child' | 'child2'; challenge: Buffer; admitted: boolean };
 function listener(role: State['role']) {
   const key =
@@ -67,11 +81,16 @@ function listener(role: State['role']) {
     },
     websocket: {
       open(ws) {
+        if (role === 'root') {
+          stats.rootOpens++;
+          rootClosers.add(() => ws.close());
+          publish();
+        }
         if (role === 'child') {
           stats.childOpens++;
           publish();
         }
-        if (role === 'root' && mode === 'legacy') {
+        if (role === 'root' && (mode === 'legacy' || reconnectLegacy)) {
           ws.data.admitted = true;
           return;
         }
@@ -117,11 +136,22 @@ function listener(role: State['role']) {
             }),
           );
         } else if (message.type === 'hello' && ws.data.admitted) {
+          if (role === 'root') {
+            stats.rootHello++;
+            publish();
+          }
+          if (role === 'root' && reconnectLegacy) {
+            stats.rootLegacyHello++;
+            publish();
+          }
           if (role === 'child') {
             stats.childHello++;
             publish();
           }
-          if (role === 'root' && mode.startsWith('rootheld')) {
+          if (
+            role === 'root' &&
+            (mode.startsWith('rootheld') || (mode === 'manual-reconnect' && reconnectLegacy))
+          ) {
             stats.rootHelloHeld++;
             publish();
             heldRootHellos.push(() => ws.send(JSON.stringify(hello)));
@@ -161,6 +191,11 @@ try {
   for await (const line of createInterface({ input: process.stdin })) {
     if (line === 'release') for (const challenge of heldChallenges.splice(0)) challenge();
     if (line === 'release-root') for (const hello of heldRootHellos.splice(0)) hello();
+    if (line === 'switch-legacy' || line === 'switch-valid') {
+      reconnectLegacy = line === 'switch-legacy';
+      for (const close of rootClosers) close();
+      rootClosers.clear();
+    }
   }
 } finally {
   clearTimeout(deadline);

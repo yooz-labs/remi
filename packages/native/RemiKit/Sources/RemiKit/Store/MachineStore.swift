@@ -375,6 +375,7 @@ public final class MachineStore {
     @ObservationIgnored var ownedBeforeRecoveryAdmission: (@MainActor () async -> Void)?
     @ObservationIgnored var ownedBeforeChildSignature: (@Sendable () async throws -> Void)?
     @ObservationIgnored var ownedBeforeParentHello: (@Sendable () async -> Void)?
+    @ObservationIgnored var ownedBeforeParentReconnectState: (@Sendable () async -> Void)?
     var ownedRecoveryCoordinator: MachineRecoveryCoordinator? { recoveryCoordinator }
     func ownedConnectionID(_ endpoint: MachineEndpoint) -> ObjectIdentifier? { connections[endpoint].map(ObjectIdentifier.init) }
     func ownedObserveParentHello(_ endpoint: MachineEndpoint, key: Data?) {
@@ -2284,6 +2285,7 @@ public final class MachineStore {
         let pushGeneration = try? pushStore?.generation()
         #if DEBUG
         let beforeParentHello = ownedBeforeParentHello
+        let beforeParentReconnectState = ownedBeforeParentReconnectState
         #endif
         connectionGenerations[endpoint] = generation
         parentByConnection[endpoint] = parent
@@ -2324,6 +2326,14 @@ public final class MachineStore {
                     }
                 } else { epoch = nil }
                 Task { @MainActor [weak self] in
+                    #if DEBUG
+                    if endpoint == parent {
+                        switch state {
+                        case .reachabilityFailed, .retrying: await beforeParentReconnectState?()
+                        default: break
+                        }
+                    }
+                    #endif
                     if let epoch, parentHelloFence?.isCurrent(epoch) != true { return }
                     self?.receive(state, from: endpoint, generation: generation)
                 }

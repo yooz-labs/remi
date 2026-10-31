@@ -359,5 +359,90 @@ struct DirectChildKeyIntegrationTests {
         }
         await cleanup()
     }
+
+    @Test(arguments: ["legacy", "matching"])
+    func learnedManualRootCannotDowngradeOnReconnect(_ scenario: String) async throws {
+        let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Integration/direct-child-key-peer.ts")
+        let peer = Process(), input = Pipe(), output = Pipe()
+        let folder = try OwnedRecoveryFixture.configure(peer, script: script,
+            arguments: [scenario == "legacy" ? "manual-reconnect" : "matching", "stats.json"])
+        peer.standardInput = input; peer.standardOutput = output; peer.standardError = FileHandle.standardError
+        try peer.run()
+        func cleanup() async {
+            try? input.fileHandleForWriting.close()
+            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while peer.isRunning && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+            if peer.isRunning { peer.terminate() }
+            let end = ContinuousClock.now.advanced(by: .seconds(2))
+            while peer.isRunning && ContinuousClock.now < end { try? await Task.sleep(for: .milliseconds(20)) }
+            #expect(!peer.isRunning)
+            if !peer.isRunning { try? FileManager.default.removeItem(at: folder) }
+        }
+        var store: MachineStore?
+        let reconnectGate = OwnedChildSignGate()
+        do {
+            var line = Data()
+            for try await byte in output.fileHandleForReading.bytes { if byte == 10 { break }; line.append(byte) }
+            let info = try #require(JSONSerialization.jsonObject(with: line) as? [String: Any])
+            let rootPort = try #require(info["rootPort"] as? Int), childPort = try #require(info["childPort"] as? Int)
+            let endpoint = MachineEndpoint(host: "127.0.0.1", port: rootPort)
+            let subject = MachineStore(endpoints: [endpoint], identity: ClientIdentity(), clientVersion: "test", clientId: "owned")
+            store = subject
+            subject.ownedBeforeParentReconnectState = { await reconnectGate.hold() }
+            subject.start()
+            let initial = ContinuousClock.now.advanced(by: .seconds(5))
+            while subject.machines.first?.status != .connected && ContinuousClock.now < initial { try await Task.sleep(for: .milliseconds(10)) }
+            try #require(subject.machines.first?.status == .connected)
+            let statsFile = folder.appendingPathComponent("stats.json")
+            func stats() throws -> [String: Int] {
+                try #require(JSONSerialization.jsonObject(with: Data(contentsOf: statsFile)) as? [String: Int])
+            }
+            #expect(try stats()["rootAuth"] == 1, "The initially unpinned root really authenticated")
+            let generation = try #require(subject.connectionGenerations[endpoint])
+            let originalSocketOwner = try #require(subject.ownedConnectionID(endpoint))
+            try input.fileHandleForWriting.write(contentsOf: Data((scenario == "legacy" ? "switch-legacy\n" : "switch-valid\n").utf8))
+            let deadline = ContinuousClock.now.advanced(by: .seconds(8))
+            while ContinuousClock.now < deadline {
+                let entered = await reconnectGate.entered
+                let opened = try stats()["rootOpens", default: 0]
+                if entered && opened >= 2 { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            try #require(await reconnectGate.entered, "Store route retirement must be held for the same actor reconnect")
+            try #require(subject.ownedConnectionID(endpoint) == originalSocketOwner, "Reconnect must use the original RemiConnection")
+            while ContinuousClock.now < deadline {
+                let current = try stats()
+                if scenario == "legacy", current["rootHelloHeld", default: 0] > 0 { break }
+                if scenario == "matching", current["rootHello", default: 0] >= 2 { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(try stats()["rootOpens", default: 0] >= 2)
+            if scenario == "legacy" {
+                try #require(try stats()["rootHelloHeld"] == 1)
+                try input.fileHandleForWriting.write(contentsOf: Data("release-root\n".utf8))
+            }
+            else { #expect(try stats()["rootAuth", default: 0] >= 2) }
+            try await Task.sleep(for: .milliseconds(100))
+            let response = try JSONDecoder().decode(SessionListResponse.self, from: fixture("session_list_response", port: childPort))
+            subject.receive(.sessions(response), from: endpoint, generation: generation)
+            let end = ContinuousClock.now.advanced(by: .seconds(3))
+            while ContinuousClock.now < end {
+                let current = try stats()
+                if current["childAuth", default: 0] > 0 || subject.connectionGenerations[endpoint] == nil { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(try stats()["childAuth"] == (scenario == "legacy" ? 0 : 1),
+                "A learned root key must survive reconnect; the matching key remains usable")
+            await reconnectGate.open()
+            subject.stop()
+        } catch {
+            await reconnectGate.open()
+            store?.stop()
+            await cleanup()
+            throw error
+        }
+        await cleanup()
+    }
 }
 #endif
