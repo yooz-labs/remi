@@ -72,4 +72,16 @@ import Testing
             #expect(throws: (any Error).self) { try lease.verifyIdentity() }
         }
     }
+
+    @Test func replacedRootDirectoryInvalidatesTheLease() throws {
+        try withDirectory { url, directory in
+            let lease = try ImageDirectoryLease(directory: directory)
+            let saved = url.deletingLastPathComponent().appendingPathComponent("saved-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: saved) }
+            #expect(rename(url.path, saved.path) == 0)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false,
+                                                    attributes: [.posixPermissions: 0o700])
+            #expect(throws: (any Error).self) { try lease.verifyIdentity() }
+        }
+    }
 }
