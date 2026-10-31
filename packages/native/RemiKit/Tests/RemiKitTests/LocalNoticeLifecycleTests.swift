@@ -19,6 +19,7 @@ import UserNotifications
     var removals: [[String]] = []
     var delayedRemovals: [[String]] = []
     var delayRemovals = false
+    var onRemove: (() -> Void)?
     var identifiersAvailable = true
     var failNextAdd = false
     var boundary: LocalNoticeBoundary {
@@ -48,6 +49,7 @@ import UserNotifications
             removals.append(ids)
             if delayRemovals { delayedRemovals.append(ids) }
             else { for id in ids { requests[id] = nil } }
+            onRemove?()
         })
     }
     func finishHeldAdd() { held?.resume(); held = nil }
@@ -246,5 +248,35 @@ private enum NoticeTestTimeout: Error { case noEvent }
         #expect(os.requests.values.map(\.content.body) == ["Second"])
         lifecycle.schedule(intent(owner: first, body: "Forbidden"))
         #expect(os.requests.values.map(\.content.body) == ["Second"])
+    }
+
+    @Test func forgetRetriesExactOwnerAfterCleanupTransactionFails() async throws {
+        let parent = try directory(), original = parent.appendingPathComponent("original")
+        let moved = parent.appendingPathComponent("moved"), replacement = parent.appendingPathComponent("replacement")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        try FileManager.default.createDirectory(at: original, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: replacement, withIntermediateDirectories: false)
+        let ledger = try LocalNoticeLedger(directory: original), os = OwnedLocalNoticeOS()
+        defer { ledger.close() }
+        let keys = try LocalNoticeKeys(root: Data(repeating: 39, count: 32)), owner = UUID()
+        let lifecycle = LocalNoticeLifecycle(ledger: ledger, keys: keys, boundary: os.boundary)
+        lifecycle.schedule(intent(owner: owner))
+        let ownerIndex = try keys.ownerIndex(runtimeOwner: owner)
+        try await until { os.requests.count == 1 && (try? ledger.records(owner: ownerIndex).first?.effect) == .settledSuccess }
+        var swapError: (any Error)?
+        os.onRemove = {
+            os.onRemove = nil
+            do {
+                try FileManager.default.moveItem(at: original, to: moved)
+                try FileManager.default.createSymbolicLink(at: original, withDestinationURL: replacement)
+            } catch { swapError = error }
+        }
+        #expect(!lifecycle.retireOwner(owner))
+        try #require(swapError == nil)
+        try FileManager.default.removeItem(at: original)
+        try FileManager.default.moveItem(at: moved, to: original)
+        #expect(lifecycle.retireOwner(owner))
+        #expect(try ledger.counts().tickets == 0)
+        #expect(try ledger.pendingForgetOwners().count == 1)
     }
 }

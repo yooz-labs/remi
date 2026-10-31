@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import Testing
 @testable import RemiKit
 
@@ -107,9 +108,34 @@ import Testing
         defer { ledger.close(); try? FileManager.default.removeItem(at: dir) }
         try ledger.createOwner(owner); try ledger.invalidateOwner(owner)
         #expect(try ledger.pendingForgetOwners() == [owner])
+        // If the profile write or exact-ID cleanup fails, the same live owner can retry.
+        try ledger.invalidateOwner(owner)
         try ledger.finishForget(owner)
         #expect(try ledger.pendingForgetOwners().isEmpty)
         #expect(throws: LocalNoticeError.changed) { try ledger.finishForget(owner) }
+        #expect(throws: LocalNoticeError.changed) { try ledger.invalidateOwner(owner) }
+    }
+
+    @Test func versionOneJournalMigratesWithoutLosingHistoricalTickets() throws {
+        let dir = try directory(), keys = try LocalNoticeKeys(root: Data(repeating: 38, count: 32))
+        let (owner, question) = try indexes(keys), ledger = try LocalNoticeLedger(directory: dir)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try ledger.createOwner(owner)
+        let ticket = try ledger.prepare(owner: owner, question: question)
+        let issued = try marker(keys, ticket)
+        ledger.close()
+        var database: OpaquePointer?
+        let status = sqlite3_open_v2(dir.appendingPathComponent("local-notifications.sqlite").path,
+                                     &database, SQLITE_OPEN_READWRITE, nil)
+        #expect(status == SQLITE_OK)
+        let db = try #require(database)
+        #expect(sqlite3_exec(db, "ALTER TABLE owner DROP COLUMN pending_forget; PRAGMA user_version=1", nil, nil, nil) == SQLITE_OK)
+        #expect(sqlite3_close(db) == SQLITE_OK)
+        let migrated = try LocalNoticeLedger(directory: dir)
+        defer { migrated.close() }
+        #expect(try migrated.pendingForgetOwners().isEmpty)
+        #expect(try migrated.classify(issued, keys: keys, systemIdentifier: issued.systemIdentifier) == .historicalActive)
+        #expect(try migrated.record(ticket).activity == .active)
     }
 
     @Test func retirementCompactsThousandsWithoutCrossingLiveHole() throws {

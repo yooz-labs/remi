@@ -161,9 +161,12 @@ import RemiPush
         guard let index = owners[owner] else { return true }
         do {
             try ledger.invalidateOwner(index)
-            for (_, value) in old { try cleanupIfSettled(value.ticket, deferRetirement: running.contains(value.token)) }
-            for values in oldRetained.values {
-                for value in values { try cleanupIfSettled(value.ticket, deferRetirement: running.contains(value.token)) }
+            let oldValues = Array(old.values) + oldRetained.values.flatMap { $0 }
+            // A prior attempt may already have frozen the in-memory entries before cleanup
+            // failed. Re-enumerate the exact current owner so retry can finish that work.
+            for record in try ledger.records(owner: index) {
+                let inFlight = oldValues.contains { $0.ticket == record.ticket && running.contains($0.token) }
+                try cleanupIfSettled(record.ticket, deferRetirement: inFlight)
             }
             return true
         } catch { fail(); return false }

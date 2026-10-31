@@ -95,7 +95,11 @@ final class LocalNoticeLedger: @unchecked Sendable {
                     try execute("CREATE TABLE retired_range (owner BLOB NOT NULL REFERENCES owner(id), lo INTEGER NOT NULL CHECK(lo>0), hi INTEGER NOT NULL CHECK(hi>=lo), PRIMARY KEY(owner,lo))")
                     try execute("PRAGMA application_id=1380797520") // RMLP
                     try execute("PRAGMA user_version=1")
-                } else if version != 1 || application != 1380797520 { throw LocalNoticeError.corrupt }
+                } else if ![1, 2].contains(version) || application != 1380797520 { throw LocalNoticeError.corrupt }
+                if version != 2 {
+                    try execute("ALTER TABLE owner ADD COLUMN pending_forget INTEGER NOT NULL DEFAULT 0 CHECK(pending_forget IN(0,1))")
+                    try execute("PRAGMA user_version=2")
+                }
                 // Only the exclusive owner can open this store, so prior ADDING calls have lost their process.
                 try execute("UPDATE ticket SET effect=5 WHERE effect=2")
                 try validate()
@@ -286,8 +290,41 @@ final class LocalNoticeLedger: @unchecked Sendable {
             guard currentOwners.contains(owner) else { throw LocalNoticeError.changed }
             try transaction {
                 _ = try ownerState(owner)
-                try statement("UPDATE owner SET retired=1 WHERE id=?1") { stmt in try bind(owner, to: stmt, at: 1); try done(stmt) }
+                try statement("UPDATE owner SET retired=1,pending_forget=1 WHERE id=?1 AND (retired=0 OR pending_forget=1)") { stmt in
+                    try bind(owner, to: stmt, at: 1); try done(stmt)
+                    guard sqlite3_changes(database) == 1 else { throw LocalNoticeError.changed }
+                }
                 try statement("UPDATE ticket SET activity=2 WHERE owner=?1") { stmt in try bind(owner, to: stmt, at: 1); try done(stmt) }
+            }
+        }
+    }
+
+    /// Opaque owner indexes only. A historical index is not associated with a current profile.
+    func pendingForgetOwners() throws -> [Data] {
+        try withLock {
+            try statement("SELECT id FROM owner WHERE pending_forget=1 ORDER BY id") { stmt in
+                var values: [Data] = []
+                while true {
+                    let result = sqlite3_step(stmt)
+                    if result == SQLITE_DONE { return values }
+                    guard result == SQLITE_ROW else { throw Self.sqliteError(result) }
+                    guard values.count < Self.maximumRows else { throw LocalNoticeError.corrupt }
+                    values.append(try blob(stmt, at: 0))
+                }
+            }
+        }
+    }
+
+    /// Call only after the current-process Store observes the profile deletion. A prior
+    /// process's pending index cannot be mapped to a current profile or completed here.
+    func finishForget(_ owner: Data) throws {
+        try withLock {
+            guard currentOwners.contains(owner) else { throw LocalNoticeError.changed }
+            try transaction {
+                try statement("UPDATE owner SET pending_forget=0 WHERE id=?1 AND retired=1 AND pending_forget=1") { stmt in
+                    try bind(owner, to: stmt, at: 1); try done(stmt)
+                    guard sqlite3_changes(database) == 1 else { throw LocalNoticeError.changed }
+                }
             }
         }
     }
@@ -385,6 +422,7 @@ final class LocalNoticeLedger: @unchecked Sendable {
     }
     private func validate() throws {
         guard try integer("SELECT count(*) FROM ticket WHERE seq>(SELECT highwater FROM owner WHERE id=ticket.owner)") == 0,
+              try integer("SELECT count(*) FROM owner WHERE pending_forget=1 AND retired=0") == 0,
               try integer("SELECT count(*) FROM retired_range WHERE hi>(SELECT highwater FROM owner WHERE id=retired_range.owner)") == 0,
               try integer("SELECT count(*) FROM retired_range a JOIN retired_range b ON a.owner=b.owner AND a.lo<b.lo AND a.hi>=b.lo") == 0,
               try integer("SELECT count(*) FROM ticket t JOIN retired_range r ON t.owner=r.owner AND t.seq BETWEEN r.lo AND r.hi") == 0,
