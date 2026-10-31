@@ -80,6 +80,12 @@ private struct GenericImageFrame: Encodable, Sendable {
             for type in ["image_upload_begin", "image_insert_request"] {
                 let frame = GenericImageFrame(type: type, id: UUID().uuidString.lowercased(), timestamp: Date().ISO8601Format())
                 await #expect(throws: PaneTransportBlocked.self) { try await client.send(frame) }
+                let encoded = try JSONEncoder().encode(frame)
+                let text = try #require(String(data: encoded, encoding: .utf8))
+                let incorrectlyPermissivePolicy = PaneTransportPolicy(directSecureTransport: true, relaySemanticChild: true)
+                await #expect(throws: PaneTransportBlocked.self) {
+                    try await client.sendEncodedFrame(text, policy: incorrectlyPermissivePolicy)
+                }
             }
             let chat = UserInputMessage(id: UUID().uuidString.lowercased(), timestamp: Date().ISO8601Format(),
                 sessionId: peer.sessionID, content: #"A quoted "type":"image_upload_begin" is ordinary text"#)
