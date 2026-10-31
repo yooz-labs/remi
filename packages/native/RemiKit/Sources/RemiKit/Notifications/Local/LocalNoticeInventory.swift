@@ -32,9 +32,14 @@ final class LocalNoticeInventoryBudget: @unchecked Sendable {
     #if DEBUG
     /// Synthetic test seam. Read under the lock and invoked only after releasing it.
     private var ownedAfterChunkReservation: (@Sendable () -> Void)?
+    private var ownedWaitingChargers = 0
     func installOwnedChunkHook(_ hook: @escaping @Sendable () -> Void) {
         condition.lock(); defer { condition.unlock() }
         ownedAfterChunkReservation = hook
+    }
+    func ownedCounters() -> (remaining: Int, reserved: Int, waiting: Int) {
+        condition.lock(); defer { condition.unlock() }
+        return (remainingBytes, reservedBytes, ownedWaitingChargers)
     }
     private func callOwnedChunkHook() {
         condition.lock(); let hook = ownedAfterChunkReservation; condition.unlock()
@@ -51,7 +56,15 @@ final class LocalNoticeInventoryBudget: @unchecked Sendable {
     func charge(_ count: Int) throws {
         condition.lock(); defer { condition.unlock() }
         guard count >= 0, count <= LocalNoticeInventoryLimits.maximumMetadataBytes else { fail(.capacity); throw LocalNoticeError.capacity }
-        while failure == nil && count > remainingBytes && reservedBytes > 0 { condition.wait() }
+        while failure == nil && count > remainingBytes && reservedBytes > 0 {
+            #if DEBUG
+            ownedWaitingChargers += 1
+            #endif
+            condition.wait()
+            #if DEBUG
+            ownedWaitingChargers -= 1
+            #endif
+        }
         if let failure { throw failure }
         guard count <= remainingBytes else { fail(.capacity); throw LocalNoticeError.capacity }
         remainingBytes -= count

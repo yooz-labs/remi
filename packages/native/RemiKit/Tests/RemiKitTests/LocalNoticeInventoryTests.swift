@@ -200,7 +200,7 @@ private final class OwnedBudgetOutcomes: @unchecked Sendable {
         let reader = LocalNoticeInventory(boundary: boundary, timeout: .milliseconds(50))
         let result = Task { try await reader.read() }
         // Bound the synthetic worker even if a regression blocks MainActor's timeout path.
-        let fallback = DispatchWorkItem { gate.release() }
+        let fallback = DispatchWorkItem(block: { @Sendable in gate.release() })
         DispatchQueue.global().asyncAfter(deadline: .now() + 1, execute: fallback)
         try await until { gate.entered }
         do { _ = try await result.value; Issue.record("A held half cannot become a complete inventory") }
@@ -208,6 +208,13 @@ private final class OwnedBudgetOutcomes: @unchecked Sendable {
         #expect(!gate.released, "Timeout must not wait for the held callback traversal")
         gate.release(); fallback.cancel()
         try await until { gate.finished }
+    }
+
+    @Test func ownedFallbackCanRunOutsideMainActor() async throws {
+        let gate = OwnedInventoryChunkGate()
+        let fallback = DispatchWorkItem(block: { @Sendable in gate.release() })
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(20), execute: fallback)
+        try await until { gate.released }
     }
 
     @Test func concurrentCallbackWaitsForUnusedChunkRefundWithoutFalseOverflow() async throws {
@@ -223,10 +230,12 @@ private final class OwnedBudgetOutcomes: @unchecked Sendable {
             do { try budget.charge(LocalNoticeInventoryLimits.maximumMetadataBytes - 1); outcomes.set("second", "ok") }
             catch { outcomes.set("second", "failed") }
         }
-        try await until { outcomes.get("second") != nil }
+        try await until { outcomes.get("second") != nil && budget.ownedCounters().waiting > 0 }
         gate.release()
         try await until { outcomes.get("first") != nil && outcomes.get("second") != "started" }
         #expect(outcomes.get("first") == "ok"); #expect(outcomes.get("second") == "ok")
+        let counters = budget.ownedCounters()
+        #expect(counters.remaining == 0 && counters.reserved == 0 && counters.waiting == 0)
     }
 
     @Test func invalidationWakesCallbackWaitingForReservedBudget() async throws {
@@ -242,10 +251,12 @@ private final class OwnedBudgetOutcomes: @unchecked Sendable {
             do { try budget.charge(LocalNoticeInventoryLimits.maximumMetadataBytes); outcomes.set("second", "unexpected") }
             catch { outcomes.set("second", "stopped") }
         }
-        try await until { outcomes.get("second") != nil }
+        try await until { outcomes.get("second") != nil && budget.ownedCounters().waiting > 0 }
         budget.invalidate()
         try await until { outcomes.get("second") == "stopped" }
         gate.release()
         try await until { outcomes.get("first") == "stopped" }
+        let counters = budget.ownedCounters()
+        #expect(counters.remaining >= 0 && counters.reserved == 0 && counters.waiting == 0)
     }
 }
