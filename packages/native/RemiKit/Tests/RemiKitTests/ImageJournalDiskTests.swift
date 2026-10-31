@@ -66,4 +66,24 @@ import Testing
             #expect(try Data(contentsOf: target) == marker)
         }
     }
+
+    @Test func unprovenCrashLeftoversBlockUseAndAreNotRemoved() throws {
+        try withStore { root, disk in
+            let valid = try ImageRecoveryLedger().encodeJournal(secret: secret)
+            try disk.initializeIfProvenFresh(valid)
+            let leftover = root.appendingPathComponent(".image-journal-unknown")
+            let marker = Data([9, 8, 7])
+            try marker.write(to: leftover)
+            #expect(throws: (any Error).self) { try disk.load() }
+            #expect(throws: (any Error).self) { try disk.replace(expected: valid, with: valid) }
+            #expect(try Data(contentsOf: leftover) == marker)
+        }
+        try withStore { root, disk in
+            let leftover = root.appendingPathComponent(".image-journal-unknown")
+            try Data([1]).write(to: leftover)
+            let valid = try ImageRecoveryLedger().encodeJournal(secret: secret)
+            #expect(throws: (any Error).self) { try disk.initializeIfProvenFresh(valid) }
+            #expect(FileManager.default.fileExists(atPath: leftover.path))
+        }
+    }
 }
