@@ -90,6 +90,11 @@ private struct GenericImageFrame: Encodable, Sendable {
             let chat = UserInputMessage(id: UUID().uuidString.lowercased(), timestamp: Date().ISO8601Format(),
                 sessionId: peer.sessionID, content: #"A quoted "type":"image_upload_begin" is ordinary text"#)
             try await client.send(chat)
+            let header = WireHeader(id: UUID().uuidString.lowercased(), timestamp: "2026-10-31T00:00:00.000Z",
+                                    sessionId: peer.sessionID)
+            let binding = AttachedBinding(harness: .claude, harnessSessionId: "09a9e195-b1af-4bd5-b9bf-e64855b16d36")
+            let terminal = try TerminalViewMessage.open(SessionTerminalOpen(header: header, binding: binding)).encodedFrame()
+            try await client.sendEncodedFrame(terminal, policy: PaneTransportPolicy(directSecureTransport: true, relaySemanticChild: false))
             try await client.send(SessionListRequestMessage(id: UUID().uuidString.lowercased(), timestamp: Date().ISO8601Format()))
             let deadline = ContinuousClock.now.advanced(by: .seconds(5))
             while ContinuousClock.now < deadline {
@@ -99,6 +104,7 @@ private struct GenericImageFrame: Encodable, Sendable {
             #expect(await observations.snapshot().sessions)
             #expect(peer.snapshot().images == 0)
             #expect(peer.snapshot().inputs == 1)
+            #expect(peer.snapshot().terminals == 1)
             await client.stop()
         } catch {
             await connection?.stop(); #expect(await peer.stop()); throw error

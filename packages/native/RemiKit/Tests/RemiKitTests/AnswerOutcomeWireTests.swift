@@ -34,6 +34,7 @@ final class OwnedAnswerPeer: @unchecked Sendable {
     private var resultCount = 0
     private var imageCount = 0
     private var userInputCount = 0
+    private var terminalCount = 0
     let sessionID: String
     let questionID: String
 
@@ -79,10 +80,11 @@ final class OwnedAnswerPeer: @unchecked Sendable {
 
     var pinnedPublicKey: String { publicKey.base64EncodedString() }
     func snapshot() -> (port: UInt16?, ended: Bool, failure: PeerError?, answers: Int, results: Int,
-                        rejected: Bool, connectionReady: Bool, connectionEnded: Bool, images: Int, inputs: Int) {
+                        rejected: Bool, connectionReady: Bool, connectionEnded: Bool, images: Int, inputs: Int,
+                        terminals: Int) {
         lock.lock(); defer { lock.unlock() }
         return (port, listenerEnded && connectionEnded, failure, answerCount, resultCount, inputRejected,
-                connectionReady, connectionEnded, imageCount, userInputCount)
+                connectionReady, connectionEnded, imageCount, userInputCount, terminalCount)
     }
 
     func start() {
@@ -226,6 +228,8 @@ final class OwnedAnswerPeer: @unchecked Sendable {
                 self.sendAnswer(requestID: requestID, sessionID: sessionID, questionID: questionID, on: connection)
             case "user_input":
                 self.lock.lock(); self.userInputCount += 1; self.lock.unlock()
+            case "session_terminal_open":
+                self.lock.lock(); self.terminalCount += 1; self.lock.unlock()
             default:
                 if type.utf8.starts(with: "image_upload_".utf8) || type.utf8.starts(with: "image_insert_".utf8) {
                     self.lock.lock(); self.imageCount += 1; self.lock.unlock()
