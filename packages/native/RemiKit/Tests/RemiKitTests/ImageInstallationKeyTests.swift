@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import Security
@@ -317,6 +318,43 @@ private final class BlockingImageCopy: @unchecked Sendable {
             #expect(throws: ImageInstallationOwner.Failure.recoveryRequired) { try ImageInstallationOwner.open(lease: lease, keys: store) }
             #expect(try Data(contentsOf: moved) == bytes)
             #expect(try Data(contentsOf: selected) == bytes)
+        }
+    }
+
+    @Test func olderAuthenticatedJournalCannotEraseARecordedInsertionFence() throws {
+        try withStore { root, lease, store, _ in
+            let selected = root.deletingLastPathComponent().appendingPathComponent("selected")
+            let bytes = Data([4, 5, 6])
+            try bytes.write(to: selected)
+            let fd = open(selected.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+            guard fd >= 0 else { throw POSIXError(.EIO) }
+            defer { close(fd) }
+            let journalURL = root.appendingPathComponent(".image-journal")
+            let older: Data = try {
+                let owner = try ImageInstallationOwner.open(lease: lease, keys: store)
+                let previous = try Data(contentsOf: journalURL)
+                let id = try owner.journal.reserveCopy()
+                _ = try owner.snapshots.capture(id: id, source: fd)
+                let loaded = try store.load()
+                let key = try #require(loaded)
+                let fingerprint = try ImageRecoveryFingerprint.make(secret: key.secret, machineKey: Data(repeating: 0x42, count: 32),
+                    sessionID: "00112233-4455-4677-8899-aabbccddeeff",
+                    binding: AttachedBinding(harness: .claude, harnessSessionId: "owned-thread"),
+                    imageDigest: Data(SHA256.hash(data: bytes)))
+                try owner.journal.finishCopy(id, fingerprint: fingerprint)
+                try owner.journal.markPartialPossible(id)
+                try owner.journal.markStagingPossible(id)
+                try owner.journal.markStaged(id, expiry: "2026-11-01T00:00:00.000Z")
+                try owner.snapshots.clearAfterStaging(id: id)
+                try owner.journal.markInsertionPossible(id)
+                return previous
+            }()
+            let key = try store.load()
+            try older.write(to: journalURL)
+            #expect(chmod(journalURL.path, 0o600) == 0)
+            #expect(throws: (any Error).self) { try ImageInstallationOwner.open(lease: lease, keys: store) }
+            #expect(try Data(contentsOf: journalURL) == older)
+            #expect(try store.load() == key)
         }
     }
 
