@@ -142,6 +142,7 @@ import Testing
             let marker = root.appendingPathComponent(".image-installation")
             let unknown = Data("unknown".utf8)
             try unknown.write(to: marker)
+            #expect(chmod(marker.path, 0o600) == 0)
             #expect(throws: (any Error).self) { try ImageInstallationOwner.open(lease: lease, keys: store) }
             #expect(try store.load() == pending)
             #expect(try Data(contentsOf: marker) == unknown)
@@ -176,6 +177,57 @@ import Testing
             #expect(reopened.journal.snapshot.records.first?.exposure == .copyOrphaned)
             try reopened.snapshots.abandon(id: id, confirmed: true)
             #expect(reopened.journal.snapshot.records.isEmpty)
+        }
+    }
+
+    @Test func unavailablePromotionLeavesPendingStateAndCanResumeSafely() throws {
+        let system = NativeKeychainOperations.system
+        var operations = system
+        var first = true
+        operations.update = { query, values in
+            if first { first = false; return errSecNotAvailable }
+            return system.update(query, values)
+        }
+        try withStore(operations: operations) { root, lease, store, _ in
+            #expect(throws: (any Error).self) { try ImageInstallationOwner.open(lease: lease, keys: store) }
+            let loadedPending = try store.load()
+            let pending = try #require(loadedPending)
+            #expect(pending.phase == .pending)
+            #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(".image-journal").path))
+            let reopened = try ImageInstallationOwner.open(lease: lease, keys: store)
+            #expect(reopened.journal.snapshot.records.isEmpty)
+            let loadedReady = try store.load()
+            let ready = try #require(loadedReady)
+            #expect(ready.phase == .ready && ready.installation == pending.installation)
+        }
+    }
+
+    @Test func unknownReadyStateIsPreservedAndBlocksAdoption() throws {
+        try withStore { root, lease, store, _ in
+            _ = try ImageInstallationOwner.open(lease: lease, keys: store)
+            let loaded = try store.load()
+            let before = try #require(loaded)
+            let foreign = root.appendingPathComponent("unrelated")
+            let bytes = Data([9, 8, 7])
+            try bytes.write(to: foreign)
+            #expect(throws: ImageInstallationOwner.Failure.recoveryRequired) { try ImageInstallationOwner.open(lease: lease, keys: store) }
+            #expect(try store.load() == before)
+            #expect(try Data(contentsOf: foreign) == bytes)
+        }
+    }
+
+    @Test func pendingKeyCannotAdoptNonemptyJournal() throws {
+        try withStore { root, lease, store, _ in
+            let pending = try store.beginPending()
+            let marker = root.appendingPathComponent(".image-installation")
+            try Data("remi-image-installation-v1:\(pending.installation)\n".utf8).write(to: marker)
+            #expect(chmod(marker.path, 0o600) == 0)
+            let disk = ImageJournalDisk(lease: lease, secret: pending.secret)
+            try disk.initializeIfProvenFresh(ImageRecoveryLedger().encodeJournal(secret: pending.secret))
+            let owner = try ImageRecoveryJournal(disk: disk, secret: pending.secret)
+            _ = try owner.reserveCopy()
+            #expect(throws: ImageInstallationOwner.Failure.recoveryRequired) { try ImageInstallationOwner.open(lease: lease, keys: store) }
+            #expect(try store.load() == pending)
         }
     }
     #endif
