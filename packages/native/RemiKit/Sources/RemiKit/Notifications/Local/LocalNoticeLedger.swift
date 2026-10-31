@@ -320,6 +320,44 @@ final class LocalNoticeLedger: @unchecked Sendable {
         }
     }
 
+    /// Unassigned tracking records contain no stored destination or profile association.
+    func unassignedUncertainTickets() throws -> [Ticket] {
+        try withLock {
+            let ids = try statement("SELECT id FROM ticket WHERE effect=5 ORDER BY id") { stmt in
+                var values: [String] = []
+                while true {
+                    let result = sqlite3_step(stmt)
+                    if result == SQLITE_DONE { return values }
+                    guard result == SQLITE_ROW else { throw Self.sqliteError(result) }
+                    guard values.count < Self.maximumUncertain, let text = sqlite3_column_text(stmt, 0)
+                    else { throw LocalNoticeError.corrupt }
+                    values.append(String(cString: text))
+                }
+            }
+            var values: [Ticket] = []
+            for id in ids {
+                guard let record = try recordIfPresent(id) else { throw LocalNoticeError.changed }
+                let owner = try ownerState(record.ticket.owner)
+                if !currentOwners.contains(record.ticket.owner) && !owner.quarantined { values.append(record.ticket) }
+            }
+            return values
+        }
+    }
+
+    /// Only the separately confirmed, exact, currently unseen historical debt may use this.
+    /// Retirement revokes taps and leaves a compact tombstone; it does not confirm OS removal.
+    func abandonSelectedUncertain(_ ticket: Ticket) throws {
+        try withLock {
+            guard !currentOwners.contains(ticket.owner) else { throw LocalNoticeError.changed }
+            try transaction {
+                let record = try exact(ticket), owner = try ownerState(ticket.owner)
+                guard !owner.quarantined, record.effect == .crashUncertain else { throw LocalNoticeError.changed }
+                try update(ticket, sql: "DELETE FROM ticket WHERE id=?1")
+                try insertRetired(owner: ticket.owner, sequence: ticket.sequence)
+            }
+        }
+    }
+
     /// Current-process forget may retire exactly this owner; historical owners are not matched by endpoint/key.
     func invalidateOwner(_ owner: Data) throws {
         try withLock {

@@ -151,6 +151,7 @@ import UserNotifications
         #expect(try ledger.record(two).activity == .active)
         try recovery.abandonUnseen(selected, current: [])
         #expect(removed.isEmpty)
+        #expect(throws: LocalNoticeError.changed) { try recovery.abandonUnseen(selected, current: []) }
         #expect(throws: LocalNoticeError.changed) { try ledger.record(two) }
         #expect(try ledger.classify(markerTwo, keys: keys, systemIdentifier: markerTwo.systemIdentifier) == .retired)
         #expect(try ledger.record(one).activity == .active)
@@ -164,6 +165,7 @@ import UserNotifications
         let debts = try recovery.unassignedUncertain(), selected = try #require(debts.first)
         let visible: [LocalNoticeRecovery.Entry] = [.init(request: try request(markerTwo), deliveredAt: nil)]
         #expect(throws: LocalNoticeError.changed) { try recovery.abandonUnseen(selected, current: visible) }
+        #expect(throws: LocalNoticeError.unavailable) { try recovery.abandonUnseen(selected, current: nil) }
         let big = UNMutableNotificationContent()
         big.body = String(repeating: "x", count: LocalNoticeReconciler.maximumMetadataBytes + 1)
         let oversized: [LocalNoticeRecovery.Entry] = [.init(request: UNNotificationRequest(identifier: "big", content: big, trigger: nil), deliveredAt: nil)]

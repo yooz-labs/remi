@@ -17,6 +17,10 @@ import UserNotifications
         let deliveredAt: Date?
         let marker: LocalNoticeMarker
     }
+    struct UnassignedDebt: Equatable {
+        fileprivate let ticket: LocalNoticeLedger.Ticket
+        var identifierSuffix: String { String(ticket.requestID.suffix(8)) }
+    }
 
     private let ledger: LocalNoticeLedger
     private let keys: LocalNoticeKeys
@@ -80,5 +84,23 @@ import UserNotifications
         case .prepared, .adding:
             throw LocalNoticeError.corrupt
         }
+    }
+
+    /// These records have no proven profile association and expose only an opaque suffix to UI.
+    func unassignedUncertain() throws -> [UnassignedDebt] {
+        try ledger.unassignedUncertainTickets().map { UnassignedDebt(ticket: $0) }
+    }
+
+    /// After separate explicit confirmation of the late-banner risk, abandon one exact debt.
+    /// `current` must represent both complete pending and delivered OS inventories; nil means
+    /// the scan failed, never an empty center. No OS notification is removed by this operation.
+    func abandonUnseen(_ selection: UnassignedDebt, current: [Entry]?) throws {
+        guard let current else { throw LocalNoticeError.unavailable }
+        guard current.count <= LocalNoticeReconciler.maximumRequests else { throw LocalNoticeError.capacity }
+        _ = try LocalNoticeReconciler.inspectInventory(current.map(\.request))
+        let identifier = "remi.local.v1." + selection.ticket.requestID
+        guard !current.contains(where: { $0.request.identifier == identifier }),
+              try ledger.unassignedUncertainTickets().contains(selection.ticket) else { throw LocalNoticeError.changed }
+        try ledger.abandonSelectedUncertain(selection.ticket)
     }
 }
