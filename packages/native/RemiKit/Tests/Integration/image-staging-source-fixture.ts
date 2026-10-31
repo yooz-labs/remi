@@ -93,6 +93,8 @@ let chunks = 0;
 let completes = 0;
 let staged = 0;
 let insertions = 0;
+let dropInsertionResult = false;
+let droppedInsertionResults = 0;
 const adapter = new WebSocketAdapter(
   {
     host: '127.0.0.1',
@@ -152,7 +154,10 @@ const insertionHandlers = createImageInsertionHandlers({
   service: () => service,
   coordinator: () => coordinator,
   send: (id, response) => {
-    adapter.sendRaw(id, response);
+    if (dropInsertionResult) {
+      dropInsertionResult = false;
+      droppedInsertionResults++;
+    } else adapter.sendRaw(id, response);
   },
 });
 await adapter.start();
@@ -160,6 +165,14 @@ process.stdout.write(
   `${JSON.stringify({ port, sessionId, bindingId, publicKey: identity.publicKeyRaw, certPath })}\n`,
 );
 for await (const line of createInterface({ input: process.stdin })) {
+  if (line === 'rotate-binding') {
+    bindings.update(sessionId, generateId());
+    process.stdout.write(`${JSON.stringify({ rotated: true })}\n`);
+  }
+  if (line === 'drop-insertion-result') {
+    dropInsertionResult = true;
+    process.stdout.write(`${JSON.stringify({ dropArmed: true })}\n`);
+  }
   if (line === 'stats')
     process.stdout.write(
       `${JSON.stringify({
@@ -168,6 +181,7 @@ for await (const line of createInterface({ input: process.stdin })) {
         completes,
         staged,
         insertions,
+        droppedInsertionResults,
         outputBytes: Buffer.byteLength(output),
         containsNewline: /[\r\n]/u.test(output),
         referenceOnly: /^ @"[^"\r\n]+" $/u.test(output),
