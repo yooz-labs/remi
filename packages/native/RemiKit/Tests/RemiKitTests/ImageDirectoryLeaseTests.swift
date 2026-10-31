@@ -62,6 +62,16 @@ import Testing
         }
     }
 
+    @Test func separateLeaseCannotOpenTheSameRootInOneProcess() throws {
+        try withDirectory { url, parent, directory in
+            let first = try ImageDirectoryLease(parent: parent, rootName: url.lastPathComponent, directory: directory)
+            #expect(throws: ImageDirectoryLease.Failure.busy) {
+                try ImageDirectoryLease(parent: parent, rootName: url.lastPathComponent, directory: directory)
+            }
+            try first.verifyIdentity()
+        }
+    }
+
     @Test func replacedLockNameInvalidatesTheLease() throws {
         try withDirectory { url, parent, directory in
             let lease = try ImageDirectoryLease(parent: parent, rootName: url.lastPathComponent, directory: directory)
