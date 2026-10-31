@@ -1,6 +1,6 @@
 import Foundation
 
-/// Classifies only oversized direct-socket envelopes before the general JSON decoder (#1313).
+/// Classifies oversized inbound envelopes before the general JSON decoder (#1313).
 /// Small frames still go through the existing decoder and the image family's strict codec.
 /// A large image frame, or a large frame whose top-level type cannot be identified safely,
 /// is refused. The scanner reads the original Data in place and never builds a JSON object.
