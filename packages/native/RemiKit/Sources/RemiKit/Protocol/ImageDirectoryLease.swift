@@ -12,6 +12,7 @@ final class ImageDirectoryLease {
 
     private let directory: Int32
     private let lock: Int32
+    private var retired = false
     private static let lockName = ".image-lock"
 
     init(directory source: Int32) throws {
@@ -45,10 +46,14 @@ final class ImageDirectoryLease {
     }
 
     func verifyIdentity() throws {
+        guard !retired else { throw Failure.invalidLock }
         var root = stat()
         guard fstat(directory, &root) == 0, (root.st_mode & S_IFMT) == S_IFDIR,
               root.st_uid == geteuid(), (root.st_mode & 0o7777) == 0o700,
-              Self.sameLock(directory: directory, lock: lock) else { throw Failure.invalidLock }
+              Self.sameLock(directory: directory, lock: lock) else {
+            retired = true
+            throw Failure.invalidLock
+        }
     }
 
     private static func validLock(_ value: stat) -> Bool {
