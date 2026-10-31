@@ -340,6 +340,7 @@ public final class MachineStore {
     @ObservationIgnored var ownedBeforePairingAdmission: (@MainActor () async -> Void)?
     var ownedPairingCoordinator: PairingAttemptCoordinator? { pairingCoordinator }
     @ObservationIgnored var ownedBeforeRecoveryAdmission: (@MainActor () async -> Void)?
+    @ObservationIgnored var ownedBeforeChildSignature: (@Sendable () async throws -> Void)?
     var ownedRecoveryCoordinator: MachineRecoveryCoordinator? { recoveryCoordinator }
     func ownedConnectionID(_ endpoint: MachineEndpoint) -> ObjectIdentifier? { connections[endpoint].map(ObjectIdentifier.init) }
     private(set) var ownedSessionListReceipts: Set<String> = []
@@ -405,7 +406,35 @@ public final class MachineStore {
     @ObservationIgnored private var approvalPollTasks: [MachineEndpoint: Task<Void, Never>] = [:]
     /// Injectable so tests can use a short interval; production always uses the standard policy.
     @ObservationIgnored var approvalPollPolicy = ApprovalPollPolicy.standard
-    @ObservationIgnored private(set) var connectionGenerations: [MachineEndpoint: UUID] = [:]
+    private struct DirectParentAuthority {
+        let generation: UUID
+        let lifetime: UUID
+        let key: String
+    }
+    private struct DirectChildOwner {
+        let parent: MachineEndpoint
+        let parentGeneration: UUID
+        let lifetime: UUID
+        let key: String?
+        let signingFence: DirectChildSigningFence
+    }
+    @ObservationIgnored private var directParentAuthorities: [MachineEndpoint: DirectParentAuthority] = [:]
+    @ObservationIgnored private var directChildOwners: [MachineEndpoint: DirectChildOwner] = [:]
+    @ObservationIgnored private(set) var connectionGenerations: [MachineEndpoint: UUID] = [:] {
+        didSet {
+            // Retire signers synchronously, before the asynchronous socket stop.
+            for (route, oldGeneration) in oldValue where connectionGenerations[route] != oldGeneration {
+                directParentAuthorities[route] = nil
+                let retired = directChildOwners.filter {
+                    $0.key == route || ($0.value.parent == route && $0.value.parentGeneration == oldGeneration)
+                }
+                for (child, owner) in retired {
+                    owner.signingFence.retire()
+                    directChildOwners[child] = nil
+                }
+            }
+        }
+    }
     @ObservationIgnored private var relayPairingContexts: [MachineEndpoint: (Data, UInt64?)] = [:]
     @ObservationIgnored private var parentByConnection: [MachineEndpoint: MachineEndpoint] = [:]
     @ObservationIgnored private var connectedRoutes: Set<MachineEndpoint> = []
@@ -2091,11 +2120,34 @@ public final class MachineStore {
         }
     }
 
+    private func childOwnedByCurrentParent(_ child: MachineEndpoint, parent: MachineEndpoint, index: Int) -> Bool {
+        guard let owner = directChildOwners[child], let parentGeneration = connectionGenerations[parent] else { return false }
+        return owner.parent == parent && owner.parentGeneration == parentGeneration &&
+            owner.lifetime == machines[index].pairingLifetime
+    }
+
+    private let childAddressCollision = "This session address is already in use by another machine. Refresh or reconnect that machine before trying again."
+
     private func connect(_ endpoint: MachineEndpoint, parent: MachineEndpoint) {
         guard running, let index = machineIndex(containing: parent),
               machines[index].configurationIssue == nil,
               machines[index].connectionPreference.permits(parent),
-              connections[endpoint] == nil, let url = endpoint.webSocketURL else { return }
+              let url = endpoint.webSocketURL else { return }
+        let isDirectChild = endpoint != parent && parent.relayPin == nil && endpoint.relayPin == nil
+        let occupied = isDirectChild ? connections.keys.first(where: { $0.id == endpoint.id }) :
+            (connections[endpoint] == nil ? nil : endpoint)
+        if let occupied {
+            if isDirectChild && !childOwnedByCurrentParent(occupied, parent: parent, index: index) {
+                latestOperationError = childAddressCollision
+            }
+            return
+        }
+        let parentGeneration = isDirectChild ? connectionGenerations[parent] : nil
+        if isDirectChild && parentGeneration == nil { return }
+        let parentAuthority = directParentAuthorities[parent].flatMap { authority in
+            authority.generation == parentGeneration && authority.lifetime == machines[index].pairingLifetime ? authority.key : nil
+        }
+        let childFence = isDirectChild ? DirectChildSigningFence() : nil
         if let pin = endpoint.relayPin, let room = try? RelayCrypto.room(RelayCrypto.unb64(pin.machinePublicKey)),
            suspendedRelayRooms.contains(room) { return }
         let pairing = relayPairingContexts.removeValue(forKey: endpoint)
@@ -2110,6 +2162,10 @@ public final class MachineStore {
         let pushGeneration = try? pushStore?.generation()
         connectionGenerations[endpoint] = generation
         parentByConnection[endpoint] = parent
+        if let childFence, let parentGeneration {
+            directChildOwners[endpoint] = DirectChildOwner(parent: parent, parentGeneration: parentGeneration,
+                lifetime: machines[index].pairingLifetime, key: parentAuthority, signingFence: childFence)
+        }
         let connection = RemiConnection(
             configuration: RemiConnectionConfiguration(
                 url: url,
@@ -2117,7 +2173,7 @@ public final class MachineStore {
                 clientId: clientId,
                 deviceId: clientId,
                 expectedServerFingerprint: endpoint.expectedFingerprint,
-                expectedServerPublicKey: endpoint.expectedPublicKey,
+                expectedServerPublicKey: isDirectChild ? parentAuthority : endpoint.expectedPublicKey,
                 pairingNonce: endpoint.pairingNonce,
                 pairingLabel: endpoint.pairingLabel,
                 expectedMachineID: machineIndex(containing: parent)
@@ -2145,10 +2201,43 @@ public final class MachineStore {
         connections[endpoint] = connection
         #if DEBUG
         let session = ownedTestSession
-        Task { if let session { try? await connection.useOwnedTestSession(session) }; launchConnection(connection, endpoint: endpoint, generation: generation) }
-        #else
-        launchConnection(connection, endpoint: endpoint, generation: generation)
+        let beforeChildSignature = ownedBeforeChildSignature
         #endif
+        Task {
+            if let childFence {
+                do { try await connection.configureChildSigningFence(childFence) }
+                catch { await connection.stop(); return }
+            }
+            #if DEBUG
+            if let session { try? await connection.useOwnedTestSession(session) }
+            if childFence != nil, let beforeChildSignature {
+                do { try await connection.beforeOwnedChildSignature(beforeChildSignature) }
+                catch { await connection.stop(); return }
+            }
+            #endif
+            launchConnection(connection, endpoint: endpoint, generation: generation)
+        }
+    }
+
+    private func retireChildrenWithOldAuthority(parent: MachineEndpoint, key: String?, machineIndex: Int) {
+        let children = directChildOwners.filter { $0.value.parent == parent && (key == nil || $0.value.key != key) }.map(\.key)
+        guard !children.isEmpty else { return }
+        let retired = Set(children)
+        for answer in Array(pendingAnswers.values) where routeBySession[answer.key].map(retired.contains) == true {
+            finishAnswer(answer.id, outcome: "uncertain")
+        }
+        for child in children {
+            if let request = resumeRequestByChild.removeValue(forKey: child) {
+                finishResume(requestID: request, error: "The machine identity changed. Check the session before resuming again.")
+            }
+            connectionGenerations[child] = nil
+            parentByConnection[child] = nil
+            failedChildConnections.remove(child)
+            if let connection = connections.removeValue(forKey: child) { Task { await connection.stop() } }
+        }
+        machines[machineIndex].sessionActivity = machines[machineIndex].sessionActivity.filter { !retired.contains($0.value.origin) }
+        routeBySession = routeBySession.filter { !retired.contains($0.value) }
+        transcriptRouteGenerations = transcriptRouteGenerations.filter { routeBySession[$0.key] != nil }
     }
 
     private func brokerKey(_ endpoint: MachineEndpoint) -> String? {
@@ -2192,6 +2281,11 @@ public final class MachineStore {
             $0.durableMachineID == descriptor.id && !$0.routes.contains(where: { $0.id == endpoint.id })
         }), other != fallbackIndex else { return fallbackIndex }
 
+        // A merged profile is a different lifetime. Existing child signers
+        // must not survive under its old owner, even when the routes match.
+        for route in machines[fallbackIndex].routingRoutes {
+            retireChildrenWithOldAuthority(parent: route, key: nil, machineIndex: fallbackIndex)
+        }
         var target = machines[other]
         let source = machines[fallbackIndex]
         target.policyOwner = max(target.policyOwner, source.policyOwner)
@@ -2462,6 +2556,17 @@ public final class MachineStore {
                 index = consolidateRoute(endpoint, parent: parent, descriptor: descriptor, fallbackIndex: index)
                 machines[index].apply(descriptor)
             }
+            if endpoint == parent, parent.relayPin == nil, let authority {
+                if let saved = machines[index].durableMachinePublicKey,
+                   (try? RelayCrypto.unb64(saved)) != authority {
+                    failClosed(parent, machineIndex: index, reason: "The machine public key does not match the saved identity.")
+                    return
+                }
+                let key = authority.base64EncodedString()
+                directParentAuthorities[parent] = DirectParentAuthority(generation: generation,
+                    lifetime: machines[index].pairingLifetime, key: key)
+                retireChildrenWithOldAuthority(parent: parent, key: key, machineIndex: index)
+            }
             if let authority { machines[index].bindAuthenticatedPublicKey(authority) }
             publishPolicy(machineIndex: index)
             retireDisallowedRoutes(machineIndex: index)
@@ -2581,8 +2686,11 @@ public final class MachineStore {
                 latestOperationNotice = response.notice
                 if parent.relayPin != nil { requestSessions(from: parent) }
                 else if let port = response.port {
-                    connect(MachineEndpoint(host: parent.host, port: port), parent: parent)
-                    requestSessions(from: parent)
+                    if port == parent.port { latestOperationError = childAddressCollision }
+                    else {
+                        connect(MachineEndpoint(host: parent.host, port: port), parent: parent)
+                        requestSessions(from: parent)
+                    }
                 }
             } else if !response.success {
                 latestOperationError = "Could not create session: \(response.error ?? "Unknown daemon error")"
@@ -2685,6 +2793,13 @@ public final class MachineStore {
         }
 
         let child = MachineEndpoint(host: parent.host, port: port)
+        if let occupied = connections.keys.first(where: { $0.id == child.id }),
+           let index = machineIndex(containing: parent),
+           !childOwnedByCurrentParent(occupied, parent: parent, index: index) {
+            latestOperationError = childAddressCollision
+            finishResume(requestID: response.requestId, error: childAddressCollision)
+            return
+        }
         resumeRequestByChild[child] = response.requestId
         if connections[child] == nil {
             connect(child, parent: parent)

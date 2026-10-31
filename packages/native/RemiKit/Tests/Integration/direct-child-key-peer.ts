@@ -32,16 +32,24 @@ const frame = (type: string, fields = {}) =>
 const fixtureDir = new URL('../../../../shared/tests/fixtures/protocol/', import.meta.url);
 const hello = await Bun.file(new URL('hello_ack_legacy.json', fixtureDir)).json();
 const sessionList = await Bun.file(new URL('session_list_response.json', fixtureDir)).json();
-const stats = { rootAuth: 0, childOpens: 0, childAuth: 0, childPairing: 0, childHello: 0 };
+const stats = {
+  rootAuth: 0,
+  childOpens: 0,
+  childAuth: 0,
+  childPairing: 0,
+  childHello: 0,
+  child2Auth: 0,
+};
 const publish = () => {
   writeFileSync(`${statsPath}.tmp`, JSON.stringify(stats));
   renameSync(`${statsPath}.tmp`, statsPath);
 };
 publish();
 const heldChallenges: Array<() => void> = [];
-type State = { role: 'root' | 'root2' | 'child'; challenge: Buffer; admitted: boolean };
+type State = { role: 'root' | 'root2' | 'child' | 'child2'; challenge: Buffer; admitted: boolean };
 function listener(role: State['role']) {
-  const key = role === 'root' ? parent : role === 'root2' ? otherParent : child;
+  const key =
+    role === 'root' ? parent : role === 'root2' || role === 'child2' ? otherParent : child;
   return Bun.serve<State>({
     hostname: '127.0.0.1',
     port: 0,
@@ -76,7 +84,8 @@ function listener(role: State['role']) {
       message(ws, bytes) {
         const message = JSON.parse(String(bytes));
         if (message.type === 'auth_response') {
-          if (role !== 'child') stats.rootAuth++;
+          if (role === 'root' || role === 'root2') stats.rootAuth++;
+          else if (role === 'child2') stats.child2Auth++;
           else {
             stats.childAuth++;
             if (message.pairingNonce != null || message.pairingLabel != null) stats.childPairing++;
@@ -125,12 +134,14 @@ function listener(role: State['role']) {
 const root = listener('root');
 const root2 = listener('root2');
 const childServer = listener('child');
+const child2Server = listener('child2');
 const deadline = setTimeout(() => process.exit(1), 30_000);
 process.stdout.write(
   `${JSON.stringify({
     rootPort: root.port,
     root2Port: root2.port,
     childPort: childServer.port,
+    child2Port: child2Server.port,
     publicKey: raw(parent.publicKey).toString('base64'),
     machineID: digest(parent.publicKey).slice(0, 32),
     otherPublicKey: raw(otherParent.publicKey).toString('base64'),
@@ -146,4 +157,5 @@ try {
   root.stop(true);
   root2.stop(true);
   childServer.stop(true);
+  child2Server.stop(true);
 }

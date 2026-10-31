@@ -1,6 +1,26 @@
 import CryptoKit
 import Foundation
 
+/// Revocation and synchronous signing share one linearization point. The
+/// lock is never held while waiting on an actor or a network operation.
+final class DirectChildSigningFence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var retired = false
+
+    func withSigning<T>(_ sign: () throws -> T) throws -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !retired else { throw RelayFailure.closed }
+        return try sign()
+    }
+
+    func retire() {
+        lock.lock()
+        retired = true
+        lock.unlock()
+    }
+}
+
 public enum DirectRetryPolicy: Sendable, Equatable {
     case runtime
     /// The initial-pairing owner advances candidates only on reachability failure.
@@ -147,11 +167,13 @@ public actor RemiConnection {
     private let stateHandler: StateHandler
     private let eventHandler: EventHandler
     private let readyHandler: ReadyHandler?
+    private var childSigningFence: DirectChildSigningFence?
     private var session = URLSession.shared
     private var singleAttempt = false
     private var applicationHello = true
     #if DEBUG
     private var ownedBeforeH2: (@Sendable () async throws -> Void)?
+    private var ownedBeforeChildSignature: (@Sendable () async throws -> Void)?
     #endif
     private var ready = false
     private var readyWaiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
@@ -225,6 +247,11 @@ public actor RemiConnection {
         singleAttempt = true; applicationHello = false
     }
 
+    func configureChildSigningFence(_ fence: DirectChildSigningFence) throws {
+        guard !shouldRun else { throw RelayFailure.state }
+        childSigningFence = fence
+    }
+
     /// The live direct handshake supplies bootstrap authority, never response fields.
     func notificationHostKey() throws -> Data {
         guard configuration.relayPin == nil, applicationAdmitted,
@@ -247,6 +274,9 @@ public actor RemiConnection {
     }
     func beforeOwnedH2(_ callback: @escaping @Sendable () async throws -> Void) throws {
         guard !shouldRun else { throw RelayFailure.state }; ownedBeforeH2 = callback
+    }
+    func beforeOwnedChildSignature(_ callback: @escaping @Sendable () async throws -> Void) throws {
+        guard !shouldRun else { throw RelayFailure.state }; ownedBeforeChildSignature = callback
     }
     #endif
 
@@ -562,13 +592,19 @@ public actor RemiConnection {
             }
             let authenticationDeadline = try currentDirectAuthenticationDeadline()
             transition(to: .authenticating(serverFingerprint: challenge.serverFingerprint))
-            let (response, pending) = try AuthenticationHandshake.response(
-                to: challenge,
-                identity: identity,
-                expectedServerPublicKey: configuration.expectedServerPublicKey,
-                pairingNonce: configuration.pairingNonce,
-                pairingLabel: configuration.pairingLabel
-            )
+            #if DEBUG
+            if childSigningFence != nil { try await ownedBeforeChildSignature?() }
+            #endif
+            let makeResponse = {
+                try AuthenticationHandshake.response(
+                    to: challenge,
+                    identity: self.identity,
+                    expectedServerPublicKey: self.configuration.expectedServerPublicKey,
+                    pairingNonce: self.configuration.pairingNonce,
+                    pairingLabel: self.configuration.pairingLabel
+                )
+            }
+            let (response, pending) = try childSigningFence.map { try $0.withSigning(makeResponse) } ?? makeResponse()
             pendingAuthentication = pending
             _ = try currentDirectAuthenticationDeadline()
             armDirectDeadline(task, until: authenticationDeadline, opening: false)
