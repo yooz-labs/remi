@@ -97,12 +97,7 @@ import RemiPush
             return
         }
         do {
-            let owner: Data
-            if let existing = owners[intent.owner] { owner = existing }
-            else {
-                owner = try keys.ownerIndex(runtimeOwner: intent.owner)
-                try ledger.createOwner(owner); owners[intent.owner] = owner
-            }
+            let owner = try ensureOwner(intent.owner)
             let question = try keys.questionIndex(owner: owner, sessionID: intent.sessionID, questionID: intent.questionID)
             let ticket = try ledger.prepare(owner: owner, question: question)
             let value = Active(token: UUID(), eligibility: eligibility, ticket: ticket)
@@ -158,8 +153,8 @@ import RemiPush
         let oldRetained = retained.filter { $0.key.owner == owner }
         for key in old.keys { active.removeValue(forKey: key) }
         for key in oldRetained.keys { retained.removeValue(forKey: key) }
-        guard let index = owners[owner] else { return true }
         do {
+            let index = try ensureOwner(owner)
             try ledger.invalidateOwner(index)
             let oldValues = Array(old.values) + oldRetained.values.flatMap { $0 }
             // A prior attempt may already have frozen the in-memory entries before cleanup
@@ -170,6 +165,20 @@ import RemiPush
             }
             return true
         } catch { fail(); return false }
+    }
+
+    /// The profile write/readback must already have succeeded in this process.
+    func finishOwnerForget(_ owner: UUID) throws {
+        guard blockedOwners.contains(owner), let index = owners[owner] else { throw LocalNoticeError.changed }
+        try ledger.finishForget(index)
+    }
+
+    private func ensureOwner(_ owner: UUID) throws -> Data {
+        if let existing = owners[owner] { return existing }
+        let index = try keys.ownerIndex(runtimeOwner: owner)
+        try ledger.createOwner(index)
+        owners[owner] = index
+        return index
     }
 
     private func currentToken(_ intent: Intent, _ value: Active) -> Bool {

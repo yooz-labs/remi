@@ -457,6 +457,16 @@ public final class MachineStore {
 
 
     public var persistableProfiles: [MachineRouteProfile] {
+        persistableProfiles(for: machines)
+    }
+
+    /// Exact in-memory profile lifetime, used to prepare a local-notification forget write.
+    func profilesForLocalForget(excluding lifetime: UUID) -> [MachineRouteProfile]? {
+        guard machines.filter({ $0.pairingLifetime == lifetime }).count == 1 else { return nil }
+        return persistableProfiles(for: machines.filter { $0.pairingLifetime != lifetime })
+    }
+
+    private func persistableProfiles(for machines: [MachineState]) -> [MachineRouteProfile] {
         machines.map { machine in
             MachineRouteProfile(
                 machineID: machine.durableMachineID,

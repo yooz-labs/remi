@@ -394,12 +394,18 @@ final class LocalNoticeLedger: @unchecked Sendable {
     func finishForget(_ owner: Data) throws {
         try withLock {
             guard currentOwners.contains(owner) else { throw LocalNoticeError.changed }
-            try transaction {
+            let retiredEmpty = try transaction {
                 try statement("UPDATE owner SET pending_forget=0 WHERE id=?1 AND retired=1 AND pending_forget=1") { stmt in
                     try bind(owner, to: stmt, at: 1); try done(stmt)
                     guard sqlite3_changes(database) == 1 else { throw LocalNoticeError.changed }
                 }
+                // An owner with no allocations cannot have issued a marker or own tickets.
+                try statement("DELETE FROM owner WHERE id=?1 AND highwater=0 AND retired=1 AND pending_forget=0 AND NOT EXISTS(SELECT 1 FROM ticket WHERE owner=?1) AND NOT EXISTS(SELECT 1 FROM retired_range WHERE owner=?1)") { stmt in
+                    try bind(owner, to: stmt, at: 1); try done(stmt)
+                }
+                return sqlite3_changes(database) == 1
             }
+            if retiredEmpty { currentOwners.remove(owner) }
         }
     }
 

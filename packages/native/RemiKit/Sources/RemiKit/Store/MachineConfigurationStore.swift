@@ -116,25 +116,48 @@ public struct MachineConfigurationStore: Sendable {
 
     @MainActor func prepareLocalForgetProfiles(_ profiles: [MachineRouteProfile], defaults: UserDefaults,
                                               domainName: String,
+                                              expectedCurrent: [MachineRouteProfile]? = nil,
                                               encode: ([MachineRouteProfile]) throws -> Data = { try JSONEncoder().encode($0) }) throws -> LocalNoticeProfileWritePlan {
         let existing = defaults.persistentDomain(forName: domainName)?[key]
         let original: Data?
         if let existing {
             guard let data = existing as? Data, !data.isEmpty else { throw LocalNoticeProfilePersistenceError.corruptExisting }
             let records = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]]
+            let saved: [MachineRouteProfile]
             if records?.contains(where: { $0["routes"] != nil || $0["connectionPreference"] != nil || $0["machinePublicKey"] != nil }) == true {
                 guard let decoded = try? JSONDecoder().decode([MachineRouteProfile].self, from: data) else { throw LocalNoticeProfilePersistenceError.corruptExisting }
                 do { for profile in decoded { _ = try profile.verifiedSavedIdentity() } }
                 catch { throw LocalNoticeProfilePersistenceError.corruptExisting }
-            } else if (try? JSONDecoder().decode([MachineEndpoint].self, from: data)) == nil {
-                throw LocalNoticeProfilePersistenceError.corruptExisting
+                saved = decoded.filter { !$0.routes.isEmpty }
+            } else {
+                guard let endpoints = try? JSONDecoder().decode([MachineEndpoint].self, from: data) else { throw LocalNoticeProfilePersistenceError.corruptExisting }
+                let names = defaults.persistentDomain(forName: domainName)?[displayNamesKey] as? [String: String] ?? [:]
+                saved = endpoints.map { MachineRouteProfile(machineID: nil, routes: [$0], displayName: names[$0.id]) }
+            }
+            if let expectedCurrent, !Self.savedProfiles(saved, areRepresentedBy: expectedCurrent) {
+                throw LocalNoticeProfilePersistenceError.changed
             }
             original = data
         } else { original = nil }
         let intendedProfiles = profiles.filter { !$0.routes.isEmpty }
+        do { for profile in intendedProfiles { _ = try profile.verifiedSavedIdentity() } }
+        catch { throw LocalNoticeProfilePersistenceError.encodingFailed }
+        // A runtime-only direct pin must have the enclosing durable profile pin, or this
+        // write would silently discard trust when Endpoint's Codable projection omits it.
+        for profile in intendedProfiles {
+            for route in profile.routes {
+                if let runtimePin = route.expectedPublicKey {
+                    guard let encoded = profile.machinePublicKey, let durable = try? RelayCrypto.unb64(encoded),
+                          Data(base64Encoded: runtimePin) == durable else { throw LocalNoticeProfilePersistenceError.encodingFailed }
+                }
+            }
+        }
+        guard let persistedProjection = Self.persistedProjection(intendedProfiles) else {
+            throw LocalNoticeProfilePersistenceError.encodingFailed
+        }
         let intended: Data
         do { intended = try encode(intendedProfiles) } catch { throw LocalNoticeProfilePersistenceError.encodingFailed }
-        guard (try? JSONDecoder().decode([MachineRouteProfile].self, from: intended)) == intendedProfiles else {
+        guard (try? JSONDecoder().decode([MachineRouteProfile].self, from: intended)) == persistedProjection else {
             throw LocalNoticeProfilePersistenceError.encodingFailed
         }
         return LocalNoticeProfileWritePlan(key: key, domainName: domainName, original: original, intended: intended)
@@ -142,6 +165,40 @@ public struct MachineConfigurationStore: Sendable {
 
     @MainActor func commitLocalForgetProfiles(_ plan: LocalNoticeProfileWritePlan) throws {
         try commitLocalForgetProfiles(plan, defaults: .standard, flush: { $0.synchronize() })
+    }
+
+    @MainActor func localForgetPlan(_ plan: LocalNoticeProfileWritePlan, matches profiles: [MachineRouteProfile]) -> Bool {
+        guard plan.key == key, let intended = try? JSONDecoder().decode([MachineRouteProfile].self, from: plan.intended) else { return false }
+        return intended == Self.persistedProjection(profiles.filter { !$0.routes.isEmpty })
+    }
+
+    /// Endpoint Codable deliberately omits runtime-only pairing data and direct full keys;
+    /// the enclosing profile persists the pin. Compare the project's real Codable projection.
+    private static func persistedProjection(_ profiles: [MachineRouteProfile]) -> [MachineRouteProfile]? {
+        guard let data = try? JSONEncoder().encode(profiles) else { return nil }
+        return try? JSONDecoder().decode([MachineRouteProfile].self, from: data)
+    }
+
+    /// Refuse to overwrite saved routes or explicit settings missing from the current Store.
+    /// Current Store additions and authenticated pin upgrades are allowed, but each saved route
+    /// must map to exactly one current profile with its explicit persisted values preserved.
+    private static func savedProfiles(_ saved: [MachineRouteProfile], areRepresentedBy current: [MachineRouteProfile]) -> Bool {
+        for profile in saved {
+            for route in profile.routes {
+                let owners = current.filter { $0.routes.contains(where: { $0.id == route.id }) }
+                guard owners.count == 1, let owner = owners.first,
+                      owner.connectionPreference == profile.connectionPreference,
+                      owner.displayName == profile.displayName,
+                      profile.machineID == nil || profile.machineID == owner.machineID,
+                      profile.navigationID == nil || profile.navigationID == owner.navigationID,
+                      profile.machinePublicKey == nil || profile.machinePublicKey == owner.machinePublicKey,
+                      let savedRoute = owner.routes.first(where: { $0.id == route.id }),
+                      route.expectedFingerprint == nil || route.expectedFingerprint == savedRoute.expectedFingerprint,
+                      route.expectedPublicKey == nil || route.expectedPublicKey == savedRoute.expectedPublicKey,
+                      route.relayPin == savedRoute.relayPin else { return false }
+            }
+        }
+        return true
     }
 
     /// The pending journal intent must remain until this succeeds. MainActor serialization
