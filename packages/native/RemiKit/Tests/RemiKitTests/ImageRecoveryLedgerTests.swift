@@ -251,6 +251,13 @@ import Testing
             var copy = restored.ledger
             _ = try copy.reserve(fingerprint())
         }
+        let rewritten = try restored.ledger.encodeJournal(secret: secret)
+        let second = try ImageRecoveryLedger.restoreJournal(rewritten, secret: secret)
+        #expect(!second.needsRewrite)
+        #expect(throws: ImageRecoveryLedger.Failure.sameImageInsertionUncertain) {
+            var copy = second.ledger
+            _ = try copy.reserve(fingerprint())
+        }
     }
 
     @Test func restartNeverRestoresAStagedArtifactsSocketAuthority() throws {
@@ -299,5 +306,27 @@ import Testing
         #expect(throws: (any Error).self) { try ImageRecoveryLedger.restoreJournal(bytes, secret: Data(repeating: 0x33, count: 32)) }
         #expect(throws: (any Error).self) { try ImageRecoveryLedger.restoreJournal(Data(bytes.dropLast()), secret: secret) }
         #expect(throws: (any Error).self) { try ImageRecoveryLedger.restoreJournal(Data(repeating: 0x20, count: 16_385), secret: secret) }
+    }
+
+    @Test func journalRestoresMaximumUncertainFencesWithoutEviction() throws {
+        var ledger = ImageRecoveryLedger()
+        for n in 0..<ImageRecoveryLedger.maximumRecords {
+            let id = try ledger.reserve(fingerprint(image: Data(repeating: UInt8(n), count: 32)))
+            try ledger.markPartialPossible(id)
+            try ledger.markStagingPossible(id)
+            try ledger.markStaged(id, expiry: "2026-10-31T12:00:00.000Z")
+            try ledger.requestStagedLocalCleanup(id)
+            try ledger.confirmOwnedSnapshotDeleted(id)
+            try ledger.markInsertionPossible(id)
+            try ledger.markInsertionUncertain(id)
+        }
+        let bytes = try ledger.encodeJournal(secret: secret)
+        #expect(bytes.count <= 16_384)
+        let restored = try ImageRecoveryLedger.restoreJournal(bytes, secret: secret)
+        #expect(restored.ledger.records.count == ImageRecoveryLedger.maximumRecords)
+        #expect(throws: ImageRecoveryLedger.Failure.recordCapacity) {
+            var copy = restored.ledger
+            _ = try copy.reserve(fingerprint(image: Data(repeating: 0xee, count: 32)))
+        }
     }
 }
