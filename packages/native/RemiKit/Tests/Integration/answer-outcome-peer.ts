@@ -3,6 +3,13 @@
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 
 const mode = process.argv[2];
+// Test-only startup failure controls: neither branch starts a server or reads a fixture.
+if (mode === 'startup-stalled' || mode === 'startup-oversized') {
+  if (mode === 'startup-stalled') process.on('SIGTERM', () => {});
+  process.stdout.write(mode === 'startup-stalled' ? 'partial' : 'x'.repeat(4097));
+  setInterval(() => {}, 1000);
+  await new Promise(() => {});
+}
 const key = generateKeyPairSync('ed25519');
 const raw = key.publicKey.export({ type: 'spki', format: 'der' }).subarray(-32);
 const challenge = randomBytes(32);
