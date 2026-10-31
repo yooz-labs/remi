@@ -62,6 +62,8 @@ struct ImageRecoveryLedger: Sendable {
     }
 
     enum Exposure: Sendable, Equatable {
+        case copyReserved
+        case copyOrphaned
         case prepared
         /// A prior process may have stopped before finishing the private snapshot.
         case preparedOrphaned
@@ -84,7 +86,7 @@ struct ImageRecoveryLedger: Sendable {
 
     struct Record: Sendable, Equatable {
         let id: UUID
-        let fingerprint: ImageRecoveryFingerprint
+        fileprivate(set) var fingerprint: ImageRecoveryFingerprint?
         fileprivate(set) var exposure: Exposure = .prepared
         fileprivate(set) var localSnapshotPresent = true
         fileprivate(set) var cleanupRequested = false
@@ -99,6 +101,14 @@ struct ImageRecoveryLedger: Sendable {
     private(set) var hasAggregateUnconfirmedCleanup = false
 
     mutating func reserve(_ fingerprint: ImageRecoveryFingerprint) throws -> UUID {
+        try checkFingerprint(fingerprint)
+        let id = try reserveCopy()
+        try finishCopy(id, fingerprint: fingerprint)
+        return id
+    }
+
+    /// Reserve a durable local slot before copying any bytes or knowing the image digest.
+    mutating func reserveCopy() throws -> UUID {
         guard localSnapshotID == nil else { throw Failure.localSlotBusy }
         guard records.count < Self.maximumRecords else { throw Failure.recordCapacity }
         guard !records.contains(where: {
@@ -112,6 +122,26 @@ struct ImageRecoveryLedger: Sendable {
         guard !records.contains(where: { if case .insertionInFlight = $0.exposure { return true }; return false }) else {
             throw Failure.insertionInFlight
         }
+        for _ in 0..<4 {
+            let id = UUID()
+            guard !records.contains(where: { $0.id == id }) else { continue }
+            records.append(Record(id: id, fingerprint: nil, exposure: .copyReserved))
+            localSnapshotID = id
+            return id
+        }
+        throw Failure.identityCollision
+    }
+
+    /// Called only after a bounded, durable snapshot has been hashed and validated.
+    mutating func finishCopy(_ id: UUID, fingerprint: ImageRecoveryFingerprint) throws {
+        let index = try recordIndex(id)
+        guard records[index].exposure == .copyReserved, records[index].localSnapshotPresent else { throw Failure.invalidTransition }
+        try checkFingerprint(fingerprint)
+        records[index].fingerprint = fingerprint
+        records[index].exposure = .prepared
+    }
+
+    private func checkFingerprint(_ fingerprint: ImageRecoveryFingerprint) throws {
         guard !records.contains(where: { record in
             if case .insertionUncertain = record.exposure { return record.fingerprint == fingerprint }
             return false
@@ -120,14 +150,6 @@ struct ImageRecoveryLedger: Sendable {
             if case .insertionConfirmed = record.exposure { return record.fingerprint == fingerprint }
             return false
         }) else { throw Failure.sameImageAlreadyInserted }
-        for _ in 0..<4 {
-            let id = UUID()
-            guard !records.contains(where: { $0.id == id }) else { continue }
-            records.append(Record(id: id, fingerprint: fingerprint))
-            localSnapshotID = id
-            return id
-        }
-        throw Failure.identityCollision
     }
 
     /// Persist this conservative transition before the begin effect may enter.
@@ -223,7 +245,8 @@ struct ImageRecoveryLedger: Sendable {
         records[index].localSnapshotPresent = false
         records[index].cleanupRequested = false
         localSnapshotID = nil
-        if records[index].exposure == .prepared || records[index].exposure == .preparedOrphaned || records[index].remoteCancellationConfirmed {
+        if records[index].exposure == .copyReserved || records[index].exposure == .copyOrphaned ||
+            records[index].exposure == .prepared || records[index].exposure == .preparedOrphaned || records[index].remoteCancellationConfirmed {
             records.remove(at: index)
         }
     }
@@ -278,8 +301,8 @@ struct ImageRecoveryLedger: Sendable {
             let (name, expiry) = Self.encodeExposure(record.exposure)
             return Self.object([
                 ("id", .string(record.id.uuidString.lowercased())),
-                ("scope", .string(WireGuards.encodeBase64URL(record.fingerprint.scope))),
-                ("image", .string(WireGuards.encodeBase64URL(record.fingerprint.image))),
+                ("scope", record.fingerprint.map { .string(WireGuards.encodeBase64URL($0.scope)) } ?? .null),
+                ("image", record.fingerprint.map { .string(WireGuards.encodeBase64URL($0.image)) } ?? .null),
                 ("exposure", .string(name)), ("expiry", expiry.map(WireJSON.string) ?? .null),
                 ("partialExpiry", record.knownPartialExpiry.map(WireJSON.string) ?? .null),
                 ("local", .bool(record.localSnapshotPresent)), ("cleanup", .bool(record.cleanupRequested)),
@@ -329,10 +352,18 @@ struct ImageRecoveryLedger: Sendable {
             let entry = try WireFields(raw, keys: ["id", "scope", "image", "exposure", "expiry", "partialExpiry",
                                                    "local", "cleanup", "remoteCancelled"])
             let textID = try entry.uuid4("id")
-            guard let id = UUID(uuidString: textID), ids.insert(id).inserted,
-                  let scope = WireGuards.decodeBase64URL(try entry.encoded("scope", bytes: 32...32)),
-                  let image = WireGuards.decodeBase64URL(try entry.encoded("image", bytes: 32...32)) else {
+            guard let id = UUID(uuidString: textID), ids.insert(id).inserted else {
                 throw WireFrameError.invalid("record")
+            }
+            let fingerprint: ImageRecoveryFingerprint?
+            if case .null = try entry.raw("scope"), case .null = try entry.raw("image") {
+                fingerprint = nil
+            } else {
+                guard let scope = WireGuards.decodeBase64URL(try entry.encoded("scope", bytes: 32...32)),
+                      let image = WireGuards.decodeBase64URL(try entry.encoded("image", bytes: 32...32)) else {
+                    throw WireFrameError.invalid("fingerprint")
+                }
+                fingerprint = ImageRecoveryFingerprint(scope: scope, image: image)
             }
             let name = try entry.string("exposure")
             let expiry = try optionalTimestamp(entry, "expiry")
@@ -341,11 +372,13 @@ struct ImageRecoveryLedger: Sendable {
             let cleanup = try bool(entry, "cleanup")
             let remoteCancelled = try bool(entry, "remoteCancelled")
             var exposure = try decodeExposure(name, expiry: expiry)
-            guard validRecord(exposure: exposure, partialExpiry: partialExpiry, local: local,
+            guard validRecord(exposure: exposure, fingerprint: fingerprint, partialExpiry: partialExpiry, local: local,
                               cleanup: cleanup, remoteCancelled: remoteCancelled) else {
                 throw WireFrameError.invalid("record")
             }
             switch exposure {
+            case .copyReserved:
+                exposure = .copyOrphaned; needsRewrite = true
             case .prepared:
                 exposure = .preparedOrphaned; needsRewrite = true
             case .partialPossible:
@@ -362,7 +395,7 @@ struct ImageRecoveryLedger: Sendable {
                 guard ledger.localSnapshotID == nil else { throw WireFrameError.invalid("local") }
                 ledger.localSnapshotID = id
             }
-            ledger.records.append(Record(id: id, fingerprint: ImageRecoveryFingerprint(scope: scope, image: image),
+            ledger.records.append(Record(id: id, fingerprint: fingerprint,
                 exposure: exposure, localSnapshotPresent: local, cleanupRequested: cleanup,
                 remoteCancellationConfirmed: remoteCancelled, knownPartialExpiry: partialExpiry))
         }
@@ -390,6 +423,8 @@ struct ImageRecoveryLedger: Sendable {
 
     private static func encodeExposure(_ exposure: Exposure) -> (String, String?) {
         switch exposure {
+        case .copyReserved: ("copy_reserved", nil)
+        case .copyOrphaned: ("copy_orphaned", nil)
         case .prepared: ("prepared", nil)
         case .preparedOrphaned: ("prepared_orphaned", nil)
         case .partialPossible: ("partial", nil)
@@ -407,6 +442,8 @@ struct ImageRecoveryLedger: Sendable {
 
     private static func decodeExposure(_ name: String, expiry: String?) throws -> Exposure {
         switch name {
+        case "copy_reserved" where expiry == nil: .copyReserved
+        case "copy_orphaned" where expiry == nil: .copyOrphaned
         case "prepared" where expiry == nil: .prepared
         case "prepared_orphaned" where expiry == nil: .preparedOrphaned
         case "partial" where expiry == nil: .partialPossible
@@ -428,14 +465,21 @@ struct ImageRecoveryLedger: Sendable {
         return build(expiry)
     }
 
-    private static func validRecord(exposure: Exposure, partialExpiry: String?, local: Bool,
+    private static func validRecord(exposure: Exposure, fingerprint: ImageRecoveryFingerprint?, partialExpiry: String?, local: Bool,
                                     cleanup: Bool, remoteCancelled: Bool) -> Bool {
         if cleanup && !local { return false }
+        switch exposure {
+        case .copyReserved, .copyOrphaned:
+            return fingerprint == nil && local && !remoteCancelled && partialExpiry == nil
+        default:
+            guard fingerprint != nil else { return false }
+        }
         if remoteCancelled {
             guard local, (exposure == .partialPossible || exposure == .stagingPossible ||
                           exposure == .partialOrphaned || exposure == .stagingOrphaned) else { return false }
         }
         switch exposure {
+        case .copyReserved, .copyOrphaned: return false // handled above
         case .prepared, .preparedOrphaned: return local && !remoteCancelled && partialExpiry == nil
         case .partialPossible, .stagingPossible, .partialOrphaned, .stagingOrphaned: return true
         case .staged, .stagedOrphaned: return !remoteCancelled
