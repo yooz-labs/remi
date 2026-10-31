@@ -104,6 +104,26 @@ private actor OwnedImageSendGate {
                 #expect(observed["completes"] as? Int == 1)
                 #expect(observed["staged"] as? Int == 1)
                 #expect(installation.journal.snapshot.localSnapshotID == nil)
+                await transfer.addToDraft()
+                let insertionDeadline = ContinuousClock.now.advanced(by: .seconds(15))
+                while ContinuousClock.now < insertionDeadline {
+                    await transfer.refresh()
+                    if case .inserted = transfer.state { break }
+                    if case .insertionUncertain = transfer.state { throw Failure.deadline }
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                guard case .inserted(let expiry) = transfer.state else { throw Failure.deadline }
+                try await until { try await stats(input: input, output: output)["referenceOnly"] as? Bool == true }
+                let inserted = try await stats(input: input, output: output)
+                #expect(inserted["insertions"] as? Int == 1)
+                #expect(inserted["referenceOnly"] as? Bool == true)
+                #expect(inserted["containsNewline"] as? Bool == false)
+                let outputBytes = try #require(inserted["outputBytes"] as? Int)
+                await transfer.addToDraft() // An explicit second tap must not replay the effect.
+                let repeated = try await stats(input: input, output: output)
+                #expect(repeated["insertions"] as? Int == 1)
+                #expect(repeated["outputBytes"] as? Int == outputBytes)
+                #expect(installation.journal.snapshot.records.first?.exposure == .insertionConfirmed(expiry: expiry))
             }
             await stop()
         } catch {
