@@ -4,8 +4,8 @@ import Foundation
 /// A narrow snapshot-creation step. The caller must hold the one installation lease, open
 /// the selected file without following links while provider access is valid, and later verify
 /// media and perform descriptor-confined cleanup. This does not authorize a network effect.
-/// iOS is deliberately unavailable until complete file protection and backup exclusion are
-/// implemented and verified before any snapshot bytes are written.
+/// iOS is deliberately unavailable until complete file protection and a backup-exclusion
+/// request are verified before any snapshot bytes are written. Exclusion is not a guarantee.
 final class ImageSnapshotOwner {
     enum Failure: Error, Equatable { case unavailable, unsupportedProtection, invalidReservation }
 

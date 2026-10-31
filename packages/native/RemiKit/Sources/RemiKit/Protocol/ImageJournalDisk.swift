@@ -23,6 +23,7 @@ final class ImageJournalDisk {
     }
 
     func load() throws -> Data {
+        try Self.requireSupportedProtection()
         guard !retired else { throw Failure.unavailable }
         retired = true
         let result = try lease.withVerifiedDirectory { directory in
@@ -38,6 +39,7 @@ final class ImageJournalDisk {
     /// Only a separately proven first installation may call this. Failure leaves any created
     /// entry in place, so a partial initialization cannot be silently interpreted as fresh.
     func initializeIfProvenFresh(_ bytes: Data) throws {
+        try Self.requireSupportedProtection()
         guard !retired else { throw Failure.unavailable }
         try authenticate(bytes)
         retired = true
@@ -59,6 +61,7 @@ final class ImageJournalDisk {
     /// transitions before effects. The root is an OS-provided private container serialized by
     /// the lease, not an arbitrary project path.
     func replace(expected: Data, with bytes: Data) throws {
+        try Self.requireSupportedProtection()
         guard !retired else { throw Failure.unavailable }
         try authenticate(expected)
         try authenticate(bytes)
@@ -100,6 +103,14 @@ final class ImageJournalDisk {
         guard bytes.count <= Self.limit, secret.count == 32 else { throw Failure.invalid }
         do { _ = try ImageRecoveryLedger.restoreJournal(bytes, secret: secret) }
         catch { throw Failure.invalid }
+    }
+
+    /// iOS remains closed until the owner applies complete protection and requests backup
+    /// exclusion for each generation. The exclusion flag is not a guarantee of no backup.
+    private static func requireSupportedProtection() throws {
+        #if os(iOS)
+        throw Failure.unavailable
+        #endif
     }
 
     private struct ReadResult {
