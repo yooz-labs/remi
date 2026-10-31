@@ -268,6 +268,25 @@ import Testing
         #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try recovered.markInsertionPossible(id) }
     }
 
+    @Test func restartNeverContinuesAnUnfinishedTransfer() throws {
+        for completeMayHaveEntered in [false, true] {
+            var ledger = ImageRecoveryLedger()
+            let id = try ledger.reserve(try fingerprint())
+            try ledger.markPartialPossible(id)
+            try ledger.rememberPartialExpiry(id, expiry: "2026-10-30T12:05:00.000Z")
+            if completeMayHaveEntered { try ledger.markStagingPossible(id) }
+            let restored = try ImageRecoveryLedger.restoreJournal(ledger.encodeJournal(secret: secret), secret: secret)
+            #expect(restored.needsRewrite)
+            #expect(restored.ledger.records.first?.exposure == (completeMayHaveEntered ? .stagingOrphaned : .partialOrphaned))
+            var recovered = restored.ledger
+            #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try recovered.markStagingPossible(id) }
+            #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) {
+                try recovered.markStaged(id, expiry: "2026-10-31T12:00:00.000Z")
+            }
+            #expect(recovered.localSnapshotID == id)
+        }
+    }
+
     @Test func journalRejectsTamperingWrongKeyAndOversizedInput() throws {
         var ledger = ImageRecoveryLedger()
         let id = try ledger.reserve(try fingerprint())
