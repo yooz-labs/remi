@@ -72,6 +72,18 @@ import Testing
         }
     }
 
+    @Test func missingKeyWithExistingJournalIsObservedLossNotFreshInstallation() throws {
+        try withStore { root, store, _ in
+            let journal = root.appendingPathComponent(".image-journal")
+            let previousState = Data("prior state".utf8)
+            try previousState.write(to: journal)
+            #expect(try store.load() == nil)
+            #expect(throws: ImageInstallationKeyStore.Failure.notFresh) { try store.beginPending() }
+            #expect(try Data(contentsOf: journal) == previousState)
+            #expect(try store.load() == nil)
+        }
+    }
+
     @Test func corruptExistingKeyIsNeverReplaced() throws {
         try withStore { _, store, query in
             let corrupt = Data("not an image key record".utf8)
