@@ -23,11 +23,35 @@ enum ImageFileProtection {
         try lease.withVerifiedDirectory { directory in
             try verifyRoot(directory, url: rootURL)
             try verifyValues(rootURL)
-            try verifyFile(directory, name: name, descriptor: descriptor)
+            try verifyFile(directory, name: name, descriptor: descriptor, requireEmpty: true)
             let fileURL = rootURL.appendingPathComponent(name, isDirectory: false)
             try applyValues(fileURL)
             try verifyRoot(directory, url: rootURL)
-            try verifyFile(directory, name: name, descriptor: descriptor)
+            try verifyFile(directory, name: name, descriptor: descriptor, requireEmpty: true)
+            guard fsync(descriptor) == 0, fsync(directory) == 0 else { throw Failure.unavailable }
+        }
+    }
+
+    /// A rename may reset the backup flag. Never use this to upgrade bytes that were
+    /// previously unprotected: the file must already report complete protection.
+    static func refreshAfterRename(lease: ImageDirectoryLease, rootURL: URL, name: String, descriptor: Int32) throws {
+        guard allowedName(name) else { throw Failure.unavailable }
+        try lease.withVerifiedDirectory { directory in
+            try verifyRoot(directory, url: rootURL)
+            try verifyValues(rootURL)
+            try verifyFile(directory, name: name, descriptor: descriptor, requireEmpty: false)
+            do {
+                var url = rootURL.appendingPathComponent(name, isDirectory: false)
+                url.removeAllCachedResourceValues()
+                let previous = try url.resourceValues(forKeys: [.fileProtectionKey])
+                guard previous.fileProtection == .complete else { throw Failure.unavailable }
+                var attributes = URLResourceValues()
+                attributes.isExcludedFromBackup = true
+                try url.setResourceValues(attributes)
+                try verifyValues(url)
+            } catch { throw Failure.unavailable }
+            try verifyRoot(directory, url: rootURL)
+            try verifyFile(directory, name: name, descriptor: descriptor, requireEmpty: false)
             guard fsync(descriptor) == 0, fsync(directory) == 0 else { throw Failure.unavailable }
         }
     }
@@ -63,11 +87,11 @@ enum ImageFileProtection {
               descriptor.st_dev == entry.st_dev, descriptor.st_ino == entry.st_ino else { throw Failure.unavailable }
     }
 
-    private static func verifyFile(_ directory: Int32, name: String, descriptor: Int32) throws {
+    private static func verifyFile(_ directory: Int32, name: String, descriptor: Int32, requireEmpty: Bool) throws {
         var opened = stat()
         var entry = stat()
         guard fstat(descriptor, &opened) == 0, fstatat(directory, name, &entry, AT_SYMLINK_NOFOLLOW) == 0,
-              validFile(opened), validFile(entry), opened.st_size == 0, entry.st_size == 0,
+              validFile(opened), validFile(entry), (!requireEmpty || (opened.st_size == 0 && entry.st_size == 0)),
               opened.st_dev == entry.st_dev, opened.st_ino == entry.st_ino else {
             throw Failure.unavailable
         }
