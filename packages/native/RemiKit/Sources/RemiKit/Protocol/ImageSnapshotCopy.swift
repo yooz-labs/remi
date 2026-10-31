@@ -57,6 +57,7 @@ enum ImageSnapshotCopy {
             hash.update(data: Data(buffer.prefix(count)))
             total += count
         }
+        guard total > 0 else { throw Failure.invalidFile }
         guard !cancelled() else { throw Failure.cancelled }
         guard fsync(destination) == 0, fstat(destination, &output) == 0,
               (output.st_mode & S_IFMT) == S_IFREG, output.st_uid == geteuid(), output.st_nlink == 1,
