@@ -48,6 +48,9 @@ struct ImageRecoveryLedger: Sendable {
         case notFound
         case localSlotBusy
         case localSnapshotStillPresent
+        case stagedActionOutstanding
+        case insertionInFlight
+        case sameImageAlreadyInserted
         case recordCapacity
         case sameImageInsertionUncertain
         case insertionMayHaveOccurred
@@ -61,7 +64,12 @@ struct ImageRecoveryLedger: Sendable {
         case partialPossible
         case stagingPossible
         case staged(expiry: String)
-        case insertionPossible(expiry: String)
+        case insertionInFlight(expiry: String)
+        case insertionUncertain(expiry: String)
+        /// The host confirmed a reference write, not Claude consumption.
+        case insertionConfirmed(expiry: String)
+        /// A pre-effect refusal cannot be retried until the original socket is revalidated.
+        case insertionRefusedAwaitingOrigin(expiry: String)
     }
 
     struct Record: Sendable, Equatable {
@@ -82,10 +90,25 @@ struct ImageRecoveryLedger: Sendable {
     mutating func reserve(_ fingerprint: ImageRecoveryFingerprint) throws -> UUID {
         guard localSnapshotID == nil else { throw Failure.localSlotBusy }
         guard records.count < Self.maximumRecords else { throw Failure.recordCapacity }
+        guard !records.contains(where: {
+            switch $0.exposure {
+            case .staged, .insertionRefusedAwaitingOrigin: true
+            default: false
+            }
+        }) else {
+            throw Failure.stagedActionOutstanding
+        }
+        guard !records.contains(where: { if case .insertionInFlight = $0.exposure { return true }; return false }) else {
+            throw Failure.insertionInFlight
+        }
         guard !records.contains(where: { record in
-            if case .insertionPossible = record.exposure { return record.fingerprint == fingerprint }
+            if case .insertionUncertain = record.exposure { return record.fingerprint == fingerprint }
             return false
         }) else { throw Failure.sameImageInsertionUncertain }
+        guard !records.contains(where: { record in
+            if case .insertionConfirmed = record.exposure { return record.fingerprint == fingerprint }
+            return false
+        }) else { throw Failure.sameImageAlreadyInserted }
         for _ in 0..<4 {
             let id = UUID()
             guard !records.contains(where: { $0.id == id }) else { continue }
@@ -130,14 +153,37 @@ struct ImageRecoveryLedger: Sendable {
         let index = try recordIndex(id)
         guard case .staged(let expiry) = records[index].exposure else { throw Failure.invalidTransition }
         guard !records[index].localSnapshotPresent else { throw Failure.localSnapshotStillPresent }
-        records[index].exposure = .insertionPossible(expiry: expiry)
+        records[index].exposure = .insertionInFlight(expiry: expiry)
+    }
+
+    /// A lost response or process restart cannot prove whether the entered effect occurred.
+    /// Persist this fence before allowing a different explicit selection to start.
+    mutating func markInsertionUncertain(_ id: UUID) throws {
+        let index = try recordIndex(id)
+        guard case .insertionInFlight(let expiry) = records[index].exposure else { throw Failure.invalidTransition }
+        records[index].exposure = .insertionUncertain(expiry: expiry)
+    }
+
+    /// Only a correlated result from the original socket may confirm this reference write.
+    mutating func confirmInsertion(_ id: UUID) throws {
+        let index = try recordIndex(id)
+        guard case .insertionInFlight(let expiry) = records[index].exposure else { throw Failure.invalidTransition }
+        records[index].exposure = .insertionConfirmed(expiry: expiry)
+    }
+
+    /// A correlated pre-effect refusal proves no write. Retrying is unavailable here: the
+    /// future connection owner must first revalidate the original socket and attachment.
+    mutating func recordInsertionRefusal(_ id: UUID) throws {
+        let index = try recordIndex(id)
+        guard case .insertionInFlight(let expiry) = records[index].exposure else { throw Failure.invalidTransition }
+        records[index].exposure = .insertionRefusedAwaitingOrigin(expiry: expiry)
     }
 
     /// Explicit per-case local abandonment is allowed only before insertion could occur.
     mutating func requestLocalAbandonment(_ id: UUID, confirmed: Bool) throws {
         guard confirmed else { throw Failure.consentRequired }
         let index = try recordIndex(id)
-        if case .insertionPossible = records[index].exposure { throw Failure.insertionMayHaveOccurred }
+        if records[index].exposure.hasPossibleInsertion { throw Failure.insertionMayHaveOccurred }
         guard records[index].localSnapshotPresent else { throw Failure.invalidTransition }
         records[index].cleanupRequested = true
     }
@@ -160,7 +206,7 @@ struct ImageRecoveryLedger: Sendable {
     /// refusal, local expiry or process death must never call this operation.
     mutating func confirmRemoteCancellation(_ id: UUID) throws {
         let index = try recordIndex(id)
-        if case .insertionPossible = records[index].exposure { throw Failure.insertionMayHaveOccurred }
+        if records[index].exposure.hasPossibleInsertion { throw Failure.insertionMayHaveOccurred }
         guard records[index].exposure == .partialPossible || records[index].exposure == .stagingPossible else {
             throw Failure.invalidTransition
         }
@@ -173,7 +219,7 @@ struct ImageRecoveryLedger: Sendable {
     mutating func compactNoInsertion(_ id: UUID, confirmed: Bool) throws {
         guard confirmed else { throw Failure.consentRequired }
         let index = try recordIndex(id)
-        if case .insertionPossible = records[index].exposure { throw Failure.insertionMayHaveOccurred }
+        if records[index].exposure.hasPossibleInsertion { throw Failure.insertionMayHaveOccurred }
         guard !records[index].localSnapshotPresent else { throw Failure.localSnapshotStillPresent }
         if records[index].exposure != .prepared && !records[index].remoteCancellationConfirmed {
             hasAggregateUnconfirmedCleanup = true
@@ -181,8 +227,28 @@ struct ImageRecoveryLedger: Sendable {
         records.remove(at: index)
     }
 
+    /// The person acknowledges a known reference write and its still-unconfirmed host cleanup.
+    /// This is never available for an uncertain insertion.
+    mutating func compactConfirmedInsertion(_ id: UUID, confirmed: Bool) throws {
+        guard confirmed else { throw Failure.consentRequired }
+        let index = try recordIndex(id)
+        guard case .insertionConfirmed = records[index].exposure,
+              !records[index].localSnapshotPresent else { throw Failure.invalidTransition }
+        hasAggregateUnconfirmedCleanup = true
+        records.remove(at: index)
+    }
+
     private func recordIndex(_ id: UUID) throws -> Int {
         guard let index = records.firstIndex(where: { $0.id == id }) else { throw Failure.notFound }
         return index
+    }
+}
+
+private extension ImageRecoveryLedger.Exposure {
+    var hasPossibleInsertion: Bool {
+        switch self {
+        case .insertionInFlight, .insertionUncertain, .insertionConfirmed: true
+        default: false
+        }
     }
 }
