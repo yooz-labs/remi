@@ -873,7 +873,7 @@ public final class MachineStore {
             guard case .answer(let response) = result else { throw RelayFailure.malformed }
             // A signed terminal capsule may arrive before its authenticated,
             // tuple-correlated receipt. That receipt remains valid after the transition.
-            outcome = RelayNotificationAnswerOutcome(rawValue: response.outcome) ?? .uncertain
+            outcome = RelayNotificationAnswerOutcome.fromWire(response.outcome)
             lastRelayAnswerOutcome = outcome.rawValue
             if action == nil, presentationStore.matches(presentation) {
                 relayNotificationNotice = response.outcome == "delivered" ? "Answer delivered." :

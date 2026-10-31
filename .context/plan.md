@@ -30,6 +30,24 @@ B3a (#1617/#1618) supplies shared model/view reservations.
 B3b (#1620) adds [launch-time capture](../docs/terminal-capture.md) before either
 harness starts, with one bounded borrowed frame and disposal before quota release.
 It adds no terminal service, capability or pane; B3c/B4 remain required.
+Current owner decision(2026-10-23): qualify the complete terminal stack at4MiB
+per model while retaining32MiB/home, hence eight captured models. ADR0048 records
+version2 accounting and conservative compatibility with old reservations. The
+primitive keeps its independently qualified1MiB bound. C1ownership PR1642 and
+admission fixture1653 landed after hosted/actual61minute gates; signed service
+PR1655 records passing 320-case source lanes, actual leases and all six compiled
+resource/quota/held-No cells with causal controls. The fixed-delta review is
+complete; merge requires final-head hosted checks and the actual relay soak.
+B4 encrypted routing and the qualified caller precede capability advertisement.
+Original failures remain recorded; see the service report for scope and controls.
+Develop integration (2026-10-30) retains the three isolated CI workers and current
+worker/controller/cleanup caps. Fresh local source/static/actual-lease and six-cell
+compiled/resource/held-No controls pass on measured tree `a8812f4fb03bd3e815fea691a447368400f59858`
+and source manifest `85c4b21df442df772fb8b7d4d269e804d71bb52b7e90e29eae9c4afdee9ec505`; the exact receipt
+is in `docs/terminal-view-service-integration-qualification.json`. At this local
+qualification checkpoint, no push or PR merge had occurred. Fresh final-head
+hosted checks and the actual 61-minute same-child
+soak remain required; the old hosted soak is historical evidence only.
 Transferred-media preview cleanup uses the owner-confirmed oldest-cache eviction
 when full, preserving explicit Save/export and host source files.
 
