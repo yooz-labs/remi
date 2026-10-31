@@ -180,6 +180,30 @@ import Testing
         }
     }
 
+    @Test func onlyOneComposedOwnerCanUseAnInstallationLease() throws {
+        try withStore { _, lease, store, _ in
+            var first: ImageInstallationOwner? = try ImageInstallationOwner.open(lease: lease, keys: store)
+            #expect(first != nil)
+            #expect(throws: (any Error).self) { try ImageInstallationOwner.open(lease: lease, keys: store) }
+            first = nil
+            let reopened = try ImageInstallationOwner.open(lease: lease, keys: store)
+            #expect(reopened.journal.snapshot.records.isEmpty)
+        }
+    }
+
+    @Test func retainedSnapshotOwnerKeepsTheInstallationClaim() throws {
+        try withStore { _, lease, store, _ in
+            var first: ImageInstallationOwner? = try ImageInstallationOwner.open(lease: lease, keys: store)
+            var retained: ImageSnapshotOwner? = first?.snapshots
+            #expect(retained != nil)
+            first = nil
+            #expect(throws: (any Error).self) { try ImageInstallationOwner.open(lease: lease, keys: store) }
+            retained = nil
+            let reopened = try ImageInstallationOwner.open(lease: lease, keys: store)
+            #expect(reopened.journal.snapshot.records.isEmpty)
+        }
+    }
+
     @Test func reopensRegisteredSnapshotAndRequiresExplicitOwnedCleanup() throws {
         try withStore { root, lease, store, _ in
             let selected = root.deletingLastPathComponent().appendingPathComponent("selected")
