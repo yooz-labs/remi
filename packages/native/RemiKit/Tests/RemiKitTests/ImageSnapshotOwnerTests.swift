@@ -87,7 +87,7 @@ import Testing
         try withFixture(original) { root, input, _, journal, owner in
             let id = try journal.reserveCopy()
             var modified = false
-            #expect(throws: (any Error).self) {
+            #expect(throws: ImageSnapshotOwner.Failure.sourceChanged) {
                 try owner.captureSelectedFile(id: id, url: input) {
                     if !modified {
                         let writer = open(input.path, O_WRONLY | O_CLOEXEC | O_NOFOLLOW)
