@@ -79,6 +79,37 @@ import Testing
         }
     }
 
+    @Test func reentrantCallbackCannotDeleteOrFinalizeAnActiveCopy() throws {
+        let bytes = Data(repeating: 7, count: 100_000)
+        try withFixture(bytes) { root, _, source, journal, owner in
+            let id = try journal.reserveCopy()
+            let fingerprint = try ImageRecoveryFingerprint.make(secret: secret, machineKey: Data(repeating: 0x42, count: 32),
+                sessionID: "00112233-4455-4677-8899-aabbccddeeff",
+                binding: AttachedBinding(harness: .claude, harnessSessionId: "owned-thread"),
+                imageDigest: Data(SHA256.hash(data: bytes)))
+            var attempted = false
+            var cleanupDenied = false
+            var finalizeDenied = false
+            let result = try owner.capture(id: id, source: source) {
+                if !attempted {
+                    attempted = true
+                    do { try owner.abandon(id: id, confirmed: true) }
+                    catch ImageRecoveryJournal.Failure.copyActive { cleanupDenied = true }
+                    catch {}
+                    do { try journal.finishCopy(id, fingerprint: fingerprint) }
+                    catch ImageRecoveryJournal.Failure.copyActive { finalizeDenied = true }
+                    catch {}
+                }
+                return false
+            }
+            #expect(attempted && cleanupDenied && finalizeDenied)
+            #expect(result.byteCount == bytes.count)
+            #expect(journal.snapshot.localSnapshotID == id)
+            #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("image-\(id.uuidString.lowercased())").path))
+            try journal.finishCopy(id, fingerprint: fingerprint)
+        }
+    }
+
     @Test func confirmedAbandonmentDeletesOnlyOwnedSnapshot() throws {
         try withFixture(Data([7, 8, 9])) { root, input, source, journal, owner in
             let id = try journal.reserveCopy()
