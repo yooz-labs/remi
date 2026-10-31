@@ -115,6 +115,20 @@ public enum RemiConnectionError: Error, Sendable, Equatable {
     case authentication(String)
 }
 
+/// A value minted only by the owning connection for one authenticated child socket.
+/// It is not a profile-lifetime grant or a replacement for the production route gate.
+struct ImageBeginAuthority: Sendable, Equatable {
+    fileprivate let socketID: UUID
+    fileprivate let machineKey: Data
+    fileprivate let sessionID: String
+    fileprivate let bindingID: String
+
+    static func == (left: Self, right: Self) -> Bool {
+        left.socketID == right.socketID && left.machineKey == right.machineKey &&
+            WireGuards.same(left.sessionID, right.sessionID) && WireGuards.same(left.bindingID, right.bindingID)
+    }
+}
+
 /// Pinned relay broadcasts can arrive between READY and application Hello.
 /// Keep them bounded and invisible until Hello verifies the machine descriptor.
 struct RelayHelloBuffer {
@@ -171,6 +185,7 @@ public actor RemiConnection {
     private var applicationAdmitted = false
     private var chatSocketID: UUID?
     private var chatSocketAuthenticated = false
+    private var imageChildHello: HelloAckMessage?
     private var relayHelloBuffer = RelayHelloBuffer()
     private var initialDirectHelloPending = false
     private var directOpeningCompleted = false
@@ -406,10 +421,59 @@ public actor RemiConnection {
         guard applicationAdmitted, chatSocketID == attempt.origin else { throw RelayFailure.closed }
     }
 
+    /// Kept false until the receive bound, stable snapshot reader, profile lifetime, child
+    /// identity, and direct TLS path are independently qualified. A pane-policy change alone
+    /// must never enable image ingress.
+    private static let imageIngressQualified = false
+
+    func imageBeginAuthority(for begin: ImageUploadBegin, machineKey: Data) -> ImageBeginAuthority? {
+        guard Self.imageIngressQualified, PaneTransportPolicy.current.directSecureTransport,
+              configuration.relayPin == nil, configuration.url.scheme == "wss", applicationAdmitted,
+              socket != nil, let socketID = chatSocketID, let hello = imageChildHello,
+              let pinned = configuration.expectedServerPublicKey, let decoded = Data(base64Encoded: pinned),
+              decoded.base64EncodedString() == pinned, machineKey.count == 32, decoded == machineKey,
+              authenticatedServerPublicKey == machineKey, let sessionID = hello.sessionId,
+              WireGuards.same(sessionID, begin.header.sessionId),
+              hello.harness.map({ WireGuards.same($0, "claude") }) == true,
+              let bindingID = hello.harnessSessionId, WireGuards.same(bindingID, begin.binding.harnessSessionId),
+              begin.binding.harness == .claude,
+              HubSupport.check(HubSupportAck(hello), needs: [HubCapability.imageStaging.rawValue,
+                                                           HubCapability.imageInsertion.rawValue]).isSupported else { return nil }
+        return ImageBeginAuthority(socketID: socketID, machineKey: machineKey, sessionID: sessionID, bindingID: bindingID)
+    }
+
+    enum ImageBeginSendResult: Sendable { case notInvoked, handedOff, uncertain }
+    private struct ImageBeginAttempt {
+        let begin: ImageUploadBegin
+        let authority: ImageBeginAuthority
+        let ticket: ImageEffectTicket
+    }
+
+    /// This uses the same actual socket path as other direct sends. It cannot mint authority,
+    /// bypass the route gate, or infer host receipt from successful socket handoff.
+    func sendImageBegin(_ begin: ImageUploadBegin, authority: ImageBeginAuthority,
+                        ticket: ImageEffectTicket) async -> ImageBeginSendResult {
+        do {
+            let frame = try ImageUploadMessage.begin(begin).encodedFrame()
+            let attempt = ImageBeginAttempt(begin: begin, authority: authority, ticket: ticket)
+            try await deliver(Data(frame.utf8), validateBeforeSend: nil, imageAttempt: attempt)
+            return .handedOff
+        } catch {
+            return ticket.retire() == .noEffect ? .notInvoked : .uncertain
+        }
+    }
+
+    private func enterImageAttempt(_ attempt: ImageBeginAttempt?) throws {
+        guard let attempt else { return }
+        guard let current = imageBeginAuthority(for: attempt.begin, machineKey: attempt.authority.machineKey),
+              current == attempt.authority, attempt.ticket.enter() else { throw RelayFailure.closed }
+    }
+
     private func deliver(_ data: Data, validateBeforeSend: (@Sendable () throws -> Void)?,
-                         chatAttempt: ChatAttempt? = nil) async throws {
+                         chatAttempt: ChatAttempt? = nil, imageAttempt: ImageBeginAttempt? = nil) async throws {
         guard let socket else { throw URLError(.notConnectedToInternet) }
         if configuration.relayPin != nil {
+            guard imageAttempt == nil else { throw RelayFailure.closed }
             guard relayChannel != nil, !relayClosing, pendingSends < 64 else { throw RelayFailure.closed }
             guard !data.isEmpty, data.count <= RelayCrypto.maxPlaintext else { throw RelayFailure.oversize }
             pendingSends += 1
@@ -449,6 +513,9 @@ public actor RemiConnection {
             guard applicationAdmitted else { throw RelayFailure.closed }
             try validateBeforeSend?()
             try validateChatOrigin(chatAttempt)
+            // The actor rechecks the concrete socket, key, binding and ticket at the last
+            // synchronous boundary. A cancellation after entry is an uncertain effect.
+            try enterImageAttempt(imageAttempt)
             chatAttempt?.invoked = true
             try await socket.send(.data(data))
         }
@@ -688,6 +755,7 @@ public actor RemiConnection {
                 ?? authenticatedServerPublicKey
             chatSocketID = UUID()
             chatSocketAuthenticated = authority != nil
+            imageChildHello = message
             eventHandler(.hello(message, authorityPublicKey: authority))
             for buffered in relayHelloBuffer.drain() {
                 guard applicationAdmitted, socket === task else { throw RelayFailure.closed }
@@ -807,6 +875,7 @@ public actor RemiConnection {
     private func retireChatOrigin() {
         chatSocketID = nil
         chatSocketAuthenticated = false
+        imageChildHello = nil
     }
 
     private func closeSocket() {

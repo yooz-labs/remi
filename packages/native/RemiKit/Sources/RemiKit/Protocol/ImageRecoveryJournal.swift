@@ -92,6 +92,21 @@ final class ImageRecoveryJournal {
 
     func holds(_ lease: ImageDirectoryLease) -> Bool { claim.belongs(to: lease) }
 
+    /// Compare the recorded scope and digest without exposing the installation secret.
+    func matchesPreparedCopy(_ id: UUID, begin: ImageUploadBegin, machineKey: Data) throws -> Bool {
+        try claim.synchronized {
+            guard !isRetired, let digest = WireGuards.decodeBase64URL(begin.digest), digest.count == 32 else {
+                return false
+            }
+            let fingerprint = try ImageRecoveryFingerprint.make(secret: secret, machineKey: machineKey,
+                sessionID: begin.header.sessionId, binding: begin.binding, imageDigest: digest)
+            guard storedSnapshot.localSnapshotID == id,
+                  let record = storedSnapshot.records.first(where: { $0.id == id }),
+                  record.exposure == .prepared, record.localSnapshotPresent, !record.cleanupRequested else { return false }
+            return record.fingerprint == fingerprint
+        }
+    }
+
     /// Reentrant callbacks cannot finalize or abandon the file until the copy scope ends.
     func withActiveCopy<T>(_ body: () throws -> T) throws -> T {
         try claim.synchronized {
