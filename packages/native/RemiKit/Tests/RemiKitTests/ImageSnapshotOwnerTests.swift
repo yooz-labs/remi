@@ -92,6 +92,28 @@ import Testing
         }
     }
 
+    @Test func uploadReaderRefusesAReplacedEntryWithoutReadingIt() throws {
+        let bytes = Data([1, 2, 3])
+        try withFixture(bytes) { root, _, source, journal, owner in
+            let id = try journal.reserveCopy()
+            let captured = try owner.capture(id: id, source: source)
+            let fingerprint = try ImageRecoveryFingerprint.make(secret: secret, machineKey: Data(repeating: 0x42, count: 32),
+                sessionID: "00112233-4455-4677-8899-aabbccddeeff",
+                binding: AttachedBinding(harness: .claude, harnessSessionId: "owned-thread"), imageDigest: captured.digest)
+            try journal.finishCopy(id, fingerprint: fingerprint)
+            let reader = try owner.openUploadReader(id: id, byteCount: captured.byteCount, digest: captured.digest)
+            let snapshot = root.appendingPathComponent("image-\(id.uuidString.lowercased())")
+            let moved = root.appendingPathComponent("moved")
+            #expect(rename(snapshot.path, moved.path) == 0)
+            try Data([7, 8, 9]).write(to: snapshot)
+            #expect(chmod(snapshot.path, 0o600) == 0)
+            #expect(throws: (any Error).self) { try reader.read(offset: 0, count: bytes.count) }
+            #expect(throws: (any Error).self) { try owner.abandon(id: id, confirmed: true) }
+            #expect(try Data(contentsOf: snapshot) == Data([7, 8, 9]))
+            #expect(try Data(contentsOf: moved) == bytes)
+        }
+    }
+
     @Test func selectedFileIsCopiedWhileItsOpenedDescriptorIsHeld() throws {
         let bytes = Data(repeating: 0x42, count: 75_000)
         try withFixture(bytes) { root, input, _, journal, owner in

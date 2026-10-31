@@ -118,6 +118,8 @@ private actor OwnedImageSendGate {
                 try await until { try await stats(input: input, output: output)["images"] as? Int == 1 }
                 #expect(try await stats(input: input, output: output)["images"] as? Int == 1)
                 #expect(installation.journal.snapshot.records.first?.exposure == .partialPossible)
+                transfer.cancel()
+                #expect(transfer.state == .uncertain)
                 try installation.snapshots.abandon(id: record, confirmed: true)
             }
             await stop()
