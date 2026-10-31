@@ -146,4 +146,26 @@ import Testing
         #expect(keychain.adds == 0)
         #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("local-notifications.sqlite").path))
     }
+
+    @Test func historicalPendingForgetCannotSilentlyRestoreLocalScheduling() async throws {
+        let (dir, name, defaults) = try resources(); defer { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: dir) }
+        let keychain = OwnedStartupKeychain(), sentinel = LocalNoticeSentinel(defaults: defaults, domainName: name)
+        let reader = LocalNoticeInventory(boundary: boundary())
+        let first = try await LocalNoticeStartup.open(directory: dir, sentinel: sentinel,
+            keyStore: .init(service: "synthetic", account: "startup"), operations: keychain.operations,
+            inventory: reader, protectedDataAvailable: { true }, notificationBoundary: notificationBoundary())
+        let owner = Data(repeating: 51, count: 32)
+        try first.ledger.createOwner(owner); try first.ledger.invalidateOwner(owner)
+        first.ledger.close()
+        do {
+            _ = try await LocalNoticeStartup.open(directory: dir, sentinel: sentinel,
+                keyStore: .init(service: "synthetic", account: "startup"), operations: keychain.operations,
+                inventory: reader, protectedDataAvailable: { true }, notificationBoundary: notificationBoundary())
+            Issue.record("An unresolved historical forget cannot be silently adopted")
+        } catch let error as LocalNoticeBootstrap.Failure { #expect(error == .pendingForget) }
+        let ledger = try LocalNoticeLedger(directory: dir)
+        defer { ledger.close() }
+        #expect(try ledger.pendingForgetOwners() == [owner])
+        #expect(keychain.adds == 1)
+    }
 }

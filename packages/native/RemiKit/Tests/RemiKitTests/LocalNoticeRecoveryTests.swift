@@ -182,4 +182,25 @@ import UserNotifications
         #expect(throws: LocalNoticeError.capacity) { try recovery.abandonUnseen(selected, current: oversized) }
         #expect(removed.isEmpty); #expect(try ledger.record(two).effect == .crashUncertain)
     }
+
+    @Test func unassignedDebtsWithSameShortSuffixAreDistinguishable() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("remi-local-review-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let keys = try LocalNoticeKeys(root: Data(repeating: 45, count: 32))
+        let original = try LocalNoticeLedger(directory: dir)
+        for id in ["00000000-0000-4000-8000-0001deadbeef", "00000000-0000-4000-8000-0002deadbeef"] {
+            let owner = try keys.ownerIndex(runtimeOwner: UUID())
+            let question = try keys.questionIndex(owner: owner, sessionID: "synthetic", questionID: "q")
+            try original.createOwner(owner)
+            let ticket = try original.prepare(owner: owner, question: question, requestID: id)
+            try original.beginAdd(ticket)
+        }
+        original.close()
+        let ledger = try LocalNoticeLedger(directory: dir)
+        defer { ledger.close() }
+        let recovery = LocalNoticeRecovery(ledger: ledger, keys: keys) { _ in Issue.record("Review cannot remove") }
+        let labels = try recovery.unassignedUncertain().map(\.identifierSuffix)
+        #expect(labels.count == 2); #expect(Set(labels).count == 2)
+        #expect(labels.allSatisfy { $0.count > 8 })
+    }
 }
