@@ -173,6 +173,32 @@ struct RelayIdleRecoverySourceTests {
     }
 
     @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_IDLE_RELAY_TESTS"] == "1"))
+    func oneShotReadyLossDoesNotReconnect() async throws {
+        try await withFixture(oneShot: true) { active, probe, command in
+            try await active.waitForRelayReady(until: .now.advanced(by: .seconds(10)))
+            #expect(try await command("drop")["kind"] as? String == "dropped")
+            try await until("one-shot terminal loss") { probe.rejected }
+            try await Task.sleep(for: .milliseconds(1500))
+            #expect(probe.hellos == 0)
+            #expect(probe.states.filter { $0.hasPrefix("connecting:") }.count == 1)
+            #expect((try await command("stats")["inputs"] as? [String]) == [])
+        }
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_IDLE_RELAY_TESTS"] == "1"))
+    func unadoptedRecoveryProbeLossDoesNotReconnect() async throws {
+        try await withFixture(recoveryProbe: true) { _, probe, command in
+            try await until("recovery probe hello") { probe.hellos == 1 || probe.rejected }
+            try #require(probe.hellos == 1 && !probe.rejected)
+            #expect(try await command("drop")["kind"] as? String == "dropped")
+            try await until("recovery probe terminal loss") { probe.rejected }
+            try await Task.sleep(for: .milliseconds(1500))
+            #expect(probe.states.filter { $0.hasPrefix("connecting:") }.count == 1)
+            #expect((try await command("stats")["inputs"] as? [String]) == [])
+        }
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_IDLE_RELAY_TESTS"] == "1"))
     func malformedEncryptedPayloadAfterHelloRemainsTerminal() async throws {
         try await withFixture { _, probe, command in
             try await until("initial hello") { probe.hellos == 1 || probe.rejected }
@@ -217,6 +243,8 @@ struct RelayIdleRecoverySourceTests {
 
     private func withFixture(
         preHelloInitially: Bool = false,
+        oneShot: Bool = false,
+        recoveryProbe: Bool = false,
         _ body: (RemiConnection, RelayIdleProbe, @MainActor (String) async throws -> [String: Any]) async throws -> Void
     ) async throws {
         let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -267,11 +295,13 @@ struct RelayIdleRecoverySourceTests {
                 machinePublicKey: #require(ready["machinePublicKey"] as? String))
             let probe = RelayIdleProbe()
             let active = RemiConnection(configuration: .init(url: try #require(pin.clientURL),
-                clientVersion: "owned-idle-relay", clientId: "owned-idle-relay", relayPin: pin),
+                clientVersion: "owned-idle-relay", clientId: "owned-idle-relay", relayPin: pin,
+                directRetryPolicy: recoveryProbe ? .recoveryProbe : .runtime),
                 identity: identity,
                 stateHandler: { state in Task { @MainActor in probe.transition(state) } },
                 eventHandler: { event in Task { @MainActor in probe.receive(event) } })
             connection = active
+            if oneShot { try await active.configureOneShot() }
             await active.start()
             try await body(active, probe, command)
             await stop()
