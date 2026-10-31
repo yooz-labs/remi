@@ -138,4 +138,36 @@ import UserNotifications
         #expect(removed.isEmpty)
         #expect(try ledger.classify(marker, keys: keys, systemIdentifier: marker.systemIdentifier) == .quarantined)
     }
+
+    @Test func separatelyConfirmedUnseenDebtCanBeAbandonedWithoutRemovingOtherAlerts() throws {
+        let (dir, keys, ledger, one, _, two, markerTwo) = try setup()
+        defer { ledger.close(); try? FileManager.default.removeItem(at: dir) }
+        var removed: [[String]] = []
+        let recovery = LocalNoticeRecovery(ledger: ledger, keys: keys) { removed.append($0) }
+        let debts = try recovery.unassignedUncertain()
+        #expect(debts.count == 1)
+        let selected = try #require(debts.first)
+        #expect(selected.identifierSuffix == String(two.requestID.suffix(8)))
+        #expect(try ledger.record(two).activity == .active)
+        try recovery.abandonUnseen(selected, current: [])
+        #expect(removed.isEmpty)
+        #expect(throws: LocalNoticeError.changed) { try ledger.record(two) }
+        #expect(try ledger.classify(markerTwo, keys: keys, systemIdentifier: markerTwo.systemIdentifier) == .retired)
+        #expect(try ledger.record(one).activity == .active)
+    }
+
+    @Test func visibleOrOversizedInventoryPreventsAbandoningUncertainDebt() throws {
+        let (dir, keys, ledger, _, _, two, markerTwo) = try setup()
+        defer { ledger.close(); try? FileManager.default.removeItem(at: dir) }
+        var removed: [[String]] = []
+        let recovery = LocalNoticeRecovery(ledger: ledger, keys: keys) { removed.append($0) }
+        let debts = try recovery.unassignedUncertain(), selected = try #require(debts.first)
+        let visible: [LocalNoticeRecovery.Entry] = [.init(request: try request(markerTwo), deliveredAt: nil)]
+        #expect(throws: LocalNoticeError.changed) { try recovery.abandonUnseen(selected, current: visible) }
+        let big = UNMutableNotificationContent()
+        big.body = String(repeating: "x", count: LocalNoticeReconciler.maximumMetadataBytes + 1)
+        let oversized: [LocalNoticeRecovery.Entry] = [.init(request: UNNotificationRequest(identifier: "big", content: big, trigger: nil), deliveredAt: nil)]
+        #expect(throws: LocalNoticeError.capacity) { try recovery.abandonUnseen(selected, current: oversized) }
+        #expect(removed.isEmpty); #expect(try ledger.record(two).effect == .crashUncertain)
+    }
 }
