@@ -20,43 +20,90 @@ struct LocalNoticeInventoryRecord: Sendable, Equatable {
     let metadataBytes: Int
 }
 
-/// Only scalar counters and a validity bit cross callback threads. The lock protects all state;
-/// no notification object, payload, continuation or actor-owned reference is stored here.
+/// Only scalar counters and validity cross callback threads in production. The condition protects
+/// all state; no notification object, payload, continuation or actor-owned reference is stored.
 final class LocalNoticeInventoryBudget: @unchecked Sendable {
-    private let lock = NSLock()
+    private let condition = NSCondition()
     private var remainingEntries = LocalNoticeInventoryLimits.maximumRequests
     private var remainingBytes = LocalNoticeInventoryLimits.maximumMetadataBytes
+    private var reservedBytes = 0
     private var failure: LocalNoticeError?
+    private static let chunkSize = 4_096
+    #if DEBUG
+    /// Synthetic test seam. Read under the lock and invoked only after releasing it.
+    private var ownedAfterChunkReservation: (@Sendable () -> Void)?
+    func installOwnedChunkHook(_ hook: @escaping @Sendable () -> Void) {
+        condition.lock(); defer { condition.unlock() }
+        ownedAfterChunkReservation = hook
+    }
+    private func callOwnedChunkHook() {
+        condition.lock(); let hook = ownedAfterChunkReservation; condition.unlock()
+        hook?()
+    }
+    #endif
 
     func reserve(_ count: Int) throws {
-        lock.lock(); defer { lock.unlock() }
+        condition.lock(); defer { condition.unlock() }
         if let failure { throw failure }
-        guard count >= 0, count <= remainingEntries else { failure = .capacity; throw LocalNoticeError.capacity }
+        guard count >= 0, count <= remainingEntries else { fail(.capacity); throw LocalNoticeError.capacity }
         remainingEntries -= count
     }
     func charge(_ count: Int) throws {
-        lock.lock(); defer { lock.unlock() }
+        condition.lock(); defer { condition.unlock() }
+        guard count >= 0, count <= LocalNoticeInventoryLimits.maximumMetadataBytes else { fail(.capacity); throw LocalNoticeError.capacity }
+        while failure == nil && count > remainingBytes && reservedBytes > 0 { condition.wait() }
         if let failure { throw failure }
-        guard count >= 0, count <= remainingBytes else { failure = .capacity; throw LocalNoticeError.capacity }
+        guard count <= remainingBytes else { fail(.capacity); throw LocalNoticeError.capacity }
         remainingBytes -= count
     }
-    /// Inspect at most the remaining budget plus one UTF-8 byte, even for an oversized string.
+
+    /// Reserve a bounded chunk under the short scalar lock, inspect outside it, then refund the
+    /// unused reservation. Other callback threads can wait for refunds; timeout/cancel wakes them.
     func chargeString(_ value: String, minimum: Int = 0) throws -> Int {
-        lock.lock(); defer { lock.unlock() }
+        let bytes = value.utf8
+        var cursor = bytes.startIndex, total = 0
+        while cursor != bytes.endIndex {
+            let reservation = try reserveChunk()
+            #if DEBUG
+            callOwnedChunkHook()
+            #endif
+            let end = bytes.index(cursor, offsetBy: reservation, limitedBy: bytes.endIndex) ?? bytes.endIndex
+            let used = bytes.distance(from: cursor, to: end)
+            try settleChunk(reservation, used: used)
+            total += used; cursor = end
+        }
+        if total < minimum { try charge(minimum - total); total = minimum }
+        return total
+    }
+    private func reserveChunk() throws -> Int {
+        condition.lock(); defer { condition.unlock() }
+        while failure == nil && remainingBytes == 0 && reservedBytes > 0 { condition.wait() }
         if let failure { throw failure }
-        let count = value.utf8.prefix(remainingBytes + 1).count
-        let charged = max(count, minimum)
-        guard charged <= remainingBytes else { failure = .capacity; throw LocalNoticeError.capacity }
-        remainingBytes -= charged
-        return charged
+        guard remainingBytes > 0 else { fail(.capacity); throw LocalNoticeError.capacity }
+        let amount = min(Self.chunkSize, remainingBytes)
+        remainingBytes -= amount; reservedBytes += amount
+        return amount
+    }
+    private func settleChunk(_ amount: Int, used: Int) throws {
+        condition.lock(); defer { condition.unlock() }
+        guard amount > 0, used >= 0, used <= amount, amount <= reservedBytes else {
+            fail(.invalid); throw LocalNoticeError.invalid
+        }
+        reservedBytes -= amount; remainingBytes += amount - used
+        condition.broadcast()
+        if let failure { throw failure }
     }
     func check() throws {
-        lock.lock(); defer { lock.unlock() }
+        condition.lock(); defer { condition.unlock() }
         if let failure { throw failure }
     }
     func invalidate() {
-        lock.lock(); defer { lock.unlock() }
-        if failure == nil { failure = .unavailable }
+        condition.lock(); defer { condition.unlock() }
+        fail(.unavailable)
+    }
+    private func fail(_ error: LocalNoticeError) {
+        if failure == nil { failure = error }
+        condition.broadcast()
     }
 }
 

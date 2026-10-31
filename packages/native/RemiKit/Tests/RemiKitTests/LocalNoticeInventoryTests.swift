@@ -28,6 +28,32 @@ import UserNotifications
 }
 private enum InventoryTimeout: Error { case deadline }
 
+/// Synthetic scheduling gate owns only a flag and semaphore, never notification objects.
+private final class OwnedInventoryChunkGate: @unchecked Sendable {
+    private let lock = NSLock(), semaphore = DispatchSemaphore(value: 0)
+    private var enteredValue = false, releasedValue = false, finishedValue = false
+    var entered: Bool { lock.lock(); defer { lock.unlock() }; return enteredValue }
+    var released: Bool { lock.lock(); defer { lock.unlock() }; return releasedValue }
+    var finished: Bool { lock.lock(); defer { lock.unlock() }; return finishedValue }
+    func holdOnce() {
+        lock.lock()
+        guard !enteredValue else { lock.unlock(); return }
+        enteredValue = true; lock.unlock()
+        _ = semaphore.wait(timeout: .now() + 2)
+    }
+    func release() {
+        lock.lock(); releasedValue = true; lock.unlock(); semaphore.signal()
+    }
+    func finish() { lock.lock(); finishedValue = true; lock.unlock() }
+}
+
+private final class OwnedBudgetOutcomes: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: String] = [:]
+    func set(_ name: String, _ result: String) { lock.lock(); values[name] = result; lock.unlock() }
+    func get(_ name: String) -> String? { lock.lock(); defer { lock.unlock() }; return values[name] }
+}
+
 @Suite(.serialized) @MainActor struct LocalNoticeInventoryTests {
     private func until(_ condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(3))
@@ -156,5 +182,70 @@ private enum InventoryTimeout: Error { case deadline }
             try LocalNoticeInventoryProjection.make(requests, dates: Array(repeating: nil, count: requests.count),
                                                      budget: LocalNoticeInventoryBudget())
         }
+    }
+
+    @Test func heldCallbackChunkDoesNotBlockTimeoutOrGrantLateAuthority() async throws {
+        let gate = OwnedInventoryChunkGate()
+        let boundary = LocalNoticeInventory.Boundary(pending: { budget, completion in
+            budget.installOwnedChunkHook { gate.holdOnce() }
+            DispatchQueue.global().async {
+                defer { gate.finish() }
+                let content = UNMutableNotificationContent(); content.body = String(repeating: "x", count: 8_192)
+                let request = UNNotificationRequest(identifier: "synthetic-held", content: content, trigger: nil)
+                do { completion(.pending(try LocalNoticeInventoryProjection.make([request], dates: [nil], budget: budget))) }
+                catch let error as LocalNoticeError { completion(.failure(error)) }
+                catch { completion(.failure(.unavailable)) }
+            }
+        }, delivered: { _, completion in completion(.delivered([])) })
+        let reader = LocalNoticeInventory(boundary: boundary, timeout: .milliseconds(50))
+        let result = Task { try await reader.read() }
+        // Bound the synthetic worker even if a regression blocks MainActor's timeout path.
+        let fallback = DispatchWorkItem { gate.release() }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1, execute: fallback)
+        try await until { gate.entered }
+        do { _ = try await result.value; Issue.record("A held half cannot become a complete inventory") }
+        catch let error as LocalNoticeError { #expect(error == .unavailable) }
+        #expect(!gate.released, "Timeout must not wait for the held callback traversal")
+        gate.release(); fallback.cancel()
+        try await until { gate.finished }
+    }
+
+    @Test func concurrentCallbackWaitsForUnusedChunkRefundWithoutFalseOverflow() async throws {
+        let budget = LocalNoticeInventoryBudget(), gate = OwnedInventoryChunkGate(), outcomes = OwnedBudgetOutcomes()
+        budget.installOwnedChunkHook { gate.holdOnce() }
+        DispatchQueue.global().async {
+            do { _ = try budget.chargeString("x"); outcomes.set("first", "ok") }
+            catch { outcomes.set("first", "failed") }
+        }
+        try await until { gate.entered }
+        DispatchQueue.global().async {
+            outcomes.set("second", "started")
+            do { try budget.charge(LocalNoticeInventoryLimits.maximumMetadataBytes - 1); outcomes.set("second", "ok") }
+            catch { outcomes.set("second", "failed") }
+        }
+        try await until { outcomes.get("second") != nil }
+        gate.release()
+        try await until { outcomes.get("first") != nil && outcomes.get("second") != "started" }
+        #expect(outcomes.get("first") == "ok"); #expect(outcomes.get("second") == "ok")
+    }
+
+    @Test func invalidationWakesCallbackWaitingForReservedBudget() async throws {
+        let budget = LocalNoticeInventoryBudget(), gate = OwnedInventoryChunkGate(), outcomes = OwnedBudgetOutcomes()
+        budget.installOwnedChunkHook { gate.holdOnce() }
+        DispatchQueue.global().async {
+            do { _ = try budget.chargeString("x"); outcomes.set("first", "unexpected") }
+            catch { outcomes.set("first", "stopped") }
+        }
+        try await until { gate.entered }
+        DispatchQueue.global().async {
+            outcomes.set("second", "started")
+            do { try budget.charge(LocalNoticeInventoryLimits.maximumMetadataBytes); outcomes.set("second", "unexpected") }
+            catch { outcomes.set("second", "stopped") }
+        }
+        try await until { outcomes.get("second") != nil }
+        budget.invalidate()
+        try await until { outcomes.get("second") == "stopped" }
+        gate.release()
+        try await until { outcomes.get("first") == "stopped" }
     }
 }
