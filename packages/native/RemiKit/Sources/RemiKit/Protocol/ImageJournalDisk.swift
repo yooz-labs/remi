@@ -12,6 +12,8 @@ final class ImageJournalDisk {
     private static let limit = 16_384
     private let lease: ImageDirectoryLease
     private let secret: Data
+    // Process-local retirement only. A future owner must durably handle observed state loss
+    // across restarts; constructing another instance is not a recovery procedure.
     private var retired = false
 
     init(lease: ImageDirectoryLease, secret: Data) {
@@ -21,12 +23,15 @@ final class ImageJournalDisk {
 
     func load() throws -> Data {
         guard !retired else { throw Failure.unavailable }
-        return try lease.withVerifiedDirectory { directory in
+        retired = true
+        let result = try lease.withVerifiedDirectory { directory in
             try Self.refuseOrphans(directory: directory)
             let record = try Self.read(directory: directory)
             try authenticate(record.bytes)
             return record.bytes
         }
+        retired = false
+        return result
     }
 
     /// Only a separately proven first installation may call this. Failure leaves any created
@@ -54,12 +59,12 @@ final class ImageJournalDisk {
         guard !retired else { throw Failure.unavailable }
         try authenticate(expected)
         try authenticate(bytes)
-        try lease.withVerifiedDirectory { directory in
+        retired = true
+        do { try lease.withVerifiedDirectory { directory in
             try Self.refuseOrphans(directory: directory)
             let current = try Self.read(directory: directory)
             try authenticate(current.bytes)
             guard current.bytes == expected else { throw Failure.stale }
-            retired = true
             let temporary = ".image-journal-\(UUID().uuidString.lowercased())"
             let fd = openat(directory, temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
             guard fd >= 0 else { throw Failure.unavailable }
@@ -81,6 +86,9 @@ final class ImageJournalDisk {
             guard fsync(directory) == 0, Self.sameEntry(directory: directory, name: Self.name, fd: fd) else {
                 throw Failure.unavailable
             }
+        } } catch Failure.stale {
+            retired = false
+            throw Failure.stale
         }
         retired = false
     }
