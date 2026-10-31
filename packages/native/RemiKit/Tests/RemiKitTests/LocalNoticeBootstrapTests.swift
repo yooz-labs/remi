@@ -108,4 +108,19 @@ private final class OwnedLocalKeychain {
         }
         #expect(os.adds == 0)
     }
+
+    @Test func corruptExistingJournalRequiresRecoveryAndIsNotRecreated() throws {
+        let dir = try path(); defer { try? FileManager.default.removeItem(at: dir) }
+        let os = OwnedLocalKeychain(), key = LocalNoticeKeyStore(service: "synthetic", account: "one")
+        os.readStatus = errSecSuccess; os.stored = Data(repeating: 41, count: 32)
+        let journal = dir.appendingPathComponent("local-notifications.sqlite")
+        let original = Data("synthetic-corrupt-journal".utf8)
+        try original.write(to: journal)
+        #expect(throws: LocalNoticeBootstrap.Failure.recoveryRequired) {
+            try LocalNoticeBootstrap.open(directory: dir, sentinel: .present, inventory: .noLocalMarkers,
+                protectedDataAvailable: true, keyStore: key, operations: os.operations)
+        }
+        #expect(try Data(contentsOf: journal) == original)
+        #expect(os.adds == 0 && os.stored == Data(repeating: 41, count: 32))
+    }
 }
