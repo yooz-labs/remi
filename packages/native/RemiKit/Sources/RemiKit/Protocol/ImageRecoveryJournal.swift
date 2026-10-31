@@ -85,6 +85,8 @@ final class ImageRecoveryJournal {
     /// The local snapshot must already be removed before insertion can become possible.
     func markInsertionPossible(_ id: UUID) throws { try transition { try $0.markInsertionPossible(id) } }
     func markInsertionUncertain(_ id: UUID) throws { try transition { try $0.markInsertionUncertain(id) } }
+    func confirmInsertion(_ id: UUID) throws { try transition { try $0.confirmInsertion(id) } }
+    func recordInsertionRefusal(_ id: UUID) throws { try transition { try $0.recordInsertionRefusal(id) } }
 
     func requestLocalAbandonment(_ id: UUID, confirmed: Bool) throws {
         try claim.synchronized {

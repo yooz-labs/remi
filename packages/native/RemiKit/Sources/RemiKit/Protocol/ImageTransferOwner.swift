@@ -1,8 +1,8 @@
 import Foundation
 
-/// One bounded staging attempt for one prepared installation record. It cannot open a picker,
-/// qualify a route, validate media, insert a draft reference, or replay an effect. Those remaining
-/// boundaries must exist before an image feature may be exposed to the user.
+/// One bounded staging attempt and explicit draft insertion for one prepared record. It cannot
+/// open a picker, qualify a route, validate media, or automatically replay an effect. Those
+/// remaining boundaries must exist before an image feature may be exposed to the user.
 @MainActor
 final class ImageTransferOwner {
     enum Failure: Error { case invalidPreparedCopy }
@@ -10,6 +10,9 @@ final class ImageTransferOwner {
         case ready, beginning, unavailable, awaitingAcceptance, awaitingChunk(offset: Int, count: Int)
         case sendingChunk, awaitingChunkAck, readyForComplete, completing, awaitingResult
         case staged(expiry: String), stagedCleanupPending(expiry: String)
+        case inserting(expiry: String), awaitingInsertion(expiry: String)
+        case inserted(expiry: String), insertedExpired(expiry: String)
+        case insertionRefused(ImageInsertionRefusalCode, expiry: String), insertionUncertain(expiry: String)
         case refused(ImageUploadRefusalCode, remoteCleanupUnconfirmed: Bool)
         case cancelled, notInvokedCleanupPending, uncertain
     }
@@ -89,6 +92,7 @@ final class ImageTransferOwner {
     /// Queries actor-owned correlation on the original socket. This is a local state read;
     /// it sends nothing and cannot restore a lost connection or stale authority.
     func refresh() async {
+        if case .awaitingInsertion = state { await refreshInsertion(); return }
         guard state == .awaitingAcceptance || state == .awaitingChunkAck || state == .awaitingResult,
               let authority else { return }
         let previous = state
@@ -121,6 +125,53 @@ final class ImageTransferOwner {
             reader?.close(); reader = nil
             state = .uncertain
         }
+    }
+
+    /// Separate explicit action; the journal records possible insertion before socket entry.
+    func addToDraft() async {
+        guard case .staged(let expiry) = state, let authority else { return }
+        do { try installation.journal.markInsertionPossible(recordID) }
+        catch { state = .insertionUncertain(expiry: expiry); return }
+        state = .inserting(expiry: expiry)
+        let operation = ImageEffectTicket()
+        ticket = operation
+        let result = await connection.sendImageInsertion(authority: authority, ticket: operation)
+        _ = operation.retire(); ticket = nil
+        guard state == .inserting(expiry: expiry) else { return }
+        switch result {
+        case .handedOff:
+            state = .awaitingInsertion(expiry: expiry)
+            await refreshInsertion()
+        case .notInvoked, .uncertain:
+            recordInsertionUncertainty(expiry: expiry)
+        }
+    }
+
+    private func refreshInsertion() async {
+        guard case .awaitingInsertion(let expiry) = state, let authority else { return }
+        let progress = await connection.imageInsertionProgress(authority: authority)
+        guard state == .awaitingInsertion(expiry: expiry) else { return }
+        switch progress {
+        case .waiting: break
+        case .inserted(let actualExpiry, let expired):
+            guard WireGuards.same(actualExpiry, expiry) else { recordInsertionUncertainty(expiry: expiry); return }
+            do {
+                try installation.journal.confirmInsertion(recordID)
+                state = expired ? .insertedExpired(expiry: expiry) : .inserted(expiry: expiry)
+            } catch { state = .insertionUncertain(expiry: expiry) }
+        case .refused(let code, let actualExpiry):
+            guard WireGuards.same(actualExpiry, expiry) else { recordInsertionUncertainty(expiry: expiry); return }
+            do {
+                try installation.journal.recordInsertionRefusal(recordID)
+                state = .insertionRefused(code, expiry: expiry)
+            } catch { state = .insertionUncertain(expiry: expiry) }
+        case .uncertain, nil: recordInsertionUncertainty(expiry: expiry)
+        }
+    }
+
+    private func recordInsertionUncertainty(expiry: String) {
+        try? installation.journal.markInsertionUncertain(recordID)
+        state = .insertionUncertain(expiry: expiry)
     }
 
     /// Read and send exactly one chunk; a failed or cancelled phase is never replayed.
@@ -173,6 +224,11 @@ final class ImageTransferOwner {
         if state == .beginning, let ticket {
             state = ticket.retire() == .noEffect ? .cancelled : .uncertain
             reader?.close(); reader = nil
+        } else if case .inserting(let expiry) = state, let ticket {
+            _ = ticket.retire()
+            recordInsertionUncertainty(expiry: expiry)
+        } else if case .awaitingInsertion(let expiry) = state {
+            recordInsertionUncertainty(expiry: expiry)
         } else if (state == .sendingChunk || state == .completing), let ticket {
             _ = ticket.retire()
             reader?.close(); reader = nil

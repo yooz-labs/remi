@@ -476,7 +476,13 @@ public actor RemiConnection {
         case refused(ImageUploadRefusalCode, remoteCleanupUnconfirmed: Bool)
         case uncertain
     }
-    private enum ImageEffectKind { case begin, chunk, complete }
+    enum ImageInsertionProgress: Sendable, Equatable {
+        case waiting
+        case inserted(expiry: String, artifactExpired: Bool)
+        case refused(ImageInsertionRefusalCode, expiry: String)
+        case uncertain
+    }
+    private enum ImageEffectKind { case begin, chunk, complete, insert }
     private struct ImageBeginAttempt {
         let begin: ImageUploadBegin
         let authority: ImageBeginAuthority
@@ -508,6 +514,20 @@ public actor RemiConnection {
         case .awaitingResult: return operation.pendingComplete == nil ? .waitingResult : .readyForComplete
         case .staged(let expiry): return .staged(expiry: expiry)
         case .refused(let code, let unconfirmed): return .refused(code, remoteCleanupUnconfirmed: unconfirmed)
+        default: return .uncertain
+        }
+    }
+
+    func imageInsertionProgress(authority: ImageBeginAuthority) -> ImageInsertionProgress? {
+        guard var operation = imageBeginOperation, operation.authority == authority,
+              imageBeginAuthority(for: operation.begin, machineKey: authority.machineKey) == authority else { return nil }
+        operation.flow.tick(now: ProcessInfo.processInfo.systemUptime)
+        imageBeginOperation = operation
+        switch operation.flow.status {
+        case .awaitingInsertion: return .waiting
+        case .inserted(let expiry): return .inserted(expiry: expiry, artifactExpired: false)
+        case .insertedExpired(let expiry): return .inserted(expiry: expiry, artifactExpired: true)
+        case .insertionRefused(let code, let expiry): return .refused(code, expiry: expiry)
         default: return .uncertain
         }
     }
@@ -587,6 +607,39 @@ public actor RemiConnection {
         }
     }
 
+    /// The explicit caller chooses insertion; the staged artifact and binding stay actor-owned.
+    func sendImageInsertion(authority: ImageBeginAuthority, ticket: ImageEffectTicket) async -> ImageBeginSendResult {
+        guard var operation = imageBeginOperation, operation.authority == authority,
+              imageBeginAuthority(for: operation.begin, machineKey: authority.machineKey) == authority else {
+            _ = ticket.retire(); return .notInvoked
+        }
+        guard let message = operation.flow.addToDraft(requestID: UUID().uuidString.lowercased(),
+            timestamp: WireTimestamp.string(), now: ProcessInfo.processInfo.systemUptime),
+              let frame = try? message.encodedFrame() else {
+            imageBeginOperation = operation; _ = ticket.retire(); return .notInvoked
+        }
+        operation.phase = UUID()
+        operation.invoked = false
+        imageBeginOperation = operation
+        let attempt = ImageBeginAttempt(begin: operation.begin, authority: authority, ticket: ticket,
+                                        kind: .insert, phase: operation.phase)
+        do {
+            #if DEBUG
+            try await ownedImageBeforeSend?()
+            #endif
+            try await deliver(Data(frame.utf8), validateBeforeSend: nil, imageAttempt: attempt)
+            #if DEBUG
+            try await ownedImageAfterSend?()
+            #endif
+            return .handedOff
+        } catch {
+            if var current = imageBeginOperation, current.authority == authority {
+                current.flow.disconnected(); imageBeginOperation = current
+            }
+            return ticket.retire() == .noEffect ? .notInvoked : .uncertain
+        }
+    }
+
     private func enterImageAttempt(_ attempt: ImageBeginAttempt?) throws {
         guard let attempt else { return }
         guard let current = imageBeginAuthority(for: attempt.begin, machineKey: attempt.authority.machineKey),
@@ -598,7 +651,7 @@ public actor RemiConnection {
             guard attempt.ticket.enter() else { throw RelayFailure.closed }
             imageBeginOperation = ImageBeginOperation(begin: attempt.begin, authority: attempt.authority,
                 flow: flow, phase: attempt.phase, invoked: true, pendingComplete: nil)
-        case .chunk, .complete:
+        case .chunk, .complete, .insert:
             guard var operation = imageBeginOperation, operation.authority == attempt.authority,
                   operation.phase == attempt.phase, !operation.invoked else { throw RelayFailure.closed }
             operation.flow.tick(now: ProcessInfo.processInfo.systemUptime)
@@ -608,6 +661,8 @@ public actor RemiConnection {
                 guard case .awaitingChunkAck = operation.flow.status else { throw RelayFailure.closed }
             case .complete:
                 guard case .awaitingResult = operation.flow.status, operation.pendingComplete != nil else { throw RelayFailure.closed }
+            case .insert:
+                guard case .awaitingInsertion = operation.flow.status else { throw RelayFailure.closed }
             case .begin: throw RelayFailure.state
             }
             guard attempt.ticket.enter() else { throw RelayFailure.closed }
@@ -937,6 +992,14 @@ public actor RemiConnection {
                     operation.invoked = false
                 }
             }
+            imageBeginOperation = operation
+        case "image_insert_result":
+            guard var operation = imageBeginOperation, operation.invoked,
+                  imageBeginAuthority(for: operation.begin, machineKey: operation.authority.machineKey) == operation.authority else {
+                eventHandler(.unsupported(type: envelope.type)); return
+            }
+            let message = try ImageInsertionMessage.decode(data)
+            operation.flow.receiveInsertion(message, now: ProcessInfo.processInfo.systemUptime)
             imageBeginOperation = operation
         case "question":
             eventHandler(.question(try decoder.decode(QuestionMessage.self, from: data)))
