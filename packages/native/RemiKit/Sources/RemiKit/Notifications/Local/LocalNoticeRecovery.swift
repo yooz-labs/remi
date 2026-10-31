@@ -14,7 +14,7 @@ import Foundation
     }
     struct UnassignedDebt: Equatable {
         fileprivate let ticket: LocalNoticeLedger.Ticket
-        var identifierSuffix: String { String(ticket.requestID.suffix(8)) }
+        let identifierSuffix: String
     }
 
     private let ledger: LocalNoticeLedger
@@ -80,7 +80,14 @@ import Foundation
 
     /// These records have no proven profile association and expose only an opaque suffix to UI.
     func unassignedUncertain() throws -> [UnassignedDebt] {
-        try ledger.unassignedUncertainTickets().map { UnassignedDebt(ticket: $0) }
+        let tickets = try ledger.unassignedUncertainTickets()
+        return tickets.map { ticket in
+            var width = 8
+            while width < ticket.requestID.count && tickets.contains(where: {
+                $0.requestID != ticket.requestID && $0.requestID.suffix(width) == ticket.requestID.suffix(width)
+            }) { width = min(width + 4, ticket.requestID.count) }
+            return UnassignedDebt(ticket: ticket, identifierSuffix: String(ticket.requestID.suffix(width)))
+        }
     }
 
     /// After separate explicit confirmation of the late-banner risk, abandon one exact debt.
