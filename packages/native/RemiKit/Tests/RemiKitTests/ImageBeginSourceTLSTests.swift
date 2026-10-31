@@ -20,8 +20,8 @@ private actor OwnedImageSendGate {
 @MainActor @Suite(.serialized) struct ImageBeginSourceTLSTests {
     private enum Failure: Error { case deadline }
 
-    @Test(arguments: ["fixture.png", "fixture.jpg"])
-    func ownedSourceStagesAndExplicitlyInsertsImageWithoutEnter(_ filename: String) async throws {
+    @Test(arguments: ["fixture.png", "fixture.jpg"], [false, true])
+    func ownedSourceStagesAndExplicitlyInsertsImageWithoutEnter(_ filename: String, _ cancelBeforeSend: Bool) async throws {
         let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let script = tests.appendingPathComponent("Integration/image-staging-source-fixture.ts")
         let repository = tests.deletingLastPathComponent().deletingLastPathComponent()
@@ -104,6 +104,24 @@ private actor OwnedImageSendGate {
                 #expect(observed["completes"] as? Int == 1)
                 #expect(observed["staged"] as? Int == 1)
                 #expect(installation.journal.snapshot.localSnapshotID == nil)
+                if cancelBeforeSend {
+                    let cancelGate = OwnedImageSendGate()
+                    try await client.ownedSetImageBeforeSend { try await cancelGate.hold() }
+                    let inserting = Task { await transfer.addToDraft() }
+                    do { try await until { await cancelGate.entered } }
+                    catch { await cancelGate.release(); await inserting.value; throw error }
+                    transfer.cancel()
+                    #expect(transfer.state == .insertionUncertain(expiry: stagedExpiry))
+                    await cancelGate.release()
+                    await inserting.value
+                    try await client.ownedSetImageBeforeSend(nil)
+                    await transfer.addToDraft()
+                    let cancelled = try await stats(input: input, output: output)
+                    #expect(cancelled["insertions"] as? Int == 0)
+                    #expect(cancelled["outputBytes"] as? Int == 0)
+                    #expect(installation.journal.snapshot.records.first?.exposure == .insertionUncertain(expiry: stagedExpiry))
+                    return
+                }
                 let insertionReturn = OwnedImageSendGate()
                 try await client.ownedSetImageAfterSend { try await insertionReturn.hold() }
                 let inserting = Task { await transfer.addToDraft() }
@@ -212,6 +230,11 @@ private actor OwnedImageSendGate {
             try await until { await client.imageBeginAuthority(for: begin, machineKey: machineKey) != nil }
             let initial = await client.imageBeginAuthority(for: begin, machineKey: machineKey)
             let authority = try #require(initial)
+            let wrongBinding = AttachedBinding(harness: .claude, harnessSessionId: "different-owned-binding")
+            let wrong = ImageUploadBegin(header: header, binding: wrongBinding, mediaType: .png, byteLength: payload.count,
+                                         digest: WireGuards.encodeBase64URL(digest))
+            #expect(await client.imageBeginAuthority(for: wrong, machineKey: machineKey) == nil)
+            #expect(await client.imageBeginAuthority(for: begin, machineKey: Data(repeating: 7, count: 32)) == nil)
 
             let cancelGate = OwnedImageSendGate()
             try await client.ownedSetImageBeforeSend { try await cancelGate.hold() }
