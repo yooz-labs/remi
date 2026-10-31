@@ -24,7 +24,7 @@ public enum AuthenticationHandshake {
         pairingNonce: String? = nil,
         pairingLabel: String? = nil
     ) throws -> (AuthResponseMessage, PendingAuthentication) {
-        guard let challenge = Data(base64Encoded: frame.challenge),
+        guard let challenge = Data(base64Encoded: frame.challenge), challenge.count == 32,
               let serverKey = Data(base64Encoded: frame.serverPublicKey)
         else {
             throw AuthenticationHandshakeError.malformedChallenge
