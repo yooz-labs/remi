@@ -86,4 +86,18 @@ private enum OwnedEncodingFailure: Error { case synthetic }
         }
         #expect(defaults.data(forKey: key) == previous)
     }
+
+    @Test func runtimeOnlyDirectPinCannotBeSilentlyDiscarded() throws {
+        let name = "live.yooz.remi.tests.local-profile." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let key = "synthetic-machine-profiles", store = MachineConfigurationStore(key: key)
+        let pin = ClientIdentity().publicKeyRaw.base64EncodedString()
+        let profile = MachineRouteProfile(machineID: nil,
+            routes: [MachineEndpoint(host: "192.0.2.10", port: 1234, expectedPublicKey: pin)])
+        #expect(throws: LocalNoticeProfilePersistenceError.encodingFailed) {
+            try store.prepareLocalForgetProfiles([profile], defaults: defaults, domainName: name)
+        }
+        #expect(defaults.object(forKey: key) == nil)
+    }
 }
