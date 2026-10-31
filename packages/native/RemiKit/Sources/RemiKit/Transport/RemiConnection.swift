@@ -1,6 +1,57 @@
 import CryptoKit
 import Foundation
 
+/// The socket actor updates admission before any callback can be delayed.
+final class DirectParentHelloFence: @unchecked Sendable {
+    enum Admission { case waiting, admitted(Data?) }
+    private let lock = NSLock()
+    private var epoch = UUID()
+    private var admission: Admission = .waiting
+
+    func reset() -> UUID {
+        lock.lock(); defer { lock.unlock() }
+        epoch = UUID(); admission = .waiting
+        return epoch
+    }
+    func observeHello(_ key: Data?) -> UUID {
+        lock.lock(); defer { lock.unlock() }
+        admission = .admitted(key)
+        return epoch
+    }
+    func snapshot() -> (UUID, Admission) {
+        lock.lock(); defer { lock.unlock() }
+        return (epoch, admission)
+    }
+    func isCurrent(_ expected: UUID) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return epoch == expected
+    }
+    func withAdmission<T>(_ expected: UUID, _ body: () throws -> T) throws -> T {
+        lock.lock(); defer { lock.unlock() }
+        guard epoch == expected, case .admitted = admission else { throw RelayFailure.closed }
+        return try body()
+    }
+}
+
+/// A callback can be constructed before its connection, but is bound before start.
+final class DirectParentHelloReference: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: DirectParentHelloFence?
+    func bind(_ fence: DirectParentHelloFence) {
+        lock.lock(); defer { lock.unlock() }
+        precondition(value == nil)
+        value = fence
+    }
+    func snapshot() -> (UUID, DirectParentHelloFence.Admission)? {
+        lock.lock(); let fence = value; lock.unlock()
+        return fence?.snapshot()
+    }
+    func isCurrent(_ epoch: UUID) -> Bool {
+        lock.lock(); let fence = value; lock.unlock()
+        return fence?.isCurrent(epoch) == true
+    }
+}
+
 /// Revocation and synchronous signing share one linearization point. The
 /// lock is never held while waiting on an actor or a network operation.
 final class DirectChildSigningFence: @unchecked Sendable {
@@ -160,6 +211,10 @@ public actor RemiConnection {
     public typealias EventHandler = @Sendable (RemiInboundEvent) -> Void
     public typealias ReadyHandler = @Sendable () async throws -> Void
 
+    /// Shared with the owning Store or adoption bridge. Socket transitions
+    /// update it inside this actor before callbacks can be queued or delayed.
+    nonisolated let directParentHelloFence = DirectParentHelloFence()
+
     private var configuration: RemiConnectionConfiguration
     private nonisolated let expectedMachineID: String?
     private let authenticationRetryHandler: @Sendable (String) -> Void
@@ -188,6 +243,7 @@ public actor RemiConnection {
     private var pendingAuthentication: PendingAuthentication?
     /// The key that authenticated this direct connection. Relay authority comes from the pin.
     private var authenticatedServerPublicKey: Data?
+    private var learnedDirectServerPublicKey: String?
     private let notificationAuthorityEpoch = RelayRegistrationEpoch()
     private var applicationAdmitted = false
     private var relayHelloBuffer = RelayHelloBuffer()
@@ -435,6 +491,7 @@ public actor RemiConnection {
         var attempt = 0
         while shouldRun && !Task.isCancelled {
             attempt += 1
+            if configuration.relayPin == nil { _ = directParentHelloFence.reset() }
             transition(to: .connecting(attempt: attempt))
             do {
                 try await connectAndReceive()
@@ -584,7 +641,7 @@ public actor RemiConnection {
                     : "The daemon fingerprint does not match the scanned pairing code."))
                 return
             }
-            if let expected = configuration.expectedServerPublicKey,
+            if let expected = configuration.expectedServerPublicKey ?? learnedDirectServerPublicKey,
                challenge.serverPublicKey != expected {
                 shouldRun = false
                 closeSocket()
@@ -602,7 +659,7 @@ public actor RemiConnection {
                 try AuthenticationHandshake.response(
                     to: challenge,
                     identity: self.identity,
-                    expectedServerPublicKey: self.configuration.expectedServerPublicKey,
+                    expectedServerPublicKey: self.configuration.expectedServerPublicKey ?? self.learnedDirectServerPublicKey,
                     pairingNonce: self.configuration.pairingNonce,
                     pairingLabel: self.configuration.pairingLabel
                 )
@@ -652,20 +709,24 @@ public actor RemiConnection {
         case "hello_ack":
             guard pendingAuthentication == nil else { throw AuthenticationHandshakeError.missingPendingChallenge }
             if configuration.relayPin == nil,
-               configuration.expectedServerPublicKey != nil || configuration.expectedServerFingerprint != nil {
+               configuration.expectedServerPublicKey != nil || configuration.expectedServerFingerprint != nil || learnedDirectServerPublicKey != nil {
                 guard authenticatedServerPublicKey != nil else { throw AuthenticationHandshakeError.missingPendingChallenge }
             }
             initialDirectHelloPending = false
             let message = try decoder.decode(HelloAckMessage.self, from: data)
             guard acceptMachineIdentity(descriptor: message.machine) else { return }
+            if configuration.relayPin == nil, let authenticatedServerPublicKey {
+                learnedDirectServerPublicKey = authenticatedServerPublicKey.base64EncodedString()
+            }
             applicationAdmitted = true
             directDeadline?.cancel()
             directDeadline = nil
             relayDeadline?.cancel()
             relayDeadline = nil
-            transition(to: .connected(sessionId: message.sessionId))
             let authority = configuration.relayPin.flatMap { try? RelayCrypto.unb64($0.machinePublicKey) }
                 ?? authenticatedServerPublicKey
+            if configuration.relayPin == nil { _ = directParentHelloFence.observeHello(authority) }
+            transition(to: .connected(sessionId: message.sessionId))
             eventHandler(.hello(message, authorityPublicKey: authority))
             for buffered in relayHelloBuffer.drain() {
                 guard applicationAdmitted, socket === task else { throw RelayFailure.closed }
@@ -783,6 +844,7 @@ public actor RemiConnection {
     }
 
     private func closeSocket() {
+        if configuration.relayPin == nil, socket != nil { _ = directParentHelloFence.reset() }
         notificationAuthorityEpoch.replace()
         ready = false
         let waiting = readyWaiters; readyWaiters.removeAll()

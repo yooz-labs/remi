@@ -3,39 +3,6 @@ import Foundation
 import Observation
 import RemiPush
 
-/// Captures the actual parent connection's verified Hello before its Store
-/// callback can be delayed behind another callback on the main actor.
-final class DirectParentHelloFence: @unchecked Sendable {
-    enum Admission { case waiting, admitted(Data?) }
-    private let lock = NSLock()
-    private var epoch = UUID()
-    private var admission: Admission = .waiting
-
-    func reset() -> UUID {
-        lock.lock(); defer { lock.unlock() }
-        epoch = UUID(); admission = .waiting
-        return epoch
-    }
-    func observeHello(_ key: Data?) -> UUID {
-        lock.lock(); defer { lock.unlock() }
-        admission = .admitted(key)
-        return epoch
-    }
-    func snapshot() -> (UUID, Admission) {
-        lock.lock(); defer { lock.unlock() }
-        return (epoch, admission)
-    }
-    func isCurrent(_ expected: UUID) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        return epoch == expected
-    }
-    func withAdmission<T>(_ expected: UUID, _ body: () throws -> T) throws -> T {
-        lock.lock(); defer { lock.unlock() }
-        guard epoch == expected, case .admitted = admission else { throw RelayFailure.closed }
-        return try body()
-    }
-}
-
 /// A configured transport endpoint plus its optional authenticated machine descriptor (#1531).
 /// Legacy daemons still use `host:port` until their descriptor arrives.
 public struct MachineEndpoint: Codable, Sendable, Hashable, Identifiable {
@@ -1089,8 +1056,13 @@ public final class MachineStore {
                     connection: connection, generation: generation, hello: hello, key: key)
             }, forward: { [weak self] callback, adoption in
                 switch callback {
-                case .state(let state): self?.receive(state, from: adoption.endpoint, generation: adoption.generation)
-                case .event(let event): self?.receive(event, from: adoption.endpoint, generation: adoption.generation)
+                case .state(let state):
+                    if let epoch = adoption.callbackEpoch, self?.directParentHelloFences[adoption.endpoint]?.isCurrent(epoch) != true { return }
+                    self?.receive(state, from: adoption.endpoint, generation: adoption.generation)
+                case .event(let event):
+                    if case .hello = event, let epoch = adoption.callbackEpoch,
+                       self?.directParentHelloFences[adoption.endpoint]?.isCurrent(epoch) != true { return }
+                    self?.receive(event, from: adoption.endpoint, generation: adoption.generation, callbackEpoch: adoption.callbackEpoch)
                 case .authenticationRetry: break
                 }
             }, resume: { [weak self] adoption in
@@ -1111,6 +1083,7 @@ public final class MachineStore {
             })
         #if DEBUG
         coordinator.ownedBeforeAdmission = { [weak self] in await self?.ownedBeforeRecoveryAdmission?() }
+        coordinator.ownedBeforeAdoptedReconnectState = { [weak self] in await self?.ownedBeforeParentReconnectState?() }
         #endif
         recoveryCoordinator = coordinator
         return coordinator
@@ -1185,6 +1158,7 @@ public final class MachineStore {
         connections[admitted] = connection
         connectionGenerations[admitted] = generation
         parentByConnection[admitted] = admitted
+        if admitted.relayPin == nil { directParentHelloFences[admitted] = connection.directParentHelloFence }
         if hadConnection {
             latestOperationNotice = "The connection changed. Pending answers, Cancel, chat and session requests may be uncertain. Check the current session before trying again."
         }
@@ -1491,13 +1465,19 @@ public final class MachineStore {
                         authority: authority, origin: origin, preference: preference)
                 }, forward: { [weak self] callback, adoption in
                     switch callback {
-                    case .state(let state): self?.receive(state, from: adoption.endpoint, generation: adoption.generation)
-                    case .event(let event): self?.receive(event, from: adoption.endpoint, generation: adoption.generation)
+                    case .state(let state):
+                        if let epoch = adoption.callbackEpoch, self?.directParentHelloFences[adoption.endpoint]?.isCurrent(epoch) != true { return }
+                        self?.receive(state, from: adoption.endpoint, generation: adoption.generation)
+                    case .event(let event):
+                        if case .hello = event, let epoch = adoption.callbackEpoch,
+                           self?.directParentHelloFences[adoption.endpoint]?.isCurrent(epoch) != true { return }
+                        self?.receive(event, from: adoption.endpoint, generation: adoption.generation, callbackEpoch: adoption.callbackEpoch)
                     case .authenticationRetry: break
                     }
                 })
             #if DEBUG
             coordinator.ownedBeforeAdmission = ownedBeforePairingAdmission
+            coordinator.ownedBeforeAdoptedReconnectState = { [weak self] in await self?.ownedBeforeParentReconnectState?() }
             #endif
             pairingCoordinator = coordinator
             publishPairing(.init(id: id, address: nil, layer: nil, phase: .connecting))
@@ -1535,6 +1515,7 @@ public final class MachineStore {
         connections[endpoint] = connection
         connectionGenerations[endpoint] = generation
         parentByConnection[endpoint] = endpoint
+        if endpoint.relayPin == nil { directParentHelloFences[endpoint] = connection.directParentHelloFence }
         let adoption = PairingAdoption(endpoint: endpoint, generation: generation, profileID: machines[index].id)
         receive(.hello(hello, authorityPublicKey: authority), from: endpoint, generation: generation)
         recovery().start()
@@ -2289,8 +2270,7 @@ public final class MachineStore {
         #endif
         connectionGenerations[endpoint] = generation
         parentByConnection[endpoint] = parent
-        let parentHelloFence = endpoint == parent && endpoint.relayPin == nil ? DirectParentHelloFence() : nil
-        if let parentHelloFence { directParentHelloFences[endpoint] = parentHelloFence }
+        let parentHelloReference = endpoint == parent && endpoint.relayPin == nil ? DirectParentHelloReference() : nil
         if let childFence, let parentGeneration {
             directChildOwners[endpoint] = DirectChildOwner(parent: parent, parentGeneration: parentGeneration,
                 lifetime: machines[index].pairingLifetime, key: parentAuthority, parentEpoch: parentEpoch, signingFence: childFence)
@@ -2317,14 +2297,7 @@ public final class MachineStore {
                     explicit: trustIntent, ledgerGeneration: pushGeneration)
             },
             stateHandler: { [weak self] state in
-                let epoch: UUID?
-                if let parentHelloFence {
-                    switch state {
-                    case .connecting, .retrying, .stopped, .rejected, .reachabilityFailed, .awaitingLocalApproval, .awaitingRelayConfirmation:
-                        epoch = parentHelloFence.reset()
-                    default: epoch = parentHelloFence.snapshot().0
-                    }
-                } else { epoch = nil }
+                let epoch = parentHelloReference?.snapshot()?.0
                 Task { @MainActor [weak self] in
                     #if DEBUG
                     if endpoint == parent {
@@ -2334,25 +2307,25 @@ public final class MachineStore {
                         }
                     }
                     #endif
-                    if let epoch, parentHelloFence?.isCurrent(epoch) != true { return }
+                    if let epoch, parentHelloReference?.isCurrent(epoch) != true { return }
                     self?.receive(state, from: endpoint, generation: generation)
                 }
             },
             eventHandler: { [weak self] event in
-                let epoch: UUID?
-                if let parentHelloFence {
-                    if case .hello(_, let authority) = event { epoch = parentHelloFence.observeHello(authority) }
-                    else { epoch = parentHelloFence.snapshot().0 }
-                } else { epoch = nil }
+                let epoch = parentHelloReference?.snapshot()?.0
                 Task { @MainActor [weak self] in
                     #if DEBUG
                     if endpoint == parent, case .hello = event { await beforeParentHello?() }
                     #endif
-                    if case .hello = event, let epoch, parentHelloFence?.isCurrent(epoch) != true { return }
+                    if case .hello = event, let epoch, parentHelloReference?.isCurrent(epoch) != true { return }
                     self?.receive(event, from: endpoint, generation: generation, callbackEpoch: epoch)
                 }
             }
         )
+        if let parentHelloReference {
+            parentHelloReference.bind(connection.directParentHelloFence)
+            directParentHelloFences[endpoint] = connection.directParentHelloFence
+        }
         connections[endpoint] = connection
         #if DEBUG
         let session = ownedTestSession

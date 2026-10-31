@@ -360,13 +360,13 @@ struct DirectChildKeyIntegrationTests {
         await cleanup()
     }
 
-    @Test(arguments: ["legacy", "matching"])
+    @Test(arguments: ["legacy", "matching", "wrongkey"])
     func learnedManualRootCannotDowngradeOnReconnect(_ scenario: String) async throws {
         let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Integration/direct-child-key-peer.ts")
         let peer = Process(), input = Pipe(), output = Pipe()
         let folder = try OwnedRecoveryFixture.configure(peer, script: script,
-            arguments: [scenario == "legacy" ? "manual-reconnect" : "matching", "stats.json"])
+            arguments: [scenario == "matching" ? "matching" : "manual-reconnect", "stats.json"])
         peer.standardInput = input; peer.standardOutput = output; peer.standardError = FileHandle.standardError
         try peer.run()
         func cleanup() async {
@@ -401,7 +401,8 @@ struct DirectChildKeyIntegrationTests {
             #expect(try stats()["rootAuth"] == 1, "The initially unpinned root really authenticated")
             let generation = try #require(subject.connectionGenerations[endpoint])
             let originalSocketOwner = try #require(subject.ownedConnectionID(endpoint))
-            try input.fileHandleForWriting.write(contentsOf: Data((scenario == "legacy" ? "switch-legacy\n" : "switch-valid\n").utf8))
+            let switchCommand = scenario == "legacy" ? "switch-legacy\n" : scenario == "wrongkey" ? "switch-wrong\n" : "switch-valid\n"
+            try input.fileHandleForWriting.write(contentsOf: Data(switchCommand.utf8))
             let deadline = ContinuousClock.now.advanced(by: .seconds(8))
             while ContinuousClock.now < deadline {
                 let entered = await reconnectGate.entered
@@ -414,6 +415,7 @@ struct DirectChildKeyIntegrationTests {
             while ContinuousClock.now < deadline {
                 let current = try stats()
                 if scenario == "legacy", current["rootHelloHeld", default: 0] > 0 { break }
+                if scenario == "wrongkey", current["rootWrongHeld", default: 0] > 0 { break }
                 if scenario == "matching", current["rootHello", default: 0] >= 2 { break }
                 try await Task.sleep(for: .milliseconds(10))
             }
@@ -422,7 +424,14 @@ struct DirectChildKeyIntegrationTests {
                 try #require(try stats()["rootHelloHeld"] == 1)
                 try input.fileHandleForWriting.write(contentsOf: Data("release-root\n".utf8))
             }
-            else { #expect(try stats()["rootAuth", default: 0] >= 2) }
+            else if scenario == "wrongkey" {
+                try #require(try stats()["rootWrongHeld"] == 1)
+                try input.fileHandleForWriting.write(contentsOf: Data("release\n".utf8))
+                while try stats()["rootWrongChallenges", default: 0] == 0 && ContinuousClock.now < deadline {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                try #require(try stats()["rootWrongChallenges"] == 1)
+            } else { #expect(try stats()["rootAuth", default: 0] >= 2) }
             try await Task.sleep(for: .milliseconds(100))
             let response = try JSONDecoder().decode(SessionListResponse.self, from: fixture("session_list_response", port: childPort))
             subject.receive(.sessions(response), from: endpoint, generation: generation)
@@ -432,8 +441,11 @@ struct DirectChildKeyIntegrationTests {
                 if current["childAuth", default: 0] > 0 || subject.connectionGenerations[endpoint] == nil { break }
                 try await Task.sleep(for: .milliseconds(10))
             }
-            #expect(try stats()["childAuth"] == (scenario == "legacy" ? 0 : 1),
+            #expect(try stats()["childAuth"] == (scenario == "matching" ? 1 : 0),
                 "A learned root key must survive reconnect; the matching key remains usable")
+            if scenario == "wrongkey" {
+                #expect(try stats()["rootAuth"] == 1, "A changed root key must be rejected before the client signs")
+            }
             await reconnectGate.open()
             subject.stop()
         } catch {
@@ -445,7 +457,7 @@ struct DirectChildKeyIntegrationTests {
         await cleanup()
     }
 
-    @Test(arguments: ["pairing-stop", "pairing-forget", "pairing-repair", "pairing-live", "pairing-wrong", "recovery-stop", "recovery-forget", "recovery-repair", "recovery-live", "recovery-wrong"])
+    @Test(arguments: ["pairing-stop", "pairing-reconnect", "pairing-forget", "pairing-repair", "pairing-live", "pairing-wrong", "recovery-stop", "recovery-reconnect", "recovery-forget", "recovery-repair", "recovery-live", "recovery-wrong"])
     func adoptedParentOwnsChildSigningAcrossRetirement(_ scenario: String) async throws {
         let pieces = scenario.split(separator: "-")
         let kind = String(pieces[0]), action = String(pieces[1])
@@ -468,6 +480,7 @@ struct DirectChildKeyIntegrationTests {
         }
         var store: MachineStore?
         let gate = OwnedChildSignGate()
+        let reconnectGate = OwnedChildSignGate()
         do {
             var line = Data()
             for try await byte in output.fileHandleForReading.bytes { if byte == 10 { break }; line.append(byte) }
@@ -484,14 +497,14 @@ struct DirectChildKeyIntegrationTests {
                 let encoded = Data(json.utf8).base64EncodedString().replacingOccurrences(of: "+", with: "-")
                     .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
                 let payload = try PairingPayload(scannedValue: "remi://pair#" + encoded)
-                if ["stop", "forget", "repair"].contains(action) { subject.ownedBeforeChildSignature = { await gate.hold() } }
+                if ["stop", "reconnect", "forget", "repair"].contains(action) { subject.ownedBeforeChildSignature = { await gate.hold() } }
                 _ = subject.beginPairing(payload, label: "Owned")
             } else {
                 let closed = MachineEndpoint(host: "127.0.0.1", port: try #require(info["closedPort"] as? Int), expectedPublicKey: key)
                 let profile = MachineRouteProfile(machineID: machineID, routes: [closed, endpoint],
                     machinePublicKey: RelayCrypto.b64(try #require(Data(base64Encoded: key))))
                 subject = MachineStore(profiles: [profile], identity: identity, clientVersion: "test", clientId: "owned")
-                if ["stop", "forget", "repair"].contains(action) { subject.ownedBeforeChildSignature = { await gate.hold() } }
+                if ["stop", "reconnect", "forget", "repair"].contains(action) { subject.ownedBeforeChildSignature = { await gate.hold() } }
                 try #require(subject.machines.first?.endpoint.port == closed.port, "The real recovery probe must replace the refused configured route")
                 subject.start()
             }
@@ -507,17 +520,30 @@ struct DirectChildKeyIntegrationTests {
             } else {
                 try #require(subject.ownedRecoveryCoordinator?.ownedAdmittedConnections[generation] == ObjectIdentifier(rootConnection))
             }
+            if action == "reconnect" { subject.ownedBeforeParentReconnectState = { await reconnectGate.hold() } }
             let response = try JSONDecoder().decode(SessionListResponse.self, from: fixture("session_list_response", port: childPort))
             subject.receive(.sessions(response), from: root, generation: generation)
             let statsFile = folder.appendingPathComponent("stats.json")
             func stats() throws -> [String: Int] {
                 try #require(JSONSerialization.jsonObject(with: Data(contentsOf: statsFile)) as? [String: Int])
             }
-            if ["stop", "forget", "repair"].contains(action) {
+            if ["stop", "reconnect", "forget", "repair"].contains(action) {
                 while !(await gate.entered) && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
                 try #require(await gate.entered, "The child must have received its challenge before parent retirement")
                 switch action {
                 case "stop": await rootConnection.stop()
+                case "reconnect":
+                    try input.fileHandleForWriting.write(contentsOf: Data("switch-valid\n".utf8))
+                    while ContinuousClock.now < deadline {
+                        let held = await reconnectGate.entered
+                        let verifiedHellos = try stats()["rootHello", default: 0]
+                        if held && verifiedHellos >= 2 { break }
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                    try #require(await reconnectGate.entered, "Adopted reconnect callbacks must be held")
+                    try #require(try stats()["rootAuth", default: 0] >= 2, "The same adopted actor must authenticate its second socket")
+                    try #require(try stats()["rootHello", default: 0] >= 2, "The second server proof must be verified before retrying the child")
+                    try #require(subject.ownedConnectionID(root) == ObjectIdentifier(rootConnection))
                 case "forget": _ = subject.removeMachine(root)
                 case "repair": subject.addMachine(root)
                 default: break
@@ -535,9 +561,11 @@ struct DirectChildKeyIntegrationTests {
                 "Only a matching child under the current adopted parent can sign")
             #expect(try stats()["childPairing"] == 0)
             await gate.open()
+            await reconnectGate.open()
             subject.stop()
         } catch {
             await gate.open()
+            await reconnectGate.open()
             store?.stop()
             await cleanup()
             throw error

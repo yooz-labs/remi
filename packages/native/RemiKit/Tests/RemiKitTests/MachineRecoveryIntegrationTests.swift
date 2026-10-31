@@ -9,6 +9,13 @@ private final class RecoveryAdmissionGate {
     var released = false
 }
 
+private actor RecoveryVerifiedHello {
+    private(set) var value: (HelloAckMessage, Data)?
+    func record(_ event: RemiInboundEvent) {
+        if case .hello(let hello, let key?) = event { value = (hello, key) }
+    }
+}
+
 @MainActor
 @Suite(.serialized)
 struct MachineRecoveryIntegrationTests {
@@ -245,31 +252,51 @@ struct MachineRecoveryIntegrationTests {
         #expect(store.machines.first?.sessionConnectionIssue == nil)
     }
 
-    /// Starts with the manual endpoint, then learns its full key through the
-    /// authenticated Hello seam. Recovery must update that configured owner.
+    /// Both the original owner and the promoted connection complete a real
+    /// signed Hello before this Store-commit control exercises its route changes.
     @Test(arguments: [false, true])
     func learnedPinRecoveryKeepsCanonicalConfiguredOwner(_ discovered: Bool) async throws {
-        let hub = try listener(), session = try listener()
-        defer { Darwin.close(hub.0); Darwin.close(session.0) }
-        let root = MachineEndpoint(host: "127.0.0.1", port: hub.1)
-        let key = ClientIdentity().publicKeyRaw
+        let session = try listener()
+        defer { Darwin.close(session.0) }
+        let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Integration/direct-child-key-peer.ts")
+        let peer = Process(), input = Pipe(), output = Pipe()
+        let directory = try OwnedRecoveryFixture.configure(peer, script: script, arguments: ["matching", "stats.json"])
+        peer.standardInput = input; peer.standardOutput = output; peer.standardError = FileHandle.standardError
+        try peer.run()
+        defer {
+            try? input.fileHandleForWriting.close()
+            if peer.isRunning { peer.terminate() }
+        }
+        let info = try #require(try await readLine(output.fileHandleForReading) as? [String: Any])
+        let encodedKey = try #require(info["publicKey"] as? String)
+        let key = try #require(Data(base64Encoded: encodedKey))
+        let root = MachineEndpoint(host: "127.0.0.1", port: try #require(info["rootPort"] as? Int))
         let store = MachineStore(endpoints: [root], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
         store.start(); defer { store.stop() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while store.machines.first?.status != .connected && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(store.machines.first?.status == .connected, "Original route must complete real signed Hello")
         let initial = try #require(store.connectionGenerations[root])
-        let hello = try fixture("hello_ack_legacy", as: HelloAckMessage.self)
-        store.receive(.hello(hello, authorityPublicKey: key), from: root, generation: initial)
         store.renameMachine(root, to: "Saved manual alias")
         store.receive(.retrying(attempt: 1, delaySeconds: 1), from: root, generation: initial)
         let navigationID = try #require(store.machines.first?.id)
         let target = try #require(store.recoveryTargets().first)
         let pinned = target.pinned(root)
         #expect(pinned.id == root.id && pinned != root)
-        let connection = RemiConnection(configuration: .init(url: try #require(pinned.webSocketURL), clientVersion: "test", clientId: "test"),
-            identity: ClientIdentity(), stateHandler: { _ in }, eventHandler: { _ in })
+        let received = RecoveryVerifiedHello()
+        let connection = RemiConnection(configuration: .init(url: try #require(pinned.webSocketURL), clientVersion: "test", clientId: "test",
+            expectedServerPublicKey: key.base64EncodedString()), identity: ClientIdentity(), stateHandler: { _ in },
+            eventHandler: { event in Task { await received.record(event) } })
         defer { Task { await connection.stop() } }
+        await connection.start()
+        let secondDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while await received.value == nil && ContinuousClock.now < secondDeadline { try await Task.sleep(for: .milliseconds(10)) }
+        let (hello, provenKey) = try #require(await received.value, "Promoted socket must complete real signed Hello")
+        #expect(provenKey == key)
         let generation = UUID()
         let adopted = try store.admitRecovery(target: target, endpoint: pinned, discovered: discovered,
-            connection: connection, generation: generation, hello: hello, key: key)
+            connection: connection, generation: generation, hello: hello, key: provenKey)
         #expect(adopted.endpoint == pinned && store.machines.first?.routes.first == pinned)
         #expect(store.machines.first?.endpoint == pinned && store.machines.first?.id == navigationID)
         #expect(store.machines.first?.displayName == "Saved manual alias")
@@ -294,6 +321,11 @@ struct MachineRecoveryIntegrationTests {
         store.receive(.sessions(list), from: child, generation: childGeneration)
         #expect(store.connectionGenerations.isEmpty && store.ownedSessionRoutes.isEmpty && store.machines.first?.status == stopped)
         store.stop(); await connection.stop()
+        try? input.fileHandleForWriting.close()
+        let stopDeadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while peer.isRunning && ContinuousClock.now < stopDeadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(!peer.isRunning)
+        if !peer.isRunning { try? FileManager.default.removeItem(at: directory) }
     }
 
     @Test(arguments: [0, 1, 2])

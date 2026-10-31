@@ -57,6 +57,8 @@ const stats = {
   rootOpens: 0,
   rootLegacyHello: 0,
   rootHello: 0,
+  rootWrongChallenges: 0,
+  rootWrongHeld: 0,
 };
 const publish = () => {
   writeFileSync(`${statsPath}.tmp`, JSON.stringify(stats));
@@ -67,22 +69,34 @@ const heldChallenges: Array<() => void> = [];
 const heldRootHellos: Array<() => void> = [];
 const rootClosers = new Set<() => void>();
 let reconnectLegacy = false;
-type State = { role: 'root' | 'root2' | 'child' | 'child2'; challenge: Buffer; admitted: boolean };
+let reconnectWrong = false;
+type State = {
+  role: 'root' | 'root2' | 'child' | 'child2';
+  challenge: Buffer;
+  admitted: boolean;
+  key: typeof parent;
+};
 function listener(role: State['role']) {
-  const key =
+  const defaultKey =
     role === 'root' ? parent : role === 'root2' || role === 'child2' ? otherParent : child;
   return Bun.serve<State>({
     hostname: '127.0.0.1',
     port: 0,
     fetch(request, server) {
       return server.upgrade(request, {
-        data: { role, challenge: randomBytes(32), admitted: false },
+        data: {
+          role,
+          challenge: randomBytes(32),
+          admitted: false,
+          key: role === 'root' && reconnectWrong ? otherParent : defaultKey,
+        },
       })
         ? undefined
         : new Response('upgrade required', { status: 400 });
     },
     websocket: {
       open(ws) {
+        const key = ws.data.key;
         if (role === 'root') {
           stats.rootOpens++;
           rootClosers.add(() => ws.close());
@@ -104,10 +118,19 @@ function listener(role: State['role']) {
               serverFingerprint: digest(key.publicKey).slice(0, 16),
             }),
           );
-        if (role === 'child' && mode === 'held') heldChallenges.push(challenge);
+        if (role === 'root' && reconnectWrong) {
+          stats.rootWrongHeld++;
+          publish();
+          heldChallenges.push(() => {
+            stats.rootWrongChallenges++;
+            publish();
+            challenge();
+          });
+        } else if (role === 'child' && mode === 'held') heldChallenges.push(challenge);
         else challenge();
       },
       message(ws, bytes) {
+        const key = ws.data.key;
         const message = JSON.parse(String(bytes));
         if (message.type === 'auth_response') {
           if (role === 'root' || role === 'root2') stats.rootAuth++;
@@ -204,8 +227,9 @@ try {
   for await (const line of createInterface({ input: process.stdin })) {
     if (line === 'release') for (const challenge of heldChallenges.splice(0)) challenge();
     if (line === 'release-root') for (const hello of heldRootHellos.splice(0)) hello();
-    if (line === 'switch-legacy' || line === 'switch-valid') {
+    if (line === 'switch-legacy' || line === 'switch-valid' || line === 'switch-wrong') {
       reconnectLegacy = line === 'switch-legacy';
+      reconnectWrong = line === 'switch-wrong';
       for (const close of rootClosers) close();
       rootClosers.clear();
     }
