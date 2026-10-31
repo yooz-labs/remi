@@ -144,4 +144,23 @@ import Testing
             #expect(owner.snapshot.records.isEmpty)
         }
     }
+
+    @Test func snapshotDescriptorIdentityMustBePersistedBeforeCopyFinalization() throws {
+        try withStore { _, disk in
+            try disk.initializeIfProvenFresh(ImageRecoveryLedger().encodeJournal(secret: secret))
+            let owner = try ImageRecoveryJournal(disk: disk, secret: secret)
+            let id = try owner.reserveCopy()
+            let fingerprint = try ImageRecoveryFingerprint.make(secret: secret, machineKey: Data(repeating: 0x42, count: 32),
+                sessionID: "00112233-4455-4677-8899-aabbccddeeff",
+                binding: AttachedBinding(harness: .claude, harnessSessionId: "owned-thread"),
+                imageDigest: Data(repeating: 0x52, count: 32))
+            #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try owner.finishCopy(id, fingerprint: fingerprint) }
+            try owner.registerSnapshot(id, device: 42, inode: 1234)
+            let restored = try ImageRecoveryLedger.restoreJournal(disk.load(), secret: secret)
+            #expect(restored.ledger.records.first?.snapshotIdentity?.device == 42)
+            #expect(restored.ledger.records.first?.snapshotIdentity?.inode == 1234)
+            #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try owner.registerSnapshot(id, device: 42, inode: 1235) }
+            try owner.finishCopy(id, fingerprint: fingerprint)
+        }
+    }
 }
