@@ -7,7 +7,17 @@ import Testing
 /// not replace daemon business logic or claim a device/relay qualification.
 @MainActor @Suite(.serialized)
 struct AnswerOutcomeWireTests {
-    @Test(arguments: ["delivered", "stale", "stale-binding", "session-not-found", "conflict", "busy", "uncertain", "future-outcome", "non-string", "mismatch-request", "mismatch-session", "mismatch-question"])
+    @Test(arguments: [
+        ("delivered", "delivered"), ("stale", "stale"),
+        ("stale-binding", "stale"), ("session-not-found", "stale"),
+        ("conflict", "conflict"), ("busy", "busy"), ("uncertain", "uncertain"),
+        ("future-outcome", "uncertain"), ("STALE-BINDING", "uncertain"), ("refused", "uncertain"),
+    ])
+    func secureNotificationOutcomeUsesTheSharedWireVocabulary(input: String, expected: String) {
+        #expect(RelayNotificationAnswerOutcome.fromWire(input).rawValue == expected)
+    }
+
+    @Test(arguments: ["delivered", "stale", "stale-binding", "session-not-found", "conflict", "busy", "uncertain", "future-outcome", "STALE-BINDING", "non-string", "mismatch-request", "mismatch-session", "mismatch-question"])
     func localNotificationClassifiesCorrelatedWireOutcome(_ wireOutcome: String) async throws {
         let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Integration/answer-outcome-peer.ts")
