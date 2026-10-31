@@ -20,6 +20,98 @@ private actor OwnedImageSendGate {
 @MainActor @Suite(.serialized) struct ImageBeginSourceTLSTests {
     private enum Failure: Error { case deadline }
 
+    @Test(arguments: ["fixture.png", "fixture.jpg"])
+    func ownedSourceStagesExactImageUsingBoundedChunks(_ filename: String) async throws {
+        let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let script = tests.appendingPathComponent("Integration/image-staging-source-fixture.ts")
+        let repository = tests.deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let bytes = try Data(contentsOf: repository.appendingPathComponent("scripts/tunnel-decoder-proof/\(filename)"))
+        let identity = ClientIdentity()
+        let process = Process()
+        let own = try OwnedRecoveryFixture.configure(process, script: script,
+            arguments: [identity.publicIdentity.publicKey], bunExecutable: ProcessInfo.processInfo.environment["REMI_DELIVERY_BUN"])
+        let input = Pipe(), output = Pipe()
+        let log = own.appendingPathComponent("image-staging-source.log")
+        FileManager.default.createFile(atPath: log.path, contents: nil)
+        let errors = try FileHandle(forWritingTo: log)
+        process.standardInput = input; process.standardOutput = output; process.standardError = errors
+        try process.run()
+        let watchdog = Task {
+            try? await Task.sleep(for: .seconds(60))
+            if !Task.isCancelled, process.isRunning { process.terminate() }
+        }
+        defer { watchdog.cancel() }
+        var connection: RemiConnection?
+        var testSession: URLSession?
+        func stop() async {
+            await connection?.stop()
+            testSession?.invalidateAndCancel()
+            try? input.fileHandleForWriting.write(contentsOf: Data("stop\n".utf8))
+            try? input.fileHandleForWriting.close()
+            let deadline = ContinuousClock.now.advanced(by: .seconds(8))
+            while process.isRunning, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+            if process.isRunning { process.terminate() }
+            let end = ContinuousClock.now.advanced(by: .seconds(3))
+            while process.isRunning, ContinuousClock.now < end { try? await Task.sleep(for: .milliseconds(20)) }
+            #expect(!process.isRunning)
+            try? errors.close()
+        }
+        do {
+            let ready = try #require(JSONSerialization.jsonObject(with: await Self.readLine(output.fileHandleForReading)) as? [String: Any])
+            let port = try #require(ready["port"] as? Int)
+            let sessionID = try #require(ready["sessionId"] as? String)
+            let bindingID = try #require(ready["bindingId"] as? String)
+            let publicKey = try #require(ready["publicKey"] as? String)
+            let machineKey = try #require(Data(base64Encoded: publicKey))
+            let ca = try OwnedRelayCA(path: #require(ready["certPath"] as? String))
+            let session = URLSession(configuration: .ephemeral, delegate: ca, delegateQueue: nil)
+            testSession = session
+            let client = RemiConnection(configuration: .init(url: try #require(URL(string: "wss://127.0.0.1:\(port)/ws")),
+                clientVersion: "owned", clientId: "owned", expectedServerPublicKey: publicKey), identity: identity,
+                stateHandler: { _ in }, eventHandler: { _ in })
+            connection = client
+            try await client.useOwnedTestSession(session)
+            try await client.enableOwnedImageFixture()
+            await client.start()
+            let header = WireHeader(id: UUID().uuidString.lowercased(), timestamp: "2026-10-31T00:00:00.000Z", sessionId: sessionID)
+            let binding = AttachedBinding(harness: .claude, harnessSessionId: bindingID)
+            let begin = ImageUploadBegin(header: header, binding: binding, mediaType: filename.hasSuffix(".png") ? .png : .jpeg,
+                byteLength: bytes.count, digest: WireGuards.encodeBase64URL(Data(SHA256.hash(data: bytes))))
+            try await until { await client.imageBeginAuthority(for: begin, machineKey: machineKey) != nil }
+            try await withPreparedInstallation(payload: bytes, begin: begin, machineKey: machineKey) { installation, record in
+                let transfer = try ImageTransferOwner(installation: installation, connection: client, recordID: record,
+                                                       begin: begin, machineKey: machineKey, now: 0)
+                await transfer.begin()
+                let deadline = ContinuousClock.now.advanced(by: .seconds(20))
+                while ContinuousClock.now < deadline {
+                    await transfer.refresh()
+                    switch transfer.state {
+                    case .awaitingChunk: await transfer.sendNextChunk()
+                    case .readyForComplete: await transfer.complete()
+                    case .staged: break
+                    case .refused, .uncertain, .notInvokedCleanupPending: throw Failure.deadline
+                    default: break
+                    }
+                    if case .staged = transfer.state { break }
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                guard case .staged = transfer.state else { throw Failure.deadline }
+                let observed = try await stats(input: input, output: output)
+                #expect(observed["begins"] as? Int == 1)
+                #expect(observed["chunks"] as? Int == (bytes.count + ImageStagingLimits.chunkBytes - 1) / ImageStagingLimits.chunkBytes)
+                #expect(observed["completes"] as? Int == 1)
+                #expect(observed["staged"] as? Int == 1)
+                #expect(installation.journal.snapshot.localSnapshotID == nil)
+            }
+            await stop()
+        } catch {
+            print("Owned staging fixture failed; inspect \(log.path)")
+            await stop()
+            throw error
+        }
+    }
+
     @Test func ownedWSSBeginHonorsCancellationAndSocketReplacement() async throws {
         let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Integration/delivery-source-fixture.ts")
