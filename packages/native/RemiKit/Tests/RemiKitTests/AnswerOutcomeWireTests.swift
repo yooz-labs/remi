@@ -5,13 +5,13 @@ import Testing
 @testable import RemiKit
 
 #if os(macOS)
-private enum PeerError: Error, Equatable {
+enum PeerError: Error, Equatable {
     case startupTimedOut, startupFailed, encodingFailed, unexpectedInput
 }
 
 /// A single synthetic WebSocket peer, bound only to loopback. It exercises the
 /// real native client; it is neither a daemon substitute nor a device test.
-private final class OwnedAnswerPeer: @unchecked Sendable {
+final class OwnedAnswerPeer: @unchecked Sendable {
     private let queue = DispatchQueue(label: "remi.test.answer-outcome-peer")
     private let lock = NSLock()
     private let listener: NWListener
@@ -61,7 +61,7 @@ private final class OwnedAnswerPeer: @unchecked Sendable {
         hello["harnessSessionId"] = harnessID
         helloData = try JSONSerialization.data(withJSONObject: hello)
         let websocket = NWProtocolWebSocket.Options()
-        websocket.maximumMessageSize = 65_536
+        websocket.maximumMessageSize = mode == "image-ingress" ? 131_072 : 65_536
         websocket.setClientRequestHandler(queue) { _, _ in
             NWProtocolWebSocket.Response(status: .accept, subprotocol: nil)
         }
@@ -138,6 +138,20 @@ private final class OwnedAnswerPeer: @unchecked Sendable {
             try await Task.sleep(for: .milliseconds(10))
         }
         throw PeerError.startupTimedOut
+    }
+
+    /// One bounded adversarial image-boundary frame on an already authenticated test peer.
+    func sendImageIngressProbe(_ data: Data) -> Bool {
+        lock.lock()
+        let current = mode == "image-ingress" && connectionReady && !stopped && data.count <= 131_072 ? connection : nil
+        lock.unlock()
+        guard let current else { return false }
+        queue.async {
+            let context = NWConnection.ContentContext(identifier: "test-image-ingress",
+                metadata: [NWProtocolWebSocket.Metadata(opcode: .text)])
+            current.send(content: data, contentContext: context, isComplete: true, completion: .contentProcessed { _ in })
+        }
+        return true
     }
 
     func stop(timeout: Duration = .seconds(3)) async -> Bool {
