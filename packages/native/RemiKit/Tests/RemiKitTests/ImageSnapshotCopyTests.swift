@@ -44,6 +44,15 @@ import Testing
         }
     }
 
+    @Test func emptySourceIsRefusedWithoutDeletingTheOwnedDestination() throws {
+        try withFiles(Data()) { source, destination, output in
+            #expect(throws: ImageSnapshotCopy.Failure.invalidFile) {
+                try ImageSnapshotCopy.capture(source: source, destination: destination)
+            }
+            #expect(FileManager.default.fileExists(atPath: output.path))
+        }
+    }
+
     @Test func refusesNonemptyDestinationAndSameFile() throws {
         try withFiles(Data([1, 2, 3])) { source, destination, _ in
             let marker: [UInt8] = [4]
