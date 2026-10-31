@@ -225,6 +225,7 @@ import Testing
             try journal.finishCopy(id, fingerprint: fingerprint)
             #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try owner.clearAfterStaging(id: id) }
             try journal.markPartialPossible(id)
+            try journal.rememberPartialExpiry(id, expiry: "2026-10-31T23:59:00.000Z")
             try journal.markStagingPossible(id)
             try journal.markStaged(id, expiry: "2026-11-01T00:00:00.000Z")
             #expect(throws: ImageRecoveryLedger.Failure.localSnapshotStillPresent) { try journal.markInsertionPossible(id) }
@@ -236,6 +237,17 @@ import Testing
             #expect(!journal.snapshot.hasAggregateUnconfirmedCleanup)
             try journal.markInsertionPossible(id)
             #expect(journal.snapshot.records.first?.exposure == .insertionInFlight(expiry: "2026-11-01T00:00:00.000Z"))
+            try journal.markInsertionUncertain(id)
+            #expect(throws: ImageRecoveryLedger.Failure.insertionMayHaveOccurred) { try owner.abandon(id: id, confirmed: true) }
+            let second = try journal.reserveCopy()
+            #expect(lseek(source, 0, SEEK_SET) == 0)
+            _ = try owner.capture(id: second, source: source)
+            #expect(throws: ImageRecoveryLedger.Failure.sameImageInsertionUncertain) {
+                try journal.finishCopy(second, fingerprint: fingerprint)
+            }
+            try owner.abandon(id: second, confirmed: true)
+            #expect(journal.snapshot.records.first?.exposure == .insertionUncertain(expiry: "2026-11-01T00:00:00.000Z"))
+            #expect(journal.snapshot.records.first?.knownPartialExpiry == "2026-10-31T23:59:00.000Z")
         }
     }
 
