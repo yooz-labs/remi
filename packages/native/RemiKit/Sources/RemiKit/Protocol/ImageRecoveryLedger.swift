@@ -135,7 +135,8 @@ struct ImageRecoveryLedger: Sendable {
     /// Called only after a bounded, durable snapshot has been hashed and validated.
     mutating func finishCopy(_ id: UUID, fingerprint: ImageRecoveryFingerprint) throws {
         let index = try recordIndex(id)
-        guard records[index].exposure == .copyReserved, records[index].localSnapshotPresent else { throw Failure.invalidTransition }
+        guard records[index].exposure == .copyReserved, records[index].localSnapshotPresent,
+              !records[index].cleanupRequested else { throw Failure.invalidTransition }
         try checkFingerprint(fingerprint)
         records[index].fingerprint = fingerprint
         records[index].exposure = .prepared
@@ -155,14 +156,16 @@ struct ImageRecoveryLedger: Sendable {
     /// Persist this conservative transition before the begin effect may enter.
     mutating func markPartialPossible(_ id: UUID) throws {
         let index = try recordIndex(id)
-        guard records[index].exposure == .prepared, records[index].localSnapshotPresent else { throw Failure.invalidTransition }
+        guard records[index].exposure == .prepared, records[index].localSnapshotPresent,
+              !records[index].cleanupRequested else { throw Failure.invalidTransition }
         records[index].exposure = .partialPossible
     }
 
     /// Persist before the complete effect may enter; host staging then may be unknown.
     mutating func markStagingPossible(_ id: UUID) throws {
         let index = try recordIndex(id)
-        guard records[index].exposure == .partialPossible, records[index].localSnapshotPresent else { throw Failure.invalidTransition }
+        guard records[index].exposure == .partialPossible, records[index].localSnapshotPresent,
+              !records[index].cleanupRequested else { throw Failure.invalidTransition }
         records[index].exposure = .stagingPossible
     }
 
