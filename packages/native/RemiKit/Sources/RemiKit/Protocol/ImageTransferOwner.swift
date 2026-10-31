@@ -17,6 +17,7 @@ final class ImageTransferOwner {
     private let machineKey: Data
     private var flow: ImageUploadFlow
     private var ticket: ImageEffectTicket?
+    private var reader: ImageSnapshotReader?
     private(set) var state: State = .ready
 
     init(installation: ImageInstallationOwner, connection: RemiConnection, recordID: UUID,
@@ -47,8 +48,13 @@ final class ImageTransferOwner {
             state = .unavailable
             return
         }
-        do { try installation.journal.markPartialPossible(recordID) }
+        do {
+            guard let digest = WireGuards.decodeBase64URL(beginMessage.digest) else { throw Failure.invalidPreparedCopy }
+            reader = try installation.snapshots.openUploadReader(id: recordID, byteCount: beginMessage.byteLength, digest: digest)
+            try installation.journal.markPartialPossible(recordID)
+        }
         catch {
+            reader?.close(); reader = nil
             _ = operation.retire()
             ticket = nil
             state = .notInvokedCleanupPending
@@ -59,8 +65,10 @@ final class ImageTransferOwner {
         ticket = nil
         switch result {
         case .notInvoked:
+            reader?.close(); reader = nil
             state = .notInvokedCleanupPending
         case .uncertain:
+            reader?.close(); reader = nil
             state = .uncertain
         case .handedOff:
             state = state == .cancelled ? .uncertain : .awaitingAcceptance
@@ -69,7 +77,14 @@ final class ImageTransferOwner {
 
     /// Synchronous retirement prevents a queued begin from entering after cancellation.
     func cancel() {
-        guard state == .beginning, let ticket else { return }
-        state = ticket.retire() == .noEffect ? .cancelled : .uncertain
+        if state == .beginning, let ticket {
+            state = ticket.retire() == .noEffect ? .cancelled : .uncertain
+            reader?.close(); reader = nil
+        } else if state == .awaitingAcceptance {
+            // A cancel frame/receipt is not wired yet; remote partial cleanup is uncertain.
+            flow.disconnected()
+            reader?.close(); reader = nil
+            state = .uncertain
+        }
     }
 }

@@ -5,7 +5,7 @@ import Foundation
 /// key, prove snapshot creation and validation, and provide one serialized owner per lease.
 /// It cannot authorize a socket, delete a file, or establish remote cleanup.
 final class ImageRecoveryJournal {
-    enum Failure: Error, Equatable { case retired, invalidClaim, copyActive }
+    enum Failure: Error, Equatable { case retired, invalidClaim, copyActive, readerActive }
 
     private let disk: ImageJournalDisk
     private let claim: ImageDirectoryLease.OwnerClaim
@@ -15,6 +15,7 @@ final class ImageRecoveryJournal {
     private var storedSnapshot: ImageRecoveryLedger
     private var isRetired = false
     private var copyActive = false
+    private var activeReader: UUID?
     var snapshot: ImageRecoveryLedger { claim.synchronized { storedSnapshot } }
     var retired: Bool { claim.synchronized { isRetired } }
 
@@ -74,23 +75,65 @@ final class ImageRecoveryJournal {
     /// The caller must first validate the result on its original authorized socket.
     func markStaged(_ id: UUID, expiry: String) throws { try transition { try $0.markStaged(id, expiry: expiry) } }
 
-    func requestStagedLocalCleanup(_ id: UUID) throws { try transition { try $0.requestStagedLocalCleanup(id) } }
+    func requestStagedLocalCleanup(_ id: UUID) throws {
+        try claim.synchronized {
+            guard activeReader == nil else { throw Failure.readerActive }
+            try transition { try $0.requestStagedLocalCleanup(id) }
+        }
+    }
 
     /// The local snapshot must already be removed before insertion can become possible.
     func markInsertionPossible(_ id: UUID) throws { try transition { try $0.markInsertionPossible(id) } }
     func markInsertionUncertain(_ id: UUID) throws { try transition { try $0.markInsertionUncertain(id) } }
 
     func requestLocalAbandonment(_ id: UUID, confirmed: Bool) throws {
-        try transition { try $0.requestLocalAbandonment(id, confirmed: confirmed) }
+        try claim.synchronized {
+            guard activeReader == nil else { throw Failure.readerActive }
+            try transition { try $0.requestLocalAbandonment(id, confirmed: confirmed) }
+        }
     }
 
     /// Only the filesystem owner may call this after proving the owned entry is absent and
     /// synchronizing its directory. The transition never proves remote deletion.
     func confirmOwnedSnapshotDeleted(_ id: UUID) throws {
-        try transition { try $0.confirmOwnedSnapshotDeleted(id) }
+        try claim.synchronized {
+            guard activeReader == nil else { throw Failure.readerActive }
+            try transition { try $0.confirmOwnedSnapshotDeleted(id) }
+        }
     }
 
     func holds(_ lease: ImageDirectoryLease) -> Bool { claim.belongs(to: lease) }
+
+    /// Retains the journal/lease and prevents local cleanup during a serialized upload read.
+    final class SnapshotReadClaim {
+        private let lock = NSLock()
+        private var journal: ImageRecoveryJournal?
+        private let id: UUID
+        fileprivate init(journal: ImageRecoveryJournal, id: UUID) { self.journal = journal; self.id = id }
+        func release() {
+            lock.lock(); let owner = journal; journal = nil; lock.unlock()
+            owner?.releaseSnapshotReader(id)
+        }
+        deinit { release() }
+    }
+
+    func claimSnapshotRead(_ id: UUID) throws -> SnapshotReadClaim {
+        try claim.synchronized {
+            guard !isRetired else { throw Failure.retired }
+            guard !copyActive else { throw Failure.copyActive }
+            guard activeReader == nil else { throw Failure.readerActive }
+            guard storedSnapshot.localSnapshotID == id,
+                  let record = storedSnapshot.records.first(where: { $0.id == id }),
+                  record.exposure == .prepared, record.localSnapshotPresent, !record.cleanupRequested,
+                  record.snapshotIdentity != nil else { throw Failure.invalidClaim }
+            activeReader = id
+            return SnapshotReadClaim(journal: self, id: id)
+        }
+    }
+
+    private func releaseSnapshotReader(_ id: UUID) {
+        claim.synchronized { if activeReader == id { activeReader = nil } }
+    }
 
     /// Compare the recorded scope and digest without exposing the installation secret.
     func matchesPreparedCopy(_ id: UUID, begin: ImageUploadBegin, machineKey: Data) throws -> Bool {
@@ -112,6 +155,7 @@ final class ImageRecoveryJournal {
         try claim.synchronized {
             guard !isRetired else { throw Failure.retired }
             guard !copyActive else { throw Failure.copyActive }
+            guard activeReader == nil else { throw Failure.readerActive }
             copyActive = true
             defer { copyActive = false }
             return try body()

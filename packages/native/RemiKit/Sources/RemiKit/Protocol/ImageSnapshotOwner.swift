@@ -93,6 +93,49 @@ final class ImageSnapshotOwner {
         #endif
     }
 
+    /// Open only the registered private copy. Cleanup stays blocked until the reader closes;
+    /// the SHA-256 of returned chunks must match before a complete effect can be sent.
+    func openUploadReader(id: UUID, byteCount: Int, digest: Data) throws -> ImageSnapshotReader {
+        #if os(iOS)
+        throw Failure.unsupportedProtection
+        #else
+        guard (1...ImageStagingLimits.imageBytes).contains(byteCount), digest.count == 32,
+              journal.holds(lease) else { throw Failure.invalidReservation }
+        let readClaim = try journal.claimSnapshotRead(id)
+        var acquired: Int32 = -1
+        do {
+            guard let record = journal.snapshot.records.first(where: { $0.id == id }),
+                  let identity = record.snapshotIdentity else { throw Failure.invalidReservation }
+            let name = "image-\(id.uuidString.lowercased())"
+            return try lease.withVerifiedDirectory { directory in
+                let fd = openat(directory, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+                guard fd >= 0 else { throw Failure.unavailable }
+                acquired = fd
+                let verify: () throws -> Void = { [lease] in
+                    try lease.withVerifiedDirectory { current in
+                        var info = stat()
+                        guard fstat(fd, &info) == 0, Self.validFile(info), info.st_size == byteCount,
+                              UInt64(UInt32(bitPattern: info.st_dev)) == identity.device,
+                              UInt64(info.st_ino) == identity.inode,
+                              Self.sameEntry(directory: current, name: name, descriptor: info) else {
+                            throw Failure.unavailable
+                        }
+                    }
+                }
+                try verify()
+                let reader = ImageSnapshotReader(descriptor: fd, byteCount: byteCount, digest: digest,
+                                                 claim: readClaim, verifyEntry: verify)
+                acquired = -1
+                return reader
+            }
+        } catch {
+            if acquired >= 0 { close(acquired) }
+            readClaim.release()
+            throw error
+        }
+        #endif
+    }
+
     /// Explicit local abandonment only. This never asserts remote deletion, and leaves an
     /// unknown or substituted entry untouched. The caller must serialize all use of this owner.
     func abandon(id: UUID, confirmed: Bool) throws {
