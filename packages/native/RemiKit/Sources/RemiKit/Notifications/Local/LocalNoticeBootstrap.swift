@@ -4,7 +4,7 @@ import RemiPush
 
 /// Cold-start decisions for the local notification journal. Never rotates a key on a read error.
 enum LocalNoticeBootstrap {
-    enum Sentinel { case absent, present, invalid }
+    enum Sentinel: Equatable { case absent, present, invalid }
     enum Inventory { case noLocalMarkers, localMarkersPresent, unavailable }
     enum Failure: Error, Equatable { case locked, recoveryRequired, unavailable }
     /// Production callers use only this OS-provided app-container location, never a wire or project path.
