@@ -17,6 +17,31 @@ final class ImageSnapshotOwner {
         self.journal = journal
     }
 
+    /// Consume a person-selected file while its security scope is active. The source descriptor
+    /// is opened once without following a final symlink; no provider URL is reopened for upload.
+    /// A false scope result may also mean the URL needed no scope, so actual access is determined
+    /// by opening the file. This is not media validation; the caller must validate the owned copy
+    /// before any send. Invoke it off the UI executor after route admission.
+    func captureSelectedFile(id: UUID, url: URL, cancelled: () -> Bool = { false }) throws -> ImageSnapshotCopy.Result {
+        #if os(iOS)
+        throw Failure.unsupportedProtection
+        #else
+        let host = url.host ?? ""
+        let path = url.path
+        guard url.isFileURL, (host.isEmpty || WireGuards.same(host, "localhost")),
+              !path.isEmpty, path.utf8.count <= 4096, !path.utf8.contains(0) else { throw Failure.unavailable }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let source = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        guard source >= 0 else { throw Failure.unavailable }
+        defer { close(source) }
+        var info = stat()
+        guard fstat(source, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_size > 0, info.st_size <= ImageStagingLimits.imageBytes else { throw Failure.unavailable }
+        return try capture(id: id, source: source, cancelled: cancelled)
+        #endif
+    }
+
     func capture(id: UUID, source: Int32, cancelled: () -> Bool = { false }) throws -> ImageSnapshotCopy.Result {
         #if os(iOS)
         throw Failure.unsupportedProtection
