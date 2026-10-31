@@ -92,6 +92,7 @@ struct RelayIdleRecoverySourceTests {
             try await until("initial admitted hello") { probe.hellos == 1 || probe.rejected }
             try #require(probe.hellos == 1 && !probe.rejected)
             for episode in 1...5 {
+                let oldOrigin = try #require(await active.chatOrigin())
                 // A correlated real encrypted census verifies each admitted episode before loss.
                 let previousLists = probe.lists
                 try await active.send(SessionListRequestMessage(id: UUID().uuidString.lowercased(),
@@ -102,6 +103,11 @@ struct RelayIdleRecoverySourceTests {
                 #expect(try await line()["kind"] as? String == "dropped")
                 try await until("reconnect episode \(episode)") {
                     probe.hellos >= episode + 1 || probe.rejected
+                }
+                if !probe.rejected {
+                    let stale = UserInputMessage(id: UUID().uuidString.lowercased(), timestamp: Date().ISO8601Format(),
+                        sessionId: UUID().uuidString.lowercased(), content: "owned stale input", claudeSessionId: nil)
+                    #expect(await active.sendChat(stale, origin: oldOrigin) == .notInvoked)
                 }
                 try input.fileHandleForWriting.write(contentsOf: Data("stats\n".utf8))
                 let stats = try await line()

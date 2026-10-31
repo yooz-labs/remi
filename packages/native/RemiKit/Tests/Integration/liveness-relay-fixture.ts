@@ -115,7 +115,8 @@ try {
       const ready = [...observable.peers.values()].filter((peer) => peer.stage === 'ready');
       if (ready.length !== 1)
         throw new Error(`Expected one owned ready peer, found ${ready.length}`);
-      const peer = ready[0]!;
+      const peer = ready[0];
+      if (!peer) throw new Error('Owned ready peer disappeared');
       if (line === 'drop') {
         // Close only the owned server-side pipe, without emitting an authenticated BYE.
         peer.ws.close(1011, 'owned synthetic transport loss');
