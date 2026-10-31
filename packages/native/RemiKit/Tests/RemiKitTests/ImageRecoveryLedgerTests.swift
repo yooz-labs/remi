@@ -76,7 +76,14 @@ import Testing
         #expect(throws: ImageRecoveryLedger.Failure.localSnapshotStillPresent) { try ledger.markInsertionPossible(first) }
         try ledger.requestStagedLocalCleanup(first)
         try ledger.confirmOwnedSnapshotDeleted(first)
+        #expect(throws: ImageRecoveryLedger.Failure.stagedActionOutstanding) {
+            _ = try ledger.reserve(fingerprint(image: Data(repeating: 0x53, count: 32)))
+        }
         try ledger.markInsertionPossible(first)
+        #expect(throws: ImageRecoveryLedger.Failure.insertionInFlight) {
+            _ = try ledger.reserve(fingerprint(image: Data(repeating: 0x53, count: 32)))
+        }
+        try ledger.markInsertionUncertain(first)
         #expect(throws: ImageRecoveryLedger.Failure.insertionMayHaveOccurred) {
             try ledger.requestLocalAbandonment(first, confirmed: true)
         }
@@ -125,6 +132,7 @@ import Testing
             try ledger.requestStagedLocalCleanup(id)
             try ledger.confirmOwnedSnapshotDeleted(id)
             try ledger.markInsertionPossible(id)
+            try ledger.markInsertionUncertain(id)
             ids.append(id)
         }
         #expect(throws: ImageRecoveryLedger.Failure.recordCapacity) {
