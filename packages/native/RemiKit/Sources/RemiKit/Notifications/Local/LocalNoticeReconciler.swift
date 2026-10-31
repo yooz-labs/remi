@@ -1,4 +1,5 @@
 import Foundation
+import RemiPush
 import UserNotifications
 
 /// Scans only after the OS returns both inventories. An absent in-memory ticket is never removal
@@ -27,12 +28,15 @@ import UserNotifications
         }
         // Removal is identifier-based, so a same-ID remote or non-immediate request protects
         // that ID even if a separately observed local request otherwise qualifies.
-        let protected = Set(requests.filter { $0.trigger != nil || $0.content.userInfo["remiPush"] != nil }.map(\.identifier))
+        let protected = Set(requests.filter {
+            $0.trigger != nil || RemiPushStore.isSecureNotification(content: $0.content)
+        }.map(\.identifier))
         var candidates: [(LocalNoticeMarker, String)] = []
         for request in requests {
             // This path submits immediate local requests only. Remote or other triggered
             // requests, including anything with remiPush, are never local cleanup authority.
-            guard !protected.contains(request.identifier), request.trigger == nil, request.content.userInfo["remiPush"] == nil,
+            guard !protected.contains(request.identifier), request.trigger == nil,
+                  !RemiPushStore.isSecureNotification(content: request.content),
                   request.identifier.hasPrefix("remi.local.v1."),
                   let marker = try? LocalNoticeMarker.parse(userInfo: request.content.userInfo)
             else { continue }
