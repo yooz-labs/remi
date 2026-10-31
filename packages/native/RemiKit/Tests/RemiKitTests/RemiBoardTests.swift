@@ -534,6 +534,16 @@ import Testing
         #expect(bottom.maxX == 424 && bottom.maxY == 400)
     }
 
+    @Test func resizingNearAPresetSnapsToItsHeight() {
+        let frame = RemiBoardFrame(x: 16, y: 40, width: 400, height: 414)
+        let bottom = frame.snappedResize(topRight: false, otherFrames: [])
+        let top = frame.snappedResize(topRight: true, otherFrames: [])
+        #expect(bottom.height == RemiTileSize.regular.estimatedHeight)
+        #expect(bottom.y == frame.y)
+        #expect(top.height == RemiTileSize.regular.estimatedHeight)
+        #expect(top.maxY == frame.maxY)
+    }
+
     @Test func hiddenAndDisconnectedFramesReserveSpaceForNewAndReturningSessions() {
         let returning = session("returning", machine: "one")
         let other = session("other", machine: "one")
