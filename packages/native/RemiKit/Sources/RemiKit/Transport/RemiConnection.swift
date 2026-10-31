@@ -732,7 +732,7 @@ public actor RemiConnection {
             eventHandler(.error(message, chatOrigin: chatSocketAuthenticated ? chatSocketID : nil))
         case "answer_result":
             let result = try decoder.decode(AnswerResultMessage.self, from: data)
-            guard ["delivered", "stale", "conflict", "busy", "uncertain"].contains(result.outcome) else { throw RelayFailure.malformed }
+            guard AnswerResultWireOutcome(rawValue: result.outcome) != nil else { throw RelayFailure.malformed }
             if let pending = rpcWaiters[result.requestId], case .answer(let session, let question) = pending.expected,
                Data(result.sessionId.utf8) == Data(session.utf8), Data(result.questionId.utf8) == Data(question.utf8) {
                 finishRPC(result.requestId, result: .success(.answer(result)))
