@@ -17,7 +17,7 @@ struct DirectChildKeyIntegrationTests {
         return try JSONSerialization.data(withJSONObject: value)
     }
 
-    @Test(arguments: ["discovery-matching", "discovery-wrong", "create-matching", "create-wrong", "resume-matching", "resume-wrong"])
+    @Test(arguments: ["discovery-matching", "discovery-wrong", "create-matching", "create-wrong", "resume-matching", "resume-wrong", "discovery-legacy"])
     func childUsesAuthenticatedParentKey(_ scenario: String) async throws {
         let pieces = scenario.split(separator: "-")
         let action = String(pieces[0]), mode = String(pieces[1])
@@ -47,10 +47,15 @@ struct DirectChildKeyIntegrationTests {
             let publicKey = try #require(info["publicKey"] as? String)
             let machineID = try #require(info["machineID"] as? String)
             #expect(publicKey.contains("+") && publicKey.contains("/") && publicKey.hasSuffix("="))
-            let root = MachineEndpoint(host: "127.0.0.1", port: rootPort, expectedPublicKey: publicKey,
+            let root = MachineEndpoint(host: "127.0.0.1", port: rootPort, expectedPublicKey: mode == "legacy" ? nil : publicKey,
                 pairingNonce: "owned-only", pairingLabel: "synthetic")
-            let profile = MachineRouteProfile(machineID: machineID, routes: [root], machinePublicKey: RelayCrypto.b64(try #require(Data(base64Encoded: publicKey))))
-            let subject = MachineStore(profiles: [profile], identity: ClientIdentity(), clientVersion: "test", clientId: "owned")
+            let subject: MachineStore
+            if mode == "legacy" {
+                subject = MachineStore(endpoints: [root], identity: ClientIdentity(), clientVersion: "test", clientId: "owned")
+            } else {
+                let profile = MachineRouteProfile(machineID: machineID, routes: [root], machinePublicKey: RelayCrypto.b64(try #require(Data(base64Encoded: publicKey))))
+                subject = MachineStore(profiles: [profile], identity: ClientIdentity(), clientVersion: "test", clientId: "owned")
+            }
             store = subject
             subject.start()
             let activeRoot = try #require(subject.machines.first?.endpoint)
@@ -81,18 +86,18 @@ struct DirectChildKeyIntegrationTests {
             let deadline = ContinuousClock.now.advanced(by: .seconds(5))
             while ContinuousClock.now < deadline {
                 let current = try stats()
-                if mode == "matching", current["childHello", default: 0] > 0,
+                if mode != "wrong", current["childHello", default: 0] > 0,
                    subject.ownedSessionRoutes.values.contains(where: { $0.port == childPort }) { break }
                 if mode == "wrong", current["childAuth", default: 0] > 0 || subject.machines.first?.sessionConnectionIssue != nil { break }
                 try await Task.sleep(for: .milliseconds(10))
             }
             let observed = try stats()
-            #expect(observed["rootAuth"] == 1)
+            #expect(observed["rootAuth"] == (mode == "legacy" ? 0 : 1))
             #expect(observed["childOpens"] == 1)
             #expect(observed["childPairing"] == 0)
-            #expect(observed["childAuth"] == (mode == "matching" ? 1 : 0), "Wrong child must never receive a signed auth response")
-            #expect(observed["childHello"] == (mode == "matching" ? 1 : 0))
-            #expect(subject.ownedSessionRoutes.values.contains(where: { $0.port == childPort }) == (mode == "matching"))
+            #expect(observed["childAuth"] == (mode == "wrong" ? 0 : 1), "Wrong child must never receive a signed auth response")
+            #expect(observed["childHello"] == (mode == "wrong" ? 0 : 1))
+            #expect(subject.ownedSessionRoutes.values.contains(where: { $0.port == childPort }) == (mode != "wrong"))
             subject.stop()
         } catch {
             store?.stop()
