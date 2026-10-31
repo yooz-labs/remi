@@ -63,6 +63,8 @@ struct ImageRecoveryLedger: Sendable {
 
     enum Exposure: Sendable, Equatable {
         case prepared
+        /// A prior process may have stopped before finishing the private snapshot.
+        case preparedOrphaned
         case partialPossible
         case stagingPossible
         /// The prior process may have begun a transfer, but its socket is gone.
@@ -221,7 +223,7 @@ struct ImageRecoveryLedger: Sendable {
         records[index].localSnapshotPresent = false
         records[index].cleanupRequested = false
         localSnapshotID = nil
-        if records[index].exposure == .prepared || records[index].remoteCancellationConfirmed {
+        if records[index].exposure == .prepared || records[index].exposure == .preparedOrphaned || records[index].remoteCancellationConfirmed {
             records.remove(at: index)
         }
     }
@@ -344,6 +346,8 @@ struct ImageRecoveryLedger: Sendable {
                 throw WireFrameError.invalid("record")
             }
             switch exposure {
+            case .prepared:
+                exposure = .preparedOrphaned; needsRewrite = true
             case .partialPossible:
                 exposure = .partialOrphaned; needsRewrite = true
             case .stagingPossible:
@@ -387,6 +391,7 @@ struct ImageRecoveryLedger: Sendable {
     private static func encodeExposure(_ exposure: Exposure) -> (String, String?) {
         switch exposure {
         case .prepared: ("prepared", nil)
+        case .preparedOrphaned: ("prepared_orphaned", nil)
         case .partialPossible: ("partial", nil)
         case .stagingPossible: ("staging", nil)
         case .partialOrphaned: ("partial_orphaned", nil)
@@ -403,6 +408,7 @@ struct ImageRecoveryLedger: Sendable {
     private static func decodeExposure(_ name: String, expiry: String?) throws -> Exposure {
         switch name {
         case "prepared" where expiry == nil: .prepared
+        case "prepared_orphaned" where expiry == nil: .preparedOrphaned
         case "partial" where expiry == nil: .partialPossible
         case "staging" where expiry == nil: .stagingPossible
         case "partial_orphaned" where expiry == nil: .partialOrphaned
@@ -430,7 +436,7 @@ struct ImageRecoveryLedger: Sendable {
                           exposure == .partialOrphaned || exposure == .stagingOrphaned) else { return false }
         }
         switch exposure {
-        case .prepared: return local && !remoteCancelled && partialExpiry == nil
+        case .prepared, .preparedOrphaned: return local && !remoteCancelled && partialExpiry == nil
         case .partialPossible, .stagingPossible, .partialOrphaned, .stagingOrphaned: return true
         case .staged, .stagedOrphaned: return !remoteCancelled
         case .insertionInFlight, .insertionUncertain, .insertionConfirmed, .insertionRefusedAwaitingOrigin:
