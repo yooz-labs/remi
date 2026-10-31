@@ -25,7 +25,7 @@ import Testing
         #expect(try ImageIngressPreflight.classify(bytes) == .bounded)
     }
 
-    @Test func oversizedImageFamiliesAreRefusedBeforeGeneralDecode() {
+    @Test func preflightRefusesOversizedImageFamilies() {
         for type in ["image_upload_result", "image_upload_refused", "image_insert_result", "image_upload_future", "image_upload_é"] {
             let bytes = frame(#"{"type":"\#(type)","padding":""#, #""}"#, size: WireJSON.maxFrameBytes + 1)
             #expect(throws: WireFrameError.oversize) { try ImageIngressPreflight.classify(bytes) }
@@ -38,7 +38,7 @@ import Testing
         #expect(throws: WireFrameError.oversize) { try ImageIngressPreflight.classify(bytes) }
     }
 
-    @Test func largeNonImageMessagesRemainAvailable() throws {
+    @Test func preflightAllowsLargeNonImageMessages() throws {
         let beforeType = frame(#"{"content":""#, #"","type":"transcript_content"}"#,
                                size: WireJSON.maxFrameBytes + 100)
         let embeddedImageText = frame(#"{"type":"transcript_content","content":""#,
@@ -73,7 +73,7 @@ import Testing
         }
     }
 
-    @Test func genericOutgoingProbeRejectsOnlyImageFamilies() throws {
+    @Test func genericOutgoingProbeIdentifiesImagesAndRejectsAmbiguousTypes() throws {
         let image = Data(#"{"nested":{"type":"chat"},"ty\u0070e":"image_\u0075pload_begin"}"#.utf8)
         let insertion = Data(#"{"type":"image_insert_request","content":"safe"}"#.utf8)
         let unrelated = Data(#"{"nested":{"type":"image_upload_begin"},"type":"user_input","content":"quoted } ] ,"}"#.utf8)
@@ -93,7 +93,7 @@ import Testing
         #expect(!deepIsImage)
     }
 
-    @Test func largeOrdinaryChatRemainsAValidGenericMessage() throws {
+    @Test func genericProbeAllowsLargeOrdinaryChat() throws {
         let message = UserInputMessage(id: UUID().uuidString.lowercased(), timestamp: "2026-10-31T00:00:00.000Z",
             sessionId: "108a8a9e-912e-4d52-9fdd-913c16654f5c",
             content: String(repeating: "x", count: 1_000_000) + " image_upload_begin")
