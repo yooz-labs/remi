@@ -117,9 +117,22 @@ import Testing
             #expect(throws: (any Error).self) {
                 try owner.captureSelectedFile(id: id, url: remote)
             }
+            let remoteFile = try #require(URL(string: "file://example.invalid/image.png"))
+            #expect(throws: (any Error).self) { try owner.captureSelectedFile(id: id, url: remoteFile) }
             #expect(journal.snapshot.records.first?.snapshotIdentity == nil)
             #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("image-\(id.uuidString.lowercased())").path))
             #expect(try Data(contentsOf: input) == Data([1, 2, 3]))
+        }
+    }
+
+    @Test func emptySelectedFileCanBeAbandonedWithoutCreatingASnapshot() throws {
+        try withFixture(Data()) { root, input, _, journal, owner in
+            let id = try journal.reserveCopy()
+            #expect(throws: (any Error).self) { try owner.captureSelectedFile(id: id, url: input) }
+            #expect(journal.snapshot.records.first?.snapshotIdentity == nil)
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("image-\(id.uuidString.lowercased())").path))
+            try owner.abandon(id: id, confirmed: true)
+            #expect(journal.snapshot.localSnapshotID == nil)
         }
     }
 
