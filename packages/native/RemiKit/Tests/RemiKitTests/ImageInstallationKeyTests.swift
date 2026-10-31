@@ -24,7 +24,20 @@ import Testing
             kSecAttrService as String: service, kSecAttrAccount as String: account]
         defer { SecItemDelete(query as CFDictionary) }
         let lease = try ImageDirectoryLease(parent: parentFD, rootName: "images", directory: rootFD)
-        let store = ImageInstallationKeyStore(lease: lease, service: service, account: account, operations: operations)
+        // The unsigned fixture redirects only the OS boundary to a UUID-owned Keychain slot;
+        // signed app-group and ThisDeviceOnly behavior still require device acceptance.
+        func redirected(_ input: CFDictionary) -> CFDictionary {
+            var values = input as! [String: Any]
+            values.removeValue(forKey: kSecAttrAccessGroup as String)
+            #if os(macOS)
+            values.removeValue(forKey: kSecUseDataProtectionKeychain as String)
+            #endif
+            return values as CFDictionary
+        }
+        let controlled = NativeKeychainOperations(copyMatching: { operations.copyMatching(redirected($0), $1) },
+            add: { operations.add(redirected($0), $1) }, update: { operations.update(redirected($0), $1) })
+        let store = ImageInstallationKeyStore(lease: lease, accessGroup: "owned-test-group", service: service,
+                                              account: account, operations: controlled)
         try body(root, store, query)
     }
 
