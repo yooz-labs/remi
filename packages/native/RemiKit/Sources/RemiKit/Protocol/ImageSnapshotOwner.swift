@@ -28,26 +28,28 @@ final class ImageSnapshotOwner {
                   record.exposure == .copyReserved, record.snapshotIdentity == nil, !record.cleanupRequested else {
                 throw Failure.invalidReservation
             }
-            let fd = openat(directory, name, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
-            guard fd >= 0 else { throw Failure.unavailable }
-            defer { close(fd) }
-            var info = stat()
-            guard fstat(fd, &info) == 0, Self.validFile(info), info.st_size == 0,
-                  Self.sameEntry(directory: directory, name: name, descriptor: info), fsync(directory) == 0 else {
-                throw Failure.unavailable
+            return try journal.withActiveCopy {
+                let fd = openat(directory, name, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
+                guard fd >= 0 else { throw Failure.unavailable }
+                defer { close(fd) }
+                var info = stat()
+                guard fstat(fd, &info) == 0, Self.validFile(info), info.st_size == 0,
+                      Self.sameEntry(directory: directory, name: name, descriptor: info), fsync(directory) == 0 else {
+                    throw Failure.unavailable
+                }
+                let device = UInt64(UInt32(bitPattern: info.st_dev))
+                let inode = UInt64(info.st_ino)
+                guard device > 0, inode > 0 else { throw Failure.unavailable }
+                // Persist the new file identity before the first selected byte is written.
+                try journal.registerSnapshot(id, device: device, inode: inode)
+                guard Self.sameEntry(directory: directory, name: name, descriptor: info) else { throw Failure.unavailable }
+                let result = try ImageSnapshotCopy.capture(source: source, destination: fd, cancelled: cancelled)
+                var after = stat()
+                guard fstat(fd, &after) == 0, Self.validFile(after), after.st_size == result.byteCount,
+                      after.st_dev == info.st_dev, after.st_ino == info.st_ino,
+                      Self.sameEntry(directory: directory, name: name, descriptor: after) else { throw Failure.unavailable }
+                return result
             }
-            let device = UInt64(UInt32(bitPattern: info.st_dev))
-            let inode = UInt64(info.st_ino)
-            guard device > 0, inode > 0 else { throw Failure.unavailable }
-            // Persist the new file identity before the first selected byte is written.
-            try journal.registerSnapshot(id, device: device, inode: inode)
-            guard Self.sameEntry(directory: directory, name: name, descriptor: info) else { throw Failure.unavailable }
-            let result = try ImageSnapshotCopy.capture(source: source, destination: fd, cancelled: cancelled)
-            var after = stat()
-            guard fstat(fd, &after) == 0, Self.validFile(after), after.st_size == result.byteCount,
-                  after.st_dev == info.st_dev, after.st_ino == info.st_ino,
-                  Self.sameEntry(directory: directory, name: name, descriptor: after) else { throw Failure.unavailable }
-            return result
         }
         #endif
     }

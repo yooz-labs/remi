@@ -5,7 +5,7 @@ import Foundation
 /// key, prove snapshot creation and validation, and provide one serialized owner per lease.
 /// It cannot authorize a socket, delete a file, or establish remote cleanup.
 final class ImageRecoveryJournal {
-    enum Failure: Error, Equatable { case retired, invalidClaim }
+    enum Failure: Error, Equatable { case retired, invalidClaim, copyActive }
 
     private let disk: ImageJournalDisk
     private let claim: ImageDirectoryLease.OwnerClaim
@@ -13,6 +13,7 @@ final class ImageRecoveryJournal {
     private var bytes: Data
     private var storedSnapshot: ImageRecoveryLedger
     private var isRetired = false
+    private var copyActive = false
     var snapshot: ImageRecoveryLedger { claim.synchronized { storedSnapshot } }
     var retired: Bool { claim.synchronized { isRetired } }
 
@@ -45,7 +46,7 @@ final class ImageRecoveryJournal {
     /// The caller must open the new file exclusively and verify both the descriptor and its
     /// entry in the owned directory before recording the identity, and before writing data.
     func registerSnapshot(_ id: UUID, device: UInt64, inode: UInt64) throws {
-        try transition { try $0.registerSnapshot(id, device: device, inode: inode) }
+        try transition(allowDuringCopy: true) { try $0.registerSnapshot(id, device: device, inode: inode) }
     }
 
     /// The caller must first prove that the owned copy is complete, protected and validated.
@@ -65,9 +66,21 @@ final class ImageRecoveryJournal {
 
     func holds(_ lease: ImageDirectoryLease) -> Bool { claim.belongs(to: lease) }
 
-    private func transition<T>(_ apply: (inout ImageRecoveryLedger) throws -> T) throws -> T {
+    /// Reentrant callbacks cannot finalize or abandon the file until the copy scope ends.
+    func withActiveCopy<T>(_ body: () throws -> T) throws -> T {
         try claim.synchronized {
             guard !isRetired else { throw Failure.retired }
+            guard !copyActive else { throw Failure.copyActive }
+            copyActive = true
+            defer { copyActive = false }
+            return try body()
+        }
+    }
+
+    private func transition<T>(allowDuringCopy: Bool = false, _ apply: (inout ImageRecoveryLedger) throws -> T) throws -> T {
+        try claim.synchronized {
+            guard !isRetired else { throw Failure.retired }
+            guard allowDuringCopy || !copyActive else { throw Failure.copyActive }
             var candidate = storedSnapshot
             let result = try apply(&candidate)
             let next = try candidate.encodeJournal(secret: secret)
