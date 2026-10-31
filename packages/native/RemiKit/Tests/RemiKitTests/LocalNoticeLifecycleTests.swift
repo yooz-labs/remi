@@ -14,6 +14,7 @@ import UserNotifications
     var delayedRemovals: [[String]] = []
     var delayRemovals = false
     var identifiersAvailable = true
+    var failNextAdd = false
     var boundary: LocalNoticeBoundary {
         .init(authorized: { [self] in allowed }, identifierAvailable: { [self] _ in identifiersAvailable }, add: { [self] request in
             begun.append(request.identifier)
@@ -21,6 +22,7 @@ import UserNotifications
                 holdNextAdd = false
                 await withCheckedContinuation { held = $0 }
             }
+            if failNextAdd { failNextAdd = false; throw NoticeTestTimeout.noEvent }
             requests[request.identifier] = request
         }, remove: { [self] ids in
             removals.append(ids)
@@ -133,6 +135,49 @@ private enum NoticeTestTimeout: Error { case noEvent }
         try await until { lifecycle.warning != nil }
         #expect(os.begun.isEmpty); #expect(os.removals.isEmpty)
         #expect(try ledger.counts().tickets == 1); #expect(try ledger.counts().uncertain == 0)
+    }
+
+    @Test func routeLossRetainsOldRequestUntilAcceptedReplacement() async throws {
+        let dir = try directory(), keys = try LocalNoticeKeys(root: Data(repeating: 27, count: 32))
+        let ledger = try LocalNoticeLedger(directory: dir), os = OwnedLocalNoticeOS()
+        defer { ledger.close(); try? FileManager.default.removeItem(at: dir) }
+        let owner = UUID(), lifecycle = LocalNoticeLifecycle(ledger: ledger, keys: keys, boundary: os.boundary)
+        let old = intent(owner: owner, body: "Old"), new = intent(owner: owner, body: "New")
+        os.holdNextAdd = true; lifecycle.schedule(old)
+        try await until { os.held != nil }
+        let oldID = try #require(os.begun.first)
+        lifecycle.suspend(owner: owner, sessionID: old.sessionID)
+        os.finishHeldAdd()
+        try await until { os.requests[oldID] != nil }
+        let oldRequest = try #require(os.requests[oldID])
+        let oldMarker = try LocalNoticeMarker.parse(userInfo: oldRequest.content.userInfo)
+        #expect(try lifecycle.currentIdentity(for: oldMarker, systemIdentifier: oldID) == nil)
+        #expect(os.removals.allSatisfy { !$0.contains(oldID) })
+        lifecycle.schedule(new)
+        try await until { os.requests.values.contains { $0.content.body == "New" } && os.requests[oldID] == nil }
+        #expect(os.removals.contains([oldID]))
+        #expect(os.requests.values.map(\.content.body) == ["New"])
+        let newRequest = try #require(os.requests.values.first)
+        let newMarker = try LocalNoticeMarker.parse(userInfo: newRequest.content.userInfo)
+        #expect(try lifecycle.currentIdentity(for: newMarker, systemIdentifier: newRequest.identifier) == new.id)
+    }
+
+    @Test func failedReplacementDoesNotClearRetainedRequest() async throws {
+        let dir = try directory(), keys = try LocalNoticeKeys(root: Data(repeating: 28, count: 32))
+        let ledger = try LocalNoticeLedger(directory: dir), os = OwnedLocalNoticeOS()
+        defer { ledger.close(); try? FileManager.default.removeItem(at: dir) }
+        let owner = UUID(), lifecycle = LocalNoticeLifecycle(ledger: ledger, keys: keys, boundary: os.boundary)
+        let old = intent(owner: owner, body: "Old"), new = intent(owner: owner, body: "New")
+        lifecycle.schedule(old)
+        try await until { os.requests.count == 1 }
+        let oldID = try #require(os.begun.first)
+        lifecycle.suspend(owner: owner, sessionID: old.sessionID)
+        os.failNextAdd = true; lifecycle.schedule(new)
+        try await until { lifecycle.warning != nil && os.begun.count == 2 }
+        #expect(os.requests[oldID]?.content.body == "Old")
+        #expect(os.removals.allSatisfy { !$0.contains(oldID) })
+        lifecycle.resolve(old.id)
+        #expect(os.requests[oldID] == nil)
     }
 
     @Test func currentOwnerForgetCannotInvalidateAnotherOwner() async throws {

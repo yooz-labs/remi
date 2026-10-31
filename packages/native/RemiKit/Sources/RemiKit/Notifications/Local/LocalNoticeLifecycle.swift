@@ -72,6 +72,8 @@ import RemiPush
     private let addWarningDelay: Duration
     private var owners: [UUID: Data] = [:]
     private var active: [LogicalID: Active] = [:]
+    /// Route loss revokes live tap authority without declaring a question resolved.
+    private var retained: [LogicalID: [Active]] = [:]
     private var running: Set<UUID> = []
     private var blockedOwners: Set<UUID> = []
     private var eligibility = UUID()
@@ -117,32 +119,52 @@ import RemiPush
 
     /// Only an authoritative current-owner resolution/snapshot invokes this method.
     func resolve(_ id: LogicalID) {
-        guard let value = active.removeValue(forKey: id) else { return }
-        do { try ledger.invalidate(value.ticket); try cleanupIfSettled(value.ticket, deferRetirement: running.contains(value.token)) }
-        catch {
-            boundary.remove(["remi.local.v1." + value.ticket.requestID]); fail()
+        let values = [active.removeValue(forKey: id)].compactMap { $0 } + (retained.removeValue(forKey: id) ?? [])
+        invalidate(values)
+    }
+
+    /// A route is no longer authoritative, but that does not establish resolution.
+    /// Keep old visible requests until an accepted replacement or exact resolution.
+    func suspend(owner: UUID, sessionID: String) {
+        let ids = active.keys.filter { $0.owner == owner && $0.sessionID == sessionID }
+        for id in ids {
+            if let old = active.removeValue(forKey: id) { retained[id, default: []].append(old) }
         }
+    }
+
+    /// This is only a lookup for a current in-process ticket, not complete navigation
+    /// authority. The caller must still verify current Store identity, question and eligibility.
+    func currentIdentity(for marker: LocalNoticeMarker, systemIdentifier: String) throws -> LogicalID? {
+        guard try ledger.classify(marker, keys: keys, systemIdentifier: systemIdentifier) == .currentActive else { return nil }
+        return active.first { id, value in
+            value.ticket.requestID == marker.requestID && value.ticket.owner == marker.ownerIndex &&
+                value.ticket.sequence == marker.sequence && value.ticket.question == marker.questionIndex &&
+                value.eligibility == eligibility && !blockedOwners.contains(id.owner)
+        }?.key
     }
 
     /// Preference changes invalidate all current tickets before any pending async work resumes.
     func invalidateEligibility() {
         eligibility = UUID()
-        let old = active; active.removeAll()
-        for (_, value) in old {
-            do { try ledger.invalidate(value.ticket); try cleanupIfSettled(value.ticket, deferRetirement: running.contains(value.token)) }
-            catch { boundary.remove(["remi.local.v1." + value.ticket.requestID]); fail() }
-        }
+        let old = Array(active.values) + retained.values.flatMap { $0 }
+        active.removeAll(); retained.removeAll()
+        invalidate(old)
     }
 
     /// Must return true before the caller forgets a current profile; false leaves it intact.
     func retireOwner(_ owner: UUID) -> Bool {
         blockedOwners.insert(owner)
         let old = active.filter { $0.key.owner == owner }
+        let oldRetained = retained.filter { $0.key.owner == owner }
         for key in old.keys { active.removeValue(forKey: key) }
+        for key in oldRetained.keys { retained.removeValue(forKey: key) }
         guard let index = owners[owner] else { return true }
         do {
             try ledger.invalidateOwner(index)
             for (_, value) in old { try cleanupIfSettled(value.ticket, deferRetirement: running.contains(value.token)) }
+            for values in oldRetained.values {
+                for value in values { try cleanupIfSettled(value.ticket, deferRetirement: running.contains(value.token)) }
+            }
             return true
         } catch { fail(); return false }
     }
@@ -188,7 +210,10 @@ import RemiPush
             // removed again after settlement, and its old UUID cannot target a newer ticket.
             let authorized = await boundary.authorized()
             if !succeeded || !authorized { invalidateIfCurrent(intent.id, token: value.token) }
-            if !currentToken(intent, value) {
+            if succeeded && authorized && currentToken(intent, value) && intent.isCurrent() {
+                invalidate(retained.removeValue(forKey: intent.id) ?? [])
+            }
+            if !currentToken(intent, value) && !isRetained(intent.id, token: value.token) {
                 // Even a failed journal invalidation must not leave a settled stale request.
                 boundary.remove(["remi.local.v1." + value.ticket.requestID])
                 try cleanupIfSettled(value.ticket, deferRetirement: false)
@@ -200,8 +225,30 @@ import RemiPush
     }
 
     private func invalidateIfCurrent(_ id: LogicalID, token: UUID) {
-        guard active[id]?.token == token else { return }
-        resolve(id)
+        if let value = active[id], value.token == token {
+            active[id] = nil
+            invalidate([value])
+            return
+        }
+        guard let values = retained[id], values.contains(where: { $0.token == token }) else { return }
+        let invalid = values.filter { $0.token == token }
+        let keep = values.filter { $0.token != token }
+        retained[id] = keep.isEmpty ? nil : keep
+        invalidate(invalid)
+    }
+    private func isRetained(_ id: LogicalID, token: UUID) -> Bool {
+        retained[id]?.contains(where: { $0.token == token }) == true
+    }
+    private func invalidate(_ values: [Active]) {
+        for value in values {
+            do { try ledger.invalidate(value.ticket); try cleanupIfSettled(value.ticket, deferRetirement: running.contains(value.token)) }
+            catch {
+                if let state = try? ledger.record(value.ticket), state.effect != .prepared {
+                    boundary.remove(["remi.local.v1." + value.ticket.requestID])
+                }
+                fail()
+            }
+        }
     }
     /// This only surfaces a suspended operation. It does not cancel an add or settle its debt.
     private func observePending(_ token: UUID) {
