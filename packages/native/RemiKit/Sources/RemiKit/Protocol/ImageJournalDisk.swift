@@ -22,6 +22,7 @@ final class ImageJournalDisk {
     func load() throws -> Data {
         guard !retired else { throw Failure.unavailable }
         return try lease.withVerifiedDirectory { directory in
+            try Self.refuseOrphans(directory: directory)
             let record = try Self.read(directory: directory)
             try authenticate(record.bytes)
             return record.bytes
@@ -35,6 +36,7 @@ final class ImageJournalDisk {
         try authenticate(bytes)
         retired = true
         try lease.withVerifiedDirectory { directory in
+            try Self.refuseOrphans(directory: directory)
             let fd = openat(directory, Self.name, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
             guard fd >= 0 else { throw Failure.unavailable }
             defer { close(fd) }
@@ -53,6 +55,7 @@ final class ImageJournalDisk {
         try authenticate(expected)
         try authenticate(bytes)
         try lease.withVerifiedDirectory { directory in
+            try Self.refuseOrphans(directory: directory)
             let current = try Self.read(directory: directory)
             try authenticate(current.bytes)
             guard current.bytes == expected else { throw Failure.stale }
@@ -91,6 +94,31 @@ final class ImageJournalDisk {
     private struct ReadResult {
         let bytes: Data
         let identity: stat
+    }
+
+    /// A previous interrupted write may have left a sibling whose ownership is unproven.
+    /// Never delete it or silently proceed; a separate recovery owner must resolve it.
+    private static func refuseOrphans(directory: Int32) throws {
+        let scanFD = openat(directory, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        guard scanFD >= 0 else { throw Failure.unavailable }
+        guard let stream = fdopendir(scanFD) else { close(scanFD); throw Failure.unavailable }
+        defer { closedir(stream) }
+        var scanned = 0
+        while true {
+            errno = 0
+            guard let entry = readdir(stream) else {
+                if errno != 0 { throw Failure.unavailable }
+                return
+            }
+            scanned += 1
+            guard scanned <= 256 else { throw Failure.unavailable }
+            let count = Int(entry.pointee.d_namlen)
+            guard count <= 1023 else { throw Failure.unavailable }
+            let name = withUnsafePointer(to: &entry.pointee.d_name) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: count + 1) { String(cString: $0) }
+            }
+            if name.hasPrefix(".image-journal-") { throw Failure.unavailable }
+        }
     }
 
     private static func read(directory: Int32) throws -> ReadResult {
