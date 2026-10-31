@@ -202,6 +202,30 @@ import Testing
         }
     }
 
+    @Test func uncommittedPromotionCannotCreateReadyAuthority() throws {
+        var operations = NativeKeychainOperations.system
+        operations.update = { _, _ in errSecSuccess }
+        try withStore(operations: operations) { root, lease, store, _ in
+            #expect(throws: (any Error).self) { try ImageInstallationOwner.open(lease: lease, keys: store) }
+            let loaded = try store.load()
+            let record = try #require(loaded)
+            #expect(record.phase == .pending)
+            #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(".image-journal").path))
+        }
+    }
+
+    @Test func malformedSuccessfulKeychainReadNeverTriggersCreation() throws {
+        var operations = NativeKeychainOperations.system
+        var adds = 0
+        operations.copyMatching = { _, _ in errSecSuccess }
+        operations.add = { _, _ in adds += 1; return errSecSuccess }
+        try withStore(operations: operations) { _, _, store, _ in
+            #expect(throws: ImageInstallationKeyStore.Failure.malformed) { try store.load() }
+            #expect(throws: ImageInstallationKeyStore.Failure.malformed) { try store.beginPending() }
+            #expect(adds == 0)
+        }
+    }
+
     @Test func unknownReadyStateIsPreservedAndBlocksAdoption() throws {
         try withStore { root, lease, store, _ in
             _ = try ImageInstallationOwner.open(lease: lease, keys: store)
