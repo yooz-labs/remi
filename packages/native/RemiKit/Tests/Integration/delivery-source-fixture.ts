@@ -137,6 +137,7 @@ const server = new WebSocketServer(
     },
     onImageUpload() {
       images++;
+      if (mode === 'image-tls') throw new Error('owned image service unavailable');
     },
     onImageInsert() {
       images++;
