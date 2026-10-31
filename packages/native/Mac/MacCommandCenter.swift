@@ -184,6 +184,7 @@ struct MacCommandCenter: View {
         let kind: BoardGestureKind
         let start: RemiBoardFrame
         let proposed: RemiBoardFrame
+        let frames: [String: RemiBoardFrame]
     }
 
     private func boardScroll(now: Date) -> some View {
@@ -207,10 +208,10 @@ struct MacCommandCenter: View {
             spacing: spacing,
             margin: margin
         )
+        let displayFrames = gesturePreview?.frames ?? frames
         let items = ordering.visible.compactMap { session -> BoardItem? in
             let key = RemiBoardOrder.key(for: session)
-            guard let original = frames[key] else { return nil }
-            let frame = gesturePreview.flatMap { $0.key == key ? $0.proposed : nil } ?? original
+            guard let frame = displayFrames[key] else { return nil }
             return BoardItem(key: key, session: session, frame: frame)
         }
         var canvasFrames = Dictionary(uniqueKeysWithValues: items.map { ($0.key, $0.frame) })
@@ -266,6 +267,7 @@ struct MacCommandCenter: View {
                 .id(item.key)
                 .offset(x: item.frame.x, y: item.frame.y)
                 .zIndex(frontTile == item.key ? 1 : 0)
+                .animation(gesturePreview?.key == item.key ? nil : .easeOut(duration: 0.15), value: item.frame)
                 .simultaneousGesture(TapGesture().onEnded { frontTile = item.key })
             }
         }
@@ -334,7 +336,9 @@ struct MacCommandCenter: View {
                     var resized = current
                     resized.height = min(max(size.estimatedHeight, RemiBoardFrame.minimumHeight),
                                          RemiBoardFrame.maximumCoordinate - current.y)
-                    _ = board.setFrame(resized, for: key)
+                    if let adjusted = RemiBoardOrder.reflow(moving: key, to: resized, in: frames, spacing: spacing) {
+                        persistLayout(adjusted)
+                    }
                 }
                 saveBoard()
             },
@@ -366,18 +370,14 @@ struct MacCommandCenter: View {
     ) {
         guard let start = frames[key] else { return }
         let proposal = kind == .move ? start.constrainedMove(by: delta) : start.resized(by: delta)
-        guard proposal.isValid else { return }
+        guard let adjusted = RemiBoardOrder.reflow(moving: key, to: proposal, in: frames, spacing: spacing) else { return }
         frontTile = key
-        persistPlacement(proposal, for: key, frames: frames)
+        persistLayout(adjusted)
     }
 
-    private func persistPlacement(_ frame: RemiBoardFrame, for key: String, frames: [String: RemiBoardFrame]) {
-        guard frame.isValid else { return }
-        // A window moved over an automatic card must not make that other card jump away.
-        for (otherKey, otherFrame) in frames where otherKey != key && board.frame(for: otherKey) == nil {
-            _ = board.setFrame(otherFrame, for: otherKey)
-        }
-        if board.setFrame(frame, for: key) { saveBoard() }
+    private func persistLayout(_ frames: [String: RemiBoardFrame]) {
+        for (key, frame) in frames { _ = board.setFrame(frame, for: key) }
+        saveBoard()
     }
 
     private func updateGesture(
@@ -403,15 +403,21 @@ struct MacCommandCenter: View {
             let snapped = kind == .move ? proposed.snappedMove(otherFrames: others, gap: spacing, margin: margin)
                 : proposed.snappedResize(topRight: kind == .resizeTopRight, otherFrames: others, gap: spacing, margin: margin)
             if snapped != start {
-                persistPlacement(snapped, for: key, frames: frames)
+                if let adjusted = RemiBoardOrder.reflow(moving: key, to: snapped, in: frames, spacing: spacing) {
+                    persistLayout(adjusted)
+                } else if let previous = active?.frames {
+                    persistLayout(previous)
+                }
             }
             gesturePreview = nil
         } else {
+            guard let adjusted = RemiBoardOrder.reflow(moving: key, to: proposed, in: frames, spacing: spacing) else { return }
             gesturePreview = BoardGesturePreview(
                 key: key,
                 kind: kind,
                 start: start,
-                proposed: proposed
+                proposed: proposed,
+                frames: adjusted
             )
         }
     }

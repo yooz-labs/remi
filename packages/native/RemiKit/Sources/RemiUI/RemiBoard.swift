@@ -496,9 +496,10 @@ public enum RemiBoardOrder {
         var result: [String: RemiBoardFrame] = [:]
         var occupied: [RemiBoardFrame] = []
         for savedKey in savedKeys {
-            guard let frame = state.frame(for: savedKey), frame.isValid else { continue }
-            result[savedKey] = frame
-            occupied.append(frame)
+            guard let frame = state.frame(for: savedKey), frame.isValid,
+                  let placed = nearestAvailable(frame, occupied: occupied, spacing: spacing) else { continue }
+            result[savedKey] = placed
+            occupied.append(placed)
         }
 
         let availableWidth = max(0, viewportWidth - 2 * margin)
@@ -535,6 +536,64 @@ public enum RemiBoardOrder {
             columnBottoms[placement.column] = placement.frame.maxY + spacing
         }
         return result
+    }
+
+    /// Move only the cards touched by a proposed frame, keeping the rest in place.
+    /// Every candidate is recomputed from the gesture's original frames, so dragging back
+    /// restores neighbors instead of accumulating displacement on every pointer update.
+    public static func reflow(moving key: String, to proposal: RemiBoardFrame,
+                              in frames: [String: RemiBoardFrame], spacing: CGFloat = 12) -> [String: RemiBoardFrame]? {
+        guard proposal.isValid, frames[key] != nil, spacing.isFinite, spacing >= 0,
+              frames.values.allSatisfy(\.isValid) else { return nil }
+        let otherKeys = frames.keys.filter { $0 != key }.sorted()
+        let untouched = otherKeys.filter { !frames[$0]!.intersects(proposal) }
+        let affected = otherKeys.filter { frames[$0]!.intersects(proposal) }
+        var result = frames
+        result[key] = proposal
+        var occupied = [proposal] + untouched.compactMap { frames[$0] }
+        for other in affected {
+            guard let original = frames[other], let placed = nearestAvailable(original, occupied: occupied, spacing: spacing) else {
+                return nil
+            }
+            result[other] = placed
+            occupied.append(placed)
+        }
+        return result
+    }
+
+    /// Find the nearest open position along a horizontal or vertical axis. Each step jumps
+    /// beyond at least one blocker and the bounded canvas provides a finite failure case.
+    private static func nearestAvailable(_ original: RemiBoardFrame, occupied: [RemiBoardFrame],
+                                         spacing: CGFloat) -> RemiBoardFrame? {
+        guard original.isValid, spacing.isFinite, spacing >= 0 else { return nil }
+        guard occupied.contains(where: { original.intersects($0) }) else { return original }
+        var candidates: [RemiBoardFrame] = []
+        for direction in 0..<4 {
+            var candidate = original
+            for _ in 0...occupied.count {
+                let blockers = occupied.filter { candidate.intersects($0) }
+                if blockers.isEmpty { candidates.append(candidate); break }
+                switch direction {
+                case 0: candidate.x = blockers.map(\.maxX).max()! + spacing
+                case 1: candidate.x = blockers.map(\.x).min()! - spacing - candidate.width
+                case 2: candidate.y = blockers.map(\.maxY).max()! + spacing
+                default: candidate.y = blockers.map(\.y).min()! - spacing - candidate.height
+                }
+                if !candidate.isValid { break }
+            }
+        }
+        // A free corner can exist even when all four straight paths hit a canvas edge.
+        if let bottom = occupied.map(\.maxY).max(), let right = occupied.map(\.maxX).max() {
+            let below = RemiBoardFrame(x: 0, y: bottom + spacing, width: original.width, height: original.height)
+            let beside = RemiBoardFrame(x: right + spacing, y: 0, width: original.width, height: original.height)
+            if below.isValid && !occupied.contains(where: { below.intersects($0) }) { candidates.append(below) }
+            if beside.isValid && !occupied.contains(where: { beside.intersects($0) }) { candidates.append(beside) }
+        }
+        return candidates.min {
+            let left = abs($0.x - original.x) + abs($0.y - original.y)
+            let right = abs($1.x - original.x) + abs($1.y - original.y)
+            return (left, $0.y, $0.x) < (right, $1.y, $1.x)
+        }
     }
 
     /// The canvas fits every visible frame and at least the current viewport.
