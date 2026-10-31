@@ -237,6 +237,19 @@ private final class BlockingImageCopy: @unchecked Sendable {
         }
     }
 
+    @Test func retainedJournalKeepsTheInstallationClaim() throws {
+        try withStore { _, lease, store, _ in
+            var first: ImageInstallationOwner? = try ImageInstallationOwner.open(lease: lease, keys: store)
+            var retained: ImageRecoveryJournal? = first?.journal
+            #expect(retained != nil)
+            first = nil
+            #expect(throws: ImageDirectoryLease.Failure.busy) { try ImageInstallationOwner.open(lease: lease, keys: store) }
+            retained = nil
+            let reopened = try ImageInstallationOwner.open(lease: lease, keys: store)
+            #expect(reopened.journal.snapshot.records.isEmpty)
+        }
+    }
+
     @Test func activeCopyCannotBeReopenedByAnotherOwner() throws {
         try withStore { root, lease, store, _ in
             let selected = root.deletingLastPathComponent().appendingPathComponent("selected")
