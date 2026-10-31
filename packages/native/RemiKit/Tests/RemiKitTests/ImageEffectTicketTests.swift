@@ -4,11 +4,15 @@ import Testing
 @testable import RemiKit
 
 @Suite struct ImageEffectTicketTests {
+    private static func waitForQueuedEffect(_ gate: DispatchSemaphore) -> Bool {
+        gate.wait(timeout: .now() + 2) == .success
+    }
+
     @Test func cancellationBeforeQueuedEffectForbidsInvocation() async {
         let ticket = ImageEffectTicket()
         let queued = DispatchSemaphore(value: 0)
         let effect = Task.detached {
-            guard queued.wait(timeout: .now() + 2) == .success else { return false }
+            guard Self.waitForQueuedEffect(queued) else { return false }
             return ticket.enter()
         }
         #expect(ticket.retire() == .noEffect)
