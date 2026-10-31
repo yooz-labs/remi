@@ -9,6 +9,8 @@ import Foundation
 enum ImageFileProtection {
     enum Failure: Error { case unavailable }
 
+    /// The owner must first establish that the root contains no unknown entries; changing a
+    /// directory's backup treatment can also affect its contents. Never use this as inventory.
     static func prepareRoot(lease: ImageDirectoryLease, rootURL: URL) throws {
         try lease.withVerifiedDirectory { directory in
             try verifyRoot(directory, url: rootURL)
