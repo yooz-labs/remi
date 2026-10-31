@@ -163,4 +163,27 @@ struct AuthenticationHandshakeTests {
         }
         #expect(count.snapshot() == 0, "Malformed challenge must be refused before signing")
     }
+
+    @Test func acceptsDecoded32ByteNoncanonicalBase64() throws {
+        // The shared challenge contract specifies base64 and length, not canonical encoding.
+        // Foundation accepts these distinct trailing bits as the same 32 zero bytes.
+        let challenge = Data(repeating: 0, count: 32)
+        let canonical = challenge.base64EncodedString()
+        let encoded = String(canonical.dropLast(2)) + "B="
+        #expect(encoded != canonical)
+        #expect(Data(base64Encoded: encoded) == challenge)
+        let server = Curve25519.Signing.PrivateKey()
+        let client = ClientIdentity()
+        let frame = AuthChallengeMessage(
+            type: "auth_challenge", id: "challenge-id", timestamp: "2026-10-07T00:00:00Z",
+            challenge: encoded,
+            serverFingerprint: ClientIdentity.fingerprint(ofPublicKeyRaw: server.publicKey.rawRepresentation),
+            serverPublicKey: server.publicKey.rawRepresentation.base64EncodedString(),
+            relayEphemeralKey: nil, relayKexSignature: nil, answerEncryptionKey: nil
+        )
+        let (response, _) = try AuthenticationHandshake.response(to: frame, identity: client,
+            expectedServerPublicKey: server.publicKey.rawRepresentation.base64EncodedString())
+        let clientKey = try Curve25519.Signing.PublicKey(rawRepresentation: client.publicKeyRaw)
+        #expect(clientKey.isValidSignature(try #require(Data(base64Encoded: response.signature)), for: challenge))
+    }
 }
