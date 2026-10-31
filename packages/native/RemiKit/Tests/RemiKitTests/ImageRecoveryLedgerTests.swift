@@ -308,6 +308,47 @@ import Testing
         #expect(!recovered.hasAggregateUnconfirmedCleanup)
     }
 
+    @Test func reservationPrecedesSnapshotAndDigestWithoutGrantingSendAuthority() throws {
+        var ledger = ImageRecoveryLedger()
+        let id = try ledger.reserveCopy()
+        #expect(ledger.localSnapshotID == id)
+        #expect(throws: ImageRecoveryLedger.Failure.localSlotBusy) { _ = try ledger.reserveCopy() }
+        #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try ledger.markPartialPossible(id) }
+        try ledger.finishCopy(id, fingerprint: fingerprint())
+        try ledger.markPartialPossible(id)
+    }
+
+    @Test func aCopyInterruptedBeforeItsDigestCannotResumeAfterRestart() throws {
+        var ledger = ImageRecoveryLedger()
+        let id = try ledger.reserveCopy()
+        let restored = try ImageRecoveryLedger.restoreJournal(ledger.encodeJournal(secret: secret), secret: secret)
+        #expect(restored.needsRewrite)
+        var recovered = restored.ledger
+        #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try recovered.finishCopy(id, fingerprint: fingerprint()) }
+        try recovered.requestLocalAbandonment(id, confirmed: true)
+        try recovered.confirmOwnedSnapshotDeleted(id)
+        #expect(recovered.records.isEmpty)
+        #expect(!recovered.hasAggregateUnconfirmedCleanup)
+    }
+
+    @Test func finalizingCopyStillRespectsExistingUncertainInsertionFence() throws {
+        var ledger = ImageRecoveryLedger()
+        let first = try ledger.reserve(try fingerprint())
+        try ledger.markPartialPossible(first)
+        try ledger.markStagingPossible(first)
+        try ledger.markStaged(first, expiry: "2026-10-31T12:00:00.000Z")
+        try ledger.requestStagedLocalCleanup(first)
+        try ledger.confirmOwnedSnapshotDeleted(first)
+        try ledger.markInsertionPossible(first)
+        try ledger.markInsertionUncertain(first)
+        let copy = try ledger.reserveCopy()
+        #expect(throws: ImageRecoveryLedger.Failure.sameImageInsertionUncertain) { try ledger.finishCopy(copy, fingerprint: fingerprint()) }
+        #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try ledger.markPartialPossible(copy) }
+        try ledger.requestLocalAbandonment(copy, confirmed: true)
+        try ledger.confirmOwnedSnapshotDeleted(copy)
+        #expect(ledger.records.count == 1)
+    }
+
     @Test func journalRejectsTamperingWrongKeyAndOversizedInput() throws {
         var ledger = ImageRecoveryLedger()
         let id = try ledger.reserve(try fingerprint())
