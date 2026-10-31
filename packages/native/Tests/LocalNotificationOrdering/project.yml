@@ -1,0 +1,59 @@
+name: NotificationBurstFixture
+packages:
+  RemiKit:
+    path: RemiKit
+settings:
+  base:
+    SWIFT_VERSION: 6.0
+    SWIFT_STRICT_CONCURRENCY: complete
+    ENABLE_TESTABILITY: YES
+    CODE_SIGNING_ALLOWED: NO
+targets:
+  NotificationBurstHost:
+    type: application
+    platform: iOS
+    deploymentTarget: '26.0'
+    sources:
+      - path: iPhone
+        excludes: [Info.plist, Remi.entitlements, PrivacyInfo.xcprivacy]
+    dependencies:
+      - package: RemiKit
+        product: RemiKit
+      - package: RemiKit
+        product: RemiPush
+      - package: RemiKit
+        product: RemiUI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: live.yooz.remi.tests.notification-burst-fixture
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: 'DEBUG BURST_DIAGNOSTICS'
+  NotificationBurstTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: '26.0'
+    sources:
+      - Tests
+    dependencies:
+      - target: NotificationBurstHost
+      - package: RemiKit
+        product: RemiKit
+      - package: RemiKit
+        product: RemiUI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: live.yooz.remi.tests.notification-burst-tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: '$(BUILT_PRODUCTS_DIR)/NotificationBurstHost.app/NotificationBurstHost'
+        BUNDLE_LOADER: '$(TEST_HOST)'
+schemes:
+  NotificationBurstFixture:
+    build:
+      targets:
+        NotificationBurstHost: all
+        NotificationBurstTests: [test]
+    test:
+      targets:
+        - NotificationBurstTests
