@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Testing
 @testable import RemiKit
 
@@ -327,6 +328,37 @@ import Testing
         #expect(throws: ImageRecoveryLedger.Failure.recordCapacity) {
             var copy = restored.ledger
             _ = try copy.reserve(fingerprint(image: Data(repeating: 0xee, count: 32)))
+        }
+    }
+
+    @Test func authenticatedButInconsistentJournalCannotRestoreAuthority() throws {
+        // A valid MAC alone must not make impossible prior-version or corrupted state safe.
+        func record(id: String, exposure: String, expiry: String = "null", local: Bool,
+                    cleanup: Bool = false, cancelled: Bool = false) -> String {
+            let hash = WireGuards.encodeBase64URL(Data(repeating: 1, count: 32))
+            return "{\"id\":\"\(id)\",\"scope\":\"\(hash)\",\"image\":\"\(hash)\",\"exposure\":\"\(exposure)\",\"expiry\":\(expiry),\"partialExpiry\":null,\"local\":\(local),\"cleanup\":\(cleanup),\"remoteCancelled\":\(cancelled)}"
+        }
+        func journal(_ records: [String]) -> Data {
+            let payload = "{\"version\":1,\"aggregate\":false,\"records\":[\(records.joined(separator: ","))]}"
+            let tag = HMAC<SHA256>.authenticationCode(for: Data(payload.utf8), using: SymmetricKey(data: secret))
+            return Data("{\"payload\":\(payload),\"mac\":\"\(WireGuards.encodeBase64URL(Data(tag)))\"}".utf8)
+        }
+        let one = "00112233-4455-4677-8899-aabbccddeeff"
+        let two = "00112233-4455-4677-8899-aabbccddee00"
+        let expiry = "\"2026-10-31T12:00:00.000Z\""
+        let valid = try ImageRecoveryLedger.restoreJournal(journal([record(id: one, exposure: "prepared", local: true)]), secret: secret)
+        #expect(valid.ledger.records.count == 1)
+        let invalid = [
+            [record(id: one, exposure: "prepared", local: false)],
+            [record(id: one, exposure: "insertion_in_flight", expiry: expiry, local: true)],
+            [record(id: one, exposure: "insertion_confirmed", expiry: expiry, local: false, cancelled: true)],
+            [record(id: one, exposure: "prepared", local: true), record(id: two, exposure: "prepared", local: true)],
+            [record(id: one, exposure: "partial", local: false), record(id: one, exposure: "partial", local: false)],
+            [record(id: one, exposure: "staged", local: false)],
+            [record(id: one, exposure: "future_unknown", local: false)],
+        ]
+        for entries in invalid {
+            #expect(throws: (any Error).self) { try ImageRecoveryLedger.restoreJournal(journal(entries), secret: secret) }
         }
     }
 }
