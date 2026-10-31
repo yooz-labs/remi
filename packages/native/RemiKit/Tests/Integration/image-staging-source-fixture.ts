@@ -10,10 +10,12 @@ import { WebSocketAdapter } from '../../../../daemon/src/adapters/websocket-adap
 import { MessageAPI } from '../../../../daemon/src/api/message-api';
 import { Authenticator } from '../../../../daemon/src/auth/authenticator';
 import { IdentityStore } from '../../../../daemon/src/auth/identity-store';
+import { createImageInsertionHandlers } from '../../../../daemon/src/cli/handlers/image-insertion-events';
 import { PTYSession } from '../../../../daemon/src/pty/pty-session';
 import { SessionBindingStore } from '../../../../daemon/src/session/session-binding-store';
 import { SessionRegistry } from '../../../../daemon/src/session/session-registry';
 import { SessionStore } from '../../../../daemon/src/session/session-store';
+import { ImageInsertionCoordinator } from '../../../../daemon/src/tunnel/image-insertion-coordinator';
 import { ImageStagingService } from '../../../../daemon/src/tunnel/image-staging-service';
 
 const clientKey = process.argv[2];
@@ -65,7 +67,15 @@ const port = await new Promise<number>((resolve, reject) => {
 });
 const registry = new SessionRegistry();
 const bindings = new SessionBindingStore(new SessionStore(join(home, 'sessions.json')));
-const pty = new PTYSession({ command: '/bin/cat', cwd: home, size: { cols: 500, rows: 40 } }, {});
+let output = '';
+const pty = new PTYSession(
+  { command: '/bin/cat', cwd: home, size: { cols: 500, rows: 40 } },
+  {
+    onData(data) {
+      output = (output + data).slice(0, 4096);
+    },
+  },
+);
 await pty.start();
 registry.registerSession(sessionId, home, pty, new MessageAPI({ sessionId }), true);
 bindings.preAssign({
@@ -82,6 +92,7 @@ let begins = 0;
 let chunks = 0;
 let completes = 0;
 let staged = 0;
+let insertions = 0;
 const adapter = new WebSocketAdapter(
   {
     host: '127.0.0.1',
@@ -107,6 +118,7 @@ const adapter = new WebSocketAdapter(
     onDisconnect(id) {
       registry.detachConnection(id);
       void service?.invalidateConnection(id);
+      coordinator?.invalidateConnection(id);
     },
     async onImageUpload(id, ingress) {
       if (!service) throw new Error('owned staging unavailable');
@@ -122,6 +134,10 @@ const adapter = new WebSocketAdapter(
         service.refuseMalformed(id, ingress.correlation, (message) => adapter.sendRaw(id, message));
       }
     },
+    async onImageInsert(id, ingress) {
+      insertions++;
+      await insertionHandlers.onImageInsert(id, ingress);
+    },
   },
 );
 const service = await ImageStagingService.open({
@@ -131,15 +147,35 @@ const service = await ImageStagingService.open({
   bindingStore: bindings,
   directAdapter: () => adapter,
 });
+const coordinator = new ImageInsertionCoordinator(service, () => false);
+const insertionHandlers = createImageInsertionHandlers({
+  service: () => service,
+  coordinator: () => coordinator,
+  send: (id, response) => {
+    adapter.sendRaw(id, response);
+  },
+});
 await adapter.start();
 process.stdout.write(
   `${JSON.stringify({ port, sessionId, bindingId, publicKey: identity.publicKeyRaw, certPath })}\n`,
 );
 for await (const line of createInterface({ input: process.stdin })) {
   if (line === 'stats')
-    process.stdout.write(`${JSON.stringify({ begins, chunks, completes, staged })}\n`);
+    process.stdout.write(
+      `${JSON.stringify({
+        begins,
+        chunks,
+        completes,
+        staged,
+        insertions,
+        outputBytes: Buffer.byteLength(output),
+        containsNewline: /[\r\n]/u.test(output),
+        referenceOnly: /^ @"[^"\r\n]+" $/u.test(output),
+      })}\n`,
+    );
   if (line === 'stop') break;
 }
+coordinator.close();
 const clean = await service.close();
 await adapter.stop();
 await pty.close();
