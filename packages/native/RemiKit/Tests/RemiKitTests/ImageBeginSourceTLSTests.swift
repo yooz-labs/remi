@@ -97,14 +97,32 @@ private actor OwnedImageSendGate {
                     if case .staged = transfer.state { break }
                     try await Task.sleep(for: .milliseconds(10))
                 }
-                guard case .staged = transfer.state else { throw Failure.deadline }
+                guard case .staged(let stagedExpiry) = transfer.state else { throw Failure.deadline }
                 let observed = try await stats(input: input, output: output)
                 #expect(observed["begins"] as? Int == 1)
                 #expect(observed["chunks"] as? Int == (bytes.count + ImageStagingLimits.chunkBytes - 1) / ImageStagingLimits.chunkBytes)
                 #expect(observed["completes"] as? Int == 1)
                 #expect(observed["staged"] as? Int == 1)
                 #expect(installation.journal.snapshot.localSnapshotID == nil)
-                await transfer.addToDraft()
+                let insertionReturn = OwnedImageSendGate()
+                try await client.ownedSetImageAfterSend { try await insertionReturn.hold() }
+                let inserting = Task { await transfer.addToDraft() }
+                do {
+                    try await until { await insertionReturn.entered }
+                    let captured = await client.imageBeginAuthority(for: begin, machineKey: machineKey)
+                    let authority = try #require(captured)
+                    try await until {
+                        await client.imageInsertionProgress(authority: authority) ==
+                            .inserted(expiry: stagedExpiry, artifactExpired: false)
+                    }
+                } catch {
+                    await insertionReturn.release()
+                    await inserting.value
+                    throw error
+                }
+                await insertionReturn.release()
+                await inserting.value
+                try await client.ownedSetImageAfterSend(nil)
                 let insertionDeadline = ContinuousClock.now.advanced(by: .seconds(15))
                 while ContinuousClock.now < insertionDeadline {
                     await transfer.refresh()
