@@ -5,17 +5,22 @@ import Foundation
 /// key, prove snapshot creation and validation, and provide one serialized owner per lease.
 /// It cannot authorize a socket, delete a file, or establish remote cleanup.
 final class ImageRecoveryJournal {
-    enum Failure: Error, Equatable { case retired }
+    enum Failure: Error, Equatable { case retired, invalidClaim }
 
     private let disk: ImageJournalDisk
+    private let claim: ImageDirectoryLease.OwnerClaim
     private let secret: Data
     private var bytes: Data
-    private(set) var snapshot: ImageRecoveryLedger
-    private(set) var retired = false
+    private var storedSnapshot: ImageRecoveryLedger
+    private var isRetired = false
+    var snapshot: ImageRecoveryLedger { claim.synchronized { storedSnapshot } }
+    var retired: Bool { claim.synchronized { isRetired } }
 
     /// Restart never revives a pending copy or old socket. The normalized record is made
     /// durable before this object returns; failure cannot be retried through this object.
-    init(disk: ImageJournalDisk, secret: Data) throws {
+    init(disk: ImageJournalDisk, secret: Data, claim: ImageDirectoryLease.OwnerClaim) throws {
+        guard disk.accepts(claim) else { throw Failure.invalidClaim }
+        try claim.attachJournal()
         let original = try disk.load()
         let restored = try ImageRecoveryLedger.restoreJournal(original, secret: secret)
         let stored: Data
@@ -26,9 +31,10 @@ final class ImageRecoveryJournal {
             stored = original
         }
         self.disk = disk
+        self.claim = claim
         self.secret = secret
         self.bytes = stored
-        self.snapshot = restored.ledger
+        self.storedSnapshot = restored.ledger
     }
 
     /// A durable reservation comes before opening or writing the selected image copy.
@@ -57,19 +63,23 @@ final class ImageRecoveryJournal {
         try transition { try $0.confirmOwnedSnapshotDeleted(id) }
     }
 
+    func holds(_ lease: ImageDirectoryLease) -> Bool { claim.belongs(to: lease) }
+
     private func transition<T>(_ apply: (inout ImageRecoveryLedger) throws -> T) throws -> T {
-        guard !retired else { throw Failure.retired }
-        var candidate = snapshot
-        let result = try apply(&candidate)
-        let next = try candidate.encodeJournal(secret: secret)
-        do {
-            try disk.replace(expected: bytes, with: next)
-        } catch {
-            retired = true
-            throw error
+        try claim.synchronized {
+            guard !isRetired else { throw Failure.retired }
+            var candidate = storedSnapshot
+            let result = try apply(&candidate)
+            let next = try candidate.encodeJournal(secret: secret)
+            do {
+                try disk.replace(expected: bytes, with: next)
+            } catch {
+                isRetired = true
+                throw error
+            }
+            bytes = next
+            storedSnapshot = candidate
+            return result
         }
-        bytes = next
-        snapshot = candidate
-        return result
     }
 }

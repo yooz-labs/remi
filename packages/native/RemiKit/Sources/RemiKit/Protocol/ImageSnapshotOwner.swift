@@ -21,13 +21,13 @@ final class ImageSnapshotOwner {
         #if os(iOS)
         throw Failure.unsupportedProtection
         #else
-        guard !journal.retired, journal.snapshot.localSnapshotID == id,
-              let record = journal.snapshot.records.first(where: { $0.id == id }),
-              record.exposure == .copyReserved, record.snapshotIdentity == nil, !record.cleanupRequested else {
-            throw Failure.invalidReservation
-        }
         let name = "image-\(id.uuidString.lowercased())"
         return try lease.withVerifiedDirectory { directory in
+            guard journal.holds(lease), !journal.retired, journal.snapshot.localSnapshotID == id,
+                  let record = journal.snapshot.records.first(where: { $0.id == id }),
+                  record.exposure == .copyReserved, record.snapshotIdentity == nil, !record.cleanupRequested else {
+                throw Failure.invalidReservation
+            }
             let fd = openat(directory, name, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
             guard fd >= 0 else { throw Failure.unavailable }
             defer { close(fd) }
@@ -58,11 +58,12 @@ final class ImageSnapshotOwner {
         #if os(iOS)
         throw Failure.unsupportedProtection
         #else
-        try journal.requestLocalAbandonment(id, confirmed: confirmed)
-        guard let record = journal.snapshot.records.first(where: { $0.id == id }),
-              record.cleanupRequested, record.localSnapshotPresent else { throw Failure.invalidReservation }
         let name = "image-\(id.uuidString.lowercased())"
         try lease.withVerifiedDirectory { directory in
+            guard journal.holds(lease) else { throw Failure.invalidReservation }
+            try journal.requestLocalAbandonment(id, confirmed: confirmed)
+            guard let record = journal.snapshot.records.first(where: { $0.id == id }),
+                  record.cleanupRequested, record.localSnapshotPresent else { throw Failure.invalidReservation }
             var entry = stat()
             if fstatat(directory, name, &entry, AT_SYMLINK_NOFOLLOW) == 0 {
                 guard let identity = record.snapshotIdentity, Self.validFile(entry),

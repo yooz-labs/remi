@@ -1,4 +1,5 @@
 import Darwin
+import Foundation
 
 /// A process-shared lock on an already-open private directory. The parent must be an
 /// OS-provided app-private directory opened by the future owner, not a user-selected path.
@@ -16,6 +17,9 @@ final class ImageDirectoryLease {
     private let parent: Int32
     private let rootName: String
     private let lock: Int32
+    private let serialization = NSRecursiveLock()
+    private let ownerLock = NSLock()
+    private var ownerClaimed = false
     private var retired = false
     private static let lockName = ".image-lock"
 
@@ -62,28 +66,75 @@ final class ImageDirectoryLease {
         close(parent)
     }
 
-    func verifyIdentity() throws {
-        guard !retired else { throw Failure.invalidLock }
-        var parentStat = stat()
-        guard fstat(parent, &parentStat) == 0, Self.validDirectory(parentStat),
-              Self.sameRoot(parent: parent, name: rootName, root: directory),
-              Self.sameLock(directory: directory, lock: lock) else {
-            retired = true
-            throw Failure.invalidLock
+    /// The claim retains the process lock until every dependent journal/snapshot owner is gone.
+    final class OwnerClaim {
+        enum Failure: Error { case alreadyAttached }
+        private let lease: ImageDirectoryLease
+        private var journalAttached = false
+        fileprivate init(_ lease: ImageDirectoryLease) { self.lease = lease }
+        deinit { lease.releaseOwner() }
+
+        func belongs(to candidate: ImageDirectoryLease) -> Bool { lease === candidate }
+        func synchronized<T>(_ body: () throws -> T) rethrows -> T { try lease.synchronized(body) }
+        func attachJournal() throws {
+            try lease.synchronized {
+                guard !journalAttached else { throw Failure.alreadyAttached }
+                journalAttached = true
+            }
         }
     }
 
-    /// Synchronous descriptor-relative work only. The owner must confine this lease to a
-    /// single isolation domain and must not let the descriptor escape the closure.
-    func withVerifiedDirectory<T>(_ body: (Int32) throws -> T) throws -> T {
-        try verifyIdentity()
+    func claimOwner() throws -> OwnerClaim {
+        ownerLock.lock()
+        guard !ownerClaimed else { ownerLock.unlock(); throw Failure.busy }
+        ownerClaimed = true
+        ownerLock.unlock()
         do {
-            let value = try body(directory)
             try verifyIdentity()
-            return value
+            return OwnerClaim(self)
         } catch {
-            try? verifyIdentity()
+            releaseOwner()
             throw error
+        }
+    }
+
+    private func releaseOwner() {
+        ownerLock.lock()
+        ownerClaimed = false
+        ownerLock.unlock()
+    }
+
+    func synchronized<T>(_ body: () throws -> T) rethrows -> T {
+        serialization.lock()
+        defer { serialization.unlock() }
+        return try body()
+    }
+
+    func verifyIdentity() throws {
+        try synchronized {
+            guard !retired else { throw Failure.invalidLock }
+            var parentStat = stat()
+            guard fstat(parent, &parentStat) == 0, Self.validDirectory(parentStat),
+                  Self.sameRoot(parent: parent, name: rootName, root: directory),
+                  Self.sameLock(directory: directory, lock: lock) else {
+                retired = true
+                throw Failure.invalidLock
+            }
+        }
+    }
+
+    /// Synchronous descriptor-relative work only. The descriptor cannot escape the closure.
+    func withVerifiedDirectory<T>(_ body: (Int32) throws -> T) throws -> T {
+        try synchronized {
+            try verifyIdentity()
+            do {
+                let value = try body(directory)
+                try verifyIdentity()
+                return value
+            } catch {
+                try? verifyIdentity()
+                throw error
+            }
         }
     }
 

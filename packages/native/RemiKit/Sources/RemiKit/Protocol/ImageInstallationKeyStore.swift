@@ -181,6 +181,7 @@ final class ImageInstallationOwner {
         throw Failure.protectionUnavailable
         #else
         guard keys.holds(lease) else { throw Failure.recoveryRequired }
+        let claim = try lease.claimOwner()
         return try lease.withVerifiedDirectory { directory in
             var key = try keys.load() ?? keys.beginPending()
             if key.phase == .pending {
@@ -215,7 +216,7 @@ final class ImageInstallationOwner {
                 try inventory(directory: directory, expected: expected, pending: false)
             }
             guard key.phase == .ready else { throw Failure.recoveryRequired }
-            let journal = try ImageRecoveryJournal(disk: disk, secret: key.secret)
+            let journal = try ImageRecoveryJournal(disk: disk, secret: key.secret, claim: claim)
             return ImageInstallationOwner(journal: journal, snapshots: ImageSnapshotOwner(lease: lease, journal: journal))
         }
         #endif

@@ -22,38 +22,45 @@ final class ImageJournalDisk {
         self.secret = secret
     }
 
+    func claimOwner() throws -> ImageDirectoryLease.OwnerClaim { try lease.claimOwner() }
+    func accepts(_ claim: ImageDirectoryLease.OwnerClaim) -> Bool { claim.belongs(to: lease) }
+
     func load() throws -> Data {
-        try Self.requireSupportedProtection()
-        guard !retired else { throw Failure.unavailable }
-        retired = true
-        let result = try lease.withVerifiedDirectory { directory in
-            try Self.refuseOrphans(directory: directory)
-            let record = try Self.read(directory: directory)
-            try authenticate(record.bytes)
-            return record.bytes
+        try lease.synchronized {
+            try Self.requireSupportedProtection()
+            guard !retired else { throw Failure.unavailable }
+            retired = true
+            let result = try lease.withVerifiedDirectory { directory in
+                try Self.refuseOrphans(directory: directory)
+                let record = try Self.read(directory: directory)
+                try authenticate(record.bytes)
+                return record.bytes
+            }
+            retired = false
+            return result
         }
-        retired = false
-        return result
     }
 
     /// Only a separately proven first installation may call this. Failure leaves any created
     /// entry in place, so a partial initialization cannot be silently interpreted as fresh.
     func initializeIfProvenFresh(_ bytes: Data) throws {
-        try Self.requireSupportedProtection()
-        guard !retired else { throw Failure.unavailable }
-        try authenticate(bytes)
-        retired = true
-        try lease.withVerifiedDirectory { directory in
-            try Self.refuseOrphans(directory: directory)
-            let fd = openat(directory, Self.name, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
-            guard fd >= 0 else { throw Failure.unavailable }
-            defer { close(fd) }
-            try Self.write(bytes, to: fd)
-            guard Self.sameEntry(directory: directory, name: Self.name, fd: fd), fsync(directory) == 0 else {
-                throw Failure.unavailable
+        try lease.synchronized {
+            try Self.requireSupportedProtection()
+            guard !retired else { throw Failure.unavailable }
+            try authenticate(bytes)
+            retired = true
+            try lease.withVerifiedDirectory { directory in
+                try Self.refuseOrphans(directory: directory)
+                let fd = openat(directory, Self.name, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
+                guard fd >= 0 else { throw Failure.unavailable }
+                defer { close(fd) }
+                try Self.write(bytes, to: fd)
+                guard Self.sameEntry(directory: directory, name: Self.name, fd: fd), fsync(directory) == 0 else {
+                    throw Failure.unavailable
+                }
             }
+            retired = false
         }
-        retired = false
     }
 
     /// A stale caller cannot replace a later authenticated revision. This does not establish
@@ -61,42 +68,46 @@ final class ImageJournalDisk {
     /// transitions before effects. The root is an OS-provided private container serialized by
     /// the lease, not an arbitrary project path.
     func replace(expected: Data, with bytes: Data) throws {
-        try Self.requireSupportedProtection()
-        guard !retired else { throw Failure.unavailable }
-        try authenticate(expected)
-        try authenticate(bytes)
-        retired = true
-        do { try lease.withVerifiedDirectory { directory in
-            try Self.refuseOrphans(directory: directory)
-            let current = try Self.read(directory: directory)
-            try authenticate(current.bytes)
-            guard current.bytes == expected else { throw Failure.stale }
-            let temporary = ".image-journal-\(UUID().uuidString.lowercased())"
-            let fd = openat(directory, temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
-            guard fd >= 0 else { throw Failure.unavailable }
-            var renamed = false
-            defer {
-                if !renamed, Self.sameEntry(directory: directory, name: temporary, fd: fd) {
-                    _ = unlinkat(directory, temporary, 0)
-                    _ = fsync(directory)
+        try lease.synchronized {
+            try Self.requireSupportedProtection()
+            guard !retired else { throw Failure.unavailable }
+            try authenticate(expected)
+            try authenticate(bytes)
+            retired = true
+            do {
+                try lease.withVerifiedDirectory { directory in
+                    try Self.refuseOrphans(directory: directory)
+                    let current = try Self.read(directory: directory)
+                    try authenticate(current.bytes)
+                    guard current.bytes == expected else { throw Failure.stale }
+                    let temporary = ".image-journal-\(UUID().uuidString.lowercased())"
+                    let fd = openat(directory, temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
+                    guard fd >= 0 else { throw Failure.unavailable }
+                    var renamed = false
+                    defer {
+                        if !renamed, Self.sameEntry(directory: directory, name: temporary, fd: fd) {
+                            _ = unlinkat(directory, temporary, 0)
+                            _ = fsync(directory)
+                        }
+                        close(fd)
+                    }
+                    try Self.write(bytes, to: fd)
+                    guard Self.sameEntry(directory: directory, name: temporary, fd: fd),
+                          Self.sameIdentity(directory: directory, name: Self.name, identity: current.identity) else {
+                        throw Failure.unavailable
+                    }
+                    guard renameat(directory, temporary, directory, Self.name) == 0 else { throw Failure.unavailable }
+                    renamed = true
+                    guard fsync(directory) == 0, Self.sameEntry(directory: directory, name: Self.name, fd: fd) else {
+                        throw Failure.unavailable
+                    }
                 }
-                close(fd)
+            } catch Failure.stale {
+                retired = false
+                throw Failure.stale
             }
-            try Self.write(bytes, to: fd)
-            guard Self.sameEntry(directory: directory, name: temporary, fd: fd),
-                  Self.sameIdentity(directory: directory, name: Self.name, identity: current.identity) else {
-                throw Failure.unavailable
-            }
-            guard renameat(directory, temporary, directory, Self.name) == 0 else { throw Failure.unavailable }
-            renamed = true
-            guard fsync(directory) == 0, Self.sameEntry(directory: directory, name: Self.name, fd: fd) else {
-                throw Failure.unavailable
-            }
-        } } catch Failure.stale {
             retired = false
-            throw Failure.stale
         }
-        retired = false
     }
 
     private func authenticate(_ bytes: Data) throws {
