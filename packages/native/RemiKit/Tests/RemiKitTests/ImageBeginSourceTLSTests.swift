@@ -21,7 +21,7 @@ private actor OwnedImageSendGate {
     private enum Failure: Error { case deadline }
 
     @Test(arguments: ["fixture.png", "fixture.jpg"])
-    func ownedSourceStagesExactImageUsingBoundedChunks(_ filename: String) async throws {
+    func ownedSourceStagesAndExplicitlyInsertsImageWithoutEnter(_ filename: String) async throws {
         let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let script = tests.appendingPathComponent("Integration/image-staging-source-fixture.ts")
         let repository = tests.deletingLastPathComponent().deletingLastPathComponent()
