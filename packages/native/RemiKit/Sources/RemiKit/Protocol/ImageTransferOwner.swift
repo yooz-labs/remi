@@ -1,13 +1,15 @@
 import Foundation
 
-/// One explicit begin for one already-prepared installation record. This owner cannot open a
-/// picker, qualify a route, read image chunks, insert a draft reference, or replay an effect.
-/// Those remaining boundaries must exist before an image feature may be exposed to the user.
+/// One bounded staging attempt for one prepared installation record. It cannot open a picker,
+/// qualify a route, validate media, insert a draft reference, or replay an effect. Those remaining
+/// boundaries must exist before an image feature may be exposed to the user.
 @MainActor
 final class ImageTransferOwner {
     enum Failure: Error { case invalidPreparedCopy }
     enum State: Equatable {
         case ready, beginning, unavailable, awaitingAcceptance, awaitingChunk(offset: Int, count: Int)
+        case sendingChunk, awaitingChunkAck, readyForComplete, completing, awaitingResult
+        case staged(expiry: String), stagedCleanupPending(expiry: String)
         case refused(ImageUploadRefusalCode, remoteCleanupUnconfirmed: Bool)
         case cancelled, notInvokedCleanupPending, uncertain
     }
@@ -87,12 +89,31 @@ final class ImageTransferOwner {
     /// Queries actor-owned correlation on the original socket. This is a local state read;
     /// it sends nothing and cannot restore a lost connection or stale authority.
     func refresh() async {
-        guard state == .awaitingAcceptance, let authority else { return }
+        guard state == .awaitingAcceptance || state == .awaitingChunkAck || state == .awaitingResult,
+              let authority else { return }
+        let previous = state
         let progress = await connection.imageBeginProgress(authority: authority)
-        guard state == .awaitingAcceptance else { return }
+        guard state == previous else { return }
         switch progress {
-        case .waiting: break
-        case .readyForChunk(let offset, let count): state = .awaitingChunk(offset: offset, count: count)
+        case .waiting: state = .awaitingAcceptance
+        case .readyForChunk(let offset, let count, let expiry):
+            do {
+                try installation.journal.rememberPartialExpiry(recordID, expiry: expiry)
+                state = .awaitingChunk(offset: offset, count: count)
+            } catch {
+                reader?.close(); reader = nil; state = .uncertain
+            }
+        case .waitingChunkAck: state = .awaitingChunkAck
+        case .readyForComplete: state = .readyForComplete
+        case .waitingResult: state = .awaitingResult
+        case .staged(let expiry):
+            do {
+                try installation.journal.markStaged(recordID, expiry: expiry)
+                do {
+                    try installation.snapshots.clearAfterStaging(id: recordID)
+                    state = .staged(expiry: expiry)
+                } catch { state = .stagedCleanupPending(expiry: expiry) }
+            } catch { state = .uncertain }
         case .refused(let code, let unconfirmed):
             reader?.close(); reader = nil
             state = .refused(code, remoteCleanupUnconfirmed: unconfirmed)
@@ -102,12 +123,62 @@ final class ImageTransferOwner {
         }
     }
 
+    /// Read and send exactly one chunk; a failed or cancelled phase is never replayed.
+    func sendNextChunk() async {
+        guard case .awaitingChunk(let offset, let count) = state, let authority, let reader else { return }
+        let data: Data
+        do { data = try reader.read(offset: offset, count: count) }
+        catch { self.reader = nil; state = .uncertain; return }
+        state = .sendingChunk
+        let operation = ImageEffectTicket()
+        ticket = operation
+        let result = await connection.sendImageChunk(data, authority: authority, ticket: operation)
+        _ = operation.retire(); ticket = nil
+        guard state == .sendingChunk else { return }
+        switch result {
+        case .handedOff:
+            state = .awaitingChunkAck
+            await refresh()
+        case .notInvoked, .uncertain:
+            reader.close(); self.reader = nil; state = .uncertain
+        }
+    }
+
+    /// Hash verification and its durable staging boundary precede the complete effect.
+    func complete() async {
+        guard state == .readyForComplete, let authority, let reader else { return }
+        do {
+            try reader.finish()
+            self.reader = nil
+            try installation.journal.markStagingPossible(recordID)
+        } catch {
+            reader.close(); self.reader = nil; state = .uncertain; return
+        }
+        state = .completing
+        let operation = ImageEffectTicket()
+        ticket = operation
+        let result = await connection.sendImageComplete(authority: authority, ticket: operation)
+        _ = operation.retire(); ticket = nil
+        guard state == .completing else { return }
+        switch result {
+        case .handedOff:
+            state = .awaitingResult
+            await refresh()
+        case .notInvoked, .uncertain: state = .uncertain
+        }
+    }
+
     /// Synchronous retirement prevents a queued begin from entering after cancellation.
     func cancel() {
         if state == .beginning, let ticket {
             state = ticket.retire() == .noEffect ? .cancelled : .uncertain
             reader?.close(); reader = nil
-        } else if state == .awaitingAcceptance || isAwaitingChunk {
+        } else if (state == .sendingChunk || state == .completing), let ticket {
+            _ = ticket.retire()
+            reader?.close(); reader = nil
+            state = .uncertain
+        } else if state == .awaitingAcceptance || state == .awaitingChunkAck || state == .readyForComplete ||
+                    state == .awaitingResult || isAwaitingChunk {
             // A cancel frame/receipt is not wired yet; remote partial cleanup is uncertain.
             reader?.close(); reader = nil
             state = .uncertain
