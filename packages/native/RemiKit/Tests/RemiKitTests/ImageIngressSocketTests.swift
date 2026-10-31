@@ -70,6 +70,9 @@ private struct GenericImageFrame: Encodable, Sendable {
                 identity: ClientIdentity(), stateHandler: { state in Task { await observations.state(state) } },
                 eventHandler: { event in Task { await observations.event(event) } })
             connection = client
+            #if DEBUG
+            await #expect(throws: (any Error).self) { try await client.enableOwnedImageFixture() }
+            #endif
             await client.start()
             let helloDeadline = ContinuousClock.now.advanced(by: .seconds(5))
             while ContinuousClock.now < helloDeadline {
