@@ -19,7 +19,7 @@ import { TranscriptDiscovery } from '../../../../daemon/src/transcript/transcrip
 
 const mode = process.argv[2];
 const publicKey = process.argv[3];
-if (!['refuse', 'allow', 'partial'].includes(mode ?? '') || !publicKey)
+if (!['refuse', 'allow', 'partial', 'image'].includes(mode ?? '') || !publicKey)
   throw new Error('owned arguments required');
 // Metadata only on stdout; source logger output stays in the retained stderr log.
 console.log = (...args) => console.error(...args);
@@ -35,6 +35,7 @@ const registry = new SessionRegistry(
 );
 let prompt = false;
 let inputs = 0;
+let images = 0;
 let outputBytes = 0;
 const pty = new PTYSession(
   { command: '/bin/cat', cwd: directory, env: { HOME: directory, PATH: '/usr/bin:/bin' } },
@@ -88,6 +89,12 @@ const server = new WebSocketServer(
       inputs++;
       await handlers.onUserInput(...args);
     },
+    onImageUpload() {
+      images++;
+    },
+    onImageInsert() {
+      images++;
+    },
     onKillSessionRequest: (...args) => lifecycle?.onKillSessionRequest(...args),
     onTranscriptLoadRequest(id, session) {
       server.sendTo(
@@ -114,9 +121,12 @@ const lifecycle = createSessionHandlers({
   },
 });
 await server.start();
-process.stdout.write(`${JSON.stringify({ port: server.port, sessionId })}\n`);
+process.stdout.write(
+  `${JSON.stringify({ port: server.port, sessionId, publicKey: identity.publicKeyRaw })}\n`,
+);
 for await (const line of createInterface({ input: process.stdin })) {
-  if (line === 'stats') process.stdout.write(`${JSON.stringify({ inputs, outputBytes })}\n`);
+  if (line === 'stats')
+    process.stdout.write(`${JSON.stringify({ inputs, outputBytes, images })}\n`);
   if (line === 'stop') break;
 }
 await server.stop();
