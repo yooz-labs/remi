@@ -123,4 +123,18 @@ private final class OwnedLocalKeychain {
         #expect(try Data(contentsOf: journal) == original)
         #expect(os.adds == 0 && os.stored == Data(repeating: 41, count: 32))
     }
+
+    @Test func busyJournalIsUnavailableNotEvidenceOfCorruption() throws {
+        let dir = try path(); defer { try? FileManager.default.removeItem(at: dir) }
+        let os = OwnedLocalKeychain(), key = LocalNoticeKeyStore(service: "synthetic", account: "one")
+        let first = try LocalNoticeBootstrap.open(directory: dir, sentinel: .absent, inventory: .noLocalMarkers,
+            protectedDataAvailable: true, keyStore: key, operations: os.operations)
+        defer { first.ledger.close() }
+        #expect(throws: LocalNoticeBootstrap.Failure.unavailable) {
+            try LocalNoticeBootstrap.open(directory: dir, sentinel: .present, inventory: .noLocalMarkers,
+                protectedDataAvailable: true, keyStore: key, operations: os.operations)
+        }
+        #expect(os.adds == 1)
+        #expect(try first.ledger.counts().tickets == 0)
+    }
 }

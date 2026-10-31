@@ -76,7 +76,7 @@ final class LocalNoticeLedger: @unchecked Sendable {
             try Self.checkExistingFile(file)
             try verifyDirectory()
             let status = sqlite3_open_v2(file.path, &database, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW, nil)
-            guard status == SQLITE_OK else { throw LocalNoticeError.unavailable }
+            guard status == SQLITE_OK else { throw Self.sqliteError(status) }
             try verifyDirectory()
             try fm.setAttributes(Self.protection(mode: 0o600), ofItemAtPath: file.path)
             guard sqlite3_busy_timeout(database, 1_000) == SQLITE_OK else { throw LocalNoticeError.unavailable }
@@ -421,7 +421,8 @@ final class LocalNoticeLedger: @unchecked Sendable {
         }
     }
     private func execute(_ sql: String) throws {
-        guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else { throw LocalNoticeError.unavailable }
+        let result = sqlite3_exec(database, sql, nil, nil, nil)
+        guard result == SQLITE_OK else { throw Self.sqliteError(result) }
     }
     private func integer(_ sql: String) throws -> Int64 {
         try statement(sql) { stmt in
@@ -431,7 +432,9 @@ final class LocalNoticeLedger: @unchecked Sendable {
     }
     private func statement<T>(_ sql: String, _ body: (OpaquePointer) throws -> T) throws -> T {
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(database, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { throw LocalNoticeError.unavailable }
+        let result = sqlite3_prepare_v2(database, sql, -1, &stmt, nil)
+        guard result == SQLITE_OK else { throw Self.sqliteError(result) }
+        guard let stmt else { throw LocalNoticeError.unavailable }
         defer { sqlite3_finalize(stmt) }; return try body(stmt)
     }
     private func bind(_ value: Data, to stmt: OpaquePointer, at index: Int32) throws {
@@ -450,6 +453,14 @@ final class LocalNoticeLedger: @unchecked Sendable {
         return Data(bytes: value, count: 32)
     }
     private func done(_ stmt: OpaquePointer) throws {
-        guard sqlite3_step(stmt) == SQLITE_DONE else { throw LocalNoticeError.unavailable }
+        let result = sqlite3_step(stmt)
+        guard result == SQLITE_DONE else { throw Self.sqliteError(result) }
+    }
+    private static func sqliteError(_ status: Int32) -> LocalNoticeError {
+        switch status & 0xff {
+        case SQLITE_CORRUPT, SQLITE_NOTADB: .corrupt
+        case SQLITE_FULL: .capacity
+        default: .unavailable
+        }
     }
 }
