@@ -142,6 +142,25 @@ struct RelayIdleRecoverySourceTests {
     }
 
     @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_IDLE_RELAY_TESTS"] == "1"))
+    func readyWithoutHelloCannotRestartTheRetryBudget() async throws {
+        try await withFixture { _, probe, command in
+            try await until("initial hello") { probe.hellos == 1 || probe.rejected }
+            try #require(probe.hellos == 1 && !probe.rejected)
+            #expect(try await command("prehello-on")["kind"] as? String == "prehello-on")
+            #expect(try await command("drop")["kind"] as? String == "dropped")
+            // A seventh connect is observable evidence of a retry past the cap,
+            // not a timeout. The first is the already-admitted episode.
+            try await until("terminal cap or extra connection", timeout: .seconds(30)) {
+                probe.rejected || probe.states.filter { $0.hasPrefix("connecting:") }.count >= 7
+            }
+            print("READY-only cap control: states=\(probe.states)")
+            #expect(probe.rejected, "READY alone must not reset the consecutive failure budget")
+            #expect(probe.hellos == 1)
+            #expect((try await command("stats")["inputs"] as? [String]) == [])
+        }
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_IDLE_RELAY_TESTS"] == "1"))
     func coldPreHelloFailuresRemainBounded() async throws {
         try await withFixture(preHelloInitially: true) { _, probe, command in
             try await until("cold unadmitted connection cap", timeout: .seconds(30)) { probe.rejected }
