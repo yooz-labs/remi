@@ -77,6 +77,14 @@ private struct GenericImageFrame: Encodable, Sendable {
                 try await Task.sleep(for: .milliseconds(10))
             }
             #expect(await observations.snapshot().admitted)
+            let imageHeader = WireHeader(id: UUID().uuidString.lowercased(), timestamp: "2026-10-31T00:00:00.000Z",
+                                         sessionId: peer.sessionID)
+            let imageBinding = AttachedBinding(harness: .claude, harnessSessionId: "09a9e195-b1af-4bd5-b9bf-e64855b16d36")
+            let imageBegin = ImageUploadBegin(header: imageHeader, binding: imageBinding, mediaType: .png,
+                                              byteLength: 3, digest: WireGuards.encodeBase64URL(Data(repeating: 1, count: 32)))
+            let pinnedMachineKey = try #require(Data(base64Encoded: peer.pinnedPublicKey))
+            // An authenticated direct socket is still not a qualified WSS/child image route.
+            #expect(await client.imageBeginAuthority(for: imageBegin, machineKey: pinnedMachineKey) == nil)
             for type in ["image_upload_begin", "image_insert_request"] {
                 let frame = GenericImageFrame(type: type, id: UUID().uuidString.lowercased(), timestamp: Date().ISO8601Format())
                 await #expect(throws: PaneTransportBlocked.self) { try await client.send(frame) }
