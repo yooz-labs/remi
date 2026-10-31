@@ -349,6 +349,22 @@ import Testing
         #expect(ledger.records.count == 1)
     }
 
+    @Test func cleanupRequestRetiresCopyAndSendAuthority() throws {
+        var copying = ImageRecoveryLedger()
+        let copy = try copying.reserveCopy()
+        try copying.requestLocalAbandonment(copy, confirmed: true)
+        #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try copying.finishCopy(copy, fingerprint: fingerprint()) }
+        var prepared = ImageRecoveryLedger()
+        let ready = try prepared.reserve(try fingerprint())
+        try prepared.requestLocalAbandonment(ready, confirmed: true)
+        #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try prepared.markPartialPossible(ready) }
+        var partial = ImageRecoveryLedger()
+        let started = try partial.reserve(try fingerprint())
+        try partial.markPartialPossible(started)
+        try partial.requestLocalAbandonment(started, confirmed: true)
+        #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try partial.markStagingPossible(started) }
+    }
+
     @Test func journalRejectsTamperingWrongKeyAndOversizedInput() throws {
         var ledger = ImageRecoveryLedger()
         let id = try ledger.reserve(try fingerprint())
