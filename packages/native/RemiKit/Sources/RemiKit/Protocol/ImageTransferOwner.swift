@@ -7,7 +7,9 @@ import Foundation
 final class ImageTransferOwner {
     enum Failure: Error { case invalidPreparedCopy }
     enum State: Equatable {
-        case ready, beginning, unavailable, awaitingAcceptance, cancelled, notInvokedCleanupPending, uncertain
+        case ready, beginning, unavailable, awaitingAcceptance, awaitingChunk(offset: Int, count: Int)
+        case refused(ImageUploadRefusalCode, remoteCleanupUnconfirmed: Bool)
+        case cancelled, notInvokedCleanupPending, uncertain
     }
 
     private let installation: ImageInstallationOwner
@@ -15,7 +17,7 @@ final class ImageTransferOwner {
     private let recordID: UUID
     private let beginMessage: ImageUploadBegin
     private let machineKey: Data
-    private var flow: ImageUploadFlow
+    private var authority: ImageBeginAuthority?
     private var ticket: ImageEffectTicket?
     private var reader: ImageSnapshotReader?
     private(set) var state: State = .ready
@@ -25,7 +27,7 @@ final class ImageTransferOwner {
         guard try installation.journal.matchesPreparedCopy(recordID, begin: begin, machineKey: machineKey) else {
             throw Failure.invalidPreparedCopy
         }
-        self.flow = try ImageUploadFlow(begin: begin, now: now)
+        _ = try ImageUploadFlow(begin: begin, now: now)
         self.installation = installation
         self.connection = connection
         self.recordID = recordID
@@ -48,6 +50,7 @@ final class ImageTransferOwner {
             state = .unavailable
             return
         }
+        self.authority = authority
         do {
             guard let digest = WireGuards.decodeBase64URL(beginMessage.digest) else { throw Failure.invalidPreparedCopy }
             reader = try installation.snapshots.openUploadReader(id: recordID, byteCount: beginMessage.byteLength, digest: digest)
@@ -71,7 +74,31 @@ final class ImageTransferOwner {
             reader?.close(); reader = nil
             state = .uncertain
         case .handedOff:
-            state = state == .cancelled ? .uncertain : .awaitingAcceptance
+            if state == .cancelled {
+                reader?.close(); reader = nil
+                state = .uncertain
+            } else if state == .beginning {
+                state = .awaitingAcceptance
+                await refresh()
+            }
+        }
+    }
+
+    /// Queries actor-owned correlation on the original socket. This is a local state read;
+    /// it sends nothing and cannot restore a lost connection or stale authority.
+    func refresh() async {
+        guard state == .awaitingAcceptance, let authority else { return }
+        let progress = await connection.imageBeginProgress(authority: authority)
+        guard state == .awaitingAcceptance else { return }
+        switch progress {
+        case .waiting: break
+        case .readyForChunk(let offset, let count): state = .awaitingChunk(offset: offset, count: count)
+        case .refused(let code, let unconfirmed):
+            reader?.close(); reader = nil
+            state = .refused(code, remoteCleanupUnconfirmed: unconfirmed)
+        case .uncertain, nil:
+            reader?.close(); reader = nil
+            state = .uncertain
         }
     }
 
@@ -80,11 +107,15 @@ final class ImageTransferOwner {
         if state == .beginning, let ticket {
             state = ticket.retire() == .noEffect ? .cancelled : .uncertain
             reader?.close(); reader = nil
-        } else if state == .awaitingAcceptance {
+        } else if state == .awaitingAcceptance || isAwaitingChunk {
             // A cancel frame/receipt is not wired yet; remote partial cleanup is uncertain.
-            flow.disconnected()
             reader?.close(); reader = nil
             state = .uncertain
         }
+    }
+
+    private var isAwaitingChunk: Bool {
+        if case .awaitingChunk = state { return true }
+        return false
     }
 }

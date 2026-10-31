@@ -170,6 +170,7 @@ public actor RemiConnection {
     private var ownedBeforeH2: (@Sendable () async throws -> Void)?
     private var ownedImageFixture = false
     private var ownedImageBeforeSend: (@Sendable () async throws -> Void)?
+    private var ownedImageAfterSend: (@Sendable () async throws -> Void)?
     #endif
     private var ready = false
     private var readyWaiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
@@ -188,6 +189,7 @@ public actor RemiConnection {
     private var chatSocketID: UUID?
     private var chatSocketAuthenticated = false
     private var imageChildHello: HelloAckMessage?
+    private var imageBeginOperation: ImageBeginOperation?
     private var relayHelloBuffer = RelayHelloBuffer()
     private var initialDirectHelloPending = false
     private var directOpeningCompleted = false
@@ -276,6 +278,10 @@ public actor RemiConnection {
     func ownedSetImageBeforeSend(_ callback: (@Sendable () async throws -> Void)?) throws {
         guard ownedImageFixture else { throw RelayFailure.state }
         ownedImageBeforeSend = callback
+    }
+    func ownedSetImageAfterSend(_ callback: (@Sendable () async throws -> Void)?) throws {
+        guard ownedImageFixture else { throw RelayFailure.state }
+        ownedImageAfterSend = callback
     }
     func beforeOwnedH2(_ callback: @escaping @Sendable () async throws -> Void) throws {
         guard !shouldRun else { throw RelayFailure.state }; ownedBeforeH2 = callback
@@ -460,10 +466,33 @@ public actor RemiConnection {
     }
 
     enum ImageBeginSendResult: Sendable, Equatable { case notInvoked, handedOff, uncertain }
+    enum ImageBeginProgress: Sendable, Equatable {
+        case waiting
+        case readyForChunk(offset: Int, count: Int)
+        case refused(ImageUploadRefusalCode, remoteCleanupUnconfirmed: Bool)
+        case uncertain
+    }
     private struct ImageBeginAttempt {
         let begin: ImageUploadBegin
         let authority: ImageBeginAuthority
         let ticket: ImageEffectTicket
+    }
+    private struct ImageBeginOperation {
+        let begin: ImageUploadBegin
+        let authority: ImageBeginAuthority
+        var flow: ImageUploadFlow
+    }
+
+    /// The actor owns correlation; a queued Store callback cannot revive an old socket.
+    func imageBeginProgress(authority: ImageBeginAuthority) -> ImageBeginProgress? {
+        guard let operation = imageBeginOperation, operation.authority == authority,
+              imageBeginAuthority(for: operation.begin, machineKey: authority.machineKey) == authority else { return nil }
+        switch operation.flow.status {
+        case .awaitingAcceptance: return .waiting
+        case .awaitingChunkData(let offset, let count): return .readyForChunk(offset: offset, count: count)
+        case .refused(let code, let unconfirmed): return .refused(code, remoteCleanupUnconfirmed: unconfirmed)
+        default: return .uncertain
+        }
     }
 
     /// This uses the same actual socket path as other direct sends. It cannot mint authority,
@@ -477,6 +506,9 @@ public actor RemiConnection {
             try await ownedImageBeforeSend?()
             #endif
             try await deliver(Data(frame.utf8), validateBeforeSend: nil, imageAttempt: attempt)
+            #if DEBUG
+            try await ownedImageAfterSend?()
+            #endif
             return .handedOff
         } catch {
             return ticket.retire() == .noEffect ? .notInvoked : .uncertain
@@ -485,8 +517,12 @@ public actor RemiConnection {
 
     private func enterImageAttempt(_ attempt: ImageBeginAttempt?) throws {
         guard let attempt else { return }
+        guard imageBeginOperation == nil else { throw RelayFailure.state }
         guard let current = imageBeginAuthority(for: attempt.begin, machineKey: attempt.authority.machineKey),
-              current == attempt.authority, attempt.ticket.enter() else { throw RelayFailure.closed }
+              current == attempt.authority else { throw RelayFailure.closed }
+        let flow = try ImageUploadFlow(begin: attempt.begin, now: ProcessInfo.processInfo.systemUptime)
+        guard attempt.ticket.enter() else { throw RelayFailure.closed }
+        imageBeginOperation = ImageBeginOperation(begin: attempt.begin, authority: attempt.authority, flow: flow)
     }
 
     private func deliver(_ data: Data, validateBeforeSend: (@Sendable () throws -> Void)?,
@@ -794,6 +830,15 @@ public actor RemiConnection {
             let message = try decoder.decode(SessionListResponse.self, from: data)
             guard acceptMachineIdentity(descriptor: message.machine, sessions: message.sessions) else { return }
             eventHandler(.sessions(message))
+        case "image_upload_accepted", "image_upload_refused":
+            guard var operation = imageBeginOperation,
+                  imageBeginAuthority(for: operation.begin, machineKey: operation.authority.machineKey) == operation.authority else {
+                eventHandler(.unsupported(type: envelope.type)); return
+            }
+            let message = try ImageUploadMessage.decode(data)
+            _ = operation.flow.receive(message, now: ProcessInfo.processInfo.systemUptime,
+                nextID: { UUID().uuidString.lowercased() }, timestamp: WireTimestamp.string())
+            imageBeginOperation = operation
         case "question":
             eventHandler(.question(try decoder.decode(QuestionMessage.self, from: data)))
         case "question_resolved":
@@ -896,6 +941,7 @@ public actor RemiConnection {
         chatSocketID = nil
         chatSocketAuthenticated = false
         imageChildHello = nil
+        imageBeginOperation = nil
     }
 
     private func closeSocket() {
