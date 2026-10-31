@@ -496,6 +496,38 @@ import Testing
         #expect(frames["c"] == c)
     }
 
+    @Test func reflowPersistsOnlyTheOperatedAndDisplacedCards() throws {
+        let a = RemiBoardFrame(x: 16, y: 16, width: 340, height: 300)
+        let b = RemiBoardFrame(x: 368, y: 16, width: 340, height: 300)
+        let c = RemiBoardFrame(x: 1_500, y: 16, width: 340, height: 300)
+        let previous = ["a": a, "b": b, "c": c]
+        let adjusted = try #require(RemiBoardOrder.reflow(moving: "a", to: a.moved(by: CGSize(width: 200, height: 0)), in: previous))
+        var state = RemiBoardState()
+        let existing = RemiBoardFrame(x: 16, y: 800, width: 340, height: 300)
+        #expect(state.setFrame(existing, for: "hidden"))
+        #expect(state.applyReflow(adjusted, previous: previous, moving: "a"))
+        #expect(state.frame(for: "a") == adjusted["a"])
+        #expect(state.frame(for: "b") == adjusted["b"])
+        #expect(state.frame(for: "c") == nil)
+        let restored = RemiBoardState(storage: state.storageValue)
+        #expect(restored.frame(for: "c") == nil)
+        #expect(restored.frame(for: "hidden") == existing)
+    }
+
+    @Test func manualHeightSelectsMatchingContentDensityAfterRestore() throws {
+        let frame = RemiBoardFrame(x: 16, y: 16, width: 340, height: 260)
+        let large = frame.resized(by: CGSize(width: 0, height: 380))
+        #expect(RemiTileSize.boardDensity(forHeight: frame.height) == .compact)
+        #expect(RemiTileSize.boardDensity(forHeight: large.height) == .large)
+        var state = RemiBoardState()
+        #expect(state.setFrame(large, for: "card"))
+        let restored = RemiBoardState(storage: state.storageValue)
+        let restoredFrame = try #require(restored.frame(for: "card"))
+        #expect(RemiTileSize.boardDensity(forHeight: restoredFrame.height) == .large)
+        let small = large.resized(by: CGSize(width: 0, height: -380))
+        #expect(RemiTileSize.boardDensity(forHeight: small.height) == .compact)
+    }
+
     @Test func movementClampsAtCanvasOriginAndSnapsToTheGridOnRelease() {
         let start = RemiBoardFrame(x: 73, y: 79, width: 420, height: 360)
         let moved = start.constrainedMove(by: CGSize(width: -200, height: 30))
