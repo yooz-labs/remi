@@ -20,8 +20,10 @@ private actor OwnedImageSendGate {
 @MainActor @Suite(.serialized) struct ImageBeginSourceTLSTests {
     private enum Failure: Error { case deadline }
 
-    @Test(arguments: ["fixture.png", "fixture.jpg"], [false, true])
-    func ownedSourceStagesAndExplicitlyInsertsImageWithoutEnter(_ filename: String, _ cancelBeforeSend: Bool) async throws {
+    @Test(arguments: [("fixture.png", "insert"), ("fixture.jpg", "insert"), ("fixture.png", "cancel"),
+                      ("fixture.png", "stale"), ("fixture.png", "disconnect"), ("fixture.png", "timeout")])
+    func ownedSourceStagesAndExplicitlyInsertsImageWithoutEnter(_ scenario: (String, String)) async throws {
+        let (filename, mode) = scenario
         let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let script = tests.appendingPathComponent("Integration/image-staging-source-fixture.ts")
         let repository = tests.deletingLastPathComponent().deletingLastPathComponent()
@@ -104,7 +106,7 @@ private actor OwnedImageSendGate {
                 #expect(observed["completes"] as? Int == 1)
                 #expect(observed["staged"] as? Int == 1)
                 #expect(installation.journal.snapshot.localSnapshotID == nil)
-                if cancelBeforeSend {
+                if mode == "cancel" {
                     let cancelGate = OwnedImageSendGate()
                     try await client.ownedSetImageBeforeSend { try await cancelGate.hold() }
                     let inserting = Task { await transfer.addToDraft() }
@@ -120,6 +122,57 @@ private actor OwnedImageSendGate {
                     #expect(cancelled["insertions"] as? Int == 0)
                     #expect(cancelled["outputBytes"] as? Int == 0)
                     #expect(installation.journal.snapshot.records.first?.exposure == .insertionUncertain(expiry: stagedExpiry))
+                    return
+                }
+                if mode == "stale" {
+                    try input.fileHandleForWriting.write(contentsOf: Data("rotate-binding\n".utf8))
+                    let rotated = try #require(JSONSerialization.jsonObject(with: await Self.readLine(output.fileHandleForReading)) as? [String: Any])
+                    #expect(rotated["rotated"] as? Bool == true)
+                    await transfer.addToDraft()
+                    try await until {
+                        await transfer.refresh()
+                        if case .insertionRefused = transfer.state { return true }
+                        return false
+                    }
+                    #expect(transfer.state == .insertionRefused(.bindingChanged, expiry: stagedExpiry))
+                    await transfer.addToDraft()
+                    let refused = try await stats(input: input, output: output)
+                    #expect(refused["insertions"] as? Int == 1)
+                    #expect(refused["outputBytes"] as? Int == 0)
+                    #expect(installation.journal.snapshot.records.first?.exposure == .insertionRefusedAwaitingOrigin(expiry: stagedExpiry))
+                    return
+                }
+                if mode == "disconnect" {
+                    await client.stop()
+                    await transfer.addToDraft()
+                    #expect(transfer.state == .insertionUncertain(expiry: stagedExpiry))
+                    await transfer.addToDraft()
+                    let disconnected = try await stats(input: input, output: output)
+                    #expect(disconnected["insertions"] as? Int == 0)
+                    #expect(disconnected["outputBytes"] as? Int == 0)
+                    #expect(installation.journal.snapshot.records.first?.exposure == .insertionUncertain(expiry: stagedExpiry))
+                    return
+                }
+                if mode == "timeout" {
+                    try input.fileHandleForWriting.write(contentsOf: Data("drop-insertion-result\n".utf8))
+                    let armed = try #require(JSONSerialization.jsonObject(with: await Self.readLine(output.fileHandleForReading)) as? [String: Any])
+                    #expect(armed["dropArmed"] as? Bool == true)
+                    await transfer.addToDraft()
+                    let timeout = ContinuousClock.now.advanced(by: .seconds(20))
+                    while ContinuousClock.now < timeout {
+                        await transfer.refresh()
+                        if case .insertionUncertain = transfer.state { break }
+                        try await Task.sleep(for: .milliseconds(50))
+                    }
+                    #expect(transfer.state == .insertionUncertain(expiry: stagedExpiry))
+                    await transfer.addToDraft()
+                    let lost = try await stats(input: input, output: output)
+                    #expect(lost["insertions"] as? Int == 1)
+                    #expect(lost["referenceOnly"] as? Bool == true)
+                    #expect(lost["containsNewline"] as? Bool == false)
+                    #expect(lost["droppedInsertionResults"] as? Int == 1)
+                    #expect(installation.journal.snapshot.records.first?.exposure == .insertionUncertain(expiry: stagedExpiry))
+                    #expect(installation.journal.snapshot.localSnapshotID == nil)
                     return
                 }
                 let insertionReturn = OwnedImageSendGate()
