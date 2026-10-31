@@ -48,6 +48,56 @@ import Testing
         }
     }
 
+    @Test func selectedFileIsCopiedWhileItsOpenedDescriptorIsHeld() throws {
+        let bytes = Data(repeating: 0x42, count: 75_000)
+        try withFixture(bytes) { root, input, _, journal, owner in
+            let id = try journal.reserveCopy()
+            let result = try owner.captureSelectedFile(id: id, url: input)
+            let snapshot = root.appendingPathComponent("image-\(id.uuidString.lowercased())")
+            #expect(result.byteCount == bytes.count)
+            #expect(result.digest == Data(SHA256.hash(data: bytes)))
+            #expect(try Data(contentsOf: snapshot) == bytes)
+            #expect(try Data(contentsOf: input) == bytes)
+        }
+    }
+
+    @Test func selectedFileReplacementCannotChangeTheOpenedInput() throws {
+        let original = Data(repeating: 0x31, count: 70_000)
+        let replacement = Data([4, 5, 6])
+        try withFixture(original) { root, input, _, journal, owner in
+            let id = try journal.reserveCopy()
+            let moved = input.deletingLastPathComponent().appendingPathComponent("original-moved")
+            var replaced = false
+            _ = try owner.captureSelectedFile(id: id, url: input) {
+                if !replaced, rename(input.path, moved.path) == 0 {
+                    do { try replacement.write(to: input); replaced = true } catch {}
+                }
+                return false
+            }
+            #expect(replaced)
+            let snapshot = root.appendingPathComponent("image-\(id.uuidString.lowercased())")
+            #expect(try Data(contentsOf: snapshot) == original)
+            #expect(try Data(contentsOf: moved) == original)
+            #expect(try Data(contentsOf: input) == replacement)
+        }
+    }
+
+    @Test func selectedSymlinkAndRemoteURLAreRefusedWithoutReadingTarget() throws {
+        try withFixture(Data([1, 2, 3])) { root, input, _, journal, owner in
+            let id = try journal.reserveCopy()
+            let alias = input.deletingLastPathComponent().appendingPathComponent("alias")
+            #expect(symlink(input.path, alias.path) == 0)
+            #expect(throws: (any Error).self) { try owner.captureSelectedFile(id: id, url: alias) }
+            let remote = try #require(URL(string: "https://example.invalid/image.png"))
+            #expect(throws: (any Error).self) {
+                try owner.captureSelectedFile(id: id, url: remote)
+            }
+            #expect(journal.snapshot.records.first?.snapshotIdentity == nil)
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("image-\(id.uuidString.lowercased())").path))
+            #expect(try Data(contentsOf: input) == Data([1, 2, 3]))
+        }
+    }
+
     @Test func existingSymlinkIsPreservedAndNeverRegistered() throws {
         try withFixture(Data([4, 5, 6])) { root, input, source, journal, owner in
             let id = try journal.reserveCopy()
