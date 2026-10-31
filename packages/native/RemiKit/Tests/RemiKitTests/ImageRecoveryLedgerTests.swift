@@ -99,6 +99,61 @@ import Testing
         #expect(!ledger.hasAggregateUnconfirmedCleanup)
     }
 
+    @Test func confirmedInsertionRequiresExplicitAcknowledgmentBeforeSameImageCanBeSelectedAgain() throws {
+        var ledger = ImageRecoveryLedger()
+        let first = try ledger.reserve(try fingerprint())
+        try ledger.markPartialPossible(first)
+        try ledger.markStagingPossible(first)
+        try ledger.markStaged(first, expiry: "2026-10-31T12:00:00.000Z")
+        try ledger.requestStagedLocalCleanup(first)
+        try ledger.confirmOwnedSnapshotDeleted(first)
+        try ledger.markInsertionPossible(first)
+        try ledger.confirmInsertion(first)
+        #expect(throws: ImageRecoveryLedger.Failure.sameImageAlreadyInserted) {
+            _ = try ledger.reserve(fingerprint())
+        }
+        #expect(throws: ImageRecoveryLedger.Failure.consentRequired) {
+            try ledger.compactConfirmedInsertion(first, confirmed: false)
+        }
+        try ledger.compactConfirmedInsertion(first, confirmed: true)
+        #expect(ledger.hasAggregateUnconfirmedCleanup) // This never claims host deletion.
+        _ = try ledger.reserve(fingerprint())
+    }
+
+    @Test func preEffectRefusalCannotRetryWithoutOriginalSocketRevalidation() throws {
+        var ledger = ImageRecoveryLedger()
+        let id = try ledger.reserve(try fingerprint())
+        try ledger.markPartialPossible(id)
+        try ledger.markStagingPossible(id)
+        try ledger.markStaged(id, expiry: "2026-10-31T12:00:00.000Z")
+        try ledger.requestStagedLocalCleanup(id)
+        try ledger.confirmOwnedSnapshotDeleted(id)
+        try ledger.markInsertionPossible(id)
+        try ledger.recordInsertionRefusal(id)
+        #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try ledger.markInsertionPossible(id) }
+        #expect(throws: ImageRecoveryLedger.Failure.stagedActionOutstanding) {
+            _ = try ledger.reserve(fingerprint(image: Data(repeating: 0x53, count: 32)))
+        }
+        try ledger.compactNoInsertion(id, confirmed: true)
+        #expect(ledger.hasAggregateUnconfirmedCleanup)
+    }
+
+    @Test func lateReceiptCannotEraseAnUncertainFence() throws {
+        var ledger = ImageRecoveryLedger()
+        let id = try ledger.reserve(try fingerprint())
+        try ledger.markPartialPossible(id)
+        try ledger.markStagingPossible(id)
+        try ledger.markStaged(id, expiry: "2026-10-31T12:00:00.000Z")
+        try ledger.requestStagedLocalCleanup(id)
+        try ledger.confirmOwnedSnapshotDeleted(id)
+        try ledger.markInsertionPossible(id)
+        try ledger.markInsertionUncertain(id)
+        #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try ledger.confirmInsertion(id) }
+        #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try ledger.recordInsertionRefusal(id) }
+        #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try ledger.compactConfirmedInsertion(id, confirmed: true) }
+        #expect(throws: ImageRecoveryLedger.Failure.sameImageInsertionUncertain) { _ = try ledger.reserve(fingerprint()) }
+    }
+
     @Test func capacityIsBoundedAndOnlyExplicitSafeCompactionFreesASlot() throws {
         var ledger = ImageRecoveryLedger()
         var ids: [UUID] = []
