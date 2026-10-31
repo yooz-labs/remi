@@ -52,6 +52,7 @@ final class MachineRecoveryCoordinator {
     private var retirement: Task<Void, Never>?
     #if DEBUG
     var ownedBeforeAdmission: (@MainActor () async -> Void)?
+    var ownedBeforeAdoptedReconnectState: (@MainActor () async -> Void)?
     private(set) var ownedStarts: [(String, MachineConnectionLayer, Bool)] = []
     private(set) var ownedStartTimes: [ContinuousClock.Instant] = []
     private(set) var ownedAdmittedConnections: [UUID: ObjectIdentifier] = [:]
@@ -247,6 +248,7 @@ final class MachineRecoveryCoordinator {
                 completion: { [weak self] outcome in self?.completed(lease: lease, next: next, run: run, outcome: outcome) })
             #if DEBUG
             probe.ownedBeforeAdmission = ownedBeforeAdmission
+            probe.ownedBeforeAdoptedReconnectState = ownedBeforeAdoptedReconnectState
             ownedStarts.append((next.target.id, next.endpoint.connectionLayer, next.discovered))
             ownedStartTimes.append(.now)
             if ownedStarts.count > 128 { ownedStarts.removeFirst(ownedStarts.count - 128) }
