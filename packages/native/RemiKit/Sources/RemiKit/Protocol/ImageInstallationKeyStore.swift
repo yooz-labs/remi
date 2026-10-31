@@ -90,6 +90,24 @@ final class ImageInstallationKeyStore {
         return value
     }
 
+    fileprivate func holds(_ candidate: ImageDirectoryLease) -> Bool { lease === candidate }
+
+    /// Only the composed owner in this file can promote after validating the marker and journal.
+    fileprivate func promotePending(_ expected: Record) throws -> Record {
+        guard expected.phase == .pending, let current = try load(), current == expected else {
+            throw Failure.malformed
+        }
+        let ready = Record(phase: .ready, installation: expected.installation, secret: expected.secret)
+        var request = query
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        request[kSecUseAuthenticationContext as String] = context
+        let status = operations.update(request as CFDictionary, [kSecValueData as String: Self.encode(ready)] as CFDictionary)
+        guard status == errSecSuccess else { throw Failure.unavailable(status) }
+        guard try load() == ready else { throw Failure.malformed }
+        return ready
+    }
+
     private static func encode(_ record: Record) -> Data {
         let fields: [(String, WireJSON)] = [
             ("version", .number(1)), ("phase", .string(record.phase == .pending ? "pending" : "ready")),
@@ -140,6 +158,175 @@ final class ImageInstallationKeyStore {
             }
             guard WireGuards.same(name, ".") || WireGuards.same(name, "..") ||
                     WireGuards.same(name, ".image-lock") else { throw Failure.notFresh }
+        }
+    }
+}
+
+/// Composes the installation witness, private marker and authenticated journal. This is not
+/// a transfer controller: it grants no socket authority and does not choose or validate media.
+/// The caller must supply the OS-provided private parent and serialize all access to the lease.
+final class ImageInstallationOwner {
+    enum Failure: Error, Equatable { case protectionUnavailable, recoveryRequired }
+
+    let journal: ImageRecoveryJournal
+    let snapshots: ImageSnapshotOwner
+
+    private init(journal: ImageRecoveryJournal, snapshots: ImageSnapshotOwner) {
+        self.journal = journal
+        self.snapshots = snapshots
+    }
+
+    static func open(lease: ImageDirectoryLease, keys: ImageInstallationKeyStore) throws -> ImageInstallationOwner {
+        #if os(iOS)
+        throw Failure.protectionUnavailable
+        #else
+        guard keys.holds(lease) else { throw Failure.recoveryRequired }
+        return try lease.withVerifiedDirectory { directory in
+            var key = try keys.load() ?? keys.beginPending()
+            if key.phase == .pending {
+                try inventory(directory: directory, expected: nil, pending: true)
+                if try exists(directory, name: markerName) {
+                    try verifyMarker(directory, installation: key.installation)
+                } else {
+                    try createMarker(directory, installation: key.installation)
+                }
+            } else {
+                try verifyMarker(directory, installation: key.installation)
+            }
+            let disk = ImageJournalDisk(lease: lease, secret: key.secret)
+            if try !exists(directory, name: journalName) {
+                guard key.phase == .pending else { throw Failure.recoveryRequired }
+                try disk.initializeIfProvenFresh(ImageRecoveryLedger().encodeJournal(secret: key.secret))
+            }
+            let bytes = try disk.load()
+            let restored = try ImageRecoveryLedger.restoreJournal(bytes, secret: key.secret)
+            if key.phase == .pending {
+                guard restored.ledger.records.isEmpty, restored.ledger.localSnapshotID == nil,
+                      !restored.ledger.hasAggregateUnconfirmedCleanup, !restored.needsRewrite else {
+                    throw Failure.recoveryRequired
+                }
+                try inventory(directory: directory, expected: nil, pending: true)
+                try verifyMarker(directory, installation: key.installation)
+                key = try keys.promotePending(key)
+            } else {
+                let expected = restored.ledger.localSnapshotID.flatMap { id in
+                    restored.ledger.records.first { $0.id == id }
+                }
+                try inventory(directory: directory, expected: expected, pending: false)
+            }
+            guard key.phase == .ready else { throw Failure.recoveryRequired }
+            let journal = try ImageRecoveryJournal(disk: disk, secret: key.secret)
+            return ImageInstallationOwner(journal: journal, snapshots: ImageSnapshotOwner(lease: lease, journal: journal))
+        }
+        #endif
+    }
+
+    private static let markerName = ".image-installation"
+    private static let journalName = ".image-journal"
+
+    private static func marker(_ installation: String) -> Data {
+        Data("remi-image-installation-v1:\(installation)\n".utf8)
+    }
+
+    private static func exists(_ directory: Int32, name: String) throws -> Bool {
+        var entry = stat()
+        if fstatat(directory, name, &entry, AT_SYMLINK_NOFOLLOW) == 0 { return true }
+        guard errno == ENOENT else { throw Failure.recoveryRequired }
+        return false
+    }
+
+    private static func createMarker(_ directory: Int32, installation: String) throws {
+        let fd = openat(directory, markerName, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else { throw Failure.recoveryRequired }
+        defer { close(fd) }
+        let bytes = marker(installation)
+        try bytes.withUnsafeBytes { buffer in
+            guard let base = buffer.baseAddress else { throw Failure.recoveryRequired }
+            var offset = 0
+            while offset < buffer.count {
+                let written = Darwin.write(fd, base.advanced(by: offset), buffer.count - offset)
+                if written < 0, errno == EINTR { continue }
+                guard written > 0 else { throw Failure.recoveryRequired }
+                offset += written
+            }
+        }
+        var info = stat()
+        guard fsync(fd) == 0, fstat(fd, &info) == 0, validFile(info), info.st_size == bytes.count,
+              sameEntry(directory, name: markerName, info: info), fsync(directory) == 0 else {
+            throw Failure.recoveryRequired
+        }
+    }
+
+    private static func verifyMarker(_ directory: Int32, installation: String) throws {
+        let fd = openat(directory, markerName, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard fd >= 0 else { throw Failure.recoveryRequired }
+        defer { close(fd) }
+        let expected = marker(installation)
+        var info = stat()
+        guard fstat(fd, &info) == 0, validFile(info), info.st_size == expected.count,
+              sameEntry(directory, name: markerName, info: info) else { throw Failure.recoveryRequired }
+        var result = [UInt8](repeating: 0, count: expected.count)
+        var offset = 0
+        while offset < result.count {
+            let count = result.withUnsafeMutableBytes { buffer in
+                guard let base = buffer.baseAddress else { return -1 }
+                return Darwin.read(fd, base.advanced(by: offset), buffer.count - offset)
+            }
+            if count < 0, errno == EINTR { continue }
+            guard count > 0 else { throw Failure.recoveryRequired }
+            offset += count
+        }
+        guard Data(result) == expected, sameEntry(directory, name: markerName, info: info) else {
+            throw Failure.recoveryRequired
+        }
+    }
+
+    private static func validFile(_ value: stat) -> Bool {
+        (value.st_mode & S_IFMT) == S_IFREG && value.st_uid == geteuid() && value.st_nlink == 1 &&
+            (value.st_mode & 0o7777) == 0o600
+    }
+
+    private static func sameEntry(_ directory: Int32, name: String, info: stat) -> Bool {
+        var entry = stat()
+        guard fstatat(directory, name, &entry, AT_SYMLINK_NOFOLLOW) == 0, validFile(entry) else { return false }
+        return entry.st_dev == info.st_dev && entry.st_ino == info.st_ino && entry.st_size == info.st_size
+    }
+
+    /// Preserve every unknown entry. A registered snapshot is adopted only by exact inode;
+    /// an absent expected file is recoverable only if deletion intent was already durable.
+    private static func inventory(directory: Int32, expected: ImageRecoveryLedger.Record?, pending: Bool) throws {
+        let fd = openat(directory, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        guard fd >= 0 else { throw Failure.recoveryRequired }
+        guard let stream = fdopendir(fd) else { close(fd); throw Failure.recoveryRequired }
+        defer { closedir(stream) }
+        let snapshotName = expected.map { "image-\($0.id.uuidString.lowercased())" }
+        var seenSnapshot = false
+        var scanned = 0
+        while true {
+            errno = 0
+            guard let entry = readdir(stream) else {
+                if errno != 0 { throw Failure.recoveryRequired }
+                break
+            }
+            scanned += 1
+            guard scanned <= 256 else { throw Failure.recoveryRequired }
+            let count = Int(entry.pointee.d_namlen)
+            guard count <= 1023 else { throw Failure.recoveryRequired }
+            let name = withUnsafePointer(to: &entry.pointee.d_name) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: count + 1) { String(cString: $0) }
+            }
+            if [".", "..", ".image-lock", markerName, journalName].contains(where: { WireGuards.same(name, $0) }) { continue }
+            guard !pending, let expected, let snapshotName, WireGuards.same(name, snapshotName),
+                  let identity = expected.snapshotIdentity else { throw Failure.recoveryRequired }
+            var info = stat()
+            guard fstatat(directory, name, &info, AT_SYMLINK_NOFOLLOW) == 0, validFile(info),
+                  UInt64(UInt32(bitPattern: info.st_dev)) == identity.device, UInt64(info.st_ino) == identity.inode else {
+                throw Failure.recoveryRequired
+            }
+            seenSnapshot = true
+        }
+        if let expected, expected.snapshotIdentity != nil, !seenSnapshot, !expected.cleanupRequested {
+            throw Failure.recoveryRequired
         }
     }
 }
