@@ -295,6 +295,19 @@ import Testing
         }
     }
 
+    @Test func restartCannotSendAnIncompletePreparedSnapshot() throws {
+        var ledger = ImageRecoveryLedger()
+        let id = try ledger.reserve(try fingerprint())
+        let restored = try ImageRecoveryLedger.restoreJournal(ledger.encodeJournal(secret: secret), secret: secret)
+        var recovered = restored.ledger
+        #expect(restored.needsRewrite)
+        #expect(throws: ImageRecoveryLedger.Failure.invalidTransition) { try recovered.markPartialPossible(id) }
+        try recovered.requestLocalAbandonment(id, confirmed: true)
+        try recovered.confirmOwnedSnapshotDeleted(id)
+        #expect(recovered.records.isEmpty)
+        #expect(!recovered.hasAggregateUnconfirmedCleanup)
+    }
+
     @Test func journalRejectsTamperingWrongKeyAndOversizedInput() throws {
         var ledger = ImageRecoveryLedger()
         let id = try ledger.reserve(try fingerprint())
