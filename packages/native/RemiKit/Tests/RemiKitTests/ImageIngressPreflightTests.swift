@@ -63,4 +63,24 @@ import Testing
             #expect(throws: (any Error).self) { try ImageIngressPreflight.classify(bytes) }
         }
     }
+
+    @Test func genericOutgoingProbeRejectsOnlyImageFamilies() throws {
+        let image = Data(#"{"nested":{"type":"chat"},"ty\u0070e":"image_\u0075pload_begin"}"#.utf8)
+        let insertion = Data(#"{"type":"image_insert_request","content":"safe"}"#.utf8)
+        let unrelated = Data(#"{"nested":{"type":"image_upload_begin"},"type":"user_input","content":"quoted } ] ,"}"#.utf8)
+        let missing = Data(#"{"content":"no type"}"#.utf8)
+        let scalar = Data(#"["image_upload_begin"]"#.utf8)
+        #expect(try ImageIngressPreflight.outgoingIsImage(image))
+        #expect(try ImageIngressPreflight.outgoingIsImage(insertion))
+        for bytes in [unrelated, missing, scalar] {
+            let isImage = try ImageIngressPreflight.outgoingIsImage(bytes)
+            #expect(!isImage)
+        }
+        let duplicate = Data(#"{"type":"chat","type":"image_upload_begin"}"#.utf8)
+        #expect(throws: (any Error).self) { try ImageIngressPreflight.outgoingIsImage(duplicate) }
+        let nested = String(repeating: "[", count: 600) + "0" + String(repeating: "]", count: 600)
+        let deep = Data("{\"content\":\(nested),\"type\":\"user_input\"}".utf8)
+        let deepIsImage = try ImageIngressPreflight.outgoingIsImage(deep)
+        #expect(!deepIsImage)
+    }
 }
