@@ -3,6 +3,16 @@ import Testing
 import UserNotifications
 @testable import RemiKit
 
+/// Test-only convenience; production inventory is projected inside the OS callback.
+@MainActor extension LocalNoticeInventoryRecord {
+    init(request: UNNotificationRequest, deliveredAt: Date?) {
+        if let projected = try? LocalNoticeInventoryProjection.make([request], dates: [deliveredAt], budget: LocalNoticeInventoryBudget()),
+           let first = projected.first { self = first; return }
+        self.init(identifier: request.identifier, title: "", subtitle: "", body: "", deliveredAt: deliveredAt,
+                  protected: true, marker: nil, metadataBytes: LocalNoticeReconciler.maximumMetadataBytes + 1)
+    }
+}
+
 @Suite(.serialized) @MainActor struct LocalNoticeRecoveryTests {
     private func request(_ marker: LocalNoticeMarker, title: String = "Synthetic", secure: Bool = false) throws -> UNNotificationRequest {
         let content = UNMutableNotificationContent()

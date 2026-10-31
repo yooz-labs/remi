@@ -4,6 +4,9 @@ import UserNotifications
 @testable import RemiKit
 
 @Suite(.serialized) @MainActor struct LocalNoticeReconcilerTests {
+    private func projected(_ requests: [UNNotificationRequest]) -> [LocalNoticeInventoryRecord] {
+        requests.map { .init(request: $0, deliveredAt: nil) }
+    }
     private func request(_ marker: LocalNoticeMarker, extraRemote: Bool = false, secureCategory: Bool = false) throws -> UNNotificationRequest {
         let content = UNMutableNotificationContent()
         if secureCategory { content.categoryIdentifier = "remi.secure.v2.synthetic" }
@@ -48,9 +51,9 @@ import UserNotifications
                                                content: UNMutableNotificationContent(), trigger: nil)
         var removals: [[String]] = []
         let reconciler = LocalNoticeReconciler(ledger: ledger, keys: keys) { removals.append($0) }
-        try reconciler.reconcile([request(oldMarker), request(retiredMarker), request(collidedMarker),
+        try reconciler.reconcile(projected([request(oldMarker), request(retiredMarker), request(collidedMarker),
                                   request(collidedMarker, extraRemote: true), request(secureMarker),
-                                  request(secureMarker, secureCategory: true), request(unrelatedMarker), otherLocal])
+                                  request(secureMarker, secureCategory: true), request(unrelatedMarker), otherLocal]))
         #expect(removals == [[retiredMarker.systemIdentifier]])
         #expect(try ledger.classify(oldMarker, keys: keys, systemIdentifier: oldMarker.systemIdentifier) == .historicalActive)
         #expect(try ledger.record(active).effect == .crashUncertain)
@@ -66,7 +69,7 @@ import UserNotifications
         let reconciler = LocalNoticeReconciler(ledger: ledger, keys: keys) { removals.append($0) }
         let content = UNMutableNotificationContent(); content.body = String(repeating: "x", count: 2 * 1_024 * 1_024 + 1)
         let request = UNNotificationRequest(identifier: "synthetic", content: content, trigger: nil)
-        #expect(throws: LocalNoticeError.capacity) { try reconciler.reconcile([request]) }
+        #expect(throws: LocalNoticeError.capacity) { try reconciler.reconcile(projected([request])) }
         #expect(removals.isEmpty)
     }
 
@@ -86,7 +89,7 @@ import UserNotifications
                                      sequence: retired.sequence + 1, question: question)
         var removals: [[String]] = []
         let reconciler = LocalNoticeReconciler(ledger: ledger, keys: keys) { removals.append($0) }
-        try reconciler.reconcile([request(normal), request(future)])
+        try reconciler.reconcile(projected([request(normal), request(future)]))
         #expect(removals.isEmpty)
         #expect(try ledger.classify(normal, keys: keys, systemIdentifier: normal.systemIdentifier) == .quarantined)
     }

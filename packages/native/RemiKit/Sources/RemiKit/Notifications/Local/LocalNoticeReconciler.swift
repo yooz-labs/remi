@@ -1,12 +1,10 @@
 import Foundation
-import RemiPush
-import UserNotifications
 
 /// Scans only after the OS returns both inventories. An absent in-memory ticket is never removal
 /// authority; a historical active marker remains visible through offline/partial reconnects.
 @MainActor final class LocalNoticeReconciler {
-    static let maximumRequests = 4_096
-    static let maximumMetadataBytes = 2 * 1_024 * 1_024
+    static let maximumRequests = LocalNoticeInventoryLimits.maximumRequests
+    static let maximumMetadataBytes = LocalNoticeInventoryLimits.maximumMetadataBytes
     private let ledger: LocalNoticeLedger
     private let keys: LocalNoticeKeys
     private let remove: ([String]) -> Void
@@ -16,19 +14,15 @@ import UserNotifications
     }
 
     /// If the scan is too large, malformed, or storage fails, no removal is issued.
-    func reconcile(_ requests: [UNNotificationRequest]) throws {
-        var protected = try Self.inspectInventory(requests)
+    func reconcile(_ entries: [LocalNoticeInventoryRecord]) throws {
+        var protected = try Self.inspectInventory(entries)
         var candidates: [(LocalNoticeMarker, String)] = []
-        for request in requests {
-            // This path submits immediate local requests only. Remote or other triggered
-            // requests, including secure categories, are never local cleanup authority.
-            guard !protected.contains(request.identifier), request.identifier.hasPrefix("remi.local.v1.") else { continue }
-            guard request.trigger == nil, !RemiPushStore.isSecureNotification(content: request.content),
-                  let marker = try? LocalNoticeMarker.parse(userInfo: request.content.userInfo)
-            else { protected.insert(request.identifier); continue }
-            switch try ledger.classify(marker, keys: keys, systemIdentifier: request.identifier) {
-            case .retired, .invalidated: candidates.append((marker, request.identifier))
-            case .currentActive, .historicalActive, .unknown, .quarantined: protected.insert(request.identifier)
+        for entry in entries {
+            guard !protected.contains(entry.identifier), entry.identifier.hasPrefix("remi.local.v1.") else { continue }
+            guard !entry.protected, let marker = entry.marker else { protected.insert(entry.identifier); continue }
+            switch try ledger.classify(marker, keys: keys, systemIdentifier: entry.identifier) {
+            case .retired, .invalidated: candidates.append((marker, entry.identifier))
+            case .currentActive, .historicalActive, .unknown, .quarantined: protected.insert(entry.identifier)
             }
         }
         // A later marker in the same scan may have quarantined its owner. Check every
@@ -43,48 +37,15 @@ import UserNotifications
         if !removable.isEmpty { remove(removable.sorted()) }
     }
 
-    /// Bounded scan shared by automatic cleanup and explicitly selected recovery.
-    static func inspectInventory(_ requests: [UNNotificationRequest]) throws -> Set<String> {
-        guard requests.count <= Self.maximumRequests else { throw LocalNoticeError.capacity }
-        var remaining = Self.maximumMetadataBytes
-        for request in requests {
-            try Self.consume(request.identifier, remaining: &remaining)
-            try Self.consume(request.content.title, remaining: &remaining)
-            try Self.consume(request.content.subtitle, remaining: &remaining)
-            try Self.consume(request.content.body, remaining: &remaining)
-            try Self.consume(request.content.categoryIdentifier, remaining: &remaining)
-            try Self.consume(request.content.threadIdentifier, remaining: &remaining)
-            try Self.consume(request.content.userInfo, remaining: &remaining)
+    /// The OS callback already charged all raw metadata; recheck the immutable projection's
+    /// aggregate before either automatic cleanup or explicitly selected recovery.
+    static func inspectInventory(_ entries: [LocalNoticeInventoryRecord]) throws -> Set<String> {
+        guard entries.count <= maximumRequests else { throw LocalNoticeError.capacity }
+        var remaining = maximumMetadataBytes
+        for entry in entries {
+            guard entry.metadataBytes >= 0, entry.metadataBytes <= remaining else { throw LocalNoticeError.capacity }
+            remaining -= entry.metadataBytes
         }
-        // Removal is identifier-based, so a same-ID remote or non-immediate request protects
-        // that ID even if a separately observed local request otherwise qualifies.
-        return Set(requests.filter {
-            $0.trigger != nil || RemiPushStore.isSecureNotification(content: $0.content)
-        }.map(\.identifier))
-    }
-
-    /// Walk only bounded property-list metadata, without serializing an unbounded OS array.
-    private static func consume(_ root: Any, remaining: inout Int) throws {
-        var stack: [Any] = [root], nodes = 0
-        while let value = stack.popLast() {
-            nodes += 1
-            guard nodes <= 16_384 else { throw LocalNoticeError.capacity }
-            let size: Int
-            switch value {
-            case let value as String: size = value.utf8.count
-            case let value as Data: size = value.count
-            case is NSNumber, is Date, is NSNull: size = 16
-            case let value as [Any]:
-                guard value.count <= 16_384 - nodes else { throw LocalNoticeError.capacity }
-                stack.append(contentsOf: value); size = 16
-            case let value as [AnyHashable: Any]:
-                guard value.count <= (16_384 - nodes) / 2 else { throw LocalNoticeError.capacity }
-                for (key, item) in value { stack.append(key.base); stack.append(item) }
-                size = 16
-            default: throw LocalNoticeError.invalid
-            }
-            guard size <= remaining else { throw LocalNoticeError.capacity }
-            remaining -= size
-        }
+        return Set(entries.filter(\.protected).map(\.identifier))
     }
 }
