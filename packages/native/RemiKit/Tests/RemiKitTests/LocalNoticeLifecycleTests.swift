@@ -7,7 +7,13 @@ import UserNotifications
 @MainActor private final class OwnedLocalNoticeOS {
     var allowed = true
     var holdNextAdd = false
+    var holdNextAuthorization = false
+    var holdNextInventory = false
     var held: CheckedContinuation<Void, Never>?
+    var heldAuthorization: CheckedContinuation<Void, Never>?
+    var heldInventory: CheckedContinuation<Void, Never>?
+    var authorizationFinished = false
+    var inventoryFinished = false
     var requests: [String: UNNotificationRequest] = [:]
     var begun: [String] = []
     var removals: [[String]] = []
@@ -16,7 +22,21 @@ import UserNotifications
     var identifiersAvailable = true
     var failNextAdd = false
     var boundary: LocalNoticeBoundary {
-        .init(authorized: { [self] in allowed }, identifierAvailable: { [self] _ in identifiersAvailable }, add: { [self] request in
+        .init(authorized: { [self] in
+            if holdNextAuthorization {
+                holdNextAuthorization = false
+                await withCheckedContinuation { heldAuthorization = $0 }
+            }
+            authorizationFinished = true
+            return allowed
+        }, identifierAvailable: { [self] _ in
+            if holdNextInventory {
+                holdNextInventory = false
+                await withCheckedContinuation { heldInventory = $0 }
+            }
+            inventoryFinished = true
+            return identifiersAvailable
+        }, add: { [self] request in
             begun.append(request.identifier)
             if holdNextAdd {
                 holdNextAdd = false
@@ -31,6 +51,8 @@ import UserNotifications
         })
     }
     func finishHeldAdd() { held?.resume(); held = nil }
+    func finishHeldAuthorization() { heldAuthorization?.resume(); heldAuthorization = nil }
+    func finishHeldInventory() { heldInventory?.resume(); heldInventory = nil }
     func finishRemovals() {
         for ids in delayedRemovals { for id in ids { requests[id] = nil } }
         delayedRemovals.removeAll()
@@ -107,6 +129,39 @@ private enum NoticeTestTimeout: Error { case noEvent }
         try await until { os.removals.filter { $0 == [oldID] }.count >= 2 }
         #expect(os.requests[oldID] == nil)
         #expect(try ledger.counts().tickets == 0)
+    }
+
+    @Test func disablingBeforeDispatchAtEachSuspensionNeverAdds() async throws {
+        for holdAuthorization in [true, false] {
+            let dir = try directory(), keys = try LocalNoticeKeys(root: Data(repeating: 34, count: 32))
+            let ledger = try LocalNoticeLedger(directory: dir), os = OwnedLocalNoticeOS()
+            let lifecycle = LocalNoticeLifecycle(ledger: ledger, keys: keys, boundary: os.boundary)
+            os.holdNextAuthorization = holdAuthorization; os.holdNextInventory = !holdAuthorization
+            lifecycle.schedule(intent(owner: UUID()))
+            try await until { holdAuthorization ? os.heldAuthorization != nil : os.heldInventory != nil }
+            lifecycle.invalidateEligibility()
+            if holdAuthorization { os.finishHeldAuthorization() } else { os.finishHeldInventory() }
+            try await until {
+                (holdAuthorization ? os.authorizationFinished : os.inventoryFinished) && (try? ledger.counts().tickets) == 0
+            }
+            #expect(os.begun.isEmpty); #expect(os.removals.isEmpty)
+            ledger.close(); try? FileManager.default.removeItem(at: dir)
+        }
+    }
+
+    @Test func observedSystemDenialDuringAddClearsOnlyOldRequest() async throws {
+        let dir = try directory(), keys = try LocalNoticeKeys(root: Data(repeating: 35, count: 32))
+        let ledger = try LocalNoticeLedger(directory: dir), os = OwnedLocalNoticeOS()
+        defer { ledger.close(); try? FileManager.default.removeItem(at: dir) }
+        let lifecycle = LocalNoticeLifecycle(ledger: ledger, keys: keys, boundary: os.boundary)
+        os.holdNextAdd = true; lifecycle.schedule(intent(owner: UUID()))
+        try await until { os.held != nil }
+        let oldID = try #require(os.begun.first)
+        os.allowed = false; os.finishHeldAdd()
+        try await until { (try? ledger.counts().tickets) == 0 }
+        #expect(os.requests[oldID] == nil)
+        #expect(os.removals.allSatisfy { $0 == [oldID] })
+        #expect(!os.removals.isEmpty)
     }
 
     @Test func stalledAddWarnsWithoutPretendingItSettled() async throws {
