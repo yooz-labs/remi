@@ -23,7 +23,7 @@ enum ImageSnapshotCopy {
         var output = stat()
         guard fstat(source, &input) == 0, fstat(destination, &output) == 0,
               (input.st_mode & S_IFMT) == S_IFREG, (output.st_mode & S_IFMT) == S_IFREG,
-              output.st_uid == geteuid(), output.st_nlink == 1, (output.st_mode & 0o777) == 0o600,
+              output.st_uid == geteuid(), output.st_nlink == 1, (output.st_mode & 0o7777) == 0o600,
               output.st_size == 0, input.st_size >= 0,
               !(input.st_dev == output.st_dev && input.st_ino == output.st_ino),
               lseek(source, 0, SEEK_CUR) == 0, lseek(destination, 0, SEEK_CUR) == 0 else {
@@ -60,7 +60,7 @@ enum ImageSnapshotCopy {
         guard !cancelled() else { throw Failure.cancelled }
         guard fsync(destination) == 0, fstat(destination, &output) == 0,
               (output.st_mode & S_IFMT) == S_IFREG, output.st_uid == geteuid(), output.st_nlink == 1,
-              (output.st_mode & 0o777) == 0o600, output.st_size == total else { throw Failure.io }
+              (output.st_mode & 0o7777) == 0o600, output.st_size == total else { throw Failure.io }
         return Result(byteCount: total, digest: Data(hash.finalize()))
     }
 }
