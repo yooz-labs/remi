@@ -107,6 +107,59 @@ public struct MachineConfigurationStore: Sendable {
         UserDefaults.standard.set(data, forKey: key)
     }
 
+    /// A local-forget plan is memory-only and must be prepared before the profile is removed.
+    /// It does not associate a historical notification owner with a saved profile.
+    @MainActor func prepareLocalForgetProfiles(_ profiles: [MachineRouteProfile]) throws -> LocalNoticeProfileWritePlan {
+        guard let domain = Bundle.main.bundleIdentifier, !domain.isEmpty else { throw LocalNoticeProfilePersistenceError.unavailable }
+        return try prepareLocalForgetProfiles(profiles, defaults: .standard, domainName: domain)
+    }
+
+    @MainActor func prepareLocalForgetProfiles(_ profiles: [MachineRouteProfile], defaults: UserDefaults,
+                                              domainName: String,
+                                              encode: ([MachineRouteProfile]) throws -> Data = { try JSONEncoder().encode($0) }) throws -> LocalNoticeProfileWritePlan {
+        let existing = defaults.persistentDomain(forName: domainName)?[key]
+        let original: Data?
+        if let existing {
+            guard let data = existing as? Data, !data.isEmpty else { throw LocalNoticeProfilePersistenceError.corruptExisting }
+            let records = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]]
+            if records?.contains(where: { $0["routes"] != nil || $0["connectionPreference"] != nil || $0["machinePublicKey"] != nil }) == true {
+                guard let decoded = try? JSONDecoder().decode([MachineRouteProfile].self, from: data) else { throw LocalNoticeProfilePersistenceError.corruptExisting }
+                do { for profile in decoded { _ = try profile.verifiedSavedIdentity() } }
+                catch { throw LocalNoticeProfilePersistenceError.corruptExisting }
+            } else if (try? JSONDecoder().decode([MachineEndpoint].self, from: data)) == nil {
+                throw LocalNoticeProfilePersistenceError.corruptExisting
+            }
+            original = data
+        } else { original = nil }
+        let intendedProfiles = profiles.filter { !$0.routes.isEmpty }
+        let intended: Data
+        do { intended = try encode(intendedProfiles) } catch { throw LocalNoticeProfilePersistenceError.encodingFailed }
+        guard (try? JSONDecoder().decode([MachineRouteProfile].self, from: intended)) == intendedProfiles else {
+            throw LocalNoticeProfilePersistenceError.encodingFailed
+        }
+        return LocalNoticeProfileWritePlan(key: key, domainName: domainName, original: original, intended: intended)
+    }
+
+    @MainActor func commitLocalForgetProfiles(_ plan: LocalNoticeProfileWritePlan) throws {
+        try commitLocalForgetProfiles(plan, defaults: .standard, flush: { $0.synchronize() })
+    }
+
+    /// The pending journal intent must remain until this succeeds. MainActor serialization
+    /// covers current iPhone writers; UserDefaults does not provide cross-process CAS, fsync
+    /// or an atomic transaction with SQLite.
+    @MainActor func commitLocalForgetProfiles(_ plan: LocalNoticeProfileWritePlan, defaults: UserDefaults,
+                                             flush: (UserDefaults) -> Bool) throws {
+        guard plan.key == key else { throw LocalNoticeProfilePersistenceError.changed }
+        let current = defaults.persistentDomain(forName: plan.domainName)?[key]
+        guard current == nil || current is Data else { throw LocalNoticeProfilePersistenceError.changed }
+        let bytes = current as? Data
+        guard bytes == plan.original || bytes == plan.intended else { throw LocalNoticeProfilePersistenceError.changed }
+        defaults.set(plan.intended, forKey: key)
+        guard flush(defaults) else { throw LocalNoticeProfilePersistenceError.unavailable }
+        guard let persisted = defaults.persistentDomain(forName: plan.domainName)?[key] as? Data,
+              persisted == plan.intended else { throw LocalNoticeProfilePersistenceError.readbackMismatch }
+    }
+
     public func loadDisplayNames() -> [String: String] {
         UserDefaults.standard.dictionary(forKey: displayNamesKey) as? [String: String] ?? [:]
     }
@@ -116,4 +169,16 @@ public struct MachineConfigurationStore: Sendable {
     }
 
     private var displayNamesKey: String { "\(key).display-names" }
+}
+
+/// Contains local profile bytes only in memory; never persist or log this retry plan.
+struct LocalNoticeProfileWritePlan {
+    fileprivate let key: String
+    fileprivate let domainName: String
+    fileprivate let original: Data?
+    fileprivate let intended: Data
+}
+
+enum LocalNoticeProfilePersistenceError: Error, Equatable {
+    case corruptExisting, encodingFailed, unavailable, readbackMismatch, changed
 }
