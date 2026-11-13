@@ -784,6 +784,12 @@ Those complete blobs differ solely in the cache comment: "once per test file"
 became "once per loaded harness module". The original pin tables remain intact;
 other comment, executable, path or mode changes still restore all gates.
 
+The relay workflow runner pin `9fa98da6` likewise also accepts exactly two reviewed
+`relay-r7.yml` blobs at that path and regular `100644` mode: `7d7cc4af` (the
+#1623 Worker listener setup) and `915d257e`, which differs from it only in the
+relay job's `BUN_VERSION` moving from 1.3.11 to 1.4.2 (#1273). Any other runner
+content, executable, path or mode change still restores all gates.
+
 ## Complete Test execution experiment (#1206)
 
 The proposed Test runner discovers the complete filesystem test population using

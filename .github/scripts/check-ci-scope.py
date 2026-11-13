@@ -4834,7 +4834,7 @@ with tempfile.TemporaryDirectory(prefix="remi-ci-scope-") as owned:
         current_diagnostic = classify(source_head, soak_tree(source_head, current_diagnostic_updates))
         assert selected(current_diagnostic) == gates and current_diagnostic["relay_soak"], current_diagnostic
         current_diagnostic_controls = 1
-        # Focused parser controls stay separately reported; the established 2,381-control
+        # Focused parser controls stay separately reported; the established 2,383-control
         # population and ordering above remain unchanged.
         focused_status_controls = 0
         status_modified = "docs/owned-status space.md"

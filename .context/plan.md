@@ -740,8 +740,10 @@ and isolated signed-client hub authorization/revocation/stop controls at frozen
 The corrected local Linux run retained all 9,838 tests but failed three mDNS
 checks; its network-routing explanation remains a hypothesis, not a pass.
 
-The source PR moves all six executing pins and the strict relay producer runtime
-contract together. Preserve all 2,381 classifier controls and nine focused status
+The source PR moves the six executing CI and release pins and the strict relay producer runtime
+contract together.
+`native-app.yml` stays on Bun 1.3.11 for three native fixtures that refuse any other runtime; #1273 stays open for it.
+Preserve all 2,383 classifier controls and nine focused status
 controls; report new old-runtime/no-op-mutation controls separately. Remove only
 old-runtime test allowances, retaining production close/drain/grace behavior and
 historical receipts. Review before publication avoids unnecessary repeated soak

@@ -52,7 +52,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         if: needs.scope.result == 'success' && needs.scope.outputs.macos != 'false'
         with:
-          # Pinned: bun 1.3.12 --compile ships silent-exit binaries.
+          # Pinned with ci.yml and release.yml (1.4.2, #1273); 1.3.12 --compile shipped silent-exit binaries.
           bun-version: 1.4.2
 
       - name: Install dependencies

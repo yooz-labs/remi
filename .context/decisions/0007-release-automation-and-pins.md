@@ -33,8 +33,10 @@ main; watch the post-merge main run and `gh run rerun --failed`.
 
 ## Bun 1.4.2 adoption gate (#1273)
 
-The migration moves all executing workflow pins, the relay workflow contract and
-the strict soak-runtime identity together. Old-runtime producer evidence is not
+The migration moves the six executing CI and release workflow pins, the relay workflow contract and
+the strict soak-runtime identity together.
+`native-app.yml` stays on Bun 1.3.11 because three native fixtures (`local-discovery-fixture.ts`, `pairing-source-fixture.ts`, `recovery-probe-peer.ts`) refuse any other runtime, and #1273 stays open for it.
+Old-runtime producer evidence is not
 eligible for the new pin. Active close controls require the full reason and clean
 transport outcome, without the former 1.3.11 exceptions; historical proof matrices
 keep their original runtime identities.
