@@ -22,6 +22,7 @@
 2026-11-12: L14 frame guard in RemiConnection.swift after #1724 (R3).
 
 ## Next intentions
+2026-11-13: PAUSED. Waiting on the owner: #1512 phone result; Xcode session for P01; phase 6 vendor-risk call; phases 5/5B after 5A.
 2026-11-12: L01 fix round (findings in artifacts L01/r2); L02 round 3 and L04 running; L03 needs its Luna contract reviewer when a Luna slot frees.
 2026-11-12: CP1 after L01 to L06: confirm landing state; rule on any dropped dependency.
 

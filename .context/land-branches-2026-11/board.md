@@ -17,10 +17,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Repo | yooz-labs/remi |
 | Integration branch | develop |
 | Manager id | mba-claude-sonnet |
-| State | running |
+| State | paused |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | 2026-11-13T13:28-08:00 |
-| Next tick | 2026-11-13T13:58-08:00 |
+| Last tick | 2026-11-13T13:35-08:00 |
+| Next tick | - |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-12T19:05-08:00 |
 
@@ -166,3 +166,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | fable-A02 | advisor | extra | fable | A02 | 2026-11-13T12:45 | done |
 | opus-A01b | implementer | claude-opus | opus xhigh | A03 | 2026-11-13T13:30 | done |
 | opus-A03 | implementer | claude-opus | opus xhigh | A03 | 2026-11-13T14:10 | running a290e7ce (record CP4 answers, issue bodies) |
+| codex-DV9 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T14:05 | done |
