@@ -35,6 +35,7 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-12T21:23-08:00 | Q16: no PR for #1727 yet | owner |  |
 | 2026-11-12T22:11-08:00 | Q17: accept hosted native CI as evidence for L03's local pairing baseline; proceed to review | owner |  |
 | 2026-11-13T00:57-08:00 | Q18: Codex danger-full-access extended from native-only (Q10) to L02 and every other Codex card that needs it; same bounds (clean worktree, push only the card's branch, develop-unchanged check) | owner |  |
+| 2026-11-13T01:02-08:00 | L03 advisor ruling (c): the Luna finding (child key pin has no proof of possession before auth_response) is a description defect, accepted as a documented protocol limit; fix = PR body and test wording, a 'copied' peer test, follow-up issue (owner files); no production change | advisor |  |
 
 ## Log
 
@@ -57,3 +58,4 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T00:58-08:00 | L02 round 4 dispatched (luna, full access per Q18, thread 01a1d421) |
 | 2026-11-13T00:59-08:00 | L04 maintainability: 3 findings (Moderate: 9 hand-written predicates; Minor x2 docs, test helper), all fix; fix round dispatched (luna, full access, thread 01a1d422-4895); the old 'Fixes #1732' commit cannot be rewritten (no force-push): owner notice at merge plus reopen command |
 | 2026-11-13T01:00-08:00 | L01 delta review: 4 of 5 round-1 findings resolved; 1 Important introduced by the fix (standing-grant lock-screen bullet wrong). Fix r3 queued; Luna budget at its limit until the daily reset at next tick; last review round, no third |
+| 2026-11-13T01:02-08:00 | L03 fix round dispatched (terra, full access, thread 01a1d424-f58c); owner action needed: file the follow-up issue from L03/r2/issue-body.md |
