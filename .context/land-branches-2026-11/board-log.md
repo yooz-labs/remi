@@ -46,6 +46,7 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T06:14-08:00 | Slots are for workers only; reviewers, advisor and lead extra (owner); L09 given to an Opus worker since Terra is busy | manager |  |
 | 2026-11-13T06:28-08:00 | L05 advisor ruling (Opus): merge 28341b5a resolution is sound (one hunk in MacLiveRootView kept both sides; PR-only and develop-only files identical to their own diffs; no id-only question lookup returned after #1734; no stale PR dependencies) | advisor |  |
 | 2026-11-13T06:56-08:00 | L06 advisor ruling (Opus): the unconditional reset after any admitted Hello is a real defect (1 Hz loop trips the Worker's 10/min limits and ends in rejected; BYE path regressed vs baseline): add a 30 s monotonic-clock health condition inside this PR, narrowing the owner-approved Q3 reset without adding authority; lead decision recorded for the owner | lead |  |
+| 2026-11-13T07:18-08:00 | Owner (2026-11-13, chat): there is no daily budget on Luna (or the other agent rows); the budget is the concurrency slots (2 Codex Luna, 1 Codex Terra, 2 Claude Sonnet workers, 1 Claude Opus worker), active at all times; spend overruns are approved (use --over); reviewers, advisor and lead are extra | owner |  |
 
 ## Log
 
@@ -100,3 +101,6 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T06:57-08:00 | L06 fix round dispatched to Terra (full access) with the advisor-ruled 30 s health condition and F2-F10; Terra slot |
 | 2026-11-13T07:03-08:00 | L09 delta review: 1 Critical (scripts/ci/remote-new-client-contract.json runtime pinned to the 1.3.11 revision; hosted test-workers should fail 'Unsupported target contract' on 1.4.2), 1 Important (docs claim 1.3.11 / exception that was deleted; ADR and plan overstate the migration), 7 notes: all fix; sent to the Opus worker (resumed a6a64c52); no third review round |
 | 2026-11-13T07:05-08:00 | L14 fix r2 reported and verified: head 66114ad8, revert checks for F2 F3 F4 F5 recorded, closing refs [], local TS typecheck noise is the Bun 1.4.4 baseline; hosted native failed on the #1739 flake (commented, rerun requested); RV-delta dispatched |
+| 2026-11-13T07:10-08:00 | L14 delta: no Critical/Important, F1-F10 all resolved; minor leftovers (weakened 'does not throw' tests, nit blank line, F10 no longer pins encoder-key-reuse) rejected with reason: no behavior or coverage hole, a whitespace-only push would restart the 65-min soak; merge gate waits on hosted native rerun and the relay soak |
+| 2026-11-13T07:11-08:00 | L02 merged (PR 1657 -> 105438be, bump 89fc64a1): all required checks green incl. soak, merge-tree clean, no file overlap, closing ref #1656 intended; DV r5 dispatched on 89fc64a193942cc05f8c8de98efe0557aa69138d |
+| 2026-11-13T07:18-08:00 | DV r5 on 89fc64a1 dispatched; Luna daily limit reached then waived by the owner (no daily budgets, slots only) |

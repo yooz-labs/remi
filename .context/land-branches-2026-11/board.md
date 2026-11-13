@@ -48,8 +48,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 25 | daily | every dispatch on every platform; the plan approval covers this limit |
-| Codex Luna today | 8 | 8 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
+| Agents today | 30 | 27 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Codex Luna today | 8 | 9 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 3 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
 | Claude Sonnet today | 16 | 11 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
 | Claude Opus today | 4 | 3 | daily | lead wakes, lead-tier steps, advisor consults |
@@ -68,7 +68,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | L01 | [AGENTS.md split #1733](cards/L01-agents-md-split.md) | - | worker | - | - | done | - | 1733 | 2026-11-12T21:30 | 4h | merge gate: sentence verified vs selectPushCategory; waiting on hosted checks at 750dc597 (native flake rerun once more; local-relay pending) |
 | L03 | [Direct child key #1728](cards/L03-direct-child-key.md) | - | worker-hard | xcode | - | done | - | 1728 | 2026-11-12T21:30 | 2d | develop merged into branch (477f1680, clean), PR ready; waiting hosted checks incl. local-relay soak; then merge gate (no further review round) |
-| L02 | [Terminal relay probe #1657](cards/L02-terminal-relay-qualification.md) | - | worker | - | - | review | - | 1657 | 2026-11-12T21:30 | 1d | probe ok on Bun 1.3.11, fails 1.4.4 (#1738); hosted CI on 833ada41 pending (soak); own diff unchanged, no RV-delta; merge when green (Q19) |
+| L02 | [Terminal relay probe #1657](cards/L02-terminal-relay-qualification.md) | - | worker | - | - | done | - | 1657 | 2026-11-12T21:30 | 1d | probe ok on Bun 1.3.11, fails 1.4.4 (#1738); hosted CI on 833ada41 pending (soak); own diff unchanged, no RV-delta; merge when green (Q19) |
 | L04 | [Question session identity #1732](cards/L04-question-session-identity.md) | - | worker | xcode | - | done | - | 1734 | 2026-11-12T22:10 | 1d | merge gate: fix r3 verified (head bab01d67, wide-pin revert, Mac lookup revert); waiting on native CI; then merge, reopen #1732 |
 | L05 | [Notification preferences #1707](cards/L05-notification-preferences.md) | - | worker | xcode | - | review | L03 | 1707 | 2026-11-13T06:11-08:00 | 1d | PR ready; waiting hosted checks (native, relay scope) at 28341b5a; then merge gate (no third review round) |
 | L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | codex-terra | active | L03 | 1736 | 2026-11-13T06:04-08:00 | 2d | fix r2 (advisor: 30 s health condition; CI step for opt-in suite; findings L06/r2); then RV-delta, hosted incl. soak, merge gate |
@@ -86,7 +86,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | A02 | [Fable review](cards/A02-account-switching-fable-review.md) | - | frontier | - | - | todo | A01 | - | - | 4h | owner-requested Fable (claude-fable-5-2) |
 | A03 | [Account switching checkpoint](cards/A03-account-switching-checkpoint.md) | - | lead | - | - | todo | A02 | - | - | 1d | ends at owner CP4; no merge before approval |
 | CP1 | CP1 go or adjust for L07 and L08 | - | - | - | - | blocked | - | - | - | - | manager sets done when L01 to L06 are done or dropped and the lead's CP1 decision is recorded; now gates only L07's unpark |
-| L14 | [image-availability #1313](cards/L14-image-availability.md) | - | worker | xcode | - | review | L03 | 1737 | 2026-11-13T06:11-08:00 | 1d | RV-delta (Sonnet) on 6fa27711..66114ad8 running; native job failed on the #1739 flake, rerun requested; then merge gate |
+| L14 | [image-availability #1313](cards/L14-image-availability.md) | - | worker | xcode | - | review | L03 | 1737 | 2026-11-13T06:11-08:00 | 1d | delta clean; waiting hosted: native rerun after the #1739 flake, relay soak; then merge gate (Part of #1313, closing refs []) |
 
 ## Questions
 
@@ -154,4 +154,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | advisor-L06 | advisor | extra | opus xhigh | L06 | 2026-11-13T08:10 | done |
 | rv-L09 | reviewer | extra | sonnet xhigh | L09 | 2026-11-13T08:30 | done |
 | codex-L06fix | implementer | codex-terra | gpt-6.1-terra xhigh | L06 | 2026-11-13T08:45 | thread fix round (A, F2-F10) |
-| rv-L14d | reviewer | extra | sonnet xhigh | L14 | 2026-11-13T09:10 | running a4777574 (delta 6fa27711..66114ad8) |
+| rv-L14d | reviewer | extra | sonnet xhigh | L14 | 2026-11-13T09:10 | done |
