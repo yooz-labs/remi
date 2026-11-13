@@ -13,6 +13,7 @@ import { IdentityStore } from '../../../../daemon/src/auth/identity-store';
 import { HubRelay } from '../../../../daemon/src/remote/hub-relay';
 import { RelayDeviceStore } from '../../../../daemon/src/remote/relay-device-store';
 import { SessionRegistryFile } from '../../../../daemon/src/session/session-registry-file';
+import { decodeHello } from '../../../../shared/src/relay/envelope';
 import { startWorker } from '../../../../signaling/tests/e2e/harness';
 
 const publicKey = process.argv[2];
@@ -28,6 +29,7 @@ const worker = await startWorker();
 let admissions = 0;
 let dropBeforeHello = process.argv[3] === 'prehello';
 let preHelloDrops = 0;
+let refusedPairHellos = 0;
 const inputs: string[] = [];
 const relay = new HubRelay(
   {
@@ -60,6 +62,9 @@ const relay = new HubRelay(
 // trace of real authenticated frames, not a replacement handler or an expected outcome stub.
 const observable = relay as unknown as {
   route(peer: unknown, message: ProtocolMessage): Promise<void>;
+  openPeer(id: string): void;
+  offers: Map<string, unknown>;
+  control?: { command(value: unknown): Promise<boolean> };
   peers: Map<
     string,
     {
@@ -68,6 +73,19 @@ const observable = relay as unknown as {
       channel?: { send(bytes: Uint8Array): Promise<void>; bye(): Promise<void> };
     }
   >;
+};
+const openPeer = observable.openPeer.bind(relay);
+observable.openPeer = (id) => {
+  openPeer(id);
+  const peer = observable.peers.get(id);
+  peer?.ws.addEventListener('message', (event) => {
+    if (peer.stage !== 'hello' || observable.offers.size !== 0) return;
+    try {
+      if (decodeHello(event.data).mode === 'pair') refusedPairHellos++;
+    } catch {
+      // This trace counts only a valid pairing hello with no offer.
+    }
+  });
 };
 const route = observable.route.bind(relay);
 observable.route = async (peer, message) => {
@@ -102,6 +120,14 @@ const out = (value: object) => process.stdout.write(`${JSON.stringify(value)}\n`
 try {
   await relay.start();
   await admitted(0);
+  if (process.argv[3] === 'pair-no-offer') {
+    // Admit only this synthetic pairing attempt at the Worker. No HubRelay offer exists,
+    // so its real pairing policy must refuse the authenticated client's Hello.
+    const hash = await relayV2.admitTagHash(await relayV2.admitTag(new Uint8Array(32).fill(42)));
+    if (!(await observable.control?.command({ t: 'pairing', ticketHash: hash, ttlSeconds: 60 }))) {
+      throw new Error('Owned pairing admission setup failed');
+    }
+  }
   out({
     kind: 'ready',
     relayURL: worker.wsUrl,
@@ -132,7 +158,7 @@ try {
       await relay.start();
       await admitted(previous);
       out({ kind: 'restarted' });
-    } else if (line === 'stats') out({ kind: 'stats', inputs, preHelloDrops });
+    } else if (line === 'stats') out({ kind: 'stats', inputs, preHelloDrops, refusedPairHellos });
     else if (line === 'stop') break;
   }
 } finally {

@@ -9,6 +9,7 @@ private final class RelayIdleProbe {
     var lists = 0
     var cleanEnds = 0
     var rejected = false
+    var rejectionReason: String?
     var states: [String] = []
 
     func receive(_ event: RemiInboundEvent) {
@@ -25,7 +26,7 @@ private final class RelayIdleProbe {
         case .connecting(let attempt): states.append("connecting:\(attempt)")
         case .retrying(let attempt, _): states.append("retrying:\(attempt)")
         case .connected: states.append("connected")
-        case .rejected: rejected = true; states.append("rejected")
+        case .rejected(let reason): rejected = true; rejectionReason = reason; states.append("rejected")
         default: break
         }
     }
@@ -241,10 +242,38 @@ struct RelayIdleRecoverySourceTests {
         }
     }
 
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_IDLE_RELAY_TESTS"] == "1"))
+    func wrongExpectedMachineIsTerminal() async throws {
+        try await withFixture(wrongMachine: true) { _, probe, command in
+            try await until("machine identity rejection") { probe.rejected }
+            #expect(probe.rejectionReason == "The machine identity did not match its authenticated key.")
+            #expect(probe.hellos == 0)
+            try await Task.sleep(for: .milliseconds(1500))
+            #expect(probe.states.filter { $0.hasPrefix("connecting:") }.count == 1)
+            #expect((try await command("stats")["inputs"] as? [String]) == [])
+        }
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["REMI_IDLE_RELAY_TESTS"] == "1"))
+    func pairingWithoutAnOfferIsTerminal() async throws {
+        try await withFixture(pairWithoutOffer: true) { _, probe, command in
+            try await until("pairing refusal") { probe.rejected }
+            let stats = try await command("stats")
+            #expect(stats["refusedPairHellos"] as? Int == 1)
+            #expect(probe.rejectionReason == "The relay connection closed. Pair again if this machine has not been saved.")
+            #expect(probe.hellos == 0)
+            try await Task.sleep(for: .milliseconds(1500))
+            #expect(probe.states.filter { $0.hasPrefix("connecting:") }.count == 1)
+            #expect((stats["inputs"] as? [String]) == [])
+        }
+    }
+
     private func withFixture(
         preHelloInitially: Bool = false,
         oneShot: Bool = false,
         recoveryProbe: Bool = false,
+        wrongMachine: Bool = false,
+        pairWithoutOffer: Bool = false,
         _ body: (RemiConnection, RelayIdleProbe, @MainActor (String) async throws -> [String: Any]) async throws -> Void
     ) async throws {
         let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -253,6 +282,7 @@ struct RelayIdleRecoverySourceTests {
         let process = Process()
         var arguments = [identity.publicKeyBase64]
         if preHelloInitially { arguments.append("prehello") }
+        if pairWithoutOffer { arguments.append("pair-no-offer") }
         let own = try OwnedRecoveryFixture.configure(process, script: script, arguments: arguments,
             bunExecutable: ProcessInfo.processInfo.environment["REMI_IDLE_BUN"])
         let input = Pipe(), output = Pipe()
@@ -295,9 +325,11 @@ struct RelayIdleRecoverySourceTests {
                 machinePublicKey: #require(ready["machinePublicKey"] as? String))
             let probe = RelayIdleProbe()
             let active = RemiConnection(configuration: .init(url: try #require(pin.clientURL),
-                clientVersion: "owned-idle-relay", clientId: "owned-idle-relay", relayPin: pin,
+                clientVersion: "owned-idle-relay", clientId: "owned-idle-relay",
+                expectedMachineID: wrongMachine ? String(repeating: "0", count: 32) : nil, relayPin: pin,
                 directRetryPolicy: recoveryProbe ? .recoveryProbe : .runtime),
                 identity: identity,
+                relayPairingSecret: pairWithoutOffer ? Data(repeating: 42, count: 32) : nil,
                 stateHandler: { state in Task { @MainActor in probe.transition(state) } },
                 eventHandler: { event in Task { @MainActor in probe.receive(event) } })
             connection = active
