@@ -41,6 +41,7 @@ struct RelayPushRequest: Encodable, Sendable {
     let pushPublicKey: String?
     let keyVersion: Int?
     var renewExpired: Bool? = nil
+    var pushPrefs: NativeNotificationPreferences? = nil
 }
 enum RelayRPCExpected: Sendable {
     case notificationHost

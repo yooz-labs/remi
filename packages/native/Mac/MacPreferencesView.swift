@@ -17,6 +17,8 @@ struct MacPreferencesView: View {
     @State private var machineToRename: MachineState?
     @State private var proposedName = ""
     @AppStorage(QuestionNotificationSummarizer.preferenceKey) private var summariesEnabled = true
+    @AppStorage(NativeNotificationPreferences.questionsKey) private var questionNotifications = true
+    @AppStorage(NativeNotificationPreferences.turnCompleteKey) private var turnCompleteNotifications = false
 
     init(
         store: MachineStore,
@@ -95,11 +97,14 @@ struct MacPreferencesView: View {
                         title: "Notifications are off",
                         detail: "Waiting questions still appear in Remi and the menu bar, but macOS cannot show banners or play sounds.",
                         actionTitle: "Open System Settings",
-                        action: openNotificationSettings
+                        action: { notificationPermission.openSystemSettings() }
                     )
                     Divider()
                 }
 
+                MacNotificationSettingsControls(questions: $questionNotifications, turnComplete: $turnCompleteNotifications)
+                    .onChange(of: questionNotifications) { _, _ in relayNotifications.notificationPreferencesDidChange() }
+                    .onChange(of: turnCompleteNotifications) { _, _ in relayNotifications.notificationPreferencesDidChange() }
                 Toggle("Concise question summaries", isOn: $summariesEnabled)
                     .font(.headline)
                 Text("Longer questions can be summarized on device when Apple Intelligence is available. The original conversation is never changed.")
@@ -440,13 +445,6 @@ struct MacPreferencesView: View {
             result[machine.endpoint.id] = machine.displayName
         }
         MachineConfigurationStore.shared.saveDisplayNames(names)
-    }
-
-    private func openNotificationSettings() {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") else { return }
-        if !NSWorkspace.shared.open(url), let settingsURL = URL(string: "x-apple.systempreferences:") {
-            NSWorkspace.shared.open(settingsURL)
-        }
     }
 
     private func statusLabel(_ status: MachineConnectionStatus) -> String {

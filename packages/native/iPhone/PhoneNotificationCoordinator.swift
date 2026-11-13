@@ -52,10 +52,9 @@ final class PhoneNotificationDelegate: NSObject, UIApplicationDelegate, UNUserNo
     ) async -> UNNotificationPresentationOptions {
         if RemiPushStore.isSecureNotification(content: notification.request.content) {
             guard NativeRelayNotifications.allowsPresentation(notification.request.content) else { return [] }
-        }
-        guard UserDefaults.standard.object(
+        } else if !(UserDefaults.standard.object(
             forKey: PhonePreferenceKey.questionNotifications
-        ) as? Bool ?? true else { return [] }
+        ) as? Bool ?? true) { return [] }
         let soundEnabled = UserDefaults.standard.object(
             forKey: PhonePreferenceKey.notificationSounds
         ) as? Bool ?? true
@@ -125,7 +124,7 @@ enum PhoneNotificationCoordinator {
     }
 
     static func requestAuthorization() async -> NotificationAuthorizationState {
-        guard notificationsEnabled else { return await authorizationState() }
+        guard notificationsEnabled || turnCompleteEnabled else { return await authorizationState() }
         _ = try? await UNUserNotificationCenter.current()
             .requestAuthorization(options: [.alert, .sound])
         return await authorizationState()
@@ -153,6 +152,7 @@ enum PhoneNotificationCoordinator {
         let summarizedBody = summariesEnabled
             ? await QuestionNotificationSummarizer.shared.summary(questionID: id, text: body)
             : QuestionNotificationSummarizer.fallback(for: body)
+        guard notificationsEnabled else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = summarizedBody
@@ -190,6 +190,10 @@ enum PhoneNotificationCoordinator {
 
     private static var notificationsEnabled: Bool {
         UserDefaults.standard.object(forKey: PhonePreferenceKey.questionNotifications) as? Bool ?? true
+    }
+
+    private static var turnCompleteEnabled: Bool {
+        UserDefaults.standard.object(forKey: NativeNotificationPreferences.turnCompleteKey) as? Bool ?? false
     }
 
     private static var soundsEnabled: Bool {
@@ -246,11 +250,11 @@ enum NotificationAuthorizationState: Equatable {
         case .unknown:
             "Remi is checking whether iOS can show question alerts."
         case .notDetermined:
-            "Allow Remi to alert you when a connected session needs an answer."
+            "Allow Remi to show the alerts you choose."
         case .denied:
             "iOS is blocking Remi alerts. You can allow them in Notification Settings."
         case .authorized:
-            "iOS can show Remi alerts when a connected session needs an answer."
+            "iOS can show the Remi alerts you choose."
         case .provisional:
             "iOS delivers Remi alerts quietly without interrupting you."
         case .ephemeral:

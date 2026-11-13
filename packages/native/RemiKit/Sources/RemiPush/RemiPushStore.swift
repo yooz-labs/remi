@@ -225,13 +225,14 @@ public final class RemiPushStore: @unchecked Sendable {
         guard notification.owner == owner else { throw RemiPushError.changed }
         try NativePushEffect(state: state, keys: keys, now: { now }).recheck(notification.prepared)
     }
-    public func allowsPresentation(_ content: UNNotificationContent) -> Bool {
+    public func allowsPresentation(_ content: UNNotificationContent, policy: NativePushAlertPolicy = .all) -> Bool {
         do {
             guard let carrier = content.userInfo["remiPush"], JSONSerialization.isValidJSONObject(carrier) else { return false }
             let opened = try open(carrier: JSONSerialization.data(withJSONObject: carrier))
             guard opened.kind != .dismiss, Data(content.title.utf8) == Data(opened.title.utf8),
                   Data(content.body.utf8) == Data(opened.body.utf8), content.subtitle.isEmpty else { return false }
             try recheck(opened)
+            guard policy.permits(kind: opened.prepared.push.record.kind) else { return false }
             // Verified alerts can intentionally have no actions when publication
             // fails or the signed shape/protection policy requires the app.
             if content.categoryIdentifier.isEmpty { return true }

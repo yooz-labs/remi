@@ -34,6 +34,10 @@ struct MacLiveRootView: View {
     @State private var pairingAttemptID: UUID?
     @State private var pendingMachineRemoval: MachineState?
     @State private var notificationRouter = MacNotificationRouter.shared
+    @State private var notificationPermission = MacNotificationPermission.shared
+    @State private var dismissedNotificationPermission = false
+    @AppStorage(NativeNotificationPreferences.questionsKey) private var questionNotifications = true
+    @AppStorage(NativeNotificationPreferences.turnCompleteKey) private var turnCompleteNotifications = false
     @State private var notificationDestination: RemiNavigationDestination?
     @State private var pendingResume: ResumeSessionKey?
     @State private var relayNotifications = NativeRelayNotifications.shared
@@ -281,6 +285,7 @@ struct MacLiveRootView: View {
         // Split columns can paint beneath a root safe-area inset on Mac (#1141).
         VStack(spacing: 0) {
             feedbackBanner
+            notificationPermissionBanner
             if store.outgoingCount > 0 {
                 HStack {
                     Spacer()
@@ -295,6 +300,7 @@ struct MacLiveRootView: View {
         .task {
             restoreColumnLayout()
             reconcileNavigation()
+            await notificationPermission.refresh()
         }
         .task(id: GraceWindow(connectedAt: connectedAt, tick: graceTick)) {
             let now = Date()
@@ -347,7 +353,8 @@ struct MacLiveRootView: View {
             pruneDrafts()
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { flushDrafts() }
+            if phase == .active { Task { await notificationPermission.refresh() } }
+            else { flushDrafts() }
         }
         // Command-Q may end the process without scenePhase leaving active.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
@@ -483,6 +490,20 @@ struct MacLiveRootView: View {
             Button("Cancel", role: .cancel) { pendingMachineRemoval = nil }
         } message: {
             Text("Remi will forget this endpoint and its cached conversations on this Mac. Sessions on the machine keep running.")
+        }
+    }
+
+    @ViewBuilder private var notificationPermissionBanner: some View {
+        if !dismissedNotificationPermission, questionNotifications || turnCompleteNotifications,
+           notificationPermission.access == .notDetermined || notificationPermission.access == .denied {
+            MacNotificationPermissionBanner(
+                denied: notificationPermission.access == .denied,
+                onEnable: {
+                    if notificationPermission.access == .denied { notificationPermission.openSystemSettings() }
+                    else { Task { await notificationPermission.request() } }
+                },
+                onDismiss: { dismissedNotificationPermission = true }
+            )
         }
     }
 

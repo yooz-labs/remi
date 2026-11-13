@@ -27,7 +27,25 @@ const { RelayDeviceStore } = await import(
 );
 chmodSync(own, 0o700);
 const out = (value: object) => process.stdout.write(`${JSON.stringify(value)}\n`);
-const hub = await resumedHub({ pushLeaseMs: 10_000 });
+// The fixture's own initial probe consumes only its transport ACK. Later real
+// app peers also need the application hello_ack supplied by the daemon's
+// onConnect handler; leave the initial probe undisturbed.
+let relayHelloCount = 0;
+const helloResponder: { send?: (id: string) => void } = {};
+const hub = await resumedHub(
+  { pushLeaseMs: 10_000 },
+  {
+    events: {
+      onConnect: (id) => {
+        relayHelloCount++;
+        helloResponder.send?.(id);
+      },
+    },
+  },
+);
+helloResponder.send = (id) => {
+  hub.relay.sendRaw(id, createHelloAck('owned', null));
+};
 const subscriptions = new SecurePushStore(hub.dir, hub.trust, 64, { leaseMs: 10_000 });
 const machine = await hub.trust.unlock();
 const machineSigner = await relayV2.signerFromKey(
@@ -169,6 +187,8 @@ const service = new NotificationHostService({
 await direct.start();
 out({ kind: 'ready', directPort: direct.port, machineKey: machine.publicKeyRaw, relayUrl, ca });
 const lines = createInterface({ input: process.stdin });
+const terminate = () => lines.close();
+process.on('SIGTERM', terminate);
 const deadline = setTimeout(() => {
   lines.close();
 }, 60_000);
@@ -183,6 +203,11 @@ try {
           'owned existing full grant',
         );
       out({ kind: 'authorized' });
+    } else if (message.kind === 'prepare_relay') {
+      const epoch = hub.trust.captureAuthorizationEpoch(message.publicKey);
+      if (!epoch) throw new Error('OWNED_RELAY_GRANT_REQUIRED');
+      await hub.relay.enrollNotifications(message.publicKey, epoch, () => true);
+      out({ kind: 'relay-enrolled' });
     } else if (message.kind === 'expire') {
       expireSubscription();
       out({ kind: 'expired' });
@@ -192,7 +217,10 @@ try {
         kind: 'state',
         count: current.length,
         tokenMatches: current.length === 1 && current[0]?.token === message.expectedToken,
+        pushPrefs: current.length === 1 ? current[0]?.pushPrefs : null,
         expiredAtUpgrade,
+        relayLogs: hub.logs,
+        relayHelloCount,
       });
     } else if (message.kind === 'issue_question') {
       const recipient = subscriptions.listCurrent();
@@ -265,6 +293,7 @@ try {
     } else if (message.kind === 'stop') break;
   }
 } finally {
+  process.off('SIGTERM', terminate);
   clearTimeout(deadline);
   lines.close();
   releaseEnable?.();
