@@ -64,6 +64,7 @@ add a row below.
 | [0046](0046-bounded-read-only-terminal-screen.md) | Bounded read-only screen primitive with pinned headless emulator, finite 1 MiB qualification and no PTY input; strict wire, secure host/relay integration and client caller remain pending |
 | [0047](0047-strict-terminal-view-protocol.md) | Eight strict normalized terminal-view shapes; structural codec/registry only, with no capability advertisement, host lease or relay/caller availability |
 | [0048](0048-terminal-stack-budget-and-policy.md) | Owner-approved4MiB complete terminal stack, eight models/32MiB home; exact versioned policy and conservative old-writer transition, qualification still required |
+| [0049](0049-account-switching.md) | (accepted as the direction, owner 2026-11-13; phases 1-4 and 5A approved, 5, 5B and 6 not yet) Account profiles per session (#1157 contract: each harness's own state directory, never a credential), with the effective login checked before launch; plan usage observed only from what Claude Code's status line and Codex's app-server already report, with source and age, and a local keyed account fingerprint; compaction on request; continuation onto another of the person's own profiles only when the person confirms, after a permission diff and a loss list, and from a usage-limit wait only after an owner-run characterization; opt-in automatic switching per profile pair allowed in principle but not approved to start: its condition (a vendor answer) is unmet because the owner chose not to ask |
 
 ## By area
 
@@ -74,5 +75,5 @@ another one closed.
 - **Permission decisions:** 0030 (current), 0031, 0003; historical, superseded by 0030: 0010, 0015, 0016, 0017, 0018, 0023, 0025, 0026, 0027, 0028, 0029
 - **Questions + notifications:** 0031 (current), 0002, 0004, 0019, 0020, 0021, 0022
 - **Protocol + contracts:** 0035, 0036, 0037, 0038, 0039, 0041, 0043, 0044, 0045, 0047, 0012, 0013, 0014, 0006
-- **Sessions + transport:** 0001, 0005, 0009, 0024, 0032, 0033, 0034, 0046, 0048
+- **Sessions + transport:** 0001, 0005, 0009, 0024, 0032, 0033, 0034, 0046, 0048, 0049
 - **Process:** 0007, 0008, 0011, 0040

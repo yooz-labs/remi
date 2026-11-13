@@ -93,3 +93,33 @@ Claims to avoid until true: "end-to-end encrypted" (#881), "peer-to-peer", "priv
 - Conductor mobile reaching local workspaces; Conductor push.
 - Vibe Kanban relay after shutdown; T3 Connect E2E; HAPI relay operator; Vicoa encryption; Happy push payload contents.
 - remi itself under API-key, Bedrock or gateway auth; Android store status.
+
+## Addendum 2026-11-13: multiple accounts and account switching
+
+Date: 2026-11-13.
+Method: the A02 advisor review of [ADR 0049](decisions/0049-account-switching.md) (land-branches-2026-11) listed these sources; each was read again on this date by the ADR's author, and the quotes are kept in the A01 r2 evidence (`web-sources-r2.txt`).
+It corrects #1157, which said that no reviewed competitor advertises per-session account switching: several now do.
+
+| Product | What it does with several accounts | How it handles credentials | Automatic switching | Source |
+|---|---|---|---|---|
+| Claude Code itself | Several accounts side by side, one configuration directory each (`CLAUDE_CONFIG_DIR`); no switcher | The CLI's own store, keyed per directory | No; waits for the reset and continues by itself | code.claude.com/docs/en/authentication, code.claude.com/docs/en/interactive-mode |
+| Codex itself | An experimental `accountSession/switch` in the app-server, undocumented | The CLI's own store under `CODEX_HOME` | No | `codex app-server generate-ts --experimental` (codex-cli 0.167.0) |
+| AgentsRoom | Pins an account "per project, per sidebar folder or per agent" with `CLAUDE_CONFIG_DIR` and `CODEX_HOME`; a usage panel "one section per signed-in account" | One configuration directory per account | An "Account Auto-Switch" feature to "continue on another account when one hits its usage limit"; added accounts capped by paid plan ("one on Free and Plus ..., unlimited on Pro") | agentsroom.dev/docs/multi-account.md |
+| claude-swap 1.1.0 (released 2026-11-12) | Switches the Claude login between saved accounts; a usage dashboard per account | "Backs up OAuth tokens and config when you add an account" | At a threshold "(default 90%)"; the menu bar app's switching is off until turned on | pypi.org/project/claude-swap/ |
+| ccswap | Switches between saved Claude accounts | "Switching replaces `~/.claude/.credentials.json`"; backups as base64 files | `auto` at a threshold "(default 80%)", a one-shot command | github.com/ipfans/ccswap |
+| codex-switch 0.1.21 | Hot-loads another ChatGPT account into managed Codex sessions | "Accounts are stored in `~/.codex-switch/accounts.json`" | "Usage-limit errors trigger an immediate recovery attempt" | docs.rs/crate/codex-switch/0.1.21/source/README.md |
+| Happier | Account pools per service, "shared by every session using them" | "keep credentials encrypted in Happier Cloud and decrypt them only on the client / daemon" | "Automatic switching is off by default"; when on, pools "apply a switch in the middle of a turn" | docs.happier.dev/accounts/connected-services |
+| Conductor | Uses "the auth tokens already saved on your machine"; nothing on multiple accounts | The machine's existing login | No | conductor.build/docs/faq |
+| OpenRouter BYOK | Several provider keys; "falls through to the next matching key" on a rate limit | Provider API keys and cloud credentials, not subscription logins | Yes, for keys | openrouter.ai/docs/guides/overview/auth/byok |
+
+What it means for remi:
+
+1. Per-session or per-project account profiles are table stakes, not a differentiator.
+2. The difference remi can claim is the method: no credential copied, replaced or stored, no usage endpoint called, and the source and age shown on every usage number.
+   Most tools above copy, replace or store login tokens, which the Claude Code legal page forbids to developers ("may not collect, store, or intermediate Claude.ai credentials or session tokens").
+3. Confirm-first continuation matches the most careful competitor (Happier, off by default); standing automatic rotation would trade the method for parity with these tools (ADR 0049, O4).
+
+Candidate statement, after ADR 0049's phases 1 to 3 ship: "Several accounts on one machine, one per session: remi never touches your login, and every usage number says where it came from and how old it is."
+Claims to avoid: "the first to switch accounts per session", and any wording that presents switching as a way to get more usage.
+
+Unconfirmed (do not use in marketing): Cursor, Cline, Continue, Aider and Happy (slopus) multiple-account support (no primary source found by the advisor); Roo Code (search excerpts only); AgentsRoom's auto-switch details (its page returned HTTP 413 to the advisor); CodeAgentSwarm (HTTP 429).
