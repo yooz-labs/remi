@@ -6,34 +6,36 @@ import Foundation
 /// A large image frame, or a large frame whose top-level type cannot be identified safely,
 /// is refused. The scanner does not build a JSON object; Data may materialize a contiguous view.
 enum ImageIngressPreflight {
-    enum Classification: Equatable {
-        case bounded
-        case nonImage
+    static let imageTypePrefixes = ["image_upload_", "image_insert_"]
+    private static let imageTypePrefixLimit = imageTypePrefixes.map { $0.utf8.count }.max() ?? 0
+
+    static func isImageType(_ type: String) -> Bool {
+        imageTypePrefixes.contains { type.hasPrefix($0) }
     }
 
-    static func classify(_ data: Data) throws -> Classification {
-        guard data.count > ImageStagingLimits.frameBytes else { return .bounded }
-        return try data.withUnsafeBytes { bytes in
-            var scanner = Scanner(bytes: bytes)
+    /// Refuses oversized image envelopes before the general decoder sees their fields (#1313).
+    /// Large non-image frames continue to the existing decoder.
+    static func refuseOversizedImage(_ data: Data) throws {
+        guard data.count > ImageStagingLimits.frameBytes else { return }
+        try data.withUnsafeBytes { bytes in
+            var scanner = FrameTypeScanner(bytes: bytes)
             try scanner.scan()
-            return .nonImage
         }
     }
 
-    /// Probe locally JSONEncoder-produced output without building a second JSON object.
-    /// Encoder output is valid JSON; an ambiguous top-level type is nevertheless refused.
+    /// Probes outgoing JSON without building a second JSON object.
+    /// Input must be well-formed JSON from JSONEncoder or WireJSON.serialized(); this probe does
+    /// not fully validate malformed input, which the receiving decoder must reject downstream.
     static func outgoingIsImage(_ data: Data) throws -> Bool {
         try data.withUnsafeBytes { bytes in
-            var scanner = Scanner(bytes: bytes)
+            var scanner = FrameTypeScanner(bytes: bytes)
             return try scanner.scanOutgoing()
         }
     }
 
-    private struct Scanner {
+    private struct FrameTypeScanner {
         private static let maxDepth = 512
         private static let typeKey: [UInt8] = Array("type".utf8)
-        private static let uploadPrefix: [UInt8] = Array("image_upload_".utf8)
-        private static let insertPrefix: [UInt8] = Array("image_insert_".utf8)
 
         let bytes: UnsafeRawBufferPointer
         var index = 0
@@ -59,9 +61,8 @@ enum ImageIngressPreflight {
                 if key.prefixIsASCII, key.length == Self.typeKey.count, key.prefix == Self.typeKey {
                     guard !foundType else { throw WireFrameError.malformedJSON }
                     foundType = true
-                    let type = try string(limit: max(Self.uploadPrefix.count, Self.insertPrefix.count))
-                    if type.prefixIsASCII,
-                       type.prefix.starts(with: Self.uploadPrefix) || type.prefix.starts(with: Self.insertPrefix) {
+                    let type = try string(limit: ImageIngressPreflight.imageTypePrefixLimit)
+                    if type.prefixIsASCII, ImageIngressPreflight.isImageType(String(decoding: type.prefix, as: UTF8.self)) {
                         throw WireFrameError.oversize
                     }
                 } else {
@@ -79,8 +80,8 @@ enum ImageIngressPreflight {
             }
         }
 
-        /// Unlike inbound traffic, this input was produced by JSONEncoder. Nested containers
-        /// can therefore be skipped with a depth counter rather than a bounded validation stack.
+        /// Nested containers can be skipped with a depth counter because the caller supplies
+        /// well-formed JSON from JSONEncoder or WireJSON.serialized().
         mutating func scanOutgoing() throws -> Bool {
             whitespace()
             guard peek == 0x7b else { return false }
@@ -103,9 +104,9 @@ enum ImageIngressPreflight {
                     guard !foundType else { throw WireFrameError.malformedJSON }
                     foundType = true
                     if peek == 0x22 {
-                        let type = try string(limit: max(Self.uploadPrefix.count, Self.insertPrefix.count))
+                        let type = try string(limit: ImageIngressPreflight.imageTypePrefixLimit)
                         image = type.prefixIsASCII &&
-                            (type.prefix.starts(with: Self.uploadPrefix) || type.prefix.starts(with: Self.insertPrefix))
+                            ImageIngressPreflight.isImageType(String(decoding: type.prefix, as: UTF8.self))
                     } else {
                         try skipEncoderValue()
                     }

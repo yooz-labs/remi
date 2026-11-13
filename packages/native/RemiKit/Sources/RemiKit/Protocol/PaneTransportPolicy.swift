@@ -1,6 +1,7 @@
 import Foundation
 
 /// Which routes may carry the terminal-view and file-download families (#1639).
+/// Image-family frames have a separate refusal in `RemiConnection` and are not enabled by this policy.
 ///
 /// ADR 0045 and ADR 0047 allow these frames on two paths only: a direct secure WebSocket
 /// (WSS) with the existing authenticated authority, and the encrypted semantic child of the
@@ -37,6 +38,7 @@ public struct PaneTransportPolicy: Sendable, Equatable {
 }
 
 /// A gated frame was refused before sending because its route or message type is unavailable.
+/// Generic senders also throw this when they refuse image-family frames.
 public struct PaneTransportBlocked: Error, Sendable, Equatable {
     public let reason: String
 }

@@ -28,7 +28,15 @@ enum RemiComposerSubmission {
 /// The image action currently explains its unavailable state; it grants no picker or send
 /// authority. A future transfer owner must replace it only after the secure route is qualified.
 struct RemiImageAttachmentNotice {
-    static let message = "Image attachments are not available yet. Secure image transfer is still being prepared."
+    static let message = "Image attachments are not available in this version of the app."
+
+    static func isOffered(for state: RemiSessionInteractionState) -> Bool {
+        if case .liveMain = state { return isOffered(isLiveMain: true) }
+        return isOffered(isLiveMain: false)
+    }
+
+    static func isOffered(isLiveMain: Bool) -> Bool { isLiveMain }
+
     private(set) var isPresented = false
 
     mutating func explain() { isPresented = true }
@@ -62,7 +70,7 @@ struct RemiImageAttachmentButton: View {
         .foregroundStyle(.secondary)
         .accessibilityLabel("Image attachments unavailable")
         .accessibilityHint("Shows why image attachments are unavailable")
-        .help("Image attachments are not available yet")
+        .help(RemiImageAttachmentNotice.message)
         .alert("Image attachments unavailable", isPresented: Binding(
             get: { notice.isPresented },
             set: { if !$0 { notice.dismiss() } }
@@ -125,7 +133,9 @@ public struct RemiSessionInteractionBar: View {
                         onSend: sendDraft,
                         onInterrupt: onInterrupt
                     ) {
-                        RemiImageAttachmentButton()
+                        if RemiImageAttachmentNotice.isOffered(for: state) {
+                            RemiImageAttachmentButton()
+                        }
                     }
                     if sendFailed {
                         RemiFeedbackBanner(

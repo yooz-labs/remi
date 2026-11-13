@@ -231,7 +231,7 @@ final class OwnedAnswerPeer: @unchecked Sendable {
             case "session_terminal_open":
                 self.lock.lock(); self.terminalCount += 1; self.lock.unlock()
             default:
-                if type.utf8.starts(with: "image_upload_".utf8) || type.utf8.starts(with: "image_insert_".utf8) {
+                if ImageIngressPreflight.isImageType(type) {
                     self.lock.lock(); self.imageCount += 1; self.lock.unlock()
                 }
             }

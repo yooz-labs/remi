@@ -51,7 +51,7 @@ function pngDimensions(bytes: Uint8Array, view: DataView): Dimensions {
       bitDepth = bytes[offset + 16] as number;
       colorType = bytes[offset + 17] as number;
       if (colorType === 3 && ![1, 2, 4, 8].includes(bitDepth)) refuse();
-      // pngjs 7's interlaced sync branch uses uncapped zlib.inflateSync. Candidate only.
+      // pngjs 7's interlaced sync branch uses uncapped zlib.inflateSync, so interlaced PNG is refused.
       if (bytes[offset + 18] !== 0 || bytes[offset + 19] !== 0 || bytes[offset + 20] !== 0)
         refuse();
     } else if (type === 0x504c5445) {
@@ -62,7 +62,7 @@ function pngDimensions(bytes: Uint8Array, view: DataView): Dimensions {
       paletteEntries = length / 3;
       if (colorType === 3 && paletteEntries > 2 ** bitDepth) refuse();
     } else if (type === 0x6163544c || type === 0x6663544c || type === 0x66644154) {
-      refuse(); // acTL/fcTL/fdAT: this candidate admits a single static image only.
+      refuse(); // acTL/fcTL/fdAT: direct staging admits a single static image only.
     } else if (type === 0x49444154) {
       if (colorType === 3 && !paletteEntries) refuse();
       imageData = true;
@@ -106,7 +106,7 @@ function jpegDimensions(bytes: Uint8Array, view: DataView): Dimensions {
       return result;
     }
     if (marker === 0 || marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7)) refuse();
-    if (marker === 1) refuse(); // This decoder candidate does not implement TEM.
+    if (marker === 1) refuse(); // This decoder does not implement TEM.
     if (offset + 2 > bytes.length) refuse();
     const length = view.getUint16(offset);
     const end = offset + length;
