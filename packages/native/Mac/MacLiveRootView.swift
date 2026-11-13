@@ -639,8 +639,7 @@ struct MacLiveRootView: View {
     }
 
     private func rawQuestion(machineID: String, sessionID: String, questionID: String) -> QuestionMessage? {
-        store.machine(withIdentifier: machineID)?.questions
-            .first { $0.sessionId == sessionID && $0.question.id == questionID }
+        store.machine(withIdentifier: machineID)?.question(sessionID: sessionID, questionID: questionID)
     }
 
     private func answerFromInbox(machineID: String, sessionID: String, questionID: String, value: String) {

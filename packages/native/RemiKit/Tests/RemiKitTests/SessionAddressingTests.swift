@@ -191,7 +191,7 @@ struct SessionAddressingTests {
         #expect(afterLiveSnapshot.questions.count == 2)
     }
 
-    @Test func liveQuestionLookupsRequireSessionAndQuestionLabels() throws {
+    @Test func nativeQuestionComparisonsRequireSessionScope() throws {
         let packages = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -199,23 +199,96 @@ struct SessionAddressingTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let native = packages.appendingPathComponent("native")
-        let rawQuestionPattern = try NSRegularExpression(pattern: #"rawQuestion\(([^)]*)\)"#)
+        let questionComparison = try NSRegularExpression(
+            pattern: #"\bquestion\.id\b\s*==|==\s*\bquestion\.id\b|\bquestionId\b\s*==|==\s*\bquestionId\b"#
+        )
+        let sessionComparison = try NSRegularExpression(pattern: #"\bsessionId\s*=="#)
+        let exactMachineStateLookup = try NSRegularExpression(
+            pattern: #"store\.machine\s*\(\s*withIdentifier:\s*machineID\s*\)\s*\?\.question\s*\(\s*sessionID:\s*sessionID\s*,\s*questionID:\s*questionID\s*\)"#
+        )
+        let rootViews: Set<String> = ["iPhone/PhoneLiveRootView.swift", "Mac/MacLiveRootView.swift"]
 
-        for relativePath in ["iPhone/PhoneLiveRootView.swift", "Mac/MacLiveRootView.swift"] {
-            let source = try String(contentsOf: native.appendingPathComponent(relativePath), encoding: .utf8)
-            for (index, line) in source.components(separatedBy: .newlines).enumerated()
-                where line.contains("question.id ==") {
-                #expect(line.contains("sessionId =="), "\(relativePath):\(index + 1) has an id-only question predicate")
-            }
+        for directoryName in ["iPhone", "Mac"] {
+            let directory = native.appendingPathComponent(directoryName, isDirectory: true)
+            let enumerator = try #require(
+                FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil)
+            )
+            let sourceFiles = enumerator.compactMap { $0 as? URL }
+                .filter { $0.pathExtension == "swift" }
+                .sorted { $0.path < $1.path }
+            #expect(!sourceFiles.isEmpty, "packages/native/\(directoryName) has no Swift source files")
 
-            let nsSource = source as NSString
-            let calls = rawQuestionPattern.matches(in: source, range: NSRange(location: 0, length: nsSource.length))
-            #expect(!calls.isEmpty, "\(relativePath) has no rawQuestion lookup")
-            for call in calls {
-                let arguments = nsSource.substring(with: call.range(at: 1))
-                #expect(arguments.contains("machineID:"), "\(relativePath) rawQuestion call lacks machineID")
-                #expect(arguments.contains("sessionID:"), "\(relativePath) rawQuestion call lacks sessionID")
-                #expect(arguments.contains("questionID:"), "\(relativePath) rawQuestion call lacks questionID")
+            for sourceFile in sourceFiles {
+                let relativePath = String(sourceFile.path.dropFirst(native.path.count + 1))
+                let source = try String(contentsOf: sourceFile, encoding: .utf8)
+                let nsSource = source as NSString
+                let matches = questionComparison.matches(
+                    in: source,
+                    range: NSRange(location: 0, length: nsSource.length)
+                )
+
+                for match in matches {
+                    var openBraces: [Int] = []
+                    for index in 0..<match.range.location {
+                        switch nsSource.character(at: index) {
+                        case 123:
+                            openBraces.append(index)
+                        case 125:
+                            _ = openBraces.popLast()
+                        default:
+                            break
+                        }
+                    }
+
+                    guard let openingBrace = openBraces.last else {
+                        let line = nsSource.substring(to: match.range.location).filter { $0 == "\n" }.count + 1
+                        #expect(Bool(false), "\(relativePath):\(line) has a question id comparison outside a scoped predicate")
+                        continue
+                    }
+
+                    var depth = 0
+                    var closingBrace: Int?
+                    braceScan: for index in openingBrace..<nsSource.length {
+                        switch nsSource.character(at: index) {
+                        case 123:
+                            depth += 1
+                        case 125:
+                            depth -= 1
+                            if depth == 0 {
+                                closingBrace = index
+                                break braceScan
+                            }
+                        default:
+                            break
+                        }
+                    }
+
+                    guard let closingBrace else {
+                        let line = nsSource.substring(to: match.range.location).filter { $0 == "\n" }.count + 1
+                        #expect(Bool(false), "\(relativePath):\(line) has an unclosed question predicate")
+                        continue
+                    }
+
+                    let predicate = nsSource.substring(
+                        with: NSRange(location: openingBrace + 1, length: closingBrace - openingBrace - 1)
+                    )
+                    let predicateSource = predicate as NSString
+                    let hasSession = sessionComparison.firstMatch(
+                        in: predicate,
+                        range: NSRange(location: 0, length: predicateSource.length)
+                    ) != nil
+                    let line = nsSource.substring(to: match.range.location).filter { $0 == "\n" }.count + 1
+                    #expect(hasSession, "\(relativePath):\(line) has a question id comparison without sessionId")
+                }
+
+                if rootViews.contains(relativePath) {
+                    #expect(matches.isEmpty, "\(relativePath) must use MachineState's scoped lookup")
+                    let helperMatches = exactMachineStateLookup.matches(
+                        in: source,
+                        range: NSRange(location: 0, length: nsSource.length)
+                    )
+                    #expect(helperMatches.count == 1, "\(relativePath) must pass machineID, sessionID, and questionID to MachineState")
+                }
             }
         }
     }
