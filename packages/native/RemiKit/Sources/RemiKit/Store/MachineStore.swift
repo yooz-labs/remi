@@ -194,6 +194,10 @@ public struct MachineState: Sendable, Equatable, Identifiable {
     public var harnesses: [String]
     public var activeSessions: [DiscoverableSession] { sessions.filter { $0.source == "daemon" } }
 
+    public func question(sessionID: String, questionID: String) -> QuestionMessage? {
+        questions.first { $0.sessionId == sessionID && $0.question.id == questionID }
+    }
+
     public init(endpoint: MachineEndpoint, displayName: String, configuredDisplayName: Bool = false) {
         self.endpoint = endpoint
         routes = [endpoint]
@@ -2327,7 +2331,9 @@ public final class MachineStore {
         }
         target.sessions = mergeSessions(target.sessions, with: source.sessions)
         target.sessionActivity.merge(source.sessionActivity) { current, _ in current }
-        for question in source.questions where !target.questions.contains(where: { $0.question.id == question.question.id }) {
+        for question in source.questions where !target.questions.contains(where: {
+            $0.sessionId == question.sessionId && $0.question.id == question.question.id
+        }) {
             target.questions.append(question)
         }
         if endpoint == parent, target.connectionPreference.permits(endpoint),
@@ -2664,8 +2670,13 @@ public final class MachineStore {
             }
         case .question(let message):
             routeBySession[MachineSessionKey(machineID: machines[index].id, sessionID: message.sessionId)] = endpoint
-            machines[index].questions.removeAll { $0.question.id == message.question.id }
-            machines[index].questions.append(message)
+            if let existingIndex = machines[index].questions.firstIndex(where: {
+                $0.sessionId == message.sessionId && $0.question.id == message.question.id
+            }) {
+                machines[index].questions[existingIndex] = message
+            } else {
+                machines[index].questions.append(message)
+            }
             let resolvedID = Self.resolvedQuestionID(
                 machineID: machines[index].id,
                 sessionID: message.sessionId,

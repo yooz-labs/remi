@@ -192,7 +192,7 @@ struct MacLiveRootView: View {
                                     sessionId: session.id,
                                     questionId: questionId,
                                     answer: value,
-                                    claudeSessionId: rawQuestion(id: questionId)?.claudeSessionId
+                                    claudeSessionId: rawQuestion(sessionID: session.id, questionID: questionId)?.claudeSessionId
                                 )
                             },
                             onSubmit: { questionId, selections in
@@ -201,7 +201,7 @@ struct MacLiveRootView: View {
                                     sessionId: session.id,
                                     questionId: questionId,
                                     answer: "",
-                                    claudeSessionId: rawQuestion(id: questionId)?.claudeSessionId,
+                                    claudeSessionId: rawQuestion(sessionID: session.id, questionID: questionId)?.claudeSessionId,
                                     selections: selections.compactMap { selection in
                                         guard let questionIndex = Int(selection.stepID) else { return nil }
                                         return AnswerSelection(
@@ -218,7 +218,7 @@ struct MacLiveRootView: View {
                                     sessionId: session.id,
                                     questionId: questionId,
                                     answer: "",
-                                    claudeSessionId: rawQuestion(id: questionId)?.claudeSessionId,
+                                    claudeSessionId: rawQuestion(sessionID: session.id, questionID: questionId)?.claudeSessionId,
                                     cancel: true
                                 )
                             },
@@ -1185,8 +1185,8 @@ struct MacLiveRootView: View {
         )
     }
 
-    private func rawQuestion(id: String) -> QuestionMessage? {
-        selectedMachine?.questions.first { $0.question.id == id }
+    private func rawQuestion(sessionID: String, questionID: String) -> QuestionMessage? {
+        selectedMachine?.question(sessionID: sessionID, questionID: questionID)
     }
 
     private func answerPath(_ value: QuestionAnswerPath?) -> RemiAnswerPath? {

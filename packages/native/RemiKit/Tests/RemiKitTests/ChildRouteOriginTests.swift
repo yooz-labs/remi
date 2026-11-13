@@ -27,12 +27,17 @@ struct ChildRouteOriginTests {
         let legacy = try JSONDecoder().decode(HelloAckMessage.self,
             from: FixtureConformanceTests.fixture("hello_ack_legacy"))
         store.receive(.hello(legacy), from: second, generation: secondGeneration)
+        // The exact same pair arriving from a second route must be deduplicated
+        // during consolidation, while the distinct session below remains.
+        store.receive(.question(try question(firstSession)), from: second, generation: secondGeneration)
         store.receive(.question(try question(secondSession)), from: second, generation: secondGeneration)
         #expect(store.machines.count == 2)
         store.receive(.sessions(try sessions(ports: [])), from: second, generation: secondGeneration)
         let merged = try #require(store.machines.first)
         #expect(store.machines.count == 1)
-        #expect(Set(merged.questions.filter { $0.question.id == id }.map(\.sessionId)) ==
+        let matchingQuestions = merged.questions.filter { $0.question.id == id }
+        #expect(matchingQuestions.count == 2)
+        #expect(Set(matchingQuestions.map(\.sessionId)) ==
                 Set([firstSession, secondSession]))
     }
 
