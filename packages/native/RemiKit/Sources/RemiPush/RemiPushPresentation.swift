@@ -1,5 +1,26 @@
 import UserNotifications
 
+/// Foreground presentation policy is applied only after the original capsule is verified.
+public enum NativePushAlertPolicy: Sendable {
+    case all
+    case selected(questions: Bool, turnComplete: Bool)
+
+    func permits(kind: Int) -> Bool {
+        switch self {
+        case .all: return true
+        case .selected(let questions, let turnComplete):
+            guard questions || turnComplete else { return false }
+            switch kind {
+            case NativePushCodec.Kind.question.byte: return questions
+            case NativePushCodec.Kind.turnComplete.byte: return turnComplete
+            // Host-configured subagent alerts remain an explicit separate policy.
+            case NativePushCodec.Kind.subagentAlert.byte: return true
+            default: return false
+            }
+        }
+    }
+}
+
 /// How Remi delivers a notification: how loudly it interrupts, and how notifications group.
 ///
 /// One owner for the notification service extension and the two local notification paths, so a
