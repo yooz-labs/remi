@@ -110,6 +110,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Q16 | L10 | The #1727 prototype tests are now pushed to patch/issue-1727-store-callback-order (9e7ddf41). Open a PR? | No PR yet: keep the branch until a #1727 implementation card exists (Recommended) / Open a draft PR now for visibility / Open a PR for review and landing in this plan | none | 2026-11-16T12:00 | answered | No PR yet; keep the branch as pushed evidence until a #1727 implementation card exists (owner, 2026-11-12T21:23-08:00) |
 | Q17 | - | L03: local Mac/Swift tests hit the 32 documented PairingAttemptTests failures (not a stall); hosted native CI passed them on the same head. Accept hosted as evidence and proceed to review? (log has detail) | Accept hosted, proceed to review (Recommended) / Require local fix first / Hold L03 | none | 2026-11-13T09:00 | answered | Accept hosted result as Mac/Pairing evidence; proceed to review (owner, 2026-11-12T22:11-08:00) |
 | Q18 | - | L02 (#1657): the relay probe fails EPERM spawning /bin/ps under Codex workspace-write (round 1 and 3). Allow danger-full-access for L02 only (non-native, Q10 covers native)? Else the probe runs only on hosted CI. | Full access for L02 only (Recommended) / Push merge commit, rely on hosted CI / Hold L02 | none | 2026-11-13T09:00 | answered | Full access for L02, and for all other Codex cards that need it (owner: go full for this and all the rest that needs) (owner, 2026-11-13T00:57-08:00) |
+| Q21 | - | CP4: account-switching design (ADR 0049, PR 1747 draft): approve direction, which phase issues to file, automatic switching stance, vendor questions | see AskUserQuestion batch | none | 2026-11-14T12:00 | answered | CP4 answers recorded in log (owner, 2026-11-13T13:24-08:00) |
 
 ## Proposals
 
@@ -163,4 +164,5 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | codex-DV8 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T10:40 | done |
 | opus-A01 | implementer | claude-opus | opus xhigh | A01 | 2026-11-13T12:10 | done |
 | fable-A02 | advisor | extra | fable | A02 | 2026-11-13T12:45 | done |
-| opus-A01b | implementer | claude-opus | opus xhigh | A03 | 2026-11-13T13:30 | running a290e7ce (fold A02 findings) |
+| opus-A01b | implementer | claude-opus | opus xhigh | A03 | 2026-11-13T13:30 | done |
+| opus-A03 | implementer | claude-opus | opus xhigh | A03 | 2026-11-13T14:10 | running a290e7ce (record CP4 answers, issue bodies) |
