@@ -48,8 +48,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 3 | daily | every dispatch on every platform; the plan approval covers this limit |
-| Codex Luna today | 8 | 1 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
+| Agents today | 30 | 4 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Codex Luna today | 8 | 2 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 1 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
 | Claude Sonnet today | 16 | 1 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
 | Claude Opus today | 4 | 0 | daily | lead wakes, lead-tier steps, advisor consults |
@@ -69,7 +69,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | L01 | [AGENTS.md split #1733](cards/L01-agents-md-split.md) | - | worker | - | codex-luna | active | - | 1733 | 2026-11-12T21:30 | 4h | fix r3 running; then verify the sentence and merge gate (no third review) |
 | L03 | [Direct child key #1728](cards/L03-direct-child-key.md) | - | worker-hard | xcode | codex-terra | active | - | 1728 | 2026-11-12T21:30 | 2d | fix r2 (ruling-and-fix.md); owner files follow-up issue (command handed); then merge gate (RV-delta empty, no third round) |
 | L02 | [Terminal relay probe #1657](cards/L02-terminal-relay-qualification.md) | - | worker | - | - | review | - | 1657 | 2026-11-12T21:30 | 1d | probe fails locally on Bun 1.4.4 (CI pins 1.3.11); merge commit pushed so hosted CI (Bun 1.3.11 + relay soak) is the evidence; then RV-delta 26fbf947..head |
-| L04 | [Question session identity #1732](cards/L04-question-session-identity.md) | - | worker | xcode | claude-sonnet | review | - | 1734 | 2026-11-12T22:10 | 1d | RV-delta running (48a569cf..4bfccf4c); native CI pending; owner notified: merge closes #1732, reopen after |
+| L04 | [Question session identity #1732](cards/L04-question-session-identity.md) | - | worker | xcode | codex-luna | active | - | 1734 | 2026-11-12T22:10 | 1d | fix r3 (R1,R2; R3 rejected) then verify revert-pin-wide.log, hosted native CI, merge gate; reopen #1732 after merge |
 | L05 | [Notification preferences #1707](cards/L05-notification-preferences.md) | - | worker | xcode | - | todo | L03 | 1707 | - | 1d | merge develop; advisor checks the resolution; no third review |
 | L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | - | todo | L03 | - | - | 2d | after L03; plan's negative controls; 3 Sonnet reviewers plus 1 Luna (Q9) |
 | L07 | [Local notification order #1720](cards/L07-local-notification-order.md) | - | worker | xcode | - | blocked | L04, CP1 | - | - | 3d | parked until #1727 is resolved (Q12); counts as settled for L99; branch kept |
@@ -138,4 +138,5 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | codex-L03fix | implementer | codex-terra | gpt-6.1-terra xhigh | L03 | 2026-11-13T01:40 | done |
 | codex-L01fix3 | implementer | codex-luna | gpt-6-luna max | L01 | 2026-11-13T01:50 | thread 01a1d439-625f fix r3 (1 finding) |
 | codex-L03fix2 | implementer | codex-terra | gpt-6.1-terra xhigh | L03 | 2026-11-13T01:50 | thread 01a1d439-63a4 continuation |
-| rv-L04-delta | reviewer | claude-sonnet | sonnet xhigh | L04 | 2026-11-13T01:50 | running aa23b58b |
+| rv-L04-delta | reviewer | claude-sonnet | sonnet xhigh | L04 | 2026-11-13T01:50 | done |
+| codex-L04fix3 | implementer | codex-luna | gpt-6-luna max | L04 | 2026-11-13T01:58 | thread 01a1d43c-d76f fix r3 (R1,R2) |
