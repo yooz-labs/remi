@@ -48,10 +48,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 22 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Agents today | 30 | 23 | daily | every dispatch on every platform; the plan approval covers this limit |
 | Codex Luna today | 8 | 8 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 2 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
-| Claude Sonnet today | 16 | 9 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
+| Claude Sonnet today | 16 | 10 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
 | Claude Opus today | 4 | 3 | daily | lead wakes, lead-tier steps, advisor consults |
 | Advisor consults | 8 | 3 | never | lead tier (Opus), whole plan |
 | Fable consults | 1 | 0 | never | A02 only, owner-requested |
@@ -74,7 +74,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | - | review | L03 | 1736 | 2026-11-13T06:04-08:00 | 2d | 3 Sonnet reviewers running (head d9f8699b), advisor only for a contested security finding; soak pending |
 | L07 | [Local notification order #1720](cards/L07-local-notification-order.md) | - | worker | xcode | - | blocked | L04, CP1 | - | - | 3d | parked until #1727 is resolved (Q12); counts as settled for L99; branch kept |
 | L08 | [Native images #1313](cards/L08-native-images.md) | - | worker-hard | xcode | - | dropped | L03, CP1 | - | - | 3d | parked as evidence (Q11 a): branch kept, not deleted; chunk cards are reference only |
-| L09 | [Bun 1.4.2 pins #1512](cards/L09-bun142-pins.md) | - | worker-hard | - | claude-opus | active | L01 | 1512 | 2026-11-13T06:14-08:00 | 2d | after L01, while no native PR is in review; one RV-delta review from 3a654273 (Q13); merged only after the owner's phone check (Q1) |
+| L09 | [Bun 1.4.2 pins #1512](cards/L09-bun142-pins.md) | - | worker-hard | - | - | review | L01 | 1512 | 2026-11-13T06:14-08:00 | 2d | RV-delta (Sonnet) on the PR's own 20-file diff, owner phone check (Q1), hosted checks at 91f78fbe; PR body closing keyword changed to Part of #1273 |
 | L12 | [WSS writer tests #1641](cards/L12-native-wss-characterization.md) | - | worker | xcode | - | dropped | - | - | - | 4h | Q6 fold into the first #1641 implementation PR; branch kept |
 | L11 | [Compact preview probes #1711](cards/L11-compact-preview.md) | - | worker | - | - | dropped | - | - | - | 4h | Q5 park: branch kept, no PR; not in the L13 delete list |
 | L10 | [#1727 local files check](cards/L10-store-callback-owner-check.md) | - | - | - | - | done | - | - | - | - | verify the #1727 push landed (git ls-remote); then waits on Q16 (PR wanted?) |
@@ -146,9 +146,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | codex-DV4 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T06:15 | done |
 | sonnet-L05 | implementer | claude-sonnet | sonnet high | L05 | 2026-11-13T06:35 | done |
 | sonnet-L14 | implementer | claude-sonnet | sonnet high | L14 | 2026-11-13T06:35 | done |
-| opus-L09 | implementer | claude-opus | opus xhigh | L09 | 2026-11-13T06:45 | running a6a64c52 (Terra busy; Claude slot used) |
+| opus-L09 | implementer | claude-opus | opus xhigh | L09 | 2026-11-13T06:45 | done |
 | rv-L14 | reviewer | extra | sonnet xhigh x3 | L14 | 2026-11-13T07:05 | done |
 | advisor-L05 | advisor | extra | opus xhigh | L05 | 2026-11-13T07:05 | done |
 | codex-L14fix | implementer | codex-luna | gpt-6-luna max | L14 | 2026-11-13T07:30 | running (thread 01a1d554-0434) |
 | rv-L06 | reviewer | extra | sonnet xhigh x3 | L06 | 2026-11-13T07:50 | done |
 | advisor-L06 | advisor | extra | opus xhigh | L06 | 2026-11-13T08:10 | running (reset policy: unbounded 1 Hz after admitted-then-dropped episodes) |
+| rv-L09 | reviewer | extra | sonnet xhigh | L09 | 2026-11-13T08:30 | running a8dd54cf (delta, PR own diff) |
