@@ -133,6 +133,34 @@ struct SessionAddressingTests {
         #expect(afterB.questions.contains { $0.sessionId == original.sessionId && $0.question.id == original.question.id })
     }
 
+    @Test func questionLookupRequiresExactSessionAndMachine() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store
+        let original = try #require(store.machines.first { $0.id == fixture.ids.a }?.questions.first)
+        let sessionA = original.sessionId, sessionB = "00000000-0000-4000-8000-00000000b002"
+        func question(_ session: String, binding: String) throws -> QuestionMessage {
+            var payload = try #require(try JSONSerialization.jsonObject(
+                with: FixtureConformanceTests.fixture("question")) as? [String: Any])
+            payload["sessionId"] = session
+            payload["claudeSessionId"] = binding
+            return try JSONDecoder().decode(QuestionMessage.self, from: JSONSerialization.data(withJSONObject: payload))
+        }
+        let generationA = try #require(store.connectionGenerations[fixture.routes[0]])
+        let generationB = try #require(store.connectionGenerations[fixture.routes[1]])
+        store.receive(.question(try question(sessionA, binding: "binding-a")), from: fixture.routes[0], generation: generationA)
+        store.receive(.question(try question(sessionB, binding: "binding-b")), from: fixture.routes[0], generation: generationA)
+        store.receive(.question(try question(sessionA, binding: "binding-other-machine")), from: fixture.routes[1], generation: generationB)
+        let a = try #require(store.machines.first { $0.id == fixture.ids.a })
+        let b = try #require(store.machines.first { $0.id == fixture.ids.b })
+        let id = original.question.id
+        #expect(a.question(sessionID: sessionA, questionID: id)?.claudeSessionId == "binding-a")
+        #expect(a.question(sessionID: sessionB, questionID: id)?.claudeSessionId == "binding-b")
+        #expect(b.question(sessionID: sessionA, questionID: id)?.claudeSessionId == "binding-other-machine")
+        #expect(b.question(sessionID: sessionB, questionID: id) == nil)
+        #expect(a.question(sessionID: sessionA, questionID: "missing") == nil)
+    }
+
     @Test func sameSessionIDOnTwoMachinesIsAddressedIndependently() async throws {
         let first = try listener(), second = try listener()
         defer { Darwin.close(first.0); Darwin.close(second.0) }
