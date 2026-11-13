@@ -67,24 +67,26 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | ID | Title | Wave | Tier | Needs | Slot | State | Depends | PR | Started | Timebox | Next |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | L01 | [AGENTS.md split #1733](cards/L01-agents-md-split.md) | - | worker | - | - | todo | - | 1733 | - | 4h | verbatim-move check, then 1 docs reviewer (RV-panel, docs) |
-| L03 | [Direct child key #1728](cards/L03-direct-child-key.md) | - | worker-hard | xcode | - | owner | - | 1728 | - | 2d | waits on Q2 only (Q10 answered: full access in a clean worktree); then 3 Sonnet reviewers plus 1 Luna |
-| L02 | [Terminal relay probe #1657](cards/L02-terminal-relay-qualification.md) | - | worker | - | - | todo | - | 1657 | - | 1d | merge develop, start checks, then 2 reviewers |
+| L03 | [Direct child key #1728](cards/L03-direct-child-key.md) | - | worker-hard | xcode | - | owner | - | 1728 | - | 2d | waits on Q2; review form waits on Q13; hosted log must show PairingAttemptTests passed |
+| L02 | [Terminal relay probe #1657](cards/L02-terminal-relay-qualification.md) | - | worker | - | - | todo | - | 1657 | - | 1d | merge develop, start checks; review form waits on Q13 |
 | L04 | [Question session identity #1732](cards/L04-question-session-identity.md) | - | worker | xcode | - | owner | - | - | - | 1d | waits on Q2 only (Q10 answered); then implement per #1732 |
 | L05 | [Notification preferences #1707](cards/L05-notification-preferences.md) | - | worker | xcode | - | todo | L03 | 1707 | - | 1d | merge develop; advisor checks the resolution; no third review |
 | L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | - | owner | L03 | - | - | 2d | waits on Q3; reviews: 3 Sonnet plus 1 Luna (Q9) |
-| L07 | [Local notification order #1720](cards/L07-local-notification-order.md) | - | worker | xcode | - | todo | L03, L04, L05 | - | - | 3d | one PR; chunked review L07-R1 to R4, then L07-S |
-| L08 | [Native images #1313](cards/L08-native-images.md) | - | worker-hard | xcode | - | todo | L03, L06 | - | - | 3d | one PR; chunked review L08-R1 to R4 (R4 adds 1 Luna, Q9), then L08-S; risk R3 |
-| L09 | [Bun 1.4.2 pins #1512](cards/L09-bun142-pins.md) | - | worker-hard | - | - | todo | L01, L07, L08 | 1512 | - | 2d | Q1 keep: after its gates pass it goes owner for the phone check; never merged before |
+| L07 | [Local notification order #1720](cards/L07-local-notification-order.md) | - | worker | xcode | - | owner | L04, CP1 | - | - | 3d | waits on Q12 (a: todo, review-only landing; b: dropped, parked until #1727) |
+| L08 | [Native images #1313](cards/L08-native-images.md) | - | worker-hard | xcode | - | owner | L03, CP1 | - | - | 3d | waits on Q11 (a: dropped, parked as evidence; b: todo, dormant with Release seam gate and owner sign-off) |
+| L09 | [Bun 1.4.2 pins #1512](cards/L09-bun142-pins.md) | - | worker-hard | - | - | todo | L01 | 1512 | - | 2d | dispatch only while no xcode step is in review; merge only while no other step is in review; then owner phone check (Q1) |
 | L12 | [WSS writer tests #1641](cards/L12-native-wss-characterization.md) | - | worker | xcode | - | dropped | - | - | - | 4h | Q6 fold into the first #1641 implementation PR; branch kept |
 | L11 | [Compact preview probes #1711](cards/L11-compact-preview.md) | - | worker | - | - | dropped | - | - | - | 4h | Q5 park: branch kept, no PR; not in the L13 delete list |
 | L10 | [#1727 local files check](cards/L10-store-callback-owner-check.md) | - | - | - | - | owner | - | - | - | - | owner step; waits on Q7; no agent |
-| L99 | Landing complete (CP2) | - | - | - | - | blocked | - | - | - | - | manager sets done when L01 to L12 are each done or dropped (runbook 8) |
+| L99 | Landing complete (CP2) | - | - | - | - | blocked | - | - | - | - | manager sets done when L01 to L12, L14 and CP1 are each done or dropped (runbook 8) |
 | L13 | [Cleanup commands](cards/L13-cleanup-commands.md) | - | worker | - | - | todo | L99 | - | - | 2h | then the owner runs cleanup.md |
 | P01 | [iPad Board design](cards/P01-ipad-board-design.md) | - | lead | xcode, simulator | - | blocked | L99 | - | - | 1d | todo when L99 done; iPad issue filed first; Xcode MCP precondition; CP3 |
 | P02 | iPad Board implementation (outline) | - | worker-hard | xcode, simulator | - | outline | P01 | - | - | - | lead writes the card at CP3 after the owner approves P01 |
-| A01 | [Account switching design](cards/A01-account-switching-design.md) | - | lead | - | - | blocked | L99 | - | - | 1d | todo when L99 done; no code |
+| A01 | [Account switching design](cards/A01-account-switching-design.md) | - | lead | - | - | blocked | L99 | - | - | 1d | todo when L99 done (owner: blocked until every landing step is done or dropped); no code |
 | A02 | [Fable review](cards/A02-account-switching-fable-review.md) | - | frontier | - | - | todo | A01 | - | - | 4h | owner-requested Fable (claude-fable-5-2) |
 | A03 | [Account switching checkpoint](cards/A03-account-switching-checkpoint.md) | - | lead | - | - | todo | A02 | - | - | 1d | ends at owner CP4; no merge before approval |
+| CP1 | CP1 go or adjust for L07 and L08 | - | - | - | - | blocked | - | - | - | - | manager sets done when L01 to L06 are each done or dropped and the lead's CP1 decision is recorded (runbook 8) |
+| L14 | [image-availability #1313](cards/L14-image-availability.md) | - | worker | xcode | - | owner | L03 | - | - | 1d | waits on Q11 (a: todo, L08 dropped; b: dropped, folded into L08) |
 
 ## Questions
 
@@ -100,6 +102,11 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Q8 | L13 | Delete these superseded branches at cleanup: #1717 apns-test-scheduling, native-build-21, #1346 fixture, 1195-epic-relay, 3 scratch/1724? | Delete all and close #1717 citing #1719 (Recommended) / Keep some (name them) | none | 2026-11-18T12:00 | closed | Delete the superseded branches only via commands handed to the owner (L13) (owner, 2026-11-12T19:58-08:00) |
 | Q9 | L03 | Add a Codex Luna second reviewer (different family) on security PRs L03, L06 and chunk L08-R4? | Yes, those three only (Recommended) / Yes, every PR / No, Sonnet only | none | 2026-11-13T12:00 | closed | Add a Codex Luna second reviewer on L03, L06 and chunk L08-R4 only, on top of Sonnet (owner, 2026-11-12T19:58-08:00) |
 | Q10 | L03 | Codex native cards: SwiftPM and xcodebuild write under ~/Library; which sandbox? | danger-full-access for xcode steps only (Recommended) / workspace-write; ask again if a gate is blocked | none | 2026-11-13T12:00 | closed | Codex danger-full-access for native Swift cards only, in a clean worktree; every other Codex card stays workspace-write (owner, 2026-11-12T19:58-08:00) |
+| Q11 | L08 | Supersedes Q4: #1313 artifacts say do not land native-images as dormant code; image-availability is the smallest slice with a caller. Which? | Land image-availability after L03 as its own PR; park native-images as evidence (Recommended) / Land all native-images dormant, with a Release seam gate and your sign-off | none | 2026-11-16T12:00 | open |  |
+| Q12 | L07 | #1720 handoff says the branch is not ready and not wired to live iPhone scheduling (gated on #1727). Land review-only or park? | Park until #1727 is resolved (Recommended), unless the review-only UI is useful alone / Land review-only, stating what is user-visible; remaining items filed by your commands | none | 2026-11-16T12:00 | open |  |
+| Q13 | L03 | #1728, #1657, #1512 record earlier review rounds outside the PR. How many rounds now? | Accept the recorded rounds plus one delta review of changes since (Recommended) / Fresh full round 1, cap resets / Waive review: merge on gates | none | 2026-11-13T12:00 | open |  |
+| Q14 | L03 | Install the pack's Codex forbidden-command rules (gh pr merge/close, gh issue, force push) into ~/.codex/rules for the loop? | Install for the loop, remove at the end (Recommended) / Do not install; rely on the preamble and the develop check | none | 2026-11-13T12:00 | open |  |
+| Q15 | L07 | Merge authority was develop only. May the manager merge a large review-fix PR into its step PR's head branch after its delta review and gates? | Yes, fix PRs into a step's head branch only (Recommended) / No: the owner merges fix PRs | none | 2026-11-16T12:00 | open |  |
 
 ## Proposals
 
