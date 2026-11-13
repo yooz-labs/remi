@@ -778,7 +778,7 @@ struct PhoneLiveRootView: View {
             sessionId: sessionId,
             questionId: questionId,
             answer: value,
-            claudeSessionId: rawQuestion(machineID: machineID, questionId)?.claudeSessionId
+            claudeSessionId: rawQuestion(machineID: machineID, sessionID: sessionId, questionID: questionId)?.claudeSessionId
         )
     }
 
@@ -794,7 +794,7 @@ struct PhoneLiveRootView: View {
             sessionId: sessionId,
             questionId: questionId,
             answer: "",
-            claudeSessionId: rawQuestion(machineID: machineID, questionId)?.claudeSessionId,
+            claudeSessionId: rawQuestion(machineID: machineID, sessionID: sessionId, questionID: questionId)?.claudeSessionId,
             selections: values.compactMap { value in
                 guard let questionIndex = Int(value.stepID) else { return nil }
                 return AnswerSelection(
@@ -813,7 +813,7 @@ struct PhoneLiveRootView: View {
             sessionId: sessionId,
             questionId: questionId,
             answer: "",
-            claudeSessionId: rawQuestion(machineID: machineID, questionId)?.claudeSessionId,
+            claudeSessionId: rawQuestion(machineID: machineID, sessionID: sessionId, questionID: questionId)?.claudeSessionId,
             cancel: true
         )
     }
@@ -869,8 +869,8 @@ struct PhoneLiveRootView: View {
         store.resumeSession(on: machine.endpoint, sessionId: sessionID)
     }
 
-    private func rawQuestion(machineID: String, _ id: String) -> QuestionMessage? {
-        store.machine(withIdentifier: machineID)?.questions.first { $0.question.id == id }
+    private func rawQuestion(machineID: String, sessionID: String, questionID: String) -> QuestionMessage? {
+        store.machine(withIdentifier: machineID)?.question(sessionID: sessionID, questionID: questionID)
     }
 
     private func destination(forQuestionIdentity id: String) -> RemiNavigationDestination? {

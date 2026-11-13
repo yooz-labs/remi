@@ -45,22 +45,33 @@ final class PairingCallbackBridge: @unchecked Sendable {
         case event(RemiInboundEvent)
         case authenticationRetry(String)
     }
-    let stream: AsyncStream<Callback>
-    private let continuation: AsyncStream<Callback>.Continuation
+    struct Receipt: Sendable {
+        let callback: Callback
+        let epoch: UUID?
+    }
+    let stream: AsyncStream<Receipt>
+    private let continuation: AsyncStream<Receipt>.Continuation
     private let lock = NSLock()
+    private var directParentFence: DirectParentHelloFence?
     private var valid = true
     private(set) var overflowed = false
 
     init() {
-        let pair = AsyncStream<Callback>.makeStream(bufferingPolicy: .bufferingOldest(128))
+        let pair = AsyncStream<Receipt>.makeStream(bufferingPolicy: .bufferingOldest(128))
         stream = pair.stream
         continuation = pair.continuation
+    }
+
+    func bindDirectParentFence(_ fence: DirectParentHelloFence) {
+        lock.lock(); defer { lock.unlock() }
+        precondition(directParentFence == nil)
+        directParentFence = fence
     }
 
     func yield(_ callback: Callback) {
         lock.lock(); defer { lock.unlock() }
         guard valid else { return }
-        if case .dropped = continuation.yield(callback) {
+        if case .dropped = continuation.yield(Receipt(callback: callback, epoch: directParentFence?.snapshot().0)) {
             overflowed = true
             valid = false
             continuation.finish()
@@ -90,6 +101,7 @@ struct PairingAdoption {
     let endpoint: MachineEndpoint
     let generation: UUID
     let profileID: String
+    var callbackEpoch: UUID? = nil
 }
 
 /// One initial pairing owner. Candidates are never normal Store routes until
@@ -120,6 +132,7 @@ final class PairingAttemptCoordinator {
     private var layer: MachineConnectionLayer?
     #if DEBUG
     var ownedBeforeAdmission: (@MainActor () async -> Void)?
+    var ownedBeforeAdoptedReconnectState: (@MainActor () async -> Void)?
     private(set) var ownedAttemptedAddresses: [String] = []
     private(set) var ownedAdmittedConfiguration: RemiConnectionConfiguration?
     #endif
@@ -210,6 +223,7 @@ final class PairingAttemptCoordinator {
                 directRetryPolicy: .coordinatedPairing), identity: identity,
                 authenticationRetryHandler: { bridge.yield(.authenticationRetry($0)) },
                 stateHandler: { bridge.yield(.state($0)) }, eventHandler: { bridge.yield(.event($0)) })
+            bridge.bindDirectParentFence(connection.directParentHelloFence)
             self.connection = connection
             #if DEBUG
             ownedAttemptedAddresses.append(endpoint.displayAddress)
@@ -217,14 +231,28 @@ final class PairingAttemptCoordinator {
             publishState(.connecting)
             await connection.start()
             var advance = false
-            for await callback in bridge.stream {
+            for await receipt in bridge.stream {
+                let callback = receipt.callback
                 guard active else { return }
                 if bridge.didOverflow { fail("Pairing stopped because the callback queue overflowed."); return }
                 if let adoption {
-                    _ = bridge.ifValid { forward(callback, adoption) }
-                    if case .state(.stopped) = callback { bridge.invalidate(); active = false; return }
+                    #if DEBUG
+                    switch callback {
+                    case .state(.reachabilityFailed), .state(.retrying): await ownedBeforeAdoptedReconnectState?()
+                    default: break
+                    }
+                    #endif
+                    var forwarded = adoption
+                    forwarded.callbackEpoch = receipt.epoch
+                    _ = bridge.ifValid { forward(callback, forwarded) }
+                    if case .state(.stopped) = callback,
+                       receipt.epoch.map(connection.directParentHelloFence.isCurrent) ?? true {
+                        bridge.invalidate(); active = false; return
+                    }
                     continue
                 }
+                if case .event(.hello) = callback, let epoch = receipt.epoch,
+                   !connection.directParentHelloFence.isCurrent(epoch) { continue }
                 switch callback {
                 case .state(.reachabilityFailed): advance = true
                 case .state(.rejected(let reason)): fail(reason)
@@ -243,6 +271,9 @@ final class PairingAttemptCoordinator {
                         await ownedBeforeAdmission?()
                         #endif
                         try await connection.completeCoordinatedAdmission()
+                        if let epoch = receipt.epoch, !connection.directParentHelloFence.isCurrent(epoch) {
+                            throw PairingAdmissionError.refused("The pairing socket changed before admission.")
+                        }
                         #if DEBUG
                         let admittedConfiguration = await connection.ownedConfiguration
                         #endif

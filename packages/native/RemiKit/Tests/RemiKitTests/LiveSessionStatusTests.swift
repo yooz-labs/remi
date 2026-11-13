@@ -88,6 +88,7 @@ struct LiveSessionStatusTests {
         let generation = try #require(store.connectionGenerations[endpoint])
         let list = try JSONDecoder().decode(SessionListResponse.self,
             from: FixtureConformanceTests.fixture("session_list_response"))
+        try admitLegacyRootAtStoreSeam(store, endpoint: endpoint, generation: generation)
         store.receive(.connected(sessionId: nil), from: endpoint, generation: generation)
         store.receive(.sessions(list), from: endpoint, generation: generation)
         let child = try #require(store.connectionGenerations.keys.first { $0.port == 19924 })
@@ -118,6 +119,7 @@ struct LiveSessionStatusTests {
         let list = try JSONDecoder().decode(SessionListResponse.self,
             from: JSONSerialization.data(withJSONObject: payload))
         let session = list.sessions[0].sessionId
+        try admitLegacyRootAtStoreSeam(store, endpoint: endpoint, generation: generation)
         store.receive(.sessions(list), from: endpoint, generation: generation)
         let child = try #require(store.connectionGenerations.keys.first { $0.port == 19924 })
         let childGeneration = try #require(store.connectionGenerations[child])
@@ -126,6 +128,14 @@ struct LiveSessionStatusTests {
         store.receive(.stopped, from: endpoint, generation: generation)
         store.receive(.sessions(list), from: child, generation: childGeneration)
         #expect(store.transcriptRouteGeneration(machineID: endpoint.id, sessionID: session) == childGeneration)
+    }
+
+    /// These tests inject legacy messages after the actor's Hello boundary;
+    /// real-socket legacy admission is exercised separately.
+    private func admitLegacyRootAtStoreSeam(_ store: MachineStore, endpoint: MachineEndpoint, generation: UUID) throws {
+        let hello = try JSONDecoder().decode(HelloAckMessage.self, from: FixtureConformanceTests.fixture("hello_ack_legacy"))
+        store.ownedObserveParentHello(endpoint, key: nil)
+        store.receive(.hello(hello), from: endpoint, generation: generation)
     }
 
     @Test(arguments: ["thinking", "executing", "working", "active", "evaluating", "approved", "idle", "waiting", "starting"])
