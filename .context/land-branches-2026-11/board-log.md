@@ -105,3 +105,5 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T07:11-08:00 | L02 merged (PR 1657 -> 105438be, bump 89fc64a1): all required checks green incl. soak, merge-tree clean, no file overlap, closing ref #1656 intended; DV r5 dispatched on 89fc64a193942cc05f8c8de98efe0557aa69138d |
 | 2026-11-13T07:18-08:00 | DV r5 on 89fc64a1 dispatched; Luna daily limit reached then waived by the owner (no daily budgets, slots only) |
 | 2026-11-13T07:21-08:00 | DV r5 on 89fc64a1 green (952 tests; the optional --help call was my extra, not a gate). Hosted CI on PR 1512 confirms the Critical: test-workers fail 'Unsupported target contract' (the Opus fix round is in flight). L02 worktree and branch deleted (merged). |
+| 2026-11-13T07:42-08:00 | L05 merged (PR 1707 -> fac561eb, bump faa335d7): all required checks green incl. native and soak, merge-tree clean, no overlap, closing refs []; DV r6 dispatched |
+| 2026-11-13T07:43-08:00 | L05 worktree and branch deleted (merged) |

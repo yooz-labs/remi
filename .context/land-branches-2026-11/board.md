@@ -19,8 +19,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Manager id | mba-claude-sonnet |
 | State | running |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | 2026-11-13T07:21-08:00 |
-| Next tick | 2026-11-13T07:51-08:00 |
+| Last tick | 2026-11-13T07:42-08:00 |
+| Next tick | 2026-11-13T08:12-08:00 |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-12T19:05-08:00 |
 
@@ -48,8 +48,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 27 | daily | every dispatch on every platform; the plan approval covers this limit |
-| Codex Luna today | 8 | 9 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
+| Agents today | 30 | 28 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Codex Luna today | 8 | 10 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 3 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
 | Claude Sonnet today | 16 | 11 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
 | Claude Opus today | 4 | 3 | daily | lead wakes, lead-tier steps, advisor consults |
@@ -70,7 +70,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | L03 | [Direct child key #1728](cards/L03-direct-child-key.md) | - | worker-hard | xcode | - | done | - | 1728 | 2026-11-12T21:30 | 2d | develop merged into branch (477f1680, clean), PR ready; waiting hosted checks incl. local-relay soak; then merge gate (no further review round) |
 | L02 | [Terminal relay probe #1657](cards/L02-terminal-relay-qualification.md) | - | worker | - | - | done | - | 1657 | 2026-11-12T21:30 | 1d | probe ok on Bun 1.3.11, fails 1.4.4 (#1738); hosted CI on 833ada41 pending (soak); own diff unchanged, no RV-delta; merge when green (Q19) |
 | L04 | [Question session identity #1732](cards/L04-question-session-identity.md) | - | worker | xcode | - | done | - | 1734 | 2026-11-12T22:10 | 1d | merge gate: fix r3 verified (head bab01d67, wide-pin revert, Mac lookup revert); waiting on native CI; then merge, reopen #1732 |
-| L05 | [Notification preferences #1707](cards/L05-notification-preferences.md) | - | worker | xcode | - | review | L03 | 1707 | 2026-11-13T06:11-08:00 | 1d | PR ready; waiting hosted checks (native, relay scope) at 28341b5a; then merge gate (no third review round) |
+| L05 | [Notification preferences #1707](cards/L05-notification-preferences.md) | - | worker | xcode | - | done | L03 | 1707 | 2026-11-13T06:11-08:00 | 1d | PR ready; waiting hosted checks (native, relay scope) at 28341b5a; then merge gate (no third review round) |
 | L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | codex-terra | active | L03 | 1736 | 2026-11-13T06:04-08:00 | 2d | fix r2 (advisor: 30 s health condition; CI step for opt-in suite; findings L06/r2); then RV-delta, hosted incl. soak, merge gate |
 | L07 | [Local notification order #1720](cards/L07-local-notification-order.md) | - | worker | xcode | - | blocked | L04, CP1 | - | - | 3d | parked until #1727 is resolved (Q12); counts as settled for L99; branch kept |
 | L08 | [Native images #1313](cards/L08-native-images.md) | - | worker-hard | xcode | - | dropped | L03, CP1 | - | - | 3d | parked as evidence (Q11 a): branch kept, not deleted; chunk cards are reference only |
@@ -156,3 +156,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | codex-L06fix | implementer | codex-terra | gpt-6.1-terra xhigh | L06 | 2026-11-13T08:45 | thread fix round (A, F2-F10) |
 | rv-L14d | reviewer | extra | sonnet xhigh | L14 | 2026-11-13T09:10 | done |
 | codex-DV5 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T07:10 | done |
+| codex-DV6 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T07:50 | thread DV r6 on faa335d7 |
