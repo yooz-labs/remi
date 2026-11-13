@@ -19,8 +19,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Manager id | mba-claude-sonnet |
 | State | running |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | 2026-11-13T06:43-08:00 |
-| Next tick | 2026-11-13T07:13-08:00 |
+| Last tick | 2026-11-13T07:05-08:00 |
+| Next tick | 2026-11-13T07:35-08:00 |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-12T19:05-08:00 |
 
@@ -48,10 +48,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 24 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Agents today | 30 | 25 | daily | every dispatch on every platform; the plan approval covers this limit |
 | Codex Luna today | 8 | 8 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 3 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
-| Claude Sonnet today | 16 | 10 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
+| Claude Sonnet today | 16 | 11 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
 | Claude Opus today | 4 | 3 | daily | lead wakes, lead-tier steps, advisor consults |
 | Advisor consults | 8 | 3 | never | lead tier (Opus), whole plan |
 | Fable consults | 1 | 0 | never | A02 only, owner-requested |
@@ -86,7 +86,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | A02 | [Fable review](cards/A02-account-switching-fable-review.md) | - | frontier | - | - | todo | A01 | - | - | 4h | owner-requested Fable (claude-fable-5-2) |
 | A03 | [Account switching checkpoint](cards/A03-account-switching-checkpoint.md) | - | lead | - | - | todo | A02 | - | - | 1d | ends at owner CP4; no merge before approval |
 | CP1 | CP1 go or adjust for L07 and L08 | - | - | - | - | blocked | - | - | - | - | manager sets done when L01 to L06 are done or dropped and the lead's CP1 decision is recorded; now gates only L07's unpark |
-| L14 | [image-availability #1313](cards/L14-image-availability.md) | - | worker | xcode | codex-luna | active | L03 | 1737 | 2026-11-13T06:11-08:00 | 1d | fix r2 (F1-F10, findings in L14/r2); then RV-delta Sonnet (round 2, last), hosted checks, merge gate |
+| L14 | [image-availability #1313](cards/L14-image-availability.md) | - | worker | xcode | - | review | L03 | 1737 | 2026-11-13T06:11-08:00 | 1d | RV-delta (Sonnet) on 6fa27711..66114ad8 running; native job failed on the #1739 flake, rerun requested; then merge gate |
 
 ## Questions
 
@@ -149,8 +149,9 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | opus-L09 | implementer | claude-opus | opus xhigh | L09 | 2026-11-13T06:45 | running a6a64c52 (fix round: runner contract, docs) |
 | rv-L14 | reviewer | extra | sonnet xhigh x3 | L14 | 2026-11-13T07:05 | done |
 | advisor-L05 | advisor | extra | opus xhigh | L05 | 2026-11-13T07:05 | done |
-| codex-L14fix | implementer | codex-luna | gpt-6-luna max | L14 | 2026-11-13T07:30 | running (thread 01a1d554-0434) |
+| codex-L14fix | implementer | codex-luna | gpt-6-luna max | L14 | 2026-11-13T07:30 | done |
 | rv-L06 | reviewer | extra | sonnet xhigh x3 | L06 | 2026-11-13T07:50 | done |
 | advisor-L06 | advisor | extra | opus xhigh | L06 | 2026-11-13T08:10 | done |
 | rv-L09 | reviewer | extra | sonnet xhigh | L09 | 2026-11-13T08:30 | done |
 | codex-L06fix | implementer | codex-terra | gpt-6.1-terra xhigh | L06 | 2026-11-13T08:45 | thread fix round (A, F2-F10) |
+| rv-L14d | reviewer | extra | sonnet xhigh | L14 | 2026-11-13T09:10 | running a4777574 (delta 6fa27711..66114ad8) |
