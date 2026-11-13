@@ -9,11 +9,22 @@ private final class APNsCallbackDelivery: @unchecked Sendable {
     init(_ callback: @escaping (NativeAPNsEnvironment.Match) -> Void) { self.callback = callback }
 }
 
-@MainActor
-struct APNsCallbackOrderTests {
-    @Test func callbackPriorityCannotReorderAnEarlierDuplicate() async {
-        let environment = NativeAPNsEnvironment(query: { production, completion in
-            let delivery = APNsCallbackDelivery(completion)
+private final class APNsWaitResults: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Bool] = []
+    func append(_ value: Bool) { lock.lock(); defer { lock.unlock() }; values.append(value) }
+    func snapshot() -> [Bool] { lock.lock(); defer { lock.unlock() }; return values }
+}
+
+private final class APNsOrderedCallbacks: @unchecked Sendable {
+    let queue = DispatchQueue(label: "remi.test.apns-callback-order")
+    let finished = DispatchGroup()
+    let waits = APNsWaitResults()
+
+    func submit(production: Bool, delivery: APNsCallbackDelivery) {
+        finished.enter()
+        queue.async { [self] in
+            defer { finished.leave() }
             let priorities: [TaskPriority] = production ? [.high, .background] : [.high]
             for priority in priorities {
                 let returned = DispatchSemaphore(value: 0)
@@ -21,11 +32,28 @@ struct APNsCallbackOrderTests {
                     delivery.callback(production ? .match : .mismatch)
                     returned.signal()
                 }
-                #expect(returned.wait(timeout: .now() + 3) == .success)
+                waits.append(returned.wait(timeout: .now() + 3) == .success)
             }
+        }
+    }
+}
+
+@MainActor
+struct APNsCallbackOrderTests {
+    @Test func callbackPriorityCannotReorderAnEarlierDuplicate() async {
+        let callbacks = APNsOrderedCallbacks()
+        let environment = NativeAPNsEnvironment(query: { production, completion in
+            let delivery = APNsCallbackDelivery(completion)
+            // Preserve arrival order without waiting on the MainActor that other tests need.
+            callbacks.submit(production: production, delivery: delivery)
             return {}
         })
-        #expect(await environment.resolve(stillCurrent: { true }) == .unavailable)
+        let result = await environment.resolve(stillCurrent: { true })
+        await withCheckedContinuation { continuation in
+            callbacks.finished.notify(queue: .main) { continuation.resume() }
+        }
+        #expect(callbacks.waits.snapshot() == [true, true, true])
+        #expect(result == .unavailable)
     }
 
     @Test func earlierDuplicateCannotBeOvertakenByComplementaryResult() async {

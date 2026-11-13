@@ -26,6 +26,7 @@ struct MacLiveRootView: View {
     /// The session `reconcileNavigation` chose as a fallback; `onChange` skips recording it.
     @State private var autoSelected: (machineID: String, sessionID: String)?
     @State private var showingNewSession = false
+    @State private var showingMessageOutcomes = false
     @State private var showingJump = false
     @State private var newSessionMachineID: String?
     @State private var newSessionRepository: String?
@@ -195,7 +196,11 @@ struct MacLiveRootView: View {
                                     sessionId: session.id,
                                     questionId: questionId,
                                     answer: value,
-                                    claudeSessionId: rawQuestion(id: questionId)?.claudeSessionId
+                                    claudeSessionId: rawQuestion(
+                                        machineID: session.machineID,
+                                        sessionID: session.id,
+                                        questionID: questionId
+                                    )?.claudeSessionId
                                 )
                             },
                             onSubmit: { questionId, selections in
@@ -204,7 +209,11 @@ struct MacLiveRootView: View {
                                     sessionId: session.id,
                                     questionId: questionId,
                                     answer: "",
-                                    claudeSessionId: rawQuestion(id: questionId)?.claudeSessionId,
+                                    claudeSessionId: rawQuestion(
+                                        machineID: session.machineID,
+                                        sessionID: session.id,
+                                        questionID: questionId
+                                    )?.claudeSessionId,
                                     selections: selections.compactMap { selection in
                                         guard let questionIndex = Int(selection.stepID) else { return nil }
                                         return AnswerSelection(
@@ -221,7 +230,11 @@ struct MacLiveRootView: View {
                                     sessionId: session.id,
                                     questionId: questionId,
                                     answer: "",
-                                    claudeSessionId: rawQuestion(id: questionId)?.claudeSessionId,
+                                    claudeSessionId: rawQuestion(
+                                        machineID: session.machineID,
+                                        sessionID: session.id,
+                                        questionID: questionId
+                                    )?.claudeSessionId,
                                     cancel: true
                                 )
                             },
@@ -234,6 +247,9 @@ struct MacLiveRootView: View {
                                     content: content,
                                     claudeSessionId: binding
                                 )
+                            },
+                            onDismissOutgoing: { id in
+                                store.dismissOutgoing(presentationID: id)
                             },
                             onResume: session.canResume ? { resume(session) } : nil,
                             onTerminate: { store.terminateSession(machineID: session.machineID, sessionId: session.id) },
@@ -270,6 +286,14 @@ struct MacLiveRootView: View {
         VStack(spacing: 0) {
             feedbackBanner
             notificationPermissionBanner
+            if store.outgoingCount > 0 {
+                HStack {
+                    Spacer()
+                    Button("Message outcomes (\(store.outgoingCount))", systemImage: "tray") { showingMessageOutcomes = true }
+                }
+                .padding(.horizontal)
+                .padding(.vertical, RemiTheme.Spacing.xs)
+            }
             mainContent
         }
         .focusedSceneValue(\.macWorkspace, workspaceActions)
@@ -420,6 +444,12 @@ struct MacLiveRootView: View {
                 relayNotifications.closeNotification()
             }
                 .frame(minWidth: 440, minHeight: 320)
+        }
+        .sheet(isPresented: $showingMessageOutcomes) {
+            RemiOutgoingHistoryView(groups: store.outgoingHistory) { key, id in
+                store.dismissOutgoing(groupID: key, messageID: id)
+            }
+            .frame(minWidth: 480, minHeight: 400)
         }
         .sheet(isPresented: $showingNewSession, onDismiss: {
             newSessionMachineID = nil
@@ -630,8 +660,7 @@ struct MacLiveRootView: View {
     }
 
     private func rawQuestion(machineID: String, sessionID: String, questionID: String) -> QuestionMessage? {
-        store.machine(withIdentifier: machineID)?.questions
-            .first { $0.sessionId == sessionID && $0.question.id == questionID }
+        store.machine(withIdentifier: machineID)?.question(sessionID: sessionID, questionID: questionID)
     }
 
     private func answerFromInbox(machineID: String, sessionID: String, questionID: String, value: String) {
@@ -1152,7 +1181,13 @@ struct MacLiveRootView: View {
 
     private func pendingEntries(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
         store.outgoingMessages(machineID: machineID, sessionID: sessionID).map {
-            RemiTranscriptEntry.pending(id: "pending-\($0.id)", text: $0.content, state: $0.delivery == .sending ? .sending : .sent)
+            let state: RemiOutgoingState = switch $0.delivery {
+            case .sending: .sending
+            case .handedOff: .handedOff
+            case .refused: .refused
+            case .uncertain: .uncertain
+            }
+            return RemiTranscriptEntry.pending(id: $0.presentationID, text: $0.content, state: state)
         }
     }
 
@@ -1180,10 +1215,6 @@ struct MacLiveRootView: View {
             name: tool.toolName ?? "Tool",
             summary: String(summary.prefix(240))
         )
-    }
-
-    private func rawQuestion(id: String) -> QuestionMessage? {
-        selectedMachine?.questions.first { $0.question.id == id }
     }
 
     private func answerPath(_ value: QuestionAnswerPath?) -> RemiAnswerPath? {

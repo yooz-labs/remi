@@ -8,6 +8,7 @@ enum PhoneShellSheet: Identifiable {
     case pairing
     case preferences
     case machines
+    case messageOutcomes
     /// A relay notification question. One presentation with the others: two `.sheet`
     /// modifiers on one host cannot both be up.
     case relayNotification
@@ -18,6 +19,7 @@ enum PhoneShellSheet: Identifiable {
         case .pairing: "pairing"
         case .preferences: "preferences"
         case .machines: "machines"
+        case .messageOutcomes: "messageOutcomes"
         case .relayNotification: "relayNotification"
         }
     }
@@ -82,6 +84,17 @@ struct PhoneLiveRootView: View {
         .onChange(of: layoutMode) { _, _ in projectMenu = nil }
         .environment(\.remiComposerFocusRequest, composerFocusRequest)
         .background { keyboardCommands }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if store.outgoingCount > 0 {
+                HStack {
+                    Spacer()
+                    Button("Message outcomes (\(store.outgoingCount))", systemImage: "tray") { present(.messageOutcomes) }
+                }
+                .padding(.horizontal)
+                .padding(.vertical, RemiTheme.Spacing.xs)
+                .background(.bar)
+            }
+        }
         .onChange(of: layoutMode, initial: true) { _, mode in
             shell.layoutModeChanged(to: mode)
         }
@@ -463,6 +476,10 @@ struct PhoneLiveRootView: View {
         case .pairing:
             pairingScreen { activeSheet = nil }
                 .presentationSizing(.form)
+        case .messageOutcomes:
+            RemiOutgoingHistoryView(groups: store.outgoingHistory) { key, id in
+                store.dismissOutgoing(groupID: key, messageID: id)
+            }
         case .preferences:
             PhonePreferencesSheet(publicIdentity: store.publicIdentity)
         case .relayNotification:
@@ -717,7 +734,13 @@ struct PhoneLiveRootView: View {
 
     private func pendingEntries(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
         store.outgoingMessages(machineID: machineID, sessionID: sessionID).map {
-            RemiTranscriptEntry.pending(id: "pending-\($0.id)", text: $0.content, state: $0.delivery == .sending ? .sending : .sent)
+            let state: RemiOutgoingState = switch $0.delivery {
+            case .sending: .sending
+            case .handedOff: .handedOff
+            case .refused: .refused
+            case .uncertain: .uncertain
+            }
+            return RemiTranscriptEntry.pending(id: $0.presentationID, text: $0.content, state: state)
         }
     }
 
@@ -755,7 +778,7 @@ struct PhoneLiveRootView: View {
             sessionId: sessionId,
             questionId: questionId,
             answer: value,
-            claudeSessionId: rawQuestion(machineID: machineID, questionId)?.claudeSessionId
+            claudeSessionId: rawQuestion(machineID: machineID, sessionID: sessionId, questionID: questionId)?.claudeSessionId
         )
     }
 
@@ -771,7 +794,7 @@ struct PhoneLiveRootView: View {
             sessionId: sessionId,
             questionId: questionId,
             answer: "",
-            claudeSessionId: rawQuestion(machineID: machineID, questionId)?.claudeSessionId,
+            claudeSessionId: rawQuestion(machineID: machineID, sessionID: sessionId, questionID: questionId)?.claudeSessionId,
             selections: values.compactMap { value in
                 guard let questionIndex = Int(value.stepID) else { return nil }
                 return AnswerSelection(
@@ -790,7 +813,7 @@ struct PhoneLiveRootView: View {
             sessionId: sessionId,
             questionId: questionId,
             answer: "",
-            claudeSessionId: rawQuestion(machineID: machineID, questionId)?.claudeSessionId,
+            claudeSessionId: rawQuestion(machineID: machineID, sessionID: sessionId, questionID: questionId)?.claudeSessionId,
             cancel: true
         )
     }
@@ -846,8 +869,8 @@ struct PhoneLiveRootView: View {
         store.resumeSession(on: machine.endpoint, sessionId: sessionID)
     }
 
-    private func rawQuestion(machineID: String, _ id: String) -> QuestionMessage? {
-        store.machine(withIdentifier: machineID)?.questions.first { $0.question.id == id }
+    private func rawQuestion(machineID: String, sessionID: String, questionID: String) -> QuestionMessage? {
+        store.machine(withIdentifier: machineID)?.question(sessionID: sessionID, questionID: questionID)
     }
 
     private func destination(forQuestionIdentity id: String) -> RemiNavigationDestination? {
@@ -917,6 +940,9 @@ struct PhoneLiveRootView: View {
             onSubmit: { submit(machineID: session.machineID, sessionId: session.id, questionId: $0, values: $1) },
             onCancel: { cancel(machineID: session.machineID, sessionId: session.id, questionId: $0) },
             onSend: { await sendChat(machineID: session.machineID, sessionId: session.id, content: $0) },
+            onDismissOutgoing: { id in
+                store.dismissOutgoing(presentationID: id)
+            },
             onTerminate: { store.terminateSession(machineID: session.machineID, sessionId: session.id) },
             onClose: { shell.select(.board) },
             focusQuestionRequest: focus,

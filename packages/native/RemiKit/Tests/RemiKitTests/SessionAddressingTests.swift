@@ -75,6 +75,15 @@ struct SessionAddressingTests {
             from: JSONSerialization.data(withJSONObject: payload))
     }
 
+    private func questionMessage(sessionID: String, claudeSessionId: String? = nil) throws -> QuestionMessage {
+        var payload = try #require(try JSONSerialization.jsonObject(
+            with: FixtureConformanceTests.fixture("question")) as? [String: Any])
+        payload["sessionId"] = sessionID
+        if let claudeSessionId { payload["claudeSessionId"] = claudeSessionId }
+        return try JSONDecoder().decode(QuestionMessage.self,
+            from: JSONSerialization.data(withJSONObject: payload))
+    }
+
     @Test func transcriptsAreKeptPerMachine() throws {
         let fixture = try twoMachines()
         defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
@@ -97,6 +106,191 @@ struct SessionAddressingTests {
         #expect(store.removeMachine(fixture.routes[0]))
         #expect(store.transcriptsBySession[keyA] == nil)
         #expect(store.transcriptsBySession[keyB]?.map(\.content) == ["from B"])
+    }
+
+    @Test func sameQuestionIDInDifferentSessionsDoesNotReplaceAnotherCard() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store
+        let original = try #require(store.machines.first { $0.id == fixture.ids.a }?.questions.first)
+        let secondSession = "00000000-0000-4000-8000-00000000b002"
+        let second = try questionMessage(sessionID: secondSession)
+        #expect(second.question.id == original.question.id)
+        let generation = try #require(store.connectionGenerations[fixture.routes[0]])
+        store.receive(.question(second), from: fixture.routes[0], generation: generation)
+
+        let a = try #require(store.machines.first { $0.id == fixture.ids.a })
+        let b = try #require(store.machines.first { $0.id == fixture.ids.b })
+        #expect(Set(a.questions.filter { $0.question.id == original.question.id }.map(\.sessionId)) ==
+                Set([original.sessionId, secondSession]))
+        #expect(b.questions.contains { $0.sessionId == original.sessionId && $0.question.id == original.question.id })
+
+        let resolution: [String: Any] = ["type": "question_resolved", "id": UUID().uuidString,
+            "timestamp": "2026-10-31T00:00:00.000Z", "sessionId": secondSession,
+            "questionId": second.question.id, "reason": "answered"]
+        let resolved = try JSONDecoder().decode(QuestionResolvedMessage.self,
+            from: JSONSerialization.data(withJSONObject: resolution))
+        store.receive(.questionResolved(resolved), from: fixture.routes[0], generation: generation)
+        let afterA = try #require(store.machines.first { $0.id == fixture.ids.a })
+        let afterB = try #require(store.machines.first { $0.id == fixture.ids.b })
+        #expect(afterA.questions.contains { $0.sessionId == original.sessionId && $0.question.id == original.question.id })
+        #expect(!afterA.questions.contains { $0.sessionId == secondSession && $0.question.id == original.question.id })
+        #expect(afterB.questions.contains { $0.sessionId == original.sessionId && $0.question.id == original.question.id })
+    }
+
+    @Test func questionLookupRequiresExactSessionAndMachine() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store
+        let original = try #require(store.machines.first { $0.id == fixture.ids.a }?.questions.first)
+        let sessionA = original.sessionId, sessionB = "00000000-0000-4000-8000-00000000b002"
+        let generationA = try #require(store.connectionGenerations[fixture.routes[0]])
+        let generationB = try #require(store.connectionGenerations[fixture.routes[1]])
+        store.receive(.question(try questionMessage(sessionID: sessionA, claudeSessionId: "binding-a")),
+            from: fixture.routes[0], generation: generationA)
+        store.receive(.question(try questionMessage(sessionID: sessionB, claudeSessionId: "binding-b")),
+            from: fixture.routes[0], generation: generationA)
+        store.receive(.question(try questionMessage(sessionID: sessionA, claudeSessionId: "binding-other-machine")),
+            from: fixture.routes[1], generation: generationB)
+        let a = try #require(store.machines.first { $0.id == fixture.ids.a })
+        let b = try #require(store.machines.first { $0.id == fixture.ids.b })
+        let id = original.question.id
+        #expect(a.question(sessionID: sessionA, questionID: id)?.claudeSessionId == "binding-a")
+        #expect(a.question(sessionID: sessionB, questionID: id)?.claudeSessionId == "binding-b")
+        #expect(b.question(sessionID: sessionA, questionID: id)?.claudeSessionId == "binding-other-machine")
+        #expect(b.question(sessionID: sessionB, questionID: id) == nil)
+        #expect(a.question(sessionID: sessionA, questionID: "missing") == nil)
+    }
+
+    @Test func questionSnapshotReconcilesOnlyItsSession() throws {
+        let sessionA = "00000000-0000-4000-8000-00000000a001"
+        let sessionB = "00000000-0000-4000-8000-00000000b002"
+        let questionA = try questionMessage(sessionID: sessionA)
+        let questionB = try questionMessage(sessionID: sessionB)
+        let questionID = questionA.question.id
+        #expect(questionB.question.id == questionID)
+        var state = MachineState(
+            endpoint: MachineEndpoint(host: "127.0.0.1", port: 18790),
+            displayName: "Test"
+        )
+        state.questions = [questionA, questionB]
+
+        let afterEmptySnapshot = MachineStore.reconcilingQuestionSnapshot(
+            in: state,
+            sessionId: sessionA,
+            liveQuestionIDs: []
+        )
+        #expect(afterEmptySnapshot.questions == [questionB])
+
+        let afterLiveSnapshot = MachineStore.reconcilingQuestionSnapshot(
+            in: state,
+            sessionId: sessionB,
+            liveQuestionIDs: [questionID]
+        )
+        #expect(Set(afterLiveSnapshot.questions.map(\.sessionId)) == Set([sessionA, sessionB]))
+        #expect(afterLiveSnapshot.questions.count == 2)
+    }
+
+    @Test func nativeQuestionComparisonsRequireSessionScope() throws {
+        let packages = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let native = packages.appendingPathComponent("native")
+        let questionComparison = try NSRegularExpression(
+            pattern: #"\bquestion\.id\b\s*==|==\s*\bquestion\.id\b|\bquestionId\b\s*==|==\s*\bquestionId\b"#
+        )
+        let sessionComparison = try NSRegularExpression(pattern: #"\bsessionId\s*=="#)
+        let exactMachineStateLookup = try NSRegularExpression(
+            pattern: #"store\.machine\s*\(\s*withIdentifier:\s*machineID\s*\)\s*\?\.question\s*\(\s*sessionID:\s*sessionID\s*,\s*questionID:\s*questionID\s*\)"#
+        )
+        let rootViews: Set<String> = ["iPhone/PhoneLiveRootView.swift", "Mac/MacLiveRootView.swift"]
+
+        for directoryName in ["iPhone", "Mac"] {
+            let directory = native.appendingPathComponent(directoryName, isDirectory: true)
+            let enumerator = try #require(
+                FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil)
+            )
+            let sourceFiles = enumerator.compactMap { $0 as? URL }
+                .filter { $0.pathExtension == "swift" }
+                .sorted { $0.path < $1.path }
+            #expect(!sourceFiles.isEmpty, "packages/native/\(directoryName) has no Swift source files")
+
+            for sourceFile in sourceFiles {
+                let relativePath = String(sourceFile.path.dropFirst(native.path.count + 1))
+                let source = try String(contentsOf: sourceFile, encoding: .utf8)
+                let nsSource = source as NSString
+                let matches = questionComparison.matches(
+                    in: source,
+                    range: NSRange(location: 0, length: nsSource.length)
+                )
+
+                for match in matches {
+                    var openBraces: [Int] = []
+                    for index in 0..<match.range.location {
+                        switch nsSource.character(at: index) {
+                        case 123:
+                            openBraces.append(index)
+                        case 125:
+                            _ = openBraces.popLast()
+                        default:
+                            break
+                        }
+                    }
+
+                    guard let openingBrace = openBraces.last else {
+                        let line = nsSource.substring(to: match.range.location).filter { $0 == "\n" }.count + 1
+                        #expect(Bool(false), "\(relativePath):\(line) has a question id comparison outside a scoped predicate")
+                        continue
+                    }
+
+                    var depth = 0
+                    var closingBrace: Int?
+                    braceScan: for index in openingBrace..<nsSource.length {
+                        switch nsSource.character(at: index) {
+                        case 123:
+                            depth += 1
+                        case 125:
+                            depth -= 1
+                            if depth == 0 {
+                                closingBrace = index
+                                break braceScan
+                            }
+                        default:
+                            break
+                        }
+                    }
+
+                    guard let closingBrace else {
+                        let line = nsSource.substring(to: match.range.location).filter { $0 == "\n" }.count + 1
+                        #expect(Bool(false), "\(relativePath):\(line) has an unclosed question predicate")
+                        continue
+                    }
+
+                    let predicate = nsSource.substring(
+                        with: NSRange(location: openingBrace + 1, length: closingBrace - openingBrace - 1)
+                    )
+                    let predicateSource = predicate as NSString
+                    let hasSession = sessionComparison.firstMatch(
+                        in: predicate,
+                        range: NSRange(location: 0, length: predicateSource.length)
+                    ) != nil
+                    let line = nsSource.substring(to: match.range.location).filter { $0 == "\n" }.count + 1
+                    #expect(hasSession, "\(relativePath):\(line) has a question id comparison without sessionId")
+                }
+
+                if rootViews.contains(relativePath) {
+                    #expect(matches.isEmpty, "\(relativePath) must use MachineState's scoped lookup")
+                    let helperMatches = exactMachineStateLookup.matches(
+                        in: source,
+                        range: NSRange(location: 0, length: nsSource.length)
+                    )
+                    #expect(helperMatches.count == 1, "\(relativePath) must pass machineID, sessionID, and questionID to MachineState")
+                }
+            }
+        }
     }
 
     @Test func sameSessionIDOnTwoMachinesIsAddressedIndependently() async throws {
@@ -210,156 +404,178 @@ struct SessionAddressingTests {
         #expect(store.isLoadingTranscript(machineID: fixture.ids.b, sessionID: sid))
     }
 
-    // MARK: Pending outgoing messages (#1239)
+    // MARK: Correlated outgoing outcomes (#1710)
 
-    private func pendingTexts(_ fixture: TwoMachines, _ machine: String) -> [String] {
-        fixture.store.outgoingMessages(machineID: machine, sessionID: fixture.sessionID).map(\.content)
+    private func origin(_ fixture: TwoMachines, index: Int = 0, socket: UUID = UUID()) throws -> OutgoingOrigin {
+        OutgoingOrigin(endpoint: fixture.routes[index],
+            connection: try #require(fixture.store.connectionGenerations[fixture.routes[index]]), socket: socket)
     }
 
-    @Test func aSendOnASocketThatNeverOpensLeavesNoBubbleAndSaysSo() async throws {
+    private func refusal(session: String, message: String? = "m1", code: String = "PROMPT_WAITING") throws -> ErrorMessage {
+        var payload = try #require(try JSONSerialization.jsonObject(with: FixtureConformanceTests.fixture("error")) as? [String: Any])
+        payload["code"] = code
+        var details = ["sessionId": session]
+        if let message { details["messageId"] = message }
+        payload["details"] = details
+        return try JSONDecoder().decode(ErrorMessage.self, from: JSONSerialization.data(withJSONObject: payload))
+    }
+
+    @Test func unavailableTransportPreservesDraftWithoutTrackingAnIntent() async throws {
         let fixture = try twoMachines()
         defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
-        let sent = await fixture.store.sendChat(machineID: fixture.ids.a, sessionId: fixture.sessionID, content: "hello")
-        #expect(!sent)
-        #expect(pendingTexts(fixture, fixture.ids.a).isEmpty)
-        #expect(fixture.store.latestOperationError == "Message not sent. Check the connection and try again.")
+        #expect(await !fixture.store.sendChat(machineID: fixture.ids.a, sessionId: fixture.sessionID, content: "hello"))
+        #expect(fixture.store.outgoingMessages(machineID: fixture.ids.a, sessionID: fixture.sessionID).isEmpty)
+        #expect(fixture.store.latestOperationError?.contains("unavailable") == true)
     }
 
-    @Test func aTrackedMessageStartsSendingAndBecomesSent() throws {
+    @Test func onlyAuthenticatedExactOriginMachineSessionAndMessageCanRefuse() throws {
         let fixture = try twoMachines()
         defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
-        let key = fixture.store.sessionKey(machineID: fixture.ids.a, sessionID: fixture.sessionID)
-        fixture.store.trackOutgoing(key: key, id: "m1", content: "hello")
-        #expect(fixture.store.outgoingMessages(machineID: fixture.ids.a, sessionID: fixture.sessionID).map(\.delivery) == [.sending])
-        fixture.store.markOutgoingSent(key: key, id: "m1")
-        #expect(fixture.store.outgoingMessages(machineID: fixture.ids.a, sessionID: fixture.sessionID).map(\.delivery) == [.sent])
-        #expect(pendingTexts(fixture, fixture.ids.b).isEmpty)
+        let store = fixture.store, sid = fixture.sessionID
+        let a = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let b = store.sessionKey(machineID: fixture.ids.b, sessionID: sid)
+        let source = try origin(fixture)
+        let other = try origin(fixture, index: 1)
+        store.trackOutgoing(key: a, id: "m1", content: "hello", origin: source)
+        store.trackOutgoing(key: b, id: "m1", content: "hello", origin: other)
+        let error = try refusal(session: sid)
+        store.receive(.error(error), from: source.endpoint, generation: source.connection)
+        store.receive(.error(error, chatOrigin: UUID()), from: source.endpoint, generation: source.connection)
+        store.receive(.error(try refusal(session: "other"), chatOrigin: source.socket), from: source.endpoint, generation: source.connection)
+        store.receive(.error(try refusal(session: sid, message: "other"), chatOrigin: source.socket), from: source.endpoint, generation: source.connection)
+        #expect(store.outgoingBySession[a]?.items.first?.delivery == .sending)
+        store.receive(.error(error, chatOrigin: source.socket), from: source.endpoint, generation: source.connection)
+        #expect(store.outgoingBySession[a]?.items.first?.delivery == .refused)
+        #expect(store.outgoingBySession[b]?.items.first?.delivery == .sending)
     }
 
-    @Test func onlyANewUserEntryConfirmsAndAnUpdateConfirmsNothing() throws {
+    @Test func sessionOnlyErrorCannotAttributeOutcomeAndOldSocketCannotRefuseNewIntent() throws {
         let fixture = try twoMachines()
         defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
         let store = fixture.store, sid = fixture.sessionID
         let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
-        let generation = try #require(store.connectionGenerations[fixture.routes[0]])
-        // An entry already in the transcript, then the person sends the same text again.
-        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "go", role: "user", entryUuid: "e1")),
-            from: fixture.routes[0], generation: generation)
-        store.trackOutgoing(key: key, id: "m1", content: "go")
-        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "go", role: "user", entryUuid: "e1")),
-            from: fixture.routes[0], generation: generation)
-        #expect(pendingTexts(fixture, fixture.ids.a) == ["go"])
-        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "go", role: "assistant", entryUuid: "e2")),
-            from: fixture.routes[0], generation: generation)
-        #expect(pendingTexts(fixture, fixture.ids.a) == ["go"])
-        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "  go\n", role: "user", entryUuid: "e3")),
-            from: fixture.routes[0], generation: generation)
-        #expect(pendingTexts(fixture, fixture.ids.a).isEmpty)
+        let source = try origin(fixture), replacement = try origin(fixture)
+        store.trackOutgoing(key: key, id: "m1", content: "hello", origin: source)
+        store.receive(.error(try refusal(session: sid, message: nil, code: "RELAY_DELIVERY_FAILED"), chatOrigin: source.socket),
+            from: source.endpoint, generation: source.connection)
+        #expect(store.outgoingBySession[key]?.items.first?.delivery == .sending)
+        #expect(store.latestError?.code == "RELAY_DELIVERY_FAILED")
+        store.dismissOutgoing(presentationID: try #require(store.outgoingBySession[key]?.items.first?.presentationID))
+        store.trackOutgoing(key: key, id: "m1", content: "new intent", origin: replacement)
+        store.receive(.error(try refusal(session: sid), chatOrigin: source.socket), from: source.endpoint, generation: source.connection)
+        #expect(store.outgoingBySession[key]?.items.first?.delivery == .sending)
     }
 
-    @Test func theSameTextSentTwiceIsConfirmedOldestFirstOneAtATime() throws {
+    @Test func matchingTranscriptTextNeverConfirmsAnIntent() throws {
         let fixture = try twoMachines()
         defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
         let store = fixture.store, sid = fixture.sessionID
         let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
-        let generation = try #require(store.connectionGenerations[fixture.routes[0]])
-        store.trackOutgoing(key: key, id: "m1", content: "yes")
-        store.trackOutgoing(key: key, id: "m2", content: "yes")
-        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "yes", role: "user", entryUuid: "e1")),
-            from: fixture.routes[0], generation: generation)
-        #expect(store.outgoingMessages(machineID: fixture.ids.a, sessionID: sid).map(\.id) == ["m2"])
-        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "yes", role: "user", entryUuid: "e2")),
-            from: fixture.routes[0], generation: generation)
-        #expect(pendingTexts(fixture, fixture.ids.a).isEmpty)
+        let source = try origin(fixture)
+        store.trackOutgoing(key: key, id: "m1", content: "hello", origin: source)
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "hello", role: "user", entryUuid: "live")),
+            from: source.endpoint, generation: source.connection)
+        #expect(store.outgoingBySession[key]?.items.first?.content == "hello")
+        #expect(store.outgoingBySession[key]?.items.first?.delivery == .sending)
     }
 
-    @Test func aHistoryReplayDuringTheFirstLoadDoesNotConfirmButALiveEntryAfterwardsDoes() throws {
-        let fixture = try twoMachines()
-        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
-        let store = fixture.store, sid = fixture.sessionID
-        store.ownedTranscriptSend = { _ in }
-        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
-        let generation = try #require(store.connectionGenerations[fixture.routes[0]])
-        store.trackOutgoing(key: key, id: "m1", content: "X")
-        store.loadTranscript(machineID: fixture.ids.a, sessionId: sid)
-        #expect(store.transcriptsBySession[key] == nil)
-        // The replay holds an old message with the same text.
-        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "X", role: "user", entryUuid: "old")),
-            from: fixture.routes[0], generation: generation)
-        #expect(pendingTexts(fixture, fixture.ids.a) == ["X"])
-
-        var payload = try #require(try JSONSerialization.jsonObject(
-            with: FixtureConformanceTests.fixture("transcript_load_complete")) as? [String: Any])
-        payload["sessionId"] = sid
-        let complete = try JSONDecoder().decode(TranscriptLoadCompleteMessage.self,
-            from: JSONSerialization.data(withJSONObject: payload))
-        store.receive(.transcriptComplete(complete), from: fixture.routes[0], generation: generation)
-        #expect(!store.isLoadingTranscript(machineID: fixture.ids.a, sessionID: sid))
-        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "X", role: "user", entryUuid: "live")),
-            from: fixture.routes[0], generation: generation)
-        #expect(pendingTexts(fixture, fixture.ids.a).isEmpty)
-    }
-
-    @Test func aLaterReplayedEntryDuringTheFirstLoadDoesNotConfirmEither() throws {
-        let fixture = try twoMachines()
-        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
-        let store = fixture.store, sid = fixture.sessionID
-        store.ownedTranscriptSend = { _ in }
-        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
-        let generation = try #require(store.connectionGenerations[fixture.routes[0]])
-        store.trackOutgoing(key: key, id: "m1", content: "X")
-        store.loadTranscript(machineID: fixture.ids.a, sessionId: sid)
-        // The replay arrives in order: an assistant entry first, then an old user entry with the same text.
-        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "hi", role: "assistant", entryUuid: "a1")),
-            from: fixture.routes[0], generation: generation)
-        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "X", role: "user", entryUuid: "old")),
-            from: fixture.routes[0], generation: generation)
-        #expect(pendingTexts(fixture, fixture.ids.a) == ["X"])
-
-        var payload = try #require(try JSONSerialization.jsonObject(
-            with: FixtureConformanceTests.fixture("transcript_load_complete")) as? [String: Any])
-        payload["sessionId"] = sid
-        let complete = try JSONDecoder().decode(TranscriptLoadCompleteMessage.self,
-            from: JSONSerialization.data(withJSONObject: payload))
-        store.receive(.transcriptComplete(complete), from: fixture.routes[0], generation: generation)
-        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "X", role: "user", entryUuid: "live")),
-            from: fixture.routes[0], generation: generation)
-        #expect(pendingTexts(fixture, fixture.ids.a).isEmpty)
-    }
-
-    @Test func anExpiredBubbleLeavesObservedStateWithoutOtherActivity() async throws {
+    @Test func missingReceiptBecomesUncertainWithoutEviction() async throws {
         let fixture = try twoMachines()
         defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
         let store = fixture.store
-        store.outgoingLifetime = 0.15
+        store.outgoingUncertaintyDelay = .milliseconds(20)
         let key = store.sessionKey(machineID: fixture.ids.a, sessionID: fixture.sessionID)
-        store.trackOutgoing(key: key, id: "m1", content: "stuck")
+        store.trackOutgoing(key: key, id: "m1", content: "hello", origin: try origin(fixture))
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(store.outgoingBySession[key]?.items.first?.delivery == .uncertain)
+        let groupID = try #require(store.outgoingBySession[key]?.items.first?.groupID)
+        let wrong = OutgoingGroupID(profile: OutgoingProfileScope(profileLifetime: UUID(), authenticatedAuthority: nil), sessionID: fixture.sessionID)
+        store.dismissOutgoing(groupID: wrong, messageID: "m1")
         #expect(store.outgoingBySession[key]?.items.count == 1)
-        var polls = 0
-        while store.outgoingBySession[key]?.items.isEmpty == false, polls < 200 {
-            try await Task.sleep(for: .milliseconds(10))
-            polls += 1
-        }
-        #expect(store.outgoingBySession[key]?.items.isEmpty ?? true)
+        store.dismissOutgoing(groupID: groupID, messageID: "m1")
+        #expect(store.outgoingBySession[key] == nil)
     }
-
-    @Test func aKilledSessionDropsItsPendingMessagesButNotAnotherSessions() throws {
+    @Test func replayUpdatesAndRepeatedTextAllPreserveEveryIntent() throws {
         let fixture = try twoMachines()
         defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
         let store = fixture.store, sid = fixture.sessionID
-        let killed = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
-        let other = store.sessionKey(machineID: fixture.ids.b, sessionID: sid)
-        store.trackOutgoing(key: killed, id: "m1", content: "a")
-        store.trackOutgoing(key: other, id: "m2", content: "b")
-        store.sessionByKillRequest["kill-1"] = killed
-        var payload = try #require(try JSONSerialization.jsonObject(
-            with: FixtureConformanceTests.fixture("kill_session_response")) as? [String: Any])
-        payload["requestId"] = "kill-1"
-        let response = try JSONDecoder().decode(KillSessionResponseMessage.self,
-            from: JSONSerialization.data(withJSONObject: payload))
-        let generation = try #require(store.connectionGenerations[fixture.routes[0]])
-        store.receive(.killSessionResponse(response), from: fixture.routes[0], generation: generation)
-        #expect(pendingTexts(fixture, fixture.ids.a).isEmpty)
-        #expect(pendingTexts(fixture, fixture.ids.b) == ["b"])
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let source = try origin(fixture)
+        store.ownedTranscriptSend = { _ in }
+        store.trackOutgoing(key: key, id: "m1", content: "yes", origin: source)
+        store.trackOutgoing(key: key, id: "m2", content: "yes", origin: source)
+        store.loadTranscript(machineID: fixture.ids.a, sessionId: sid)
+        for (entry, role) in [("old", "user"), ("old", "user"), ("reply", "assistant"), ("new", "user")] {
+            store.receive(.transcript(try transcriptContent(sessionID: sid, text: " yes\n", role: role, entryUuid: entry)),
+                from: source.endpoint, generation: source.connection)
+        }
+        #expect(store.outgoingBySession[key]?.items.map(\.id) == ["m1", "m2"])
     }
+
+    @Test func sessionTerminationKeepsOutcomesUntilExplicitDismissal() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        store.trackOutgoing(key: key, id: "m1", content: "hello", origin: try origin(fixture))
+        store.sessionByKillRequest["kill-1"] = key
+        var payload = try #require(try JSONSerialization.jsonObject(with: FixtureConformanceTests.fixture("kill_session_response")) as? [String: Any])
+        payload["requestId"] = "kill-1"
+        let result = try JSONDecoder().decode(KillSessionResponseMessage.self, from: JSONSerialization.data(withJSONObject: payload))
+        let source = try origin(fixture)
+        store.receive(.killSessionResponse(result), from: source.endpoint, generation: source.connection)
+        #expect(store.outgoingBySession[key]?.items.first?.content == "hello")
+    }
+
+    @Test func removedMachineRetainsRecoverableTextAndDismissalIsMachineScoped() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        let a = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let b = store.sessionKey(machineID: fixture.ids.b, sessionID: sid)
+        store.trackOutgoing(key: a, id: "same-message", content: "A recovery", origin: try origin(fixture))
+        store.trackOutgoing(key: b, id: "same-message", content: "B recovery", origin: try origin(fixture, index: 1))
+        #expect(store.removeMachine(fixture.routes[0]))
+        #expect(store.outgoingHistory.first { $0.key == a }?.messages.first?.content == "A recovery")
+        #expect(store.outgoingHistory.first { $0.key == a }?.messages.first?.delivery == .uncertain)
+        let groupB = try #require(store.outgoingHistory.first { $0.key == b })
+        store.dismissOutgoing(groupID: groupB.id, messageID: "same-message")
+        #expect(store.outgoingHistory.map(\.key) == [a])
+        #expect(store.outgoingHistory.first?.messages.first?.content == "A recovery")
+    }
+
+    @Test func globalRowAndSessionLimitsRefuseWithoutEviction() throws {
+        let store = MachineStore(endpoints: [], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
+        let source = OutgoingOrigin(endpoint: MachineEndpoint(host: "127.0.0.1", port: 18790), connection: UUID(), socket: UUID())
+        let scope = OutgoingProfileScope(profileLifetime: UUID(), authenticatedAuthority: nil)
+        for index in 0..<MachineStore.outgoingRowLimit {
+            let key = MachineSessionKey(machineID: "owned-machine", sessionID: "session-\(index / 50)")
+            let tracked = store.trackOutgoing(key: key, id: "m-\(index)", content: "retained", origin: source, scope: scope)
+            #expect(tracked)
+        }
+        let overflow = store.trackOutgoing(key: MachineSessionKey(machineID: "owned-machine", sessionID: "new"),
+            id: "overflow", content: "draft", origin: source, scope: scope)
+        #expect(!overflow)
+        #expect(store.outgoingCount == 512)
+        #expect(store.outgoingHistory.flatMap(\.messages).contains { $0.id == "m-0" })
+        for group in store.outgoingHistory {
+            for message in group.messages {
+                store.dismissOutgoing(groupID: group.id, messageID: message.id)
+            }
+        }
+        for index in 0..<MachineStore.outgoingSessionLimit {
+            let tracked = store.trackOutgoing(key: MachineSessionKey(machineID: "owned-machine", sessionID: "session-\(index)"),
+                id: "m", content: "retained", origin: source, scope: scope)
+            #expect(tracked)
+        }
+        let extra = MachineSessionKey(machineID: "owned-machine", sessionID: "session-65")
+        let sessionOverflow = store.trackOutgoing(key: extra, id: "m", content: "draft", origin: source, scope: scope)
+        #expect(!sessionOverflow)
+        #expect(store.outgoingHistory.count == 64)
+        store.dismissOutgoing(groupID: OutgoingGroupID(profile: scope, sessionID: "session-0"), messageID: "m")
+        let afterDismiss = store.trackOutgoing(key: extra, id: "m", content: "explicit new intent", origin: source, scope: scope)
+        #expect(afterDismiss)
+        #expect(store.outgoingHistory.count == 64)
+    }
+
 }

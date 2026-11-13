@@ -284,13 +284,13 @@ test('unsupported output retires capture while original PTY output continues', a
 test('full home budget disables optional capture and preserves agent output', async () => {
   await fixture(async (f) => {
     const ledger = TerminalReservations.open(f.home);
-    const reservations = Array.from({ length: 32 }, () => ledger.reserveModel(randomUUID()));
+    const reservations = Array.from({ length: 8 }, () => ledger.reserveModel(randomUUID()));
     expect(await f.host.prepare(f.sessionId, f.pty)).toBe(false);
     await f.pty.start();
     await f.ready();
     expect(f.host.contextFor(f.sessionId)).toBeNull();
     await until(() => f.output.join('').includes('FIRST'));
-    expect(ledgerRows(f.home)).toHaveLength(32);
+    expect(ledgerRows(f.home)).toHaveLength(8);
     await f.pty.close(1000);
     expect(f.inputReceipt().inputBytes).toBe(0);
     for (const reservation of reservations) ledger.release(reservation);

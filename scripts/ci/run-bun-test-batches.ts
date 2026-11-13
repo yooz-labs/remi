@@ -32,6 +32,16 @@ export const TARGET = 'packages/daemon/tests/cli/remote-new-client.test.ts';
 export const OWNER_PREFIX = '[ci-target-module-owner] ';
 export const CONTROLLER_MS = 22 * 60_000;
 const CLEANUP_MS = 10_000;
+export function laneDeadlineMs(index: number, elapsedMs: number): number {
+  requireValue(index === 0 || index === 1 || index === 2, 'Unknown test lane');
+  requireValue(Number.isFinite(elapsedMs) && elapsedMs >= 0, 'Invalid elapsed time');
+  const remaining = CONTROLLER_MS - elapsedMs - CLEANUP_MS;
+  // Each isolated worker keeps its existing cap. Local sequential runs also
+  // share the controller remainder, always reserving time for owned cleanup.
+  const deadline = Math.min(index === 0 ? 300_000 : 1_200_000, remaining);
+  requireValue(deadline > 0, 'Controller deadline exhausted');
+  return deadline;
+}
 const EXTENSIONS = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.mts', '.cts']);
 const SUFFIX = /(?:\.test|_test|\.spec|_spec)$/;
 export type CaseRecord = {
@@ -497,12 +507,17 @@ export async function runSuite(
   let failed = false;
   try {
     async function runLane(index: number, lane: string[]): Promise<void> {
-      const remaining = CONTROLLER_MS - (performance.now() - started) - CLEANUP_MS;
-      const deadline = Math.min(index === 0 ? 300_000 : 1_200_000, remaining);
-      requireValue(deadline > 0, 'Controller deadline exhausted');
+      const elapsedMs = performance.now() - started;
+      const deadline = laneDeadlineMs(index, elapsedMs);
       const name = index === 0 ? 'target' : `rest-${index}`;
       const laneOutput = path.join(output, name);
       mkdirSync(laneOutput);
+      json(path.join(laneOutput, 'budget.json'), {
+        controllerMs: CONTROLLER_MS,
+        cleanupReserveMs: CLEANUP_MS,
+        elapsedMs,
+        deadlineMs: deadline,
+      });
       // Real home-based state (daemon.pid, trust files, install probes) must
       // never be shared by concurrent workers or touch the invoking user's home.
       const home = realpathSync(mkdtempSync(path.join(tmpdir(), 'remi-ci-home-')));

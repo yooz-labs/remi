@@ -1,80 +1,120 @@
 import Foundation
 
-/// A message the person sent that the conversation does not show yet.
+/// The concrete connection and authenticated socket used for one message intent (#1710).
+public struct OutgoingOrigin: Sendable, Equatable {
+    public let endpoint: MachineEndpoint
+    public let connection: UUID
+    public let socket: UUID
+}
+
+/// A profile namespace never survives Forget as the current namespace. The authority is set
+/// only from an authenticated Hello, not a saved pin, descriptor, name or address (#1710).
+public struct OutgoingProfileScope: Hashable, Sendable {
+    public let id: UUID
+    let profileLifetime: UUID
+    let authenticatedAuthority: Data?
+
+    init(profileLifetime: UUID, authenticatedAuthority: Data?) {
+        id = UUID()
+        self.profileLifetime = profileLifetime
+        self.authenticatedAuthority = authenticatedAuthority
+    }
+}
+
+public struct OutgoingGroupID: Hashable, Sendable {
+    public let profile: OutgoingProfileScope
+    public let sessionID: String
+}
+
+/// Context retained only in memory so an ended or removed session's input remains recoverable.
+public struct OutgoingMessageGroup: Identifiable, Sendable {
+    public let id: OutgoingGroupID
+    /// Captured display context only. Address reuse does not authorize lookup or dismissal.
+    public let key: MachineSessionKey
+    public let machineName: String
+    public let sessionName: String
+    public let messages: [OutgoingMessage]
+    public let isCurrentProfile: Bool
+    public let remainingSessionCapacity: Int
+}
+
+/// An explicit message intent. Transport handoff never proves agent acceptance.
 public struct OutgoingMessage: Identifiable, Sendable, Equatable {
     public enum Delivery: Sendable, Equatable {
-        /// Not yet handed to the connection.
         case sending
-        /// Handed to the connection; the transcript has not shown it yet.
-        /// This does not mean the agent has read it.
-        case sent
+        case handedOff
+        case refused
+        case uncertain
     }
 
     public let id: String
     public let content: String
     public var delivery: Delivery
     public let createdAt: Date
+    public let origin: OutgoingOrigin
+    public let groupID: OutgoingGroupID?
+
+    /// An opaque UI identity, including the immutable group. Never parsed as routing authority.
+    public var presentationID: String {
+        guard let groupID else { return "pending-\(id)" }
+        return "pending:\(groupID.profile.id):\(groupID.sessionID.utf8.count):\(groupID.sessionID):\(id)"
+    }
 }
 
-/// The messages one session is still waiting to see in its transcript, oldest first.
-///
-/// An entry leaves when the transcript shows a new user entry with the same text, when its
-/// send fails, or after `lifetime`. A failed send removes the bubble because the composer
-/// keeps the draft; if the connection failed after the daemon received the message, the text
-/// can still arrive and show in the transcript.
+/// Bounded, memory-only intent history for one machine/session. Only explicit dismissal removes
+/// an invoked intent: text matches, ACKs, age and reconnects prove no per-message outcome.
 public struct OutgoingMessages: Sendable, Equatable {
-    /// A stuck connection cannot grow the queue without bound; the oldest entries drop first.
     public static let limit = 50
-
-    /// The daemon can rewrite a message (a slash command expanded, an attachment marker added)
-    /// so the transcript never matches it; such an entry stops showing after this many seconds.
-    public static let lifetime: TimeInterval = 300
-
     public private(set) var items: [OutgoingMessage] = []
+    public init() {}
+    init(retainedItems: [OutgoingMessage]) { items = retainedItems }
 
-    /// How long an entry shows; `lifetime` unless a test shortens it.
-    public let expiry: TimeInterval
-
-    public init(expiry: TimeInterval = OutgoingMessages.lifetime) { self.expiry = expiry }
-
-    public mutating func add(id: String, content: String, now: Date = Date()) {
-        dropExpired(now: now)
-        items.append(OutgoingMessage(id: id, content: content, delivery: .sending, createdAt: now))
-        if items.count > Self.limit { items.removeFirst(items.count - Self.limit) }
-    }
-
-    /// The entries younger than `lifetime`, oldest first.
-    public func visible(now: Date = Date()) -> [OutgoingMessage] {
-        items.filter { now.timeIntervalSince($0.createdAt) < expiry }
-    }
-
-    /// Drops the expired entries so the change is visible to whoever observes the outbox.
-    public mutating func removeExpired(now: Date = Date()) {
-        dropExpired(now: now)
-    }
-
-    private mutating func dropExpired(now: Date) {
-        items = visible(now: now)
-    }
-
-    public mutating func markSent(id: String) {
-        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
-        items[index].delivery = .sent
-    }
-
-    public mutating func remove(id: String) {
-        items.removeAll { $0.id == id }
-    }
-
-    /// Removes the oldest entry whose text matches a new transcript user entry.
     @discardableResult
-    public mutating func confirm(transcriptContent: String, now: Date = Date()) -> Bool {
-        dropExpired(now: now)
-        let text = transcriptContent.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let index = items.firstIndex(where: {
-            $0.content.trimmingCharacters(in: .whitespacesAndNewlines) == text
-        }) else { return false }
-        items.remove(at: index)
+    public mutating func add(id: String, content: String, origin: OutgoingOrigin, groupID: OutgoingGroupID? = nil, now: Date = Date()) -> Bool {
+        guard items.count < Self.limit, !items.contains(where: { $0.id == id }) else { return false }
+        items.append(OutgoingMessage(id: id, content: content, delivery: .sending, createdAt: now, origin: origin, groupID: groupID))
         return true
+    }
+
+    public mutating func markHandedOff(id: String, origin: OutgoingOrigin) {
+        guard let index = index(id: id, origin: origin), items[index].delivery == .sending else { return }
+        items[index].delivery = .handedOff
+    }
+
+    public mutating func markUncertain(id: String, origin: OutgoingOrigin) {
+        guard let index = index(id: id, origin: origin), items[index].delivery != .refused else { return }
+        items[index].delivery = .uncertain
+    }
+
+    /// Only current authenticated source errors with the exact session and message ID can
+    /// prove refusal. The producer guards in input-events.ts run before submitInput or before
+    /// its first write. Its second guard sets inputMayBePartial after the first possible write.
+    /// INPUT_NOT_DELIVERED also has older raw-write producers, so it stays uncertain.
+    public mutating func receive(_ error: ErrorMessage, sessionID: String, origin: OutgoingOrigin) {
+        guard case .string(let session)? = error.details?["sessionId"], session == sessionID else { return }
+        // Session-only errors may belong to another concurrent operation. They cannot
+        // change any message outcome; the app still surfaces the ordinary session error.
+        guard case .string(let id)? = error.details?["messageId"] else { return }
+        guard let index = index(id: id, origin: origin) else { return }
+        let partial = error.details?["inputMayBePartial"]
+        let noPartial = partial == nil || partial == .bool(false)
+        let refusesBeforeInput = ["PROMPT_WAITING", "SESSION_NOT_FOUND", "STALE_BINDING"].contains(error.code)
+        if noPartial && refusesBeforeInput {
+            items[index].delivery = .refused
+        } else {
+            markUncertain(id: id, origin: origin)
+        }
+    }
+
+    public mutating func connectionLost(endpoint: MachineEndpoint, connection: UUID) {
+        for item in items where item.origin.endpoint == endpoint && item.origin.connection == connection {
+            markUncertain(id: item.id, origin: item.origin)
+        }
+    }
+
+    public mutating func dismiss(id: String) { items.removeAll { $0.id == id } }
+
+    private func index(id: String, origin: OutgoingOrigin) -> Int? {
+        items.firstIndex { $0.id == id && $0.origin == origin }
     }
 }

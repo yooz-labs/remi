@@ -50,6 +50,7 @@ import type {
   UUID,
 } from '@remi/shared';
 import type { BrowserLinkReceiverRequest } from '../../../shared/src/browser-links.ts';
+import type { TerminalIngress } from '../terminal/ingress.ts';
 
 /**
  * What a create request asks of a harness (#1179), as it arrived: untrusted JSON, so `unknown`.
@@ -87,6 +88,7 @@ export function createSessionExtra(
  * message-id echoing without breaking existing positional callers.
  */
 export interface ClientMessageEventArgs {
+  onTerminalView: [ingress: TerminalIngress];
   onFileDownload: [ingress: Exclude<FileDownloadIngressResult, { kind: 'uncorrelatable' }>];
   onBrowserLinkReceiver: [request: BrowserLinkReceiverRequest];
   onStructuredChat: [request: ChatSubmitRequest];
@@ -172,6 +174,7 @@ export interface ClientMessageEventArgs {
  * assertion) so the two cannot silently drift apart.
  */
 export const CLIENT_MESSAGE_EVENT_KEYS = [
+  'onTerminalView',
   'onFileDownload',
   'onBrowserLinkReceiver',
   'onStructuredChat',

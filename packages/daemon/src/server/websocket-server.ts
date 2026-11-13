@@ -11,6 +11,7 @@ import {
   isImageInsertionCandidate,
   isImageStagingCandidate,
   isStructuredChatCandidate,
+  isTerminalViewCandidate,
 } from '@remi/shared';
 import { createError, generateId } from '@remi/shared';
 import type { ProtocolMessage, UUID } from '@remi/shared';
@@ -141,6 +142,8 @@ const MAX_REFUSED_ORIGINS_TRACKED = 64;
 
 /** WebSocket data attached to each connection */
 interface WSData {
+  /** Survives logical removal until actual native close. */
+  nativeConnection?: Connection | undefined;
   readonly listenerTransport: import('./connection.ts').ConnectionListenerTransport;
   relayChatAuthority?: SecurePushAuthority;
   relayControl?: boolean;
@@ -526,7 +529,17 @@ export class WebSocketServer {
           self.handleMessage(ws, message);
         },
 
+        drain(ws) {
+          ws.data.nativeConnection?.nativeSocketDrained();
+        },
+
+        pong(ws, data) {
+          ws.data.nativeConnection?.nativeSocketPong(data);
+        },
+
         close(ws) {
+          ws.data.nativeConnection?.nativeSocketClosed();
+          ws.data.nativeConnection = undefined;
           if (ws.data.relayControl) {
             self.controls.delete(ws.data.connectionId);
             self.config.relayControl?.close(ws.data.connectionId);
@@ -811,12 +824,17 @@ export class WebSocketServer {
       ws.data.listenerTransport,
     );
 
+    ws.data.nativeConnection = connection;
     this.connections.set(ws.data.connectionId, connection);
   }
 
   private handleMessage(ws: { data: WSData }, message: string | Buffer): void {
     const connection = this.connections.get(ws.data.connectionId);
     if (connection) {
+      if (isTerminalViewCandidate(message)) {
+        connection.handleTerminalViewFrame(message);
+        return;
+      }
       if (typeof message !== 'string' && isFileDownloadCandidate(message)) {
         connection.handleFileDownloadFrame(message);
         return;

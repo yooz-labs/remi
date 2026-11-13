@@ -11,8 +11,9 @@ import {
 import { writeRestrictedJson } from '../storage/restricted-json.ts';
 
 export const TERMINAL_RESERVATION_LIMITS = {
-  models: 32,
-  modelBytes: 1024 * 1024,
+  models: 8,
+  modelBytes: 4 * 1024 * 1024,
+  homeBytes: 32 * 1024 * 1024,
   views: 8,
   deviceViews: 2,
   sessionViews: 4,
@@ -55,17 +56,31 @@ const hostValid = (value: unknown): value is string =>
   Buffer.byteLength(value) <= 255 &&
   !/[\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u.test(value);
 
-function parse(text: string, namespace: string): Row[] {
+function parse(text: string, namespace: string, legacy = false): Row[] {
+  const modelsLimit = legacy ? 32 : LIMIT.models;
   const value = parseStrictJson(text, LIMIT.ledgerBytes) as Record<string, unknown> | null;
   if (
     !value ||
-    keys(value) !== 'namespace,records,version' ||
-    value['version'] !== 1 ||
+    keys(value) !== (legacy ? 'namespace,records,version' : 'namespace,policy,records,version') ||
+    value['version'] !== (legacy ? 1 : 2) ||
     value['namespace'] !== namespace ||
     !Array.isArray(value['records']) ||
-    value['records'].length > LIMIT.models + LIMIT.views
+    value['records'].length > modelsLimit + LIMIT.views
   )
     unavailable();
+  if (!legacy) {
+    const policy = value['policy'];
+    if (
+      !policy ||
+      typeof policy !== 'object' ||
+      Array.isArray(policy) ||
+      keys(policy) !== 'homeBytes,modelBytes,models' ||
+      (policy as Record<string, unknown>)['models'] !== LIMIT.models ||
+      (policy as Record<string, unknown>)['modelBytes'] !== LIMIT.modelBytes ||
+      (policy as Record<string, unknown>)['homeBytes'] !== LIMIT.homeBytes
+    )
+      unavailable();
+  }
   const rows: Row[] = [];
   for (const candidate of value['records']) {
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) unavailable();
@@ -98,7 +113,8 @@ function parse(text: string, namespace: string): Row[] {
   const models = rows.filter((r): r is Model => r.kind === 'model');
   const views = rows.filter((r): r is View => r.kind === 'view');
   if (
-    models.length > LIMIT.models ||
+    models.length > modelsLimit ||
+    (!legacy && models.length * LIMIT.modelBytes > LIMIT.homeBytes) ||
     views.length > LIMIT.views ||
     new Set(models.map((r) => r.session)).size !== models.length
   )
@@ -190,7 +206,7 @@ export class TerminalReservations {
     this.file = path.join(directory, 'reservations.json');
     this.locked(() => {
       if (initialize) this.write([]);
-      else this.read();
+      else this.ensurePolicy();
     });
   }
 
@@ -266,6 +282,26 @@ export class TerminalReservations {
     }
   }
 
+  /** The same lock fences the old writer. Never rewrite live or uncertain old charges. */
+  private ensurePolicy(): void {
+    const { bytes } = readPrivate(this.file, LIMIT.ledgerBytes);
+    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    try {
+      parse(text, this.namespace);
+      return;
+    } catch (error) {
+      if (!(error instanceof TerminalReservationError) || error.code !== 'unavailable') throw error;
+    }
+    const legacy = parse(text, this.namespace, true);
+    const dead = new Map<number, boolean>();
+    for (const row of legacy) {
+      if (row.host !== this.actor.host) unavailable();
+      if (!dead.has(row.pid)) dead.set(row.pid, provedDead(row.pid));
+      if (!dead.get(row.pid)) unavailable();
+    }
+    this.write([]); // Empty or proved-dead v1 only; malformed/v2 policy mismatches cannot reset.
+  }
+
   private read(): Row[] {
     const { bytes } = readPrivate(this.file, LIMIT.ledgerBytes);
     return parse(
@@ -276,7 +312,12 @@ export class TerminalReservations {
 
   private write(records: Row[]): void {
     this.current();
-    const value = { version: 1, namespace: this.namespace, records };
+    const value = {
+      version: 2,
+      namespace: this.namespace,
+      policy: { models: LIMIT.models, modelBytes: LIMIT.modelBytes, homeBytes: LIMIT.homeBytes },
+      records,
+    };
     if (Buffer.byteLength(JSON.stringify(value)) > LIMIT.ledgerBytes) unavailable();
     writeRestrictedJson(this.file, value);
   }
@@ -306,8 +347,10 @@ export class TerminalReservations {
   reserveModel(session: string): string {
     if (typeof session !== 'string' || !UUID.test(session)) unavailable();
     return this.transaction((rows) => {
+      const count = rows.filter((row) => row.kind === 'model').length;
       if (
-        rows.filter((row) => row.kind === 'model').length >= LIMIT.models ||
+        count >= LIMIT.models ||
+        (count + 1) * LIMIT.modelBytes > LIMIT.homeBytes ||
         rows.some((row) => row.kind === 'model' && row.session === session)
       )
         throw new TerminalReservationError('busy');
