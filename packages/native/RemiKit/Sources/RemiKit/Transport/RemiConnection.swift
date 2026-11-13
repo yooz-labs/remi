@@ -446,6 +446,8 @@ public actor RemiConnection {
             transition(to: .connecting(attempt: attempt))
             do {
                 try await connectAndReceive()
+                // Capture before closeSocket clears the verified Hello and channel.
+                let admittedRelayEpisode = hasAdmittedRelayEpisode
                 closeSocket()
                 if singleAttempt { shouldRun = false; return }
                 if case .awaitingLocalApproval = state { return }
@@ -455,12 +457,14 @@ public actor RemiConnection {
                     transition(to: .rejected(reason: "The recovery connection ended before admission."))
                     return
                 }
+                if admittedRelayEpisode { attempt = 0 }
             } catch {
                 if !shouldRun || Task.isCancelled { return }
                 if error is CancellationError && directDeadlineFailure == nil { return }
                 let directFailure = directDeadlineFailure
                 // closeSocket() below resets this; a socket lost after admission is not a login failure.
                 let wasAdmitted = applicationAdmitted
+                let admittedRelayEpisode = hasAdmittedRelayEpisode
                 let authenticationStarted = directOpeningCompleted || pendingAuthentication != nil || authenticatedServerPublicKey != nil
                 if configuration.relayPin != nil {
                     if let channel = relayChannel { eventHandler(.relayStreamEnded(clean: channel.peerEnded && !channel.failed)) }
@@ -490,10 +494,16 @@ public actor RemiConnection {
                     }
                     return
                 }
-                if configuration.relayPin != nil && (!relayEnrolled || attempt >= 5 || error is RelayFailure) {
-                    shouldRun = false
-                    transition(to: .rejected(reason: "The relay connection closed. Pair again if this machine has not been saved."))
-                    return
+                if configuration.relayPin != nil {
+                    // A verified application Hello ends the preceding failure streak.
+                    // It never turns an authentication or protocol failure into a retry.
+                    let terminal = !relayEnrolled || error is RelayFailure
+                    if admittedRelayEpisode && !terminal { attempt = 0 }
+                    if terminal || attempt >= 5 {
+                        shouldRun = false
+                        transition(to: .rejected(reason: "The relay connection closed. Pair again if this machine has not been saved."))
+                        return
+                    }
                 }
                 if configuration.relayPin == nil && !Self.shouldRetryDirectFailure(
                     error: error, deadlineUnreachable: directFailure == .unreachable, wasAdmitted: wasAdmitted
@@ -511,14 +521,21 @@ public actor RemiConnection {
             }
 
             guard shouldRun && !Task.isCancelled else { return }
-            let delay = Self.reconnectDelay(forAttempt: attempt)
-            transition(to: .retrying(attempt: attempt, delaySeconds: delay))
+            let retryAttempt = max(1, attempt)
+            let delay = Self.reconnectDelay(forAttempt: retryAttempt)
+            transition(to: .retrying(attempt: retryAttempt, delaySeconds: delay))
             do {
                 try await Task.sleep(for: .seconds(delay))
             } catch {
                 return
             }
         }
+    }
+
+    /// One-shot relay RPCs intentionally omit Hello and must not reset a runtime retry budget.
+    private var hasAdmittedRelayEpisode: Bool {
+        configuration.relayPin != nil && applicationHello && ready && applicationAdmitted
+            && relayChannel != nil && socket != nil
     }
 
     private func connectAndReceive() async throws {
