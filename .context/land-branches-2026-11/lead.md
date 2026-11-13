@@ -15,7 +15,7 @@
 
 2026-11-13: Owner: manager and lead (never workers) may file issues, open/edit/close PRs, push to develop, upload to TestFlight, delete done branches and worktrees. Not main, no force-push.
 
-2026-11-13: Owner: worker slots on Codex and Claude both maximized (no Codex-to-Claude ban); reviewers Sonnet only, advisor Opus only (no Luna reviewer); the lead is this session.
+2026-11-13: Owner: worker slots on Codex and Claude both maximized (no Codex-to-Claude ban); reviewers Sonnet only, advisor Opus only (no Luna reviewer); the lead is this session; reviewers, advisor and lead are extra to the worker slots.
 
 ## Open risks
 2026-11-12: develop has no CI on push; DV is the only check (R12).

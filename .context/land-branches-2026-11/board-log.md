@@ -42,6 +42,7 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T05:55-08:00 | Q20: DV baseline extended: the environment-dependent 'owned empty launch directory required' failures in PairingAttemptTests and PairingSourceTests are the local baseline; DV reruns with both skipped and everything else must pass; hosted native CI is the authority for those suites | owner |  |
 | 2026-11-13T06:10-08:00 | Owner (2026-11-13, chat): do not wait for a free Luna slot: when the Codex Luna slots are full, run worker cards (L05, L14) on Claude Sonnet implementers instead | owner |  |
 | 2026-11-13T06:13-08:00 | Owner (2026-11-13, chat): the rule that a Codex card never falls back to Claude is wrong: Codex and Claude worker slots are both used and maximized (a worker card goes to whichever platform has a free fitting slot); PR reviewers are Claude Sonnet only, the advisor is Claude Opus only (the Luna second reviewer of Q9 is superseded; no Codex reviewers), and the lead is the current session (no separate lead agent) | owner |  |
+| 2026-11-13T06:14-08:00 | Owner (2026-11-13, chat): slots are for workers only; PR reviewers, advisors and the lead are extra to the slots (reviewers no longer wait for or consume a Claude Sonnet worker slot) | owner |  |
 
 ## Log
 
