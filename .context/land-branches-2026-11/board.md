@@ -48,12 +48,12 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 21 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Agents today | 30 | 22 | daily | every dispatch on every platform; the plan approval covers this limit |
 | Codex Luna today | 8 | 8 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 2 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
 | Claude Sonnet today | 16 | 9 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
-| Claude Opus today | 4 | 2 | daily | lead wakes, lead-tier steps, advisor consults |
-| Advisor consults | 8 | 2 | never | lead tier (Opus), whole plan |
+| Claude Opus today | 4 | 3 | daily | lead wakes, lead-tier steps, advisor consults |
+| Advisor consults | 8 | 3 | never | lead tier (Opus), whole plan |
 | Fable consults | 1 | 0 | never | A02 only, owner-requested |
 | Agents this wave | 0 | 0 | wave | unused: this plan has no waves |
 
@@ -150,4 +150,5 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | rv-L14 | reviewer | extra | sonnet xhigh x3 | L14 | 2026-11-13T07:05 | done |
 | advisor-L05 | advisor | extra | opus xhigh | L05 | 2026-11-13T07:05 | done |
 | codex-L14fix | implementer | codex-luna | gpt-6-luna max | L14 | 2026-11-13T07:30 | running (thread 01a1d554-0434) |
-| rv-L06 | reviewer | extra | sonnet xhigh x3 | L06 | 2026-11-13T07:50 | running contract a815c3f3, verification ab0d4e42, maintainability ae648ada |
+| rv-L06 | reviewer | extra | sonnet xhigh x3 | L06 | 2026-11-13T07:50 | done |
+| advisor-L06 | advisor | extra | opus xhigh | L06 | 2026-11-13T08:10 | running (reset policy: unbounded 1 Hz after admitted-then-dropped episodes) |
