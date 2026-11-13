@@ -1,10 +1,10 @@
 # Card L12: legacy route writer characterization tests (#1641), only if Q6 says land
 
-Status: ready
+Status: dropped (Q6, owner 2026-11-12: fold into the first #1641 implementation PR; branch kept); kept for reference only
 Tier: worker
 Timebox: S, 4 hours; escalate at 1 day
 Needs: xcode
-Depends: none; dispatched only when Q6's answer is "land"
+Depends: none; not dispatched (Q6 answered fold)
 Branch: feature/issue-1641-native-wss-route (no PR; head `0c075a28`, 28 behind develop)
 Worktree: `/Volumes/S1/worktrees/remi/native-wss-route` (exists, clean)
 Plan: plan.md section 1, #1641 row

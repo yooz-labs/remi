@@ -19,7 +19,7 @@ One lens group's round-1 findings (at most 5) on a whole PR (L01 to L06, L09, L1
 - Lens groups: `contract` (correctness, types, invariants, security, concurrency, data integrity), `verification` (tests that can fail, negative paths, silent failures, fallbacks), `maintainability` (comments and docs that claim more than the code does, needless complexity that can cause defects), `docs` (docs-only PRs: accuracy against the code, broken links, lost or contradicted text).
 - Procedure: `project:pr-review-toolkit` (`review-procedure.md`, `review-rubrics.md`); repository rules in `AGENTS.md` at `HEAD`, especially "Verify before you describe".
 - Security-path PRs (L03 direct child key, L06 relay retry): name any finding that touches authentication, authorization, key handling or relay classification as such; the manager sends contested ones to the advisor.
-- If Q9 added a Codex Luna second reviewer, it receives this same card with lens group `contract`.
+- Q9 (owner, 2026-11-12): for L03 and L06 a Codex Luna second reviewer, on top of the Sonnet panel, receives this same card with lens group `contract` and `reviewer_id` ending in `-luna`; no other PR gets one.
 
 ## Scope
 

@@ -1,10 +1,10 @@
 # Card L11: compact preview feasibility probes (#1711), only if Q5 says land
 
-Status: ready
+Status: dropped (Q5, owner 2026-11-12: park; branch kept, no PR); kept for reference only
 Tier: worker
 Timebox: S, 4 hours; escalate at 1 day
 Needs: none
-Depends: none; dispatched only when Q5's answer is "land"
+Depends: none; not dispatched (Q5 answered park)
 Branch: feature/issue-1711-compact-preview (no PR; head `fda985af`, 79 behind develop)
 Worktree: `/Volumes/S1/worktrees/remi/compact-preview` (exists, clean)
 Plan: plan.md section 1, #1711 row

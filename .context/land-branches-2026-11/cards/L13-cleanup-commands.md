@@ -16,8 +16,8 @@ Plan: plan.md section 1 and runbook section 13
 ## Context
 
 - The manager never deletes branches or worktrees; the owner runs these commands.
-- Branches in scope: every L step's branch that is `done` (merged), the drop list Q8 approved (`patch/issue-1717-apns-test-scheduling`, `chore/native-build-21`, `patch/issue-1346-secure-push-expiry-fixture`, `feature/issue-1195-epic-relay`, the three `scratch/issue-1724-*`, `feature/issue-1313-image-availability` after L08), and any branch Q5 or Q6 said to delete.
-- Branches kept on purpose (parked) get no delete command; list them under "Kept".
+- Branches in scope: every L step's branch that is `done` (merged), the drop list Q8 approved (`patch/issue-1717-apns-test-scheduling`, `chore/native-build-21`, `patch/issue-1346-secure-push-expiry-fixture`, `feature/issue-1195-epic-relay`, the three `scratch/issue-1724-*`, `feature/issue-1313-image-availability` after L08), (Q8 approved by the owner on 2026-11-12, as commands only).
+- Branches kept on purpose get no delete command; list them under "Kept": `feature/issue-1711-compact-preview` (Q5 park), `feature/issue-1641-native-wss-route` (Q6 fold), and any step branch that is `dropped`.
 - Worktrees live under `/Volumes/S1/worktrees/remi/`; DerivedData under `/Volumes/S1/derived/remi-NAME`.
 
 ## Scope

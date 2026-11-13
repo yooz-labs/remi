@@ -8,6 +8,7 @@ Depends: L08 (its PR open and its implementer reported)
 Branch: none (read-only)
 Worktree: none; commits are read by hash from `/Users/yahya/Documents/git/yooz/remi`
 Plan: plan.md section 3.1; send [RV-chunk-common](RV-chunk-common.md) after this card
+Second reviewer (Q9, owner 2026-11-12): besides the two Sonnet lens groups, a Codex Luna reviewer gets this card with `Lens group: contract` and `reviewer_id` `L08-R4-contract-luna`
 
 ## Goal
 

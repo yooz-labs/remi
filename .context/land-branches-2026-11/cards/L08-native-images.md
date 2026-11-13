@@ -18,7 +18,7 @@ The whole native-images branch is one draft-then-ready PR into `develop`, merged
 - 39 files, +6,727 lines: image recovery journal and ledger, directory lease, installation key, file protection, snapshot and transfer owners, upload flow, composer availability notice, image-begin authority in `RemiConnection.swift`, a two-line change in `packages/daemon/src/tunnel/image-admission.ts`, tests and fixtures (two TypeScript, one Swift, one Python runner).
 - Image ingress ships disabled: `RemiConnection.imageIngressQualified` is `false`, and only a DEBUG loopback-WSS fixture seam can open it. The PR body must say so.
 - On 2026-11-12 `git merge-tree` showed the branch conflicting with #1728's head in `Transport/RemiConnection.swift`; #1728 (L03) and #1731 (L06) both merge before this card.
-- `feature/issue-1313-image-availability` is a strict subset of this branch (Q4 folds it); do not merge it.
+- `feature/issue-1313-image-availability` is a strict subset of this branch (Q4, owner 2026-11-12: folded here; deleted after this step by owner commands); do not merge it.
 - Evidence folder of the branch's work: `/Volumes/S1/yooz/remi/artifacts/native-image-1313-20261030/`.
 
 ## Scope

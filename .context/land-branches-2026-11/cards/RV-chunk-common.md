@@ -20,6 +20,7 @@ This card is sent after the chunk card, so every chunk reviewer reads the same c
 - Lens group `contract`: correctness, types, invariants, security (authentication, authorization, key and file-permission handling), concurrency and actor isolation, data integrity across restarts.
   Lens group `verification`: whether tests can fail (no mocks of business logic; real fixtures), negative paths, silent failures and fallbacks, comments and docs that claim more than the code does (the repository's "Verify before you describe" rule).
 - Repository rules: `AGENTS.md`, `packages/native/AGENTS.md` at `HEAD`.
+- Q9 (owner, 2026-11-12): chunk L08-R4 also gets a Codex Luna reviewer with lens group `contract`; every other chunk is reviewed by Sonnet only.
 
 ## Scope
 
