@@ -10,7 +10,7 @@
  * socket may not send (1006 here) into its failure close (`passedOn` in
  * `packages/signaling/src/connection-room.ts`), by design.
  *
- * The cause is the runtime's client close. Bun 1.3.11 (the CI and release pin) usually resets the
+ * The cause was the runtime's client close. Bun 1.3.11 (the former CI and release pin) usually resets the
  * TCP connection right after sending its Close frame, so the peer gets ECONNRESET and can never
  * answer the Close: a Worker that is slow to get to the socket (a loaded machine) then writes its
  * reply into a reset connection and records the close as abnormal, and it can lose what it had not
@@ -20,9 +20,8 @@
  * time after its BYE (`ORDERLY_CLOSE_GRACE_MS` in `hub-relay.ts`).
  *
  * The test is the slow peer: it answers each Close 300 ms late and records how the connection
- * ended. It asserts what each runtime does, so the day the pin moves this test says whether the
- * new runtime closes gracefully, and the one allowance for the reset in `relay-r3.test.ts`
- * (`expectHubClose`) can then go.
+ * ended. The 1.4.2 pin must answer every Close before ending the connection (#1273).
+ * The historical 1.3.11 reset observations remain above; they are no longer an accepted outcome.
  *
  * Measured on macOS only. CI runs Linux, where nobody has observed how either runtime ends the
  * connection, so the test is skipped there rather than asserting an unseen behavior: it guards
@@ -40,8 +39,6 @@ const ANSWER_DELAY_MS = 300;
  * chance that none is lost is negligible.
  */
 const CONNECTIONS = 8;
-/** The Bun release whose client close is known to reset the connection (#1225). */
-const RESETTING_RUNTIME = '1.3.11';
 
 interface PeerState {
   buffer: Buffer;
@@ -163,13 +160,8 @@ test.skipIf(process.platform !== 'darwin')(
       listener.stop(true);
     }
     const lost = seen.filter((ending) => ending.startsWith('lost'));
-    if (Bun.version === RESETTING_RUNTIME) {
-      // The defect: at least one connection ends before the peer can answer the Close.
-      expect(lost.length, seen.join(' | ')).toBeGreaterThan(0);
-    } else {
-      // A runtime that closes gracefully: every Close is answered, then the connection ends.
-      expect(lost, seen.join(' | ')).toEqual([]);
-    }
+    // Every Close is answered before the connection ends; no reset exception on this pin.
+    expect(lost, seen.join(' | ')).toEqual([]);
   },
   60_000,
 );

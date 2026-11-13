@@ -356,8 +356,6 @@ test('an auth-disabled source hub retains descriptor-free hello and list shapes'
   expect(list.type === 'session_list_response' && list.machine).toBeUndefined();
   expect(existsSync(join(running.dir, 'state/identity.json'))).toBe(false);
 }, 20000);
-/** The Bun release whose client close resets the connection (#1225, `relay-r3-transport-close.test.ts`). */
-const RESETTING_RUNTIME = '1.3.11';
 /**
  * How the Worker saw the hub's pipe close: the first close the room recorded, as
  * `close <code> "<reason>"` (the hub's pipe closes before the client, whose close it causes).
@@ -379,10 +377,8 @@ async function hubPipeClose(running: Awaited<ReturnType<typeof hub>>) {
 }
 /**
  * A pipe the hub closed itself with `code` and `reason`: the hub's log says so, the Worker records
- * that close, and the client gets it. One exception (#1225): on Bun 1.3.11 the hub's close can
- * reset the connection, so the Worker records 1006 and closes the client with its own failure
- * close. That is accepted only with the hub's record that it sent `code` and saw a clean close, so
- * a hub that resets the pipe itself or sends another code fails here on every runtime.
+ * that close, and the client gets it. The 1.4.2 pin must not use the historical 1.3.11 reset
+ * allowance (#1225/#1273): an abnormal Worker close or a changed reason fails this control.
  */
 async function expectHubClose(
   running: Awaited<ReturnType<typeof hub>>,
@@ -393,19 +389,8 @@ async function expectHubClose(
 ) {
   expect(await hubPipeClose(running)).toBe(`Relay pipe closed by the hub (${code})`);
   const pipe = await pipeClose(running, rid);
-  if (!pipe.startsWith('close 1006 ')) {
-    expect(pipe).toBe(`close ${code} ${JSON.stringify(reason)}`);
-    expect(closed).toEqual({ code, reason });
-    return;
-  }
-  if (Bun.version !== RESETTING_RUNTIME)
-    throw new Error(
-      `the Worker recorded the hub's close as ${pipe}; only Bun ${RESETTING_RUNTIME} resets it, this is Bun ${Bun.version}`,
-    );
-  expect(closed).toEqual({
-    code: relayV2.FAILURE_CLOSE.code,
-    reason: relayV2.FAILURE_CLOSE.reason,
-  });
+  expect(pipe).toBe(`close ${code} ${JSON.stringify(reason)}`);
+  expect(closed).toEqual({ code, reason });
 }
 test('real source hub grants only after exact local confirmation and persists before encrypted ready', async () => {
   const { socket, channel, drain, running, rid } = await paired();
@@ -420,10 +405,14 @@ test('real source hub grants only after exact local confirmation and persists be
   if (timer) clearTimeout(timer);
   expect(closed).not.toBeNull();
   if (!closed) throw new Error('MISSING_READY_TEXT_REFUSAL');
-  // A failure close is immediate (there is no BYE to protect). Bun 1.3.11 drops longer outbound
-  // close reasons (existing Worker E2E probe), so from that hub it arrives without one.
-  const reason = Bun.version === RESETTING_RUNTIME ? '' : relayV2.FAILURE_CLOSE.reason;
-  await expectHubClose(running, rid, closed, relayV2.FAILURE_CLOSE.code, reason);
+  // A failure close is immediate; require its complete reason on the 1.4.2 pin (#1273).
+  await expectHubClose(
+    running,
+    rid,
+    closed,
+    relayV2.FAILURE_CLOSE.code,
+    relayV2.FAILURE_CLOSE.reason,
+  );
   await drain();
   expect(await channel.transportClosed()).toBe('unclean');
 }, 20000);

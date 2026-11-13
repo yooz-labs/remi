@@ -11,13 +11,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Pinned bun version for the whole pipeline. 1.3.12's `bun build --compile`
-# silently ships broken binaries (see release.yml smoke test + PR #…).
+# Pinned bun version for the whole pipeline (1.4.2 since #1273). 1.3.12's
+# `bun build --compile` silently shipped broken binaries (see release.yml).
 # Keep CI and release.yml on the same pin so test outcomes match the binary
 # we actually publish. Bump in lockstep after validating against a real
 # compiled binary.
 env:
-  BUN_VERSION: 1.3.11
+  BUN_VERSION: 1.4.2
 
 jobs:
   scope:

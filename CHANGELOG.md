@@ -10,6 +10,7 @@ All notable changes to Remi are documented here.
 - The next native build retains build 14's accepted chat behavior: open at the latest message, follow new messages at the bottom, and preserve the reader's place when scrolling back (#1568). Native build 15, signed permission behavior and physical route transitions have separate distribution and acceptance gates.
 - Card Cancel checks the exact prompt again at the queued terminal write. A stale or formerly held card clears without sending Esc into a running agent. Confirmed owning-turn completion also clears a render-owned card that the permission gate does not track (#1570). Ambiguous status updates alone still do not dismiss questions.
 - CI records bounded owned-process wait metadata and an independent logging-stage channel. Linux Bun 1.3.11 directory cleanup is handled without assuming a Promise return. These diagnostics do not establish the cause of the intermittent full-suite stall (#1206).
+- Published binaries now compile with Bun 1.4.2, and CI and the relay gate run on it; the native app workflow stays on Bun 1.3.11 for its integration fixtures (#1273).
 
 ## [0.8.2] - 2026-10-27
 

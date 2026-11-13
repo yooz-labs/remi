@@ -14,12 +14,13 @@ concurrency:
 permissions:
   contents: read
 
-# Pinned bun version. 1.3.12's `bun build --compile` ships a binary that
-# silently exits (SIGKILL on --version, exit 0 no-op otherwise). Reproduces
-# with a trivial `console.log` script; not specific to remi code. Bump in
-# lockstep with ci.yml after validating a real compiled binary.
+# Pinned bun version (1.4.2 since #1273). Moves are deliberate: 1.3.12's
+# `bun build --compile` shipped a binary that silently exits (SIGKILL on
+# --version, exit 0 no-op otherwise), which is why the pin stayed on 1.3.11
+# until 1.4.2 was validated with real compiled binaries. Bump in lockstep with
+# ci.yml after validating a real compiled binary.
 env:
-  BUN_VERSION: 1.3.11
+  BUN_VERSION: 1.4.2
 
 jobs:
   build:
