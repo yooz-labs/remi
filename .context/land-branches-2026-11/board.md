@@ -74,7 +74,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | - | review | L03 | 1736 | 2026-11-13T06:04-08:00 | 2d | delta clean; waiting local-relay soak on e18c8c13; then gh pr ready, merge gate (check RemiConnection.swift overlap with #1737), merge, bump, DV, cleanup |
 | L07 | [Local notification order #1720](cards/L07-local-notification-order.md) | - | worker | xcode | - | blocked | L04, CP1 | - | - | 3d | parked until #1727 is resolved (Q12); counts as settled for L99; branch kept |
 | L08 | [Native images #1313](cards/L08-native-images.md) | - | worker-hard | xcode | - | dropped | L03, CP1 | - | - | 3d | parked as evidence (Q11 a): branch kept, not deleted; chunk cards are reference only |
-| L09 | [Bun 1.4.2 pins #1512](cards/L09-bun142-pins.md) | - | worker-hard | - | claude-opus | active | L01 | 1512 | 2026-11-13T06:14-08:00 | 2d | fix r2 (Critical: CI runner contract hard-coded to the 1.3.11 revision; docs; notes); then hosted checks, owner phone check (Q1), merge gate |
+| L09 | [Bun 1.4.2 pins #1512](cards/L09-bun142-pins.md) | - | worker-hard | - | - | review | L01 | 1512 | 2026-11-13T06:14-08:00 | 2d | fix r2 pushed 6c2782ca (contract recaptured on 1.4.2, docs, notes); waiting hosted (test-workers must pass on 1.4.2, soak); then owner phone check (Q1), merge only when no other step active/review |
 | L12 | [WSS writer tests #1641](cards/L12-native-wss-characterization.md) | - | worker | xcode | - | dropped | - | - | - | 4h | Q6 fold into the first #1641 implementation PR; branch kept |
 | L11 | [Compact preview probes #1711](cards/L11-compact-preview.md) | - | worker | - | - | dropped | - | - | - | 4h | Q5 park: branch kept, no PR; not in the L13 delete list |
 | L10 | [#1727 local files check](cards/L10-store-callback-owner-check.md) | - | - | - | - | done | - | - | - | - | verify the #1727 push landed (git ls-remote); then waits on Q16 (PR wanted?) |
@@ -146,7 +146,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | codex-DV4 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T06:15 | done |
 | sonnet-L05 | implementer | claude-sonnet | sonnet high | L05 | 2026-11-13T06:35 | done |
 | sonnet-L14 | implementer | claude-sonnet | sonnet high | L14 | 2026-11-13T06:35 | done |
-| opus-L09 | implementer | claude-opus | opus xhigh | L09 | 2026-11-13T06:45 | running a6a64c52 (fix round: runner contract, docs) |
+| opus-L09 | implementer | claude-opus | opus xhigh | L09 | 2026-11-13T06:45 | done |
 | rv-L14 | reviewer | extra | sonnet xhigh x3 | L14 | 2026-11-13T07:05 | done |
 | advisor-L05 | advisor | extra | opus xhigh | L05 | 2026-11-13T07:05 | done |
 | codex-L14fix | implementer | codex-luna | gpt-6-luna max | L14 | 2026-11-13T07:30 | done |
