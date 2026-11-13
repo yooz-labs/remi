@@ -43,6 +43,7 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T06:10-08:00 | Owner (2026-11-13, chat): do not wait for a free Luna slot: when the Codex Luna slots are full, run worker cards (L05, L14) on Claude Sonnet implementers instead | owner |  |
 | 2026-11-13T06:13-08:00 | Owner (2026-11-13, chat): the rule that a Codex card never falls back to Claude is wrong: Codex and Claude worker slots are both used and maximized (a worker card goes to whichever platform has a free fitting slot); PR reviewers are Claude Sonnet only, the advisor is Claude Opus only (the Luna second reviewer of Q9 is superseded; no Codex reviewers), and the lead is the current session (no separate lead agent) | owner |  |
 | 2026-11-13T06:14-08:00 | Owner (2026-11-13, chat): slots are for workers only; PR reviewers, advisors and the lead are extra to the slots (reviewers no longer wait for or consume a Claude Sonnet worker slot) | owner |  |
+| 2026-11-13T06:14-08:00 | Slots are for workers only; reviewers, advisor and lead extra (owner); L09 given to an Opus worker since Terra is busy | manager |  |
 
 ## Log
 
@@ -85,3 +86,4 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T06:05-08:00 | cleanup (owner authority): removed worktrees agents-md-split, question-session-identity, direct-child-key and their local branches (remote branches were already auto-deleted on merge); deleted the three scratch/issue-1724-* evidence branches |
 | 2026-11-13T06:11-08:00 | L05 and L14 dispatched as Claude Sonnet implementers (owner: do not wait for Luna): agents af3918dd (L05, #1707 merge with develop) and a402841c (L14, image-availability) |
 | 2026-11-13T06:13-08:00 | Owner correction recorded: slots on both platforms maximized; reviews Sonnet, advisor Opus, lead = this session; Luna second reviewer dropped |
+| 2026-11-13T06:14-08:00 | DV r4 on 981123e1 passed (952 tests, baseline suites skipped). #1724 closed with a comment pointing to #1735. L09 dispatched on a Claude Opus worker (agent a6a64c52): worktree bun142-pins created from the existing branch. |
