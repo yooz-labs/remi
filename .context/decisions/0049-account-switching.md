@@ -1,6 +1,6 @@
 # ADR 0049: Account profiles, usage visibility and confirmed continuation across a person's own accounts
 
-**Status:** proposed (design draft from card A01 of the land-branches-2026-11 plan, revised the same day with the A02 advisor review's findings F1 to F12; not accepted; the owner decides at checkpoint CP4)
+**Status:** Accepted as the direction (owner, 2026-11-13); phases 1-4 and 5A approved; phases 5, 5B and 6 not yet approved (see "Owner decisions"; design draft from card A01 of the land-branches-2026-11 plan, revised the same day with the A02 advisor review's findings F1 to F12)
 **Date:** 2026-11-13
 **Owner:** Yahya
 **Builds on:** #1157 (profiles), the profile contract in `.context/issue-1595-backend-plan.md`, ADR 0032, ADR 0033, ADR 0036, ADR 0038, ADR 0043
@@ -346,9 +346,10 @@ After a continuation: the result, and links between the new session and the supe
 | Hub restarts during a continuation | The step reached is persisted; nothing resumes on its own; clients see the state |
 | Two clients ask at once | The first wins, the second is refused |
 
-**D9. Automatic continuation is not built** until the owner amends #1157 hard rule 3 (Q1) and the vendor concerned answers in writing (Q2).
-If it is ever built, it takes only the shape of O7 (Q11): armed by the person in the app for one session and one target; fires at most once, on the authoritative limit event; expires at the source window's reset; never while a card is live; never between a team, business or enterprise seat and anything else; a notice before and after; all of D5's preconditions, with the confirmation replaced by the arming.
-There is no standing rotation per profile pair.
+**D9. Automatic continuation is not built yet.**
+The owner allowed it in principle, opt-in per profile pair, after vendor confirmation (Q1 (b)), and decided not to ask the vendors (Q2); the condition is therefore unmet, and phase 6 is neither approved to start nor dropped ("Owner decisions" below).
+Whenever it is reconsidered, it keeps all of D5's preconditions with the confirmation replaced by the person's opt-in, never runs while a card is live, never involves a team, business or enterprise seat, sends a notice before and after, and has one setting that turns it off.
+Its shape is opt-in per profile pair, as the owner's answer names; the narrower shape this ADR recommended in Q11 (O7: armed per session, one shot, expiring at the source window's reset) is settled when phase 6 is reconsidered, not now.
 
 **D10. What remi never does:** read, copy, store, print or relay a credential or token; run a login from a phone; choose a profile the person did not configure; continue onto a seat of another person (V21, V24); describe the feature as a way to get more usage; log, store or forward an email, workspace name or account identifier (only its keyed hash, D11, stays on the machine); use "Claude Code" or "Anthropic" in a feature, product or command name (V20), and, by the same caution, no OpenAI or Codex mark either.
 
@@ -372,20 +373,47 @@ Claude `auth_success` and Codex `account/updated` (V31) also invalidate the prof
 
 Each has a recommended option.
 Q11 to Q13 come from the A02 review; its question on vendor answers is merged into Q2.
+All thirteen were answered by the owner on 2026-11-13; the answers are recorded on each question and in "Owner decisions" below.
 
-- **Q1. Automatic switching.** (a) keep #1157 hard rule 3: no automatic switching, only confirmed continuation; (b) allow phase 6 after written vendor answers, in the shape Q11 chooses; (c) build it now. **Recommended: (a) now; (b) only with written answers.**
-- **Q2. Vendor answers and phase 5.** (a) ask now, Anthropic through the channel its legal page names ("contact sales", V20) and OpenAI through a channel the owner chooses (G19); release phase 5 after an answer or 30 days of silence; phase 6 only with written answers; (b) block phase 5 until written answers; (c) do not ask. **Recommended: (a); phases 1 to 4 do not depend on the answer.**
-- **Q3. Thresholds.** (a) warn 90, offer 95, both configurable; (b) warn and offer at 98 as stated. **Recommended: (a), because the signal lags by up to one turn and compaction needs headroom; 98 stays available as a setting.**
-- **Q4. Default continuation material.** (a) summary or brief in a new session; (b) resume the same conversation under the new account. **Recommended: (a) by default; (b) only after phase 5B passes.**
-- **Q5. Material when the source account has no headroom.** (a) remi's deterministic brief; (b) resume under the target and compact there (needs Q4 (b)); (c) wait for the reset. **Recommended: (a), with (c), `/usage-credits` and `/model` offered beside it.**
-- **Q6. Eligible targets.** (a) only profiles marked `continuation_target`, individual subscriptions of the same person, never to or from a team, business or enterprise seat (those seats are single-user under the business terms, V24, and the sign-in method decides which data-handling policies apply, `[doc: learn.chatgpt.com/docs/auth]`), enforced from Codex `planType` and self-declared for Claude until a plan field is found (D1); (b) any configured profile. **Recommended: (a).**
-- **Q7. Register Claude's `PostCompact` hook.** (a) yes, after measuring that a dead remi does not delay compaction; (b) no, detect completion from `SessionStart` and the status line only. **Recommended: (a).**
-- **Q8. Push kind for usage.** (a) a new kind `usage_warning`, mutable per device; (b) reuse `turn_failed`. **Recommended: (a); `turn_failed` means a turn ended.**
-- **Q9. Phone authority.** (a) an authenticated client may start a continuation with an in-app confirmation, only to remotely selectable targets; (b) terminal only. **Recommended: (a), never from the lock screen.**
-- **Q10. Flag name.** (a) `--remi-profile` and `REMI_PROFILE` as the backend plan proposes; (b) `--profile`. **Recommended: (a), so provider flags keep their meaning.**
-- **Q11. Shape of phase 6.** (a) per session, one shot, armed in the app, expiring at the reset (O7); (b) standing rotation per profile pair; (c) never. **Recommended: (a), still behind Q1 and Q2.**
-- **Q12. Local account fingerprint.** (a) a keyed hash kept on the machine (D11); (b) nothing stored, and "same account" stays unknown. **Recommended: (a).**
-- **Q13. Tiering.** (a) profiles and usage free in remi; (b) continuation reserved for super-yooz. **Recommended: (a); a competitor already caps added accounts by paid plan (competitive review addendum).**
+- **Q1. Automatic switching.** (a) keep #1157 hard rule 3: no automatic switching, only confirmed continuation; (b) allow phase 6 after written vendor answers, in the shape Q11 chooses; (c) build it now. **Recommended: (a) now; (b) only with written answers.** **Answered 2026-11-13:** (b), "allow opt-in automatic switching later": build it after vendor confirmation, opt-in per profile pair. The condition is unmet while Q2 stands; see Owner decisions.
+- **Q2. Vendor answers and phase 5.** (a) ask now, Anthropic through the channel its legal page names ("contact sales", V20) and OpenAI through a channel the owner chooses (G19); release phase 5 after an answer or 30 days of silence; phase 6 only with written answers; (b) block phase 5 until written answers; (c) do not ask. **Recommended: (a); phases 1 to 4 do not depend on the answer.** **Answered 2026-11-13:** (c), "do not ask; rely on the terms": no vendor contact. The 30-day rule of (a) therefore does not apply.
+- **Q3. Thresholds.** (a) warn 90, offer 95, both configurable; (b) warn and offer at 98 as stated. **Recommended: (a), because the signal lags by up to one turn and compaction needs headroom; 98 stays available as a setting.** **Answered 2026-11-13:** (a), as recommended: warn 90, offer 95, configurable, 98 available.
+- **Q4. Default continuation material.** (a) summary or brief in a new session; (b) resume the same conversation under the new account. **Recommended: (a) by default; (b) only after phase 5B passes.** **Answered 2026-11-13:** (a), as recommended: a brief or summary in a new session.
+- **Q5. Material when the source account has no headroom.** (a) remi's deterministic brief; (b) resume under the target and compact there (needs Q4 (b)); (c) wait for the reset. **Recommended: (a), with (c), `/usage-credits` and `/model` offered beside it.** **Answered 2026-11-13:** (a), as recommended: remi's deterministic brief, with wait, `/usage-credits` and `/model` beside it.
+- **Q6. Eligible targets.** (a) only profiles marked `continuation_target`, individual subscriptions of the same person, never to or from a team, business or enterprise seat (those seats are single-user under the business terms, V24, and the sign-in method decides which data-handling policies apply, `[doc: learn.chatgpt.com/docs/auth]`), enforced from Codex `planType` and self-declared for Claude until a plan field is found (D1); (b) any configured profile. **Recommended: (a).** **Answered 2026-11-13:** (a), as recommended: only the person's own individual subscriptions, never team, business or enterprise seats.
+- **Q7. Register Claude's `PostCompact` hook.** (a) yes, after measuring that a dead remi does not delay compaction; (b) no, detect completion from `SessionStart` and the status line only. **Recommended: (a).** **Answered 2026-11-13:** (a), as recommended: register `PostCompact` after the dead-remi latency check.
+- **Q8. Push kind for usage.** (a) a new kind `usage_warning`, mutable per device; (b) reuse `turn_failed`. **Recommended: (a); `turn_failed` means a turn ended.** **Answered 2026-11-13:** (a), as recommended: a new per-device push kind `usage_warning`.
+- **Q9. Phone authority.** (a) an authenticated client may start a continuation with an in-app confirmation, only to remotely selectable targets; (b) terminal only. **Recommended: (a), never from the lock screen.** **Answered 2026-11-13:** (a), as recommended: only with an in-app confirmation, never from the lock screen.
+- **Q10. Flag name.** (a) `--remi-profile` and `REMI_PROFILE` as the backend plan proposes; (b) `--profile`. **Recommended: (a), so provider flags keep their meaning.** **Answered 2026-11-13:** (a), as recommended: `--remi-profile` and `REMI_PROFILE`.
+- **Q11. Shape of phase 6.** (a) per session, one shot, armed in the app, expiring at the reset (O7); (b) standing rotation per profile pair; (c) never. **Recommended: (a), still behind Q1 and Q2.** **Answered 2026-11-13:** in spirit by Q1: phase 6 stays in the plan as opt-in per profile pair and is not filed now; the per-session one-shot of (a) is not adopted or rejected.
+- **Q12. Local account fingerprint.** (a) a keyed hash kept on the machine (D11); (b) nothing stored, and "same account" stays unknown. **Recommended: (a).** **Answered 2026-11-13:** (a), as recommended: a keyed hash kept on the machine.
+- **Q13. Tiering.** (a) profiles and usage free in remi; (b) continuation reserved for super-yooz. **Recommended: (a); a competitor already caps added accounts by paid plan (competitive review addendum).** **Answered 2026-11-13:** (a), as recommended: profiles and usage free in remi.
+
+## Owner decisions (2026-11-13)
+
+The owner answered checkpoint CP4 in chat on 2026-11-13 (relayed by the coordinator of the land-branches-2026-11 plan).
+The answers, as given:
+
+- **Q1:** option (b), "allow opt-in automatic switching later": build it after vendor confirmation, opt-in per profile pair.
+- **Q2:** "do not ask; rely on the terms": no vendor contact.
+- **Q3 to Q10, Q12 and Q13:** accepted as recommended: warn 90 and offer 95, configurable, with 98 available; the default continuation material is a brief or summary in a new session; with no headroom, remi's deterministic brief, with wait, `/usage-credits` and `/model` beside it; eligible targets are only the person's own individual subscriptions, never team, business or enterprise seats; Claude's `PostCompact` hook is registered after the dead-remi latency check; a new per-device push kind `usage_warning`; a phone may start a continuation only with an in-app confirmation, never from the lock screen; the flag is `--remi-profile` with `REMI_PROFILE`; a local keyed account fingerprint; profiles and usage are free in remi.
+- **Q11:** answered in spirit by Q1: phase 6 remains in the plan as opt-in per profile pair, and it is not filed now.
+- **Filing:** phases 1, 2, 3, 4 and 5A are to be filed now; phases 5, 5B and 6 are not filed yet, because they follow phase 5A passing. This ADR is accepted as the direction; it is documentation only.
+
+**A tension, recorded and not resolved.**
+This ADR's condition for automatic switching (D9, Q1 (b)) is written vendor confirmation, and the owner's answer to Q2 is that no vendor will be asked.
+The condition is therefore currently unmet.
+Phase 6 is not approved to start, and it is not dropped.
+Before phase 6 is filed it needs one of two things, recorded here: a vendor's written answer, or an explicit written acceptance by the owner of the terms risk.
+The terms that make it a risk, as quoted in V20, V22 and V24:
+OpenAI Services Agreement 3.3(i), Customer will not "violate or circumvent Usage Limits or otherwise configure the Services to avoid Usage Limits", where "“Usage Limits” means End User, messaging, token, throughput rate, or other limits on Customer’s use of the Services as described in the applicable Order Form or Documentation";
+Anthropic Usage Policy, "Intentionally bypass or interfere with capabilities, restrictions, or guardrails established within our products" and "create multiple accounts, to avoid detection, / circumvent product guardrails";
+and Claude Code's legal page, "Advertised usage limits for Pro, Max, and Ultra plans assume ordinary, individual usage of Claude Code and the Agent SDK."
+
+**Phase 5 (confirmed continuation).**
+Q2 (a)'s release rule (after an answer or 30 days of silence) does not apply, because no question is sent.
+Phase 5 stays unfiled until phase 5A passes and the owner says go.
+Phase 5B also stays unfiled until then.
 
 ## Appendix A: commands and versions
 
