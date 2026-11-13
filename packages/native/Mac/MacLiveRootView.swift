@@ -192,7 +192,11 @@ struct MacLiveRootView: View {
                                     sessionId: session.id,
                                     questionId: questionId,
                                     answer: value,
-                                    claudeSessionId: rawQuestion(sessionID: session.id, questionID: questionId)?.claudeSessionId
+                                    claudeSessionId: rawQuestion(
+                                        machineID: session.machineID,
+                                        sessionID: session.id,
+                                        questionID: questionId
+                                    )?.claudeSessionId
                                 )
                             },
                             onSubmit: { questionId, selections in
@@ -201,7 +205,11 @@ struct MacLiveRootView: View {
                                     sessionId: session.id,
                                     questionId: questionId,
                                     answer: "",
-                                    claudeSessionId: rawQuestion(sessionID: session.id, questionID: questionId)?.claudeSessionId,
+                                    claudeSessionId: rawQuestion(
+                                        machineID: session.machineID,
+                                        sessionID: session.id,
+                                        questionID: questionId
+                                    )?.claudeSessionId,
                                     selections: selections.compactMap { selection in
                                         guard let questionIndex = Int(selection.stepID) else { return nil }
                                         return AnswerSelection(
@@ -218,7 +226,11 @@ struct MacLiveRootView: View {
                                     sessionId: session.id,
                                     questionId: questionId,
                                     answer: "",
-                                    claudeSessionId: rawQuestion(sessionID: session.id, questionID: questionId)?.claudeSessionId,
+                                    claudeSessionId: rawQuestion(
+                                        machineID: session.machineID,
+                                        sessionID: session.id,
+                                        questionID: questionId
+                                    )?.claudeSessionId,
                                     cancel: true
                                 )
                             },
@@ -1183,10 +1195,6 @@ struct MacLiveRootView: View {
             name: tool.toolName ?? "Tool",
             summary: String(summary.prefix(240))
         )
-    }
-
-    private func rawQuestion(sessionID: String, questionID: String) -> QuestionMessage? {
-        selectedMachine?.question(sessionID: sessionID, questionID: questionID)
     }
 
     private func answerPath(_ value: QuestionAnswerPath?) -> RemiAnswerPath? {
