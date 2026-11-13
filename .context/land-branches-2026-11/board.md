@@ -19,8 +19,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Manager id | mba-claude-sonnet |
 | State | running |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | 2026-11-13T08:15-08:00 |
-| Next tick | 2026-11-13T08:45-08:00 |
+| Last tick | 2026-11-13T08:43-08:00 |
+| Next tick | 2026-11-13T09:13-08:00 |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-12T19:05-08:00 |
 
@@ -157,5 +157,5 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | rv-L14d | reviewer | extra | sonnet xhigh | L14 | 2026-11-13T09:10 | done |
 | codex-DV5 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T07:10 | done |
 | codex-DV6 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T07:50 | done |
-| codex-DV7 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T08:30 | thread DV r7 on cb346c5a |
+| codex-DV7 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T08:30 | done |
 | rv-L06d | reviewer | extra | sonnet xhigh | L06 | 2026-11-13T08:30 | done |
