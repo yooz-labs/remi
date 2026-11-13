@@ -19,8 +19,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Manager id | mba-claude-sonnet |
 | State | running |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | 2026-11-13T10:32-08:00 |
-| Next tick | 2026-11-13T11:02-08:00 |
+| Last tick | 2026-11-13T10:51-08:00 |
+| Next tick | 2026-11-13T11:51-08:00 |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-12T19:05-08:00 |
 
@@ -160,4 +160,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | codex-DV7 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T08:30 | done |
 | rv-L06d | reviewer | extra | sonnet xhigh | L06 | 2026-11-13T08:30 | done |
 | advisor-L06m | advisor | extra | opus xhigh | L06 | 2026-11-13T09:15 | running (merge interaction with #1737 in RemiConnection.swift) |
-| codex-DV8 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T10:40 | thread DV r8 on 68940c1d |
+| codex-DV8 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T10:40 | done |
