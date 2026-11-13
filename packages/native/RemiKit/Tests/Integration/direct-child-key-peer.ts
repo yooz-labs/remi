@@ -16,6 +16,7 @@ if (
   ![
     'matching',
     'wrong',
+    'copied',
     'held',
     'legacy',
     'rootheld',
@@ -158,7 +159,11 @@ function listener(role: State['role']) {
           ws.send(
             frame('auth_result', {
               success: true,
-              serverSignature: sign(null, ws.data.challenge, key.privateKey).toString('base64'),
+              serverSignature: sign(
+                null,
+                ws.data.challenge,
+                role === 'child' && mode === 'copied' ? otherParent.privateKey : key.privateKey,
+              ).toString('base64'),
             }),
           );
         } else if (message.type === 'hello' && ws.data.admitted) {

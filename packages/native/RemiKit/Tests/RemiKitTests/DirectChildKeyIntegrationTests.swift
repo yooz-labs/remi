@@ -27,7 +27,7 @@ struct DirectChildKeyIntegrationTests {
         return try JSONSerialization.data(withJSONObject: value)
     }
 
-    @Test(arguments: ["discovery-matching", "discovery-wrong", "create-matching", "create-wrong", "resume-matching", "resume-wrong", "discovery-legacy", "childfirst-legacy", "earlydiscovery-wrong", "earlycreate-wrong", "earlydiscovery-matching", "earlycreate-matching", "earlydiscovery-legacy", "waitingdiscovery-matching", "waitingdiscovery-wrong", "waitingcreate-matching", "waitingcreate-wrong", "waitingforget-matching", "stale-matching"])
+    @Test(arguments: ["discovery-matching", "discovery-wrong", "discovery-copied", "create-matching", "create-wrong", "resume-matching", "resume-wrong", "discovery-legacy", "childfirst-legacy", "earlydiscovery-wrong", "earlycreate-wrong", "earlydiscovery-matching", "earlycreate-matching", "earlydiscovery-legacy", "waitingdiscovery-matching", "waitingdiscovery-wrong", "waitingcreate-matching", "waitingcreate-wrong", "waitingforget-matching", "stale-matching"])
     func childUsesAuthenticatedParentKey(_ scenario: String) async throws {
         let pieces = scenario.split(separator: "-")
         let action = String(pieces[0]), mode = String(pieces[1])
@@ -146,25 +146,33 @@ struct DirectChildKeyIntegrationTests {
             if early {
                 try await Task.sleep(for: .milliseconds(150))
                 if mode == "wrong" {
-                    #expect(try stats()["childAuth"] == 0, "A delayed parent Hello must not let a wrong child obtain a signature")
+                    #expect(try stats()["childAuth"] == 0, "A delayed parent Hello must not let a child announcing a different key obtain a signature")
                 }
                 await parentHelloGate.open()
             }
             let deadline = ContinuousClock.now.advanced(by: .seconds(5))
             while ContinuousClock.now < deadline {
                 let current = try stats()
-                if mode != "wrong", current["childHello", default: 0] > 0,
+                if mode != "wrong", mode != "copied", current["childHello", default: 0] > 0,
                    subject.ownedSessionRoutes.values.contains(where: { $0.port == childPort }) { break }
                 if mode == "wrong", current["childAuth", default: 0] > 0 || subject.machines.first?.sessionConnectionIssue != nil { break }
+                if mode == "copied", current["childAuth", default: 0] > 0 && subject.machines.first?.sessionConnectionIssue != nil { break }
                 try await Task.sleep(for: .milliseconds(10))
             }
             let observed = try stats()
             #expect(observed["rootAuth"] == (mode == "legacy" ? 0 : 1))
             #expect(observed["childOpens"] == 1)
             #expect(observed["childPairing"] == 0)
-            #expect(observed["childAuth"] == (mode == "wrong" ? 0 : 1), "Wrong child must never receive a signed auth response")
-            #expect(observed["childHello"] == (mode == "wrong" ? 0 : 1))
-            #expect(subject.ownedSessionRoutes.values.contains(where: { $0.port == childPort }) == (mode != "wrong"))
+            #expect(observed["childAuth"] == (mode == "wrong" ? 0 : 1), "A child announcing a different key must never receive a signed auth response; the copied-key limit is tracked in #1735")
+            #expect(observed["childHello"] == (mode == "wrong" || mode == "copied" ? 0 : 1))
+            #expect(subject.ownedSessionRoutes.values.contains(where: { $0.port == childPort }) == (mode != "wrong" && mode != "copied"))
+            if mode == "copied" {
+                // Documented protocol limit: bind direct client authentication to the server key (#1735).
+                #expect(observed["childUserInput"] == 0)
+                #expect(subject.machines.first?.sessionConnectionIssue != nil, "The copied-key child must be refused")
+                #expect(subject.machines.first?.status == .connected, "The parent remains connected")
+                #expect(observed["rootHello"] == 1)
+            }
             if action == "childfirst" {
                 // The first child has authenticated, but an unauthenticated legacy
                 // root cannot promote that child's key to parent authority.
@@ -444,7 +452,7 @@ struct DirectChildKeyIntegrationTests {
             #expect(try stats()["childAuth"] == (scenario == "matching" ? 1 : 0),
                 "A learned root key must survive reconnect; the matching key remains usable")
             if scenario == "wrongkey" {
-                #expect(try stats()["rootAuth"] == 1, "A changed root key must be rejected before the client signs")
+                #expect(try stats()["rootAuth"] == 1, "A root announcing a changed key must be rejected before the client signs")
             }
             await reconnectGate.open()
             subject.stop()
