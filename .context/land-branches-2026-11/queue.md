@@ -7,8 +7,8 @@ This file lists, per slot, the cards in priority order with their entry conditio
 
 | Slot | Cards in order | Entry condition |
 | --- | --- | --- |
-| codex-terra (1) | L03, L06, L08, L09 | L03 after Q2; L06 after L03 merges and Q3 approves; L08 only under Q11 option b, after L03 and CP1; L09 after L01, while no native PR is in review (Q1: merged only after the owner's phone check) |
-| codex-luna (2) | L01, L02, L04, L05, L07, L14, L13, DV (plus Q9's Luna reviewers for L03, L06, L08-R4) | L01, L02 now; L04 after Q2; L05 after L03; L07 only under Q12 "land review-only", after L04 and CP1; L14 only under Q11 option a, after L03; L13 after L99; DV after every merge; L11, L12 dropped (Q5, Q6) |
+| codex-terra (1) | L03, L06, L09 | L03 now; L06 after L03 merges (Q3 approved); L09 after L01, while no native PR is in review (Q1: merged only after the owner's phone check); L08 parked (Q11) |
+| codex-luna (2) | L01, L02, L04, L05, L14, L13, DV (plus Q9's Luna reviewers for L03, L06) | L01, L02, L04 now; L05 and L14 after L03; L13 after L99; DV after every merge; L07 parked (Q12); L11, L12 dropped (Q5, Q6) |
 | claude-opus (1) | P01, A01, A03, lead wakes, advisor consults | P01 and A01 after L99; A03 after A02 |
 | claude-fable (1) | A02 | after A01 |
 | claude-sonnet (2) | reviewers and synthesis agents, never a step | runbook section 8, reviewer concurrency |

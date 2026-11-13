@@ -25,7 +25,9 @@ cd /Volumes/S1/worktrees/remi/land-branches-plan && bun install
 ```
 
 Both branches' commits are safe in the shared refs; `--force` only discards each scratch worktree's generated untracked files.
-If Q14 says install: `cp PACK/codex-landing.rules ~/.codex/rules/land-branches-2026-11.rules` (the owner runs it, and removes it when the loop ends).
+Owner-run (Q14, 2026-11-12: install for the loop): `cp /Volumes/S1/worktrees/remi/land-branches-plan/.context/land-branches-2026-11/codex-landing.rules ~/.codex/rules/land-branches-2026-11.rules`; when the loop ends, `rm ~/.codex/rules/land-branches-2026-11.rules`.
+Whether `codex exec` loads that file, and applies it under `-s danger-full-access`, is unverified; the manager's check after every full-access run (section 5) stays in force either way.
+The manager confirms the copy once: `codex execpolicy check --rules ~/.codex/rules/land-branches-2026-11.rules gh pr merge 1` prints `"decision":"forbidden"`.
 Then the `/loop` start prompt (plan 0.1).
 Optional live view (port 8765 belongs to the remi daemon; use 8799): `nohup python3 /Users/yahya/.claude/plugins/cache/research-skills/project/0.12.0/skills/manager-loop/scripts/manager_board.py serve /Volumes/S1/worktrees/remi/land-branches-plan/.context/land-branches-2026-11/board.md --port 8799 > /tmp/board-serve.log 2>&1 & disown`.
 
@@ -115,7 +117,7 @@ Copied from the board and from `git`/`gh` at dispatch time, never from an earlie
 - the PR number and head commit, when the step has a PR;
 - for a fix round: the round number, the decided findings with their outcomes, and the line "This card was started earlier. Continue from the worktree: run `git status` and `git log --oneline -10` first.";
 - for a reviewer: `Lens group`, `Base` (merge-base), `Head` (the reviewer reads those commits, never a moving worktree), and for delta reviews `Round1Head`;
-- the owner answers the card names (Q2 for native cards; while Q2 is open a stall is a stop condition; Q11 and Q12 for L07, L08, L14).
+- the owner answers the card names (Q2 for native cards: one bounded Mac test attempt, and on a stall the card continues on hosted `swift test` and logs it; Q13 for the delta-review head of L02, L03, L09).
 
 ## 7. First tick of a session
 
@@ -126,15 +128,16 @@ Copied from the board and from `git`/`gh` at dispatch time, never from an earlie
 3. Reconcile: for each step in `active` or `review`, read its PR (`gh pr view N --json headRefOid,state,isDraft,mergeStateStatus`) and its worktree (`git -C WT status --short`, `git -C WT log --oneline -3`); the PR and worktree are right; correct the board and `MB log` it.
    A step with no live worker: dispatch again with the continuation line (section 6).
 4. `test -d /Volumes/S1/yooz/remi/locks || mkdir -p /Volumes/S1/yooz/remi/locks`.
-5. Ask the questions still `open` on the board in batches of at most four (on 2026-11-12: Q2, Q3, Q7, Q11 to Q15); never re-ask a `closed` one.
+5. Ask the questions still `open` on the board in batches of at most four (on 2026-11-12: Q16 only); never re-ask a `closed` one.
 
 ## 8. The tick
 
 The skill's tick, with these project rules:
 
 - **Order:** owner answers (section 11), worker reports, reviews, failing checks, conflicts, timeboxes, dates, checkpoints, then fill free slots.
-- **CP1 rule:** when L01 to L06 are each `done` or `dropped`, wake the lead for CP1 (go or adjust for L07, L08, L14); when `board-log.md` has the lead's `CP1:` decision, set CP1 `done`.
-- **L99 rule:** when L01 to L12, L14 and CP1 are each `done` or `dropped`, set L99 `done`, set A01 to `todo`, set P01 to `todo` once the iPad issue exists (ask the owner to run its command in `PACK/issues-to-file.md`; its number is P01's live fact), and wake the lead for CP2.
+- **CP1 rule:** when L01 to L06 are each `done` or `dropped`, wake the lead for CP1 (go or adjust; with L08 parked and L07 parked it mainly confirms the landing state); when `board-log.md` has the lead's `CP1:` decision, set CP1 `done`.
+- **Parked steps:** L07 is `blocked` with Next starting "parked" (Q12) and L08 is `dropped` with Next starting "parked" (Q11); never dispatch either; their branches are kept.
+- **L99 rule:** when L01 to L12, L14 and CP1 are each `done` or `dropped`, and L07 is `done`, `dropped` or parked, set L99 `done`, set A01 to `todo`, set P01 to `todo` once the iPad issue exists (ask the owner to run its command in `PACK/issues-to-file.md`; its number is P01's live fact), and wake the lead for CP2.
 - **Dropped dependency:** when a step becomes `dropped`, list every step whose Depends names it; at the next lead wake the lead decides for each (drop it too, or remove the dependency with `MB set ... Depends=...` and a `decide` line); the manager never edits Depends on its own.
 - **L09 rule:** dispatch L09 only while no step with Needs `xcode` is in `review`; merge it only while no other step is `active` or `review`.
 - **Steps waiting on a question** stay `owner` until the answer.
@@ -176,7 +179,7 @@ Verify by observation, stop at the first failure (skill, "Verify by observation"
 5. Deviations are listed and triaged (accept, send back, or ask the lead).
 6. After a full-access run, the `develop` check in section 5.
 Then set the step `review` and dispatch its review (plan section 3; for L02, L03 and L09 the form Q13 chose) while CI runs.
-If Q13 is still open when L02, L03 or L09 reaches this point, set the step `owner` with Next "waits on Q13" instead.
+Q13 (owner, 2026-11-12): L02, L03 and L09 get one [RV-delta](cards/RV-delta.md) review from their recorded head (#1657 `26fbf947`, #1728 `5c1f9380`, #1512 `3a654273`) to the final head, plus Q9's Luna reviewer for L03; an empty diff needs no review.
 
 ### A review returns
 
@@ -187,8 +190,8 @@ If Q13 is still open when L02, L03 or L09 reaches this point, set the step `owne
   A step whose implementer was Codex keeps Codex for fixes unless the skill's handover conditions hold (`references/platforms.md`, "Handing a card from one platform to another").
 - Proposed rejects of a round: one advisor consult covering all of them; record the ruling with `MB decide` and a PR comment.
 - Round 1 substantial (`review-convergence.md` rules 1 to 5): round 2 per [RV-delta](cards/RV-delta.md); for L07 and L08 one delta reviewer per touched chunk.
-  Large fixes (rules 2, 3 or 5) go into a fix PR whose base is the step PR's head branch; merging that fix PR needs Q15; a fix PR into a `patch/*` branch gets no native CI (`native-app.yml` runs on PRs into `main`, `develop` and `feature/**`), so its local native gates are the evidence and the step PR's CI reruns after it merges.
-  Rule 4 applies to every accepted fix in L03, L06, L08-R4 and L14.
+  Large fixes (rules 2, 3 or 5) go into a fix PR whose base is the step PR's head branch; the manager may merge that fix PR into the head branch only, after the same merge gate (Q15, owner 2026-11-12), never into `develop` directly; a fix PR into a `patch/*` branch gets no native CI (`native-app.yml` runs on PRs into `main`, `develop` and `feature/**`), so its local native gates are the evidence and the step PR's CI reruns after it merges.
+  Rule 4 applies to every accepted fix in L03, L06 and L14.
 
 ### Checks
 
@@ -221,7 +224,7 @@ Apply section 11, `MB decide BOARD "ANSWER" --by owner`, set the question `close
 3. Fresh base: `git -C MAIN fetch origin && git -C MAIN log --format=%s HEAD_SHA..origin/develop` lists only `chore: bump version to ...` subjects; otherwise the worker merges `origin/develop` into the branch and the checks run again.
 4. Checks on the final head: `gh pr checks N` lists `CI Scope`, `Lint`, `Type Check`, `Test`, `Spelling`, `Relay Scope` and `local-relay`, each passing or skipping, none pending or failing; a PR that touches `packages/native/` also has `Build and Test (Native)` passing (not skipping); a PR that touches `packages/daemon/`, `packages/shared/`, `packages/signaling/`, `tests/integration/` or `.github/` has `local-relay` passing after more than 55 minutes (the real soak).
 5. Closing references: `git -C MAIN log --format=%B origin/develop..HEAD_SHA | bun -e 'import { extractClosingReferences } from "/Users/yahya/Documents/git/yooz/remi/packages/shared/src/issue-closing.ts"; console.log(JSON.stringify(extractClosingReferences(await Bun.stdin.text())))'`, plus the PR title through the same command; for each issue listed that the step does not close on purpose, notify the owner before merging and, after the merge, hand the owner `gh issue reopen N --repo yooz-labs/remi --comment "Reopened: closed by a commit message in PR #PR, not finished."` (known: #1313 from native-images' `40fb479f`).
-6. Step extras: L09 needs the owner's phone check (Q1) and the L09 rule; P01 and A03 need the owner's approval; L08 under Q11 option b needs the owner's written sign-off.
+6. Step extras: L09 needs the owner's phone check (Q1) and the L09 rule; P01 and A03 need the owner's approval.
 
 Then: `gh pr ready N` if still draft, `gh pr merge N --merge`, `MB set BOARD Steps ID State=done`, close the step's agents, `MB log`.
 
@@ -233,8 +236,9 @@ Then: `gh pr ready N` if still draft, `gh pr merge N --merge`, `MB set BOARD Ste
 
 ## 11. Owner questions and what each answer does
 
-Answered on 2026-11-12 and applied: Q1 keep, Q4 fold (suspended by Q11), Q5 park, Q6 fold, Q8 approve (commands only), Q9 yes (L03, L06, L08-R4), Q10 full access for native cards in a clean worktree; defaults approved.
-Open: Q2, Q3, Q7, Q11, Q12, Q13, Q14, Q15.
+Answered on 2026-11-12 and applied: Q1 keep; Q2 bounded attempt, then hosted; Q3 approve; Q4 superseded by Q11; Q5 park; Q6 fold; Q7 files synthetic and pushed (9e7ddf41); Q8 approve (commands only); Q9 yes (L03, L06; L08-R4 moot while L08 is parked); Q10 full access for native cards in a clean worktree; Q11 option a; Q12 park; Q13 option a; Q14 install; Q15 yes, head branch only; defaults approved.
+Open: Q16 (whether a #1727 PR is wanted).
+The rows below are the mapping that was applied (kept for reference) plus Q16's.
 
 | Q | Answer | Board change |
 | --- | --- | --- |
@@ -243,7 +247,10 @@ Open: Q2, Q3, Q7, Q11, Q12, Q13, Q14, Q15.
 | | either answer | L03 and L04 `todo` |
 | Q3 #1731 fix | approve | L06 `todo` |
 | | not now | L06 `dropped`, branch kept; L08 does not depend on L06 |
-| Q7 #1727 files | any answer | the owner acts; L10 `done` when the owner says so; a "push" answer adds a lead wake to decide whether a #1727 card follows |
+| Q7 #1727 files | synthetic, pushed (answered) | L10: the manager verifies `git ls-remote --heads origin patch/issue-1727-store-callback-order` shows a commit, then waits on Q16 |
+| Q16 #1727 PR | no PR yet | L10 `done`; branch kept; L13 lists it under Kept |
+| | draft PR now | L10 `done`; hand the owner `gh pr create --repo yooz-labs/remi --base develop --head patch/issue-1727-store-callback-order --draft --title "test: #1727 callback ordering prototypes" --body "Part of #1727. Prototype tests only; not for merge yet."` |
+| | PR for review and landing | lead wake: write a #1727 card (tier, gates, review) before any dispatch |
 | Q11 #1313 | a: image-availability alone | L14 `todo`; L08 `dropped` (native-images parked, branch kept, not deleted) |
 | | b: native-images dormant | L08 `todo`; L14 `dropped` (folded; branch deleted at L13) |
 | Q12 #1720 | park | L07 `dropped` (branch kept); L13 lists it under Kept |
@@ -253,7 +260,7 @@ Open: Q2, Q3, Q7, Q11, Q12, Q13, Q14, Q15.
 | | c: waive | no review for those three; merge gate items 2 to 6 still apply |
 | Q14 Codex rules | install | the owner copies the rules (section 2); the manager confirms with `codex execpolicy check --rules ~/.codex/rules/land-branches-2026-11.rules gh pr merge 1` printing `forbidden` |
 | | do not install | rely on the preamble and the section 5 `develop` check |
-| Q15 fix-PR merges | yes | the manager may merge a review-fix PR into its step PR's head branch after its delta review and local gates |
+| Q15 fix-PR merges | yes (answered) | the manager may merge a review-fix PR into its step PR's head branch only, after the same merge gate; never into `develop` directly |
 | | no | the owner merges fix PRs; the step waits `owner` |
 
 ## 12. The parity question
@@ -265,9 +272,10 @@ Form: "Update the parity to ... (Recommended) / Move this card to Claude Opus fo
 
 - Everything in the skill's "Never" list.
 - Switch `MAIN`'s branch, or touch a worktree other than the card's (creating it in section 5 is the exception).
-- Commit, push or read the contents of the untracked files in `/Volumes/S1/worktrees/remi/store-callback-order`.
+- Commit or push in `/Volumes/S1/worktrees/remi/store-callback-order` (the owner's session pushed it; Q16 decides what follows).
+- Dispatch a parked step (L07, L08).
 - Delete a branch or a worktree, close, reopen, comment on or file an issue: hand the exact commands to the owner.
-- Merge into `main`; merge L09 against Q1; merge P01, A03, or L08 under Q11 option b before the owner approves; merge a fix PR without Q15.
+- Merge into `main`; merge L09 before the owner's phone check (Q1); merge P01 or A03 before the owner approves; merge a fix PR anywhere but its step PR's head branch.
 - Use the frontier tier anywhere but A02.
 - Mark a test as skipped, or loosen a gate, to get a check green.
 - Proceed with a review report missing.

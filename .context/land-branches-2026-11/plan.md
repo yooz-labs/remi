@@ -41,14 +41,13 @@ The repository's `AGENTS.md` (and `packages/native/AGENTS.md`) override this pla
 The manager may merge a step's PR into `develop`, with `gh pr merge N --merge` (a merge commit, as the repository does; never `--squash`, never `--delete-branch`), only when the merge gate in the runbook ("Merge gate", section 10) passes.
 In short: every dispatched review report is in (a missing one is redispatched, then done by the advisor, never skipped); every finding has an outcome and every `fix` finding is verified on the final head by its test or repro; no accepted Critical is open; the head contains every non-bump commit on `develop`; the named check set passes on the final head (Build and Test (Native) for native PRs, the real relay soak for relay-scoped PRs; "no checks reported" is not a pass); and issue-closing references in the branch's commits are handed to the owner.
 Pushes to `develop` run only the version bump and issue closing, so the manager also verifies each new `develop` tip itself ([DV](cards/DV-develop-verify.md)) and never merges again before the bump commit lands; a red tip stops all merges, and a rollback is an owner decision ([RB](cards/RB-revert-merge.md)).
-Merging a review-fix PR into a step PR's head branch is outside this authority until Q15 is answered.
+Owner answer Q15: the manager may also merge a large review-fix PR into its step PR's head branch (never into `develop` directly), after the same merge gate.
 
 Never merged by the manager:
 
 - anything into `main` (releases are the owner's);
 - #1512 (L09) until the owner reports the physical-phone acceptance (Q1: keep the gate);
 - the P01 design PR and the A03 design PR: they merge only after the owner approves them at their checkpoints;
-- native-images (L08) under Q11 option b, before the owner's written sign-off on a dormant landing;
 - a PR that relaxes a gate's assertion (to the lead).
 
 `develop` pushes trigger `auto-bump-dev.yml`, which commits a version bump; never hand-edit versions, never add `[skip ci]` to a PR head.
@@ -87,14 +86,14 @@ Observed on 2026-11-12 between 18:55 and 19:30 PST with `git fetch --prune`, `gi
 | `scratch/issue-1724-*` (3) | #1724 | `hosted-scheduler-af0` tree equals the #1728 head; `1724-fence-diagnostic` and `1724-hosted-diagnostic` are one wip diagnostics commit each, 28 behind | **Evidence only** (named in the L03 PR body); delete after L03 merges (Q8) |
 | `patch/issue-1732-question-session-identity` | #1732 | no PR, head `9727af7c`, 2 test-only commits, 0 behind; the second test calls `question(sessionID:questionID:)`, which no source defines, so the branch needs the implementation the issue describes | **Implement and land** (L04); prerequisite of #1720 |
 | `feature/issue-1681-notification-preferences` | #1681, PR #1707 | draft, DIRTY (conflict in `Mac/MacLiveRootView.swift`), head `860a03b8`, 79 behind, 18 native files; two review rounds on record (R1 one Important, R2 no findings) | **Land** (L05): merge develop, no third review round |
-| `patch/issue-1731-idle-recovery` | #1731 | no PR, head `ea7064fd`, 4 test commits plus wip `ea7064fd`; 0 behind; the wip diff equals `approved-fix-candidate.patch` in the #1731 artifacts, whose focused run passed 5 tests; the issue says owner approval of that fix plan is pending | **Land** (L06) after Q3 |
-| `patch/issue-1720-local-notification-order` | #1720 | no PR, head `8225b2eb`, 42 commits (39 non-merge), 28 behind, 39 native files, +5,256; merges clean on develop; its last commit adds the same test lines as #1732's `e6cca52e`; its own handoff (`artifacts/notification-burst-20261030/issue-1720-current-handoff.md`) says it is "not ready for a PR or release" and not connected to live iPhone scheduling, gated on #1727 | **Owner question Q12**: park until #1727 (recommended) or land review-only (L07, one PR, chunked review) |
-| `feature/issue-1313-native-images` | #1313 | no PR, head `82db1172`, 154 commits (151 non-merge), 0 behind, 39 files, +6,727; ingress gated off (`imageIngressQualified = false`); conflicts with #1728 in `RemiConnection.swift`; commit `40fb479f` ("closed #1313") would auto-close #1313; its artifacts say not to land it as a dormant PR (`reviewable-slices-current-20261031.md`, `split-and-dependency-inventory.md`) | **Owner question Q11**: park as evidence (recommended) or land dormant (L08) with a Release seam gate and sign-off |
-| `feature/issue-1313-image-availability` | #1313 | no PR, head `38f5691d`, 3 commits, a strict subset of native-images (two patch-identical commits; the third differs by one reflowed line); merges clean after #1728 and #1731; no closing keyword; the artifacts name it the smallest slice with a caller | **Owner question Q11**: land alone after L03 (L14, recommended) or fold into L08; the earlier Q4 answer (fold) is suspended because it was given without this evidence |
+| `patch/issue-1731-idle-recovery` | #1731 | no PR, head `ea7064fd`, 4 test commits plus wip `ea7064fd`; 0 behind; the wip diff equals `approved-fix-candidate.patch` in the #1731 artifacts, whose focused run passed 5 tests; the issue says owner approval of that fix plan is pending | **Land** (L06) after L03 (Q3 approved, owner 2026-11-12) |
+| `patch/issue-1720-local-notification-order` | #1720 | no PR, head `8225b2eb`, 42 commits (39 non-merge), 28 behind, 39 native files, +5,256; merges clean on develop; its last commit adds the same test lines as #1732's `e6cca52e`; its own handoff (`artifacts/notification-burst-20261030/issue-1720-current-handoff.md`) says it is "not ready for a PR or release" and not connected to live iPhone scheduling, gated on #1727 | **Parked** (Q12, owner 2026-11-12) until #1727 is resolved; L07 is `blocked` as parked, branch kept |
+| `feature/issue-1313-native-images` | #1313 | no PR, head `82db1172`, 154 commits (151 non-merge), 0 behind, 39 files, +6,727; ingress gated off (`imageIngressQualified = false`); conflicts with #1728 in `RemiConnection.swift`; commit `40fb479f` ("closed #1313") would auto-close #1313; its artifacts say not to land it as a dormant PR (`reviewable-slices-current-20261031.md`, `split-and-dependency-inventory.md`) | **Parked as evidence** (Q11 option a, owner 2026-11-12); L08 dropped, branch kept, chunk cards for reference only |
+| `feature/issue-1313-image-availability` | #1313 | no PR, head `38f5691d`, 3 commits, a strict subset of native-images (two patch-identical commits; the third differs by one reflowed line); merges clean after #1728 and #1731; no closing keyword; the artifacts name it the smallest slice with a caller | **Land alone** after L03 as L14 (Q11 option a, owner 2026-11-12; supersedes the Q4 fold) |
 | `chore/issue-1273-bun142-pins` | #1273, PR #1512 | open, DIRTY, head `3a654273`, 787 behind; 6 workflows, CI scripts, AGENTS.md, plan.md, relay tests; body: keep unmerged until physical-phone acceptance; develop still pins Bun 1.3.11 | **Land last** (L09); the phone gate stays (Q1, owner 2026-11-12): merged only after the owner's phone check |
 | `feature/issue-1641-native-wss-route` | #1641 | no PR, head `0c075a28`, 1 commit, 28 behind, one 92-line Swift test characterizing the legacy route writer | **Fold** into the first #1641 implementation PR (Q6, owner 2026-11-12); branch kept; L12 dropped |
 | `feature/issue-1711-compact-preview` | #1711 | no PR, head `fda985af`, 1 commit, 79 behind, 6 feasibility files under `scripts/preview-proof/` (Python using system Pillow, C probes); no consumer | **Park** (Q5, owner 2026-11-12): branch kept, no PR; L11 dropped |
-| `patch/issue-1727-store-callback-order` | #1727 | **local only**, worktree `/Volumes/S1/worktrees/remi/store-callback-order` at `4a525a14` (no commits of its own), no remote branch; 3 untracked files (7,002, 20,157 and 3,949 bytes) that may derive from real transcripts; not read by the lead | **Owner check first** (L10, Q7); nothing is committed or pushed by any agent |
+| `patch/issue-1727-store-callback-order` | #1727 | **local only**, worktree `/Volumes/S1/worktrees/remi/store-callback-order` at `4a525a14` (no commits of its own), no remote branch; 3 untracked files (7,002, 20,157 and 3,949 bytes) that may derive from real transcripts; not read by the lead | Owner: files are synthetic (Q7); the manager session pushed them (`9e7ddf41`); L10 verifies the push and Q16 decides whether a PR follows |
 | `patch/issue-1717-apns-test-scheduling` | #1717 | 2 commits; its one file equals develop's (landed through #1719, `32aa9483`); issue #1717 still open | **Drop**: delete branch, close #1717 pointing at #1719 (Q8 approved: owner commands in L13) |
 | `chore/native-build-21` | - | PR #1672 closed, superseded by #1704; develop's build number is already 22 | **Drop** (Q8 approved: owner commands in L13) |
 | `patch/issue-1346-secure-push-expiry-fixture` | #1346 (closed) | PR #1347 closed, its commit included in #1345 | **Drop** (Q8 approved: owner commands in L13) |
@@ -115,15 +114,15 @@ Tiers map to models through the board's Parity table.
 | L04 | [L04](cards/L04-question-session-identity.md) | #1732 implemented per the issue and merged | worker | - | 1d |
 | L05 | [L05](cards/L05-notification-preferences.md) | #1707 conflict resolved, verified, merged | worker | L03 | 1d |
 | L06 | [L06](cards/L06-idle-recovery.md) | #1731 narrow fix finished per its approved plan and merged | worker-hard | L03 | 2d |
-| L07 | [L07](cards/L07-local-notification-order.md) | only under Q12 "land review-only": #1720 as one PR, chunk-reviewed, merged | worker | L04, CP1 | 3d |
-| L08 | [L08](cards/L08-native-images.md) | only under Q11 option b: native-images as one dormant PR, chunk-reviewed, Release seam gate, owner sign-off | worker-hard | L03, CP1 | 3d |
+| L07 | [L07](cards/L07-local-notification-order.md) | parked (Q12) until #1727 is resolved; not dispatched | worker | L04, CP1 | 3d |
+| L08 | [L08](cards/L08-native-images.md) | dropped as parked evidence (Q11 option a); card and chunk cards are reference only | worker-hard | L03, CP1 | 3d |
 | L09 | [L09](cards/L09-bun142-pins.md) | #1512 refreshed, checked, reviewed; merged only after the owner's phone check (Q1); dispatched while no native PR is in review | worker-hard | L01 | 2d |
 | L12 | [L12](cards/L12-native-wss-characterization.md) | dropped (Q6: fold into the first #1641 implementation PR; branch kept) | worker | - | 4h |
 | L11 | [L11](cards/L11-compact-preview.md) | dropped (Q5: park; branch kept) | worker | - | 4h |
-| L10 | [L10](cards/L10-store-callback-owner-check.md) | the owner checks the #1727 untracked files (owner step) | - | - | - |
+| L10 | [L10](cards/L10-store-callback-owner-check.md) | verify the #1727 push landed; Q16 decides whether a PR follows | - | - | - |
 | CP1 | (manager rule) | lead's go or adjust for L07 and L08 after L01 to L06 are done or dropped | - | - | - |
-| L14 | [L14](cards/L14-image-availability.md) | only under Q11 option a: image-availability as its own PR | worker | L03 | 1d |
-| L99 | (manager rule) | landing complete: L01 to L12, L14 and CP1 done or dropped; lead checkpoint CP2 | - | - | - |
+| L14 | [L14](cards/L14-image-availability.md) | image-availability as its own PR (Q11 option a) | worker | L03 | 1d |
+| L99 | (manager rule) | landing complete: L01 to L12, L14 and CP1 done or dropped, L07 done, dropped or parked; lead checkpoint CP2 | - | - | - |
 | L13 | [L13](cards/L13-cleanup-commands.md) | exact cleanup commands handed to the owner | worker | L99 | 2h |
 | P01 | [P01](cards/P01-ipad-board-design.md) | iPad multi-column Board design, verified against Apple docs and the simulator | lead | L99 | 1d |
 | P02 | (outline) | iPad Board implementation, with visual acceptance; the lead writes the card at CP3 | worker-hard | P01 | - |
@@ -131,7 +130,7 @@ Tiers map to models through the board's Parity table.
 | A02 | [A02](cards/A02-account-switching-fable-review.md) | Fable advisor review of the A01 draft | frontier | A01 | 4h |
 | A03 | [A03](cards/A03-account-switching-checkpoint.md) | A02 findings folded in; owner checkpoint | lead | A02 | 1d |
 
-L03 and L04 start in `owner` (Q2), L06 (Q3), L07 (Q12), L08 and L14 (Q11) and L10 (Q7) too; L09 is `todo` behind L01; L11 and L12 are `dropped` (Q5, Q6).
+After the owner's answers of 2026-11-12: L01 to L04, L06, L09 and L14 are `todo` (behind their dependencies); L07 is `blocked` (parked, Q12); L08, L11 and L12 are `dropped` (L08 parked as evidence); L10 waits on Q16.
 P01 and A01 start `blocked`; the manager sets them `todo` when L99 is `done` (runbook); A01 stays behind L99 because the owner asked for the account-switching phase to wait until every landing step is done or dropped.
 The board counts a `dropped` dependency as unmet; the runbook's "Dropped dependency" rule sends each such case to the lead, and the late steps depend on L99 and CP1 for the same reason.
 Collision rule kept from the old L06 edge: if L06 is `active` or `review` when L08 runs, L08 merges `develop` again after L06 lands.
@@ -141,14 +140,14 @@ Collision rule kept from the old L06 edge: if L06 is `active` or `review` when L
 ```text
 codex-luna (2)   L01 ── L09 (terra; Q1 phone gate; no native PR in review)
                  L02 (independent)
-                 L04 (Q2) ─────────────────────────── L07 (Q12; chunked) ◄── CP1
-codex-terra (1)  L03 (Q2) ──┬── L05 (luna)
-                            ├── L06 (Q3)
-                            ├── L14 (luna; Q11 a)
-                            └──────────────────────── L08 (Q11 b; chunked) ◄── CP1
+                 L04
+codex-terra (1)  L03 ──┬── L05 (luna)
+                       ├── L06
+                       └── L14 (luna)
+parked           L07 (#1720, until #1727)   L08 (native-images, evidence)
 CP1 = lead go/adjust after L01 to L06 are done or dropped
-owner            L10 (Q7)   (L11, L12 dropped: Q5 park, Q6 fold)
-all L, L14, CP1 done/dropped ── L99 ──┬── L13 cleanup (owner runs commands)
+owner            L10 (Q16)   (L11, L12 dropped: Q5 park, Q6 fold)
+all L (L07 parked), L14, CP1 settled ── L99 ──┬── L13 cleanup (owner runs commands)
                             ├── P01 iPad design (opus) ── owner CP3 ── P02 (outline)
                             └── A01 (opus) ── A02 (fable) ── A03 (opus) ── owner CP4
 claude-sonnet (2): reviewers and synthesis only; xcode lock: one native gate run at a time
@@ -164,21 +163,22 @@ Every PR follows `project:pr-review-toolkit`'s `review-convergence.md`: round 1,
 | PR | Round 1 | Notes |
 | --- | --- | --- |
 | L01 (#1733) | 1 Sonnet reviewer (docs-only) | [RV-panel](cards/RV-panel.md), lens group `docs` |
-| L02, L03, L09 | by Q13: (a) one delta review from the recorded head, (b) panels as below, (c) none | recorded rounds: #1728 body plus run logs `review-r1-*`, `review-r2-*` in its artifacts (no report file found); #1657 receipt JSON round 1 (0 Critical, 0 Important, 1 Moderate, resolved); #1512 `PIN-REVIEW-R1.md` (no actionable findings at `3a654273`) |
-| L02 under Q13 (b) | 2 Sonnet reviewers: `contract`, `verification` | test or probe only |
-| L04, L06, L14; L03, L09 under Q13 (b) | 3 Sonnet reviewers: `contract`, `verification`, `maintainability` | L03, L06 add a Codex Luna `contract` reviewer (Q9); security paths: contested findings go to the advisor |
+| L02, L03, L09 | Q13 option a (owner): one RV-delta review from the recorded head (L03 adds the Q9 Luna reviewer) | recorded rounds: #1728 body plus run logs `review-r1-*`, `review-r2-*` in its artifacts (no report file found); #1657 receipt JSON round 1 (0 Critical, 0 Important, 1 Moderate, resolved); #1512 `PIN-REVIEW-R1.md` (no actionable findings at `3a654273`) |
+| L04, L06, L14 | 3 Sonnet reviewers: `contract`, `verification`, `maintainability` | L06 adds a Codex Luna `contract` reviewer (Q9); security paths: contested findings go to the advisor |
 | L05 (#1707) | none | two rounds are on record; the develop-merge resolution is verified by one advisor consult when the merge commit has a manual resolution (`git show --cc` not empty) |
-| L07, L08 | chunked: 4 chunks x 2 Sonnet reviewers, 1 cross-chunk contract reviewer, then 1 Sonnet synthesis; L08-R4 adds a Codex Luna reviewer (Q9) | chunk cards below; one PR each, never split; round 2 is one delta reviewer per touched chunk |
+| L07, L08 | parked (Q12, Q11): no review now; if either is unparked later, the chunked review below applies (4 chunks x 2 Sonnet reviewers, 1 cross-chunk, 1 synthesis; L08-R4 adds Luna) | chunk cards kept for reference |
 | P01, A01-A03 docs PRs | 1 Sonnet reviewer | then the owner checkpoint |
 
-The review form for #1728, #1657 and #1512 is the owner's call (Q13), because each records earlier rounds outside the PR.
+The review form for #1728, #1657 and #1512 is the owner's answer to Q13: accept the recorded rounds plus one delta review.
 Every reviewer reports `omitted_findings`, the count dropped by its 5-finding cap; a reviewer silent at 20 minutes is dispatched again once, then the advisor performs that lens; a report is never skipped.
 Owner answer Q9: a Codex Luna second reviewer joins the security-path reviews (L03, L06, and chunk R4 of L08), on top of Sonnet, because the implementer family of the existing commits is unknown (every commit carries the owner's git identity).
 
 Finding outcomes: every finding starts as `fix`.
 The implementer may propose `reject` (one-sentence reason) or `issue` (only for code the PR did not touch); all proposed rejects of one round go to one advisor consult, whose ruling the manager records with `decide` and on the PR.
 
-### 3.1 Chunked review of the two big PRs
+### 3.1 Chunked review of the two big PRs (reference: both are parked)
+
+Both L07 and L08 are parked by the owner's answers; this section stays so the review can run unchanged if either is unparked.
 
 Commits on both branches interleave tests and sources across components, so commit ranges do not separate concerns; **path chunks are authoritative** and every changed file is in exactly one chunk (checked: no file uncovered).
 Each chunk card is dispatched twice, with `Lens group: contract` (code, types, security, concurrency) and `Lens group: verification` (tests, error paths, comments and docs).
@@ -240,7 +240,7 @@ Implementation of the account-switching epic waits for CP4 and a new plan.
 
 The skill requires an executability reviewer (worker tier) and a design reviewer (lead tier) before the first tick, each finding with a disposition here.
 Status: both reviews done on 2026-11-12 (executability by Sonnet, design by Opus); the coordinator spot-checked the design review's two critical claims (Q11, Q12 evidence) against the artifacts.
-Owner approval (CP0, 2026-11-12, in chat): the Parity, Slots and Budget defaults and the merge authority (develop only, merge commits) were approved as proposed; Q1, Q4, Q5, Q6, Q8, Q9 and Q10 were answered and applied; Q4 is now suspended by Q11.
+Owner approval (CP0, 2026-11-12, in chat): the Parity, Slots and Budget defaults and the merge authority (develop only, merge commits) were approved as proposed; Q1 to Q15 are answered and applied (Q4 superseded by Q11); Q16 (#1727 PR) is open.
 
 | ID | Finding (short) | Disposition |
 | --- | --- | --- |
