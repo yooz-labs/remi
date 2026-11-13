@@ -93,3 +93,4 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T06:27-08:00 | filed the APNsCallbackOrderTests 3 s wait flake issue (L05 patch note) |
 | 2026-11-13T06:28-08:00 | L05 advisor: resolution sound; PR 1707 marked ready; hosted checks started |
 | 2026-11-13T06:33-08:00 | L14 round 1: contract 2 Minor, verification 2 Moderate + 2 Minor, maintainability 3 Moderate + 2 Minor + 1 note: all decided fix except the optional paperclip hiding (rejected: owner-approved design) and the cross-package prefix constant (filed as an issue); fix round dispatched to Luna (thread 01a1d554-0434) |
+| 2026-11-13T06:43-08:00 | L06 report verified: PR 1736 head d9f8699b, 3 files in scope, 5 controls pass (10 tests), two mutation outcomes recorded, closing refs checked; 3 Sonnet reviewers dispatched |

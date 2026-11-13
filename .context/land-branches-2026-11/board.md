@@ -19,8 +19,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Manager id | mba-claude-sonnet |
 | State | running |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | 2026-11-13T06:21-08:00 |
-| Next tick | 2026-11-13T06:51-08:00 |
+| Last tick | 2026-11-13T06:43-08:00 |
+| Next tick | 2026-11-13T07:13-08:00 |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-12T19:05-08:00 |
 
@@ -48,10 +48,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 18 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Agents today | 30 | 21 | daily | every dispatch on every platform; the plan approval covers this limit |
 | Codex Luna today | 8 | 8 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 2 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
-| Claude Sonnet today | 16 | 6 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
+| Claude Sonnet today | 16 | 9 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
 | Claude Opus today | 4 | 2 | daily | lead wakes, lead-tier steps, advisor consults |
 | Advisor consults | 8 | 2 | never | lead tier (Opus), whole plan |
 | Fable consults | 1 | 0 | never | A02 only, owner-requested |
@@ -71,7 +71,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | L02 | [Terminal relay probe #1657](cards/L02-terminal-relay-qualification.md) | - | worker | - | - | review | - | 1657 | 2026-11-12T21:30 | 1d | probe ok on Bun 1.3.11, fails 1.4.4 (#1738); hosted CI on 833ada41 pending (soak); own diff unchanged, no RV-delta; merge when green (Q19) |
 | L04 | [Question session identity #1732](cards/L04-question-session-identity.md) | - | worker | xcode | - | done | - | 1734 | 2026-11-12T22:10 | 1d | merge gate: fix r3 verified (head bab01d67, wide-pin revert, Mac lookup revert); waiting on native CI; then merge, reopen #1732 |
 | L05 | [Notification preferences #1707](cards/L05-notification-preferences.md) | - | worker | xcode | - | review | L03 | 1707 | 2026-11-13T06:11-08:00 | 1d | PR ready; waiting hosted checks (native, relay scope) at 28341b5a; then merge gate (no third review round) |
-| L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | codex-terra | active | L03 | - | 2026-11-13T06:04-08:00 | 2d | after L03; plan's negative controls; 3 Sonnet reviewers plus 1 Luna (Q9) |
+| L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | - | review | L03 | 1736 | 2026-11-13T06:04-08:00 | 2d | 3 Sonnet reviewers running (head d9f8699b), advisor only for a contested security finding; soak pending |
 | L07 | [Local notification order #1720](cards/L07-local-notification-order.md) | - | worker | xcode | - | blocked | L04, CP1 | - | - | 3d | parked until #1727 is resolved (Q12); counts as settled for L99; branch kept |
 | L08 | [Native images #1313](cards/L08-native-images.md) | - | worker-hard | xcode | - | dropped | L03, CP1 | - | - | 3d | parked as evidence (Q11 a): branch kept, not deleted; chunk cards are reference only |
 | L09 | [Bun 1.4.2 pins #1512](cards/L09-bun142-pins.md) | - | worker-hard | - | claude-opus | active | L01 | 1512 | 2026-11-13T06:14-08:00 | 2d | after L01, while no native PR is in review; one RV-delta review from 3a654273 (Q13); merged only after the owner's phone check (Q1) |
@@ -142,11 +142,12 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | codex-L04fix3 | implementer | codex-luna | gpt-6-luna max | L04 | 2026-11-13T01:58 | done |
 | codex-DV1 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T02:30 | done |
 | codex-L02d | implementer | codex-luna | gpt-6-luna max | L02 | 2026-11-13T05:55 | done |
-| codex-L06 | implementer | codex-terra | gpt-6.1-terra xhigh | L06 | 2026-11-13T06:20 | thread r1 negative controls |
+| codex-L06 | implementer | codex-terra | gpt-6.1-terra xhigh | L06 | 2026-11-13T06:20 | done |
 | codex-DV4 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T06:15 | done |
 | sonnet-L05 | implementer | claude-sonnet | sonnet high | L05 | 2026-11-13T06:35 | done |
 | sonnet-L14 | implementer | claude-sonnet | sonnet high | L14 | 2026-11-13T06:35 | done |
 | opus-L09 | implementer | claude-opus | opus xhigh | L09 | 2026-11-13T06:45 | running a6a64c52 (Terra busy; Claude slot used) |
 | rv-L14 | reviewer | extra | sonnet xhigh x3 | L14 | 2026-11-13T07:05 | done |
 | advisor-L05 | advisor | extra | opus xhigh | L05 | 2026-11-13T07:05 | done |
-| codex-L14fix | implementer | codex-luna | gpt-6-luna max | L14 | 2026-11-13T07:30 | thread 01a1d554-0434 fix round (F1-F10) |
+| codex-L14fix | implementer | codex-luna | gpt-6-luna max | L14 | 2026-11-13T07:30 | running (thread 01a1d554-0434) |
+| rv-L06 | reviewer | extra | sonnet xhigh x3 | L06 | 2026-11-13T07:50 | running contract a815c3f3, verification ab0d4e42, maintainability ae648ada |
