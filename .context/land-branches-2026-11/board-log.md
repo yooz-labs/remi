@@ -92,3 +92,4 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T06:26-08:00 | L05 report: merge 28341b5a pushed, one conflict (MacLiveRootView) kept both, Mac test failure = baseline plus a 3s-wait flake in APNsCallbackOrderTests (patch note, to file); advisor dispatched. L14 report: PR 1737 ready, head 6fa27711, 11 files, closing refs []; 3 Sonnet reviewers dispatched |
 | 2026-11-13T06:27-08:00 | filed the APNsCallbackOrderTests 3 s wait flake issue (L05 patch note) |
 | 2026-11-13T06:28-08:00 | L05 advisor: resolution sound; PR 1707 marked ready; hosted checks started |
+| 2026-11-13T06:33-08:00 | L14 round 1: contract 2 Minor, verification 2 Moderate + 2 Minor, maintainability 3 Moderate + 2 Minor + 1 note: all decided fix except the optional paperclip hiding (rejected: owner-approved design) and the cross-package prefix constant (filed as an issue); fix round dispatched to Luna (thread 01a1d554-0434) |

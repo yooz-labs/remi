@@ -48,8 +48,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 17 | daily | every dispatch on every platform; the plan approval covers this limit |
-| Codex Luna today | 8 | 7 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
+| Agents today | 30 | 18 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Codex Luna today | 8 | 8 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 2 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
 | Claude Sonnet today | 16 | 6 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
 | Claude Opus today | 4 | 2 | daily | lead wakes, lead-tier steps, advisor consults |
@@ -86,7 +86,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | A02 | [Fable review](cards/A02-account-switching-fable-review.md) | - | frontier | - | - | todo | A01 | - | - | 4h | owner-requested Fable (claude-fable-5-2) |
 | A03 | [Account switching checkpoint](cards/A03-account-switching-checkpoint.md) | - | lead | - | - | todo | A02 | - | - | 1d | ends at owner CP4; no merge before approval |
 | CP1 | CP1 go or adjust for L07 and L08 | - | - | - | - | blocked | - | - | - | - | manager sets done when L01 to L06 are done or dropped and the lead's CP1 decision is recorded; now gates only L07's unpark |
-| L14 | [image-availability #1313](cards/L14-image-availability.md) | - | worker | xcode | - | review | L03 | 1737 | 2026-11-13T06:11-08:00 | 1d | 3 Sonnet reviewers running (head 6fa27711); hosted checks pending |
+| L14 | [image-availability #1313](cards/L14-image-availability.md) | - | worker | xcode | codex-luna | active | L03 | 1737 | 2026-11-13T06:11-08:00 | 1d | fix r2 (F1-F10, findings in L14/r2); then RV-delta Sonnet (round 2, last), hosted checks, merge gate |
 
 ## Questions
 
@@ -147,5 +147,6 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | sonnet-L05 | implementer | claude-sonnet | sonnet high | L05 | 2026-11-13T06:35 | done |
 | sonnet-L14 | implementer | claude-sonnet | sonnet high | L14 | 2026-11-13T06:35 | done |
 | opus-L09 | implementer | claude-opus | opus xhigh | L09 | 2026-11-13T06:45 | running a6a64c52 (Terra busy; Claude slot used) |
-| rv-L14 | reviewer | extra | sonnet xhigh x3 | L14 | 2026-11-13T07:05 | running contract a88d411e, verification a225562d, maintainability a751bc59 |
+| rv-L14 | reviewer | extra | sonnet xhigh x3 | L14 | 2026-11-13T07:05 | done |
 | advisor-L05 | advisor | extra | opus xhigh | L05 | 2026-11-13T07:05 | done |
+| codex-L14fix | implementer | codex-luna | gpt-6-luna max | L14 | 2026-11-13T07:30 | thread 01a1d554-0434 fix round (F1-F10) |
