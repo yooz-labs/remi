@@ -48,10 +48,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 10 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Agents today | 30 | 12 | daily | every dispatch on every platform; the plan approval covers this limit |
 | Codex Luna today | 8 | 7 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 2 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
-| Claude Sonnet today | 16 | 1 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
+| Claude Sonnet today | 16 | 3 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
 | Claude Opus today | 4 | 0 | daily | lead wakes, lead-tier steps, advisor consults |
 | Advisor consults | 8 | 1 | never | lead tier (Opus), whole plan |
 | Fable consults | 1 | 0 | never | A02 only, owner-requested |
@@ -70,7 +70,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | L03 | [Direct child key #1728](cards/L03-direct-child-key.md) | - | worker-hard | xcode | - | done | - | 1728 | 2026-11-12T21:30 | 2d | develop merged into branch (477f1680, clean), PR ready; waiting hosted checks incl. local-relay soak; then merge gate (no further review round) |
 | L02 | [Terminal relay probe #1657](cards/L02-terminal-relay-qualification.md) | - | worker | - | codex-luna | active | - | 1657 | 2026-11-12T21:30 | 1d | positive probe under pinned Bun 1.3.11 (owner-approved download, sha256 verified 6f5a3467...), PR body paragraph; RV-delta is empty (PR own diff unchanged at 6 files +638/-1); then merge gate |
 | L04 | [Question session identity #1732](cards/L04-question-session-identity.md) | - | worker | xcode | - | done | - | 1734 | 2026-11-12T22:10 | 1d | merge gate: fix r3 verified (head bab01d67, wide-pin revert, Mac lookup revert); waiting on native CI; then merge, reopen #1732 |
-| L05 | [Notification preferences #1707](cards/L05-notification-preferences.md) | - | worker | xcode | - | todo | L03 | 1707 | - | 1d | merge develop; advisor checks the resolution; no third review |
+| L05 | [Notification preferences #1707](cards/L05-notification-preferences.md) | - | worker | xcode | claude-sonnet | active | L03 | 1707 | 2026-11-13T06:11-08:00 | 1d | merge develop; advisor checks the resolution; no third review |
 | L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | codex-terra | active | L03 | - | 2026-11-13T06:04-08:00 | 2d | after L03; plan's negative controls; 3 Sonnet reviewers plus 1 Luna (Q9) |
 | L07 | [Local notification order #1720](cards/L07-local-notification-order.md) | - | worker | xcode | - | blocked | L04, CP1 | - | - | 3d | parked until #1727 is resolved (Q12); counts as settled for L99; branch kept |
 | L08 | [Native images #1313](cards/L08-native-images.md) | - | worker-hard | xcode | - | dropped | L03, CP1 | - | - | 3d | parked as evidence (Q11 a): branch kept, not deleted; chunk cards are reference only |
@@ -86,7 +86,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | A02 | [Fable review](cards/A02-account-switching-fable-review.md) | - | frontier | - | - | todo | A01 | - | - | 4h | owner-requested Fable (claude-fable-5-2) |
 | A03 | [Account switching checkpoint](cards/A03-account-switching-checkpoint.md) | - | lead | - | - | todo | A02 | - | - | 1d | ends at owner CP4; no merge before approval |
 | CP1 | CP1 go or adjust for L07 and L08 | - | - | - | - | blocked | - | - | - | - | manager sets done when L01 to L06 are done or dropped and the lead's CP1 decision is recorded; now gates only L07's unpark |
-| L14 | [image-availability #1313](cards/L14-image-availability.md) | - | worker | xcode | - | todo | L03 | - | - | 1d | after L03 (Q11 a); 3 Sonnet reviewers |
+| L14 | [image-availability #1313](cards/L14-image-availability.md) | - | worker | xcode | claude-sonnet | active | L03 | - | 2026-11-13T06:11-08:00 | 1d | after L03 (Q11 a); 3 Sonnet reviewers |
 
 ## Questions
 
@@ -144,3 +144,5 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | codex-L02d | implementer | codex-luna | gpt-6-luna max | L02 | 2026-11-13T05:55 | thread r5 pinned bun probe |
 | codex-L06 | implementer | codex-terra | gpt-6.1-terra xhigh | L06 | 2026-11-13T06:20 | thread r1 negative controls |
 | codex-DV4 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T06:15 | thread r4 verify develop 981123e1 |
+| sonnet-L05 | implementer | claude-sonnet | sonnet high | L05 | 2026-11-13T06:35 | running af3918dd (Luna full, owner: run on Sonnet) |
+| sonnet-L14 | implementer | claude-sonnet | sonnet high | L14 | 2026-11-13T06:35 | running a402841c (Luna full, owner: run on Sonnet) |

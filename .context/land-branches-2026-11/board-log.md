@@ -40,6 +40,7 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T01:10-08:00 | Owner (2026-11-13, chat): the manager and the lead (not workers or reviewers) may push to develop, push builds to TestFlight, and delete branches and worktrees that are done; main, force-push and anything for workers stay excluded | owner |  |
 | 2026-11-13T05:46-08:00 | Q19: merge gate item 3 (fresh base) relaxed: a PR may merge when its branch merges cleanly with develop (git merge-tree), shares no changed file with the commits merged since its last CI run, and DV verifies the develop tip after every merge; a red DV stops all merges | owner |  |
 | 2026-11-13T05:55-08:00 | Q20: DV baseline extended: the environment-dependent 'owned empty launch directory required' failures in PairingAttemptTests and PairingSourceTests are the local baseline; DV reruns with both skipped and everything else must pass; hosted native CI is the authority for those suites | owner |  |
+| 2026-11-13T06:10-08:00 | Owner (2026-11-13, chat): do not wait for a free Luna slot: when the Codex Luna slots are full, run worker cards (L05, L14) on Claude Sonnet implementers instead | owner |  |
 
 ## Log
 
@@ -80,3 +81,4 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T06:04-08:00 | DV r3 on 0c397251 passed. L03 merged (PR 1728 -> f82f9978, bump 981123e1); closing-ref scan listed #1724 (intended: the PR is the #1724 fix; limits tracked in #1735); DV r4 dispatched |
 | 2026-11-13T06:04-08:00 | L06 dispatched (terra, full access); L05 waits for a free Luna slot (L02 r5 and DV r4 running) |
 | 2026-11-13T06:05-08:00 | cleanup (owner authority): removed worktrees agents-md-split, question-session-identity, direct-child-key and their local branches (remote branches were already auto-deleted on merge); deleted the three scratch/issue-1724-* evidence branches |
+| 2026-11-13T06:11-08:00 | L05 and L14 dispatched as Claude Sonnet implementers (owner: do not wait for Luna): agents af3918dd (L05, #1707 merge with develop) and a402841c (L14, image-availability) |
