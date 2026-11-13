@@ -18,7 +18,8 @@
 2026-11-12: L14 frame guard in RemiConnection.swift after #1724 (R3).
 
 ## Next intentions
+2026-11-12: L01 fix round (findings in artifacts L01/r2); L02 round 3 and L04 running; L03 needs its Luna contract reviewer when a Luna slot frees.
 2026-11-12: CP1 after L01 to L06: confirm landing state; rule on any dropped dependency.
 
 ## Pending owner questions
-2026-11-12: Q16: open a PR for the pushed #1727 prototype tests (L10)?
+none open (Q16: no PR for #1727 yet; Q17: hosted native CI accepted for L03's local pairing baseline).

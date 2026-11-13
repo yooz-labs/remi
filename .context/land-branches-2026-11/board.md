@@ -66,8 +66,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | ID | Title | Wave | Tier | Needs | Slot | State | Depends | PR | Started | Timebox | Next |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| L01 | [AGENTS.md split #1733](cards/L01-agents-md-split.md) | - | worker | - | claude-sonnet | review | - | 1733 | 2026-11-12T21:30 | 4h | verbatim-move check, then 1 docs reviewer (RV-panel, docs) |
-| L03 | [Direct child key #1728](cards/L03-direct-child-key.md) | - | worker-hard | xcode | - | owner | - | 1728 | 2026-11-12T21:30 | 2d | one bounded Mac test attempt (Q2); then one RV-delta review from 5c1f9380 (Q13) plus Luna (Q9) |
+| L01 | [AGENTS.md split #1733](cards/L01-agents-md-split.md) | - | worker | - | - | active | - | 1733 | 2026-11-12T21:30 | 4h | fix round: apply findings.md (r2), then delta review |
+| L03 | [Direct child key #1728](cards/L03-direct-child-key.md) | - | worker-hard | xcode | - | review | - | 1728 | 2026-11-12T21:30 | 2d | Q17 accepted; RV-delta from 5c1f9380 is empty (head unchanged); dispatch Luna contract reviewer when a Luna slot is free (Q9) |
 | L02 | [Terminal relay probe #1657](cards/L02-terminal-relay-qualification.md) | - | worker | - | codex-luna | active | - | 1657 | 2026-11-12T21:30 | 1d | merge develop, start checks; then one RV-delta review from 26fbf947 (Q13) |
 | L04 | [Question session identity #1732](cards/L04-question-session-identity.md) | - | worker | xcode | codex-luna | active | - | - | 2026-11-12T22:10 | 1d | implement per #1732; then 3 Sonnet reviewers |
 | L05 | [Notification preferences #1707](cards/L05-notification-preferences.md) | - | worker | xcode | - | todo | L03 | 1707 | - | 1d | merge develop; advisor checks the resolution; no third review |
@@ -108,7 +108,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Q14 | L03 | Install the pack's Codex forbidden-command rules (gh pr merge/close, gh issue, force push) into ~/.codex/rules for the loop? | Install for the loop, remove at the end (Recommended) / Do not install; rely on the preamble and the develop check | none | 2026-11-13T12:00 | closed | Install the Codex rules file for the loop; the owner runs the copy command; the develop-unchanged check stays (owner, 2026-11-12T21:20-08:00) |
 | Q15 | L07 | Merge authority was develop only. May the manager merge a large review-fix PR into its step PR's head branch after its delta review and gates? | Yes, fix PRs into a step's head branch only (Recommended) / No: the owner merges fix PRs | none | 2026-11-16T12:00 | closed | The manager may merge a large review-fix PR into its step PR's head branch only, after the same merge gate; never into develop directly (owner, 2026-11-12T21:20-08:00) |
 | Q16 | L10 | The #1727 prototype tests are now pushed to patch/issue-1727-store-callback-order (9e7ddf41). Open a PR? | No PR yet: keep the branch until a #1727 implementation card exists (Recommended) / Open a draft PR now for visibility / Open a PR for review and landing in this plan | none | 2026-11-16T12:00 | answered | No PR yet; keep the branch as pushed evidence until a #1727 implementation card exists (owner, 2026-11-12T21:23-08:00) |
-| Q17 | - | L03: local Mac/Swift tests hit the 32 documented PairingAttemptTests failures (not a stall); hosted native CI passed them on the same head. Accept hosted as evidence and proceed to review? (log has detail) | Accept hosted, proceed to review (Recommended) / Require local fix first / Hold L03 | none | 2026-11-13T09:00 | open |  |
+| Q17 | - | L03: local Mac/Swift tests hit the 32 documented PairingAttemptTests failures (not a stall); hosted native CI passed them on the same head. Accept hosted as evidence and proceed to review? (log has detail) | Accept hosted, proceed to review (Recommended) / Require local fix first / Hold L03 | none | 2026-11-13T09:00 | answered | Accept hosted result as Mac/Pairing evidence; proceed to review (owner, 2026-11-12T22:11-08:00) |
 
 ## Proposals
 
@@ -122,6 +122,6 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | codex-L01 | implementer | codex-luna | gpt-6-luna max | L01 | 2026-11-12T21:30 | done |
 | codex-L02 | implementer | codex-luna | gpt-6-luna max | L02 | 2026-11-12T21:30 | done |
 | codex-L03 | implementer | codex-terra | gpt-6.1-terra xhigh | L03 | 2026-11-12T21:30 | done |
-| rv-L01-docs | reviewer | claude-sonnet | sonnet xhigh | L01 | 2026-11-12T21:58 | running a995b808 |
+| rv-L01-docs | reviewer | claude-sonnet | sonnet xhigh | L01 | 2026-11-12T21:58 | done |
 | codex-L02b | implementer | codex-luna | gpt-6-luna max | L02 | 2026-11-12T22:10 | thread 01a1d376-e5af (round 3, after dependency repair) |
 | codex-L04 | implementer | codex-luna | gpt-6-luna max | L04 | 2026-11-12T22:10 | thread 01a1d377-3dec |

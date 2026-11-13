@@ -33,6 +33,7 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-12T21:20-08:00 | Q15: The manager may merge a large review-fix PR into its step PR's head branch only, after the same merge gate; never into develop directly | owner | owner answer in chat, 2026-11-12 |
 | 2026-11-12T21:20-08:00 | Q4 (fold image-availability into native-images) is superseded by Q11: image-availability lands alone; native-images is parked | owner | owner answer to Q11, 2026-11-12 |
 | 2026-11-12T21:23-08:00 | Q16: no PR for #1727 yet | owner |  |
+| 2026-11-12T22:11-08:00 | Q17: accept hosted native CI as evidence for L03's local pairing baseline; proceed to review | owner |  |
 
 ## Log
 
@@ -47,3 +48,4 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-12T21:53-08:00 | L03 report: head unchanged 5c1f9380, PR body extended, iPhone build ok, local swift test only passes with --skip PairingAttemptTests; Mac test failed on the same baseline (not a stall); Q17 asked |
 | 2026-11-12T21:53-08:00 | L02 round 1 stopped: node_modules symlinks pointed at removed worktree terminal-service (manager cleanup of 2026-11-12); replaced with real bun install; redispatched as round 3 with continuation (local merge commit 051e9900) |
 | 2026-11-12T21:53-08:00 | L04 dispatched (luna, full access, thread 01a1d377-3dec); L01 RV docs reviewer running |
+| 2026-11-12T22:11-08:00 | L01 RV docs report: 5 findings (2 Important, 2 Moderate, 1 Minor), all decided fix; findings.md in L01/r2; fix worker waits for a free Luna slot |
