@@ -6,7 +6,7 @@ Timebox: M, 1 day; escalate at 2 days
 Needs: xcode, simulator
 Depends: L99 (all landing steps done or dropped); the iPad issue filed (issues-to-file.md); its number is a live fact, called ISSUE below
 Branch: `feature/issue-ISSUE-ipad-board` off `origin/develop`
-Worktree: `/Volumes/S1/worktrees/remi/ipad-board` (create it per the preamble)
+Worktree: `/Volumes/S1/worktrees/remi/ipad-board` (the manager creates it with `git worktree add -b`, runbook section 5)
 Plan: plan.md section 5.1; checkpoint CP3
 
 ## Goal

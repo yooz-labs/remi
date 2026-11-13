@@ -17,6 +17,7 @@ One lens group's findings (at most 5) for this chunk of the L07 PR, so the synth
 
 Recovery and forget: `LocalNoticeRecovery`, `LocalNoticeReconciler`, `LocalNoticeForgetCoordinator`, `LocalNoticeQuestionAuthority`, `MachineConfigurationStore` (+122), their tests and `LocalNoticeProfilePersistenceTests`.
 About 1,082 changed lines against develop on 2026-11-12, before the develop merge.
+Read first: the branch's own handoff `/Volumes/S1/yooz/remi/artifacts/notification-burst-20261030/issue-1720-current-handoff.md`; do not re-report its listed remaining work as findings, but report anything it misses.
 Questions to answer first, then anything else in the lens group:
 
 1. Does a forget verify the profile write it depends on, and survive interruption with its intent retained?

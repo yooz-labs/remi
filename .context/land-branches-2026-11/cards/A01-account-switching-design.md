@@ -6,7 +6,7 @@ Timebox: M, 1 day; escalate at 2 days
 Needs: none
 Depends: L99 (all landing steps done or dropped)
 Branch: `feature/issue-1157-account-switching-design` off `origin/develop`
-Worktree: `/Volumes/S1/worktrees/remi/account-switching-design` (create it per the preamble)
+Worktree: `/Volumes/S1/worktrees/remi/account-switching-design` (the manager creates it with `git worktree add -b`, runbook section 5)
 Plan: plan.md section 5.2; followed by A02 (Fable review) and A03 (owner checkpoint CP4)
 
 ## Goal

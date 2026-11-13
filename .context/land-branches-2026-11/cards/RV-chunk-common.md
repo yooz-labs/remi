@@ -29,7 +29,7 @@ Change: nothing.
 
 ## Decided design
 
-Settled: at most 5 findings, highest severity first; severity is Critical, Important, Moderate or Minor; every finding names file, line, the failure it causes, and a concrete fix; drop anything below high confidence.
+Settled: at most 5 findings, highest severity first, plus `omitted_findings` (how many further findings were dropped by the cap); severity is Critical, Important, Moderate or Minor; every finding names file, line, the failure it causes, and a concrete fix; drop anything below high confidence.
 The reviewer may choose: which 5 findings matter most.
 
 ## Acceptance
@@ -46,4 +46,4 @@ The diff of the chunk exceeds about 2,000 changed lines plus the 800-line read b
 
 ## Report
 
-The JSON object only.
+The JSON object only, including `omitted_findings`.

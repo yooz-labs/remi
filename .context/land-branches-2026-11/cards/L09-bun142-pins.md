@@ -4,9 +4,9 @@ Status: ready
 Tier: worker-hard
 Timebox: L, 2 days (the relay gate takes about 65 minutes per run); escalate at 4 days or two failed approaches
 Needs: none
-Depends: L01, L07, L08 (Q1 answered 2026-11-12: keep the phone gate)
+Depends: L01 (Q1 answered 2026-11-12: keep the phone gate); dispatched only while no step with Needs `xcode` is in review, and merged only while no other step is in review
 Branch: chore/issue-1273-bun142-pins (PR #1512, open, DIRTY, head `3a654273` on 2026-11-12, 787 behind develop)
-Worktree: `/Volumes/S1/worktrees/remi/bun142-pins` (create it per the preamble)
+Worktree: `/Volumes/S1/worktrees/remi/bun142-pins` (the manager creates it from the existing branch, runbook section 5)
 Plan: plan.md section 2, L09; risk R7
 
 ## Goal

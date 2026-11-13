@@ -18,6 +18,7 @@ One lens group's findings (at most 5) for this chunk of the L08 PR, so the synth
 
 Security path. Transport and authority: `RemiConnection.swift` (+321 before the develop merge, plus the merge's resolution against #1724's child-key fence), `ImageIngressPreflight`, `PaneTransportPolicy`, the daemon's `image-admission.ts`, the TLS, socket, preflight, wire-outcome and delivery tests and the two TypeScript fixtures.
 About 1,640 changed lines against develop on 2026-11-12, before the develop merge.
+Used only under Q11 option b (dormant landing). Read first: `/Volumes/S1/yooz/remi/artifacts/native-image-1313-20261030/reviewable-slices-current-20261031.md` (its prerequisites list is the bar for "dormant and safe").
 Questions to answer first, then anything else in the lens group:
 
 1. Read the develop merge first: `git -C /Users/yahya/Documents/git/yooz/remi show --cc MERGE -- packages/native/RemiKit/Sources/RemiKit/Transport/RemiConnection.swift`, where MERGE is the merge commit the live facts name. Does the resolution keep #1724's parent-socket and full-key fence intact for image traffic?

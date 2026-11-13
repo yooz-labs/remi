@@ -17,6 +17,7 @@ One lens group's findings (at most 5) for this chunk of the L07 PR, so the synth
 
 Inventory, the notification owner, Store hooks, the iPhone app (`PhoneLocalNoticeReviewSheet`, `PhonePreferences`, `RemiPhoneApp`, `PhoneLiveRootView`), `SessionAddressingTests` after the develop merge, and the ordering harness under `packages/native/Tests/LocalNotificationOrdering/`.
 About 1,639 changed lines against develop on 2026-11-12, before the develop merge.
+Read first: the branch's own handoff `/Volumes/S1/yooz/remi/artifacts/notification-burst-20261030/issue-1720-current-handoff.md`; do not re-report its listed remaining work as findings, but report anything it misses.
 Questions to answer first, then anything else in the lens group:
 
 1. Is the inventory bounded in work and time, and does a scan timeout block nothing it should not?

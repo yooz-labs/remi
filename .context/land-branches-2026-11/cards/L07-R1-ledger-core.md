@@ -17,6 +17,7 @@ One lens group's findings (at most 5) for this chunk of the L07 PR, so the synth
 
 The local-notice ledger core: `LocalNoticeLedger`, `LocalNoticeMarker`, `LocalNoticeKeyStore`, `LocalNoticeSentinel` and tests.
 About 1,175 changed lines against develop on 2026-11-12, before the develop merge.
+Read first: the branch's own handoff `/Volumes/S1/yooz/remi/artifacts/notification-burst-20261030/issue-1720-current-handoff.md`; do not re-report its listed remaining work as findings, but report anything it misses.
 Questions to answer first, then anything else in the lens group:
 
 1. Is a corrupt or unreadable journal classified for recovery, never silently reset?

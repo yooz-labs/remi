@@ -4,7 +4,7 @@ Status: ready
 Tier: worker-hard
 Timebox: XL, 3 days including the chunked review; escalate at 5 days or two failed approaches
 Needs: xcode
-Depends: L03, L06
+Depends: L03, CP1; dispatched only when Q11's answer is option b (land dormant); if L06 is active or in review, merge develop again after L06 lands
 Branch: feature/issue-1313-native-images (no PR yet; head `82db1172` on 2026-11-12, 154 commits, 0 behind develop at `1cbdcc6f`)
 Worktree: `/Volumes/S1/worktrees/remi/native-images` (exists, clean)
 Plan: plan.md sections 2 and 3.1 (chunks L08-R1 to L08-R4); risk R3
@@ -18,7 +18,9 @@ The whole native-images branch is one draft-then-ready PR into `develop`, merged
 - 39 files, +6,727 lines: image recovery journal and ledger, directory lease, installation key, file protection, snapshot and transfer owners, upload flow, composer availability notice, image-begin authority in `RemiConnection.swift`, a two-line change in `packages/daemon/src/tunnel/image-admission.ts`, tests and fixtures (two TypeScript, one Swift, one Python runner).
 - Image ingress ships disabled: `RemiConnection.imageIngressQualified` is `false`, and only a DEBUG loopback-WSS fixture seam can open it. The PR body must say so.
 - On 2026-11-12 `git merge-tree` showed the branch conflicting with #1728's head in `Transport/RemiConnection.swift`; #1728 (L03) and #1731 (L06) both merge before this card.
-- `feature/issue-1313-image-availability` is a strict subset of this branch (Q4, owner 2026-11-12: folded here; deleted after this step by owner commands); do not merge it.
+- `feature/issue-1313-image-availability` is a strict subset of this branch (folded here under Q11 option b); do not merge it.
+- The #1313 artifacts advise against a dormant landing (`reviewable-slices-current-20261031.md`, `split-and-dependency-inventory.md`); option b is the owner's explicit choice against that advice, so the Release build must prove no test seam ships.
+- Commit `40fb479f` ("Keep iOS image key creation closed #1313") matches the issue-closing pattern: merging this PR will close #1313 through `close-on-develop.yml`; the manager hands the owner the reopen command (runbook).
 - Evidence folder of the branch's work: `/Volumes/S1/yooz/remi/artifacts/native-image-1313-20261030/`.
 
 ## Scope
@@ -39,7 +41,8 @@ The implementer may choose: the resolution's mechanics within those rules.
 2. `git grep -n 'imageIngressQualified = false' packages/native/RemiKit/Sources/RemiKit/Transport/RemiConnection.swift` prints one line.
 3. `lockf -k -t 7200 /Volumes/S1/yooz/remi/locks/xcode.lock swift test --package-path packages/native/RemiKit --filter 'Image|DirectChild|ChildRoute|RelayIdleRecovery|DeliverySource|AnswerOutcomeWire|ComposerSubmission'` passes; log `focused.log`.
 4. `bun test packages/daemon/tests/tunnel/image-admission-adoption.test.ts packages/daemon/tests/tunnel/image-decode-adoption.test.ts` passes (the daemon change is a two-line comment correction; this guards the merge).
-5. `gh pr create --base develop --draft`, then `gh pr ready` after the gates; report the PR number.
+5. Release seam gate on the exact head: `lockf -k -t 7200 /Volumes/S1/yooz/remi/locks/xcode.lock xcodebuild -project packages/native/Remi.xcodeproj -scheme RemiMac -configuration Release -destination 'platform=macOS' -derivedDataPath /Volumes/S1/derived/remi-native-images-release -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO build`, then `nm -a /Volumes/S1/derived/remi-native-images-release/Build/Products/Release/RemiMac.app/Contents/MacOS/RemiMac | grep -c -E 'enableOwnedImageFixture|ownedSetImage|ownedImageFixture'` prints 0 (quote the binary path actually built if it differs).
+6. `gh pr create --base develop --draft`, then `gh pr ready` after the gates; report the PR number. The manager does not merge before the owner signs off on the dormant landing in writing (Q11 option b).
 
 ## Gates
 

@@ -6,7 +6,7 @@ Timebox: S, 4 hours; escalate at 8 hours
 Needs: none
 Depends: none
 Branch: chore/agents-md-split (PR #1733, head `b379ea64` on 2026-11-12)
-Worktree: none for the check (it reads git objects from the main repository); for a fix only, `/Volumes/S1/worktrees/remi/agents-md-split`
+Worktree: none for the check (`-C /Users/yahya/Documents/git/yooz/remi`, read-only, git objects only); for a fix only, `/Volumes/S1/worktrees/remi/agents-md-split`, created by the manager after the owner removed the scratch worktree that holds the branch (runbook section 2)
 Plan: plan.md section 2, L01
 
 ## Goal
@@ -18,7 +18,7 @@ PR #1733 is shown to move the five AGENTS.md sections verbatim into `docs/agent-
 - PR #1733 body: AGENTS.md went from 133k to 27k characters; five sections moved to `docs/agent-reference/` in the first commit; the second commit keeps each section's standing invariants plus a pointer.
 - The PR is docs only (6 files), checks are green, no review is on record.
 - Every later worker reads AGENTS.md, so this lands first.
-- The branch is checked out in another session's scratch worktree; if `git worktree add` refuses the branch, stop and report the path it names (the owner removes that worktree).
+- The branch is checked out in another session's scratch worktree (`wt-agents`); runbook setup removes it, so a fix worktree can be created; the check itself needs no worktree.
 
 ## Scope
 
@@ -42,7 +42,7 @@ Pass: every line in `lost-lines.txt` is classified in the report as either repla
 
 ## Gates
 
-`typos` on the branch's files reports nothing, and `git diff --check origin/develop...origin/chore/agents-md-split` prints nothing.
+`for f in AGENTS.md docs/agent-reference/harnesses-and-codex.md docs/agent-reference/hub-mode.md docs/agent-reference/protocol-and-workspaces.md docs/agent-reference/questions-and-notifications.md docs/agent-reference/transport-auth-pairing.md; do git -C /Users/yahya/Documents/git/yooz/remi show origin/chore/agents-md-split:$f | typos -; done` prints nothing, and `git -C /Users/yahya/Documents/git/yooz/remi diff --check origin/develop...origin/chore/agents-md-split` prints nothing.
 
 ## Stop conditions
 

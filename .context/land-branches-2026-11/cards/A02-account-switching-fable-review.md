@@ -15,7 +15,7 @@ An independent read of the A01 draft for technical nuance and for market positio
 
 ## Context
 
-- Model: Claude Fable (`claude-fable-5-2`); the owner asked for Fable for this review only; it is not a default anywhere else in this plan.
+- Model: Claude Fable, dispatched with the Agent tool's `model: fable` (model id `claude-fable-5-2`); the owner asked for Fable for this review only; it is not a default anywhere else in this plan.
 - Live facts: the A01 PR number and head commit, the ADR path and `.context/account-switching-epic.md`.
 - Also read `.context/competitive-review-2026-10.md` (dated 2026-10-01; it marks its own unconfirmed items) and #1157.
 - The brief format is the skill's advisor brief (`references/escalation.md`); output in its format.

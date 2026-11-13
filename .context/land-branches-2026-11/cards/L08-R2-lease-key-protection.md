@@ -17,6 +17,7 @@ One lens group's findings (at most 5) for this chunk of the L08 PR, so the synth
 
 Storage ownership and protection: `ImageDirectoryLease`, `ImageInstallationKeyStore`, `ImageFileProtection`, their tests and the process-death fixture (`image-process-fixture.swift`, `run-image-process-fixture.py`).
 About 1,553 changed lines against develop on 2026-11-12, before the develop merge.
+Used only under Q11 option b (dormant landing). Read first: `/Volumes/S1/yooz/remi/artifacts/native-image-1313-20261030/reviewable-slices-current-20261031.md` (its prerequisites list is the bar for "dormant and safe").
 Questions to answer first, then anything else in the lens group:
 
 1. Is the directory lease exclusive across processes and within one process, and retired when the directory is replaced?

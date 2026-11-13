@@ -51,4 +51,5 @@ A branch marked landed is not an ancestor of `origin/develop`; a worktree has un
 
 ## Report
 
-The preamble's report (no PR: report the commit hash on the pack branch) and the count of branches per group.
+The preamble's report with `pr` set to 0 (this card opens no PR) and `head_sha` set to the pack-branch commit, plus the count of branches per group.
+Branch groups depend on Q11 and Q12: a parked branch (native-images under Q11 option a, #1720 under Q12 park) goes under "Kept".

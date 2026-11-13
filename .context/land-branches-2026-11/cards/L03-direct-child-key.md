@@ -29,7 +29,7 @@ Everything else is out of scope.
 
 ## Decided design
 
-Settled: the PR's design stands (two earlier review rounds are claimed but not on record, so this landing runs a fresh round 1 after this card); no change to trust, route or relay behavior; the scratch branches are named in the body as evidence and not merged.
+Settled: the PR's design stands (two earlier review rounds are recorded in the body and as run logs under the artifacts folder; the review form after this card follows Q13); no change to trust, route or relay behavior; the scratch branches are named in the body as evidence and not merged.
 The implementer may choose: nothing in production code in this card; fixes come only from decided findings.
 
 ## Acceptance
@@ -39,7 +39,8 @@ The implementer may choose: nothing in production code in this card; fixes come 
    Pass, or (Q2 answer "bounded attempt, then hosted") a timeout or a stall before a test bundle loads, recorded with the log path; with Q2 "require local", a stall is a stop condition.
 3. `lockf -k -t 7200 /Volumes/S1/yooz/remi/locks/xcode.lock xcodebuild -project packages/native/Remi.xcodeproj -scheme RemiPhone -destination 'generic/platform=iOS Simulator' -derivedDataPath /Volumes/S1/derived/remi-direct-child-key -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO build` succeeds.
 4. The PR body gains one paragraph with: the result of steps 1 to 3 at the head hash, the Q2 basis for the Mac gate, and the three scratch branches with what each holds.
-5. `gh pr checks 1728` all pass or skip on the final head.
+5. `gh pr checks 1728` shows every required check (runbook "Merge gate") passing on the final head.
+6. The hosted native log on the final head shows the pairing suite ran and passed: `gh run view RUN_ID --log | grep -c 'PairingAttemptTests.*passed'` prints at least 1 (RUN_ID is the `Build and Test (Native)` run of the final head); quote the matching line.
 
 ## Gates
 

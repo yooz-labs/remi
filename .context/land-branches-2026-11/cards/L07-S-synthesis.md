@@ -15,7 +15,7 @@ One deduplicated, severity-ordered finding list for the L07 PR's round 1, built 
 
 ## Context
 
-- Inputs (live facts): the eight JSON reports (`L07-R1` to `L07-R4`, each `contract` and `verification`), `Base` and `Head`.
+- Inputs (live facts): the cross-chunk report (`RV-cross-chunk`), the Luna report for L08-R4 when present, and the eight JSON reports (`L07-R1` to `L07-R4`, each `contract` and `verification`), `Base` and `Head`.
 - Follow `review-panel-protocol.md` "Synthesis and cleanup": deduplicate by normalized file, line range and failure claim; for every Critical or Important finding, read the cited lines at `Head` (`git -C /Users/yahya/Documents/git/yooz/remi show HEAD:PATH | sed -n 'A,Bp'`) and mark it `verified` or `not reproduced` with one sentence.
 
 ## Scope
@@ -39,7 +39,7 @@ One JSON object: `reviewer_id` `L07-synthesis`, `findings` (each with `sources` 
 
 ## Stop conditions
 
-Fewer than six of the eight reports completed: return `status: "unavailable"` and name the missing ones (the manager re-dispatches them once).
+Any `contract` chunk report, the cross-chunk report is missing: return `status: "unavailable"` and name the missing ones (the manager re-dispatches each once, then asks the advisor; it never proceeds without them).
 
 ## Report
 

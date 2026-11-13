@@ -28,7 +28,7 @@ Change: nothing; no comments, commits or messages.
 
 ## Decided design
 
-Settled: at most 5 findings, highest severity first (Critical, Important, Moderate, Minor), each with file, line, failure, concrete fix and confidence; only high-confidence findings.
+Settled: at most 5 findings, highest severity first (Critical, Important, Moderate, Minor), plus `omitted_findings` (the count dropped by the cap), each with file, line, failure, concrete fix and confidence; only high-confidence findings.
 The reviewer may choose: which findings to report.
 
 ## Acceptance

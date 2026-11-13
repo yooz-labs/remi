@@ -41,7 +41,8 @@ The implementer may choose: the helper's internal implementation and where the t
 1. Before the fix, record the test-first state: `lockf -k -t 7200 /Volumes/S1/yooz/remi/locks/xcode.lock swift test --package-path packages/native/RemiKit --filter 'SessionAddressingTests|ChildRouteOriginTests'` fails (compile refusal for the lookup, behavior failures for the other two); save the log to `/Volumes/S1/yooz/remi/artifacts/land-branches-2026-11/L04/r1/before.log`.
 2. After the fix, the same command passes; save `after.log`.
 3. Revert check: with the upsert change reverted locally (not committed), `sameQuestionIDInDifferentSessionsDoesNotReplaceAnotherCard` fails; quote it.
-4. A PR into `develop` ("Fixes #1732" only if both issue items are done), opened as draft, marked ready when the gates pass.
+4. A PR into `develop` ("Part of #1732" in its body), opened as draft, marked ready when the gates pass.
+5. The last commit's message ends with "Fixes #1732" only if `git grep -n -F 'questions.first { $0.question.id == id }' packages/native/iPhone packages/native/Mac` prints nothing and items 1 to 3 passed; otherwise no closing keyword anywhere.
 
 ## Gates
 

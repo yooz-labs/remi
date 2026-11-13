@@ -17,6 +17,7 @@ One lens group's findings (at most 5) for this chunk of the L08 PR, so the synth
 
 Durable image recovery: `ImageRecoveryLedger`, `ImageRecoveryJournal`, `ImageJournalDisk` and their tests.
 About 1,583 changed lines against develop on 2026-11-12, before the develop merge.
+Used only under Q11 option b (dormant landing). Read first: `/Volumes/S1/yooz/remi/artifacts/native-image-1313-20261030/reviewable-slices-current-20261031.md` (its prerequisites list is the bar for "dormant and safe").
 Questions to answer first, then anything else in the lens group:
 
 1. Does every journal transition survive a crash at each write (rename, fsync, readback), and is a corrupt or orphaned journal retired, never trusted?

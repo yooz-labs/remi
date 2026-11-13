@@ -16,6 +16,8 @@ Critical or Important defects that the round-1 fixes introduce or fail to resolv
 ## Context
 
 - Live facts: PR number, `Round1Head` (the head round 1 reviewed), `Head` (after the fixes), and the round-1 findings with their outcomes (fix, reject with reason, issue).
+- Big PRs (L07, L08): one delta reviewer per chunk whose files the fixes touched, each limited to that chunk's paths (`git diff Round1Head..Head -- FILES`); fixes large enough to be substantial under rules 2, 3 or 5 arrive as a fix PR whose base is the big PR's head branch, and this card reviews that fix PR.
+- Under Q13 option a, this card is also the one review of changes since a PR's recorded rounds: `Round1Head` is then the recorded reviewed head (#1728 `5c1f9380`, #1657 `26fbf947`, #1512 `3a654273`).
 - Instruction from `review-convergence.md`: "Report only Critical or Important defects that the fixes introduce or fail to resolve. Do not re-flag rejected findings or code outside the fix diff."
 
 ## Scope
@@ -25,7 +27,7 @@ Change: nothing.
 
 ## Decided design
 
-Settled: one reviewer; no third round follows; findings here are fixed, rejected or filed as issues by the manager's normal triage, and the manager verifies each fix by its test or repro.
+Settled: one reviewer (one per touched chunk for L07 and L08); the report includes `omitted_findings`; no third round follows; findings here are fixed, rejected or filed as issues by the manager's normal triage, and the manager verifies each fix by its test or repro.
 The reviewer may choose: nothing else.
 
 ## Acceptance

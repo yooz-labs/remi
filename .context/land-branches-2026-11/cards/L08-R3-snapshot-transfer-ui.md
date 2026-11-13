@@ -17,6 +17,7 @@ One lens group's findings (at most 5) for this chunk of the L08 PR, so the synth
 
 Image capture and upload: `ImageSnapshotOwner`, `ImageSnapshotReader`, `ImageSnapshotCopy`, `ImageTransferOwner`, `ImageUploadFlow`, `ImageEffectTicket`, their tests, and the composer UI (`SessionInteractionBar`, `Composer`, `BoardTile`, `ComposerSubmissionTests`).
 About 1,972 changed lines against develop on 2026-11-12, before the develop merge.
+Used only under Q11 option b (dormant landing). Read first: `/Volumes/S1/yooz/remi/artifacts/native-image-1313-20261030/reviewable-slices-current-20261031.md` (its prerequisites list is the bar for "dormant and safe").
 Questions to answer first, then anything else in the lens group:
 
 1. Can a selected file change, grow, be a hard link or a special file between check and copy without the copy accepting it?
