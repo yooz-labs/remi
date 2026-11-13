@@ -19,8 +19,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Manager id | mba-claude-sonnet |
 | State | running |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | 2026-11-13T07:59-08:00 |
-| Next tick | 2026-11-13T08:29-08:00 |
+| Last tick | 2026-11-13T08:15-08:00 |
+| Next tick | 2026-11-13T08:45-08:00 |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-12T19:05-08:00 |
 
@@ -48,10 +48,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 28 | daily | every dispatch on every platform; the plan approval covers this limit |
-| Codex Luna today | 8 | 10 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
+| Agents today | 30 | 30 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Codex Luna today | 8 | 11 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 3 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
-| Claude Sonnet today | 16 | 11 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
+| Claude Sonnet today | 16 | 12 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
 | Claude Opus today | 4 | 3 | daily | lead wakes, lead-tier steps, advisor consults |
 | Advisor consults | 8 | 3 | never | lead tier (Opus), whole plan |
 | Fable consults | 1 | 0 | never | A02 only, owner-requested |
@@ -71,7 +71,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | L02 | [Terminal relay probe #1657](cards/L02-terminal-relay-qualification.md) | - | worker | - | - | done | - | 1657 | 2026-11-12T21:30 | 1d | probe ok on Bun 1.3.11, fails 1.4.4 (#1738); hosted CI on 833ada41 pending (soak); own diff unchanged, no RV-delta; merge when green (Q19) |
 | L04 | [Question session identity #1732](cards/L04-question-session-identity.md) | - | worker | xcode | - | done | - | 1734 | 2026-11-12T22:10 | 1d | merge gate: fix r3 verified (head bab01d67, wide-pin revert, Mac lookup revert); waiting on native CI; then merge, reopen #1732 |
 | L05 | [Notification preferences #1707](cards/L05-notification-preferences.md) | - | worker | xcode | - | done | L03 | 1707 | 2026-11-13T06:11-08:00 | 1d | PR ready; waiting hosted checks (native, relay scope) at 28341b5a; then merge gate (no third review round) |
-| L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | codex-terra | active | L03 | 1736 | 2026-11-13T06:04-08:00 | 2d | fix r2 (advisor: 30 s health condition; CI step for opt-in suite; findings L06/r2); then RV-delta, hosted incl. soak, merge gate |
+| L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | - | review | L03 | 1736 | 2026-11-13T06:04-08:00 | 2d | RV-delta running; hosted native passed (opt-in step ran, one rerun after DirectAdmission flake), local-relay soak pending; then merge gate |
 | L07 | [Local notification order #1720](cards/L07-local-notification-order.md) | - | worker | xcode | - | blocked | L04, CP1 | - | - | 3d | parked until #1727 is resolved (Q12); counts as settled for L99; branch kept |
 | L08 | [Native images #1313](cards/L08-native-images.md) | - | worker-hard | xcode | - | dropped | L03, CP1 | - | - | 3d | parked as evidence (Q11 a): branch kept, not deleted; chunk cards are reference only |
 | L09 | [Bun 1.4.2 pins #1512](cards/L09-bun142-pins.md) | - | worker-hard | - | claude-opus | active | L01 | 1512 | 2026-11-13T06:14-08:00 | 2d | fix r2 (Critical: CI runner contract hard-coded to the 1.3.11 revision; docs; notes); then hosted checks, owner phone check (Q1), merge gate |
@@ -86,7 +86,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | A02 | [Fable review](cards/A02-account-switching-fable-review.md) | - | frontier | - | - | todo | A01 | - | - | 4h | owner-requested Fable (claude-fable-5-2) |
 | A03 | [Account switching checkpoint](cards/A03-account-switching-checkpoint.md) | - | lead | - | - | todo | A02 | - | - | 1d | ends at owner CP4; no merge before approval |
 | CP1 | CP1 go or adjust for L07 and L08 | - | - | - | - | blocked | - | - | - | - | manager sets done when L01 to L06 are done or dropped and the lead's CP1 decision is recorded; now gates only L07's unpark |
-| L14 | [image-availability #1313](cards/L14-image-availability.md) | - | worker | xcode | - | review | L03 | 1737 | 2026-11-13T06:11-08:00 | 1d | delta clean; waiting hosted: native rerun after the #1739 flake, relay soak; then merge gate (Part of #1313, closing refs []) |
+| L14 | [image-availability #1313](cards/L14-image-availability.md) | - | worker | xcode | - | done | L03 | 1737 | 2026-11-13T06:11-08:00 | 1d | delta clean; waiting hosted: native rerun after the #1739 flake, relay soak; then merge gate (Part of #1313, closing refs []) |
 
 ## Questions
 
@@ -153,7 +153,9 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | rv-L06 | reviewer | extra | sonnet xhigh x3 | L06 | 2026-11-13T07:50 | done |
 | advisor-L06 | advisor | extra | opus xhigh | L06 | 2026-11-13T08:10 | done |
 | rv-L09 | reviewer | extra | sonnet xhigh | L09 | 2026-11-13T08:30 | done |
-| codex-L06fix | implementer | codex-terra | gpt-6.1-terra xhigh | L06 | 2026-11-13T08:45 | thread fix round (A, F2-F10) |
+| codex-L06fix | implementer | codex-terra | gpt-6.1-terra xhigh | L06 | 2026-11-13T08:45 | done |
 | rv-L14d | reviewer | extra | sonnet xhigh | L14 | 2026-11-13T09:10 | done |
 | codex-DV5 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T07:10 | done |
 | codex-DV6 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T07:50 | done |
+| codex-DV7 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T08:30 | thread DV r7 on cb346c5a |
+| rv-L06d | reviewer | extra | sonnet xhigh | L06 | 2026-11-13T08:30 | running (delta d9f8699b..e18c8c13) |
