@@ -34,6 +34,7 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-12T21:20-08:00 | Q4 (fold image-availability into native-images) is superseded by Q11: image-availability lands alone; native-images is parked | owner | owner answer to Q11, 2026-11-12 |
 | 2026-11-12T21:23-08:00 | Q16: no PR for #1727 yet | owner |  |
 | 2026-11-12T22:11-08:00 | Q17: accept hosted native CI as evidence for L03's local pairing baseline; proceed to review | owner |  |
+| 2026-11-13T00:57-08:00 | Q18: Codex danger-full-access extended from native-only (Q10) to L02 and every other Codex card that needs it; same bounds (clean worktree, push only the card's branch, develop-unchanged check) | owner |  |
 
 ## Log
 
@@ -49,3 +50,8 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-12T21:53-08:00 | L02 round 1 stopped: node_modules symlinks pointed at removed worktree terminal-service (manager cleanup of 2026-11-12); replaced with real bun install; redispatched as round 3 with continuation (local merge commit 051e9900) |
 | 2026-11-12T21:53-08:00 | L04 dispatched (luna, full access, thread 01a1d377-3dec); L01 RV docs reviewer running |
 | 2026-11-12T22:11-08:00 | L01 RV docs report: 5 findings (2 Important, 2 Moderate, 1 Minor), all decided fix; findings.md in L01/r2; fix worker waits for a free Luna slot |
+| 2026-11-12T22:38-08:00 | L04 report verified (PR 1734 head 48a569cf, base develop, scope 5 files, hosted checks green, revert check present); contract and verification reviewers dispatched; L01 fix round 2 dispatched (luna thread 01a1d3a0-4d3d); L03 Luna contract reviewer running (thread 01a1d3a0-7c44); L02 round 3 stopped: EPERM /bin/ps under workspace-write, Q18 asked; develop unchanged at 1cbdcc6f |
+| 2026-11-12T22:38-08:00 | Q16 and Q17 acted on and closed |
+| 2026-11-13T00:57-08:00 | L04 round 1: contract 0 findings; verification 2 findings (Moderate: six call sites untested + new Mac rawQuestion overload re-derives machine; Minor: no snapshot/kill-session test for same-id pair). Both decided fix. Maintainability reviewer dispatched. Note: last commit says Fixes #1732 (closes issue with the #1720/#1727 paragraph still open): notify owner before merge, reopen command after. |
+| 2026-11-13T00:58-08:00 | L01 fix round pushed (5f8e57eb); hosted Native failed signal 11 (#1634 pattern), rerun once; RV-delta L01 dispatched. L03 Luna contract review: 1 Important security finding (child key pin checks announced key, no proof of possession before auth_response); advisor consult dispatched. Q18 broadened full access. |
+| 2026-11-13T00:58-08:00 | L02 round 4 dispatched (luna, full access per Q18, thread 01a1d421) |

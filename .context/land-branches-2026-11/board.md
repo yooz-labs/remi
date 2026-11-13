@@ -19,8 +19,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Manager id | mba-claude-sonnet |
 | State | running |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | 2026-11-12T21:51-08:00 |
-| Next tick | 2026-11-12T22:21-08:00 |
+| Last tick | 2026-11-12T22:37-08:00 |
+| Next tick | 2026-11-12T23:07-08:00 |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-12T19:05-08:00 |
 
@@ -48,12 +48,12 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 6 | daily | every dispatch on every platform; the plan approval covers this limit |
-| Codex Luna today | 8 | 4 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
+| Agents today | 30 | 14 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Codex Luna today | 8 | 7 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 1 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
-| Claude Sonnet today | 16 | 1 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
-| Claude Opus today | 4 | 0 | daily | lead wakes, lead-tier steps, advisor consults |
-| Advisor consults | 8 | 0 | never | lead tier (Opus), whole plan |
+| Claude Sonnet today | 16 | 5 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
+| Claude Opus today | 4 | 1 | daily | lead wakes, lead-tier steps, advisor consults |
+| Advisor consults | 8 | 1 | never | lead tier (Opus), whole plan |
 | Fable consults | 1 | 0 | never | A02 only, owner-requested |
 | Agents this wave | 0 | 0 | wave | unused: this plan has no waves |
 
@@ -66,10 +66,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | ID | Title | Wave | Tier | Needs | Slot | State | Depends | PR | Started | Timebox | Next |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| L01 | [AGENTS.md split #1733](cards/L01-agents-md-split.md) | - | worker | - | - | active | - | 1733 | 2026-11-12T21:30 | 4h | fix round: apply findings.md (r2), then delta review |
-| L03 | [Direct child key #1728](cards/L03-direct-child-key.md) | - | worker-hard | xcode | - | review | - | 1728 | 2026-11-12T21:30 | 2d | Q17 accepted; RV-delta from 5c1f9380 is empty (head unchanged); dispatch Luna contract reviewer when a Luna slot is free (Q9) |
+| L01 | [AGENTS.md split #1733](cards/L01-agents-md-split.md) | - | worker | - | claude-sonnet | review | - | 1733 | 2026-11-12T21:30 | 4h | delta review running; hosted native rerun; then merge gate |
+| L03 | [Direct child key #1728](cards/L03-direct-child-key.md) | - | worker-hard | xcode | codex-luna | review | - | 1728 | 2026-11-12T21:30 | 2d | advisor ruling on Luna finding (child key pin, no proof of possession); then fix round or doc correction |
 | L02 | [Terminal relay probe #1657](cards/L02-terminal-relay-qualification.md) | - | worker | - | codex-luna | active | - | 1657 | 2026-11-12T21:30 | 1d | merge develop, start checks; then one RV-delta review from 26fbf947 (Q13) |
-| L04 | [Question session identity #1732](cards/L04-question-session-identity.md) | - | worker | xcode | codex-luna | active | - | - | 2026-11-12T22:10 | 1d | implement per #1732; then 3 Sonnet reviewers |
+| L04 | [Question session identity #1732](cards/L04-question-session-identity.md) | - | worker | xcode | claude-sonnet | review | - | 1734 | 2026-11-12T22:10 | 1d | 3rd reviewer (maintainability) when a Sonnet slot frees; then triage; merge gate |
 | L05 | [Notification preferences #1707](cards/L05-notification-preferences.md) | - | worker | xcode | - | todo | L03 | 1707 | - | 1d | merge develop; advisor checks the resolution; no third review |
 | L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | - | todo | L03 | - | - | 2d | after L03; plan's negative controls; 3 Sonnet reviewers plus 1 Luna (Q9) |
 | L07 | [Local notification order #1720](cards/L07-local-notification-order.md) | - | worker | xcode | - | blocked | L04, CP1 | - | - | 3d | parked until #1727 is resolved (Q12); counts as settled for L99; branch kept |
@@ -109,6 +109,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Q15 | L07 | Merge authority was develop only. May the manager merge a large review-fix PR into its step PR's head branch after its delta review and gates? | Yes, fix PRs into a step's head branch only (Recommended) / No: the owner merges fix PRs | none | 2026-11-16T12:00 | closed | The manager may merge a large review-fix PR into its step PR's head branch only, after the same merge gate; never into develop directly (owner, 2026-11-12T21:20-08:00) |
 | Q16 | L10 | The #1727 prototype tests are now pushed to patch/issue-1727-store-callback-order (9e7ddf41). Open a PR? | No PR yet: keep the branch until a #1727 implementation card exists (Recommended) / Open a draft PR now for visibility / Open a PR for review and landing in this plan | none | 2026-11-16T12:00 | answered | No PR yet; keep the branch as pushed evidence until a #1727 implementation card exists (owner, 2026-11-12T21:23-08:00) |
 | Q17 | - | L03: local Mac/Swift tests hit the 32 documented PairingAttemptTests failures (not a stall); hosted native CI passed them on the same head. Accept hosted as evidence and proceed to review? (log has detail) | Accept hosted, proceed to review (Recommended) / Require local fix first / Hold L03 | none | 2026-11-13T09:00 | answered | Accept hosted result as Mac/Pairing evidence; proceed to review (owner, 2026-11-12T22:11-08:00) |
+| Q18 | - | L02 (#1657): the relay probe fails EPERM spawning /bin/ps under Codex workspace-write (round 1 and 3). Allow danger-full-access for L02 only (non-native, Q10 covers native)? Else the probe runs only on hosted CI. | Full access for L02 only (Recommended) / Push merge commit, rely on hosted CI / Hold L02 | none | 2026-11-13T09:00 | answered | Full access for L02, and for all other Codex cards that need it (owner: go full for this and all the rest that needs) (owner, 2026-11-13T00:57-08:00) |
 
 ## Proposals
 
@@ -123,5 +124,13 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | codex-L02 | implementer | codex-luna | gpt-6-luna max | L02 | 2026-11-12T21:30 | done |
 | codex-L03 | implementer | codex-terra | gpt-6.1-terra xhigh | L03 | 2026-11-12T21:30 | done |
 | rv-L01-docs | reviewer | claude-sonnet | sonnet xhigh | L01 | 2026-11-12T21:58 | done |
-| codex-L02b | implementer | codex-luna | gpt-6-luna max | L02 | 2026-11-12T22:10 | thread 01a1d376-e5af (round 3, after dependency repair) |
-| codex-L04 | implementer | codex-luna | gpt-6-luna max | L04 | 2026-11-12T22:10 | thread 01a1d377-3dec |
+| codex-L02b | implementer | codex-luna | gpt-6-luna max | L02 | 2026-11-12T22:10 | done |
+| codex-L04 | implementer | codex-luna | gpt-6-luna max | L04 | 2026-11-12T22:10 | done |
+| codex-L01fix | implementer | codex-luna | gpt-6-luna max | L01 | 2026-11-12T22:47 | done |
+| rv-L03-luna | reviewer | codex-luna | gpt-6-luna max | L03 | 2026-11-12T22:47 | done |
+| rv-L04-contract | reviewer | claude-sonnet | sonnet xhigh | L04 | 2026-11-12T22:48 | done |
+| rv-L04-verif | reviewer | claude-sonnet | sonnet xhigh | L04 | 2026-11-12T22:48 | done |
+| codex-L02c | implementer | codex-luna | gpt-6-luna max | L02 | 2026-11-13T01:10 | thread 01a1d421 round 4 full access |
+| rv-L01-delta | reviewer | claude-sonnet | sonnet xhigh | L01 | 2026-11-13T01:10 | running aeaff18f |
+| rv-L04-maint | reviewer | claude-sonnet | sonnet xhigh | L04 | 2026-11-13T01:10 | running ae5fc9b6 |
+| advisor-L03 | advisor | claude-opus | opus xhigh | L03 | 2026-11-13T01:10 | running af821a9d |
