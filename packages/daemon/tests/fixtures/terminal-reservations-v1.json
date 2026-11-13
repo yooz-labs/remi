@@ -1,0 +1,7 @@
+{
+  "commit": "d7056ffa8956e06dadae27ab1ca8f7acbe07bf57",
+  "source": "packages/daemon/src/terminal/reservations.ts",
+  "sha256": "6886855ab07df5b1d4329016d9ba6eb5248ea0f29ed74dc2c537d6b8b8e49379",
+  "fixture": "terminal-reservations-v1.ts",
+  "normalization": "removeexactfirstheaderline and reverse ../../src/storage/ to ../storage/; no implementation edits"
+}

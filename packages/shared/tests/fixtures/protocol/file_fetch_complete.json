@@ -1,0 +1,9 @@
+{
+  "type": "file_fetch_complete",
+  "id": "55667788-99aa-4bbc-8dde-ff0011223344",
+  "timestamp": "2026-10-14T03:00:00.000Z",
+  "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+  "transferId": "AAECAwQFBgcICQoLDA0ODw",
+  "receivedBytes": 10485760,
+  "digest": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+}

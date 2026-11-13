@@ -1,5 +1,6 @@
 import AppKit
 import RemiKit
+import RemiUI
 import SwiftUI
 
 struct MacPreferencesView: View {
@@ -10,7 +11,7 @@ struct MacPreferencesView: View {
 
     @State private var copiedValue: CopiedValue?
     @State private var notificationPermission = MacNotificationPermission.shared
-    @State private var relayNotifications = NativeRelayNotifications.shared
+    @State private var relayNotifications: NativeRelayNotifications
     @State private var selectedMachineID: String?
     @State private var machineToForget: MachineState?
     @State private var machineToRename: MachineState?
@@ -20,11 +21,13 @@ struct MacPreferencesView: View {
     init(
         store: MachineStore,
         notificationPermission: MacNotificationPermission = .shared,
+        relayNotifications: NativeRelayNotifications = .shared,
         refreshNotificationPermission: Bool = true
     ) {
         self.store = store
         self.refreshNotificationPermission = refreshNotificationPermission
         _notificationPermission = State(initialValue: notificationPermission)
+        _relayNotifications = State(initialValue: relayNotifications)
     }
 
     var body: some View {
@@ -148,7 +151,7 @@ struct MacPreferencesView: View {
                         onDismiss: store.clearLatestError
                     )
                 } else if let message = relayNotifications.notice ?? store.relayNotificationNotice {
-                    PreferencesFeedback(message: message, systemImage: "info.circle.fill", tint: .blue) {
+                    PreferencesFeedback(message: message, systemImage: "info.circle.fill", tint: .teal) {
                         relayNotifications.clearNotice()
                         store.clearRelayNotificationNotice()
                     }
@@ -172,6 +175,26 @@ struct MacPreferencesView: View {
                 }
 
                 PreferencesCard(title: "Connection", systemImage: "point.3.connected.trianglepath.dotted") {
+                    Picker("Connection layer", selection: Binding(
+                        get: { machine.connectionPreference },
+                        set: { store.setConnectionPreference($0, for: machine.endpoint) }
+                    )) {
+                        ForEach(MachineConnectionPreference.allCases) { preference in
+                            Text(preference.title).tag(preference)
+                        }
+                    }
+                    Text(machine.connectionPreference.guidance)
+                        .font(.caption).foregroundStyle(.secondary)
+                    LabeledContent("Active layer", value: machine.activeConnectionLayer?.title ?? "Not connected")
+                    if let attempted = machine.attemptedConnectionLayer {
+                        LabeledContent("Attempted layer", value: attempted.title)
+                    }
+                    if let progress = machine.recoveryProgress {
+                        Text(progress.message).font(.caption).foregroundStyle(.secondary)
+                        if progress.allowsRetry {
+                            Button("Retry recovery", systemImage: "arrow.clockwise") { store.retryConnection(for: machine.endpoint) }
+                        }
+                    }
                     LabeledContent("Transport", value: transportLabel(machine.endpoint))
                     LabeledContent("Endpoint") {
                         Text(machine.endpoint.displayAddress)
@@ -179,7 +202,9 @@ struct MacPreferencesView: View {
                             .textSelection(.enabled)
                     }
                     LabeledContent("Active sessions", value: machine.activeSessions.count.formatted())
-                    if machine.endpoint.relayPin != nil {
+                    if let status = store.pairedNotificationState(for: machine.endpoint) {
+                        LabeledContent("Notifications", value: status.title)
+                    } else if machine.endpoint.relayPin != nil {
                         LabeledContent(
                             "Relay alerts",
                             value: relayNotifications.hasRelayNotificationIntent(for: machine.endpoint)
@@ -246,6 +271,12 @@ struct MacPreferencesView: View {
                     Button("Retry connection", systemImage: "arrow.clockwise") { store.retryConnection(for: machine.endpoint) }
                 }
             }
+        case .connected where machine.sessionConnectionIssue != nil:
+            PreferencesCard(title: "Session connection unavailable", systemImage: "exclamationmark.triangle") {
+                Text(machine.sessionConnectionIssue ?? "Retry the session connections.")
+                    .foregroundStyle(.secondary)
+                Button("Retry connection", systemImage: "arrow.clockwise") { store.retryConnection(for: machine.endpoint) }
+            }
         case .connecting, .connected:
             EmptyView()
         }
@@ -259,11 +290,7 @@ struct MacPreferencesView: View {
         Button("Copy diagnostics", systemImage: "stethoscope") {
             copy(diagnostics(for: machine), value: .diagnostics)
         }
-        if machine.endpoint.relayPin != nil,
-           !relayNotifications.hasRelayNotificationIntent(for: machine.endpoint) {
-            Button("Enable relay alerts", systemImage: "bell.badge") { relayNotifications.enable(on: machine.endpoint) }
-                .disabled(relayNotifications.enabling || !store.persistableEndpoints.contains(machine.endpoint))
-        }
+        notificationControls(machine)
     }
 
     private func machineDetailIcon(_ machine: MachineState) -> some View {
@@ -297,13 +324,16 @@ struct MacPreferencesView: View {
         Button("Rename", systemImage: "pencil") { beginRename(machine) }
         Button("Copy endpoint", systemImage: "doc.on.doc") { copy(machine.endpoint.displayAddress, value: .endpoint) }
         Button("Copy diagnostics", systemImage: "stethoscope") { copy(diagnostics(for: machine), value: .diagnostics) }
-        if machine.endpoint.relayPin != nil,
-           !relayNotifications.hasRelayNotificationIntent(for: machine.endpoint) {
-            Button("Enable relay alerts", systemImage: "bell.badge") { relayNotifications.enable(on: machine.endpoint) }
-                .disabled(relayNotifications.enabling || !store.persistableEndpoints.contains(machine.endpoint))
-        }
+        notificationControls(machine)
         Divider()
         Button("Forget machine", systemImage: "trash", role: .destructive) { machineToForget = machine }
+    }
+
+    private func notificationControls(_ machine: MachineState) -> some View {
+        PairedNotificationControls(state: store.pairedNotificationState(for: machine.endpoint),
+            busy: relayNotifications.enabling, connected: machine.status == .connected,
+            enable: { relayNotifications.enable(on: machine.endpoint) },
+            revoke: { relayNotifications.revoke(on: machine.endpoint) })
     }
 
     private var identitySettings: some View {
@@ -358,7 +388,7 @@ struct MacPreferencesView: View {
     }
 
     private var selectedMachine: MachineState? {
-        store.machines.first { $0.id == selectedMachineID }
+        selectedMachineID.flatMap { store.machine(withIdentifier: $0) }
     }
 
     private var renamePresentation: Binding<Bool> {
@@ -374,7 +404,7 @@ struct MacPreferencesView: View {
     }
 
     private func selectAvailableMachine() {
-        if !store.machines.contains(where: { $0.id == selectedMachineID }) {
+        if selectedMachineID.flatMap({ store.machine(withIdentifier: $0) }) == nil {
             selectedMachineID = store.machines.first?.id
         }
     }
@@ -396,7 +426,7 @@ struct MacPreferencesView: View {
         relayNotifications.machineWillChange(machine.endpoint)
         if store.removeMachine(machine.endpoint) {
             relayNotifications.didForget(machine.endpoint)
-            MachineConfigurationStore.shared.save(store.persistableEndpoints)
+            MachineConfigurationStore.shared.saveProfiles(store.persistableProfiles)
             persistDisplayNames()
         }
         relayNotifications.reconcileEndpoints()
@@ -406,7 +436,8 @@ struct MacPreferencesView: View {
 
     private func persistDisplayNames() {
         let names = store.machines.reduce(into: [String: String]()) { result, machine in
-            result[machine.id] = machine.displayName
+            // Endpoint-keyed aliases remain loadable before a legacy/current daemon first answers.
+            result[machine.endpoint.id] = machine.displayName
         }
         MachineConfigurationStore.shared.saveDisplayNames(names)
     }
@@ -432,7 +463,7 @@ struct MacPreferencesView: View {
     private func statusTint(_ status: MachineConnectionStatus) -> Color {
         switch status {
         case .connected: .green
-        case .connecting: .blue
+        case .connecting: .teal
         case .waitingForApproval, .waitingForRelayConfirmation: .orange
         case .disconnected, .unavailable: .secondary
         }
@@ -561,7 +592,7 @@ private struct MachinePreferencesRow: View {
     private var statusTint: Color {
         switch machine.status {
         case .connected: .green
-        case .connecting: .blue
+        case .connecting: .teal
         case .waitingForApproval, .waitingForRelayConfirmation: .orange
         case .disconnected, .unavailable: .secondary
         }

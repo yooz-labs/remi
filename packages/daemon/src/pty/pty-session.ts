@@ -16,6 +16,20 @@ export interface TerminalSize {
   readonly rows: number;
 }
 
+/** One launch-time local observer; no input or native-resize methods are handed to it. */
+export interface PTYReadObserver {
+  starting(size: TerminalSize): void;
+  output(bytes: Uint8Array): void;
+  resized(size: TerminalSize): void;
+  ended(): void;
+  unavailable(): void;
+}
+export interface PTYObservation {
+  readonly active: boolean;
+  readonly running: boolean;
+  dispose(): void;
+}
+
 /** Events emitted by PTY session */
 export interface PTYSessionEvents {
   /** Raw output data from terminal (decoded to string) */
@@ -52,6 +66,11 @@ export interface PTYSessionConfig {
   readonly size?: TerminalSize;
 }
 
+/** Injectable scheduling boundary for the text-to-Enter pause. Production uses a 50 ms delay. */
+export interface PTYSessionDependencies {
+  readonly submitDelay?: () => Promise<void>;
+}
+
 /** Synchronous caller validity at each queued submission effect (#1488). */
 export type SubmitInputGuard = (phase: 'text' | 'enter') => boolean;
 
@@ -84,15 +103,24 @@ export class PTYSession {
   private state: SessionState = 'created';
   private readonly config: Required<PTYSessionConfig>;
   private readonly events: Partial<PTYSessionEvents>;
+  private readonly submitDelay: () => Promise<void>;
 
   private process: ReturnType<typeof Bun.spawn> | null = null;
   private exitCode: number | null = null;
   private exitSignal: string | null = null;
+  private readObserver: PTYReadObserver | undefined;
+  private observationUsed = false;
 
-  constructor(config: PTYSessionConfig = {}, events: Partial<PTYSessionEvents> = {}) {
+  constructor(
+    config: PTYSessionConfig = {},
+    events: Partial<PTYSessionEvents> = {},
+    dependencies: PTYSessionDependencies = {},
+  ) {
     this.id = generateId();
     this.createdAt = now();
     this.events = events;
+    this.submitDelay =
+      dependencies.submitDelay ?? (() => new Promise((resolve) => setTimeout(resolve, 50)));
 
     this.config = {
       command: config.command ?? DEFAULT_COMMAND,
@@ -128,6 +156,41 @@ export class PTYSession {
     return this.exitSignal;
   }
 
+  /** Predating/replacement observers cannot establish a current screen from an ANSI suffix. */
+  observeFromLaunch(observer: PTYReadObserver): PTYObservation | null {
+    if (this.state !== 'created' || this.observationUsed) return null;
+    this.observationUsed = true;
+    this.readObserver = observer;
+    const session = this;
+    return Object.freeze({
+      get active() {
+        return session.readObserver === observer && session.state !== 'exited';
+      },
+      get running() {
+        return session.readObserver === observer && session.state === 'running';
+      },
+      dispose() {
+        if (session.readObserver === observer) session.readObserver = undefined;
+      },
+    });
+  }
+
+  private observeRead(operation: (observer: PTYReadObserver) => void): void {
+    const observer = this.readObserver;
+    if (!observer) return;
+    try {
+      operation(observer);
+    } catch {
+      this.readObserver = undefined;
+      try {
+        observer.unavailable();
+      } catch {
+        // Optional capture cannot interrupt the agent. Its handle is already
+        // inactive, so no reader may mistake a failed observer for a live screen.
+      }
+    }
+  }
+
   /**
    * Start the PTY session.
    * Throws if already started or closed.
@@ -139,6 +202,8 @@ export class PTYSession {
 
     try {
       const cmd = [this.config.command, ...this.config.args];
+      const size = { cols: this.config.size.cols, rows: this.config.size.rows };
+      this.observeRead((observer) => observer.starting(Object.freeze({ ...size })));
 
       this.process = Bun.spawn(cmd, {
         cwd: this.config.cwd,
@@ -152,8 +217,8 @@ export class PTYSession {
           TERM: process.env['TERM'] ?? 'xterm-256color',
         }),
         terminal: {
-          cols: this.config.size.cols,
-          rows: this.config.size.rows,
+          cols: size.cols,
+          rows: size.rows,
           data: (_terminal, data) => {
             this.handleData(data);
           },
@@ -171,6 +236,8 @@ export class PTYSession {
           this.handleError(error);
         });
     } catch (error) {
+      this.observeRead((observer) => observer.unavailable());
+      this.readObserver = undefined;
       this.handleError(error instanceof Error ? error : new Error(String(error)));
       throw error;
     }
@@ -214,9 +281,10 @@ export class PTYSession {
    * Throws synchronously if the session is not currently running. The actual
    * byte write is then queued (see `enqueueWrite`) so a single-shot write can
    * never land in the middle of another connection's in-flight `submitInput`
-   * sequence (#795).
+   * sequence (#795). An optional guard runs inside that queue immediately
+   * before the byte effect; false writes nothing (#1570).
    */
-  write(data: string | Uint8Array): Promise<void> {
+  write(data: string | Uint8Array, guard?: () => boolean): Promise<void> {
     if (this.state !== 'running' || !this.process?.terminal) {
       throw new Error(`Cannot write to session in state: ${this.state}`);
     }
@@ -226,6 +294,9 @@ export class PTYSession {
       if (this.state !== 'running' || !this.process?.terminal) {
         throw new Error(`Cannot write to session in state: ${this.state}`);
       }
+      // Card Cancel must validate the exact prompt at the byte write, not
+      // before an earlier queued submission finishes (#1570).
+      if (guard && !guard()) return;
       this.termWrite(data);
     });
   }
@@ -291,7 +362,7 @@ export class PTYSession {
       this.termWrite(text);
 
       // Small delay to let Claude Code process the text
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await this.submitDelay();
 
       if (this.state !== 'running' || !this.process?.terminal) {
         throw new Error(`Cannot write to session in state: ${this.state}`);
@@ -373,7 +444,9 @@ export class PTYSession {
       throw new Error(`Cannot resize session in state: ${this.state}`);
     }
 
-    this.process.terminal.resize(size.cols, size.rows);
+    const actual = { cols: size.cols, rows: size.rows };
+    this.process.terminal.resize(actual.cols, actual.rows);
+    this.observeRead((observer) => observer.resized(Object.freeze(actual)));
   }
 
   /**
@@ -394,6 +467,10 @@ export class PTYSession {
    */
   async close(timeoutMs = 5000): Promise<void> {
     if (this.state !== 'running' || !this.process) {
+      if (this.state === 'created') {
+        this.observeRead((observer) => observer.unavailable());
+        this.readObserver = undefined;
+      }
       return; // Already closed or never started
     }
 
@@ -428,6 +505,7 @@ export class PTYSession {
     // #627: record the rendered frame for the optional keystroke-capture diagnostic
     // (no-op unless REMI_PTY_CAPTURE is set), before any decode/processing.
     ptyCapture.out(data);
+    this.observeRead((observer) => observer.output(data));
     // Emit raw bytes first for direct terminal pass-through (no decode/encode).
     // Isolate so a throw here does not prevent text processing from running.
     try {
@@ -452,6 +530,8 @@ export class PTYSession {
     this.state = 'exited';
     this.exitCode = exitCode;
     this.exitSignal = signal;
+    this.observeRead((observer) => observer.ended());
+    this.readObserver = undefined;
     this.events.onExit?.(exitCode, signal);
   }
 

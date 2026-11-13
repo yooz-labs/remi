@@ -48,7 +48,7 @@ export class ClaudeHarness implements Harness {
     return claudeTranscriptPath(this.transcriptDiscovery, projectPath, harnessSessionId);
   }
 
-  createSession(ctx: HarnessLaunchContext): HarnessSession {
+  async createSession(ctx: HarnessLaunchContext): Promise<HarnessSession> {
     if (!this.launchDeps) {
       throw new Error(
         'ClaudeHarness was built without launch dependencies; it cannot create a session',

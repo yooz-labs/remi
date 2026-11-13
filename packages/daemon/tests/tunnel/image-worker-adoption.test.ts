@@ -30,6 +30,7 @@ function exited(controller: DecoderProcess, code: number | null, signal: string 
   expect(proofObserved.pid).toBe(pid);
   expect(proofObserved.exitCode).toBe(code);
   expect(proofObserved.signalCode).toBe(signal);
+  expect(proofObserved.elapsedMs).toBeLessThan(5000);
   expect(Object.isFrozen(proofObserved)).toBe(true);
   assert.throws(() => process.kill(proofObserved.pid, 0), { code: 'ESRCH' });
 }
@@ -132,4 +133,5 @@ test('proof adapters share daemon controller and worker with actual owned child 
     if (repeated) await repeated;
     fs.rmSync(home, { recursive: true, force: true });
   }
-});
+  // #1637: five sequential child lifetimes, each still bounded to five seconds above.
+}, 30000);

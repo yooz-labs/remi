@@ -1,0 +1,13 @@
+{
+  "type": "browser_link_candidate",
+  "id": "66778899-aabb-4ccd-8eef-001122334455",
+  "timestamp": "2026-10-14T03:00:00.000Z",
+  "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+  "binding": {
+    "harness": "claude",
+    "harnessSessionId": "11223344-5566-7788-99aa-bbccddeeff00"
+  },
+  "leaseId": "44556677-8899-4aab-bccd-eeff00112233",
+  "url": "https://example.com/a%20b?q=x%20y#top",
+  "lifetimeMs": 120000
+}

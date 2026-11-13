@@ -4,6 +4,11 @@ import type { UUID } from '@remi/shared';
 import type { ChatSubmitOutcome, ChatSubmitRequest, ChatSubmitResult } from '@remi/shared';
 import { WebSocketAdapter } from '../../adapters/websocket-adapter';
 import type { IdentityStore } from '../../auth/identity-store';
+import {
+  connectionDeviceIdentityInsideLock,
+  connectionDeviceKey,
+} from '../../auth/relay-chat-authority';
+import type { AnswerCommit, AnswerCommitResult } from '../../harness/decision';
 import { SubmissionSequence } from '../../harness/submission-sequence';
 import type { HarnessSession, HarnessStructuredChat } from '../../harness/types';
 import type { SecurePushAuthority, SecurePushStore } from '../../notifications/secure-push-store';
@@ -86,28 +91,12 @@ export class StructuredChatService {
   }
 
   private publicKey(connection: Connection | null): string | null {
-    return (
-      connection?.connectionClientPublicKey ??
-      connection?.structuredChatProxyAuthority?.publicKey ??
-      null
-    );
+    return connection ? connectionDeviceKey(connection) : null;
   }
 
   /** Called only while this device's original grant lock is held. */
   private identity(connection: Connection, grant: string | null) {
-    const proxy = connection.structuredChatProxyAuthority;
-    if (proxy) {
-      if (
-        connection.connectionClientPublicKey ||
-        connection.connectionClientFingerprint ||
-        !this.host.relayAuthority?.isCurrentAuthorityInsideLock(proxy, grant)
-      )
-        return null;
-      return { publicKey: proxy.publicKey, fingerprint: proxy.fingerprint, proxy };
-    }
-    const publicKey = connection.connectionClientPublicKey;
-    const fingerprint = connection.connectionClientFingerprint;
-    return publicKey && fingerprint ? { publicKey, fingerprint, proxy: null } : null;
+    return connectionDeviceIdentityInsideLock(connection, grant, this.host.relayAuthority);
   }
 
   /** Must run inside the grant lock. It never re-enters that lock. */
@@ -158,6 +147,29 @@ export class StructuredChatService {
     } catch {
       return null;
     }
+  }
+
+  /** Async question answers reuse this exact signed-device/attachment/runtime authority. */
+  decisionCommit(id: UUID, sessionId: UUID): AnswerCommit | null {
+    const original = this.capture(id, sessionId);
+    if (!original) return null;
+    return <T>(effect: () => T): AnswerCommitResult<T> => {
+      let invoked = false;
+      try {
+        return this.host.identityStore.withAuthorizationEpochNonblocking(
+          original.publicKey,
+          (grant) => {
+            if (!same(original, this.authority(id, sessionId, grant))) return { kind: 'refused' };
+            invoked = true;
+            return { kind: 'committed', value: effect() };
+          },
+          false,
+        );
+      } catch (error) {
+        if (invoked) throw error;
+        return { kind: 'refused' };
+      }
+    };
   }
 
   /** Hold the original grant through the operation's synchronous effect/delivery. */

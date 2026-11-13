@@ -86,6 +86,9 @@ async function fixture(behavior: ChildBehavior, delayMs: number) {
     () => {},
     () => {},
     () => true,
+    undefined,
+    undefined,
+    dir,
   );
   cleanups.push(() => {
     proxy.close();

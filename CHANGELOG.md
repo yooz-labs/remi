@@ -4,6 +4,42 @@ All notable changes to Remi are documented here.
 
 ## [Unreleased]
 
+- Native app source adds per-machine Automatic, Local only, Tailscale only and Relay only preferences, bounded handshakes and full authenticated machine-pin persistence. Re-pairing preserves the saved policy, alias and routes. An unavailable locked layer does not fall back (#1571).
+- `remi pair --qr-version 2` offers one to four direct addresses under the same machine key and pairing nonce. The native candidate tries permitted Local addresses before Tailscale and stops on authentication or identity refusal. V1 remains the CLI default for compatibility; v2 needs the separately distributed compatible app. Relay enrollment stays explicit (#1574).
+- Native recovery discovers compatible local hubs and verifies the saved full key before replacing a connection. A healthy route stays active while a preferred route is checked. Discovery addresses stay in memory; network changes and Retry use bounded episodes without replaying pending operations. Hubs and session daemons now advertise distinct default Bonjour names (#1575).
+- The next native build retains build 14's accepted chat behavior: open at the latest message, follow new messages at the bottom, and preserve the reader's place when scrolling back (#1568). Native build 15, signed permission behavior and physical route transitions have separate distribution and acceptance gates.
+- Card Cancel checks the exact prompt again at the queued terminal write. A stale or formerly held card clears without sending Esc into a running agent. Confirmed owning-turn completion also clears a render-owned card that the permission gate does not track (#1570). Ambiguous status updates alone still do not dismiss questions.
+- CI records bounded owned-process wait metadata and an independent logging-stage channel. Linux Bun 1.3.11 directory cleanup is handled without assuming a Promise return. These diagnostics do not establish the cause of the intermittent full-suite stall (#1206).
+
+## [0.8.2] - 2026-10-27
+
+- Codex asynchronous questions now become readable question cards and Question/Answer history. Replies retain the original question identity, recheck authority at send time, and stop automatic retry after uncertain delivery. Following a thread selected with Codex's internal `/resume` remains deferred (#1687, #1691).
+- Native app source consumes live session activity updates and reloads selected Codex history after authenticated reconnect. Pending questions take precedence over activity labels; disconnected routes clear stale activity (#1675).
+- Paired native apps can register a notification-only connection after notification permission, independently of the foreground session connection. Authenticated use renews registration; after 30 days inactive the app offers Continue or Revoke. Existing explicit `push_lease_hours` settings remain effective (#1678–#1680).
+- Registered devices remain push recipients while attached. Notification previews are short; complete short binary requests can show Deny and Allow once, while longer or complex requests open Review request in the app. Summaries do not authorize approval of hidden details (#1676, #1680).
+- The hub can forward secure question pushes from its current local session daemons without copying the provider credential into their arguments. Push still needs the deployment credential and compatible app registration. Publishing this CLI does not update an already-running daemon or complete physical iPhone/Watch delivery acceptance (#1679, #1681).
+- Linux ARM64 release binaries are now built and smoke-tested on a native ARM64 runner. All three platform binaries must report the exact source version before publication; release-workflow PRs exercise these builds without publishing (#1694).
+- Terminal screen capture, bounded storage and ownership checks are included for the integrated terminal work. Remote terminal service and encrypted relay qualification remain separate work; this release does not enable an unfinished service (#1595, #1655, #1657).
+- Native app source changes are distributed through their separate app build. This daemon release does not sign or upload the app, deploy a Worker, or establish the remaining device acceptance gates.
+
+## [0.8.0] - 2026-10-20
+
+### Upgrade for the native TestFlight app
+
+- CLI 0.8.0 provides `remi pair` for native iPhone app 0.2.0 (12). CLI 0.7.16 does not recognize that subcommand and can pass `pair` to Claude as its prompt. Updating the app alone does not update the machine's CLI or a daemon already running. See [the upgrade guide](docs/UPGRADING-0.8.0.md) for package installation, daemon restart and pairing.
+- The native iPhone app is distributed separately through TestFlight. This CLI release does not publish the native Mac app or establish all signed-device, deployed-relay or battery acceptance gates.
+- Secure push subscriptions now enforce the configured 24-hour lease by default, including final send and answer commits. Expired subscriptions retain their push-key version floor until explicit removal; periodic authenticated relay activity renews a current subscription (#1272).
+- Direct connections recheck the device's authorization before domain dispatch and at the existing ping interval. Removing a device closes an active connection on its next message or ping tick (#1305).
+- Optional direct TLS fails closed when its certificate, private key or local control capability is unavailable. Native secure endpoint/QR support remains pending; ordinary direct QR pairing refuses a TLS hub. See [DIRECT-TLS.md](docs/DIRECT-TLS.md).
+- The web client can submit structured Codex chat and explicitly transfer supported images, links and downloads through their authenticated direct/relay capabilities. Native conformance and physical acceptance remain separate gates; legacy typed Codex input stays refused.
+- Relay v2 remains opt-in. Publishing the CLI does not deploy the Worker, configure push credentials, retire legacy push or complete R7 provider/device measurements. Old connection codes are retired in the CLI; use direct pairing or the separately configured v2 relay.
+
+### Native child connections (#1561)
+
+- Native app 0.2.0 (12) keeps session chat and questions on the active machine route. Re-pairing a Mac at a new address no longer opens session connections at the old address. Child connections verify the advertising machine identity, including when an older daemon omits its machine descriptor. Retired foreground sockets display as disconnected.
+- Application messages wait for an identity-verified hello. Failed session connections show an error and can be retried from machine settings while the hub stays connected.
+- The native app remains a separate TestFlight upload; this CLI release does not upload it.
+
 ### Keep repositories available for native session creation (#1284)
 
 #### Added
@@ -20,7 +56,7 @@ All notable changes to Remi are documented here.
 
 #### Known limits
 
-- Removing a key (`remi authorize --remove`) does not close a connection that key already authenticated; the next fresh authentication is refused (#1305).
+- Removing a key (`remi authorize --remove`) closes an authenticated direct connection on its next domain message or ping tick, and refuses its next authentication (#1305).
 - `remi authorize` keeps only the public key of the JSON it is given and does not refuse one that holds a private key (#1320), and a `--label` is stored and printed as typed (#1321).
 
 ### Resume a session from the app when the machine runs only a hub (#1129)
@@ -57,7 +93,7 @@ All notable changes to Remi are documented here.
 
 #### Added
 
-- `remi pair` shows a QR code for the running hub: the machine's name and address, its key, and a code that works once, for five minutes. The Remi app scans it, and you approve the phone at the terminal by typing the first four characters of its fingerprint, after checking that the app shows the same one. No released app scans the code yet; the native app's scanner is being aligned with it (#1283). Without a terminal, `remi keys` and `remi authorize` still work.
+- `remi pair` shows a QR code for the running hub: the machine's name and address, its key, and a code that works once, for five minutes. Native iPhone TestFlight app 0.2.0 (11) reads this format. You approve the phone at the terminal by typing the first four characters of its fingerprint, after checking that the app shows the same one. Without a terminal, `remi keys` and `remi authorize` still work.
 - The code approves nothing on its own: the phone still proves its key, and you still say yes. A code someone else photographs gets them nothing but a request you can see and refuse. The connection is not encrypted by remi; use a trusted network, a VPN or an SSH tunnel.
 - `remi pair` needs the hub to listen on an address your phone can reach (`daemon.bind`) and authentication on, and says how to fix either. It needs the hub restarted once after upgrading, so the hub records how it is bound.
 - If another device tries the code after a phone claimed it, the terminal names it at the question; answer no unless the fingerprint is your phone's. Ctrl-C, SIGTERM or a closed terminal cancels a code nobody has claimed, and rejects one that is waiting for your answer. Keys typed while the code is up never answer the question.

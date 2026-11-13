@@ -10,13 +10,92 @@ import {
   writeToLog,
 } from '../../src/cli/log-file.ts';
 
+// #1206: a file header alone does not establish module-body or test-body entry.
+type LogFileStage =
+  | 'module-body'
+  | 'setup:entered'
+  | 'setup:tempdir'
+  | 'setup:reset'
+  | 'first:entered'
+  | 'first:opened'
+  | 'first:read';
+
+let diagnosticStageWrites = 0;
+let diagnosticStageOverflow = false;
+
+function writeDiagnosticStage(stage: LogFileStage): void {
+  const file = process.env['REMI_CI_LOG_STAGE_FILE'];
+  const expectedParent = Number(process.env['REMI_CI_LOG_STAGE_PARENT_PID']);
+  if (
+    !file ||
+    !Number.isSafeInteger(expectedParent) ||
+    process.ppid !== expectedParent ||
+    typeof fs.constants.O_NOFOLLOW !== 'number' ||
+    typeof fs.constants.O_NONBLOCK !== 'number'
+  )
+    return;
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(
+      file,
+      fs.constants.O_WRONLY |
+        fs.constants.O_APPEND |
+        fs.constants.O_NOFOLLOW |
+        fs.constants.O_NONBLOCK,
+    );
+    if (!fs.fstatSync(fd).isFile()) return;
+    if (diagnosticStageWrites >= 64) {
+      if (!diagnosticStageOverflow) {
+        fs.writeSync(fd, '!truncated\n');
+        diagnosticStageOverflow = true;
+      }
+    } else {
+      fs.writeSync(fd, `${process.pid}\t${stage}\n`);
+      diagnosticStageWrites += 1;
+    }
+  } catch {
+    // The second channel is best-effort and never changes the test verdict.
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // Best-effort diagnostic cleanup.
+      }
+    }
+  }
+}
+
+function waitForDiagnosticRelease(): void {
+  const release = process.env['REMI_CI_LOG_STAGE_HOLD_PATH'];
+  const expectedParent = Number(process.env['REMI_CI_LOG_STAGE_PARENT_PID']);
+  if (!release || process.ppid !== expectedParent) return;
+  const deadline = Date.now() + 2_500;
+  const waitCell = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  while (!fs.existsSync(release) && Date.now() < deadline) Atomics.wait(waitCell, 0, 0, 5);
+}
+
+function checkpoint(stage: LogFileStage): void {
+  writeDiagnosticStage(stage);
+  if (process.env['GITHUB_ACTIONS'] === 'true') {
+    if (stage === 'module-body' && process.env['REMI_CI_LOG_STAGE_HOLD_PATH'])
+      waitForDiagnosticRelease();
+    fs.writeSync(2, `[log-file-stage] ${stage}\n`);
+  }
+}
+
+checkpoint('module-body');
+
 describe('log-file session', () => {
   let sandbox: string;
 
   beforeEach(() => {
+    checkpoint('setup:entered');
     sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-log-'));
+    checkpoint('setup:tempdir');
     // Tests share module state; make sure previous runs aren't leaking.
     endLogFileSession();
+    checkpoint('setup:reset');
   });
 
   afterEach(() => {
@@ -25,13 +104,16 @@ describe('log-file session', () => {
   });
 
   test('opens the primary log file and writes the session header', () => {
+    checkpoint('first:entered');
     const primary = path.join(sandbox, 'remi.log');
     const result = startLogFileSession(primary);
+    checkpoint('first:opened');
     expect(result.fd).not.toBeNull();
     expect(result.path).toBe(primary);
     expect(result.usedFallback).toBe(false);
     expect(fs.existsSync(primary)).toBe(true);
     const content = fs.readFileSync(primary, 'utf-8');
+    checkpoint('first:read');
     expect(content).toMatch(/^\n--- Remi session started at /);
   });
 

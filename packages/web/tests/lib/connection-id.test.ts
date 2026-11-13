@@ -12,8 +12,10 @@
 
 import { describe, expect, test } from 'bun:test';
 import {
+  childDaemonUrl,
   dedupeConnectionUrls,
   normalizeConnectionHost,
+  parseConnectionId,
   splitConnectionId,
 } from '../../src/lib/connection-id';
 import type { ConnectionId } from '../../src/types';
@@ -75,14 +77,7 @@ describe('normalizeConnectionHost (#682)', () => {
 });
 
 describe('dedupeConnectionUrls (#682)', () => {
-  // Fake keying function: strips everything but "host:port" so tests don't
-  // need the real parseConnectionId (which lives in useConnectionManager and
-  // would pull React/WebSocket deps into this pure-function test).
-  const toKey = (url: string): string => {
-    const parsed = new URL(url);
-    const host = normalizeConnectionHost(parsed.hostname);
-    return `${host}:${parsed.port}`;
-  };
+  const toKey = parseConnectionId;
 
   test('collapses alias URLs for the same daemon, keeping the LAST one', () => {
     const result = dedupeConnectionUrls(
@@ -99,11 +94,7 @@ describe('dedupeConnectionUrls (#682)', () => {
 
   test('a later duplicate replaces an earlier one in place (order preserved)', () => {
     const result = dedupeConnectionUrls(
-      [
-        'ws://localhost:18765/ws',
-        'ws://192.168.1.5:18770/ws',
-        'ws://127.0.0.1:18765/ws',
-      ],
+      ['ws://localhost:18765/ws', 'ws://192.168.1.5:18770/ws', 'ws://127.0.0.1:18765/ws'],
       toKey,
     );
     // The localhost/127.0.0.1 pair collapses to one entry that keeps its
@@ -118,5 +109,44 @@ describe('dedupeConnectionUrls (#682)', () => {
   test('no-op when there are no duplicates', () => {
     const urls = ['ws://192.168.1.5:18770/ws'];
     expect(dedupeConnectionUrls(urls, toKey)).toEqual(urls);
+  });
+});
+
+describe('actual direct URL identity and child derivation', () => {
+  test('implicit ports follow the actual WS/WSS transport', () => {
+    expect(parseConnectionId('wss://example.com/ws')).toBe(cid('example.com:443'));
+    expect(parseConnectionId('wss://example.com:443/ws')).toBe(cid('example.com:443'));
+    expect(parseConnectionId('ws://example.com/ws')).toBe(cid('example.com:80'));
+    expect(parseConnectionId('ws://example.com:80/ws')).toBe(cid('example.com:80'));
+    expect(parseConnectionId('wss://example.com:18765/ws')).toBe(cid('example.com:18765'));
+    expect(
+      dedupeConnectionUrls(
+        ['wss://example.com/ws', 'ws://example.com:18765/ws', 'ws://example.com/ws'],
+        parseConnectionId,
+      ),
+    ).toHaveLength(3);
+  });
+
+  test('a child retains WSS and the certificate hostname despite bookkeeping aliases', () => {
+    expect(parseConnectionId('wss://localhost:18765/ws')).toBe(cid('127.0.0.1:18765'));
+    expect(childDaemonUrl('wss://localhost:18765/ws', 18766)).toBe('wss://localhost:18766/ws');
+    expect(childDaemonUrl('wss://example.com/ws', 443)).toBe('wss://example.com/ws');
+    expect(childDaemonUrl('ws://example.com:18765/ws', 18766)).toBe('ws://example.com:18766/ws');
+    expect(childDaemonUrl('wss://[2001:db8::1]:18765/ws', 18766)).toBe(
+      'wss://[2001:db8::1]:18766/ws',
+    );
+  });
+
+  test('child endpoints carry no parent credentials, query, fragment or attachment path', () => {
+    expect(
+      childDaemonUrl('wss://user:pass@example.com:18765/parent?dir=private#token', 18766),
+    ).toBe('wss://example.com:18766/ws');
+  });
+
+  test('invalid ports and non-WebSocket parents produce no endpoint', () => {
+    for (const port of [0, -1, 65536, 1.5, Number.NaN, Number.POSITIVE_INFINITY])
+      expect(childDaemonUrl('wss://example.com/ws', port)).toBeNull();
+    for (const parent of ['https://example.com', 'file:///tmp/example', 'broken'])
+      expect(childDaemonUrl(parent, 18766)).toBeNull();
   });
 });

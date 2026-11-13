@@ -66,7 +66,7 @@ public struct RemiFeedbackBanner: View {
     private var accentColor: Color {
         switch tone {
         case .error: .orange
-        case .information: .blue
+        case .information: .teal
         }
     }
 

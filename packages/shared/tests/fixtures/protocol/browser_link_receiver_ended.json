@@ -1,0 +1,8 @@
+{
+  "type": "browser_link_receiver_ended",
+  "id": "55667788-99aa-4bbc-8dde-ff0011223344",
+  "timestamp": "2026-10-14T03:00:00.000Z",
+  "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+  "leaseId": "44556677-8899-4aab-bccd-eeff00112233",
+  "reason": "released"
+}

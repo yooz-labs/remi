@@ -166,6 +166,11 @@ export async function runRelayChatControl(f: Fixture): Promise<string[]> {
       return result;
     }
     const first = await client();
+    let questionCommits = 0;
+    const questionEffect = () => ++questionCommits;
+    const questionAuthority = f.service.decisionCommit(first.id, f.sessionId);
+    expect(questionAuthority?.(questionEffect)).toEqual({ kind: 'committed', value: 1 });
+    const beforeReattach = f.service.decisionCommit(first.id, f.sessionId);
     const initial = f.effects();
     const one = request(1);
     const accepted = await send(first, one);
@@ -197,17 +202,20 @@ export async function runRelayChatControl(f: Fixture): Promise<string[]> {
       outcome: 'refused',
       code: 'unavailable',
     });
+    expect(beforeReattach?.(questionEffect)).toEqual({ kind: 'refused' });
     expect(await send(first, one)).toMatchObject({ outcome: 'uncertain', code: 'receipt_expired' });
     expect(f.effects()).toBe(initial + 1);
     checks.push(
       'actual encrypted Worker/hub/capability child route: original grant locked RPC, exact receipt, duplicate/conflict, binding and concrete attachment',
     );
 
+    const beforeRevoke = f.service.decisionCommit(first.id, f.sessionId);
     f.onMetadata(() => f.trust.removeAuthorizedKey(f.identity.fingerprint));
     expect(first.channel.send(request(4))).toBe(true);
     await pollUntil(() => !first.channel.connected, 5000, 'revoked relay channel retirement');
     expect(f.effects()).toBe(initial + 1);
     await f.trust.addAuthorizedKey(f.identity.publicKeyRaw, 'restored relay chat');
+    expect(beforeRevoke?.(questionEffect)).toEqual({ kind: 'refused' });
     expect(first.channel.send(one)).toBe(false);
     expect(f.effects()).toBe(initial + 1);
     checks.push(
@@ -217,6 +225,7 @@ export async function runRelayChatControl(f: Fixture): Promise<string[]> {
     const second = await client();
     const beforeChildClose = f.effects();
     expect(await send(second, request(1))).toMatchObject({ outcome: 'accepted' });
+    const beforeClose = f.service.decisionCommit(second.id, f.sessionId);
     expect(f.effects()).toBe(beforeChildClose + 1);
     expect(f.adapter.closeConnection(second.id, 'owned child loss')).toBe(true);
     await pollUntil(
@@ -225,6 +234,8 @@ export async function runRelayChatControl(f: Fixture): Promise<string[]> {
       'lost chat owner retires machine channel',
     );
     expect(second.channel.send(request(1))).toBe(false);
+    expect(beforeClose?.(questionEffect)).toEqual({ kind: 'refused' });
+    expect(questionCommits).toBe(1);
     expect(f.effects()).toBe(beforeChildClose + 1);
     checks.push(
       'losing the concrete child sequence owner closes the machine channel before a replacement can reset old input',

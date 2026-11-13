@@ -20,6 +20,10 @@ import type {
 } from '@remi/shared';
 import { MessageAPI } from '../../../src/api/message-api.ts';
 import { AppServerClient } from '../../../src/harness/codex/app-server-client.ts';
+import {
+  type AsyncQuestionHistory,
+  encodeAsyncQuestionReply,
+} from '../../../src/harness/codex/async-question-codec.ts';
 import { createCodexChat } from '../../../src/harness/codex/codex-chat.ts';
 import { loadFixtureFrames } from '../../helpers/codex-fixtures.ts';
 import {
@@ -121,6 +125,83 @@ describe('createCodexChat', () => {
     live.filter((m): m is TranscriptContentMessage => m.type === 'transcript_content');
 
   describe('history', () => {
+    const asyncSource = {
+      callId: 'call_history',
+      questions: [{ title: 'Which route?', options: ['Local', 'Relay'] }],
+    };
+    const asyncItem = () =>
+      realItem('agentMessage', {
+        id: asyncSource.callId,
+        text: JSON.stringify(asyncSource.questions),
+        phase: 'commentary',
+        delivery: 'async',
+        questions: asyncSource.questions,
+      });
+
+    test('formats source and reply across pages and recovers their metadata together', async () => {
+      const reply = encodeAsyncQuestionReply(asyncSource, [{ questionIndex: 0, answer: 'Local' }]);
+      if (!reply) throw new Error('Invalid fixture');
+      servePages({
+        '': itemsListPage([{ item: asyncItem() }], 'reply'),
+        reply: itemsListPage([{ item: userMessageItem('reply', reply) }], null),
+      });
+      const recovered: AsyncQuestionHistory[] = [];
+      const epoch = {};
+      const chat = make({
+        questionEpoch: () => epoch,
+        onQuestionHistory: (_, h) => recovered.push(h),
+      });
+      const { messages } = await history(chat);
+      expect(messages.map((m) => m.content)).toEqual([
+        'Which route?\n1. Local\n2. Relay',
+        'Question: Which route?\nAnswer: Local',
+      ]);
+      expect(recovered).toHaveLength(1);
+      expect(recovered[0]?.complete).toBe(true);
+      expect(recovered[0]?.sources).toEqual([asyncSource]);
+      expect([...(recovered[0]?.replies.keys() ?? [])]).toEqual(['call_history:0']);
+      expect(live).toEqual([]);
+      chat.dispose();
+    });
+
+    test('a changed link epoch cannot recover old pending cards', async () => {
+      let epoch = {};
+      const recovered: AsyncQuestionHistory[] = [];
+      server.onRequest('thread/items/list', () => {
+        epoch = {};
+        return itemsListPage([{ item: asyncItem() }], null);
+      });
+      const chat = make({
+        questionEpoch: () => epoch,
+        onQuestionHistory: (_, h) => recovered.push(h),
+      });
+      await history(chat);
+      expect(recovered).toEqual([]);
+      chat.dispose();
+    });
+
+    test('a capped catch-up recovers only metadata without replaying chat or old unanswered state', async () => {
+      const reply = encodeAsyncQuestionReply(asyncSource, [{ questionIndex: 0, answer: 'Relay' }]);
+      if (!reply) throw new Error('Invalid fixture');
+      servePages({
+        '': itemsListPage([{ item: asyncItem() }], 'reply'),
+        reply: itemsListPage([{ item: userMessageItem('reply', reply) }], null),
+      });
+      const epoch = {};
+      const recovered: AsyncQuestionHistory[] = [];
+      const chat = make({
+        questionEpoch: () => epoch,
+        onQuestionHistory: (_, h) => recovered.push(h),
+      });
+      await chat.catchUp();
+      await server.waitFor(() => recovered.length === 1, 'complete metadata recovery');
+      expect(recovered[0]?.sources).toEqual([asyncSource]);
+      expect([...(recovered[0]?.replies.keys() ?? [])]).toEqual(['call_history:0']);
+      expect(transcripts()).toEqual([]);
+      expect(listCalls).toHaveLength(3);
+      chat.dispose();
+    });
+
     test('parses the captured LV-5 first page and preserves its item ids as history ids', async () => {
       const capture = loadFixtureFrames('lv5.jsonl');
       const request = capture.find(

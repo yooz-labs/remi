@@ -1,4 +1,6 @@
 import Foundation
+import RemiKit
+import RemiPush
 
 public enum RemiQuestionState: Sendable, Equatable {
     case pending
@@ -128,6 +130,8 @@ public struct RemiQuestionCardModel: Identifiable, Sendable, Equatable {
     public let text: String
     public let detail: String?
     public let machineID: String
+    /// Authenticated machine identity, distinct from the route ID until #1532 groups routes.
+    public let machineIdentityID: String?
     public let machineName: String
     public let sessionID: String
     public let sessionName: String
@@ -138,16 +142,19 @@ public struct RemiQuestionCardModel: Identifiable, Sendable, Equatable {
     public let answerPath: RemiAnswerPath?
     public let state: RemiQuestionState
 
-    public init(id: String, questionID: String? = nil, kind: RemiQuestionKind, text: String, detail: String? = nil, machineID: String? = nil, machineName: String, sessionID: String, sessionName: String, agentID: String? = nil, options: [RemiQuestionOption] = [], steps: [RemiQuestionStep] = [], terminalOnly: Bool = false, answerPath: RemiAnswerPath? = nil, state: RemiQuestionState = .pending) {
+    public init(id: String, questionID: String? = nil, kind: RemiQuestionKind, text: String, detail: String? = nil, machineID: String? = nil, machineIdentityID: String? = nil, machineName: String, sessionID: String, sessionName: String, agentID: String? = nil, options: [RemiQuestionOption] = [], steps: [RemiQuestionStep] = [], terminalOnly: Bool = false, answerPath: RemiAnswerPath? = nil, state: RemiQuestionState = .pending) {
         self.id = id
         self.questionID = questionID ?? id
         self.kind = kind
-        self.text = text
-        self.detail = detail
+        // Text another party chose is escaped here, once, where the display models are built
+        // (AGENTS.md, "Escape text another party chose"). Identifiers stay raw.
+        self.text = PushDisplayText.escape(text)
+        self.detail = detail.map(PushDisplayText.escape)
         self.machineID = machineID ?? machineName
-        self.machineName = machineName
+        self.machineIdentityID = machineIdentityID
+        self.machineName = PushDisplayText.escape(machineName)
         self.sessionID = sessionID
-        self.sessionName = sessionName
+        self.sessionName = PushDisplayText.escape(sessionName)
         self.agentID = agentID
         self.options = options
         self.steps = steps
@@ -166,6 +173,8 @@ public enum RemiSessionStatus: Sendable, Equatable { case needsYou, working, idl
 public struct RemiSessionSummary: Identifiable, Sendable, Equatable {
     public let id: String
     public let machineID: String
+    /// Authenticated machine identity, distinct from the route ID until #1532 groups routes.
+    public let machineIdentityID: String?
     public let machineName: String
     public let name: String
     public let harness: String
@@ -182,24 +191,27 @@ public struct RemiSessionSummary: Identifiable, Sendable, Equatable {
     public let resumeIdentity: String?
     public let resumeError: String?
 
-    public init(id: String, machineID: String? = nil, machineName: String, name: String, harness: String, project: String, projectPath: String? = nil, lastActivity: String? = nil, status: RemiSessionStatus, lastMessage: String? = nil, openQuestionCount: Int = 0, isLive: Bool? = nil, canTerminate: Bool = false, canResume: Bool = false, isResuming: Bool = false, resumeIdentity: String? = nil, resumeError: String? = nil) {
+    public init(id: String, machineID: String? = nil, machineIdentityID: String? = nil, machineName: String, name: String, harness: String, project: String, projectPath: String? = nil, lastActivity: String? = nil, status: RemiSessionStatus, lastMessage: String? = nil, openQuestionCount: Int = 0, isLive: Bool? = nil, canTerminate: Bool = false, canResume: Bool = false, isResuming: Bool = false, resumeIdentity: String? = nil, resumeError: String? = nil) {
         self.id = id
         self.machineID = machineID ?? machineName
-        self.machineName = machineName
-        self.name = name
-        self.harness = harness
-        self.project = project
+        self.machineIdentityID = machineIdentityID
+        // Escaped once, here; ids and `projectPath` (used to start a session and to copy)
+        // stay raw. See the question card model.
+        self.machineName = PushDisplayText.escape(machineName)
+        self.name = PushDisplayText.escape(name)
+        self.harness = PushDisplayText.escape(harness)
+        self.project = PushDisplayText.escape(project)
         self.projectPath = projectPath ?? project
         self.lastActivity = lastActivity
         self.status = status
-        self.lastMessage = lastMessage
+        self.lastMessage = lastMessage.map(PushDisplayText.escape)
         self.openQuestionCount = openQuestionCount
         self.isLive = isLive ?? (status != .offline)
         self.canTerminate = canTerminate
         self.canResume = canResume
         self.isResuming = isResuming
         self.resumeIdentity = resumeIdentity
-        self.resumeError = resumeError
+        self.resumeError = resumeError.map(PushDisplayText.escape)
     }
 }
 
@@ -208,6 +220,8 @@ public enum RemiTransport: String, Sendable, Equatable { case local, direct, rel
 
 public struct RemiMachineSummary: Identifiable, Sendable, Equatable {
     public let id: String
+    /// Authenticated machine identity, if the daemon supplied a descriptor.
+    public let machineIdentityID: String?
     public let name: String
     public let address: String
     public let reachability: RemiMachineReachability
@@ -217,6 +231,7 @@ public struct RemiMachineSummary: Identifiable, Sendable, Equatable {
 
     public init(
         id: String,
+        machineIdentityID: String? = nil,
         name: String,
         address: String,
         reachability: RemiMachineReachability,
@@ -225,8 +240,10 @@ public struct RemiMachineSummary: Identifiable, Sendable, Equatable {
         openQuestionCount: Int = 0
     ) {
         self.id = id
-        self.name = name
-        self.address = address
+        self.machineIdentityID = machineIdentityID
+        // Escaped once, here: a machine names itself.
+        self.name = PushDisplayText.escape(name)
+        self.address = PushDisplayText.escape(address)
         self.reachability = reachability
         self.transport = transport
         self.sessionCount = sessionCount
@@ -234,21 +251,55 @@ public struct RemiMachineSummary: Identifiable, Sendable, Equatable {
     }
 }
 
+/// A local delivery outcome. None of these states proves harness acceptance (#1710).
+public enum RemiOutgoingState: Sendable, Equatable, CaseIterable {
+    case sending, handedOff, refused, uncertain
+    public static let retentionNotice = "Available while Remi is running; copy before closing."
+
+    public init(delivery: OutgoingMessage.Delivery) {
+        self = switch delivery {
+        case .sending: .sending
+        case .handedOff: .handedOff
+        case .refused: .refused
+        case .uncertain: .uncertain
+        }
+    }
+
+    public var title: String {
+        switch self {
+        case .sending: "Sending"
+        case .handedOff: "Handed to connection"
+        case .refused: "Message refused"
+        case .uncertain: "Delivery uncertain"
+        }
+    }
+
+    public var guidance: String {
+        switch self {
+        case .sending: "Waiting for the connection."
+        case .handedOff: "Agent acceptance is unconfirmed. Check the session before sending again."
+        case .refused: "The daemon refused this input. Inspect the terminal or waiting prompt before sending again."
+        case .uncertain: "Some or all input may have arrived. Inspect the terminal and conversation before sending again."
+        }
+    }
+}
+
 public enum RemiTranscriptEntry: Identifiable, Sendable, Equatable {
     case user(id: String, text: String)
+    case pending(id: String, text: String, state: RemiOutgoingState)
     case agent(id: String, text: String)
     case tool(id: String, name: String, summary: String)
     case error(id: String, text: String)
 
     public var id: String {
         switch self {
-        case .user(let id, _), .agent(let id, _), .tool(let id, _, _), .error(let id, _): id
+        case .user(let id, _), .pending(let id, _, _), .agent(let id, _), .tool(let id, _, _), .error(let id, _): id
         }
     }
 
     public var searchableText: String {
         switch self {
-        case .user(_, let text), .agent(_, let text), .error(_, let text):
+        case .user(_, let text), .pending(_, let text, _), .agent(_, let text), .error(_, let text):
             text
         case .tool(_, let name, let summary):
             "\(name)\n\(summary)"
@@ -257,7 +308,7 @@ public enum RemiTranscriptEntry: Identifiable, Sendable, Equatable {
 
     public var copyText: String {
         switch self {
-        case .user(_, let text), .agent(_, let text), .error(_, let text):
+        case .user(_, let text), .pending(_, let text, _), .agent(_, let text), .error(_, let text):
             text
         case .tool(_, let name, let summary):
             "\(name)\n\(summary)"

@@ -20,18 +20,22 @@ import {
   createAuthResult,
   createError,
   createHelloAck,
+  createNotificationHostResponse,
   createPing,
   createPong,
   createSecurePushRegisterResponse,
   createSecurePushUnregisterResponse,
+  decodeFileDownloadIngress,
   decodeImageInsertionIngress,
   decodeImageStagingIngress,
   decodeStructuredChatFrame,
   deserialize,
   generateId,
+  isFileDownloadCandidate,
   isImageInsertionCandidate,
   isImageStagingCandidate,
   isStructuredChatCandidate,
+  isTerminalViewCandidate,
   now,
   serialize,
 } from '@remi/shared';
@@ -59,18 +63,47 @@ import type {
   UnregisterDeviceTokenMessage,
   UserInputMessage,
 } from '@remi/shared';
+import {
+  type BrowserLinkMessage,
+  type BrowserLinkReceiverRequest,
+  decodeBrowserLinkFrame,
+  encodeBrowserLinkFrame,
+} from '@remi/shared';
+import { isBrowserLinkCandidate } from '@remi/shared';
+import {
+  type FileDownloadMessage,
+  type FileFetchBegin,
+  type FileFetchCancel,
+  type FileFetchComplete,
+  type FileFetchRead,
+  encodeFileDownloadFrame,
+} from '@remi/shared';
 import type { Authenticator } from '../auth/authenticator.ts';
 import type { SecurePushAuthority } from '../notifications/secure-push-store';
+import { terminalIngress } from '../terminal/ingress.ts';
+import type { NativeTerminalTransport } from '../terminal/send-slot.ts';
 import { AnswerResults } from './answer-results.ts';
 import { type ClientMessageEvents, createSessionExtra } from './client-message-events.ts';
 import { type ClientMessageHandlers, routeClientMessage } from './route-client-message.ts';
 
+/** Internal actual listener provenance, never a client assertion or wire field. */
+export type ConnectionListenerTransport = 'public-tls' | 'public-plain' | 'private-control';
+
 /** Connection state */
 export type ConnectionState = 'connecting' | 'authenticating' | 'connected' | 'disconnected';
+/** Optional resource owner, installed only after its own bounded admission (#1643). */
+export interface NativeSocketObserver {
+  drain(): void;
+  pong(data: Uint8Array): void;
+  closed(): void;
+  retire(): void;
+}
 export interface ConnectionTransport {
   readonly readyState: number;
   send(data: string): unknown;
   close(): void;
+  getBufferedAmount?(): number;
+  ping?(data: Uint8Array): unknown;
 }
 
 /**
@@ -175,6 +208,8 @@ export class Connection {
   private readonly answerResults = new AnswerResults();
 
   private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private nativeObserver: NativeSocketObserver | undefined;
+  private nativeEnded = false;
   private connectionTimer: ReturnType<typeof setTimeout> | null = null;
   /** Ping ticks since the last pong was received (#662); reset to 0 on pong. */
   private missedPongs = 0;
@@ -186,6 +221,7 @@ export class Connection {
     id?: UUID,
     peerAddress?: string | null,
     relayChatAuthority?: SecurePushAuthority,
+    private readonly listenerTransport: ConnectionListenerTransport = 'public-plain',
   ) {
     this.id = id ?? generateId();
     this.ws = ws;
@@ -272,6 +308,10 @@ export class Connection {
     return this._peerAddress;
   }
 
+  get connectionListenerTransport(): ConnectionListenerTransport {
+    return this.listenerTransport;
+  }
+
   /** Check if connection is active */
   get isConnected(): boolean {
     return this.state === 'connected';
@@ -282,6 +322,20 @@ export class Connection {
    * Should be called by the WebSocket server's message handler.
    */
   handleMessage(data: string): void {
+    if (isTerminalViewCandidate(data)) {
+      this.handleTerminalViewFrame(data);
+      return;
+    }
+    if (isFileDownloadCandidate(data)) {
+      this.handleFileDownloadFrame(data);
+      return;
+    }
+    if (isBrowserLinkCandidate(data)) {
+      if (this.events.onBrowserLinkReceiver) this.handleBrowserLinkFrame(data);
+      else if (this.checkAuthorization())
+        this.sendError('INVALID_MESSAGE', 'Failed to parse message');
+      return;
+    }
     if (isStructuredChatCandidate(data)) {
       this.handleStructuredChatFrame(data);
       return;
@@ -294,6 +348,7 @@ export class Connection {
       this.handleImageStagingFrame(data);
       return;
     }
+    if (!this.checkAuthorization()) return;
     const message = deserialize(data);
     if (!message) {
       this.sendError('INVALID_MESSAGE', 'Failed to parse message');
@@ -348,6 +403,23 @@ export class Connection {
       // type, so a new registry key breaks this object's compile until it is
       // decided, rather than silently falling through a switch's default.
       const handlers: ClientMessageHandlers = {
+        notification_host_request: (message) => {
+          if (this.events.onNotificationHostRequest) this.events.onNotificationHostRequest(message);
+          else
+            this.send(
+              createNotificationHostResponse(message.id, { success: false, error: 'UNSUPPORTED' }),
+            );
+        },
+        // B2 defines syntax only; a secure host route and caller must qualify first (#1612).
+        session_terminal_open: () => this.close('Terminal view unavailable'),
+        session_terminal_read: () => this.close('Terminal view unavailable'),
+        session_terminal_close: () => this.close('Terminal view unavailable'),
+
+        file_fetch_begin: () => this.close('Invalid file download route'),
+        file_fetch_read: () => this.close('Invalid file download route'),
+        file_fetch_complete: () => this.close('Invalid file download route'),
+        file_fetch_cancel: () => this.close('Invalid file download route'),
+        browser_link_receiver_request: () => this.close('Invalid browser link route'),
         chat_submit_request: () => this.close('Invalid structured chat route'),
         image_insert_request: () => this.close('Invalid image insertion route'),
         // Dedicated raw ingress above owns these, before ordinary deduplication.
@@ -433,8 +505,159 @@ export class Connection {
     }
   }
 
+  /** Original units bypass legacy ACK/dedupe; only the installed service owns effects. */
+  handleFileDownloadFrame(data: string | Uint8Array): void {
+    if (!this.checkAuthorization()) return;
+    if (!this.events.onFileDownload) {
+      this.sendError('INVALID_MESSAGE', 'Failed to parse message');
+      return;
+    }
+    const ingress = decodeFileDownloadIngress(data);
+    if (ingress.kind === 'uncorrelatable' || !this.isConnected) {
+      this.close('Invalid file download frame');
+      return;
+    }
+    this.missedPongs = 0;
+    try {
+      const pending = this.events.onFileDownload(ingress);
+      if (pending) void pending.catch(() => this.close('File download unavailable'));
+    } catch {
+      this.close('File download unavailable');
+    }
+  }
+
+  /** No generic ACK/error or approval-connection close for optional terminal pressure. */
+  handleTerminalViewFrame(raw: string | Uint8Array): void {
+    if (!this.checkAuthorization() || !this.isConnected || !this.events.onTerminalView) return;
+    const ingress = terminalIngress(raw);
+    if (!ingress) return;
+    this.missedPongs = 0;
+    try {
+      this.events.onTerminalView(ingress);
+    } catch {
+      // The domain owner retains any entered native ownership; never retry here.
+    }
+  }
+
+  /** The service admits a real view before creating this narrow native adapter. */
+  terminalTransport(): NativeTerminalTransport | null {
+    const ws = this.ws;
+    const buffered = ws.getBufferedAmount;
+    const ping = ws.ping;
+    if (
+      !this.isConnected ||
+      this.connectionListenerTransport !== 'public-tls' ||
+      !buffered ||
+      !ping
+    )
+      return null;
+    return {
+      get readyState() {
+        return ws.readyState;
+      },
+      getBufferedAmount: () => buffered.call(ws),
+      send: (text) => ws.send(text),
+      ping: (nonce) => ping.call(ws, nonce),
+    };
+  }
+
+  observeNativeSocket(observer: NativeSocketObserver): (() => void) | null {
+    if (this.nativeEnded || this.nativeObserver || !this.isConnected) return null;
+    this.nativeObserver = observer;
+    return () => {
+      if (this.nativeObserver === observer) this.nativeObserver = undefined;
+    };
+  }
+
+  nativeSocketDrained(): void {
+    const observer = this.nativeObserver;
+    try {
+      observer?.drain();
+    } catch {
+      this.nativeSocketClosed();
+    }
+  }
+
+  /** Only the actual native callback; never a domain pong or a trust decision. */
+  nativeSocketPong(data: Uint8Array): void {
+    const observer = this.nativeObserver;
+    try {
+      observer?.pong(data);
+    } catch {
+      this.nativeSocketClosed();
+    }
+  }
+
+  nativeSocketClosed(): void {
+    this.nativeEnded = true;
+    const observer = this.nativeObserver;
+    this.nativeObserver = undefined;
+    try {
+      observer?.closed();
+    } catch {
+      /* Unknown ownership remains charged. */
+    }
+  }
+
+  /** Installed service only: original units bypass ordinary ACK/deduplication. */
+  handleBrowserLinkFrame(data: string | Uint8Array): void {
+    if (!this.events.onBrowserLinkReceiver || !this.checkAuthorization()) return;
+    const request = decodeBrowserLinkFrame(data);
+    if (request?.type !== 'browser_link_receiver_request' || !this.isConnected) {
+      this.close('Invalid browser link frame');
+      return;
+    }
+    this.missedPongs = 0;
+    try {
+      const pending = this.events.onBrowserLinkReceiver(request);
+      if (pending) void pending.catch(() => this.close('Browser links unavailable'));
+    } catch {
+      this.close('Browser links unavailable');
+    }
+  }
+
+  /** Best effort only: a positive send is not an application delivery or Open acknowledgement. */
+  sendBrowserLinkFrame(message: Exclude<BrowserLinkMessage, BrowserLinkReceiverRequest>): boolean {
+    try {
+      if (
+        !this.isConnected ||
+        this.ws.readyState !== WebSocket.OPEN ||
+        !this.ws.getBufferedAmount ||
+        this.ws.getBufferedAmount() !== 0
+      )
+        return false;
+      const status = this.ws.send(encodeBrowserLinkFrame(message));
+      return typeof status === 'number' && status > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /** One bounded send attempt only; positive status is not client receipt or an OS Save. */
+  sendFileDownloadFrame(
+    message: Exclude<
+      FileDownloadMessage,
+      FileFetchBegin | FileFetchRead | FileFetchComplete | FileFetchCancel
+    >,
+  ): boolean {
+    try {
+      if (
+        !this.isConnected ||
+        this.ws.readyState !== WebSocket.OPEN ||
+        !this.ws.getBufferedAmount ||
+        this.ws.getBufferedAmount() !== 0
+      )
+        return false;
+      const status = this.ws.send(encodeFileDownloadFrame(message));
+      return typeof status === 'number' && status > 0;
+    } catch {
+      return false;
+    }
+  }
+
   /** Strict original input bypasses legacy ACK/deduplication; the host owns sequencing. */
   handleStructuredChatFrame(data: string | Uint8Array): void {
+    if (!this.checkAuthorization()) return;
     const request = decodeStructuredChatFrame(data);
     if (request?.type !== 'chat_submit_request' || !this.isConnected) {
       this.close('Invalid structured chat frame');
@@ -468,6 +691,7 @@ export class Connection {
 
   /** Exact original insertion frames bypass ordinary deduplication; retries belong to the coordinator. */
   handleImageInsertionFrame(data: string | Uint8Array): void {
+    if (!this.checkAuthorization()) return;
     const ingress = decodeImageInsertionIngress(data);
     if (ingress.kind === 'uncorrelatable' || !this.isConnected) {
       this.close('Invalid image insertion frame');
@@ -509,6 +733,7 @@ export class Connection {
 
   /** Staging bounds and duplicate-member checks run before JSON conversion or ID tracking. */
   handleImageStagingFrame(data: string | Uint8Array): void {
+    if (!this.checkAuthorization()) return;
     const ingress = decodeImageStagingIngress(data);
     if (ingress.kind === 'uncorrelatable' || !this.isConnected) {
       this.close('Invalid image staging frame');
@@ -854,12 +1079,40 @@ export class Connection {
     this.send(createError(code, message));
   }
 
+  /** Direct identities keep their grant only while it remains in the shared store (#1305). */
+  private checkAuthorization(): boolean {
+    if (this.state === 'disconnected') return false;
+    if (
+      !this.config.authenticator ||
+      !this.authenticatedPublicKey ||
+      !this.authenticatedFingerprint
+    )
+      return true;
+    let reason = 'Device authorization removed; local approval required';
+    try {
+      if (
+        this.config.authenticator.isConnectionAuthorized(
+          this.authenticatedPublicKey,
+          this.authenticatedFingerprint,
+        )
+      )
+        return true;
+    } catch {
+      reason = 'Device authorization unavailable; reconnect required';
+    }
+    // Reuse the ordinary visible close and idempotent detach/cleanup. Capability
+    // peers have no authenticator; relay peers retain HubRelay's authority gate.
+    this.close(reason);
+    return false;
+  }
+
   private startPingTimer(): void {
     this.missedPongs = 0;
     this.pingTimer = setInterval(() => {
       if (this.ws.readyState !== WebSocket.OPEN) {
         return;
       }
+      if (!this.checkAuthorization()) return;
       if (this.missedPongs >= MAX_MISSED_PONGS) {
         // Peer stopped answering pings: force-close so the normal disconnect
         // path runs (registry detach + FIFO promotion of any queued
@@ -895,6 +1148,11 @@ export class Connection {
     this.config.authenticator?.removePendingChallenge(this.id);
 
     this.state = 'disconnected';
+    try {
+      this.nativeObserver?.retire();
+    } catch {
+      this.nativeSocketClosed();
+    }
     this.events.onDisconnect?.(reason);
   }
 }

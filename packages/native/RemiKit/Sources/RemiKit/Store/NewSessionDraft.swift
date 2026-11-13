@@ -38,14 +38,14 @@ public final class NewSessionDraft {
         self.machines = machines
         self.recentRepositoriesByMachine = recentRepositoriesByMachine
         machineID = preferredMachineID.flatMap { preferredID in
-            machines.contains(where: { $0.id == preferredID }) ? preferredID : nil
+            machines.first(where: { $0.id == preferredID || $0.machineID == preferredID })?.id
         } ?? machines.first?.id ?? ""
         selectDefaultsForCurrentMachine(replaceRepository: true)
         if let preferredRepository { repository = preferredRepository }
     }
 
     public var selectedMachine: MachineState? {
-        machines.first { $0.id == machineID }
+        machines.first { $0.id == machineID || $0.machineID == machineID }
     }
 
     public var workspaceCapable: Bool {

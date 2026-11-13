@@ -15,7 +15,7 @@
  * this broadcasts the checked-in golden fixture
  * (packages/shared/tests/fixtures/protocol/) and asserts:
  *
- *   1. the real `WebSocketClient`'s ordinary or dedicated image event receives it,
+ *   1. the real `WebSocketClient`'s ordinary or dedicated strict event receives it,
  *      byte-for-byte round-tripped over the wire (real TCP, real JSON
  *      serialize/deserialize -- not an in-process function call), and
  *   2. `packages/web/src/App.tsx`'s `handleMessage` switch has a real,
@@ -61,6 +61,7 @@ import { reserveRange } from '../../../daemon/tests/session/port-test-helpers.ts
 // "conformance-test placement decision").
 import { WebSocketAdapter } from '../../../daemon/src/adapters/websocket-adapter.ts';
 import { WebSocketClient } from '../../src/lib/websocket-client.ts';
+import { decodeFileDownloadFrame } from '../../../shared/src/file-download.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = join(HERE, '../../../shared/tests/fixtures/protocol');
@@ -126,6 +127,11 @@ describe('web total dispatch: real daemon <-> real web client conformance (#897)
         onImageInsertionMessage: (msg) => {
           received.push(msg);
         },
+        onFileDownloadMessage: (raw) => {
+          const message = decodeFileDownloadFrame(raw);
+          if (message) received.push(message);
+        },
+        onBrowserLinkMessage: (msg) => { received.push(msg); },
         onStructuredChatResult: (msg) => { received.push(msg); },
         onImageStagingMessage: (msg) => {
           received.push(msg);

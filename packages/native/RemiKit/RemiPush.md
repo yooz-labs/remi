@@ -23,6 +23,8 @@ Debug/Release namespace configuration, no-UI recipient reads, owned bytes across
 notification queue hops, Swift concurrency annotations and escaped display text.
 The public runtime APNs query is a separate Clang target; it retains its exact
 entitlement checks, cancellation and deadlines.
+Both Swift copies preserve callback submission order on the main queue (#1565);
+an earlier duplicate cannot be overtaken by a complementary query result.
 
 `RemiKit` contains the app-exclusive versioned Dpk record adapter, from legacy
 `packages/macos/Remi/ClientIdentity.swift` at the same commit.
@@ -36,6 +38,10 @@ Production configuration resolves only `group.live.yooz.remi/native-debug/` or
 inside the existing secure-push sharing group. It never opens the legacy root
 ledger or sealing service and has no local/temporary fallback.
 Tests explicitly supply disposable private SQLite files and UUID Keychain items.
+The decoder accepts stored full relay trust or separate notification-only
+trust obtained through authenticated direct bootstrap (#1681). The latter does not install a
+foreground relay route; the original capsule, authority, lifetime, expiry and
+replay checks still govern every display and answer.
 
 Port deltas include strict JSON string decoding through `JSONDecoder`, because
 `JSONSerialization` drops a sole U+FEFF inside a JSON string. The signed original

@@ -12,7 +12,7 @@ import { parseConnectionId, useConnectionManager } from '@/hooks';
 import { type AckWaiters, awaitAck, resolveAckWaiter } from '@/lib/ack-waiter';
 import { probeAuthInfo } from '@/lib/auth-probe';
 import { deriveConnectionBannerError } from '@/lib/connection-banner';
-import { dedupeConnectionUrls } from '@/lib/connection-id';
+import { childDaemonUrl, dedupeConnectionUrls } from '@/lib/connection-id';
 import { nativeHubUrlToConnect } from '@/lib/native-host';
 import { RelayDevicesPanel } from '@/components/session/RelayDevicesPanel';
 import { forgetRelayPin, loadRelayPins } from '@/lib/relay-pins';
@@ -327,6 +327,7 @@ function App() {
   const replyContextsRef = useRef<Map<UUID, ReplyContext>>(replyContexts);
   const requestSessionListRef = useRef<typeof requestSessionList | null>(null);
   const connectionModeRef = useRef<((id: ConnectionId) => 'direct' | 'relay' | null) | null>(null);
+  const directConnectionUrlRef = useRef<((id: ConnectionId) => string | null) | null>(null);
   const connectionsRef = useRef<readonly ConnectionState[]>([]);
   // Outstanding user_input sends awaiting their `ack`, keyed by message id
   // (#663). Mutated by handleSend (track), the 'ack' case (acknowledge), and
@@ -1014,6 +1015,9 @@ function App() {
         // degradation is a stated principle, so skip-and-continue preserves it
         // while keeping the compile-time guarantee for types we do know (#897).
         for (const replayMsg of message.messages) {
+          // Browser links are live ephemeral frames; never replay or print their destinations.
+          if (replayMsg && typeof replayMsg === 'object' && 'type' in replayMsg &&
+            typeof replayMsg.type === 'string' && replayMsg.type.startsWith('browser_link_')) continue;
           if (!isValidMessage(replayMsg)) {
             console.debug('Skipping unknown message type in replay batch', replayMsg);
             continue;
@@ -1183,13 +1187,14 @@ function App() {
 
         // Auto-connect to other daemon ports on the same machine.
         // Use setTimeout to run after this handler completes (avoids stale refs).
-        if (connectionModeRef.current?.(connectionId) !== 'relay' && message.daemonPorts && message.daemonPorts.length > 0) {
+        const parentUrl = directConnectionUrlRef.current?.(connectionId);
+        if (parentUrl && message.daemonPorts && message.daemonPorts.length > 0) {
           const ports = [...message.daemonPorts];
-          const host = connectionId.replace(/:\d+$/, '');
           setTimeout(() => {
+            if (directConnectionUrlRef.current?.(connectionId) !== parentUrl) return;
             for (const port of ports) {
-              const url = `ws://${host}:${port}/ws`;
-              connectDirectRef.current(url);
+              const url = childDaemonUrl(parentUrl, port);
+              if (url) connectDirectRef.current(url);
             }
           }, 100);
         }
@@ -1396,7 +1401,8 @@ function App() {
         };
         setMessages((prev) => [...prev, detachedMsg]);
         // On successful detach, clear active session so the UI reflects
-        // the disconnected state. The WebSocket close will handle cleanup.
+        // the detached view. The connection manager invalidates receiver context;
+        // the daemon may keep this WebSocket open.
         if (message.success) {
           setActiveSessionId(null);
         }
@@ -1865,8 +1871,29 @@ function App() {
       case 'image_insert_result':
         break;
 
-      // Direct staging is strictly decoded by WebSocketClient and owned by the
-      // connection manager's ImageUploadController; it never becomes a chat bubble.
+      // Direct tunnel frames are strictly decoded by WebSocketClient and owned by
+      // their connection controllers; they never become chat bubbles.
+      case 'session_terminal_open':
+      case 'session_terminal_opened':
+      case 'session_terminal_read':
+      case 'session_terminal_snapshot':
+      case 'session_terminal_unchanged':
+      case 'session_terminal_close':
+      case 'session_terminal_closed':
+      case 'session_terminal_refused':
+      case 'file_fetch_begin':
+      case 'file_fetch_read':
+      case 'file_fetch_complete':
+      case 'file_fetch_cancel':
+      case 'file_fetch_accepted':
+      case 'file_fetch_chunk':
+      case 'file_fetch_result':
+      case 'file_fetch_cancel_result':
+      case 'file_fetch_refused':
+      case 'browser_link_receiver_request':
+      case 'browser_link_receiver_result':
+      case 'browser_link_receiver_ended':
+      case 'browser_link_candidate':
       case 'image_upload_begin':
       case 'image_upload_chunk':
       case 'image_upload_complete':
@@ -1934,6 +1961,12 @@ function App() {
       // web client has no such sheet yet, so it neither sends the request nor reads the answer.
       case 'recent_repositories_request':
       case 'recent_repositories_response':
+        break;
+
+      // #1679: paired native clients bootstrap notification-only enrollment.
+      // Web secure subscriptions continue to use their existing encrypted path.
+      case 'notification_host_request':
+      case 'notification_host_response':
         break;
 
       default:
@@ -2016,12 +2049,16 @@ function App() {
     passphraseServerFingerprint,
     provideIdentity,
     getSessionId,
+    receiveBrowserLinks, stopBrowserLinks, openBrowserLink,
+    downloadFile, cancelFileDownload, dismissFileDownload, saveDownloadedFile,
+    releaseFileDownloadSave,
     uploadImage,
     cancelImageUpload,
     dismissImageUpload,
     addImageToDraft,
     takeImageDraftForSend,
     getConnectionMode,
+    getDirectConnectionUrl,
     getOwnFingerprint,
   } = useConnectionManager({
     onMessage: handleMessage,
@@ -2035,6 +2072,7 @@ function App() {
   const nativeConnectionsRef = useRef(connections);
   nativeConnectionsRef.current = connections;
   connectionModeRef.current = getConnectionMode;
+  directConnectionUrlRef.current = getDirectConnectionUrl;
 
   const handleNativeIdentityReady = useCallback((identity: NativeSigningIdentity | null) => {
     setUnlockedIdentity(identity);
@@ -3448,6 +3486,34 @@ function App() {
       onDetach={handleDetach}
       onEndSession={activeSession?.source === 'daemon' ? handleEndSession : undefined}
       showTimestamps={settings.showTimestamps}
+      browserLinks={{
+        state: activeConnection?.mode === 'relay'
+          ? activeConnection.relayBrowserLinks?.find((entry) => entry.sessionId === activeSession.id)?.state ?? {phase: 'unavailable', candidates: []}
+          : activeConnection?.sessionId === activeSession.id
+          ? activeConnection.browserLinks ?? {phase: 'unavailable', candidates: []}
+          : {phase: 'unavailable', candidates: []},
+        onReceive: () => receiveBrowserLinks(activeSession.connectionId, activeSession.id),
+        onStop: () => stopBrowserLinks(activeSession.connectionId, activeSession.id),
+        onOpen: (id) => openBrowserLink(activeSession.connectionId, id, activeSession.id),
+      }}
+      fileDownload={{
+        available: activeConnection?.mode === 'relay'
+          ? !!activeConnection.relayFileDownloadSessions?.includes(activeSession.id)
+          : activeConnection?.sessionId === activeSession.id && !!activeConnection.fileDownloadAvailable,
+        unavailableMessage: activeConnection?.mode === 'relay' &&
+          activeConnection.relayFileDownloadBusySessionId &&
+          activeConnection.relayFileDownloadBusySessionId !== activeSession.id
+          ? 'A download is active in another session. Finish or discard it there.' : undefined,
+        canCancel: activeConnection?.fileDownloadSessionId === activeSession.id && !!activeConnection.fileDownloadCanCancel,
+        state: activeConnection?.fileDownloadSessionId === activeSession.id
+          ? activeConnection.fileDownloadState ?? {phase: 'idle'} : {phase: 'idle'},
+        saveMessage: activeConnection?.fileDownloadSessionId === activeSession.id ? activeConnection.fileDownloadSaveMessage : null,
+        onDownload: (path) => downloadFile(activeSession.connectionId, activeSession.id, path),
+        onCancel: () => cancelFileDownload(activeSession.connectionId, activeSession.id),
+        onDismiss: () => dismissFileDownload(activeSession.connectionId, activeSession.id),
+        onSave: () => saveDownloadedFile(activeSession.connectionId, activeSession.id),
+        onReleaseSave: () => releaseFileDownloadSave(activeSession.connectionId),
+      }}
       imageUpload={{
         enabled:
           activeConnection?.mode === 'direct' &&

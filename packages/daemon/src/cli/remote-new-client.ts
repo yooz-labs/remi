@@ -20,7 +20,7 @@ import { errorToString, escapeUnsafeText } from '@remi/shared';
 import type { HarnessId, ProtocolMessage, UUID } from '@remi/shared';
 import { runAttachClient } from './attach-client.ts';
 import { performAuthHandshake } from './auth-helper.ts';
-import { capabilityWsOptions } from './capability-client.ts';
+import { resolveDaemonWsTarget } from './daemon-target.ts';
 
 export interface RemoteNewOptions {
   readonly host: string;
@@ -81,15 +81,14 @@ export async function createRemoteSession(
   harness?: HarnessId,
   args: readonly string[] = [],
 ): Promise<RemoteSessionResult> {
-  const url = `ws://${host}:${port}/ws`;
-
   return new Promise<RemoteSessionResult>((resolve, reject) => {
     let settled = false;
     let authInProgress = false;
     let ws: WebSocket;
 
     try {
-      ws = new WebSocket(url, capabilityWsOptions() as never);
+      const target = resolveDaemonWsTarget(host, port);
+      ws = new WebSocket(target.url, target.options as never);
     } catch (err) {
       const detail = errorToString(err);
       reject(new Error(`Cannot connect to daemon at ${host}:${port}: ${detail}`));

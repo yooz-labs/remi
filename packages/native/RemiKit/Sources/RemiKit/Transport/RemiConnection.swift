@@ -1,6 +1,85 @@
 import CryptoKit
 import Foundation
 
+/// The socket actor updates admission before any callback can be delayed.
+final class DirectParentHelloFence: @unchecked Sendable {
+    enum Admission { case waiting, admitted(Data?) }
+    private let lock = NSLock()
+    private var epoch = UUID()
+    private var admission: Admission = .waiting
+
+    func reset() -> UUID {
+        lock.lock(); defer { lock.unlock() }
+        epoch = UUID(); admission = .waiting
+        return epoch
+    }
+    func observeHello(_ key: Data?) -> UUID {
+        lock.lock(); defer { lock.unlock() }
+        admission = .admitted(key)
+        return epoch
+    }
+    func snapshot() -> (UUID, Admission) {
+        lock.lock(); defer { lock.unlock() }
+        return (epoch, admission)
+    }
+    func isCurrent(_ expected: UUID) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return epoch == expected
+    }
+    func withAdmission<T>(_ expected: UUID, _ body: () throws -> T) throws -> T {
+        lock.lock(); defer { lock.unlock() }
+        guard epoch == expected, case .admitted = admission else { throw RelayFailure.closed }
+        return try body()
+    }
+}
+
+/// A callback can be constructed before its connection, but is bound before start.
+final class DirectParentHelloReference: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: DirectParentHelloFence?
+    func bind(_ fence: DirectParentHelloFence) {
+        lock.lock(); defer { lock.unlock() }
+        precondition(value == nil)
+        value = fence
+    }
+    func snapshot() -> (UUID, DirectParentHelloFence.Admission)? {
+        lock.lock(); let fence = value; lock.unlock()
+        return fence?.snapshot()
+    }
+    func isCurrent(_ epoch: UUID) -> Bool {
+        lock.lock(); let fence = value; lock.unlock()
+        return fence?.isCurrent(epoch) == true
+    }
+}
+
+/// Revocation and synchronous signing share one linearization point. The
+/// lock is never held while waiting on an actor or a network operation.
+final class DirectChildSigningFence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var retired = false
+
+    func withSigning<T>(_ sign: () throws -> T) throws -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !retired else { throw RelayFailure.closed }
+        return try sign()
+    }
+
+    func retire() {
+        lock.lock()
+        retired = true
+        lock.unlock()
+    }
+}
+
+public enum DirectRetryPolicy: Sendable, Equatable {
+    case runtime
+    /// The initial-pairing owner advances candidates only on reachability failure.
+    case coordinatedPairing
+    /// A quarantined saved-profile probe gets exactly one socket attempt.
+    case recoveryProbe
+}
+
 public struct RemiConnectionConfiguration: Sendable, Equatable {
     public let url: URL
     public let clientVersion: String
@@ -10,7 +89,13 @@ public struct RemiConnectionConfiguration: Sendable, Equatable {
     public let expectedServerPublicKey: String?
     public let pairingNonce: String?
     public let pairingLabel: String?
+    /// Child connections must authenticate as the Mac that advertised their port.
+    public let expectedMachineID: String?
     public let relayPin: RelayMachinePin?
+    public let directConnectTimeout: Duration
+    public let directAuthenticationTimeout: Duration
+    public let directHelloTimeout: Duration
+    public let directRetryPolicy: DirectRetryPolicy
 
     public init(
         url: URL,
@@ -21,7 +106,12 @@ public struct RemiConnectionConfiguration: Sendable, Equatable {
         expectedServerPublicKey: String? = nil,
         pairingNonce: String? = nil,
         pairingLabel: String? = nil,
-        relayPin: RelayMachinePin? = nil
+        expectedMachineID: String? = nil,
+        relayPin: RelayMachinePin? = nil,
+        directConnectTimeout: Duration = .seconds(5),
+        directAuthenticationTimeout: Duration = .seconds(30),
+        directHelloTimeout: Duration = .seconds(5),
+        directRetryPolicy: DirectRetryPolicy = .runtime
     ) {
         self.url = url
         self.clientVersion = clientVersion
@@ -31,7 +121,20 @@ public struct RemiConnectionConfiguration: Sendable, Equatable {
         self.expectedServerPublicKey = expectedServerPublicKey
         self.pairingNonce = pairingNonce
         self.pairingLabel = pairingLabel
+        self.expectedMachineID = expectedMachineID
         self.relayPin = relayPin
+        self.directConnectTimeout = min(.seconds(30), max(.milliseconds(100), directConnectTimeout))
+        self.directAuthenticationTimeout = min(.seconds(60), max(.milliseconds(100), directAuthenticationTimeout))
+        self.directHelloTimeout = min(.seconds(30), max(.milliseconds(100), directHelloTimeout))
+        self.directRetryPolicy = directRetryPolicy
+    }
+
+    func admittedConfiguration() -> Self {
+        Self(url: url, clientVersion: clientVersion, clientId: clientId, deviceId: deviceId,
+            expectedServerFingerprint: expectedServerFingerprint, expectedServerPublicKey: expectedServerPublicKey,
+            expectedMachineID: expectedMachineID, relayPin: relayPin,
+            directConnectTimeout: directConnectTimeout, directAuthenticationTimeout: directAuthenticationTimeout,
+            directHelloTimeout: directHelloTimeout, directRetryPolicy: .runtime)
     }
 }
 
@@ -43,11 +146,14 @@ public enum RemiConnectionState: Sendable, Equatable {
     case awaitingRelayConfirmation(fingerprint: String)
     case connected(sessionId: String?)
     case retrying(attempt: Int, delaySeconds: Double)
+    /// The socket could not be reached after bounded attempts. Authentication and
+    /// identity failures use `rejected` and must never be treated as reachability.
+    case reachabilityFailed(attempt: Int)
     case rejected(reason: String)
 }
 
 public enum RemiInboundEvent: Sendable, Equatable {
-    case hello(HelloAckMessage)
+    case hello(HelloAckMessage, authorityPublicKey: Data? = nil)
     case sessions(SessionListResponse)
     case question(QuestionMessage)
     case questionResolved(QuestionResolvedMessage)
@@ -60,11 +166,17 @@ public enum RemiInboundEvent: Sendable, Equatable {
     case resumeSessionResponse(ResumeSessionResponseMessage)
     case killSessionResponse(KillSessionResponseMessage)
     case sessionUpdate(SessionUpdateMessage)
-    case error(ErrorMessage)
+    case remiStatus(RemiStatusMessage)
+    case error(ErrorMessage, chatOrigin: UUID? = nil)
     case relayReady
     case answerResult(AnswerResultMessage)
     case pushRegistration(RelayPushResponse)
     case relayStreamEnded(clean: Bool)
+    /// A strictly decoded `session_terminal_*` answer (ADR 0047). Nothing sends the family until a
+    /// hub advertises `terminal_view`, so none arrives today.
+    case terminalView(TerminalViewMessage)
+    /// A strictly decoded `file_fetch_*` answer (ADR 0045), under the same condition as `terminalView`.
+    case fileFetch(FileFetchMessage)
     case unsupported(type: String)
 }
 
@@ -74,6 +186,24 @@ public enum RemiConnectionError: Error, Sendable, Equatable {
     case authentication(String)
 }
 
+/// Pinned relay broadcasts can arrive between READY and application Hello.
+/// Keep them bounded and invisible until Hello verifies the machine descriptor.
+struct RelayHelloBuffer {
+    private var frames: [Data] = []
+    private var bytes = 0
+
+    mutating func append(_ data: Data) throws {
+        guard frames.count < 32, data.count <= 1_048_576 - bytes else { throw RelayFailure.oversize }
+        frames.append(data)
+        bytes += data.count
+    }
+
+    mutating func drain() -> [Data] {
+        defer { frames.removeAll(); bytes = 0 }
+        return frames
+    }
+}
+
 /// One authenticated daemon connection with bounded exponential reconnect.
 /// Unknown client keys pause in `awaitingLocalApproval` until a manual retry is requested.
 public actor RemiConnection {
@@ -81,16 +211,27 @@ public actor RemiConnection {
     public typealias EventHandler = @Sendable (RemiInboundEvent) -> Void
     public typealias ReadyHandler = @Sendable () async throws -> Void
 
-    private let configuration: RemiConnectionConfiguration
+    /// Shared with the owning Store or adoption bridge. Socket transitions
+    /// update it inside this actor before callbacks can be queued or delayed.
+    nonisolated let directParentHelloFence = DirectParentHelloFence()
+
+    private var configuration: RemiConnectionConfiguration
+    private nonisolated let expectedMachineID: String?
+    private let authenticationRetryHandler: @Sendable (String) -> Void
     private let identity: ClientIdentity
     private let stateHandler: StateHandler
     private let eventHandler: EventHandler
     private let readyHandler: ReadyHandler?
+    private var childSigningFence: DirectChildSigningFence?
+    private var childParentAdmission: (DirectParentHelloFence, UUID)?
     private var session = URLSession.shared
     private var singleAttempt = false
     private var applicationHello = true
     #if DEBUG
+    private var ownedChatSendReturn: (@Sendable () async throws -> Void)?
+    func ownedSetChatSendReturn(_ callback: (@Sendable () async throws -> Void)?) { ownedChatSendReturn = callback }
     private var ownedBeforeH2: (@Sendable () async throws -> Void)?
+    private var ownedBeforeChildSignature: (@Sendable () async throws -> Void)?
     #endif
     private var ready = false
     private var readyWaiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
@@ -102,7 +243,16 @@ public actor RemiConnection {
     private var socket: URLSessionWebSocketTask?
     private var runTask: Task<Void, Never>?
     private var pendingAuthentication: PendingAuthentication?
+    /// The key that authenticated this direct connection. Relay authority comes from the pin.
+    private var authenticatedServerPublicKey: Data?
+    private var learnedDirectServerPublicKey: String?
+    private let notificationAuthorityEpoch = RelayRegistrationEpoch()
+    private var applicationAdmitted = false
+    private var chatSocketID: UUID?
+    private var chatSocketAuthenticated = false
+    private var relayHelloBuffer = RelayHelloBuffer()
     private var initialDirectHelloPending = false
+    private var directOpeningCompleted = false
     private var shouldRun = false
     private var relayHandshake: RelayHandshake?
     private var relayChannel: RelayChannel?
@@ -110,6 +260,11 @@ public actor RemiConnection {
     private let relayPairingExpiresAt: UInt64?
     private var relayEnrolled: Bool
     private var relayDeadline: Task<Void, Never>?
+    private var directDeadline: Task<Void, Never>?
+    /// One absolute authentication budget per socket, never extended by a late challenge (#1574).
+    private var directAuthenticationDeadline: ContinuousClock.Instant?
+    private enum DirectDeadlineFailure: Equatable { case unreachable, authentication }
+    private var directDeadlineFailure: DirectDeadlineFailure?
     private var sendTail: Task<Void, Never>?
     private var pendingSends = 0
     private var relayClosing = false
@@ -120,10 +275,13 @@ public actor RemiConnection {
         relayPairingSecret: Data? = nil,
         relayPairingExpiresAt: UInt64? = nil,
         readyHandler: ReadyHandler? = nil,
+        authenticationRetryHandler: @escaping @Sendable (String) -> Void = { _ in },
         stateHandler: @escaping StateHandler,
         eventHandler: @escaping EventHandler
     ) {
         self.configuration = configuration
+        expectedMachineID = configuration.expectedMachineID
+        self.authenticationRetryHandler = authenticationRetryHandler
         self.identity = identity
         self.relaySecret = relayPairingSecret
         self.relayPairingExpiresAt = relayPairingExpiresAt
@@ -133,11 +291,45 @@ public actor RemiConnection {
         self.readyHandler = readyHandler
     }
 
+    /// Keeps the verified socket and all pins/deadlines, clearing transient claims
+    /// before runtime ownership. A probe never becomes a background one-shot RPC.
+    func completeCoordinatedAdmission() throws {
+        let policy = configuration.directRetryPolicy
+        let direct = configuration.relayPin == nil && authenticatedServerPublicKey != nil
+        let enrolledRelay = policy == .recoveryProbe && configuration.relayPin != nil && relayEnrolled && ready
+        guard policy == .coordinatedPairing || policy == .recoveryProbe,
+              direct || enrolledRelay, applicationAdmitted, socket != nil, shouldRun,
+              case .connected = state else { throw RelayFailure.closed }
+        configuration = configuration.admittedConfiguration()
+    }
+
     func configureOneShot() throws {
         guard !shouldRun else { throw RelayFailure.state }
         singleAttempt = true; applicationHello = false
     }
+
+    func configureChildSigningFence(_ fence: DirectChildSigningFence,
+                                    parent: DirectParentHelloFence?, parentEpoch: UUID?) throws {
+        guard !shouldRun else { throw RelayFailure.state }
+        childSigningFence = fence
+        if let parent, let parentEpoch { childParentAdmission = (parent, parentEpoch) }
+    }
+
+    /// The live direct handshake supplies bootstrap authority, never response fields.
+    func notificationHostKey() throws -> Data {
+        guard configuration.relayPin == nil, applicationAdmitted,
+              case .connected = state, let key = authenticatedServerPublicKey else { throw RelayFailure.closed }
+        return key
+    }
+
+    func notificationHostPermit() throws -> (Data, @Sendable () throws -> Void) {
+        let key = try notificationHostKey()
+        let epoch = notificationAuthorityEpoch, captured = epoch.capture()
+        return (key, { guard epoch.matches(captured) else { throw RelayFailure.closed } })
+    }
     #if DEBUG
+    nonisolated var ownedExpectedMachineID: String? { expectedMachineID }
+    var ownedConfiguration: RemiConnectionConfiguration { configuration }
     /// Owned integration sessions only; production always uses normal URLSession trust.
     func useOwnedTestSession(_ session: URLSession) throws {
         guard !shouldRun else { throw RelayFailure.state }
@@ -145,6 +337,9 @@ public actor RemiConnection {
     }
     func beforeOwnedH2(_ callback: @escaping @Sendable () async throws -> Void) throws {
         guard !shouldRun else { throw RelayFailure.state }; ownedBeforeH2 = callback
+    }
+    func beforeOwnedChildSignature(_ callback: @escaping @Sendable () async throws -> Void) throws {
+        guard !shouldRun else { throw RelayFailure.state }; ownedBeforeChildSignature = callback
     }
     #endif
 
@@ -227,7 +422,7 @@ public actor RemiConnection {
         switch state {
         case .stopped, .awaitingLocalApproval, .rejected:
             true
-        case .connecting, .authenticating, .awaitingRelayConfirmation, .connected, .retrying:
+        case .connecting, .authenticating, .awaitingRelayConfirmation, .connected, .retrying, .reachabilityFailed:
             false
         }
     }
@@ -238,10 +433,56 @@ public actor RemiConnection {
         runTask = Task { await run() }
     }
 
+    /// Sends a frame already encoded and validated by its strict codec (`encodedFrame()` of the
+    /// terminal-view and file-fetch families), through the same path as `send`.
+    /// Refused with `PaneTransportBlocked` unless this connection's route may carry the family
+    /// (`PaneTransportPolicy.current`), so no caller can bypass the policy.
+    public func sendEncodedFrame(_ frame: String) async throws {
+        try await sendEncodedFrame(frame, policy: .current)
+    }
+
+    func sendEncodedFrame(_ frame: String, policy: PaneTransportPolicy) async throws {
+        if let reason = policy.reason(viaRelay: configuration.relayPin != nil) {
+            throw PaneTransportBlocked(reason: reason)
+        }
+        try await deliver(Data(frame.utf8), validateBeforeSend: nil)
+    }
+
     public func send<T: Encodable & Sendable>(_ message: T,
         validateBeforeSend: (@Sendable () throws -> Void)? = nil) async throws {
+        try await deliver(try encoder.encode(message), validateBeforeSend: validateBeforeSend)
+    }
+
+    /// A local socket identity, never a wire field or an authorization grant (#1710).
+    func chatOrigin() -> UUID? { applicationAdmitted ? chatSocketID : nil }
+
+    enum ChatSendResult: Sendable { case handedOff, notInvoked, uncertain }
+    private final class ChatAttempt {
+        let origin: UUID
+        var invoked = false
+        init(origin: UUID) { self.origin = origin }
+    }
+
+    /// Sends once on the captured socket. A throw after invocation cannot prove non-delivery.
+    func sendChat(_ message: UserInputMessage, origin: UUID) async -> ChatSendResult {
+        let attempt = ChatAttempt(origin: origin)
+        do {
+            try await deliver(try encoder.encode(message), validateBeforeSend: nil, chatAttempt: attempt)
+            #if DEBUG
+            try await ownedChatSendReturn?()
+            #endif
+            return .handedOff
+        } catch { return attempt.invoked ? .uncertain : .notInvoked }
+    }
+
+    private func validateChatOrigin(_ attempt: ChatAttempt?) throws {
+        guard let attempt else { return }
+        guard applicationAdmitted, chatSocketID == attempt.origin else { throw RelayFailure.closed }
+    }
+
+    private func deliver(_ data: Data, validateBeforeSend: (@Sendable () throws -> Void)?,
+                         chatAttempt: ChatAttempt? = nil) async throws {
         guard let socket else { throw URLError(.notConnectedToInternet) }
-        let data = try encoder.encode(message)
         if configuration.relayPin != nil {
             guard relayChannel != nil, !relayClosing, pendingSends < 64 else { throw RelayFailure.closed }
             guard !data.isEmpty, data.count <= RelayCrypto.maxPlaintext else { throw RelayFailure.oversize }
@@ -251,18 +492,25 @@ public actor RemiConnection {
                 await prior?.value
                 guard self.socket === socket, let channel = self.relayChannel else { throw RelayFailure.closed }
                 try validateBeforeSend?()
+                // A stale local intent is not a failure of this replacement channel. Reject
+                // before sealing consumes its sequence, outside the transport-failure catch.
+                try validateChatOrigin(chatAttempt)
                 let frame: Data
                 do { frame = try channel.seal(data) }
                 catch {
                     if channel.closed {
+                        retireChatOrigin()
                         socket.cancel(with: .init(rawValue: 4400) ?? .policyViolation, reason: Data("closed".utf8))
                     }
                     throw error
                 }
                 do {
+                    // No await separates the queue-time origin check, seal and invocation.
+                    chatAttempt?.invoked = true
                     try await socket.send(.data(frame))
                 } catch {
                     channel.fail()
+                    retireChatOrigin()
                     socket.cancel(with: .init(rawValue: 4400) ?? .policyViolation,
                         reason: Data("closed".utf8))
                     throw error
@@ -272,10 +520,10 @@ public actor RemiConnection {
             defer { pendingSends -= 1 }
             try await job.value
         } else {
-            if validateBeforeSend != nil {
-                guard case .connected = state else { throw RelayFailure.closed }
-            }
+            guard applicationAdmitted else { throw RelayFailure.closed }
             try validateBeforeSend?()
+            try validateChatOrigin(chatAttempt)
+            chatAttempt?.invoked = true
             try await socket.send(.data(data))
         }
     }
@@ -284,6 +532,7 @@ public actor RemiConnection {
         var attempt = 0
         while shouldRun && !Task.isCancelled {
             attempt += 1
+            if configuration.relayPin == nil { _ = directParentHelloFence.reset() }
             transition(to: .connecting(attempt: attempt))
             do {
                 try await connectAndReceive()
@@ -291,19 +540,63 @@ public actor RemiConnection {
                 if singleAttempt { shouldRun = false; return }
                 if case .awaitingLocalApproval = state { return }
                 if case .rejected = state { return }
-            } catch is CancellationError {
-                return
+                if configuration.directRetryPolicy == .recoveryProbe {
+                    shouldRun = false
+                    transition(to: .rejected(reason: "The recovery connection ended before admission."))
+                    return
+                }
             } catch {
+                if !shouldRun || Task.isCancelled { return }
+                if error is CancellationError && directDeadlineFailure == nil { return }
+                let directFailure = directDeadlineFailure
+                // closeSocket() below resets this; a socket lost after admission is not a login failure.
+                let wasAdmitted = applicationAdmitted
+                let authenticationStarted = directOpeningCompleted || pendingAuthentication != nil || authenticatedServerPublicKey != nil
                 if configuration.relayPin != nil {
                     if let channel = relayChannel { eventHandler(.relayStreamEnded(clean: channel.peerEnded && !channel.failed)) }
+                    retireChatOrigin()
                     socket?.cancel(with: .init(rawValue: 4400) ?? .policyViolation, reason: Data("closed".utf8))
                 }
                 closeSocket()
+                if configuration.relayPin == nil, let reason = Self.directPolicyRejectionDescription(error) {
+                    // A local OS-policy refusal is terminal, not evidence that
+                    // another transport may bypass the selected layer (#1583).
+                    shouldRun = false
+                    transition(to: .rejected(reason: reason))
+                    return
+                }
+                if directFailure == .authentication || (configuration.relayPin == nil && configuration.directRetryPolicy != .runtime && authenticationStarted) {
+                    shouldRun = false
+                    transition(to: .rejected(reason: "The machine did not finish authentication. Check its terminal and retry this layer."))
+                    return
+                }
                 if singleAttempt { shouldRun = false; transition(to: .rejected(reason: "The relay attempt ended.")); return }
+                if configuration.directRetryPolicy == .recoveryProbe {
+                    shouldRun = false
+                    if configuration.relayPin == nil, directFailure == .unreachable || Self.isDirectReachabilityFailure(error) {
+                        transition(to: .reachabilityFailed(attempt: attempt))
+                    } else {
+                        transition(to: .rejected(reason: "The recovery connection failed authentication or protocol validation."))
+                    }
+                    return
+                }
                 if configuration.relayPin != nil && (!relayEnrolled || attempt >= 5 || error is RelayFailure) {
                     shouldRun = false
                     transition(to: .rejected(reason: "The relay connection closed. Pair again if this machine has not been saved."))
                     return
+                }
+                if configuration.relayPin == nil && !Self.shouldRetryDirectFailure(
+                    error: error, deadlineUnreachable: directFailure == .unreachable, wasAdmitted: wasAdmitted
+                ) {
+                    shouldRun = false
+                    transition(to: .rejected(
+                        reason: "The direct connection failed authentication or protocol validation."
+                    ))
+                    return
+                }
+                if configuration.relayPin == nil {
+                    transition(to: .reachabilityFailed(attempt: attempt))
+                    if configuration.directRetryPolicy != .runtime { shouldRun = false; return }
                 }
             }
 
@@ -324,11 +617,18 @@ public actor RemiConnection {
             return
         }
         pendingAuthentication = nil
+        directDeadlineFailure = nil
         let task = session.webSocketTask(with: configuration.url)
+        retireChatOrigin()
         socket = task
+        armDirectDeadline(task, after: configuration.directConnectTimeout, opening: true)
         task.resume()
         initialDirectHelloPending = true
         try await sendHello(on: task)
+        directOpeningCompleted = true
+        let authenticationDeadline = ContinuousClock.now.advanced(by: configuration.directAuthenticationTimeout)
+        directAuthenticationDeadline = authenticationDeadline
+        armDirectDeadline(task, until: authenticationDeadline, opening: false)
 
         while shouldRun && !Task.isCancelled {
             let message = try await task.receive()
@@ -345,52 +645,96 @@ public actor RemiConnection {
                 throw RemiConnectionError.nonTextFrame
             }
             try await handle(data, on: task)
+            // An explicit pairing retry closes this socket without rejecting
+            // the machine. Return to the bounded retry loop; do not classify
+            // our own cancelled receive as an authentication failure.
+            if socket !== task { return }
         }
     }
 
     private func handle(_ data: Data, on task: URLSessionWebSocketTask) async throws {
+        guard socket === task else { throw RelayFailure.closed }
         let envelope = try decoder.decode(Envelope.self, from: data)
         if configuration.relayPin != nil && ["auth_challenge", "auth_result", "raw_pty_output", "terminal_resize"].contains(envelope.type) {
             throw RelayFailure.type
         }
+        // The source daemon receipts Hello before sending its asynchronous
+        // hello_ack. Receipts convey no authority or application outcome.
+        if envelope.type == "ack" { return }
+        // #1561: child domain traffic is visible in the Store. No application
+        // frame may reach it before hello verifies the authenticated machine.
+        if !["auth_challenge", "auth_result", "hello_ack", "ping", "error"].contains(envelope.type),
+           !applicationAdmitted {
+            if configuration.relayPin != nil, relayChannel != nil {
+                try relayHelloBuffer.append(data)
+                return
+            }
+            throw RemiConnectionError.authentication("Application frame before verified hello")
+        }
         switch envelope.type {
         case "auth_challenge":
+            guard !applicationAdmitted, pendingAuthentication == nil,
+                  authenticatedServerPublicKey == nil else { throw AuthenticationHandshakeError.malformedChallenge }
             let challenge = try decoder.decode(AuthChallengeMessage.self, from: data)
             if let expected = configuration.expectedServerFingerprint,
                challenge.serverFingerprint != expected {
                 shouldRun = false
                 closeSocket()
-                transition(to: .rejected(reason: "The daemon fingerprint does not match the scanned pairing code."))
+                transition(to: .rejected(reason: configuration.directRetryPolicy == .recoveryProbe
+                    ? "The endpoint fingerprint does not match the saved machine identity."
+                    : "The daemon fingerprint does not match the scanned pairing code."))
                 return
             }
-            if let expected = configuration.expectedServerPublicKey,
+            if let expected = configuration.expectedServerPublicKey ?? learnedDirectServerPublicKey,
                challenge.serverPublicKey != expected {
                 shouldRun = false
                 closeSocket()
-                transition(to: .rejected(reason: "The daemon public key does not match the scanned pairing code."))
+                transition(to: .rejected(reason: configuration.directRetryPolicy == .recoveryProbe
+                    ? "The endpoint public key does not match the saved machine identity."
+                    : "The daemon public key does not match the scanned pairing code."))
                 return
             }
+            let authenticationDeadline = try currentDirectAuthenticationDeadline()
             transition(to: .authenticating(serverFingerprint: challenge.serverFingerprint))
-            let (response, pending) = try AuthenticationHandshake.response(
-                to: challenge,
-                identity: identity,
-                expectedServerPublicKey: configuration.expectedServerPublicKey,
-                pairingNonce: configuration.pairingNonce,
-                pairingLabel: configuration.pairingLabel
-            )
+            #if DEBUG
+            if childSigningFence != nil { try await ownedBeforeChildSignature?() }
+            #endif
+            let makeResponse = {
+                try AuthenticationHandshake.response(
+                    to: challenge,
+                    identity: self.identity,
+                    expectedServerPublicKey: self.configuration.expectedServerPublicKey ?? self.learnedDirectServerPublicKey,
+                    pairingNonce: self.configuration.pairingNonce,
+                    pairingLabel: self.configuration.pairingLabel
+                )
+            }
+            let signUnderParentAdmission = {
+                if let (parent, epoch) = self.childParentAdmission {
+                    return try parent.withAdmission(epoch, makeResponse)
+                }
+                return try makeResponse()
+            }
+            let (response, pending) = try childSigningFence.map { try $0.withSigning(signUnderParentAdmission) } ?? signUnderParentAdmission()
             pendingAuthentication = pending
+            _ = try currentDirectAuthenticationDeadline()
+            armDirectDeadline(task, until: authenticationDeadline, opening: false)
             try await task.send(.data(encoder.encode(response)))
         case "auth_result":
+            guard !applicationAdmitted, pendingAuthentication != nil else {
+                throw AuthenticationHandshakeError.missingPendingChallenge
+            }
+            _ = try currentDirectAuthenticationDeadline()
             let result = try decoder.decode(AuthResultMessage.self, from: data)
             guard result.success else {
                 pendingAuthentication = nil
                 closeSocket()
-                if result.error == "UNKNOWN_KEY" {
+                if result.error == "UNKNOWN_KEY", configuration.directRetryPolicy != .coordinatedPairing {
                     shouldRun = false
                     transition(to: .awaitingLocalApproval(fingerprint: identity.fingerprint))
                     return
                 }
-                if Self.shouldRetryAuthentication(result.error) {
+                if configuration.directRetryPolicy != .recoveryProbe, Self.shouldRetryAuthentication(result.error) {
+                    authenticationRetryHandler(result.error ?? "AUTH_STORE_ERROR")
                     closeSocket()
                     return
                 }
@@ -399,22 +743,54 @@ public actor RemiConnection {
                 return
             }
             try AuthenticationHandshake.verify(result, pending: pendingAuthentication)
+            _ = try currentDirectAuthenticationDeadline()
+            authenticatedServerPublicKey = pendingAuthentication?.serverPublicKey
             pendingAuthentication = nil
+            directAuthenticationDeadline = nil
+            guard acceptMachineIdentity(descriptor: nil) else { return }
+            armDirectDeadline(task, after: configuration.directHelloTimeout, opening: false)
             try await sendHello(on: task)
         case "hello_ack":
+            guard pendingAuthentication == nil else { throw AuthenticationHandshakeError.missingPendingChallenge }
+            if configuration.relayPin == nil,
+               configuration.expectedServerPublicKey != nil || configuration.expectedServerFingerprint != nil || learnedDirectServerPublicKey != nil {
+                guard authenticatedServerPublicKey != nil else { throw AuthenticationHandshakeError.missingPendingChallenge }
+            }
             initialDirectHelloPending = false
             let message = try decoder.decode(HelloAckMessage.self, from: data)
+            guard acceptMachineIdentity(descriptor: message.machine) else { return }
+            if configuration.relayPin == nil, let authenticatedServerPublicKey {
+                learnedDirectServerPublicKey = authenticatedServerPublicKey.base64EncodedString()
+            }
+            applicationAdmitted = true
+            directDeadline?.cancel()
+            directDeadline = nil
+            relayDeadline?.cancel()
+            relayDeadline = nil
+            let authority = configuration.relayPin.flatMap { try? RelayCrypto.unb64($0.machinePublicKey) }
+                ?? authenticatedServerPublicKey
+            if configuration.relayPin == nil { _ = directParentHelloFence.observeHello(authority) }
+            chatSocketID = UUID()
+            chatSocketAuthenticated = authority != nil
             transition(to: .connected(sessionId: message.sessionId))
-            eventHandler(.hello(message))
+            eventHandler(.hello(message, authorityPublicKey: authority))
+            for buffered in relayHelloBuffer.drain() {
+                guard applicationAdmitted, socket === task else { throw RelayFailure.closed }
+                try await handle(buffered, on: task)
+            }
         case "ping":
             let ping = try decoder.decode(PingMessage.self, from: data)
-            try await send(PongMessage(
+            let pong = PongMessage(
                 id: UUID().uuidString.lowercased(),
                 timestamp: Date().ISO8601Format(),
                 pingId: ping.id
-            ))
+            )
+            if configuration.relayPin != nil { try await send(pong) }
+            else { try await task.send(.data(encoder.encode(pong))) }
         case "session_list_response":
-            eventHandler(.sessions(try decoder.decode(SessionListResponse.self, from: data)))
+            let message = try decoder.decode(SessionListResponse.self, from: data)
+            guard acceptMachineIdentity(descriptor: message.machine, sessions: message.sessions) else { return }
+            eventHandler(.sessions(message))
         case "question":
             eventHandler(.question(try decoder.decode(QuestionMessage.self, from: data)))
         case "question_resolved":
@@ -447,6 +823,8 @@ public actor RemiConnection {
             ))
         case "session_update":
             eventHandler(.sessionUpdate(try decoder.decode(SessionUpdateMessage.self, from: data)))
+        case "remi_status":
+            eventHandler(.remiStatus(try decoder.decode(RemiStatusMessage.self, from: data)))
         case "error":
             let message = try decoder.decode(ErrorMessage.self, from: data)
             // Direct Hello also supports auth-disabled hubs. An authenticated hub
@@ -456,15 +834,22 @@ public actor RemiConnection {
                 initialDirectHelloPending = false
                 return
             }
-            eventHandler(.error(message))
+            guard applicationAdmitted else { throw RemiConnectionError.malformedMessage }
+            eventHandler(.error(message, chatOrigin: chatSocketAuthenticated ? chatSocketID : nil))
         case "answer_result":
             let result = try decoder.decode(AnswerResultMessage.self, from: data)
-            guard ["delivered", "stale", "conflict", "busy", "uncertain"].contains(result.outcome) else { throw RelayFailure.malformed }
+            guard AnswerResultWireOutcome(rawValue: result.outcome) != nil else { throw RelayFailure.malformed }
             if let pending = rpcWaiters[result.requestId], case .answer(let session, let question) = pending.expected,
                Data(result.sessionId.utf8) == Data(session.utf8), Data(result.questionId.utf8) == Data(question.utf8) {
                 finishRPC(result.requestId, result: .success(.answer(result)))
             }
             eventHandler(.answerResult(result))
+        case "notification_host_response":
+            guard configuration.relayPin == nil, applicationAdmitted else { throw RelayFailure.malformed }
+            let result = try NotificationHostResponse.decode(data)
+            if let pending = rpcWaiters[result.requestId], case .notificationHost = pending.expected {
+                finishRPC(result.requestId, result: .success(.notificationHost(result)))
+            }
         case "secure_push_register_response", "secure_push_unregister_response":
             let result = try RelayPushResponse.decode(data)
             if let pending = rpcWaiters[result.requestId], case .push(let type, let version) = pending.expected,
@@ -472,6 +857,21 @@ public actor RemiConnection {
                 finishRPC(result.requestId, result: .success(.push(result)))
             }
             eventHandler(.pushRegistration(result))
+        case "session_terminal_opened", "session_terminal_snapshot", "session_terminal_unchanged",
+            "session_terminal_closed", "session_terminal_refused":
+            // The strict codec decides; a frame it refuses is as good as unknown.
+            if let message = try? TerminalViewMessage.decode(data) {
+                eventHandler(.terminalView(message))
+            } else {
+                eventHandler(.unsupported(type: envelope.type))
+            }
+        case "file_fetch_accepted", "file_fetch_chunk", "file_fetch_result", "file_fetch_cancel_result",
+            "file_fetch_refused":
+            if let message = try? FileFetchMessage.decode(data) {
+                eventHandler(.fileFetch(message))
+            } else {
+                eventHandler(.unsupported(type: envelope.type))
+            }
         default:
             eventHandler(.unsupported(type: envelope.type))
         }
@@ -489,15 +889,31 @@ public actor RemiConnection {
         else { try await task.send(.data(encoder.encode(message))) }
     }
 
+    private func retireChatOrigin() {
+        chatSocketID = nil
+        chatSocketAuthenticated = false
+    }
+
     private func closeSocket() {
+        retireChatOrigin()
+        if configuration.relayPin == nil, socket != nil { _ = directParentHelloFence.reset() }
+        notificationAuthorityEpoch.replace()
         ready = false
         let waiting = readyWaiters; readyWaiters.removeAll()
         for waiter in waiting.values { waiter.resume(throwing: RelayFailure.closed) }
         for id in Array(rpcWaiters.keys) { finishRPC(id, result: .failure(RelayFailure.closed)) }
         pendingAuthentication = nil
+        authenticatedServerPublicKey = nil
+        applicationAdmitted = false
+        relayHelloBuffer = RelayHelloBuffer()
         initialDirectHelloPending = false
+        directOpeningCompleted = false
         relayDeadline?.cancel()
         relayDeadline = nil
+        directDeadline?.cancel()
+        directDeadline = nil
+        directAuthenticationDeadline = nil
+        directDeadlineFailure = nil
         relayHandshake?.abort()
         relayHandshake = nil
         relaySecret = nil
@@ -508,12 +924,41 @@ public actor RemiConnection {
         socket = nil
     }
 
+    /// A bad descriptor is an authentication failure, not an ordinary protocol event. In
+    /// particular, it must not trigger direct-to-relay fallback or let a claimed name/id reach UI.
+    private func acceptMachineIdentity(
+        descriptor: MachineDescriptor?,
+        sessions: [DiscoverableSession] = []
+    ) -> Bool {
+        let authority: Data?
+        if let pin = configuration.relayPin {
+            authority = try? RelayCrypto.unb64(pin.machinePublicKey)
+        } else {
+            authority = authenticatedServerPublicKey
+        }
+        do {
+            try MachineIdentityVerifier.verify(
+                descriptor: descriptor,
+                sessions: sessions,
+                authorityPublicKey: authority,
+                expectedMachineID: configuration.expectedMachineID
+            )
+            return true
+        } catch {
+            shouldRun = false
+            closeSocket()
+            transition(to: .rejected(reason: "The machine identity did not match its authenticated key."))
+            return false
+        }
+    }
+
     private func connectRelayAndReceive(_ pin: RelayMachinePin) async throws {
         guard let url = pin.clientURL else { throw RelayFailure.malformed }
         let machine = try RelayCrypto.unb64(pin.machinePublicKey)
         let room = RelayCrypto.room(machine)
         let task = session.webSocketTask(with: url)
         task.maximumMessageSize = RelayCrypto.maxFrame
+        retireChatOrigin()
         socket = task
         relayClosing = false
         var phase = "nonce"
@@ -533,6 +978,7 @@ public actor RemiConnection {
                 guard case .data(let bytes) = frame else { channel.fail(); throw RelayFailure.type }
                 guard let plaintext = try channel.open(bytes) else {
                     relayClosing = true
+                    retireChatOrigin()
                     armRelayDeadline(task, after: .seconds(1))
                     try await sendRelayBye(on: task)
                     eventHandler(.relayStreamEnded(clean: !channel.failed))
@@ -595,14 +1041,49 @@ public actor RemiConnection {
                 try await readyHandler?()
                 guard shouldRun, socket === task, relayChannel != nil, !Task.isCancelled else { throw RelayFailure.closed }
                 ready = true
+                // Background RPCs deliberately skip the application hello. Their
+                // authority is the completed, pinned relay handshake (#1242).
+                applicationAdmitted = !applicationHello
                 let waiting = readyWaiters; readyWaiters.removeAll()
                 for waiter in waiting.values { waiter.resume() }
                 relayDeadline?.cancel()
                 eventHandler(.relayReady)
-                if applicationHello { try await sendHello(on: task) }
+                if applicationHello {
+                    if configuration.directRetryPolicy == .recoveryProbe { armRelayDeadline(task, after: configuration.directHelloTimeout) }
+                    try await sendHello(on: task)
+                }
                 phase = "data"
             default: throw RelayFailure.state
             }
+        }
+    }
+
+    private func currentDirectAuthenticationDeadline() throws -> ContinuousClock.Instant {
+        guard let deadline = directAuthenticationDeadline else {
+            throw RemiConnectionError.authentication("Authentication phase has no deadline")
+        }
+        // Fail closed even if an inbound frame runs before an already-expired
+        // timer task gets actor time; that frame cannot extend or complete auth.
+        guard ContinuousClock.now < deadline else {
+            directDeadlineFailure = .authentication
+            throw RemiConnectionError.authentication("Authentication deadline elapsed")
+        }
+        return deadline
+    }
+
+    private func armDirectDeadline(_ task: URLSessionWebSocketTask, after delay: Duration, opening: Bool) {
+        armDirectDeadline(task, until: ContinuousClock.now.advanced(by: delay), opening: opening)
+    }
+
+    private func armDirectDeadline(_ task: URLSessionWebSocketTask, until deadline: ContinuousClock.Instant, opening: Bool) {
+        guard configuration.relayPin == nil else { return }
+        directDeadline?.cancel()
+        directDeadline = Task {
+            do { try await Task.sleep(until: deadline, clock: .continuous) } catch { return }
+            guard socket === task, shouldRun, !applicationAdmitted else { return }
+            directDeadlineFailure = opening ? .unreachable : .authentication
+            retireChatOrigin()
+            task.cancel(with: .goingAway, reason: nil)
         }
     }
 
@@ -615,6 +1096,7 @@ public actor RemiConnection {
         relayDeadline = Task {
             do { try await Task.sleep(for: max(.zero, boundedDelay)) } catch { return }
             guard self.socket === task else { return }
+            retireChatOrigin()
             task.cancel(with: .init(rawValue: 4400) ?? .policyViolation, reason: Data("closed".utf8))
         }
     }
@@ -633,6 +1115,58 @@ public actor RemiConnection {
 
     public nonisolated static func reconnectDelay(forAttempt attempt: Int) -> Double {
         min(pow(2, Double(max(0, attempt - 1))), 30)
+    }
+
+    /// Whether a failed direct socket is retried instead of rejected.
+    ///
+    /// A socket that dies after the machine was admitted (a graceful hub close, a restart) is a
+    /// transport loss, whatever transport error the system reports for it, so the connection
+    /// retries with backoff (#1599). Protocol violations still fail closed after admission, and a
+    /// failure before admission is judged by its error: only reachability failures retry, so a
+    /// changed machine identity or a failed handshake still fails closed. Every retry runs the
+    /// full pinned handshake again before the machine is admitted.
+    static func shouldRetryDirectFailure(error: any Error, deadlineUnreachable: Bool, wasAdmitted: Bool) -> Bool {
+        deadlineUnreachable || isDirectReachabilityFailure(error)
+            || (wasAdmitted && !isLocalProtocolViolation(error))
+    }
+
+    /// Errors this client raises itself when the peer breaks the protocol, as opposed to the
+    /// system reporting that the transport went away.
+    static func isLocalProtocolViolation(_ error: any Error) -> Bool {
+        error is RemiConnectionError || error is AuthenticationHandshakeError
+            || error is RelayFailure || error is DecodingError
+    }
+
+    /// Only network reachability failures may activate a relay fallback. TLS trust,
+    /// authentication, decoding, and protocol failures deliberately fail closed.
+    static func directPolicyRejectionDescription(_ error: any Error) -> String? {
+        let error = error as NSError
+        guard error.domain == NSURLErrorDomain,
+              error.code == URLError.appTransportSecurityRequiresSecureConnection.rawValue else { return nil }
+        return "The OS blocked this direct address (ATS -1022). Use a private LAN or Tailscale address, or an enrolled relay."
+    }
+
+    static func isDirectReachabilityFailure(_ error: any Error) -> Bool {
+        if let error = error as? URLError {
+            return [
+                .timedOut,
+                .cannotFindHost,
+                .cannotConnectToHost,
+                .dnsLookupFailed,
+                .networkConnectionLost,
+                .notConnectedToInternet,
+            ].contains(error.code)
+        }
+        let error = error as NSError
+        return error.domain == NSPOSIXErrorDomain && [
+            ECONNREFUSED,
+            ECONNRESET,
+            ENETDOWN,
+            ENETUNREACH,
+            EHOSTDOWN,
+            EHOSTUNREACH,
+            ETIMEDOUT,
+        ].contains(Int32(error.code))
     }
 
     public nonisolated static func shouldRetryAuthentication(_ code: String?) -> Bool {

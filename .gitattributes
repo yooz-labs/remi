@@ -1,0 +1,2 @@
+# Unified-diff blank context lines require a single space prefix.
+scripts/terminal-engine/lazy-attributes.patch whitespace=-blank-at-eol

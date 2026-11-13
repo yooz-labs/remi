@@ -112,5 +112,6 @@ packages/macos/DerivedData/
 packages/native/**/xcuserdata/
 packages/native/DerivedData/
 packages/native/RemiKit/.build/
+packages/native/.build/
 packages/native/RemiKit/.swiftpm/
 .claude/*.local.md.archived

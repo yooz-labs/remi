@@ -18,6 +18,10 @@ export interface StoredSecurePushSubscription extends SecurePushRegistration {
   readonly enrollmentEpoch: string;
   readonly subscriptionEpoch: string;
   readonly pushPrefs: Required<PushPreferences>;
+  /** Missing only on pre-lease records, migrated under the store lock (#1272). */
+  readonly lastSeenAt?: number;
+  /** Monotonic expiry; changing the clock/config cannot revive an old epoch (#1272). */
+  readonly leaseExpired?: true;
 }
 const PREFS = ['questions', 'turnComplete', 'harnessDenied', 'turnFailed'] as const;
 const REGISTRATION = ['token', 'environment', 'pushPublicKey', 'keyVersion', 'pushPrefs'];
@@ -103,7 +107,15 @@ export function readSecurePushSubscriptions(directory: string): StoredSecurePush
     for (const item of value['subscriptions']) {
       if (
         !record(item) ||
-        Object.keys(item).sort().join(',') !== STORED ||
+        Object.keys(item)
+          .filter((key) => key !== 'lastSeenAt' && key !== 'leaseExpired')
+          .sort()
+          .join(',') !== STORED ||
+        ('lastSeenAt' in item &&
+          (typeof item['lastSeenAt'] !== 'number' ||
+            !Number.isSafeInteger(item['lastSeenAt']) ||
+            item['lastSeenAt'] < 0)) ||
+        ('leaseExpired' in item && item['leaseExpired'] !== true) ||
         typeof item['publicKey'] !== 'string' ||
         typeof item['fingerprint'] !== 'string' ||
         !isAuthorityEpoch(item['authorizationEpoch']) ||

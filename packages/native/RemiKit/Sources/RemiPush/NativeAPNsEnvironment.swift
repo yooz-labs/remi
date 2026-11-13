@@ -54,7 +54,11 @@ final class NativeAPNsEnvironment {
                 }
                 for production in [true, false] {
                     attempt.leases.append(query(production) { [weak self] match in
-                        Task { @MainActor [weak self] in self?.received(match, production: production, id: id) }
+                        // #1565: independent actor tasks can reorder replies, letting a later
+                        // result finish before an earlier duplicate. Preserve arrival order.
+                        DispatchQueue.main.async { [weak self] in
+                            self?.received(match, production: production, id: id)
+                        }
                     })
                 }
             }

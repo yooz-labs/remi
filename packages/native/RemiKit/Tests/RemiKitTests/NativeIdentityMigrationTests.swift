@@ -10,14 +10,18 @@ struct OwnedIdentityContext {
     let push: RemiPushStore
     let service = "live.yooz.remi.tests.identity.\(UUID().uuidString)"
     let account = UUID().uuidString
+    let recipientService: String
+    let recipientAccount: String
     var query: [String: Any] { [kSecClass as String: kSecClassGenericPassword,
         kSecAttrService as String: service, kSecAttrAccount as String: account] }
     var store: ClientIdentityStore { .init(service: service, account: account, pushStore: push) }
     init() throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("remi-x2-identity-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        let pushService = "live.yooz.remi.tests.recipient.\(UUID().uuidString)", pushAccount = UUID().uuidString
+        recipientService = pushService; recipientAccount = pushAccount
         push = try .ownedTestStore(file: directory.appendingPathComponent("public.sqlite"),
-            service: "live.yooz.remi.tests.recipient.\(UUID().uuidString)", account: UUID().uuidString)
+            service: pushService, account: pushAccount)
     }
     func write(_ data: Data) throws {
         var item = query; item[kSecValueData as String] = data
@@ -30,7 +34,12 @@ struct OwnedIdentityContext {
         #expect(SecItemCopyMatching(request as CFDictionary, &result) == errSecSuccess)
         return try #require(result as? Data)
     }
-    func cleanup() throws { SecItemDelete(query as CFDictionary); try FileManager.default.removeItem(at: directory) }
+    func cleanup() throws {
+        SecItemDelete(query as CFDictionary)
+        SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: recipientService,
+            kSecAttrAccount as String: recipientAccount] as CFDictionary)
+        try FileManager.default.removeItem(at: directory)
+    }
     func record(identity: ClientIdentity, revision: String, protected: Bool) throws -> Data {
         struct Record: Encodable {
             let version: Int; let pkcs8: Data; let publicKey: Data; let revision: String; let requiresAppUnlock: Bool

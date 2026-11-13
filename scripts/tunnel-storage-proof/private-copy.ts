@@ -3,6 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import type { PrivateOps } from '../../packages/daemon/src/tunnel/private-ops';
 import type { AdmittedFile, DirectoryRoot, OpenAt } from './admission';
+import { ADMITTED_READ_CHUNK_SIZE, AdmittedRead } from './admitted-read';
 
 export type { PrivateOps } from '../../packages/daemon/src/tunnel/private-ops';
 export type CopyCheckpoint =
@@ -10,8 +11,7 @@ export type CopyCheckpoint =
   | { stage: 'read'; bytes: number }
   | { stage: 'validated'; directory: number; partial: string; final: string };
 const C = fs.constants;
-const CHUNK = 32 * 1024;
-const LIMIT = 10n * 1024n * 1024n;
+const CHUNK = ADMITTED_READ_CHUNK_SIZE;
 const DIRECTORY = C.O_RDONLY | C.O_DIRECTORY | C.O_NOFOLLOW;
 
 export class PrivateCopyCleanupError extends Error {
@@ -171,9 +171,9 @@ export function copyToPrivate(
     if (cleanupFailed) throw new PrivateCopyCleanupError(allocatedBytes);
   };
   try {
-    if (source.size < 0n || source.size > LIMIT || !root.isCurrent()) return null;
-    const before = fs.fstatSync(source.fd, { bigint: true });
-    if (!source.matchesMetadata(before) || !source.isCurrent()) return null;
+    if (!root.isCurrent()) return null;
+    const reader = AdmittedRead.capture(source);
+    if (!reader) return null;
     // Retain our own directory FD for cleanup even if its configured path is replaced.
     directory = ops.openAt(root.fd, '.', DIRECTORY);
     if (directory < 0) return null;
@@ -197,29 +197,22 @@ export function copyToPrivate(
       (created.mode & 0o777n) !== 0o600n
     )
       return null;
-    const size = Number(source.size);
-    const hash = createHash('sha256');
-    const buffer = Buffer.alloc(CHUNK);
-    let offset = 0;
-    while (offset < size) {
-      const count = fs.readSync(source.fd, buffer, 0, Math.min(CHUNK, size - offset), offset);
-      if (!count) return null;
+    const size = reader.byteLength;
+    while (reader.bytesRead < size) {
+      const offset = reader.bytesRead;
+      const buffer = reader.readNext();
+      const count = buffer.length;
       let written = 0;
       while (written < count) {
         const amount = fs.writeSync(fd, buffer, written, count - written, offset + written);
         if (!amount) return null;
         written += amount;
       }
-      hash.update(buffer.subarray(0, count));
-      offset += count;
-      checkpoint?.({ stage: 'read', bytes: offset });
+      checkpoint?.({ stage: 'read', bytes: reader.bytesRead });
     }
-    // Exactly one extra source byte can be inspected; it is never written or sent.
-    if (fs.readSync(source.fd, buffer, 0, 1, size) !== 0) return null;
-    const after = fs.fstatSync(source.fd, { bigint: true });
-    if (!source.matchesMetadata(after) || !source.isCurrent() || !root.isCurrent()) return null;
+    const { sha256 } = reader.finish();
+    if (!root.isCurrent()) return null;
     fs.fsyncSync(fd);
-    const sha256 = hash.digest('hex');
     const validCopy = () => {
       const copied = fs.fstatSync(fd, { bigint: true });
       return (
@@ -235,12 +228,7 @@ export function copyToPrivate(
     if (!validCopy()) return null;
     checkpoint?.({ stage: 'validated', directory, partial, final });
     // A checkpoint may mutate real filesystem state; validate again at the effect.
-    if (
-      !source.matchesMetadata(fs.fstatSync(source.fd, { bigint: true })) ||
-      !source.isCurrent() ||
-      !root.isCurrent()
-    )
-      return null;
+    if (!reader.isCurrent() || !root.isCurrent()) return null;
     if (!validCopy() || !sameName(directory, partial, owned, ops.openAt)) return null;
     if (ops.link(directory, partial, final) !== 0) return null;
     finalOwned = true;

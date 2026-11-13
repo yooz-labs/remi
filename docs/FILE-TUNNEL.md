@@ -14,7 +14,7 @@ Its merge tree equals tested source `28ea5daf`; both full Bun suites and the act
 Develop's successor `23df4739` changes only version strings to `0.7.17-dev.42` and is included in this documentation branch.
 The relay backend previously landed through [#1331](https://github.com/yooz-labs/remi/pull/1331) at `b1168126`, whose tree equals tested backend `2858e4bd`; `1d478e07` changes only the development version.
 The initial checks against develop `1d800273`, relay epic `8fb5b88b` and source composite `1e96c688` remain historical provenance.
-No upload, file-fetch or forwarded-browser implementation was found in the daemon, shared protocol or web client.
+At that historical baseline no upload, file-fetch or forwarded-browser implementation was found. Subsequent source continuations below supersede that baseline for their specifically qualified operations.
 `WebSocketAdapter`'s `onClientConnect` callback passes the server-derived fingerprint, `IdentityStore.withAuthorizationEpoch` supplies a grant-incarnation transaction, and `PTYSession.write` queues raw writes without a prompt callback.
 Current chat checks `promptUp` before enqueue and then calls `PTYSession.submitInput`, which appends Enter; neither operation is an attachment insertion implementation.
 
@@ -41,12 +41,12 @@ An unauthenticated peer has no tunnel authority.
 An authorized client may request an explicit transfer for a live session it is attached to; possession of another session's ID or transfer ID grants nothing.
 The hub must capture the authenticated device, authorization grant incarnation and current session binding, and the child must recheck them before reading, writing or inserting a reference.
 Cancellation, detach, authorization removal and a changed session binding invalidate unfinished transfers.
-This requires a tunnel-specific current-grant-incarnation check: today's authenticated connections survive key removal (#1305), so connection authentication alone cannot establish revocation.
+This requires a tunnel-specific current-grant-incarnation check: direct connections recheck their grant before dispatch and at the existing heartbeat (#1305), and each queued transfer effect must still verify its captured original grant.
 Removing and granting the same key again must not revive an earlier transfer; an epoch mismatch or an unavailable authority store permanently invalidates that transfer.
 
 A malicious relay may inspect metadata, delay, truncate or replay transport frames.
 Relay encryption does not stop a legitimately authenticated client from requesting files or exhaustively uploading data; filesystem policy and budgets are separate checks.
-Direct WebSockets provide authentication without encryption by remi (ADR 0009); use a trusted network, VPN or SSH tunnel for sensitive transfers.
+Direct `ws://` provides authentication without encryption by Remi; optional `[daemon.tls]` supplies HTTPS/WSS ([setup](DIRECT-TLS.md), ADR 0009 amendment). The new link/download release requires HTTPS/WSS with normal certificate and hostname validation.
 
 A malicious project or agent may plant traversal paths, symlinks, credential files, URL schemes or deceptive display text.
 The daemon must not acquire credentials for this feature, inspect credential stores or interpret an agent's output as permission to transfer a file or open a link.
@@ -107,6 +107,12 @@ Deletion is limited to owned transfer artifacts, with failures counted visibly a
 
 Egress comes after ingress and the portable filesystem spike.
 An explicit client request selects one relative file in the session's project directory; there is no directory listing, glob, recursive download or arbitrary absolute-path endpoint.
+
+Protected roots cover the known launch-environment, default and explicitly
+supplied Remi/Claude/Codex locations. Remi does not resolve arbitrary private
+locations from harness-internal settings. Missing active/explicit roots and
+unreadable or replaced protected roots keep downloads unavailable; an inactive
+default is optional only until it has first existed.
 An agent's printed path is merely a suggestion.
 The final UI displays the escaped project-relative name and byte size before export; authentication is still checked on the daemon, independently of that display.
 
@@ -242,9 +248,39 @@ The staged result shape is separate from the chunk example; actual matching PNG/
 | Operation | Candidate frames and effect | Gate and availability |
 |---|---|---|
 | Claude reference insertion | `image_insert_request`: common request envelope, `sessionId`, expected `binding`, `artifactId`; `image_insert_result`: common correlated response, `outcome` exactly `inserted`, `refused` or `uncertain`, and `code` exactly `none` on insertion; `unavailable`, `busy`, `conflict`, `expired`, `binding_changed` or `prompt_up` on refusal; `delivery_unknown` on uncertainty. `inserted` means one confirmed reference write without Enter, never proof the harness read the image. | No automatic insertion after staging. Check authority/binding/prompt at the actual serialized PTY effect. Only refusal before any possible write permits a new explicit attempt; each artifact permits at most one possible insertion. Cache/return recorded results without another write, including a retried request ID; changing the ID cannot evade retirement. Retain retirement while the artifact is usable; do not replay or auto-retry. The owner accepted the original expiry in ADR0042. The installed corrected route, direct host and explicit web caller are verified separately; native conformance is still required for native availability. |
-| File fetch | Candidate `file_fetch_begin/accepted`, `file_fetch_chunk/ack`, `file_fetch_complete/result`, `file_fetch_cancel/result`; begin selects one permitted project-relative path. Prepare a reserved private copy before any content frame. Completion describes its length and SHA-256; never claim an atomic source snapshot. | Names stay in freeze scope, not advertised. Exact fetch fields/ack/cancellation rules await descriptor confinement, denial-policy and private-copy spike evidence; no placeholder implementation. |
-| Link forwarding | Candidate `link_candidate` and a client-local explicit open choice; candidate carries a bounded validated URL, never a host-fetch instruction. | Unavailable until the per-session shim, URL bounds, selected-client routing and actual launch boundary are specified and proven. |
+| File fetch | [Accepted ADR0045](../.context/decisions/0045-direct-file-download.md): begin/accepted, bounded `file_fetch_read/chunk` pull responses, complete/result, cancel/result and short refusal. One admitted project-relative nonempty regular file, 10 MiB, exact private-copy digest and explicit client Save. A read acknowledges the preceding chunk; cancellation also works during preparation using the begin ID. | The source composes strict original-byte ingress, the managed journal, actual Claude/Codex session lifetimes and explicit web Save over signed direct WSS and the authenticated encrypted relay channel. Relay readiness is tied to the enrolled device, child attachment and binding. Local Worker/HubRelay/ChildProxy and rendered app checks cover 10 MiB Save, digest verification, cancellation and context loss. Deployed Worker, native-device and physical-device acceptance remain separate. |
+| Link forwarding | Accepted ADR0044: `browser_link_receiver_request/result/ended` and `browser_link_candidate`; exclusive explicit Receive, bounded canonical HTTP(S) destination and a separate client Open choice. | The source now composes the Claude BROWSER producer and the explicit web receiver over both the signed public-TLS direct path and the authenticated encrypted relay channel. Relay tests use the source Worker under Miniflare, HubRelay, the child proxy and the actual app; browser checks cover selection, explicit Open, replacement and natural expiry. No plaintext fallback. Deployed Worker, native-device, Codex-producer, installed-consumer and operator PKI acceptance remain separate. |
 | Codex attachment delivery | No candidate PTY insertion, `-i` relaunch or implicit `turn/start` fallback. | Unavailable until the owner resolves #1207 and the structured attachment operation/posture is independently demonstrated. |
+
+### Encrypted relay file-download delivery (2026-10-15)
+
+The file-fetch frames now travel through the existing v2 encrypted machine
+channel to the actual child daemon. The relay Worker forwards opaque encrypted
+frames and transport metadata; it does not parse the file contents. The hub
+preserves the original frame bytes until the child’s strict ingress validates
+the operation, and a possible child send stays owned by that channel so a lost
+child cannot make the download request replay on a replacement.
+
+Local source acceptance constructs the source Worker under Miniflare, HubRelay,
+ChildProxy, actual Remi daemon/PTY children with owned Claude- and Codex-shaped
+test consumers, and the actual web app. Both harnesses transfer and save a 10
+MiB file after independent digest verification. Rendered
+browser checks cover 390×844, 768×1024 and 1440×900, with cancellation, explicit
+Save, refusal, busy-session and lost-context states. No transfer automatically
+opens or saves a downloaded file; the browser download starts only after the
+user clicks Save.
+
+The local source suite also exposed authorization-lock contention during
+private-copy I/O. Bounded private read/write and digest chunks now run outside
+the grant lock, with a fresh authority check before and after each chunk. The
+final journal flush also runs outside the lock; a fresh check precedes opening
+the private reader. This staging interval exposes no path or sends no file bytes,
+and relay authority checks can proceed while it runs.
+The focused relay/link/download source population passed 143 tests across 11
+files with zero failures, including held-No responsiveness during an active
+10 MiB pull. These results do not establish deployed Cloudflare behavior, Swift
+conformance, physical-device UI, empty-file support or larger payloads. Keep
+#1170 open for those scopes.
 
 ## Spike plan and Xcode handoff
 
@@ -481,8 +517,8 @@ If a gate fails, preserve its evidence and resolve or narrow the supported scope
 | T0: threat model and freeze | Review this proposal; settle filesystem portability, snapshots, image lifetime, bounds and insertion semantics. Write the protocol ADR and fixtures. | No unresolved security-critical decision and a source trace for every reuse claim. |
 | T1a: direct image staging | Portable private storage, bounded decoder, authenticated chunk lifecycle and one real client caller; no insertion. | Real source hub/child: strict bytes/digest/decode, device/grant/session isolation, quotas, lost-ack/refusal and cleanup; a real held approval remains responsive. |
 | T1b: explicit Claude insertion | Optional harness attachment operation and guarded serialized reference write, with separate capability/caller. | Installed Claude: no Enter, zero prompt input on refusal, one effect under lost receipt, and proven image lifetime including resume. |
-| T2: explicit link forwarding | Session-scoped shim and user-triggered client launch. | Actual process environment/shim/client trace; no host fetch, automatic launch or credential inheritance. |
-| T3: read-only file egress | Portable descriptor confinement, denial policy, snapshot semantics and inert client handling. | macOS/Linux path-race corpus, credential overlap controls, quotas and revoked-device controls. No egress on an unsupported filesystem API. |
+| T2: explicit link forwarding | HTTPS/WSS first, then a session-scoped shim and user-triggered client launch. | Actual process environment/shim/client trace; no host fetch, automatic launch or credential inheritance. |
+| T3: read-only file egress | HTTPS/WSS first; accepted 10 MiB limit, portable descriptor confinement, denial policy, snapshot semantics and inert client handling. | macOS/Linux path-race corpus, credential overlap controls, quotas and revoked-device controls. No egress on an unsupported filesystem API. |
 | T4: relay transport and native depth | Reuse accepted v2 transport and implement X5 UI for capabilities already present. | Real Durable Object, hub and client; no content on Worker logs, HTTP answer routes or push; owner signs and exercises physical-device UI. |
 
 Each phase is one independently reviewable PR or is split further when its implementation exceeds that scope.
@@ -811,8 +847,9 @@ The production web connection manager owns a stop-and-wait upload controller.
 The chat panel selects a PNG/JPEG, shows acknowledged progress, permits explicit
 cancellation and reports the staged result or uncertainty. An unconfirmed attempt
 cannot blindly restart on the same context. No upload inserts an image into the
-harness or returns a host path. Direct WebSocket encryption remains outside Remi;
-use an existing private transport as described in ADR 0009.
+harness or returns a host path. Unconfigured direct `ws://` remains unencrypted
+by Remi; use the optional TLS listener or an existing private transport as
+described in ADR 0009.
 
 Both Bun source populations pass 1,462 tests and 5,427 assertions across eleven
 files, including both shipping direct-dispatch endpoints. Root, web app and web
@@ -857,3 +894,19 @@ Production App controls cover PNG/JPEG at 390×844, 1024×768 and 1440×1000, pl
 Compiled host controls cover Apple Silicon Mac and Linux ARM64/x64 on Bun1.3.11/1.4.2; the inert CLI consumes no additional model turn.
 These controls do not establish native conformance, phone battery use, deployed relay attachments or a new 24-hour hardware soak.
 Keep #1170 open for those scopes and the link/download follow-ups.
+
+## Encrypted relay browser-link delivery (2026-10-15)
+
+The relay path now routes a selected child's Claude BROWSER candidates to one
+explicitly selected web receiver over the existing authenticated encrypted
+machine channel. Receiver selection is exclusive; replacing the receiver ends
+the prior lease. The client retains bounded candidates briefly and opens a
+chosen HTTP(S) destination only after a separate user action. The Worker
+forwards opaque channel frames; it does not receive the URL as parsed content.
+
+Local source acceptance constructs the source Worker under Miniflare, HubRelay,
+the child proxy, the actual BROWSER producer and the web app. Rendered browser
+checks cover 390×844, 768×1024 and 1440×900, including natural lease expiry.
+These results do not establish deployed Cloudflare behavior, signed native
+clients, physical-device UI, Codex link production or installed-host browser
+opening. Keep #1170 open for those remaining scopes.

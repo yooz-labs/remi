@@ -98,6 +98,23 @@ struct MachineStoreTests {
         #expect(endpoint.webSocketURL?.absoluteString == "ws://127.0.0.1:18765/ws")
     }
 
+    @Test func machineStateUsesVerifiedDescriptorAndLegacyEndpointFallback() {
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        var state = MachineState(endpoint: endpoint, displayName: endpoint.displayAddress)
+        #expect(state.id == endpoint.id)
+        #expect(state.machineID == endpoint.id)
+        state.apply(MachineDescriptor(
+            id: "00112233445566778899aabbccddeeff",
+            name: "Remi Workstation",
+            platform: "darwin",
+            remiVersion: "0.7.4",
+            harnesses: ["claude"],
+            capabilities: []))
+        #expect(state.id == endpoint.id)
+        #expect(state.machineID == "00112233445566778899aabbccddeeff")
+        #expect(state.displayName == "Remi Workstation")
+    }
+
     @Test @MainActor func storeStartsWithEveryConfiguredMachine() {
         let endpoints = [
             MachineEndpoint(host: "127.0.0.1", port: 18765),
@@ -112,6 +129,46 @@ struct MachineStoreTests {
         #expect(store.machines.map(\.endpoint) == endpoints)
         #expect(store.machines.allSatisfy { !$0.hasLoadedSessions })
     }
+
+    #if DEBUG
+    @Test @MainActor func approvalPollingKeepsOnePollerPerMachine() {
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        let store = MachineStore(
+            endpoints: [endpoint], identity: ClientIdentity(), clientVersion: "test", clientId: "test"
+        )
+        store.approvalPollPolicy = ApprovalPollPolicy(interval: .seconds(60), window: .seconds(180))
+        store.ownedStartApprovalPolling(endpoint)
+        store.ownedStartApprovalPolling(endpoint)
+        #expect(store.ownedApprovalPollCount == 1)
+        store.stop()
+        #expect(store.ownedApprovalPollCount == 0)
+    }
+
+    @Test @MainActor func removingAMachineCancelsItsApprovalPoller() {
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        let store = MachineStore(
+            endpoints: [endpoint], identity: ClientIdentity(), clientVersion: "test", clientId: "test"
+        )
+        store.approvalPollPolicy = ApprovalPollPolicy(interval: .seconds(60), window: .seconds(180))
+        store.ownedStartApprovalPolling(endpoint)
+        #expect(store.ownedApprovalPollCount == 1)
+        #expect(store.removeMachine(endpoint))
+        #expect(store.ownedApprovalPollCount == 0)
+    }
+
+    @Test @MainActor func aPollerEndsWhenItsMachineIsNotWaitingForApproval() async throws {
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        let store = MachineStore(
+            endpoints: [endpoint], identity: ClientIdentity(), clientVersion: "test", clientId: "test"
+        )
+        store.approvalPollPolicy = ApprovalPollPolicy(interval: .milliseconds(20), window: .seconds(180))
+        store.ownedStartApprovalPolling(endpoint)
+        for _ in 0..<100 where store.ownedApprovalPollCount > 0 {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(store.ownedApprovalPollCount == 0)
+    }
+    #endif
 
     @Test @MainActor func removingMachineRemovesItsConfiguration() {
         let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
@@ -154,7 +211,7 @@ struct MachineStoreTests {
             clientId: "test-client"
         )
 
-        let sent = await store.sendChat(sessionId: "missing", content: "keep this draft")
+        let sent = await store.sendChat(machineID: "none", sessionId: "missing", content: "keep this draft")
 
         #expect(!sent)
         #expect(store.latestOperationError == "Cannot send message: this session is unavailable.")
@@ -252,6 +309,68 @@ struct MachineStoreTests {
         persistence.save(endpoints)
         #expect(persistence.load() == endpoints)
         UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    @Test func legacyEndpointConfigurationMigratesToUnboundProfiles() {
+        let key = "remi.machine-store-tests.\(UUID().uuidString)"
+        let persistence = MachineConfigurationStore(key: key)
+        let endpoints = [
+            MachineEndpoint(host: "100.64.0.8", port: 18765),
+            MachineEndpoint(host: "127.0.0.1", port: 28765),
+        ]
+        persistence.save(endpoints)
+
+        let profiles = persistence.loadProfiles()
+
+        #expect(profiles.map(\.machineID) == [nil, nil])
+        #expect(profiles.map(\.routes) == endpoints.map { [$0] })
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    @Test @MainActor func authenticatedProfilePrefersDirectAndPreservesRelayPinAndAlias() throws {
+        let key = Data(repeating: 7, count: 32)
+        let pin = try RelayMachinePin(
+            relayURL: "wss://relay.example.test",
+            machinePublicKey: RelayCrypto.b64(key)
+        )
+        let direct = MachineEndpoint(host: "100.64.0.8", port: 18765)
+        let relay = MachineEndpoint(host: "relay.example.test", port: 443, relayPin: pin)
+        let machineID = try MachineIdentityVerifier.machineID(forPublicKey: key)
+        let store = MachineStore(
+            profiles: [MachineRouteProfile(machineID: machineID, routes: [relay, direct], displayName: "Build Mac")],
+            identity: ClientIdentity(), clientVersion: "test", clientId: "test"
+        )
+
+        let machine = try #require(store.machines.first)
+        #expect(machine.endpoint.id == direct.id)
+        #expect(machine.endpoint.expectedPublicKey == key.base64EncodedString())
+        #expect(machine.routes.map(\.id) == [direct.id, relay.id])
+        #expect(machine.displayName == "Build Mac")
+        #expect(store.persistableProfiles.first?.machineID == machineID)
+        #expect(store.persistableProfiles.first?.routes.map(\.id) == [direct.id, relay.id])
+        #expect(store.persistableProfiles.first?.machinePublicKey == pin.machinePublicKey)
+    }
+
+    @Test @MainActor func tamperedProfileCannotGroupRoutesByUnverifiedStoredID() throws {
+        let key = Data(repeating: 9, count: 32)
+        let pin = try RelayMachinePin(
+            relayURL: "wss://relay.example.test",
+            machinePublicKey: RelayCrypto.b64(key)
+        )
+        let direct = MachineEndpoint(host: "100.64.0.9", port: 18765)
+        let relay = MachineEndpoint(host: "relay.example.test", port: 443, relayPin: pin)
+        let store = MachineStore(
+            profiles: [MachineRouteProfile(machineID: "00112233445566778899aabbccddeeff", routes: [direct, relay])],
+            identity: ClientIdentity(), clientVersion: "test", clientId: "test"
+        )
+
+        store.start()
+        defer { store.stop() }
+        #expect(store.machines.count == 1)
+        #expect(store.connectionGenerations.isEmpty)
+        guard case .unavailable = store.machines.first?.status else {
+            Issue.record("Invalid saved trust must be unavailable"); return
+        }
     }
 
     @Test func machineDisplayNamesPersistSeparatelyFromEndpoints() {

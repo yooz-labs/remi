@@ -53,6 +53,31 @@ public-key pin and stable ID. This backend phase implements no rename UI or
 profile synchronization. The wire fixtures `hello_ack_machine` and
 `session_list_response_machine` are the RemiKit adoption contract.
 
+## Native route policy follow-up (#1571, #1573)
+
+The native client now captures the full public machine key from its verified
+transport Hello and stores it with the local route profile. The profile uses
+canonical base64url; a restored direct endpoint uses canonical standard base64,
+matching `auth_challenge.serverPublicKey`. These are public pins, not device
+signing keys. A present but invalid saved pin leaves the profile unavailable;
+it never becomes an unpinned legacy connection. Old profiles without a full
+pin retain their existing per-endpoint migration behavior.
+
+Each profile persists Automatic, Local only, Tailscale only or Relay only.
+Automatic tries configured Local addresses, then Tailscale, then an enrolled
+Relay, advancing only after reachability failure. The Tailscale address ranges
+and `.ts.net` suffix classify candidates; they supply no authority and do not
+install or administer a VPN. A strict preference also restricts background
+relay answers. Re-pairing retains the alias, pins, preference and existing
+enrollment; an unsuccessful relay refresh keeps its durable route.
+
+Policy changes retire route generations before socket closure and leave
+outstanding answers uncertain rather than resending them. Direct opening and
+authentication waits have separate deadlines, preserving the daemon's pairing
+approval wait. This phase adds no protocol fields, alternate-address QR or
+local discovery. Source tests, rendered Mac settings and unsigned native
+builds are separate from signed phone acceptance and TestFlight distribution.
+
 ## Evidence and scope
 
 Production callers are `connection-events.ts`, both session-daemon resume ack

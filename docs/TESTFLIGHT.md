@@ -1,10 +1,16 @@
 # Shipping Remi to TestFlight (local upload)
 
-Remi ships to TestFlight from a **local archive + upload**, the same path as
-`yooz-whisper` — no Xcode Cloud. You build and upload from your Mac with a single
-script. Apple team `9DQ459HAZB`, bundle id `live.yooz.remi`.
+Remi ships its native Mac and iPhone apps through **local archives and uploads**.
+There is no Xcode Cloud path. Both helpers archive `packages/native/Remi.xcodeproj`:
+`RemiMac` for Mac and `RemiPhone` for iPhone and iPad. Apple team `9DQ459HAZB`; app bundle identifier
+`live.yooz.remi`; push extension bundle identifier
+`live.yooz.remi.native-push-service`.
 
-## The one command
+Signing and upload belong to the owner under
+[`packages/native/AGENTS.md`](../packages/native/AGENTS.md). Agents prepare and
+validate unsigned archives; the owner runs the signed export and upload steps.
+
+## iPhone and iPad
 
 ```bash
 # build + archive + export the .ipa (no upload)
@@ -15,24 +21,32 @@ bun run testflight:ios
 ASC_KEY_ID=XXXX ASC_ISSUER_ID=uuid ./scripts/testflight-ios.sh --upload
 ```
 
-`scripts/testflight-ios.sh` does, in order:
+`scripts/testflight-ios.sh` validates the native release contract, resolves the
+configured version and exact source commit, archives `RemiPhone` for a generic iOS
+device, checks the embedded `PhonePushService` extension and signed entitlements,
+exports exactly one IPA, writes an acceptance receipt, and uploads only when
+`--upload` is explicit. `--preflight-only` and `--unsigned-archive` provide
+non-upload validation paths used by CI.
 
-1. Stamp the app version into the Xcode project (`scripts/sync-app-version.mjs`).
-2. `bun run build` (in `packages/web`) + `bunx cap sync ios`.
-3. `xcodebuild archive` the workspace `packages/web/ios/App/App.xcworkspace`
-   (scheme `App`, Release, `generic/platform=iOS`, automatic signing).
-4. `xcodebuild -exportArchive` with App Store options → a `.ipa`.
-5. With `--upload`: `xcrun altool --upload-app -t ios` using an App Store Connect
-   API key.
+Automatic signing may use a development profile for the archive. App Store
+export re-signs the payload with distribution profiles. The helper requires
+production APNS on the exported app and verifies signatures, shared groups and
+disabled debugger access on both exported targets before writing the receipt
+or uploading (#1554).
 
-Output lands in `build/ios/` (gitignored; override with `REMI_ARCHIVE_DIR`).
+Output lands in `build/ios-native/` (gitignored; override with
+`REMI_ARCHIVE_DIR`). DerivedData defaults to `DerivedData` inside that output
+directory; override it with `REMI_DERIVED_DATA_DIR`. For S1 worktrees, set both
+paths explicitly on S1. Unsigned archives disable code signing and do not request
+provisioning updates. They do not validate distribution entitlements or APNS
+delivery.
 
 ## Versioning
 
 The app has its **own** version line in `config/app-release.json`
 (`marketingVersion`, `buildNumber`), decoupled from the daemon/npm version. The
-Info.plist already reads `$(MARKETING_VERSION)` / `$(CURRENT_PROJECT_VERSION)`, so
-only the pbxproj is stamped.
+release script passes both values as archive build settings; it does not rewrite
+the Xcode project.
 
 - Marketing version: edit `marketingVersion` in `config/app-release.json`.
 - Build number: **bump before every upload** (App Store Connect rejects a
@@ -44,7 +58,8 @@ only the pbxproj is stamped.
   ```bash
   REMI_BUILD_NUMBER=$(date +%y%m%d%H%M) ./scripts/testflight-ios.sh --upload
   ```
-- `bun run app:version` stamps the pbxproj from config without bumping.
+- `bun run app:version` updates the release configuration used by the repository's
+  release tooling. The native archive receives the resolved values explicitly.
 
 ## App Store Connect API key (for `--upload`)
 
@@ -71,10 +86,8 @@ let it manage certificates, then run the script.
 Push is split by build configuration so local testing and TestFlight each get the
 right APNS environment:
 
-- **Debug** → `App/App.entitlements` (`aps-environment = development`) — local
-  sandbox push testing keeps working.
-- **Release** → `App/AppRelease.entitlements` (`aps-environment = production`) —
-  what the archive/TestFlight build uses.
+- **Debug** requests the development APNS environment.
+- **Release** requests the production APNS environment used by TestFlight.
 
 The only prerequisite is registering the **Push Notifications** capability on the
 App ID `live.yooz.remi` so the distribution provisioning profile carries the
@@ -84,64 +97,90 @@ the sandbox/prod token split).
 
 ## One-time App Store Connect setup
 
-- The App ID `live.yooz.remi` is auto-registered on the first archive (automatic
-  signing + the API key). Enable the **Push Notifications** capability on it so
-  the production-APNS entitlement is allowed.
+- Ensure the App ID `live.yooz.remi` and extension identifier
+  `live.yooz.remi.native-push-service` exist with the capabilities required by the
+  checked-in entitlements. Enable **Push Notifications** so the production APNS
+  entitlement is allowed.
 - **Create the App Store Connect app record (iOS)** in the web UI — My Apps → +
   → New App, bundle id `live.yooz.remi`. This is **required before the first
   upload** and the App Store Connect API cannot do it; until it exists `altool`
   fails with `Cannot determine the Apple ID from Bundle ID 'live.yooz.remi'`.
 - TestFlight: add internal/external test groups; complete export-compliance.
 
-The script passes the ASC API key to `xcodebuild` itself
-(`-authenticationKey*`), so the archive/export create the App ID and the App
-Store distribution profile headlessly — no signed-in Xcode account needed.
+The script passes an available ASC API key to `xcodebuild` itself
+(`-authenticationKey*`) for archive/export provisioning. This does not replace
+the one-time App Store Connect app record and capability setup.
 
 ## Preflight checklist
 
 - [ ] `config/app-release.json` build number bumped + committed.
 - [ ] Push Notifications capability registered on the App ID (production entitlement is already wired in the Release config).
-- [ ] App icons present (`packages/web/ios/App/App/Assets.xcassets/AppIcon.appiconset`).
+- [ ] Native app icons and privacy manifests pass `bun run test:native-assets`.
 - [ ] Distribution cert in keychain; `ASC_KEY_ID` / `ASC_ISSUER_ID` exported for `--upload`.
-- [ ] Device family as intended (currently iPhone-only, `TARGETED_DEVICE_FAMILY = 1`).
+- [ ] Device family as intended (currently iPhone and iPad, `TARGETED_DEVICE_FAMILY = "1,2"`).
+
+The live backend/relay, owner and physical-device checklist is
+[`packages/native/handoff/testflight-backend.md`](../packages/native/handoff/testflight-backend.md).
 
 ## macOS
 
-The macOS client IS the menu-bar hub app (`packages/macos/`, epic #648 — see
-`docs/MACOS_APP.md`). Same local path as iOS:
+`bun run testflight:macos` selects the native SwiftUI `RemiMac` app and its
+`MacPushService` extension. It replaces the older WebView app in the Mac
+TestFlight train. Do not use `scripts/testflight-macos.sh` for native releases.
 
 ```bash
-bun run app:version --bump-build     # shared version line with iOS; commit it
-bun run testflight:macos -- --upload
+# Settings and source checks, no signing or upload
+bash packages/native/scripts/testflight-native-macos.sh --preflight-only
+# Compile and inspect the Release payload without signing
+bash packages/native/scripts/testflight-native-macos.sh --unsigned-archive
+# Owner: signed archive, export and verification of the App Store .pkg
+bun run testflight:macos
+# Owner: additionally validate and upload the .pkg
+ASC_KEY_ID=XXXX ASC_ISSUER_ID=uuid bun run testflight:macos -- --upload
 ```
 
-One-off unique build without touching the config (same override as iOS):
-`REMI_BUILD_NUMBER=$(date +%y%m%d%H%M) bun run testflight:macos -- --upload`.
+Mac output defaults to `build/macos-native/`. The same `REMI_ARCHIVE_DIR`,
+`REMI_DERIVED_DATA_DIR`, version configuration, build override and source marker
+apply to both helpers. Use separate output and DerivedData directories for each
+platform. Both archives require a clean tracked checkout. Pin the same commit
+for the two platforms and retain their `acceptance-receipt.txt` files.
 
-The script stages the web UI into the app, archives, exports a signed Mac App
-Store **.pkg** (macOS's .ipa equivalent), and uploads with `altool -t macos`.
-Same `.env` / ASC API key as iOS.
+For example, prepare the unsigned pair on S1 from that clean checkout:
 
-One-time setup (beyond the iOS list):
+```bash
+REMI_ARCHIVE_DIR=/Volumes/S1/yooz/remi/artifacts/tf22/macos \
+REMI_DERIVED_DATA_DIR=/Volumes/S1/derived/remi-tf22-macos \
+bash packages/native/scripts/testflight-native-macos.sh --unsigned-archive
+REMI_ARCHIVE_DIR=/Volumes/S1/yooz/remi/artifacts/tf22/ios \
+REMI_DERIVED_DATA_DIR=/Volumes/S1/derived/remi-tf22-ios \
+bash scripts/testflight-ios.sh --unsigned-archive
+```
 
-- App Store Connect > My Apps > Remi (`live.yooz.remi`) > **+ Add Platform >
-  macOS**. Same bundle id = universal purchase; macOS gets its own version
-  line and build train (which is why sharing `config/app-release.json`'s
-  build counter with iOS is safe).
-- A **Mac Installer Distribution** certificate in the login keychain (shows
-  as "3rd Party Mac Developer Installer" for older-generation certs — either
-  works). It signs the .pkg and is the one credential iOS never needed. A
-  missing one fails the export step with "no .pkg produced". Already present
-  on the primary dev machine (verified 2026-07-07; export produced a signed
-  .pkg end-to-end).
+One-time Mac setup, in addition to the iOS setup:
 
-Preflight (macOS-specific):
+- Add the macOS platform to the Remi App Store Connect record (`live.yooz.remi`).
+  Mac and iOS have separate build trains; confirm the proposed number is unused
+  on both before preparing the shared version configuration.
+- Install the distribution application and Mac Installer Distribution
+  certificates in the owner's keychain. The installer certificate signs the
+  exported `.pkg`.
 
-- [ ] App Sandbox + network-client entitlements only (TestFlight validation
-      rejects unsandboxed executables — the app never bundles the remi binary).
-- [ ] `ITSAppUsesNonExemptEncryption=false` in the macOS Info.plist (set).
-- [ ] AppIcon present (`packages/macos/Remi/Assets.xcassets/AppIcon.appiconset`).
-- [ ] On-machine smoke: menu-bar icon states + web UI against a live hub
-      (`remi serve`), kill-matrix from `docs/MACOS_APP.md`.
+The native helper checks app and extension identifiers, icons, privacy manifests,
+source and version markers, sandbox and shared groups. Signed export additionally
+checks production APNS entitlements, signatures, disabled debugger access and the
+installer signature before upload. These checks establish payload properties;
+physical notification delivery and answers still need device verification.
 
-Testers install via the TestFlight app on macOS (App Store > TestFlight).
+## Device acceptance after upload
+
+Install the processed build on Mac and iPhone. With a fresh daemon session,
+verify Claude and Codex conversation history, current Working/Thinking/Idle
+states, foreground and background questions, concise notification options,
+answers and resolution on the other client. Include iPhone lock screen and
+Watch delivery where available. Keep delivery, extension decryption and answer
+results separate from provider acceptance; an APNS success response alone does
+not establish that the device displayed a notification.
+
+Record the results against [#1681](https://github.com/yooz-labs/remi/issues/1681).
+Internal Codex `/resume` rebinding remains tracked separately in
+[#1691](https://github.com/yooz-labs/remi/issues/1691).

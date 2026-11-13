@@ -21,7 +21,7 @@
  * NOT `d2c` -- packages/shared/src/protocol.ts), this sends the checked-in
  * golden fixture from the real client and asserts the daemon's real
  * `AdapterEvents` callback fires with the right connection id. `hello`,
- * `auth_response`, `ping`, `pong`, `ack`, relay device and secure push requests have no app-level event (by
+ * `auth_response`, `ping`, `pong`, `ack`, relay device, secure push and terminal-view requests have no app-level event (by
  * design -- see `connection.ts`'s handler map) and get dedicated tests
  * instead of a generic "some event fired" assertion.
  */
@@ -36,6 +36,7 @@ import {
   createAuqAnswer,
   createCreateSessionRequest,
   createHello,
+  createPing,
   deserialize,
   generateId,
 } from '@remi/shared/protocol.ts';
@@ -75,7 +76,7 @@ const C2D_TYPES = (Object.keys(MESSAGE_DIRECTION) as (keyof ProtocolMessageMap)[
 );
 
 /** Types with no app-level `AdapterEvents` callback by design (connection
- *  setup, liveness, or acknowledgment) -- covered by dedicated tests below
+ *  setup, liveness, acknowledgment or explicit refusal) -- covered by dedicated tests below
  *  instead of the generic per-type loop. */
 const NO_EVENT_TYPES = new Set([
   'native_answer',
@@ -88,11 +89,20 @@ const NO_EVENT_TYPES = new Set([
   'relay_device_revoke_request',
   'secure_push_register_request',
   'secure_push_unregister_request',
+  'session_terminal_open',
+  'session_terminal_read',
+  'session_terminal_close',
 ]);
 
 /** Maps each c2d type with a real handler to the `AdapterEvents` callback
  *  name `connection.ts`'s (and the unified router's) handler map invokes. */
 const EXPECTED_EVENT: Partial<Record<keyof ProtocolMessageMap, string>> = {
+  notification_host_request: 'onNotificationHostRequest',
+  file_fetch_begin: 'onFileDownload',
+  file_fetch_read: 'onFileDownload',
+  file_fetch_complete: 'onFileDownload',
+  file_fetch_cancel: 'onFileDownload',
+  browser_link_receiver_request: 'onBrowserLinkReceiver',
   chat_submit_request: 'onStructuredChat',
   image_insert_request: 'onImageInsert',
   image_upload_begin: 'onImageUpload',
@@ -144,6 +154,8 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
         record('onConnect')(id);
       },
       onDisconnect: record('onDisconnect'),
+      onFileDownload: async (...args) => { record('onFileDownload')(...args); },
+      onBrowserLinkReceiver: record('onBrowserLinkReceiver'),
       onStructuredChat: async (...args) => { record('onStructuredChat')(...args); },
       onImageInsert: async (...args) => {
         record('onImageInsert')(...args);
@@ -155,6 +167,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
       onAnswer: record('onAnswer'),
       onBulletExpandRequest: record('onBulletExpandRequest'),
       onSessionListRequest: record('onSessionListRequest'),
+      onNotificationHostRequest: record('onNotificationHostRequest'),
       onRecentRepositoriesRequest: record('onRecentRepositoriesRequest'),
       onTranscriptLoadRequest: record('onTranscriptLoadRequest'),
       onCreateSessionRequest: record('onCreateSessionRequest'),
@@ -187,7 +200,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     await adapter.stop();
   });
 
-  test('every ClientToDaemonType has a fixture, and the set is exactly the 30 INBOUND_ROUTED types', () => {
+  test('every ClientToDaemonType has a fixture, and the set is exactly 39 types', () => {
     for (const type of C2D_TYPES) {
       expect(() => loadFixture(type)).not.toThrow();
     }
@@ -195,7 +208,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     // hand-transcribed INBOUND_ROUTED list -- if this drifts, so should that
     // list, and a mismatch between the two is exactly the kind of silent
     // drift #899 exists to make loud.
-    expect(C2D_TYPES.length).toBe(30);
+    expect(C2D_TYPES.length).toBe(39);
   });
 
   test('native proofs receive correlated refusal on direct transport, including repeated ids', async () => {
@@ -236,10 +249,13 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
       expect(call?.event).toBe(expectedEvent);
       // First positional arg on every AdapterEvents callback is connectionId.
       expect(call?.args[0]).toBe(connectionId);
-      if (expectedEvent === 'onImageUpload' || expectedEvent === 'onImageInsert') {
+      if (expectedEvent === 'onImageUpload' || expectedEvent === 'onImageInsert' || expectedEvent === 'onFileDownload') {
         expect(call?.args[1]).toEqual({ kind: 'request', request: fixture });
       }
-      if (expectedEvent === 'onStructuredChat') {
+      if (expectedEvent === 'onFileDownload') {
+        expect(received.some((message) => message.type === 'ack' && message.ack.messageId === fixture.id)).toBe(false);
+      }
+      if (expectedEvent === 'onStructuredChat' || expectedEvent === 'onBrowserLinkReceiver' || expectedEvent === 'onNotificationHostRequest') {
         expect(call?.args[1]).toEqual(fixture);
         expect(received.some((message) => message.type === 'ack' && message.ack.messageId === fixture.id)).toBe(false);
       }
@@ -303,7 +319,7 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     }
   });
 
-  // --- Dedicated tests for the 10 no-app-event types ---
+  // --- Dedicated tests for no-app-event types (terminal refusals use isolated connections below) ---
 
   test.each(['register', 'unregister'] as const)(
     'secure push %s from the real direct client returns a correlated UNSUPPORTED response and no application event',
@@ -462,3 +478,49 @@ describe('daemon inbound dispatch: real web client -> real daemon adapter confor
     expect(err.code).toBe('UNKNOWN_MESSAGE');
   });
 });
+
+describe.each(['session_terminal_open', 'session_terminal_read', 'session_terminal_close'] as const)(
+  '%s optional direct pressure without an installed terminal service',
+  (type) => {
+    test('real web client stays available without terminal input, resize or acknowledgment', async () => {
+      const port = await reserveRange(1);
+      let connected = false;
+      const disconnectReasons: string[] = [];
+      const effects: string[] = [];
+      const received: ProtocolMessage[] = [];
+      const adapter = new WebSocketAdapter({ port }, {
+        onConnect: () => { connected = true; },
+        onDisconnect: (_id, reason) => { disconnectReasons.push(reason); },
+        onUserInput: () => { effects.push('input'); },
+        onTerminalResize: () => { effects.push('resize'); },
+      });
+      const client = new WebSocketClient(
+        { url: `ws://localhost:${port}/ws`, autoReconnect: false, heartbeatInterval: 0, connectionTimeout: 2000 },
+        { onMessage: (message) => received.push(message) },
+      );
+      try {
+        await adapter.start();
+        client.connect();
+        await waitFor(() => client.isTransportOpen);
+        client.send(createHello(generateId(), '0.0.0-test'));
+        await waitFor(() => connected);
+        const fixture = loadFixture(type);
+        client.send(fixture);
+        // #1643 reserves terminal ingress before generic ACK/dispatch. Missing
+        // optional capacity preserves the shared connection; an ordered real
+        // ping proves this request was processed without an arbitrary sleep.
+        const ping = createPing();
+        client.send(ping);
+        await waitFor(() => received.some((message) => message.type === 'pong' && message.pingId === ping.id));
+        expect(client.isTransportOpen).toBe(true);
+        expect(disconnectReasons).toEqual([]);
+        expect(effects).toEqual([]);
+        expect(received.some((message) => message.type === 'ack' && message.ack.messageId === fixture.id)).toBe(false);
+        expect(received.some((message) => message.type.startsWith('session_terminal_'))).toBe(false);
+      } finally {
+        client.disconnect();
+        await adapter.stop();
+      }
+    });
+  },
+);

@@ -5,8 +5,8 @@
  * It is read from git, not remembered from a create request, so a session a person started in a
  * worktree is described too, and a branch the agent checks out later shows. The session list never
  * waits on git: {@link WorkspaceCache} answers from its last read and refreshes a stale one in the
- * background, so the first list after a change still shows the previous read and the next one shows
- * the change.
+ * background. The first stale list can show the previous read; a changed result notifies the caller
+ * so it can push the updated list without another request (#1285).
  */
 
 import * as fs from 'node:fs';
@@ -108,6 +108,7 @@ export class WorkspaceCache {
   private readonly now: () => number;
   private readonly timeoutMs: number;
   private readonly log: (line: string) => void;
+  private readonly onChange: (directory: string) => void;
 
   constructor(
     options: {
@@ -115,12 +116,15 @@ export class WorkspaceCache {
       now?: () => number;
       timeoutMs?: number;
       log?: (line: string) => void;
+      /** Synchronous notification after a changed published value is committed (#1285). */
+      onChange?: (directory: string) => void;
     } = {},
   ) {
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
     this.now = options.now ?? Date.now;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_DESCRIBE_TIMEOUT_MS;
     this.log = options.log ?? (() => {});
+    this.onChange = options.onChange ?? (() => {});
   }
 
   get(dir: string): SessionGitWorkspace | undefined {
@@ -158,6 +162,7 @@ export class WorkspaceCache {
     entry.pending = readWorkspace(dir, { timeoutMs: this.timeoutMs })
       .catch((err: unknown) => unknown(`read failed: ${String(err)}`))
       .then((reading) => {
+        let changed = false;
         if (reading !== null && 'unknown' in reading) {
           if (!entry.logged.has(reading.unknown)) {
             entry.logged.add(reading.unknown);
@@ -166,10 +171,22 @@ export class WorkspaceCache {
             );
           }
         } else {
+          const previous = entry.value ?? null;
+          changed =
+            previous?.repository !== reading?.repository ||
+            previous?.directory !== reading?.directory ||
+            previous?.branch !== reading?.branch;
           entry.value = reading;
         }
         entry.readAt = this.now();
         entry.pending = undefined;
+        if (changed) {
+          try {
+            this.onChange(dir);
+          } catch {
+            this.log('workspace change notification failed; cached value remains available');
+          }
+        }
       });
   }
 }

@@ -7,7 +7,7 @@ import UserNotifications
 
 #if os(macOS)
 /// Exact owned CA evaluation only. This adapter is compiled into tests, not apps.
-private final class OwnedRelayCA: NSObject, URLSessionDelegate, @unchecked Sendable {
+final class OwnedRelayCA: NSObject, URLSessionDelegate, @unchecked Sendable {
     let certificate: SecCertificate
     init(path: String) throws {
         let pem = try String(contentsOfFile: path, encoding: .utf8)

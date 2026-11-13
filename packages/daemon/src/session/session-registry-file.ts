@@ -13,6 +13,7 @@ import * as path from 'node:path';
 import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString, isHarnessId } from '@remi/shared';
 import { normalizeProjectPath } from '../cli/path-resolver.ts';
 import { remiHome } from '../config/remi-home.ts';
+import { isAuthorityEpoch } from '../storage/authority-epoch.ts';
 import { findAvailableTcpPort } from './port-utils.ts';
 import { isProcessAlive } from './process-alive.ts';
 
@@ -34,6 +35,8 @@ export interface PendingQuestionEntry {
 
 /** A live session entry written by each remi wrapper process. */
 export interface LiveSessionEntry {
+  /** Current process-owned push runtime, never a recipient key or provider credential. */
+  readonly notificationRuntime?: string;
   readonly sessionId: string;
   readonly pid: number;
   readonly wsPort: number;
@@ -152,6 +155,7 @@ function isValidEntry(data: unknown): data is LiveSessionEntry {
     childPidOk &&
     childExitedOk &&
     harnessOk &&
+    (obj['notificationRuntime'] === undefined || isAuthorityEpoch(obj['notificationRuntime'])) &&
     pendingQuestionsOk
   );
 }
@@ -239,6 +243,10 @@ export class SessionRegistryFile {
   /** Record the Claude child pid once the PTY has spawned. */
   setClaudeChildPid(sessionId: string, claudeChildPid: number): void {
     this.patchEntry(sessionId, { claudeChildPid, claudeChildExited: false });
+  }
+  setNotificationRuntime(sessionId: string, notificationRuntime: string): void {
+    if (!isAuthorityEpoch(notificationRuntime)) throw new Error('INVALID_NOTIFICATION_RUNTIME');
+    this.patchEntry(sessionId, { notificationRuntime });
   }
 
   /**

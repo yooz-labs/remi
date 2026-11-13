@@ -180,6 +180,81 @@ public enum RemiPreviewData {
         .tool(id: "t1", name: "Build project", summary: "xcodebuild -scheme RemiPhone\n\nCompileSwift normal arm64\nLink RemiPhone\nBuild succeeded"),
     ]
 
+    /// A session named as a hub names it, `<machine>:<project>/<branch>` (#1647).
+    public static let hubNamedSession = RemiSessionSummary(
+        id: "hub-1",
+        machineID: "yahyas-mcm",
+        machineName: "yahyas-mcm",
+        name: "yahyas-mcm:transit/dev",
+        harness: "Claude",
+        project: "transit",
+        status: .working,
+        lastMessage: "Running the build",
+        canTerminate: true
+    )
+
+    /// A conversation with a long run of tool calls between messages (#1647), the shape a
+    /// real hub sends: many consecutive tool entries, then the reply.
+    public static let toolRunTranscript: [RemiTranscriptEntry] = {
+        let tools: [(String, String)] = [
+            ("shell", "git status --short"), ("read", "Sources/App/Session.swift"),
+            ("read", "Sources/App/Store.swift"), ("edit", "Sources/App/Store.swift"),
+            ("shell", "swift build"), ("read", "Tests/StoreTests.swift"),
+            ("edit", "Tests/StoreTests.swift"), ("shell", "swift test"),
+            ("grep", "func reload"), ("read", "Sources/App/Reload.swift"),
+            ("edit", "Sources/App/Reload.swift"), ("shell", "swift test --filter Reload"),
+        ]
+        return [
+            .user(id: "run-u1", text: "Fix the reload bug and run the tests."),
+            .agent(id: "run-a1", text: "On it. I will look at the store first."),
+        ] + tools.enumerated().map { index, tool in
+            .tool(id: "run-t\(index + 1)", name: tool.0, summary: tool.1)
+        } + [
+            .tool(id: "run-pair-1", name: "shell", summary: "git diff --stat"),
+            .agent(id: "run-a2", text: "Fixed: the reload handler now clears the stale cache. All tests pass."),
+            .tool(id: "run-pair-2", name: "shell", summary: "git status --short"),
+            .tool(id: "run-pair-3", name: "read", summary: "CHANGELOG.md"),
+        ]
+    }()
+
+    /// The golden `session_terminal_snapshot` frame, decoded by the strict codec.
+    public static let fixtureTerminalSnapshot: SessionTerminalSnapshot = {
+        guard let url = Bundle.module.url(forResource: "session_terminal_snapshot", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              case .snapshot(let snapshot)? = try? TerminalViewMessage.decode(data)
+        else { preconditionFailure("Missing or invalid RemiUI preview fixture: session_terminal_snapshot.json") }
+        return snapshot
+    }()
+
+    /// A full 80 by 24 screen, built through the strict codec so it cannot claim a shape the wire lacks.
+    public static let wideTerminalSnapshot: SessionTerminalSnapshot = {
+        var lines = [
+            "~/remi $ bun test",
+            "bun test v1.3.0",
+            "",
+            "packages/shared/tests/terminal-view.test.ts:",
+            "(pass) strict frames > snapshot with wide characters 界é",
+            "(pass) strict frames > refuses controls",
+            "",
+            "  4 pass",
+            "  0 fail",
+            "Ran 4 tests across 1 file. [0.12s]",
+            "",
+            "~/remi $ ",
+        ]
+        while lines.count < 24 { lines.append("") }
+        let snapshot = SessionTerminalSnapshot(
+            header: WireHeader(
+                id: "00000000-0000-4000-8000-000000000001", timestamp: "2026-10-22T00:00:00.000Z",
+                sessionId: "00000000-0000-4000-8000-000000000003"),
+            requestId: "00000000-0000-4000-8000-000000000002", viewId: "AAECAwQFBgcICQoLDA0ODw", revision: 7,
+            columns: 80, rows: 24, lines: lines, cursor: TerminalCursor(row: 11, column: 9))
+        guard (try? TerminalViewMessage.snapshot(snapshot).encodedFrame()) != nil else {
+            preconditionFailure("The wide terminal preview is not a valid snapshot")
+        }
+        return snapshot
+    }()
+
     private static func decodeFixture<Value: Decodable>(_ name: String) -> Value {
         guard let url = Bundle.module.url(forResource: name, withExtension: "json") else {
             preconditionFailure("Missing RemiUI preview fixture: \(name).json")

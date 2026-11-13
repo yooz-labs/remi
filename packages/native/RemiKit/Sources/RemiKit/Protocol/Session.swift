@@ -32,6 +32,9 @@ public struct DiscoverableSession: Codable, Sendable, Equatable, Identifiable {
     public let claudeSessionId: String?
     public let transcriptPath: String?
     public let canResume: Bool?
+    public let machineId: String?
+    /// The harness's own id for the session (#1179); equals `claudeSessionId` for Claude, omitted while unknown.
+    public var harnessSessionId: String?
 }
 
 /// `{ "type": "session_list_response", ... }`: the sessions a machine has.
@@ -43,4 +46,5 @@ public struct SessionListResponse: Decodable, Sendable, Equatable {
     public let requestId: String
     /// The ports of the machine's session daemons (#542); a machine object replaces this (#1234).
     public let daemonPorts: [Int]?
+    public let machine: MachineDescriptor?
 }

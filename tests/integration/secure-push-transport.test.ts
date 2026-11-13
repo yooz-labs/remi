@@ -1,6 +1,6 @@
 /** Real daemon authority/codec and owned HTTP boundaries. Worker integration follows below. */
 import { afterEach, expect, test } from 'bun:test';
-import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createIdentity, relayV2 as r } from '@remi/shared';
@@ -27,13 +27,13 @@ afterEach(async () => {
   for (const server of servers.splice(0)) await server.stop(true);
   for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
-async function fixture() {
+async function fixture(leaseMs?: number) {
   const directory = mkdtempSync(join(tmpdir(), 'remi-secure-transport-'));
   chmodSync(directory, 0o700);
   directories.push(directory);
   const trust = new IdentityStore(directory);
   const devices = new RelayDeviceStore(directory, trust);
-  const store = new SecurePushStore(directory, trust);
+  const store = new SecurePushStore(directory, trust, 64, leaseMs === undefined ? {} : { leaseMs });
   const identity = await createIdentity();
   await trust.addAuthorizedKey(identity.publicKey, 'owned synthetic');
   await devices.add(identity.publicKey, 'owned synthetic');
@@ -253,6 +253,36 @@ test('secure transport classifies a dismissal as background and every other even
     expect(await transport.sendPrepared(prepared.prepared)).toMatchObject({ outcome: 'accepted' });
   }
   expect(received.bodies.map((b) => JSON.parse(b).pushClass)).toEqual(['alert', 'background']);
+});
+test('secure transport lease expiry after preparation performs zero HTTP effects', async () => {
+  // Exercise both the approved 30-day default and a supported shorter lease.
+  // The default changed in #1679; one day of inactivity is no longer expiry.
+  const day = 24 * 60 * 60 * 1000;
+  for (const policy of [
+    { leaseMs: undefined, ageMs: 30 * day + 1 },
+    { leaseMs: day, ageMs: day + 1 },
+  ]) {
+    const f = await fixture(policy.leaseMs);
+    const received = receiver(() => Response.json({}));
+    const Transport = await transportClass();
+    const transport = Transport.forOwnedLoopbackTest({
+      store: f.store,
+      signer: f.signer,
+      audience: received.server.url.origin,
+      ownedOrigin: received.server.url.origin,
+    });
+    const result = await transport.prepare(f.snapshot, f.metadata, f.payload, () => true);
+    if (result.outcome !== 'prepared') throw new Error('expected prepared capability');
+    const file = join(f.directory, 'secure_push_subscriptions.json');
+    const data = JSON.parse(readFileSync(file, 'utf8'));
+    data.subscriptions[0].lastSeenAt = Date.now() - policy.ageMs;
+    writeFileSync(file, JSON.stringify(data));
+    expect(await transport.sendPrepared(result.prepared)).toMatchObject({
+      outcome: 'refused',
+      reason: 'AUTHORITY_CHANGED',
+    });
+    expect(received.bodies).toHaveLength(0);
+  }
 });
 test('secure transport refuses durable revoke at actual signing completion and performs zero effects', async () => {
   const f = await fixture();

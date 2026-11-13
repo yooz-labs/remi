@@ -1019,6 +1019,7 @@ export function setupHookBridge(
   hookServer.on('Stop', (input) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
+    if (!input.stop_hook_active && !isSubagentEvent(input)) tracker.onAgentTurnEnded();
     // #711: mainOnly -- Stop fires whenever the LEAD agent idles, even while
     // teammates (subagent/agent_id-tagged permission escalations) are still
     // running. A wholesale cancelStale here resolved every teammate's
@@ -1147,6 +1148,7 @@ export function setupHookBridge(
   hookServer.on('SubagentStop', (input) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
+    if (input.agent_id) tracker.onAgentTurnEnded(input.agent_id);
     try {
       // #891: SubagentStop now carries agent_transcript_path directly;
       // recordStop prefers it over the SubagentStart-time derivation (see

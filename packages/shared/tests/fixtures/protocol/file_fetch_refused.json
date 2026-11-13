@@ -1,0 +1,9 @@
+{
+  "type": "file_fetch_refused",
+  "id": "99aabbcc-ddee-4f01-8233-445566778899",
+  "timestamp": "2026-10-14T03:00:00.000Z",
+  "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+  "requestId": "00112233-4455-4677-8899-aabbccddeeff",
+  "operation": "file_fetch_begin",
+  "code": "malformed"
+}

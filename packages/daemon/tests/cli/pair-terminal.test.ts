@@ -52,10 +52,10 @@ async function setup(status: Record<string, unknown> = {}) {
 }
 
 /** `remi pair` in a pseudo-terminal; `screen()` is everything it has drawn. */
-function runInTerminal(env: Record<string, string>) {
+function runInTerminal(env: Record<string, string>, args: readonly string[] = ['pair']) {
   let output = '';
   const decoder = new TextDecoder();
-  const proc = Bun.spawn([process.execPath, CLI, 'pair'], {
+  const proc = Bun.spawn([process.execPath, CLI, ...args], {
     env,
     terminal: {
       cols: 400,
@@ -129,6 +129,50 @@ describe('remi pair in a terminal (#1275)', () => {
     );
     expect(await new Response(proc.stdout).text()).not.toContain('remi://pair#');
   });
+
+  test('invalid QR version and relay combination refuse before a pairing record exists', async () => {
+    for (const args of [
+      ['pair', '--qr-version', '3'],
+      ['pair', '--relay', '--qr-version', '2'],
+    ]) {
+      const { env, remiHome } = await setup();
+      const proc = Bun.spawn([process.execPath, CLI, ...args], {
+        env,
+        stdin: 'pipe',
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      procs.push(proc);
+      expect(await proc.exited).toBe(1);
+      const error = await new Response(proc.stderr).text();
+      expect(error).toMatch(
+        args.includes('--relay') ? /cannot be combined with --relay/ : /Choose 1 or 2/,
+      );
+      expect(await new Response(proc.stdout).text()).not.toContain('remi://pair#');
+      expect(fs.existsSync(path.join(remiHome, 'pairings.json'))).toBe(false);
+    }
+  });
+
+  test('v2 explicit host is the only candidate in the real terminal approval flow', async () => {
+    const { env, store } = await setup();
+    const t = runInTerminal(env, ['pair', '--qr-version', '2', '--host', '192.0.2.10']);
+    await waitFor(() => t.screen().includes('remi://pair#'), 'the v2 code');
+    const link = t.screen().match(/remi:\/\/pair#[A-Za-z0-9_-]+/)?.[0];
+    if (link === undefined) throw new Error('no link shown');
+    const decoded = decodePairingLink(link);
+    if (!decoded.ok || decoded.code.v !== 2) throw new Error('the v2 link was not decoded');
+    expect(decoded.code.hosts).toEqual(['192.0.2.10']);
+
+    const phone = await createIdentity();
+    expect(await store.claimPairing(decoded.code.nonce, phone.publicKey, 'Sam phone')).toBe(
+      'CLAIMED',
+    );
+    await waitFor(() => t.screen().includes('Approve this device?'), 'the question');
+    t.type(`${phone.fingerprint.slice(0, 4)}\r`);
+    expect(await t.proc.exited).toBe(0);
+    expect(store.isAuthorized(phone.publicKey, phone.fingerprint)).toBe(true);
+    expect(store.listAuthorizedKeys()[0]?.label).toBe('Sam phone');
+  }, 30000);
 
   test('an answer typed after the question approves the phone that claimed the code', async () => {
     const { env, store } = await setup();

@@ -1,6 +1,6 @@
 {
   "source": "packages/shared/src/display-text.ts",
-  "sha256": "bb16fd9e0ba05ef50de024ef91de7701b3688b69aef8b8d2c0f6424b86683fcb",
+  "sha256": "021117a793093652275a62930ab3e3e542f363aec9234b6655706b648834b401",
   "cases": [
     {
       "text": "\u0000",

@@ -31,6 +31,14 @@ export type AnswerCommitResult<T> =
   | { readonly kind: 'refused' };
 export type AnswerCommit = <T>(effect: () => T) => AnswerCommitResult<T>;
 
+/** A possible input effect lost its confirmation; callers retain uncertainty, never retry authority. */
+export class AnswerDeliveryUncertainError extends Error {
+  constructor() {
+    super('Answer delivery is uncertain; check the conversation before answering again.');
+    this.name = 'AnswerDeliveryUncertainError';
+  }
+}
+
 export function applyAnswerCommit<T>(
   effect: () => T,
   commit?: AnswerCommit,

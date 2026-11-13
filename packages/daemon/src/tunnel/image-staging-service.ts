@@ -24,8 +24,7 @@ import type { IdentityStore } from '../auth/identity-store';
 import type { Connection } from '../server/connection';
 import type { SessionBindingStore } from '../session/session-binding-store';
 import type { ManagedSession, SessionRegistry } from '../session/session-registry';
-import { withInterprocessFileLockNonblocking } from '../storage/interprocess-file-lock';
-import { DirectoryRoot } from './admission';
+import type { DirectoryRoot } from './admission';
 import { admitImage } from './image-admission';
 import { ImageInsertionError, type ImageInsertionLease } from './image-insertion-lease';
 import { type ImageDecoder, createImageDecoder } from './image-worker-command';
@@ -36,8 +35,8 @@ import {
   beginJournal,
   settleJournal,
 } from './journal-settlement';
-import { recoveryNative } from './recovery-native';
-import { Reservations } from './reservations';
+import { type ManagedTunnelStorage, openManagedTunnelStorage } from './managed-tunnel-storage';
+import type { Reservations } from './reservations';
 
 export type ImageStagingRequest =
   | ImageUploadBegin
@@ -46,7 +45,6 @@ export type ImageStagingRequest =
   | ImageUploadCancel;
 export type ImageStagingResponse = Exclude<ImageStagingMessage, ImageStagingRequest>;
 type Delivery = (response: ImageStagingResponse) => void;
-type Native = Awaited<ReturnType<typeof recoveryNative>>;
 
 export interface ImageStagingServiceHost {
   readonly home: string;
@@ -106,17 +104,6 @@ const envelope = (request: ImageStagingRequest) => ({
   timestamp: new Date().toISOString(),
   sessionId: request.sessionId,
 });
-const privateDirectory = (directory: string) => {
-  const stat = fs.lstatSync(directory);
-  if (
-    !stat.isDirectory() ||
-    stat.isSymbolicLink() ||
-    stat.mode & 0o077 ||
-    stat.uid !== process.getuid?.()
-  )
-    fault('unavailable');
-  return stat;
-};
 
 export class ImageStagingService {
   private readonly transfers = new Map<string, Transfer>();
@@ -131,91 +118,38 @@ export class ImageStagingService {
   private closing: Promise<boolean> | undefined;
   private maintenance: Promise<void> | undefined;
 
+  private readonly store: Reservations;
+  private readonly scratch: DirectoryRoot;
+  private readonly metadata: DirectoryRoot;
+
   private constructor(
     private readonly host: ImageStagingServiceHost,
-    private readonly native: Native,
-    private readonly store: Reservations,
-    private readonly scratch: DirectoryRoot,
-    private readonly metadata: DirectoryRoot,
+    private readonly storage: ManagedTunnelStorage,
     private readonly workerCwd: string,
-    ledger: string,
   ) {
-    const stat = fs.lstatSync(ledger, { bigint: true });
-    // Resource scope only: identical for every process opening this exact shared ledger home.
-    this.hub = createHash('sha256')
-      .update(`remi-image-staging:${stat.dev}:${stat.ino}`)
-      .digest('hex')
-      .slice(0, 32);
+    this.store = storage.store;
+    this.scratch = storage.scratch;
+    this.metadata = storage.metadata;
+    this.hub = storage.hub;
     this.decoder = createImageDecoder(workerCwd);
   }
 
   static async open(host: ImageStagingServiceHost): Promise<ImageStagingService> {
-    if (!path.isAbsolute(host.home)) fault('unavailable');
-    privateDirectory(host.home);
-    const base = path.join(host.home, 'image-staging');
-    const ledger = path.join(base, 'ledger');
-    const scratchPath = path.join(base, 'scratch');
-    const metadataPath = path.join(base, 'metadata');
-    withInterprocessFileLockNonblocking(path.join(host.home, 'image-staging-initialize'), () => {
-      if (!fs.existsSync(base)) {
-        fs.mkdirSync(base, { mode: 0o700 });
-        fs.mkdirSync(scratchPath, { mode: 0o700 });
-        fs.mkdirSync(metadataPath, { mode: 0o700 });
-        Reservations.create(ledger);
-      }
-      for (const directory of [base, ledger, scratchPath, metadataPath])
-        privateDirectory(directory);
-    });
-    const native = await recoveryNative();
-    let scratch: DirectoryRoot | undefined;
-    let metadata: DirectoryRoot | undefined;
+    const storage = await openManagedTunnelStorage(host.home);
     let worker: string | undefined;
     try {
-      const store = new Reservations(ledger);
-      scratch = DirectoryRoot.capture(scratchPath, native.ops.openAt.bind(native.ops)) ?? undefined;
-      metadata =
-        DirectoryRoot.capture(metadataPath, native.ops.openAt.bind(native.ops)) ?? undefined;
-      if (!scratch || !metadata) return fault('unavailable');
-      worker = fs.mkdtempSync(path.join(base, 'worker-'));
+      worker = fs.mkdtempSync(path.join(storage.base, 'worker-'));
       fs.chmodSync(worker, 0o700);
-      const service = new ImageStagingService(
-        host,
-        native,
-        store,
-        scratch,
-        metadata,
-        worker,
-        ledger,
-      );
-      service.recover();
+      const service = new ImageStagingService(host, storage, worker);
+      storage.recover();
       service.timer = setInterval(() => {
         void service.maintain().catch(() => {});
       }, 1000);
       return service;
     } catch (error) {
-      scratch?.close();
-      metadata?.close();
-      native.close();
+      storage.close();
       if (worker) fs.rmdirSync(worker);
       throw error;
-    }
-  }
-
-  /** Recovery owns storage only. Live writer and staged reader intent locks are nonblocking barriers. */
-  private recover(): void {
-    for (const record of this.store.inspect()) {
-      if (record.state === 'settled' || !record.journal) continue;
-      try {
-        settleJournal(
-          this.store,
-          { id: record.id, ...record.journal },
-          this.scratch,
-          this.metadata,
-          this.native.ops,
-        );
-      } catch {
-        // Live ownership, uncertain handles or unverifiable debt remain charged. No authority is rebuilt.
-      }
     }
   }
 
@@ -604,7 +538,7 @@ export class ImageStagingService {
             request.byteLength,
             this.scratch,
             this.metadata,
-            this.native.ops,
+            this.storage.ops,
             request.mediaType === 'image/png' ? 'png' : 'jpg',
           );
         });
@@ -849,7 +783,7 @@ export class ImageStagingService {
       }
       record.reader?.close();
       record.reader = undefined;
-      settleJournal(this.store, record.lease, this.scratch, this.metadata, this.native.ops);
+      settleJournal(this.store, record.lease, this.scratch, this.metadata, this.storage.ops);
       this.debt.delete(record);
     } catch {
       record.state = 'cleanup_failed';
@@ -956,9 +890,7 @@ export class ImageStagingService {
     }
     await Promise.allSettled(this.completions);
     if (this.debt.size) return false;
-    this.scratch.close();
-    this.metadata.close();
-    this.native.close();
+    this.storage.close();
     fs.rmdirSync(this.workerCwd);
     return true;
   }

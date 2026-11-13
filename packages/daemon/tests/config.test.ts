@@ -301,6 +301,9 @@ describe('generateDefaultConfig', () => {
 });
 
 describe('formatConfig', () => {
+  test('the disabled TLS default remains disabled when config is absent', () => {
+    expect(loadConfig(path.join(TEST_DIR, 'absent-tls.toml')).daemon.tls).toBeNull();
+  });
   test('formats config as readable string', () => {
     const output = formatConfig(DEFAULT_CONFIG, path.join(TEST_DIR, 'nonexistent.toml'));
     expect(output).toContain('not found, using defaults');

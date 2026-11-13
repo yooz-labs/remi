@@ -1,6 +1,8 @@
 /** Hub-owned v2 room. The Worker admits sockets; this host alone grants application authority. */
 import {
   type AgentStatus,
+  type FileDownloadIngressResult,
+  type FileFetchRefused,
   MESSAGE_DIRECTION,
   type MachineDescriptor,
   type Message,
@@ -14,13 +16,18 @@ import {
   createAgentOutput,
   createAnswerResult,
   createError,
+  createPong,
   createSecurePushRegisterResponse,
   createSecurePushUnregisterResponse,
+  createSessionListRequest,
   createSessionListResponse,
   createSessionUpdate,
+  decodeFileDownloadIngress,
   deserialize,
   fromBase64,
   generateId,
+  isFileDownloadCandidate,
+  isTerminalViewCandidate,
   now,
   relayV2,
   serialize,
@@ -31,6 +38,7 @@ import {
   type IdentityStore,
   validatePublicKey,
 } from '../auth/identity-store.ts';
+import { DEFAULT_PUSH_LEASE_MS } from '../notifications/push-lease.ts';
 import { sanitizePushPreferences } from '../notifications/push-preferences.ts';
 import { type SecurePushAuthority, SecurePushStore } from '../notifications/secure-push-store.ts';
 import { AnswerResults } from '../server/answer-results.ts';
@@ -38,11 +46,16 @@ import { bindConnectionId } from '../server/client-message-events.ts';
 import { Connection } from '../server/connection.ts';
 import type { RelayLocalControl } from '../server/websocket-server.ts';
 import type { SessionRegistryFile } from '../session/session-registry-file.ts';
+import { InterprocessFileLockError } from '../storage/interprocess-file-lock.ts';
 import { normalizeSecureRegistration } from '../storage/secure-push-subscriptions.ts';
 import { ChildProxy } from './child-proxy.ts';
+import { NotificationDeviceStore } from './notification-device-store.ts';
 import { RelayDeviceStore } from './relay-device-store.ts';
 import { legacyRelayUrlNotice, relayWorkerUrl } from './relay-url.ts';
 import { WorkerControl } from './worker-control.ts';
+
+const AUTHORITY_GRACE_WORD = new Int32Array(new SharedArrayBuffer(4));
+const AUTHORITY_GRACE_MS = 50;
 
 type Offer = {
   id: string;
@@ -94,6 +107,9 @@ type Peer = {
   sendNotice: 'PAYLOAD_TOO_LARGE' | 'SEND_QUEUE_FULL' | undefined;
   historyOverflow: boolean;
   listing: boolean;
+  listDirty: boolean;
+  listRefreshQueued: boolean;
+  listIncludeExternal: boolean;
   cid: string;
   ws: WebSocket;
   cancelled: boolean;
@@ -105,6 +121,7 @@ type Peer = {
   proxy?: ChildProxy;
   key?: string;
   pushAuthority?: SecurePushAuthority;
+  scope?: 'full' | 'notification';
   authorityVerdict?: 'fault' | 'revoked' | undefined;
   pushMutation?: number;
   revision?: number;
@@ -130,6 +147,8 @@ export interface HubRelayConfig {
    * the existence of the secure push service (`cli.ts`); absent, registration is not gated.
    */
   securePushSender?: () => boolean;
+  /** Shared notifications.push_lease_hours, in milliseconds (#1272). */
+  pushLeaseMs?: number;
   random?: relayV2.Rng;
   ephemeral?: () => Promise<relayV2.EcPair>;
   log?: (message: string) => void;
@@ -146,12 +165,15 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   private readonly offers = new Map<string, Offer>();
   private readonly locals = new Map<string, (text: string) => void>();
   private readonly devices: RelayDeviceStore;
+  private readonly notificationDevices: NotificationDeviceStore;
+  private notificationStorageUnavailable = false;
   private readonly subscriptions: SecurePushStore;
   private stateTail: Promise<unknown> = Promise.resolve();
   private readonly revisions = new Map<string, number>();
   private reconnect: ReturnType<typeof setTimeout> | undefined;
   private stable: ReturnType<typeof setTimeout> | undefined;
   private attempts = 0;
+  private pushLeaseTimer: ReturnType<typeof setInterval> | undefined;
   constructor(
     private readonly cfg: HubRelayConfig,
     private readonly events: Partial<AdapterEvents> = {},
@@ -164,7 +186,10 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     )
       throw new Error('RELAY_PRODUCTION_CRYPTO_REQUIRED');
     this.devices = new RelayDeviceStore(cfg.dir, cfg.trust);
-    this.subscriptions = new SecurePushStore(cfg.dir, cfg.trust);
+    this.notificationDevices = new NotificationDeviceStore(cfg.dir, cfg.trust);
+    this.subscriptions = new SecurePushStore(cfg.dir, cfg.trust, 64, {
+      ...(cfg.pushLeaseMs === undefined ? {} : { leaseMs: cfg.pushLeaseMs }),
+    });
   }
   get connectionCount(): number {
     return [...this.peers.values()].filter((peer) => peer.stage === 'ready' && this.current(peer))
@@ -172,6 +197,62 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   }
   get isRunning(): boolean {
     return this.running;
+  }
+  get notificationReady(): boolean {
+    return this.running && this.control?.ready === true;
+  }
+  /** Direct pairing grants this limited scope only for the captured current grant. */
+  async enrollNotifications(
+    publicKey: string,
+    authorizationEpoch: string,
+    mayCommit: () => boolean,
+  ): Promise<void> {
+    const control = this.control;
+    if (!this.notificationReady || !control) throw new Error('HOST_SETUP_REQUIRED');
+    await this.serial(async () => {
+      const current = () => this.running && this.control === control && mayCommit();
+      if (!current() || this.cfg.trust.captureAuthorizationEpoch(publicKey) !== authorizationEpoch)
+        throw new Error('NOTIFICATION_NOT_AUTHORIZED');
+      // Existing full enrollment already permits secure registration. Do not
+      // make it depend on or duplicate the separate limited-scope store.
+      if (!this.devices.isEnrolled(publicKey))
+        await this.notificationDevices.add(
+          publicKey,
+          authorizationEpoch,
+          'Paired notifications',
+          current,
+        );
+      if (!current()) throw new Error('NOTIFICATION_NOT_AUTHORIZED');
+      if (!(await control.command({ t: 'enroll', key: new Uint8Array(fromBase64(publicKey)) })))
+        throw new Error('HOST_SETUP_REQUIRED');
+      if (!current() || this.cfg.trust.captureAuthorizationEpoch(publicKey) !== authorizationEpoch)
+        throw new Error('NOTIFICATION_NOT_AUTHORIZED');
+    });
+  }
+  /** Revoke notification delivery without removing direct trust or a full relay grant. */
+  async revokeNotifications(
+    publicKey: string,
+    authorizationEpoch: string,
+    mayCommit: () => boolean,
+  ): Promise<void> {
+    await this.serial(async () => {
+      if (
+        !mayCommit() ||
+        this.cfg.trust.captureAuthorizationEpoch(publicKey) !== authorizationEpoch
+      )
+        throw new Error('NOTIFICATION_NOT_AUTHORIZED');
+      const authority = this.subscriptions.captureAuthority(publicKey);
+      if (authority && authority.authorizationEpoch !== authorizationEpoch)
+        throw new Error('NOTIFICATION_NOT_AUTHORIZED');
+      if (authority) this.subscriptions.unregister(authority);
+      if (!this.notificationDevices.removeForAuthority(publicKey, authorizationEpoch, mayCommit))
+        throw new Error('NOTIFICATION_NOT_AUTHORIZED');
+      for (const peer of this.peers.values())
+        if (peer.key === publicKey && peer.scope === 'notification')
+          void this.closePeer(peer, true);
+      if (!this.devices.isEnrolled(publicKey))
+        await this.control?.command({ t: 'revoke', key: new Uint8Array(fromBase64(publicKey)) });
+    });
   }
   private log(message: string): void {
     this.cfg.log?.(message);
@@ -184,7 +265,25 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     );
     this.rid = await relayV2.ridOf(this.machine.publicKey);
     this.running = true;
+    const leaseMs = this.cfg.pushLeaseMs ?? DEFAULT_PUSH_LEASE_MS;
+    this.pushLeaseTimer = setInterval(
+      () => {
+        for (const peer of this.peers.values())
+          if (peer.stage === 'ready' && this.current(peer)) this.renewPushLease(peer);
+      },
+      leaseMs > 0 ? Math.min(15 * 60_000, Math.max(1, leaseMs / 3)) : 15 * 60_000,
+    );
+    this.pushLeaseTimer.unref?.();
     void this.connect();
+  }
+  private renewPushLease(peer: Peer): void {
+    if (!peer.pushAuthority) return;
+    try {
+      this.subscriptions.renew(peer.pushAuthority);
+    } catch {
+      // A busy/unreadable store cannot renew; the next tick retries, never cached authority.
+      this.log('Secure push lease renewal refused: store unavailable');
+    }
   }
   private url(role: 'host' | 'pipe', cid?: string): string {
     return relayWorkerUrl(this.cfg.relayUrl, role, this.rid, cid);
@@ -216,17 +315,23 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       await this.serial(async () => {
         // Reconnect enrollment shares the grant/revoke ordering domain. Never
         // reenroll a captured entry after its durable revocation has completed.
-        for (const device of this.devices.list()) {
+        const devices = new Map(
+          [...this.notificationControlDevices(), ...this.devices.list()].map((device) => [
+            device.publicKey,
+            device,
+          ]),
+        );
+        for (const device of devices.values()) {
           if (!this.running || this.control !== control) return;
           const revision = this.revisions.get(device.publicKey) ?? 0;
-          if (!this.devices.isEnrolled(device.publicKey)) continue;
+          if (!this.admittedKey(device.publicKey)) continue;
           const key = new Uint8Array(fromBase64(device.publicKey));
           if (!(await control.command({ t: 'enroll', key })))
             throw new Error('RELAY_ENROLL_REFUSED');
           if (!this.running || this.control !== control) return;
           if (
             revision !== (this.revisions.get(device.publicKey) ?? 0) ||
-            !this.devices.isEnrolled(device.publicKey)
+            !this.admittedKey(device.publicKey)
           ) {
             if (!(await control.command({ t: 'revoke', key })))
               throw new Error('RELAY_REVOKE_UNCERTAIN');
@@ -269,10 +374,32 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   }
   private enrolled(peer: Peer): boolean {
     try {
-      return !!peer.key && this.devices.isEnrolled(peer.key);
+      if (!peer.key) return false;
+      return peer.scope === 'notification'
+        ? !this.devices.isEnrolled(peer.key) && this.notificationDevices.isEnrolled(peer.key)
+        : peer.scope === 'full' && this.devices.isEnrolled(peer.key);
     } catch {
       this.log('Relay authorization store unreadable; routing refused');
       return false;
+    }
+  }
+  private admittedKey(publicKey: string): boolean {
+    return this.devices.isEnrolled(publicKey) || this.notificationDevices.isEnrolled(publicKey);
+  }
+  private notificationControlDevices() {
+    try {
+      const devices = this.notificationDevices.list();
+      this.notificationStorageUnavailable = false;
+      return devices;
+    } catch {
+      // Refuse the damaged scope without disabling independent valid full
+      // enrollments. Handshake admission still reads and refuses this store.
+      if (!this.notificationStorageUnavailable)
+        this.log(
+          'Notification enrollment store unreadable; notification-only admission unavailable',
+        );
+      this.notificationStorageUnavailable = true;
+      return [];
     }
   }
   private current(peer: Peer): boolean {
@@ -296,8 +423,9 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   }
   /**
    * Whether the peer's captured authority is still current (#1201). A revoked grant and an
-   * unreadable store (lock contention, a damaged file) both answer false, and both close the
-   * admitted READY peer through `current`. That is deliberate for the store fault too:
+   * unreadable store both answer false and close the admitted READY peer through `current`.
+   * Only retryable lock contention gets a bounded50ms fresh-read grace, never cached authority.
+   * That is deliberate for a persistent store fault too:
    * the channel is ordered and complete, so refusing one frame and staying open would drop it
    * silently and leave the client's state diverged, while a close makes the client reconnect
    * and resync. A reconnect re-captures authority under the same lock, so a persistent fault
@@ -307,10 +435,22 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   private authorityCurrent(peer: Peer, authority: SecurePushAuthority): boolean {
     let fault: unknown;
     let faulted = false;
-    const current = this.subscriptions.isCurrentAuthority(authority, (error) => {
-      faulted = true;
-      fault = error;
-    });
+    const deadline = performance.now() + AUTHORITY_GRACE_MS;
+    let current = false;
+    for (let attempt = 0; attempt < 51; attempt++) {
+      if (attempt > 0 && performance.now() >= deadline) break;
+      faulted = false;
+      fault = undefined;
+      current = this.subscriptions.isCurrentAuthority(authority, (error) => {
+        faulted = true;
+        fault = error;
+      });
+      if (current || !faulted || !(fault instanceof InterprocessFileLockError) || !fault.retryable)
+        break;
+      const remaining = deadline - performance.now();
+      if (attempt === 50 || remaining <= 0) break;
+      Atomics.wait(AUTHORITY_GRACE_WORD, 0, 0, Math.min(1, remaining));
+    }
     const verdict = current ? undefined : faulted ? 'fault' : 'revoked';
     if (verdict !== peer.authorityVerdict) {
       peer.authorityVerdict = verdict;
@@ -352,6 +492,9 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       sendNotice: undefined,
       historyOverflow: false,
       listing: false,
+      listDirty: false,
+      listRefreshQueued: false,
+      listIncludeExternal: false,
       stage: 'admit',
       timer: setTimeout(() => {
         void this.closePeer(peer);
@@ -424,7 +567,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
             const step = await relayV2.hostOnHello(
               { machine: this.machine as relayV2.Signer, random: relayV2.systemRandom },
               event.data,
-              { offers: peer.policy, isEnrolled: (key) => this.devices.isEnrolled(keyBase64(key)) },
+              { offers: peer.policy, isEnrolled: (key) => this.admittedKey(keyBase64(key)) },
               Date.now(),
             );
             if (!this.active(peer)) {
@@ -437,7 +580,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
           } else if (peer.stage === 'auth') {
             const step = await peer.step1?.onAuth(
               event.data,
-              { offers: peer.policy, isEnrolled: (key) => this.devices.isEnrolled(keyBase64(key)) },
+              { offers: peer.policy, isEnrolled: (key) => this.admittedKey(keyBase64(key)) },
               Date.now(),
             );
             if (!step) throw new Error('RELAY_PIPE_ORDER');
@@ -517,6 +660,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
                 const authority = this.subscriptions.captureAuthority(peer.key as string);
                 if (!authority) throw new Error('RELAY_CANCELLED');
                 peer.pushAuthority = authority;
+                peer.scope = 'full';
                 if (
                   !this.current(peer) ||
                   !(await this.control?.command({ t: 'enroll', key: step.devicePublicKey }))
@@ -526,6 +670,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
                 const authority = this.subscriptions.captureAuthority(peer.key as string);
                 if (!authority) throw new Error('RELAY_REVOKED');
                 peer.pushAuthority = authority;
+                peer.scope = this.devices.isEnrolled(peer.key as string) ? 'full' : 'notification';
               }
               if (!this.current(peer) || !this.enrolled(peer)) throw new Error('RELAY_CANCELLED');
               const ready = await step.ready(Date.now(), {
@@ -550,6 +695,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
               }
               peer.channel = ready.channel;
               peer.stage = 'ready';
+              this.renewPushLease(peer);
               clearTimeout(peer.timer);
               this.install(peer);
               ws.send(ready.ready);
@@ -564,31 +710,63 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
             });
           } else if (peer.stage === 'ready') {
             if (typeof event.data === 'string') throw new Error('RELAY_TEXT_AFTER_READY');
-            if (!peer.key || !this.devices.isEnrolled(peer.key)) throw new Error('RELAY_REVOKED');
+            if (!this.enrolled(peer)) throw new Error('RELAY_REVOKED');
             const bytes = await peer.channel?.receive(new Uint8Array(event.data));
             if (!this.current(peer) || bytes === undefined) return;
             if (bytes === null) {
               await this.closePeer(peer, true);
               return;
             }
-            // Preserve a leading BOM so strict JSON validation sees the original bytes (#1201).
-            const message = deserialize(
-              new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes),
+            // Notification-only enrollment grants no general application ingress,
+            // including future registered families. Classify before ACKs or effects.
+            if (peer.scope === 'notification') {
+              const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+              const message = deserialize(text);
+              if (
+                !message ||
+                ![
+                  'secure_push_register_request',
+                  'secure_push_unregister_request',
+                  'native_answer',
+                  'ping',
+                  'pong',
+                ].includes(message.type)
+              )
+                throw new Error('NOTIFICATION_SCOPE');
+            }
+            // A registry addition alone must not enable a terminal relay route (#1612, B4 pending).
+            if (isTerminalViewCandidate(bytes)) throw new Error('RELAY_TERMINAL_VIEW_UNAVAILABLE');
+            // Classify and decode original decrypted units before generic parse/ACK/ID tracking.
+            const file = isFileDownloadCandidate(bytes) ? decodeFileDownloadIngress(bytes) : null;
+            if (file?.kind === 'uncorrelatable') throw new Error('RELAY_INVALID_MESSAGE');
+            const original = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+              bytes,
             );
-            if (!message || MESSAGE_DIRECTION[message.type] === 'd2c')
-              throw new Error('RELAY_INVALID_MESSAGE');
+            let requestId: string;
+            let application: () => Promise<void>;
+            if (file) {
+              requestId = file.kind === 'request' ? file.request.id : file.correlation.requestId;
+              application = () => this.routeFileDownload(peer, file, original);
+            } else {
+              // Preserve a leading BOM so strict JSON sees the original bytes (#1201).
+              const message = deserialize(original);
+              if (!message || MESSAGE_DIRECTION[message.type] === 'd2c')
+                throw new Error('RELAY_INVALID_MESSAGE');
+              requestId = message.id;
+              application = () => this.route(peer, message);
+            }
             if (peer.pendingApplications >= 32) {
               this.sendRaw(
                 peer.cid,
                 createError('BUSY', 'Relay application request capacity reached', {
-                  requestId: message.id,
+                  requestId,
                 }),
               );
               return;
             }
             peer.pendingApplications++;
             // Decrypt in order; read-only queries/child waits cannot hold up decisions.
-            void this.route(peer, message)
+            void application()
               .catch(() => {
                 void this.closePeer(peer);
               })
@@ -638,10 +816,11 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       this.cfg.registry,
       peer.key as string,
       (message) => {
-        this.sendRaw(peer.cid, message);
+        if (peer.scope === 'full' || message.type === 'answer_result')
+          this.sendRaw(peer.cid, message);
       },
-      (sessionId, chatOwnerLost) => {
-        if (chatOwnerLost) {
+      (sessionId, stateOwnerLost) => {
+        if (stateOwnerLost) {
           // Child receipt state belongs to this exact logical channel. Reconnect
           // the machine before opening any replacement; never replay old input.
           void this.closePeer(peer, true);
@@ -656,7 +835,16 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       },
       () => this.current(peer),
       peer.pushAuthority,
+      () => {
+        if (peer.scope !== 'full') return;
+        peer.listDirty = true;
+        this.refreshSessionList(peer);
+      },
+      this.cfg.dir,
     );
+    // This scope intentionally has no application Hello. Its restricted RPCs
+    // do not need Connection's general dispatch or its pre-Hello deadline.
+    if (peer.scope !== 'full') return;
     peer.connection = new Connection(
       {
         get readyState() {
@@ -684,7 +872,32 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       peer.cid,
     );
   }
+  /** One aggregate at a time, with at most one trailing refresh and no polling (#1285). */
+  private refreshSessionList(peer: Peer): void {
+    if (peer.scope !== 'full') return;
+    if (!peer.listDirty || peer.listing || peer.listRefreshQueued || !this.current(peer)) return;
+    peer.listRefreshQueued = true;
+    queueMicrotask(() => {
+      peer.listRefreshQueued = false;
+      if (!peer.listDirty || peer.listing || !this.current(peer) || !peer.proxy) return;
+      peer.listDirty = false;
+      peer.listing = true;
+      void this.sessionList(peer, createSessionListRequest(peer.listIncludeExternal))
+        .catch(async () => {
+          this.log('Relay session list refresh failed; reconnect required');
+          await this.closePeer(peer, true);
+        })
+        .finally(() => {
+          peer.listing = false;
+          this.refreshSessionList(peer);
+        })
+        .catch(() => {
+          this.log('Relay session list refresh cleanup failed');
+        });
+    });
+  }
   private async sessionList(peer: Peer, request: SessionListRequestMessage): Promise<void> {
+    if (peer.scope !== 'full') throw new Error('NOTIFICATION_SCOPE');
     const deadline = Date.now() + 5000;
     let localTimedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -695,10 +908,14 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
         resolve(createSessionListResponse([], request.id, undefined, this.cfg.machine?.()));
       }, 5000);
     });
-    this.events.onSessionListRequest?.(peer.cid, request.id, request.includeExternal ?? false);
-    const localResponse = await local;
-    if (timer) clearTimeout(timer);
-    peer.hubLists.delete(request.id);
+    let localResponse: SessionListResponseMessage;
+    try {
+      this.events.onSessionListRequest?.(peer.cid, request.id, request.includeExternal ?? false);
+      localResponse = await local;
+    } finally {
+      if (timer) clearTimeout(timer);
+      peer.hubLists.delete(request.id);
+    }
     if (!this.current(peer) || !peer.proxy) return;
     const all = this.cfg.registry.listLive();
     const live = all.slice(0, 32);
@@ -774,9 +991,38 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     peer.pushMutation = current + 1;
     return peer.pushMutation;
   }
-  private async route(peer: Peer, message: ProtocolMessage): Promise<void> {
-    if (!this.current(peer) || !this.devices.isEnrolled(peer.key as string))
+  private async routeFileDownload(
+    peer: Peer,
+    ingress: Exclude<FileDownloadIngressResult, { kind: 'uncorrelatable' }>,
+    original: string,
+  ): Promise<void> {
+    if (!this.current(peer) || !this.enrolled(peer) || peer.scope !== 'full')
       throw new Error('RELAY_REVOKED');
+    const sessionId =
+      ingress.kind === 'request' ? ingress.request.sessionId : ingress.correlation.sessionId;
+    try {
+      if (!peer.proxy) throw new Error('CHILD_UNAVAILABLE');
+      await peer.proxy.sendFileDownload(sessionId, original);
+    } catch {
+      // sendFileDownload consumes ownership before ws.send. A send throw retires that owner
+      // and synchronously cancels this peer via install's failed callback. Only a still-current
+      // peer can report a failure before the file send; a consumed uncertain send stays retired.
+      if (!this.current(peer)) return;
+      const refused: FileFetchRefused = {
+        type: 'file_fetch_refused',
+        id: generateId(),
+        timestamp: now(),
+        sessionId,
+        requestId: ingress.kind === 'request' ? ingress.request.id : ingress.correlation.requestId,
+        operation:
+          ingress.kind === 'request' ? ingress.request.type : ingress.correlation.operation,
+        code: 'unavailable',
+      };
+      this.sendRaw(peer.cid, refused);
+    }
+  }
+  private async route(peer: Peer, message: ProtocolMessage): Promise<void> {
+    if (!this.current(peer) || !this.enrolled(peer)) throw new Error('RELAY_REVOKED');
     if (message.type === 'native_answer') {
       await this.routeNativeAnswer(peer, message);
       return;
@@ -801,9 +1047,12 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
         'pushPublicKey',
         'keyVersion',
         'pushPrefs',
+        'renewExpired',
       ];
       let registration: ReturnType<typeof normalizeSecureRegistration>;
       try {
+        if (message.renewExpired !== undefined && typeof message.renewExpired !== 'boolean')
+          throw new Error('INVALID_SUBSCRIPTION');
         if (Object.keys(message).some((key) => !allowed.includes(key)))
           throw new Error('INVALID_SUBSCRIPTION');
         registration = normalizeSecureRegistration({
@@ -834,6 +1083,8 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
           peer.stage === 'ready' &&
           peer.pushMutation === mutation &&
           peer.pushAuthority === authority,
+        message.renewExpired === true ||
+          (peer.scope === 'full' && message.renewExpired === undefined),
       );
       // register's commit callback is inside the authorization lock: use only
       // in-memory lifecycle state there, never current()'s nested disk lock.
@@ -860,6 +1111,14 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       this.sendRaw(peer.cid, createSecurePushUnregisterResponse(message.id, result));
       return;
     }
+    if (peer.scope !== 'full') {
+      if (message.type === 'ping') {
+        this.sendRaw(peer.cid, createPong(message.id));
+        return;
+      }
+      if (message.type === 'pong') return;
+      throw new Error('NOTIFICATION_SCOPE');
+    }
     if (message.type === 'session_list_request') {
       if (peer.listing) {
         this.sendRaw(
@@ -869,10 +1128,13 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
         return;
       }
       peer.listing = true;
+      peer.listDirty = false;
+      peer.listIncludeExternal = message.includeExternal ?? false;
       try {
         await this.sessionList(peer, message);
       } finally {
         peer.listing = false;
+        this.refreshSessionList(peer);
       }
       return;
     }
@@ -982,6 +1244,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
 
   private closePeer(peer: Peer, orderly = false): Promise<void> {
     if (peer.closing) return peer.closing;
+    if (peer.stage === 'ready' && !peer.cancelled) this.renewPushLease(peer);
     // Cancel synchronously, before crypto/storage may resume; only BYE may leave afterward.
     peer.cancelled = true;
     peer.orderlyClosing = orderly;
@@ -1144,6 +1407,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       try {
         this.cfg.trust.removeAuthorizedKey(fingerprint);
         this.devices.remove(fingerprint);
+        this.notificationDevices.remove(fingerprint);
       } catch {
         return { success: false, edgeAcknowledged: false, error: 'STORAGE_ERROR' };
       }
@@ -1215,11 +1479,30 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       peer.hubLists.get(message.requestId)?.(message);
       return false;
     }
-    if (!peer || !peer.channel || message.type === 'raw_pty_output') return false;
+    if (
+      !peer ||
+      !peer.channel ||
+      message.type === 'raw_pty_output' ||
+      message.type.startsWith('session_terminal_')
+    )
+      return false;
     if (!this.current(peer)) {
       void this.closePeer(peer, true);
       return false;
     }
+    if (
+      peer.scope === 'notification' &&
+      ![
+        'secure_push_register_response',
+        'secure_push_unregister_response',
+        'answer_result',
+        'ping',
+        'pong',
+        'error',
+        'ack',
+      ].includes(message.type)
+    )
+      return false;
     if (
       message.type === 'transcript_load_complete' &&
       (peer.historyOverflow || peer.historyFailed.has(message.sessionId))
@@ -1234,8 +1517,8 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     return true;
   }
   broadcast(message: ProtocolMessage): void {
-    if (message.type === 'raw_pty_output') return;
-    for (const id of this.peers.keys()) this.sendRaw(id, message);
+    if (message.type === 'raw_pty_output' || message.type.startsWith('session_terminal_')) return;
+    for (const [id, peer] of this.peers) if (peer.scope === 'full') this.sendRaw(id, message);
   }
   hasConnection(id: string): boolean {
     const peer = this.peers.get(id);
@@ -1250,6 +1533,8 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
   async stop(): Promise<void> {
     if (!this.running) return;
     this.running = false;
+    clearInterval(this.pushLeaseTimer);
+    this.pushLeaseTimer = undefined;
     if (this.reconnect) clearTimeout(this.reconnect);
     if (this.stable) clearTimeout(this.stable);
     // Forget the control before closing it: on Bun 1.3.11 its close handler runs inside close(),

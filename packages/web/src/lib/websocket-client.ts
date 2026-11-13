@@ -4,7 +4,9 @@
  * Handles connection, reconnection, and protocol message serialization.
  */
 
+import { type BrowserLinkMessage, type BrowserLinkReceiverRequest, decodeBrowserLinkFrame, encodeBrowserLinkFrame, isBrowserLinkCandidate } from '@remi/shared';
 import type { ConnectionStatus } from '@/types';
+import { type FileDownloadMessage, type FileDownloadOperation, decodeFileDownloadFrame, encodeFileDownloadFrame } from '../../../shared/src/file-download.ts';
 import { type ChatSubmitRequest, type ChatSubmitResult, decodeStructuredChatFrame, encodeStructuredChatFrame } from '@remi/shared';
 import type { ProtocolMessage } from '@remi/shared/protocol.ts';
 import { createPing, createPong, deserialize, serialize } from '@remi/shared/protocol.ts';
@@ -18,6 +20,7 @@ import {
   isImageInsertionCandidate,
   isImageStagingCandidate,
   isStructuredChatCandidate,
+  isFileDownloadCandidate,
 } from '../../../shared/src/image-staging-ingress.ts';
 import type {
   ImageStagingMessage,
@@ -76,6 +79,9 @@ export interface WebSocketClientConfig {
 
 /** WebSocket client events */
 export interface WebSocketClientEvents {
+  /** Strict host file frames, before generic IDs, acknowledgements or message caches. */
+  onFileDownloadMessage?: (raw: string | Uint8Array) => void;
+  onBrowserLinkMessage?: (message: Exclude<BrowserLinkMessage, BrowserLinkReceiverRequest>) => void;
   onStructuredChatResult?: (message: ChatSubmitResult) => void;
   /** Called when connection status changes */
   onStatusChange?: (status: ConnectionStatus) => void;
@@ -386,6 +392,23 @@ export class WebSocketClient {
     }
   }
 
+  sendBrowserLink(request: BrowserLinkReceiverRequest, generation: object): boolean {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN || this.status !== 'connected' ||
+      generation !== this.imageStagingGeneration || new URL(this.config.url).protocol !== 'wss:') return false;
+    try { ws.send(encodeBrowserLinkFrame(request)); return true; }
+    catch { this.handleError(new Error('Unable to send browser receiver request')); return false; }
+  }
+
+  /** One attempt on the exact current direct WSS generation; never queued or replayed. */
+  sendFileDownload(request: Extract<FileDownloadMessage, {type: FileDownloadOperation}>, generation: object): boolean {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN || this.status !== 'connected' ||
+      generation !== this.imageStagingGeneration || new URL(this.config.url).protocol !== 'wss:') return false;
+    try { ws.send(encodeFileDownloadFrame(request)); return true; }
+    catch { this.handleError(new Error('Unable to send file download request')); return false; }
+  }
+
   sendStructuredChat(request: ChatSubmitRequest): boolean {
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN || this.status !== 'connected') return false;
@@ -472,6 +495,27 @@ export class WebSocketClient {
           : event.data instanceof ArrayBuffer
             ? new Uint8Array(event.data)
             : null;
+      if (this.ws !== source) return;
+      if (raw !== null && isFileDownloadCandidate(raw)) {
+        const message = decodeFileDownloadFrame(raw);
+        if (!message || !('requestId' in message)) {
+          this.handleError(new Error('Invalid file download response'));
+          source.close(1002, 'Invalid file download response'); return;
+        }
+        try { this.events.onFileDownloadMessage?.(raw); }
+        catch { this.handleError(new Error('File download response handler failed')); }
+        return;
+      }
+      if (raw !== null && isBrowserLinkCandidate(raw)) {
+        const message = decodeBrowserLinkFrame(raw);
+        if (!message || message.type === 'browser_link_receiver_request') {
+          this.handleError(new Error('Invalid browser link response'));
+          source.close(1002, 'Invalid browser link response'); return;
+        }
+        try { this.events.onBrowserLinkMessage?.(message); }
+        catch { this.handleError(new Error('Browser link response handler failed')); }
+        return;
+      }
       if (raw !== null && isStructuredChatCandidate(raw)) {
         const message = decodeStructuredChatFrame(raw);
         if (!message || message.type !== 'chat_submit_result') {

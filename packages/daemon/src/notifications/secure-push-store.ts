@@ -10,6 +10,10 @@ import {
 import type { IdentityStore } from '../auth/identity-store.ts';
 import { newAuthorityEpoch } from '../storage/authority-epoch.ts';
 import { withInterprocessFileLock } from '../storage/interprocess-file-lock.ts';
+import {
+  NotificationStorageError,
+  readNotificationEnrollments,
+} from '../storage/notification-enrollments.ts';
 import { readRelayEnrollments, writeRelayEnrollments } from '../storage/relay-enrollments.ts';
 import { activateSecurePushLocked } from '../storage/secure-push-activation.ts';
 import {
@@ -18,6 +22,7 @@ import {
   readSecurePushSubscriptions,
   writeSecurePushSubscriptions,
 } from '../storage/secure-push-subscriptions.ts';
+import { DEFAULT_PUSH_LEASE_MS } from './push-lease.ts';
 import { sanitizePushPreferences } from './push-preferences.ts';
 
 export interface SecurePushAuthority {
@@ -29,14 +34,29 @@ export interface SecurePushAuthority {
 export interface SecurePushSnapshot extends SecurePushAuthority, SecurePushRegistration {
   readonly subscriptionEpoch: string;
 }
+export interface SecurePushStoreOptions {
+  /** The same configured push lease as legacy registrations; 0 never expires (#1272). */
+  readonly leaseMs?: number;
+}
+export interface SecureSubscriptionState {
+  readonly state: 'registration_required' | 'active' | 'renewal_required';
+  readonly expiresAt: string | null;
+}
 export class SecurePushStore {
+  private readonly leaseMs: number;
+  /** Unknown notification authority is retained for key floors but never a recipient. */
+  private readonly unavailableEnrollments = new WeakSet<StoredSecurePushSubscription>();
   constructor(
     private readonly directory: string,
     private readonly trust: IdentityStore,
     private readonly capacity = 64,
+    options: SecurePushStoreOptions = {},
   ) {
     if (!Number.isInteger(capacity) || capacity < 1 || capacity > 64)
       throw new Error('SECURE_PUSH_CAPACITY_CONFIG');
+    this.leaseMs = options.leaseMs ?? DEFAULT_PUSH_LEASE_MS;
+    if (!Number.isFinite(this.leaseMs) || this.leaseMs < 0)
+      throw new Error('SECURE_PUSH_LEASE_CONFIG');
   }
   captureAuthority(publicKey: string): SecurePushAuthority | null {
     return this.trust.withAuthorizationEpoch(
@@ -51,7 +71,22 @@ export class SecurePushStore {
         const enrolled = rows.find(
           (row) => row.publicKey === publicKey && row.fingerprint === grant.fingerprint,
         );
-        if (!enrolled) return null;
+        if (!enrolled) {
+          const notification = readNotificationEnrollments(this.directory).find(
+            (row) =>
+              row.publicKey === publicKey &&
+              row.fingerprint === grant.fingerprint &&
+              row.authorizationEpoch === authorizationEpoch,
+          );
+          if (!notification) return null;
+          activateSecurePushLocked(this.directory);
+          return Object.freeze({
+            publicKey,
+            fingerprint: grant.fingerprint,
+            authorizationEpoch,
+            enrollmentEpoch: notification.enrollmentEpoch,
+          });
+        }
         activateSecurePushLocked(this.directory);
         const enrollmentEpoch = enrolled.enrollmentEpoch ?? newAuthorityEpoch();
         if (!enrolled.enrollmentEpoch)
@@ -93,6 +128,7 @@ export class SecurePushStore {
     authority: SecurePushAuthority,
     registration: SecurePushRegistration,
     mayCommit: () => boolean = () => true,
+    allowExpired = true,
   ): Promise<SecurePushRegisterResult> {
     // Copy before the first await: mutable callers cannot replace token/key/authority later.
     const captured = Object.freeze({ ...authority });
@@ -116,27 +152,33 @@ export class SecurePushStore {
           return { success: false, error: 'NOT_AUTHORIZED' };
         if (!this.enrollmentCurrent(captured)) return { success: false, error: 'NOT_ENROLLED' };
         activateSecurePushLocked(this.directory);
-        const stored = readSecurePushSubscriptions(this.directory);
-        const current = stored.filter((entry) => this.currentInsideLock(entry));
+        const stored = this.subscriptionsInsideLock();
+        const current = stored.filter((entry) => this.leaseCurrent(entry));
+        const known = stored.find((entry) => entry.publicKey === captured.publicKey);
+        if (known?.leaseExpired && !allowExpired)
+          return { success: false, error: 'RENEWAL_REQUIRED' };
         const existing = current.find((entry) => entry.publicKey === captured.publicKey);
         if (
-          existing &&
-          (prepared.keyVersion < existing.keyVersion ||
-            (prepared.keyVersion === existing.keyVersion &&
-              prepared.pushPublicKey !== existing.pushPublicKey))
+          known &&
+          (prepared.keyVersion < known.keyVersion ||
+            (prepared.keyVersion === known.keyVersion &&
+              prepared.pushPublicKey !== known.pushPublicKey))
         )
           return { success: false, error: 'STALE_KEY_VERSION' };
-        if (existing && this.sameRegistration(existing, prepared))
+        if (existing && this.sameRegistration(existing, prepared)) {
+          this.touchInsideLock(stored, existing);
           return { success: true, keyVersion: existing.keyVersion };
-        if (!existing && current.length >= this.capacity)
+        }
+        if ((!existing && current.length >= this.capacity) || (!known && stored.length >= 64))
           return { success: false, error: 'CAPACITY' };
         const next: StoredSecurePushSubscription = {
           ...captured,
           ...prepared,
           subscriptionEpoch: newAuthorityEpoch(),
+          lastSeenAt: Date.now(),
         };
         writeSecurePushSubscriptions(this.directory, [
-          ...current.filter((entry) => entry.publicKey !== captured.publicKey),
+          ...stored.filter((entry) => entry.publicKey !== captured.publicKey),
           next,
         ]);
         return { success: true, keyVersion: next.keyVersion };
@@ -162,12 +204,27 @@ export class SecurePushStore {
   }
   listCurrent(): SecurePushSnapshot[] {
     return this.transaction(() =>
-      readSecurePushSubscriptions(this.directory)
-        .filter((entry) => this.currentInsideLock(entry))
-        .map((entry) =>
-          Object.freeze({ ...entry, pushPrefs: Object.freeze({ ...entry.pushPrefs }) }),
-        ),
+      this.currentSubscriptionsInsideLock().map(({ lastSeenAt: _lastSeenAt, ...entry }) =>
+        Object.freeze({ ...entry, pushPrefs: Object.freeze({ ...entry.pushPrefs }) }),
+      ),
     );
+  }
+  /** Reads durable expiry before any foreground renewal; never revives an old epoch. */
+  subscriptionState(authority: SecurePushAuthority): SecureSubscriptionState | null {
+    return this.trust.withAuthorizationEpoch(authority.publicKey, (epoch) => {
+      if (!this.isCurrentAuthorityInsideLock(authority, epoch)) return null;
+      const entry = this.subscriptionsInsideLock().find(
+        (row) => row.publicKey === authority.publicKey,
+      );
+      if (!entry) return { state: 'registration_required', expiresAt: null };
+      return {
+        state: this.leaseCurrent(entry) ? 'active' : 'renewal_required',
+        expiresAt:
+          this.leaseMs === 0
+            ? null
+            : new Date((entry.lastSeenAt ?? 0) + this.leaseMs).toISOString(),
+      };
+    });
   }
   /** Recheck captured epochs and invoke the effect synchronously; await returned promises outside. */
   withCurrentSubscription<T>(snapshot: SecurePushSnapshot, operation: () => T): T | null {
@@ -178,7 +235,7 @@ export class SecurePushStore {
         !this.enrollmentCurrent(snapshot)
       )
         return null;
-      const entry = readSecurePushSubscriptions(this.directory).find(
+      const entry = this.currentSubscriptionsInsideLock().find(
         (value) => value.publicKey === snapshot.publicKey,
       );
       if (
@@ -192,6 +249,79 @@ export class SecurePushStore {
       return operation();
     });
   }
+  /** Never recreates an expired/unregistered subscription or waits on a busy grant lock. */
+  renew(authority: SecurePushAuthority): boolean {
+    return this.trust.withAuthorizationEpochNonblocking(authority.publicKey, (epoch) => {
+      if (!this.isCurrentAuthorityInsideLock(authority, epoch)) return false;
+      const stored = this.subscriptionsInsideLock();
+      const entry = stored.find((row) => row.publicKey === authority.publicKey);
+      if (!entry || !this.leaseCurrent(entry)) return false;
+      this.touchInsideLock(stored, entry);
+      return true;
+    });
+  }
+  private touchInsideLock(
+    current: StoredSecurePushSubscription[],
+    entry: StoredSecurePushSubscription,
+  ): void {
+    const lastSeenAt = Date.now();
+    if (entry.lastSeenAt === lastSeenAt) return;
+    writeSecurePushSubscriptions(
+      this.directory,
+      current.map((row) => (row === entry ? { ...row, lastSeenAt } : row)),
+    );
+  }
+  /** Every fan-out and final invocation applies expiry to fresh disk state under the lock. */
+  private currentSubscriptionsInsideLock(): StoredSecurePushSubscription[] {
+    return this.subscriptionsInsideLock().filter((entry) => this.leaseCurrent(entry));
+  }
+  private leaseCurrent(entry: StoredSecurePushSubscription): boolean {
+    return (
+      !this.unavailableEnrollments.has(entry) &&
+      !entry.leaseExpired &&
+      (this.leaseMs === 0 || Date.now() - (entry.lastSeenAt ?? 0) < this.leaseMs)
+    );
+  }
+  private subscriptionsInsideLock(): StoredSecurePushSubscription[] {
+    const stored = readSecurePushSubscriptions(this.directory);
+    const now = Date.now();
+    let changed = false;
+    const current: StoredSecurePushSubscription[] = [];
+    for (const entry of stored) {
+      let unavailable = false;
+      try {
+        if (!this.currentInsideLock(entry)) {
+          changed = true;
+          continue;
+        }
+      } catch (error) {
+        if (!(error instanceof NotificationStorageError)) throw error;
+        // Scope-local damage must neither erase a recipient's key-version floor
+        // nor stop independent valid full-relay recipients from being served.
+        unavailable = true;
+      }
+      // Existing v1 records get one migration lease, not an unlimited historical registration.
+      // Persist clock rollback clamping once, so re-reads cannot repeatedly extend the lease.
+      const lastSeenAt = Math.min(entry.lastSeenAt ?? now, now);
+      const leaseExpired =
+        entry.leaseExpired === true || (this.leaseMs > 0 && now - lastSeenAt >= this.leaseMs);
+      // Retain expired rows (at most 64 total) to keep their push-key version floor.
+      // Only explicit unregister/revoke resets that floor; a fresh registration rotates epoch.
+      const rowChanged = entry.lastSeenAt !== lastSeenAt || leaseExpired !== !!entry.leaseExpired;
+      changed ||= rowChanged;
+      const normalized = rowChanged
+        ? {
+            ...entry,
+            lastSeenAt,
+            ...(leaseExpired ? { leaseExpired: true as const } : {}),
+          }
+        : entry;
+      if (unavailable) this.unavailableEnrollments.add(normalized);
+      current.push(normalized);
+    }
+    if (changed) writeSecurePushSubscriptions(this.directory, current);
+    return current;
+  }
   private transaction<T>(operation: () => T): T {
     fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     fs.chmodSync(this.directory, 0o700);
@@ -203,14 +333,19 @@ export class SecurePushStore {
       .keys.find(
         (key) => key.publicKey === authority.publicKey && key.fingerprint === authority.fingerprint,
       );
-    return (
-      grant !== undefined &&
-      readRelayEnrollments(this.directory).some(
-        (row) =>
-          row.publicKey === authority.publicKey &&
-          row.fingerprint === authority.fingerprint &&
-          row.enrollmentEpoch === authority.enrollmentEpoch,
-      )
+    if (!grant) return false;
+    const relay = readRelayEnrollments(this.directory).find(
+      (row) => row.publicKey === authority.publicKey && row.fingerprint === authority.fingerprint,
+    );
+    // A full enrollment supersedes notification-only authority. An upgrade cannot
+    // silently broaden an already-open notification channel's captured generation.
+    if (relay) return relay.enrollmentEpoch === authority.enrollmentEpoch;
+    return readNotificationEnrollments(this.directory).some(
+      (row) =>
+        row.publicKey === authority.publicKey &&
+        row.fingerprint === authority.fingerprint &&
+        row.authorizationEpoch === authority.authorizationEpoch &&
+        row.enrollmentEpoch === authority.enrollmentEpoch,
     );
   }
   private currentInsideLock(entry: SecurePushAuthority): boolean {

@@ -1,0 +1,13 @@
+{
+  "type": "file_fetch_accepted",
+  "id": "22334455-6677-4889-aabb-ccddeeff0011",
+  "timestamp": "2026-10-14T03:00:00.000Z",
+  "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+  "requestId": "00112233-4455-4677-8899-aabbccddeeff",
+  "transferId": "AAECAwQFBgcICQoLDA0ODw",
+  "fileName": ".env",
+  "byteLength": 10485760,
+  "mediaType": "application/octet-stream",
+  "digest": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "expiresAt": "2026-10-14T03:05:00.000Z"
+}

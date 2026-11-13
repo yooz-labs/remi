@@ -50,6 +50,7 @@ import {
   type ImageStagingResponse,
   ImageStagingService,
 } from '../../src/tunnel/image-staging-service';
+import { openManagedTunnelStorage } from '../../src/tunnel/managed-tunnel-storage';
 import { Reservations } from '../../src/tunnel/reservations';
 import { findTestPort, pollUntil } from '../integration/hub-test-utils';
 
@@ -439,8 +440,32 @@ test('strict wire malformed insertion hints distinguish only the original curren
   ).toBe('unavailable');
   expect(f.output()).toBe('');
   expect(f.ledger()).toEqual(ledger);
+  const beforeRemoval = f.owner.received.length;
   expect(f.store.removeAuthorizedKey(f.owner.identity.fingerprint)).toBe(true);
-  expect((await wireInsertion(f, request, f.owner, raw)).code).toBe('unavailable');
+  // #1305 retires the revoked connection before a malformed hint reaches the service.
+  f.owner.socket.send(raw);
+  await pollUntil(
+    () => f.owner.socket.readyState === WebSocket.CLOSED,
+    1000,
+    'revoked insertion connection closes before a semantic reply',
+  );
+  const afterRemoval = f.owner.received.slice(beforeRemoval);
+  expect(
+    afterRemoval.some(
+      (message) =>
+        message.type === 'error' &&
+        message.code === 'CLOSING' &&
+        message.message === 'Device authorization removed; local approval required',
+    ),
+  ).toBe(true);
+  expect(
+    afterRemoval.some(
+      (message) => message.type === 'image_insert_result' && message.requestId === request.id,
+    ),
+  ).toBe(false);
+  expect(
+    afterRemoval.some((message) => message.type === 'ack' && message.ack.messageId === request.id),
+  ).toBe(false);
   expect(f.output()).toBe('');
 });
 
@@ -1450,4 +1475,26 @@ test('equivalent reordered binding members replay the actual coordinator outcome
     },
   };
   expect(await coordinator.handle(f.owner.id, reordered)).toBe(first);
+});
+
+test('image staging shares exact managed storage scope while native owners close independently', async () => {
+  const f = await fixture();
+  const storage = await openManagedTunnelStorage(f.home);
+  try {
+    expect(storage.hub).toBe(Reflect.get(f.service, 'hub'));
+    const { accepted, bytes } = await start(f);
+    storage.recover();
+    expect(storage.store.inspect().some((row) => row.state === 'active')).toBe(true);
+    storage.close();
+    storage.close();
+    await chunks(f, accepted.transferId, bytes);
+    const result = await invoke(
+      f.service,
+      f.owner.id,
+      operation(f, accepted.transferId, 'image_upload_complete'),
+    );
+    expect(result.type).toBe('image_upload_result');
+  } finally {
+    storage.close();
+  }
 });

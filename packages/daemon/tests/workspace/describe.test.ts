@@ -203,11 +203,13 @@ describe('WorkspaceCache keeps the last answer when git cannot answer (#1276 rev
     const repo = makeRepo(root);
     let clock = 1_000_000;
     const logged: string[] = [];
+    const changed: string[] = [];
     const cache = new WorkspaceCache({
       ttlMs: 10_000,
       now: () => clock,
       timeoutMs: 500,
       log: (line) => logged.push(line),
+      onChange: (dir) => changed.push(dir),
     });
     cache.get(repo);
     await cache.settled(repo);
@@ -225,6 +227,7 @@ describe('WorkspaceCache keeps the last answer when git cannot answer (#1276 rev
       expect(cache.get(repo)).toEqual({ repository: repo, directory: repo, branch: 'main' });
     }
     expect(logged.filter((l) => l.includes('timed out'))).toHaveLength(1);
+    expect(changed).toEqual([repo]);
   }, 20000);
 });
 
@@ -286,5 +289,88 @@ describe('WorkspaceCache: the session list never waits on git (#1236 phase B)', 
     // Fresh now: more reads cost nothing.
     for (let i = 0; i < 5; i++) cache.get(repo);
     expect(cache.readsStarted()).toBe(1);
+  });
+
+  test('publishes a changed branch after the scheduled read, not another list request (#1285)', async () => {
+    const repo = makeRepo(root);
+    let clock = 1_000_000;
+    const changed: string[] = [];
+    const observed: Array<{ branch: string | null | undefined; pending: number; reads: number }> =
+      [];
+    const cache = new WorkspaceCache({
+      ttlMs: 10_000,
+      now: () => clock,
+      onChange: (directory) => {
+        changed.push(directory);
+        observed.push({
+          pending: cache.inFlight(),
+          branch: cache.get(directory)?.branch,
+          reads: cache.readsStarted(),
+        });
+      },
+    });
+    cache.get(repo);
+    await cache.settled(repo);
+    expect(changed).toEqual([repo]);
+    expect(cache.readsStarted()).toBe(1);
+    git(repo, 'checkout', '-q', '-b', 'other');
+    clock += 11_000;
+    expect(cache.get(repo)?.branch).toBe('main');
+    await cache.settled(repo);
+    expect(changed).toEqual([repo, repo]);
+    expect(cache.readsStarted()).toBe(2);
+    expect(observed).toEqual([
+      { branch: 'main', pending: 0, reads: 1 },
+      { branch: 'other', pending: 0, reads: 2 },
+    ]);
+    clock += 11_000;
+    cache.get(repo);
+    await cache.settled(repo);
+    expect(changed).toEqual([repo, repo]);
+    expect(cache.readsStarted()).toBe(3);
+  });
+
+  test('none is quiet, known workspace and removal notify once each (#1285)', async () => {
+    const plain = path.join(root, 'plain');
+    fs.mkdirSync(plain);
+    let clock = 1_000_000;
+    const changed: string[] = [];
+    const cache = new WorkspaceCache({ now: () => clock, onChange: (dir) => changed.push(dir) });
+    cache.get(plain);
+    await cache.settled(plain);
+    expect(changed).toEqual([]);
+    git(plain, 'init', '-q', '-b', 'main');
+    clock += 11_000;
+    cache.get(plain);
+    await cache.settled(plain);
+    expect(changed).toEqual([plain]);
+    fs.rmSync(path.join(plain, '.git'), { recursive: true });
+    clock += 11_000;
+    cache.get(plain);
+    await cache.settled(plain);
+    expect(changed).toEqual([plain, plain]);
+    clock += 11_000;
+    cache.get(plain);
+    await cache.settled(plain);
+    expect(changed).toEqual([plain, plain]);
+  });
+
+  test('a failed listener is logged without poisoning the committed cache (#1285)', async () => {
+    const repo = makeRepo(root);
+    const logged: string[] = [];
+    const cache = new WorkspaceCache({
+      onChange: () => {
+        throw new Error('listener failure');
+      },
+      log: (line) => logged.push(line),
+    });
+    cache.get(repo);
+    await cache.settled(repo);
+    expect(cache.get(repo)?.branch).toBe('main');
+    expect(cache.inFlight()).toBe(0);
+    expect(cache.readsStarted()).toBe(1);
+    expect(logged).toEqual([
+      'workspace change notification failed; cached value remains available',
+    ]);
   });
 });

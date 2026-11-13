@@ -410,12 +410,24 @@ describe('provisioning a client key (#1303)', () => {
     // It can ask again: the revoked key is a candidate like any unknown one, not a banned one.
     expect(store.listPendingKeys().map((k) => k.fingerprint)).toEqual([client.fingerprint]);
 
-    // The connection that was already open is not closed by the removal.
-    open.ws.send(serialize(createSessionListRequest(false)));
+    // The next frame on the old socket cannot outlive the removed grant (#1305).
+    const request = createSessionListRequest(false);
+    open.ws.send(serialize(request));
     await wait(
-      () => open.messages.some((m) => m.type === 'session_list_response'),
-      'a session list on the open connection',
+      () => open.ws.readyState === WebSocket.CLOSED,
+      'the revoked open connection to close',
     );
+    expect(
+      open.messages.some((m) => m.type === 'session_list_response' && m.requestId === request.id),
+    ).toBe(false);
+    expect(
+      open.messages.some(
+        (m) =>
+          m.type === 'error' &&
+          m.code === 'CLOSING' &&
+          m.message === 'Device authorization removed; local approval required',
+      ),
+    ).toBe(true);
 
     // Approving it again restores access; a removed key has no memory.
     expect(

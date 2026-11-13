@@ -16,25 +16,38 @@ FAIL_SCOPE = {"name": "Fail unvalidated scope", "if": "needs.scope.result != 'su
 SOAK_SKIP = {
     "name": "Report scoped soak skip",
     "if": "needs.scope.result == 'success' && needs.scope.outputs.relay != 'false' && needs.scope.outputs.relay_soak == 'false'",
-    "run": 'echo "61-minute soak scoped out for reviewed fixture changes; short relay controls remain required." >> "$GITHUB_STEP_SUMMARY"',
+    "run": 'echo "61-minute soak scoped out for exact reviewed input transitions; short relay controls remain required." >> "$GITHUB_STEP_SUMMARY"',
 }
+
+# Only these two complete inert mappings are equivalent during the reporter migration.
+SOAK_SKIP_PREVIOUS = {**SOAK_SKIP, "run": SOAK_SKIP["run"].replace(
+    "exact reviewed input transitions", "reviewed fixture changes")}
 
 COVERAGE_TEST_RUN = (
     "set -o pipefail\n"
-    "bun scripts/ci/run-bun-test-with-diagnostics.ts --coverage --coverage-reporter=text "
-    "--coverage-reporter=lcov 2>&1 | tee test-output.txt\n"
+    "bun scripts/ci/run-bun-test-batches.ts --worker=${{ matrix.worker }} 2>&1 | tee test-batches-output.txt\n"
 )
-WRAPPED_TEST_COMMAND = (
-    "bun scripts/ci/run-bun-test-with-diagnostics.ts --coverage --coverage-reporter=text "
-    "--coverage-reporter=lcov"
-)
+WRAPPED_TEST_COMMAND = "bun scripts/ci/run-bun-test-batches.ts --worker=${{ matrix.worker }}"
 WRAPPED_TEST_ARGV = "[process.execPath, 'test', ...process.argv.slice(2)]"
+COVERAGE_TEST_ENV = {"E2E_BUNDLER": "esbuild"}
 TEST_MEASUREMENT_PROVENANCE = {
-    "previous_command": "bun test --coverage --coverage-reporter=text --coverage-reporter=lcov",
+    "previous_command": "bun scripts/ci/run-bun-test-batches.ts",
     "wrapped_command": WRAPPED_TEST_COMMAND,
-    "coverage_pipeline": "2>&1 | tee test-output.txt",
-    "wrapper_argv": WRAPPED_TEST_ARGV,
-    "reason": "PR #1492 wraps the unchanged Bun test invocation with bounded quiet-period diagnostics.",
+    "coverage_pipeline": "2>&1 | tee test-batches-output.txt",
+    "environment": COVERAGE_TEST_ENV,
+    "bundler_reason": "#1206: the same Linux ARM64 139-file prefix timed out in Bun.build and passed with esbuild; full hosted acceptance remains required.",
+    "threshold_input": "test-output.txt contains one validated line-only union row",
+    "partition": "isolated target, daemon and other complete cohorts on separate hosted VMs; no retries",
+    "bounds_ms": {"target": 300000, "rest": 1200000, "controller": 1320000},
+    "reason": "#1626: active-progress runs exceeded the rest-worker budget; separate VMs preserve TCP isolation, complete source-bound evidence and unchanged worker budgets. Earlier stalls remain undiagnosed.",
+}
+TEST_EVIDENCE = {
+    "name": "Upload test evidence",
+    "if": "always() && needs.scope.result == 'success' && needs.scope.outputs.test != 'false'",
+    "uses": "actions/upload-artifact@v4",
+    "with": {"name": "test-evidence-${{ github.run_id }}-${{ github.run_attempt }}",
+             "path": "coverage/test-workers/\ncoverage/test-aggregate/\ntest-batches-output.txt\ntest-output.txt\n",
+             "if-no-files-found": "error", "retention-days": "14"},
 }
 
 
@@ -106,7 +119,7 @@ def execution(value, path):
             job.pop(key, None)
         steps = []
         for original in job["steps"]:
-            if original == FAIL_SCOPE or original == SOAK_SKIP:
+            if original == FAIL_SCOPE or original == SOAK_SKIP or original == SOAK_SKIP_PREVIOUS:
                 continue  # Dedicated cheap failure routing, with no runtime execution.
             step = dict(original)
             step.pop("if", None)
@@ -187,7 +200,7 @@ def validate():
     assert ci["jobs"]["sync-develop"]["needs"] == ["auto-release"]
     assert ci["jobs"]["sync-develop"]["if"] == "needs.auto-release.outputs.released == 'true'"
     for workflow, job_name, flag in ((ci, "lint", "lint"), (ci, "typecheck", "typecheck"),
-                                    (ci, "test", "test"), (relay, "local-relay", "relay"),
+                                    (relay, "local-relay", "relay"),
                                     (workflows["macos-app.yml"], "build-test", "macos")):
         job = workflow["jobs"][job_name]
         assert job["needs"] == ["scope"] and job["if"] == "${{ !cancelled() }}"
@@ -203,6 +216,8 @@ def validate():
                 assert job_name == "local-relay" and step == SOAK_SKIP
             elif step.get("name") == "Report scoped skip":
                 assert condition == f"needs.scope.result == 'success' && needs.scope.outputs.{flag} == 'false'"
+            elif step.get("name") == "Upload test evidence":
+                assert workflow is ci and job_name == "test" and step == TEST_EVIDENCE
             elif step.get("name") in {"Check completed soak evidence", "Record actual soak producer"}:
                 assert job_name == "local-relay" and step in CONTRACTS["relay_reuse_job"]["steps"]
             else:
@@ -230,16 +245,28 @@ def validate():
             {"uses": "actions/checkout@v5", "with": {"fetch-depth": "0"}},
             {"uses": "./.github/actions/ci-scope", "id": "scope"},
         ]
+    # Pin the complete worker and aggregate mappings, including fail-fast=false,
+    # all three distinct hosted jobs, same-run artifacts and failed-worker refusal.
+    assert ci["jobs"]["test-workers"] == CONTRACTS["test_worker_job"]
+    assert ci["jobs"]["test"] == CONTRACTS["test_aggregate_job"]
     test_runs = [step.get("run", "") for step in ci["jobs"]["test"]["steps"]]
     for key, expected in CONTRACTS["measurement_sha256"].items():
         file, job, name = key.split("/", 2)
         run = next(step["run"] for step in workflows[file]["jobs"][job]["steps"]
                    if step.get("name") == name)
         assert hashlib.sha256(run.encode()).hexdigest() == expected, key
-    coverage_step = next(step["run"] for step in ci["jobs"]["test"]["steps"]
+    coverage_step = next(step for step in ci["jobs"]["test-workers"]["steps"]
                          if step.get("name") == "Test with coverage")
-    assert coverage_step == COVERAGE_TEST_RUN
-    assert CONTRACTS["measurement_provenance"]["ci.yml/test/Test with coverage"] == TEST_MEASUREMENT_PROVENANCE
+    assert ci["jobs"]["test"]["steps"].count(TEST_EVIDENCE) == 1
+    assert coverage_step["run"] == COVERAGE_TEST_RUN
+    assert coverage_step.get("env") == COVERAGE_TEST_ENV, "coverage Worker bundler environment changed"
+    assert "E2E_BUNDLER" not in ci.get("env", {}), "Worker bundler must stay on the coverage step"
+    for job in ci["jobs"].values():
+        assert "E2E_BUNDLER" not in job.get("env", {}), "Worker bundler must stay on the coverage step"
+        for step in job.get("steps", []):
+            if step is not coverage_step:
+                assert "E2E_BUNDLER" not in step.get("env", {}), "Worker bundler leaked to another step"
+    assert CONTRACTS["measurement_provenance"]["ci.yml/test-workers/Test with coverage"] == TEST_MEASUREMENT_PROVENANCE
     runner = (root / "scripts/ci/run-bun-test-with-diagnostics.ts").read_text()
     assert runner.count(f"runChild({WRAPPED_TEST_ARGV})") == 1
     assert "if (import.meta.main)" in runner

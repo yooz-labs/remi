@@ -20,7 +20,7 @@ import type {
   UUID,
 } from '@remi/shared';
 import { performAuthHandshake } from './auth-helper.ts';
-import { capabilityWsOptions } from './capability-client.ts';
+import { resolveDaemonWsTarget } from './daemon-target.ts';
 import { DetachScanner } from './detach-scanner.ts';
 import { PtyQuiescenceGate } from './pty-quiescence-gate.ts';
 import { StatusBar, childRows } from './status-bar.ts';
@@ -74,7 +74,6 @@ export function formatQuestionBanner(question: Question): string {
 
 export async function runAttachClient(opts: AttachClientOptions): Promise<AttachClientResult> {
   const { host, port, sessionId, timeout = 5000, outputFd = 1 } = opts;
-  const url = `ws://${host}:${port}/ws`;
 
   let ws: WebSocket;
   let attachedSessionId: UUID | null = null;
@@ -335,6 +334,29 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
    */
   function renderMessage(msg: ProtocolMessage, inReplay = false): void {
     const handlers: MessageHandlers<keyof ProtocolMessageMap, void> = {
+      notification_host_request: 'ignore',
+      notification_host_response: 'ignore',
+      session_terminal_open: 'ignore',
+      session_terminal_opened: 'ignore',
+      session_terminal_read: 'ignore',
+      session_terminal_snapshot: 'ignore',
+      session_terminal_unchanged: 'ignore',
+      session_terminal_close: 'ignore',
+      session_terminal_closed: 'ignore',
+      session_terminal_refused: 'ignore',
+      file_fetch_begin: 'ignore',
+      file_fetch_accepted: 'ignore',
+      file_fetch_read: 'ignore',
+      file_fetch_chunk: 'ignore',
+      file_fetch_complete: 'ignore',
+      file_fetch_result: 'ignore',
+      file_fetch_cancel: 'ignore',
+      file_fetch_cancel_result: 'ignore',
+      file_fetch_refused: 'ignore',
+      browser_link_receiver_request: 'ignore',
+      browser_link_receiver_result: 'ignore',
+      browser_link_receiver_ended: 'ignore',
+      browser_link_candidate: 'ignore',
       // The terminal attach client has no image staging/insertion UI (#1170).
       image_insert_request: 'ignore',
       chat_submit_request: 'ignore',
@@ -478,7 +500,8 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       resolve(result);
     }
 
-    ws = new WebSocket(url, capabilityWsOptions() as never);
+    const target = resolveDaemonWsTarget(host, port);
+    ws = new WebSocket(target.url, target.options as never);
 
     const connectionTimer = setTimeout(() => {
       writeOutput(`\n[timed out connecting to daemon at ${host}:${port}]\n`);

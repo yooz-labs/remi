@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline/promises';
 import { generateId } from '@remi/shared';
 import { toString as qrCode } from 'qrcode';
 import { remiHome } from '../config/remi-home.ts';
-import { capabilityWsOptions } from './capability-client.ts';
+import { resolveDaemonWsTarget } from './daemon-target.ts';
 
 /** The package's UTF-8 renderer honors the four-module quiet zone; its
  * terminal renderer ignores margin. Force white background/black modules. */
@@ -46,8 +46,15 @@ export async function runRelayCommand(
       return 1;
     }
   }
-  const options = capabilityWsOptions();
-  if (!options || !Number.isInteger(port) || (port as number) < 1 || (port as number) > 65535) {
+  let target: ReturnType<typeof resolveDaemonWsTarget>;
+  try {
+    target = resolveDaemonWsTarget('127.0.0.1', port as number, { path: '/relay-control' });
+  } catch {
+    console.error('Local hub endpoint unavailable.');
+    return 1;
+  }
+  const options = target.options;
+  if (!options) {
     console.error('Local hub capability unavailable.');
     return 1;
   }
@@ -65,7 +72,7 @@ export async function runRelayCommand(
     return 1;
   }
   return new Promise<number>((resolve) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/relay-control`, options as never);
+    const ws = new WebSocket(target.url, options as never);
     let done = false;
     let reader: ReturnType<typeof createInterface> | undefined;
     const finish = (code: number) => {

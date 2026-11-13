@@ -10,6 +10,27 @@
  * - Messages are ordered within a session
  */
 
+import {
+  type BrowserLinkCandidate,
+  type BrowserLinkReceiverEnded,
+  type BrowserLinkReceiverRequest,
+  type BrowserLinkReceiverResult,
+  decodeBrowserLinkFrame,
+  encodeBrowserLinkFrame,
+} from './browser-links.ts';
+import {
+  type FileFetchAccepted,
+  type FileFetchBegin,
+  type FileFetchCancel,
+  type FileFetchCancelResult,
+  type FileFetchChunk,
+  type FileFetchComplete,
+  type FileFetchRead,
+  type FileFetchRefused,
+  type FileFetchResult,
+  decodeFileDownloadFrame,
+  encodeFileDownloadFrame,
+} from './file-download.ts';
 import type { HarnessId, ResolvedBy, SessionIdentity } from './harness.ts';
 import {
   type ImageInsertRequest,
@@ -18,9 +39,12 @@ import {
   encodeImageInsertionFrame,
 } from './image-insertion.ts';
 import {
+  isBrowserLinkCandidate,
+  isFileDownloadCandidate,
   isImageInsertionCandidate,
   isImageStagingCandidate,
   isStructuredChatCandidate,
+  isTerminalViewCandidate,
 } from './image-staging-ingress.ts';
 import {
   type ImageUploadAccepted,
@@ -35,6 +59,11 @@ import {
   decodeImageStagingFrame,
   encodeImageStagingFrame,
 } from './image-staging.ts';
+import {
+  type NotificationHostRequest,
+  type NotificationHostResponse,
+  isValidNotificationHostMessage,
+} from './notification-host.ts';
 import { PROTOCOL_VERSION } from './protocol-version.ts';
 import type {
   AnswerResultMessage,
@@ -61,6 +90,19 @@ import {
   decodeStructuredChatFrame,
   encodeStructuredChatFrame,
 } from './structured-chat.ts';
+import {
+  type SessionTerminalClose,
+  type SessionTerminalClosed,
+  type SessionTerminalOpen,
+  type SessionTerminalOpened,
+  type SessionTerminalRead,
+  type SessionTerminalRefused,
+  type SessionTerminalSnapshot,
+  type SessionTerminalUnchanged,
+  type TerminalViewMessage,
+  decodeTerminalViewFrame,
+  encodeTerminalViewFrame,
+} from './terminal-view.ts';
 import type {
   Acknowledgment,
   AgentStatus,
@@ -123,6 +165,28 @@ export function now(): Timestamp {
  * test that guards this derivation.
  */
 export interface ProtocolMessageMap {
+  session_terminal_open: SessionTerminalOpen;
+  session_terminal_opened: SessionTerminalOpened;
+  session_terminal_read: SessionTerminalRead;
+  session_terminal_snapshot: SessionTerminalSnapshot;
+  session_terminal_unchanged: SessionTerminalUnchanged;
+  session_terminal_close: SessionTerminalClose;
+  session_terminal_closed: SessionTerminalClosed;
+  session_terminal_refused: SessionTerminalRefused;
+
+  file_fetch_begin: FileFetchBegin;
+  file_fetch_accepted: FileFetchAccepted;
+  file_fetch_read: FileFetchRead;
+  file_fetch_chunk: FileFetchChunk;
+  file_fetch_complete: FileFetchComplete;
+  file_fetch_result: FileFetchResult;
+  file_fetch_cancel: FileFetchCancel;
+  file_fetch_cancel_result: FileFetchCancelResult;
+  file_fetch_refused: FileFetchRefused;
+  browser_link_receiver_request: BrowserLinkReceiverRequest;
+  browser_link_receiver_result: BrowserLinkReceiverResult;
+  browser_link_receiver_ended: BrowserLinkReceiverEnded;
+  browser_link_candidate: BrowserLinkCandidate;
   image_insert_request: ImageInsertRequest;
   chat_submit_request: ChatSubmitRequest;
   chat_submit_result: ChatSubmitResult;
@@ -138,6 +202,8 @@ export interface ProtocolMessageMap {
   image_upload_refused: ImageUploadRefused;
 
   native_answer: NativeAnswerMessage;
+  notification_host_request: NotificationHostRequest;
+  notification_host_response: NotificationHostResponse;
   secure_push_register_request: SecurePushRegisterRequestMessage;
   secure_push_register_response: SecurePushRegisterResponseMessage;
   secure_push_unregister_request: SecurePushUnregisterRequestMessage;
@@ -258,6 +324,27 @@ export type MessageOf<K extends keyof ProtocolMessageMap> = ProtocolMessageMap[K
  * `UNKNOWN_MESSAGE`.
  */
 export const MESSAGE_DIRECTION = {
+  session_terminal_open: 'c2d',
+  session_terminal_opened: 'd2c',
+  session_terminal_read: 'c2d',
+  session_terminal_snapshot: 'd2c',
+  session_terminal_unchanged: 'd2c',
+  session_terminal_close: 'c2d',
+  session_terminal_closed: 'd2c',
+  session_terminal_refused: 'd2c',
+  file_fetch_begin: 'c2d',
+  file_fetch_accepted: 'd2c',
+  file_fetch_read: 'c2d',
+  file_fetch_chunk: 'd2c',
+  file_fetch_complete: 'c2d',
+  file_fetch_result: 'd2c',
+  file_fetch_cancel: 'c2d',
+  file_fetch_cancel_result: 'd2c',
+  file_fetch_refused: 'd2c',
+  browser_link_receiver_request: 'c2d',
+  browser_link_receiver_result: 'd2c',
+  browser_link_receiver_ended: 'd2c',
+  browser_link_candidate: 'd2c',
   image_insert_request: 'c2d',
   chat_submit_request: 'c2d',
   chat_submit_result: 'd2c',
@@ -273,6 +360,8 @@ export const MESSAGE_DIRECTION = {
   image_upload_refused: 'd2c',
 
   native_answer: 'c2d',
+  notification_host_request: 'c2d',
+  notification_host_response: 'd2c',
   secure_push_register_request: 'c2d',
   secure_push_register_response: 'd2c',
   secure_push_unregister_request: 'c2d',
@@ -1558,6 +1647,12 @@ export interface SessionHistoryResponseMessage {
  * Throws if message is invalid.
  */
 export function serialize(message: ProtocolMessage): string {
+  if (message.type.startsWith('session_terminal_'))
+    return encodeTerminalViewFrame(message as TerminalViewMessage);
+  if (message.type.startsWith('file_fetch_'))
+    return encodeFileDownloadFrame(message as import('./file-download.ts').FileDownloadMessage);
+  if (message.type.startsWith('browser_link_'))
+    return encodeBrowserLinkFrame(message as import('./browser-links.ts').BrowserLinkMessage);
   if (message.type === 'chat_submit_request' || message.type === 'chat_submit_result')
     return encodeStructuredChatFrame(message);
   if (message.type === 'image_insert_request' || message.type === 'image_insert_result')
@@ -1572,6 +1667,9 @@ export function serialize(message: ProtocolMessage): string {
  * Returns null if parsing fails or message is invalid.
  */
 export function deserialize(data: string): ProtocolMessage | null {
+  if (isTerminalViewCandidate(data)) return decodeTerminalViewFrame(data);
+  if (isFileDownloadCandidate(data)) return decodeFileDownloadFrame(data);
+  if (isBrowserLinkCandidate(data)) return decodeBrowserLinkFrame(data);
   if (isStructuredChatCandidate(data)) return decodeStructuredChatFrame(data);
   // Stage frames never pass through the permissive legacy parser (#1170).
   if (isImageStagingCandidate(data)) return decodeImageStagingFrame(data);
@@ -1661,6 +1759,15 @@ export function isValidMessage(value: unknown): value is ProtocolMessage {
   if (typeof obj['id'] !== 'string') return false;
   if (typeof obj['timestamp'] !== 'string') return false;
 
+  if (obj['type'].startsWith('session_terminal_')) {
+    try {
+      encodeTerminalViewFrame(obj as unknown as TerminalViewMessage);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   if (obj['type'] === 'native_answer') {
     try {
       decodeNativeAnswer(encodeNativeAnswer(obj as unknown as NativeAnswer));
@@ -1669,6 +1776,9 @@ export function isValidMessage(value: unknown): value is ProtocolMessage {
       return false;
     }
   }
+
+  if (obj['type'] === 'notification_host_request' || obj['type'] === 'notification_host_response')
+    return isValidNotificationHostMessage(obj);
 
   // The subscription responses have no other validator on their way to a client (#1200).
   if (

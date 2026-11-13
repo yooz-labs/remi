@@ -1,5 +1,7 @@
 /** The hub's secure subscription branch over a real READY channel, Worker and stores (#1200). */
 import { afterEach, expect, test } from 'bun:test';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { type PushPreferences, createSecurePushRegisterRequest, relayV2 } from '@remi/shared';
 import { SecurePushStore } from '../../src/notifications/secure-push-store.ts';
 import { resumedHub } from './hub-relay-fixture.ts';
@@ -65,6 +67,41 @@ test('a hub with no secure push sender refuses registration with UNSUPPORTED and
   });
   expect(stored()).toEqual([]);
   expect(hub.logs.join('\n')).toContain('Secure push registration refused: no secure push sender');
+}, 15000);
+
+test('source hub renews secure leases while connected and on close, then stops renewing', async () => {
+  const leaseMs = 6000;
+  const { hub, register } = await start({ pushLeaseMs: leaseMs });
+  expect(await register()).toMatchObject({ success: true });
+  const file = join(hub.dir, 'secure_push_subscriptions.json');
+  const read = () => JSON.parse(readFileSync(file, 'utf8'));
+  const recorded = read();
+  const epoch = recorded.subscriptions[0].subscriptionEpoch;
+  const age = Date.now() - leaseMs / 2;
+  recorded.subscriptions[0].lastSeenAt = age;
+  writeFileSync(file, JSON.stringify(recorded));
+  const deadline = Date.now() + leaseMs / 2;
+  while (read().subscriptions[0].lastSeenAt === age && Date.now() < deadline) await Bun.sleep(10);
+  const renewed = read().subscriptions[0].lastSeenAt;
+  expect(renewed).toBeGreaterThan(age);
+  expect(read().subscriptions[0].subscriptionEpoch).toBe(epoch);
+  // Force a known old sighting to distinguish the close stamp from the periodic renewal.
+  const beforeClose = read();
+  beforeClose.subscriptions[0].lastSeenAt = Date.now() - leaseMs / 2;
+  writeFileSync(file, JSON.stringify(beforeClose));
+  hub.disconnect();
+  const closeDeadline = Date.now() + 2000;
+  while (hub.relay.connectionCount > 0 && Date.now() < closeDeadline) await Bun.sleep(10);
+  expect(hub.relay.connectionCount).toBe(0);
+  expect(read().subscriptions[0].lastSeenAt).toBeGreaterThan(
+    beforeClose.subscriptions[0].lastSeenAt,
+  );
+  const disconnected = read();
+  disconnected.subscriptions[0].lastSeenAt = Date.now() - leaseMs - 1;
+  writeFileSync(file, JSON.stringify(disconnected));
+  const sibling = new SecurePushStore(hub.dir, hub.trust, 64, { leaseMs });
+  expect(sibling.listCurrent()).toEqual([]);
+  expect(read().subscriptions).toHaveLength(1);
 }, 15000);
 
 test('sender availability is read per request: registration succeeds once a sender exists (#1200, B5)', async () => {

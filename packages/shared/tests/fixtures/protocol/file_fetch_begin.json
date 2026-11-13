@@ -1,0 +1,11 @@
+{
+  "type": "file_fetch_begin",
+  "id": "00112233-4455-4677-8899-aabbccddeeff",
+  "timestamp": "2026-10-14T03:00:00.000Z",
+  "sessionId": "00112233-4455-7677-8899-aabbccddeeff",
+  "binding": {
+    "harness": "codex",
+    "harnessSessionId": "thread name ☃ (not a UUID)"
+  },
+  "relativePath": "docs/%2e%2e/report%2Ffinal.txt"
+}

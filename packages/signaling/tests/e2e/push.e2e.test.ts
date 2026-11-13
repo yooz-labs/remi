@@ -506,7 +506,7 @@ for (const stage of ['initial-sync', 'consume-sync', 'jwt'])
 test('consumed real sync completion error is uncertain with zero network; same durable pending nonce survives orderly Worker restart', async () => {
   const path = mkdtempSync(join(tmpdir(), 'remi-push-epoch-'));
   persistence.push(path);
-  const { worker: w, machine: m, device: d, recipient: p, config } = await setup({}, path);
+  const { worker: w, machine: m, device: d, recipient: p } = await setup({}, path);
   const s = await submission(w, m, d, p);
   await gate(w, m.ridHex, 'consume-sync-error');
   const first = await post(w, s);
@@ -519,9 +519,9 @@ test('consumed real sync completion error is uncertain with zero network; same d
   });
   expect(storage[`push-nonce:${s.nonce}`]).not.toHaveProperty('result');
   await gate(w, m.ridHex, null);
-  await w.stop();
-  worker = undefined;
-  worker = await startWorker(config, true, { path, port: Number(new URL(w.url).port) });
+  const previousRuntime = w.mf;
+  worker = await w.restart();
+  expect(worker.mf).not.toBe(previousRuntime);
   expect(worker.url).toBe(w.url);
   expect(await post(worker, s)).toEqual(first);
   expect(requests.length).toBe(0);
@@ -809,13 +809,12 @@ test('durable global send budget survives actual orderly workerd restart', async
     machine: m,
     device: d,
     recipient: p,
-    config,
   } = await setup({ PUSH_SEND_TOKEN: '1' }, path);
   expect((await post(w, await submission(w, m, d, p))).outcome).toBe('accepted');
   const second = await submission(w, m, d, p);
-  await w.stop();
-  worker = undefined;
-  worker = await startWorker(config, true, { path, port: Number(new URL(w.url).port) });
+  const previousRuntime = w.mf;
+  worker = await w.restart();
+  expect(worker.mf).not.toBe(previousRuntime);
   expect(await post(worker, second)).toMatchObject({
     outcome: 'rejected',
     reason: 'RATE_LIMITED',

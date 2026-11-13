@@ -13,6 +13,8 @@ import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
 import { remiHome } from '../config/remi-home.ts';
 import { SessionRegistryFile } from '../session/session-registry-file.ts';
+import { readLocalDaemonEndpoint } from '../storage/local-daemon-endpoints.ts';
+import { withLegacyPushEligibility } from '../storage/secure-push-activation.ts';
 import { rotateIfNeeded } from './log-rotation.ts';
 import { resolveExistingDirectory } from './path-resolver.ts';
 import { formatVersionDrift } from './version-drift.ts';
@@ -108,7 +110,12 @@ function readStatus(): Record<string, unknown> | null {
  * The running hub's port, bind and whether it authenticates, for `remi pair` (#1275): null when no
  * hub is running. `bind` and `auth` are absent from a hub older than `remi pair`.
  */
-export function readHubStatus(): { port: number; bind?: string; auth?: boolean } | null {
+export function readHubStatus(): {
+  port: number;
+  bind?: string;
+  auth?: boolean;
+  directTls?: true;
+} | null {
   const pid = readPidFileLive() ?? readStatusFilePidIfAlive();
   if (pid === null) return null;
   const status = readStatus();
@@ -117,10 +124,15 @@ export function readHubStatus(): { port: number; bind?: string; auth?: boolean }
   if (typeof port !== 'number' || !Number.isInteger(port) || port <= 0) return null;
   const bind = status['bind'];
   const auth = status['auth'];
+  const local = readLocalDaemonEndpoint(port, { home: REMI_DIR, expectedPid: pid });
+  if (local.kind === 'invalid') throw new Error('Local daemon endpoint unavailable');
   return {
     port,
     ...(typeof bind === 'string' && { bind }),
     ...(typeof auth === 'boolean' && { auth }),
+    // A same-PID local routing hint is enough to refuse an incompatible v1 QR.
+    // Its absence says nothing about the listener's transport or PID age.
+    ...(local.kind === 'found' && { directTls: true as const }),
   };
 }
 
@@ -250,6 +262,36 @@ export async function startDaemon(opts: StartOptions): Promise<number> {
   child.unref();
   fs.closeSync(logFd);
 
+  const failUnexpectedChildExit = (): never => {
+    console.error('Hub process exited unexpectedly. Check logs:');
+    console.error(`  ${LOG_FILE}`);
+    // Remove the hub's self-written PID file only if it actually names the
+    // child that just died -- never a concurrently started foreign hub's.
+    try {
+      const content = fs.readFileSync(PID_FILE, 'utf-8').trim();
+      if (Number.parseInt(content, 10) === pid) {
+        fs.unlinkSync(PID_FILE);
+      }
+    } catch (err) {
+      // ENOENT expected: the PID file may never have been written or is
+      // already cleaned up. Anything else is worth a trace (we're exiting 1
+      // anyway; a stale file self-heals via readPidFileLive next start).
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        console.error(`Warning: could not clean up PID file: ${code ?? err}`);
+      }
+    }
+    process.exit(1);
+  };
+  const assertChildAlive = (): void => {
+    if (child.exitCode !== null || child.signalCode !== null) failUnexpectedChildExit();
+    try {
+      process.kill(pid, 0);
+    } catch {
+      failUnexpectedChildExit();
+    }
+  };
+
   // Poll until daemon writes daemon-status.json or times out
   const startTime = Date.now();
   const timeout = 5000;
@@ -258,36 +300,24 @@ export async function startDaemon(opts: StartOptions): Promise<number> {
   while (Date.now() - startTime < timeout) {
     const status = readStatus();
     if (status && status['pid'] === pid && status['wsPort']) {
-      port = status['wsPort'] as number;
-      break;
-    }
-    try {
-      process.kill(pid, 0);
-    } catch {
-      console.error('Hub process exited unexpectedly. Check logs:');
-      console.error(`  ${LOG_FILE}`);
-      // Remove the hub's self-written PID file only if it actually names the
-      // child that just died -- never a concurrently started foreign hub's.
-      try {
-        const content = fs.readFileSync(PID_FILE, 'utf-8').trim();
-        if (Number.parseInt(content, 10) === pid) {
-          fs.unlinkSync(PID_FILE);
-        }
-      } catch (err) {
-        // ENOENT expected: the PID file may never have been written or is
-        // already cleaned up. Anything else is worth a trace (we're exiting
-        // 1 anyway; a stale file self-heals via readPidFileLive next start).
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code !== 'ENOENT') {
-          console.error(`Warning: could not clean up PID file: ${code ?? err}`);
-        }
+      // #1559: let child exit events drain before accepting same-PID readiness.
+      await Bun.sleep(0);
+      assertChildAlive();
+      const confirmed = readStatus();
+      if (confirmed && confirmed['pid'] === pid && confirmed['wsPort']) {
+        port = confirmed['wsPort'] as number;
+        break;
       }
-      process.exit(1);
     }
-    Bun.sleepSync(100);
+    assertChildAlive();
+    // #1559: sleep asynchronously so Bun can reap a detached child that exits.
+    await Bun.sleep(100);
   }
 
   if (port === 'unknown') {
+    // Catch an exit between the final poll and reporting the initializing state.
+    await Bun.sleep(0);
+    assertChildAlive();
     console.log(`Hub started (PID ${pid}) but did not report its port within ${timeout / 1000}s.`);
     console.log('The hub may still be initializing. Check status with: remi status');
   } else {
@@ -595,6 +625,12 @@ export async function spawnRemiDaemon(
   // status-<PORT>.json a wrapper would, instead of clobbering the parent's
   // own ~/.remi/daemon-status.json.
   childEnv['REMI_SPAWNED_CHILD'] = '1';
+  // Secure recipients use the capability-proved hub sender. Keep inheritance
+  // only for the existing plaintext compatibility path until its latch retires.
+  if (!withLegacyPushEligibility(REMI_DIR, () => true).allowed) {
+    // biome-ignore lint/performance/noDelete: the credential must be absent from the child
+    delete childEnv['REMI_PUSH_SECRET'];
+  }
 
   // #1025: without this, the child inherits OUR cwd (the hub's, for a
   // hub-spawned child), so anything the child reads from process.cwd()

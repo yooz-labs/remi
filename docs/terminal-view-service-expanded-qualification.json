@@ -1,0 +1,3329 @@
+{
+  "status": "passed-source-lease-expanded-service-only",
+  "implementationCommit": "44008b86b9e13dcb159dabb0650ba29a392b11d5",
+  "scope": "signed direct WSS service preparation; no capability/caller/relay adoption or rendered/signed/hardware/deployed/provider acceptance",
+  "budget": {
+    "completeStackBytes": 4194304,
+    "models": 8,
+    "homeBytes": 33554432,
+    "primitiveIndependentBytes": 1048576
+  },
+  "source": {
+    "casesPerPin": 320,
+    "parentAssertions": {
+      "1.3.11": 3509,
+      "1.4.2": 3504
+    },
+    "functionalReceipt": "wrapper-ready-source-source-validation-result.json",
+    "leaseReuse": {
+      "status": "verified-runtime-and-lease-fixture-unchanged",
+      "changedInputs": [
+        "packages/daemon/tests/helpers/terminal-service-resource-support.ts",
+        "packages/daemon/tests/terminal/view-service.test.ts"
+      ]
+    },
+    "verifiedStaticStages": [
+      {
+        "name": "wrapper-ready-source-source-1311",
+        "status": "completed",
+        "exitCode": 0
+      },
+      {
+        "name": "wrapper-ready-source-source-142",
+        "status": "completed",
+        "exitCode": 0
+      },
+      {
+        "name": "wrapper-ready-source-types-root",
+        "status": "completed",
+        "exitCode": 0
+      },
+      {
+        "name": "wrapper-ready-source-types-web",
+        "status": "completed",
+        "exitCode": 0
+      },
+      {
+        "name": "wrapper-ready-source-types-web-tests",
+        "status": "completed",
+        "exitCode": 0
+      },
+      {
+        "name": "wrapper-ready-source-types-signaling",
+        "status": "completed",
+        "exitCode": 0
+      },
+      {
+        "name": "wrapper-ready-source-types-integration",
+        "status": "completed",
+        "exitCode": 0
+      },
+      {
+        "name": "wrapper-ready-source-lint",
+        "status": "completed",
+        "exitCode": 0
+      },
+      {
+        "name": "wrapper-ready-source-spelling",
+        "status": "completed",
+        "exitCode": 0
+      },
+      {
+        "name": "wrapper-ready-source-diff",
+        "status": "completed",
+        "exitCode": 0
+      },
+      {
+        "name": "wrapper-ready-source-notices",
+        "status": "completed",
+        "exitCode": 0
+      }
+    ],
+    "leases": {
+      "1311": {
+        "status": "passed",
+        "version": "1.3.11",
+        "revision": "af24e281ebacd6ac77c0f14b4206599cf4ae1c9f",
+        "elapsedMonotonicMs": 300050.94229100004,
+        "oldViewOutcome": "expired",
+        "explicitOpenCreatedFreshView": true,
+        "scope": "real five-minute source signed-WSS lease; no compiled/service-resource or hardware acceptance"
+      },
+      "142": {
+        "status": "passed",
+        "version": "1.4.2",
+        "revision": "744846f844374847c902b5e7fd59b4342a51ef99",
+        "elapsedMonotonicMs": 300051.48562500003,
+        "oldViewOutcome": "expired",
+        "explicitOpenCreatedFreshView": true,
+        "scope": "real five-minute source signed-WSS lease; no compiled/service-resource or hardware acceptance"
+      }
+    }
+  },
+  "originalAllowancesBytes": {
+    "nativeCopy": 65546,
+    "fixturePressure": 17418,
+    "tlsWorking": 198666,
+    "envelope": 1024,
+    "ingressHandoff": 16384
+  },
+  "linuxRuntimeContainment": {
+    "image": "oven/bun@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7",
+    "user": "1000:1000",
+    "memoryMiB": 512,
+    "tasks": 128,
+    "network": "none",
+    "capabilities": "dropped",
+    "binaryMount": "readonly"
+  },
+  "matrix": [
+    {
+      "pin": "1.3.11",
+      "revision": "af24e281ebacd6ac77c0f14b4206599cf4ae1c9f",
+      "target": "bun-darwin-arm64",
+      "binaryHashes": {
+        "resource": "2ffc197380a9f130128c2a8e5263bc496d32b65fd011be7ddfb762295e3bd4be",
+        "combined": "20dc8ce0d635450b3c9061621e8609f938317cb6c82bd4d281b8a900d0917e38",
+        "held": "2756dbb4a35393da5d43d47094920df25582b078f61f311e03e25cb56c172092",
+        "quota": "728960d154da9687cd187aa1d44a6a1c40996f6ed1c1b22a0e83a1d5f66949a9"
+      },
+      "resourceProfiles": {
+        "latin1": {
+          "peakBytes": 784259,
+          "budgetBytes": 4194304,
+          "projectedBytes": 29315,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": null,
+          "liveRawAstSamples": 0
+        },
+        "utf16-escaped": {
+          "peakBytes": 811294,
+          "budgetBytes": 4194304,
+          "projectedBytes": 41559,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": null,
+          "liveRawAstSamples": 0
+        },
+        "strict-utf16": {
+          "peakBytes": 1070482,
+          "budgetBytes": 4194304,
+          "projectedBytes": 41559,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": "utf16",
+          "liveRawAstSamples": 2
+        },
+        "strict-refusal-nodes": {
+          "peakBytes": 946343,
+          "budgetBytes": 4194304,
+          "projectedBytes": 275,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": "nodes",
+          "liveRawAstSamples": 2
+        },
+        "combined-latin1": {
+          "peakSumBytes": 1568886,
+          "budgetBytes": 8388608,
+          "owners": 2,
+          "views": 8,
+          "ownerPeaksBytes": [745392, 823494]
+        },
+        "combined-utf16": {
+          "peakSumBytes": 1890780,
+          "budgetBytes": 8388608,
+          "owners": 2,
+          "views": 8,
+          "ownerPeaksBytes": [1060004, 830776]
+        }
+      },
+      "reservationGroups": [
+        "model budget and exact owner",
+        "one model per session",
+        "connection view limit",
+        "device view limit across processes",
+        "session view limit",
+        "home view limit",
+        "view model ownership and disposal ordering",
+        "second home admission",
+        "independent homes",
+        "live concurrent owners and dead owner recovery",
+        "nonblocking held lock",
+        "missing ledger",
+        "missing namespace",
+        "missing marker",
+        "replaced namespace",
+        "ledger symlink",
+        "ledger hardlink",
+        "ledger mode",
+        "namespace mode",
+        "marker mode",
+        "marker symlink",
+        "wrong marker namespace",
+        "oversized ledger",
+        "invalid UTF-8",
+        "duplicate member",
+        "malformed JSON",
+        "unknown field",
+        "duplicate row",
+        "invalid owner PID",
+        "real crashed owner requires explicit lock repair"
+      ],
+      "policyMigrationGroups": [
+        "approved four MiB models preserve the 32 MiB home cap",
+        "a live actual legacy reservation blocks migration without rewriting",
+        "an empty actual legacy ledger migrates and fences its original writer",
+        "an actual exited legacy owner permits atomic policy migration",
+        "an unknown policy preserves a real current charge and cannot reset"
+      ],
+      "heldNo": [
+        {
+          "scenario": "max-text-service-load",
+          "latencyMs": 2.2445419999999103,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 3146016,
+          "bytesAfterNo": 3277100,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 3,
+              "polls": 5,
+              "snapshots": 3,
+              "refusals": 0
+            },
+            {
+              "reads": 3,
+              "polls": 5,
+              "snapshots": 3,
+              "refusals": 0
+            },
+            {
+              "reads": 3,
+              "polls": 5,
+              "snapshots": 3,
+              "refusals": 0
+            },
+            {
+              "reads": 3,
+              "polls": 5,
+              "snapshots": 3,
+              "refusals": 0
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        },
+        {
+          "scenario": "clear-service-load",
+          "latencyMs": 0.8918750000000273,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 1802240,
+          "bytesAfterNo": 1818624,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 5,
+              "polls": 5,
+              "snapshots": 4,
+              "refusals": 1
+            },
+            {
+              "reads": 4,
+              "polls": 5,
+              "snapshots": 3,
+              "refusals": 1
+            },
+            {
+              "reads": 4,
+              "polls": 5,
+              "snapshots": 3,
+              "refusals": 1
+            },
+            {
+              "reads": 4,
+              "polls": 5,
+              "snapshots": 3,
+              "refusals": 1
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        },
+        {
+          "scenario": "retirement-lock-contention",
+          "latencyMs": 0.947041999999783,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 4653482,
+          "bytesAfterNo": 4653482,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 6,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 6,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 6,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 6,
+              "snapshots": 1,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 6,
+              "snapshots": 1,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 6,
+              "snapshots": 1,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 6,
+              "snapshots": 1,
+              "refusals": 0
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        },
+        {
+          "scenario": "blocking-control",
+          "latencyMs": 1251.7913339999998,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 3146016,
+          "bytesAfterNo": 3211558,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 7,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 7,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 7,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 4,
+              "polls": 7,
+              "snapshots": 3,
+              "refusals": 1
+            },
+            {
+              "reads": 4,
+              "polls": 7,
+              "snapshots": 3,
+              "refusals": 1
+            },
+            {
+              "reads": 4,
+              "polls": 7,
+              "snapshots": 3,
+              "refusals": 1
+            },
+            {
+              "reads": 4,
+              "polls": 7,
+              "snapshots": 3,
+              "refusals": 1
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        }
+      ]
+    },
+    {
+      "pin": "1.3.11",
+      "revision": "af24e281ebacd6ac77c0f14b4206599cf4ae1c9f",
+      "target": "bun-linux-arm64",
+      "binaryHashes": {
+        "resource": "f9889cf6cf80f538c585446b22be00b9ffa979b31bd314a5766f6ed49bd12645",
+        "combined": "72be0e426bf9aa8036d2503181aeed0ca88fa85750225e5dfb08bbed9a0470f5",
+        "held": "88447b82385ca28138d6f6a32467e780c5d2a5d8bf7d9ac198782e2eefe3dc88",
+        "quota": "45ddb25abf2c7565b8bfe6ad7b5c5cceffb6cbc9d5e0599affc8e76b1d61d1d2"
+      },
+      "resourceProfiles": {
+        "latin1": {
+          "peakBytes": 792876,
+          "budgetBytes": 4194304,
+          "projectedBytes": 29315,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": null,
+          "liveRawAstSamples": 0
+        },
+        "utf16-escaped": {
+          "peakBytes": 815348,
+          "budgetBytes": 4194304,
+          "projectedBytes": 41559,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": null,
+          "liveRawAstSamples": 0
+        },
+        "strict-utf16": {
+          "peakBytes": 1074911,
+          "budgetBytes": 4194304,
+          "projectedBytes": 41559,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": "utf16",
+          "liveRawAstSamples": 2
+        },
+        "strict-refusal-nodes": {
+          "peakBytes": 940383,
+          "budgetBytes": 4194304,
+          "projectedBytes": 275,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": "nodes",
+          "liveRawAstSamples": 2
+        },
+        "combined-latin1": {
+          "peakSumBytes": 1962504,
+          "budgetBytes": 8388608,
+          "owners": 2,
+          "views": 8,
+          "ownerPeaksBytes": [1151158, 811346]
+        },
+        "combined-utf16": {
+          "peakSumBytes": 2014383,
+          "budgetBytes": 8388608,
+          "owners": 2,
+          "views": 8,
+          "ownerPeaksBytes": [1167857, 846526]
+        }
+      },
+      "reservationGroups": [
+        "model budget and exact owner",
+        "one model per session",
+        "connection view limit",
+        "device view limit across processes",
+        "session view limit",
+        "home view limit",
+        "view model ownership and disposal ordering",
+        "second home admission",
+        "independent homes",
+        "live concurrent owners and dead owner recovery",
+        "nonblocking held lock",
+        "missing ledger",
+        "missing namespace",
+        "missing marker",
+        "replaced namespace",
+        "ledger symlink",
+        "ledger hardlink",
+        "ledger mode",
+        "namespace mode",
+        "marker mode",
+        "marker symlink",
+        "wrong marker namespace",
+        "oversized ledger",
+        "invalid UTF-8",
+        "duplicate member",
+        "malformed JSON",
+        "unknown field",
+        "duplicate row",
+        "invalid owner PID",
+        "real crashed owner requires explicit lock repair"
+      ],
+      "policyMigrationGroups": [
+        "approved four MiB models preserve the 32 MiB home cap",
+        "a live actual legacy reservation blocks migration without rewriting",
+        "an empty actual legacy ledger migrates and fences its original writer",
+        "an actual exited legacy owner permits atomic policy migration",
+        "an unknown policy preserves a real current charge and cannot reset"
+      ],
+      "heldNo": [
+        {
+          "scenario": "max-text-service-load",
+          "latencyMs": 2.2987080000002607,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 10552262,
+          "bytesAfterNo": 10683346,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 14,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 14,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 14,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 14,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 3,
+              "polls": 14,
+              "snapshots": 3,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 14,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 14,
+              "snapshots": 1,
+              "refusals": 0
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        },
+        {
+          "scenario": "clear-service-load",
+          "latencyMs": 2.9397919999996702,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 2080768,
+          "bytesAfterNo": 2097152,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 5,
+              "polls": 5,
+              "snapshots": 4,
+              "refusals": 1
+            },
+            {
+              "reads": 5,
+              "polls": 5,
+              "snapshots": 4,
+              "refusals": 1
+            },
+            {
+              "reads": 5,
+              "polls": 5,
+              "snapshots": 4,
+              "refusals": 1
+            },
+            {
+              "reads": 5,
+              "polls": 5,
+              "snapshots": 3,
+              "refusals": 2
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        },
+        {
+          "scenario": "retirement-lock-contention",
+          "latencyMs": 1.3331660000003467,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 3670352,
+          "bytesAfterNo": 3670352,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 5,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 5,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 5,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 1,
+              "refusals": 0
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        },
+        {
+          "scenario": "blocking-control",
+          "latencyMs": 1253.7005419999996,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 3539268,
+          "bytesAfterNo": 3670352,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 8,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 8,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 8,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 3,
+              "polls": 8,
+              "snapshots": 3,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 8,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 8,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 8,
+              "snapshots": 2,
+              "refusals": 0
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        }
+      ]
+    },
+    {
+      "pin": "1.3.11",
+      "revision": "af24e281ebacd6ac77c0f14b4206599cf4ae1c9f",
+      "target": "bun-linux-x64",
+      "binaryHashes": {
+        "resource": "7c6b3f39d450207dcd826de2beb686bd9a788f377740f78ae2ec91132d1754bd",
+        "combined": "064673621d9854c172d2ffa0179f2fa7d526bdae1914d600f1557ad2f8e248a2",
+        "held": "a1edac56fa767629c73456509ccd39516412bc7b6e94ca689a4851211ae051bd",
+        "quota": "5ad07f0a1e452bfaf7aae7547cd4eb244385385095ce3e33f2ba7e9ac51a7253"
+      },
+      "resourceProfiles": {
+        "latin1": {
+          "peakBytes": 1192133,
+          "budgetBytes": 4194304,
+          "projectedBytes": 29315,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": null,
+          "liveRawAstSamples": 0
+        },
+        "utf16-escaped": {
+          "peakBytes": 1197828,
+          "budgetBytes": 4194304,
+          "projectedBytes": 41559,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": null,
+          "liveRawAstSamples": 0
+        },
+        "strict-utf16": {
+          "peakBytes": 1480660,
+          "budgetBytes": 4194304,
+          "projectedBytes": 41559,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": "utf16",
+          "liveRawAstSamples": 2
+        },
+        "strict-refusal-nodes": {
+          "peakBytes": 1368072,
+          "budgetBytes": 4194304,
+          "projectedBytes": 275,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": "nodes",
+          "liveRawAstSamples": 2
+        },
+        "combined-latin1": {
+          "peakSumBytes": 3041848,
+          "budgetBytes": 8388608,
+          "owners": 2,
+          "views": 8,
+          "ownerPeaksBytes": [1805274, 1236574]
+        },
+        "combined-utf16": {
+          "peakSumBytes": 3066909,
+          "budgetBytes": 8388608,
+          "owners": 2,
+          "views": 8,
+          "ownerPeaksBytes": [1830704, 1236205]
+        }
+      },
+      "reservationGroups": [
+        "model budget and exact owner",
+        "one model per session",
+        "connection view limit",
+        "device view limit across processes",
+        "session view limit",
+        "home view limit",
+        "view model ownership and disposal ordering",
+        "second home admission",
+        "independent homes",
+        "live concurrent owners and dead owner recovery",
+        "nonblocking held lock",
+        "missing ledger",
+        "missing namespace",
+        "missing marker",
+        "replaced namespace",
+        "ledger symlink",
+        "ledger hardlink",
+        "ledger mode",
+        "namespace mode",
+        "marker mode",
+        "marker symlink",
+        "wrong marker namespace",
+        "oversized ledger",
+        "invalid UTF-8",
+        "duplicate member",
+        "malformed JSON",
+        "unknown field",
+        "duplicate row",
+        "invalid owner PID",
+        "real crashed owner requires explicit lock repair"
+      ],
+      "policyMigrationGroups": [
+        "approved four MiB models preserve the 32 MiB home cap",
+        "a live actual legacy reservation blocks migration without rewriting",
+        "an empty actual legacy ledger migrates and fences its original writer",
+        "an actual exited legacy owner permits atomic policy migration",
+        "an unknown policy preserves a real current charge and cannot reset"
+      ],
+      "heldNo": [
+        {
+          "scenario": "max-text-service-load",
+          "latencyMs": 10.517791000000216,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 5767696,
+          "bytesAfterNo": 5898780,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 10,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 10,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 10,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 10,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 10,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 10,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 10,
+              "snapshots": 1,
+              "refusals": 0
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        },
+        {
+          "scenario": "clear-service-load",
+          "latencyMs": 5.489624999999705,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 1409024,
+          "bytesAfterNo": 1441792,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 4,
+              "polls": 5,
+              "snapshots": 3,
+              "refusals": 1
+            },
+            {
+              "reads": 4,
+              "polls": 5,
+              "snapshots": 2,
+              "refusals": 2
+            },
+            {
+              "reads": 3,
+              "polls": 5,
+              "snapshots": 3,
+              "refusals": 0
+            },
+            {
+              "reads": 3,
+              "polls": 5,
+              "snapshots": 2,
+              "refusals": 1
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        },
+        {
+          "scenario": "retirement-lock-contention",
+          "latencyMs": 16.103541999999834,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 5767696,
+          "bytesAfterNo": 5767696,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 11,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 11,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 11,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 11,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 11,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 11,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 11,
+              "snapshots": 2,
+              "refusals": 0
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        },
+        {
+          "scenario": "blocking-control",
+          "latencyMs": 1274.7278749999996,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 5964322,
+          "bytesAfterNo": 6029864,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 13,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 13,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 13,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 3,
+              "polls": 13,
+              "snapshots": 3,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 13,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 3,
+              "polls": 13,
+              "snapshots": 3,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 13,
+              "snapshots": 2,
+              "refusals": 0
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        }
+      ]
+    },
+    {
+      "pin": "1.4.2",
+      "revision": "744846f844374847c902b5e7fd59b4342a51ef99",
+      "target": "bun-darwin-arm64",
+      "binaryHashes": {
+        "resource": "7e71e47520dda0e948770c253272c6600e69f02fea4703bcb80bb164ef9c80d5",
+        "combined": "c855b720298f45f369c8b8d13aa72938ecb88e56afd2289f79cdd5e8f8f19b7a",
+        "held": "099fe521efc3d16e9dc7d987e3995744038b4f7afddc5df04b6333998ae7a947",
+        "quota": "a025bc30be1d30a8d8d7122c16853d22586b6ba5460d478ac2c645c9f1f7cb6b"
+      },
+      "resourceProfiles": {
+        "latin1": {
+          "peakBytes": 791949,
+          "budgetBytes": 4194304,
+          "projectedBytes": 29315,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": null,
+          "liveRawAstSamples": 0
+        },
+        "utf16-escaped": {
+          "peakBytes": 813488,
+          "budgetBytes": 4194304,
+          "projectedBytes": 41559,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": null,
+          "liveRawAstSamples": 0
+        },
+        "strict-utf16": {
+          "peakBytes": 1068025,
+          "budgetBytes": 4194304,
+          "projectedBytes": 41559,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": "utf16",
+          "liveRawAstSamples": 2
+        },
+        "strict-refusal-nodes": {
+          "peakBytes": 937016,
+          "budgetBytes": 4194304,
+          "projectedBytes": 275,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": "nodes",
+          "liveRawAstSamples": 2
+        },
+        "combined-latin1": {
+          "peakSumBytes": 1593676,
+          "budgetBytes": 8388608,
+          "owners": 2,
+          "views": 8,
+          "ownerPeaksBytes": [777616, 816060]
+        },
+        "combined-utf16": {
+          "peakSumBytes": 1648063,
+          "budgetBytes": 8388608,
+          "owners": 2,
+          "views": 8,
+          "ownerPeaksBytes": [809137, 838926]
+        }
+      },
+      "reservationGroups": [
+        "model budget and exact owner",
+        "one model per session",
+        "connection view limit",
+        "device view limit across processes",
+        "session view limit",
+        "home view limit",
+        "view model ownership and disposal ordering",
+        "second home admission",
+        "independent homes",
+        "live concurrent owners and dead owner recovery",
+        "nonblocking held lock",
+        "missing ledger",
+        "missing namespace",
+        "missing marker",
+        "replaced namespace",
+        "ledger symlink",
+        "ledger hardlink",
+        "ledger mode",
+        "namespace mode",
+        "marker mode",
+        "marker symlink",
+        "wrong marker namespace",
+        "oversized ledger",
+        "invalid UTF-8",
+        "duplicate member",
+        "malformed JSON",
+        "unknown field",
+        "duplicate row",
+        "invalid owner PID",
+        "real crashed owner requires explicit lock repair"
+      ],
+      "policyMigrationGroups": [
+        "approved four MiB models preserve the 32 MiB home cap",
+        "a live actual legacy reservation blocks migration without rewriting",
+        "an empty actual legacy ledger migrates and fences its original writer",
+        "an actual exited legacy owner permits atomic policy migration",
+        "an unknown policy preserves a real current charge and cannot reset"
+      ],
+      "heldNo": [
+        {
+          "scenario": "max-text-service-load",
+          "latencyMs": 1.6382920000000922,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 3146016,
+          "bytesAfterNo": 3211558,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 4,
+              "polls": 5,
+              "snapshots": 3,
+              "refusals": 1
+            },
+            {
+              "reads": 3,
+              "polls": 5,
+              "snapshots": 2,
+              "refusals": 1
+            },
+            {
+              "reads": 3,
+              "polls": 5,
+              "snapshots": 2,
+              "refusals": 1
+            },
+            {
+              "reads": 3,
+              "polls": 5,
+              "snapshots": 2,
+              "refusals": 1
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        },
+        {
+          "scenario": "clear-service-load",
+          "latencyMs": 0.5685419999999795,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 1703936,
+          "bytesAfterNo": 1736704,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 5,
+              "polls": 5,
+              "snapshots": 4,
+              "refusals": 1
+            },
+            {
+              "reads": 5,
+              "polls": 5,
+              "snapshots": 4,
+              "refusals": 1
+            },
+            {
+              "reads": 4,
+              "polls": 5,
+              "snapshots": 3,
+              "refusals": 1
+            },
+            {
+              "reads": 4,
+              "polls": 5,
+              "snapshots": 3,
+              "refusals": 1
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        },
+        {
+          "scenario": "retirement-lock-contention",
+          "latencyMs": 0.5894589999998061,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 3146016,
+          "bytesAfterNo": 3146016,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 3,
+              "polls": 5,
+              "snapshots": 2,
+              "refusals": 1
+            },
+            {
+              "reads": 3,
+              "polls": 5,
+              "snapshots": 2,
+              "refusals": 1
+            },
+            {
+              "reads": 2,
+              "polls": 5,
+              "snapshots": 1,
+              "refusals": 1
+            },
+            {
+              "reads": 2,
+              "polls": 5,
+              "snapshots": 1,
+              "refusals": 1
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        },
+        {
+          "scenario": "blocking-control",
+          "latencyMs": 1250.192875,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 3146016,
+          "bytesAfterNo": 3211558,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 7,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 7,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 7,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 6,
+              "polls": 7,
+              "snapshots": 4,
+              "refusals": 2
+            },
+            {
+              "reads": 4,
+              "polls": 7,
+              "snapshots": 3,
+              "refusals": 1
+            },
+            {
+              "reads": 4,
+              "polls": 7,
+              "snapshots": 3,
+              "refusals": 1
+            },
+            {
+              "reads": 4,
+              "polls": 7,
+              "snapshots": 3,
+              "refusals": 1
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        }
+      ]
+    },
+    {
+      "pin": "1.4.2",
+      "revision": "744846f844374847c902b5e7fd59b4342a51ef99",
+      "target": "bun-linux-arm64",
+      "binaryHashes": {
+        "resource": "fced17a4d35f08b997306c3873a4360255062163ca51d7f5938bf528e2049d76",
+        "combined": "b03c22f12aecbb73a9a473ce3cc9583a26e3a8d186d3a42d2015d3247a7b7061",
+        "held": "5e79e78da71ee004fe7743b33542f02c8871711f98d3b37a27be18f6da7c26ea",
+        "quota": "70bf81612065186504a9fbaf483b57f9d37a94f8b46857b75ff0b67fcc978d08"
+      },
+      "resourceProfiles": {
+        "latin1": {
+          "peakBytes": 781751,
+          "budgetBytes": 4194304,
+          "projectedBytes": 29315,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": null,
+          "liveRawAstSamples": 0
+        },
+        "utf16-escaped": {
+          "peakBytes": 815683,
+          "budgetBytes": 4194304,
+          "projectedBytes": 41559,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": null,
+          "liveRawAstSamples": 0
+        },
+        "strict-utf16": {
+          "peakBytes": 1061801,
+          "budgetBytes": 4194304,
+          "projectedBytes": 41559,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": "utf16",
+          "liveRawAstSamples": 2
+        },
+        "strict-refusal-nodes": {
+          "peakBytes": 935783,
+          "budgetBytes": 4194304,
+          "projectedBytes": 275,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": "nodes",
+          "liveRawAstSamples": 2
+        },
+        "combined-latin1": {
+          "peakSumBytes": 1608028,
+          "budgetBytes": 8388608,
+          "owners": 2,
+          "views": 8,
+          "ownerPeaksBytes": [788946, 819082]
+        },
+        "combined-utf16": {
+          "peakSumBytes": 1624997,
+          "budgetBytes": 8388608,
+          "owners": 2,
+          "views": 8,
+          "ownerPeaksBytes": [794031, 830966]
+        }
+      },
+      "reservationGroups": [
+        "model budget and exact owner",
+        "one model per session",
+        "connection view limit",
+        "device view limit across processes",
+        "session view limit",
+        "home view limit",
+        "view model ownership and disposal ordering",
+        "second home admission",
+        "independent homes",
+        "live concurrent owners and dead owner recovery",
+        "nonblocking held lock",
+        "missing ledger",
+        "missing namespace",
+        "missing marker",
+        "replaced namespace",
+        "ledger symlink",
+        "ledger hardlink",
+        "ledger mode",
+        "namespace mode",
+        "marker mode",
+        "marker symlink",
+        "wrong marker namespace",
+        "oversized ledger",
+        "invalid UTF-8",
+        "duplicate member",
+        "malformed JSON",
+        "unknown field",
+        "duplicate row",
+        "invalid owner PID",
+        "real crashed owner requires explicit lock repair"
+      ],
+      "policyMigrationGroups": [
+        "approved four MiB models preserve the 32 MiB home cap",
+        "a live actual legacy reservation blocks migration without rewriting",
+        "an empty actual legacy ledger migrates and fences its original writer",
+        "an actual exited legacy owner permits atomic policy migration",
+        "an unknown policy preserves a real current charge and cannot reset"
+      ],
+      "heldNo": [
+        {
+          "scenario": "max-text-service-load",
+          "latencyMs": 2.905082999999877,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 3146016,
+          "bytesAfterNo": 3211558,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 3,
+              "polls": 5,
+              "snapshots": 2,
+              "refusals": 1
+            },
+            {
+              "reads": 2,
+              "polls": 5,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 5,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 5,
+              "snapshots": 1,
+              "refusals": 1
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        },
+        {
+          "scenario": "clear-service-load",
+          "latencyMs": 0.5789169999998194,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 1851392,
+          "bytesAfterNo": 1884160,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 5,
+              "polls": 5,
+              "snapshots": 3,
+              "refusals": 2
+            },
+            {
+              "reads": 4,
+              "polls": 5,
+              "snapshots": 3,
+              "refusals": 1
+            },
+            {
+              "reads": 4,
+              "polls": 5,
+              "snapshots": 4,
+              "refusals": 0
+            },
+            {
+              "reads": 5,
+              "polls": 5,
+              "snapshots": 3,
+              "refusals": 2
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        },
+        {
+          "scenario": "retirement-lock-contention",
+          "latencyMs": 1.0451249999996435,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 3080474,
+          "bytesAfterNo": 3080474,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 3,
+              "polls": 5,
+              "snapshots": 2,
+              "refusals": 1
+            },
+            {
+              "reads": 2,
+              "polls": 5,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 5,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 5,
+              "snapshots": 1,
+              "refusals": 1
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        },
+        {
+          "scenario": "blocking-control",
+          "latencyMs": 1251.0438759999997,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 4129146,
+          "bytesAfterNo": 4260230,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 9,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 9,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 9,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 5,
+              "polls": 9,
+              "snapshots": 4,
+              "refusals": 1
+            },
+            {
+              "reads": 5,
+              "polls": 9,
+              "snapshots": 4,
+              "refusals": 1
+            },
+            {
+              "reads": 4,
+              "polls": 9,
+              "snapshots": 3,
+              "refusals": 1
+            },
+            {
+              "reads": 4,
+              "polls": 9,
+              "snapshots": 3,
+              "refusals": 1
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        }
+      ]
+    },
+    {
+      "pin": "1.4.2",
+      "revision": "744846f844374847c902b5e7fd59b4342a51ef99",
+      "target": "bun-linux-x64",
+      "binaryHashes": {
+        "resource": "19f61e492b1f46ceec2f6bd0b8aea45601983a65290478c3dcef67230789318f",
+        "combined": "353407336d30ddf9b8074eeacbdb5e4aa132e3e29c9af9c4a6b3b60ed61273b5",
+        "held": "f165d63194ba1bb7f770ba75cb8a435840003b0c294e526a7df441a47d418df8",
+        "quota": "5bfcf815991596edd53af00161fc6d372f2b1fa47f19d8ab6f970d41c3c7c8d8"
+      },
+      "resourceProfiles": {
+        "latin1": {
+          "peakBytes": 795548,
+          "budgetBytes": 4194304,
+          "projectedBytes": 29315,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": null,
+          "liveRawAstSamples": 0
+        },
+        "utf16-escaped": {
+          "peakBytes": 830679,
+          "budgetBytes": 4194304,
+          "projectedBytes": 41559,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": null,
+          "liveRawAstSamples": 0
+        },
+        "strict-utf16": {
+          "peakBytes": 1100443,
+          "budgetBytes": 4194304,
+          "projectedBytes": 41559,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": "utf16",
+          "liveRawAstSamples": 2
+        },
+        "strict-refusal-nodes": {
+          "peakBytes": 958842,
+          "budgetBytes": 4194304,
+          "projectedBytes": 275,
+          "views": 4,
+          "firstTimeIntents": 4,
+          "strictIngress": "nodes",
+          "liveRawAstSamples": 2
+        },
+        "combined-latin1": {
+          "peakSumBytes": 1658199,
+          "budgetBytes": 8388608,
+          "owners": 2,
+          "views": 8,
+          "ownerPeaksBytes": [811547, 846652]
+        },
+        "combined-utf16": {
+          "peakSumBytes": 1732955,
+          "budgetBytes": 8388608,
+          "owners": 2,
+          "views": 8,
+          "ownerPeaksBytes": [859839, 873116]
+        }
+      },
+      "reservationGroups": [
+        "model budget and exact owner",
+        "one model per session",
+        "connection view limit",
+        "device view limit across processes",
+        "session view limit",
+        "home view limit",
+        "view model ownership and disposal ordering",
+        "second home admission",
+        "independent homes",
+        "live concurrent owners and dead owner recovery",
+        "nonblocking held lock",
+        "missing ledger",
+        "missing namespace",
+        "missing marker",
+        "replaced namespace",
+        "ledger symlink",
+        "ledger hardlink",
+        "ledger mode",
+        "namespace mode",
+        "marker mode",
+        "marker symlink",
+        "wrong marker namespace",
+        "oversized ledger",
+        "invalid UTF-8",
+        "duplicate member",
+        "malformed JSON",
+        "unknown field",
+        "duplicate row",
+        "invalid owner PID",
+        "real crashed owner requires explicit lock repair"
+      ],
+      "policyMigrationGroups": [
+        "approved four MiB models preserve the 32 MiB home cap",
+        "a live actual legacy reservation blocks migration without rewriting",
+        "an empty actual legacy ledger migrates and fences its original writer",
+        "an actual exited legacy owner permits atomic policy migration",
+        "an unknown policy preserves a real current charge and cannot reset"
+      ],
+      "heldNo": [
+        {
+          "scenario": "max-text-service-load",
+          "latencyMs": 16.094749999999294,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 7340704,
+          "bytesAfterNo": 7406246,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 13,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 13,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 13,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 13,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 13,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 2,
+              "polls": 13,
+              "snapshots": 2,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 13,
+              "snapshots": 1,
+              "refusals": 0
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        },
+        {
+          "scenario": "clear-service-load",
+          "latencyMs": 7.038958999999977,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 999424,
+          "bytesAfterNo": 1032192,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 5,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 4,
+              "polls": 5,
+              "snapshots": 3,
+              "refusals": 1
+            },
+            {
+              "reads": 4,
+              "polls": 5,
+              "snapshots": 3,
+              "refusals": 1
+            },
+            {
+              "reads": 4,
+              "polls": 5,
+              "snapshots": 2,
+              "refusals": 2
+            },
+            {
+              "reads": 3,
+              "polls": 5,
+              "snapshots": 2,
+              "refusals": 1
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        },
+        {
+          "scenario": "retirement-lock-contention",
+          "latencyMs": 9.684500000000298,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 4456856,
+          "bytesAfterNo": 4456856,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 9,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 9,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 9,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 3,
+              "polls": 9,
+              "snapshots": 2,
+              "refusals": 1
+            },
+            {
+              "reads": 3,
+              "polls": 9,
+              "snapshots": 2,
+              "refusals": 1
+            },
+            {
+              "reads": 3,
+              "polls": 9,
+              "snapshots": 2,
+              "refusals": 1
+            },
+            {
+              "reads": 2,
+              "polls": 9,
+              "snapshots": 1,
+              "refusals": 1
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        },
+        {
+          "scenario": "blocking-control",
+          "latencyMs": 1253.4391260000002,
+          "actualOwners": 2,
+          "actualViews": 8,
+          "bytesBeforeNo": 2687222,
+          "bytesAfterNo": 2752764,
+          "fastCounters": [
+            {
+              "reads": 1,
+              "polls": 8,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 8,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 1,
+              "polls": 8,
+              "snapshots": 0,
+              "refusals": 0
+            },
+            {
+              "reads": 4,
+              "polls": 8,
+              "snapshots": 3,
+              "refusals": 1
+            },
+            {
+              "reads": 4,
+              "polls": 8,
+              "snapshots": 4,
+              "refusals": 0
+            },
+            {
+              "reads": 4,
+              "polls": 8,
+              "snapshots": 4,
+              "refusals": 0
+            },
+            {
+              "reads": 4,
+              "polls": 8,
+              "snapshots": 3,
+              "refusals": 1
+            }
+          ],
+          "slowReadRequests": 2,
+          "slowReceiverStoppedDuringNo": true,
+          "denyParsed": true,
+          "actualChildInputBytes": 0,
+          "scope": "actual signed-service/hook/input-handler/native load; no caller/hardware/deployed acceptance"
+        }
+      ]
+    }
+  ],
+  "compiledReuse": {
+    "receipt": "four-mib-settled-open-six-cells-result.json",
+    "receiptHash": "2c214004f83a8260bd5b6f713e9080e96ee7f5a897d39ac9ba7c47539368aec5",
+    "remainingReceipt": "four-mib-remaining-capacity-result.json",
+    "remainingReceiptHash": "87a746227c32140f8515c29be9820255ee29e2a804d6e3e1391ff59d4c137633",
+    "scope": "exact unchanged source/engine/compiler/certificate/binaries for resource/combined/quota and their negatives; all held proofs rebuilt and run fresh; missing cells run fresh"
+  },
+  "fixtureOwnerNegatives": [
+    {
+      "pin": "1311",
+      "exitCode": 1,
+      "expectedOracle": "state belongs to the actual scenario child",
+      "actualDifferentOwner": "real parent PID used against real spawned secondary state"
+    },
+    {
+      "pin": "142",
+      "exitCode": 1,
+      "expectedOracle": "state belongs to the actual scenario child",
+      "actualDifferentOwner": "real parent PID used against real spawned secondary state"
+    }
+  ],
+  "causalNegatives": [
+    {
+      "pin": "1311",
+      "target": "bun-darwin-arm64",
+      "flag": "--negative-overlap",
+      "exitCode": 1,
+      "expected": "synchronous service handoff starts from idle parser"
+    },
+    {
+      "pin": "1311",
+      "target": "bun-darwin-arm64",
+      "flag": "--negative-write",
+      "exitCode": 1,
+      "expected": "service writes zero actual PTY input"
+    },
+    {
+      "pin": "1311",
+      "target": "bun-darwin-arm64",
+      "flag": "held-negative-write",
+      "exitCode": 1,
+      "expected": "service writes zero actual PTY input"
+    },
+    {
+      "pin": "1311",
+      "target": "bun-linux-arm64",
+      "flag": "--negative-overlap",
+      "exitCode": 1,
+      "expected": "synchronous service handoff starts from idle parser"
+    },
+    {
+      "pin": "1311",
+      "target": "bun-linux-arm64",
+      "flag": "--negative-write",
+      "exitCode": 1,
+      "expected": "service writes zero actual PTY input"
+    },
+    {
+      "pin": "1311",
+      "target": "bun-linux-arm64",
+      "flag": "held-negative-write",
+      "exitCode": 1,
+      "expected": "service writes zero actual PTY input"
+    },
+    {
+      "pin": "1311",
+      "target": "bun-linux-x64",
+      "flag": "--negative-overlap",
+      "exitCode": 1,
+      "expected": "synchronous service handoff starts from idle parser"
+    },
+    {
+      "pin": "1311",
+      "target": "bun-linux-x64",
+      "flag": "--negative-write",
+      "exitCode": 1,
+      "expected": "service writes zero actual PTY input"
+    },
+    {
+      "pin": "1311",
+      "target": "bun-linux-x64",
+      "flag": "held-negative-write",
+      "exitCode": 1,
+      "expected": "service writes zero actual PTY input"
+    },
+    {
+      "pin": "142",
+      "target": "bun-darwin-arm64",
+      "flag": "--negative-overlap",
+      "exitCode": 1,
+      "expected": "synchronous service handoff starts from idle parser"
+    },
+    {
+      "pin": "142",
+      "target": "bun-darwin-arm64",
+      "flag": "--negative-write",
+      "exitCode": 1,
+      "expected": "service writes zero actual PTY input"
+    },
+    {
+      "pin": "142",
+      "target": "bun-darwin-arm64",
+      "flag": "held-negative-write",
+      "exitCode": 1,
+      "expected": "service writes zero actual PTY input"
+    },
+    {
+      "pin": "142",
+      "target": "bun-linux-arm64",
+      "flag": "--negative-overlap",
+      "exitCode": 1,
+      "expected": "synchronous service handoff starts from idle parser"
+    },
+    {
+      "pin": "142",
+      "target": "bun-linux-arm64",
+      "flag": "--negative-write",
+      "exitCode": 1,
+      "expected": "service writes zero actual PTY input"
+    },
+    {
+      "pin": "142",
+      "target": "bun-linux-arm64",
+      "flag": "held-negative-write",
+      "exitCode": 1,
+      "expected": "service writes zero actual PTY input"
+    },
+    {
+      "pin": "142",
+      "target": "bun-linux-x64",
+      "flag": "--negative-overlap",
+      "exitCode": 1,
+      "expected": "synchronous service handoff starts from idle parser"
+    },
+    {
+      "pin": "142",
+      "target": "bun-linux-x64",
+      "flag": "--negative-write",
+      "exitCode": 1,
+      "expected": "service writes zero actual PTY input"
+    },
+    {
+      "pin": "142",
+      "target": "bun-linux-x64",
+      "flag": "held-negative-write",
+      "exitCode": 1,
+      "expected": "service writes zero actual PTY input"
+    }
+  ],
+  "sourceGuardControls": {
+    "status": "passed-source-causal-controls-only",
+    "runs": [
+      {
+        "label": "1311-original",
+        "exitCode": 0,
+        "expectedExitCode": 0
+      },
+      {
+        "label": "1311-runtime",
+        "exitCode": 1,
+        "expectedExitCode": 1
+      },
+      {
+        "label": "1311-grant-effect",
+        "exitCode": 1,
+        "expectedExitCode": 1
+      },
+      {
+        "label": "1311-restored",
+        "exitCode": 0,
+        "expectedExitCode": 0
+      },
+      {
+        "label": "142-original",
+        "exitCode": 0,
+        "expectedExitCode": 0
+      },
+      {
+        "label": "142-runtime",
+        "exitCode": 1,
+        "expectedExitCode": 1
+      },
+      {
+        "label": "142-grant-effect",
+        "exitCode": 1,
+        "expectedExitCode": 1
+      },
+      {
+        "label": "142-restored",
+        "exitCode": 0,
+        "expectedExitCode": 0
+      }
+    ],
+    "originalSourceHash": "8aacc6cb88335af5622a662d6d6bd34370fccea08dc26c5979e899a7114418f7"
+  },
+  "largestOneModelPeakBytes": 1480660,
+  "largestTwoModelPeakSumBytes": 3066909,
+  "normalNoRangeMs": [0.5685419999999795, 16.103541999999834],
+  "blockedNoRangeMs": [1250.192875, 1274.7278749999996],
+  "sourceManifestSha256": "dcfc9be4d659a85ee01303fb63be7310ce2ae2d80cf4fcc4a7f2a61f44155326",
+  "sourceHashes": {
+    "packages/daemon/src/entry.ts": "e9956d7fbf76237099dbe6fa9dbd0ff7d337fcda494c5978d51a19e41b8cfee7",
+    "packages/daemon/src/cli.ts": "a7b8a79403887f54a2f965bd1367ec1fca1344e8a7497313deaa857e2a463be7",
+    "packages/daemon/src/index.ts": "6985e9364c02c48b549bebc95643a8848f08184bd7d3dc9cd33348cd54b923dd",
+    "packages/daemon/src/auto-approve/multichoice.ts": "066f6ea60a3c62adc47f72d88572fc2bdce0f6d6cc9528ad8d296753f7b4e9b2",
+    "packages/daemon/src/auto-approve/tool-input-key.ts": "4cb0ffd4247b18b3a74fb9a34670c22c711566dc7df5f736c2d24ef0dbeb8e1c",
+    "packages/daemon/src/auto-approve/auto-approve-gate.ts": "2372a9caeb02fbe886be3feb5a872607079eae96d236cd97e4b4d12f2de4b427",
+    "packages/daemon/src/auto-approve/subagent-alert.ts": "9b18e9b9c7b82b20d0d90e6a7c114dd3f75936b6d5751ff01b685538bc946e08",
+    "packages/daemon/src/auto-approve/index.ts": "ababe2884624a47ee9bb7e06e14e2bff98dba970147f050957f7a1383a88160f",
+    "packages/daemon/src/pty/pty-session.ts": "4d3c89d7026aa056cb1030ac438e5f5c439354d87e7b0c5031e5c7d9b32b7831",
+    "packages/daemon/src/pty/pty-capture.ts": "9ab94b554caebb8678452d60073b083609c238b195d84ef936104abe578e6cda",
+    "packages/daemon/src/pty/index.ts": "cc55174f7828e1ce2a4ac55350c06743125e3c2caf1b16f5e1fff56db800e94e",
+    "packages/daemon/src/pty/pty-manager.ts": "aee0234f98f789d48914f023665abb10d23918a8a9fda2d4666323d606a86e2b",
+    "packages/daemon/src/pty/child-env.ts": "86a404242c1cdf9b4a4ad8f6079e323e70d6f1c8a169334191e1491caa412afd",
+    "packages/daemon/src/config/remi-home.ts": "f8a042ad9104592bf03b10d9739ede3d1604cad8aa8295da6be4ca90d2b92ccb",
+    "packages/daemon/src/config/daemon-tls.ts": "fb2a6bbd8baa677ac7fb913c7a2823961c69509a0e30ab85b62c83a90afca06c",
+    "packages/daemon/src/config/index.ts": "a26c8a431490638738e8e593b74586b7c9e1d438ec843b08aebd9a10202e8acf",
+    "packages/daemon/src/config/config.ts": "1611d3f02a92774f6fdba9d32ef6830c65bd24e141c3a106c1ee029068a8140c",
+    "packages/daemon/src/auth/capability-token.ts": "840d26a7abc4dd909f69224613711681f33771d87a9de799b610ad6e1e98360d",
+    "packages/daemon/src/auth/identity-store.ts": "7b331c3b484dfbfe206fc0d59031e8ea9aafe32d530b073d0d39848666e0dd6f",
+    "packages/daemon/src/auth/relay-chat-authority.ts": "deabb1127d178fef44cd70c2fdb177846eb7c03cf17934c7f400e203c91329f8",
+    "packages/daemon/src/auth/authenticator.ts": "c0df668f8f8a5251ee13bea9a40918e78988ea787d26db77832002552b7bdcec",
+    "packages/daemon/src/transcript/transcript-binder.ts": "386aa7e77f4ea6781a31472aa869705662c6130c96aa66598e7df9a7d870c599",
+    "packages/daemon/src/transcript/transcript-message-bridge.ts": "9c58fc9d28d7eba308fe66bf1b700ffaf9f267c32d5aa5f44b56b55b4b495313",
+    "packages/daemon/src/transcript/types.ts": "bef77edc6f91f8fd9b88e6296087d0ec9dc751fc9741afb6095b154958ffce71",
+    "packages/daemon/src/transcript/transcript-owner.ts": "ca9af9c4e0d02bed45fa6dec88d173eeb26057399f97868e1bfa8816a80d311f",
+    "packages/daemon/src/transcript/user-entry-provenance.ts": "003c09178e76856813e3e50518049c181cb0f595ee208cf6524bdbe94ef4e797",
+    "packages/daemon/src/transcript/transcript-watcher.ts": "e0bf2877f424d37e1479921dc19d5178e9ce39ca2d0889a4a22b5ea084dd08ba",
+    "packages/daemon/src/transcript/index.ts": "37c61687c36738884552f3766e2fe1e5b8ecfb82236b6a754087f28a7b6ea21b",
+    "packages/daemon/src/transcript/transcript-discovery.ts": "bf75de0e1db415c82e56c0118174b84a1d56df5678d5b81c07bebb4567f9aeb3",
+    "packages/daemon/src/workspace/recent-store.ts": "023f264b80035974971c404f5c1524b06849ea9c524af9348fe70fbd132952da",
+    "packages/daemon/src/workspace/worktree.ts": "6011e4a2ef3260e066bd10d4c238ab5966201a30b574efb4836612756aee3d75",
+    "packages/daemon/src/workspace/recent.ts": "dace584d8d59d03a109b98817a30a193b97ddceba6db30a1756010a07c8fc77d",
+    "packages/daemon/src/workspace/git.ts": "89a433d84bdacf1f54476343ff65412f3f56d89f43946f2a627f504dd7010547",
+    "packages/daemon/src/workspace/describe.ts": "266f2498cd4308e1f262cbd6f86a35bd5407c16d3308b867f56f061134627457",
+    "packages/daemon/src/terminal/reservations.ts": "8fef414ad445e20d1a5e50a2fdc54cc75bc8c482d85a40155ecac83a6a64e617",
+    "packages/daemon/src/terminal/capture-host.ts": "230b42c760bab49628813cd01eeeeb7451260323d0bfab5bd09ba7d28f89a2d8",
+    "packages/daemon/src/terminal/ingress.ts": "dce0018944bbb87373c7cbdc07cb2098cb7de3c8f6371be1f50afdb293fd3992",
+    "packages/daemon/src/terminal/view-service.ts": "8aacc6cb88335af5622a662d6d6bd34370fccea08dc26c5979e899a7114418f7",
+    "packages/daemon/src/terminal/send-slot.ts": "be1211b0c4db29d21526d2230ce3e48b2702b677a6535ea6191fc446a350454d",
+    "packages/daemon/src/terminal/screen.ts": "b15a3d016fd96a89b1dd650ec57ce269353b3d3fe74fa47f3fca5ebdb3aeea38",
+    "packages/daemon/src/server/answer-results.ts": "1ee085b1c297d894d6560a6cb8467bce1b00db51f78704f3e0366efe50208019",
+    "packages/daemon/src/server/client-message-events.ts": "d4b7c196fbd6bff7829ec5d48f205832b935b9a05b82a72f977a06baeb0f3a7a",
+    "packages/daemon/src/server/connection.ts": "2b3bb8a999a68fa251cf115b1ebdcc725e5b259a279028ced52e7bbfd1307e23",
+    "packages/daemon/src/server/websocket-server.ts": "e83c8518e3a5d31adfab7efa29376cc08429a054d0535080b8282ac0b705aef3",
+    "packages/daemon/src/server/index.ts": "0f00dbb7c7861236ecafc87bb4226edb250fa38861f6ffb25c0a7b55df0e417c",
+    "packages/daemon/src/server/route-client-message.ts": "815537ac42888627b55f0ee0324d9ca86718b013a30056bd1f5a840414e9a944",
+    "packages/daemon/src/server/origin-policy.ts": "6e068a37e9d8e6b7ef1ccc3d1130b2da9e9bfb482a731537f745ca3388085d52",
+    "packages/daemon/src/server/peer-helpers.ts": "fdad74d18e081212fe751983b352c5fc7207f900397729797625e6c406ec46ef",
+    "packages/daemon/src/cli/cmd-migrate-permissions.ts": "50a320aaa218eafd318c43227fb2a77986d3fef0e6d409096ad004c8b84018fa",
+    "packages/daemon/src/cli/remote-new-client.ts": "61e1eafc479bc1d1a91943f6f1ddfc7cd3acb6c6e2b203c98844f1d54634c6ff",
+    "packages/daemon/src/cli/cmd-detach.ts": "f42e860a8ed9908c6d35d6e1d9a1135da15723526b99897e95623fcb3a0a4437",
+    "packages/daemon/src/cli/cmd-pair.ts": "9976e397eb8bf11d019ff8ea26f627f1ba9d6134f1d97a304f4646164d7819cc",
+    "packages/daemon/src/cli/log-file.ts": "9b113cde4982fa074ee919a784ba61bf5d9eb7aa40a1ef7ddb781a2117285cd8",
+    "packages/daemon/src/cli/session-resolver.ts": "ae1471622a55d37166dc77fc73f616d972e6f14863c5718046c2b34382816a7f",
+    "packages/daemon/src/cli/cmd-attach.ts": "af74e0b4527c39ca7e5366422671e727a4e23b37a02a9ce6e015a42cb11ad70b",
+    "packages/daemon/src/cli/auth-helper.ts": "8466c17ae11664c1e7d945eecf31a23cd9cd34496025816bd6a60c12ecb41294",
+    "packages/daemon/src/cli/cmd-unstick.ts": "c0b591cc7e4abc6aa8e099a563510b77bedef4b41f889b48e674e7b043a46c4c",
+    "packages/daemon/src/cli/status-writer.ts": "5c50d02e4788dbd3ffea5e2dcfdd491874249694cb296935807042c115c9a7ca",
+    "packages/daemon/src/cli/suspend-handler.ts": "aa72d0c218ebaeb80e3956a027dc28b1bed3fe8e23c9ef2c9467cb232ad58fa5",
+    "packages/daemon/src/cli/key-import.ts": "b07f32c4cc991a66aa5f38002d367399e01b29f0180289c656d51d681d1ad0d7",
+    "packages/daemon/src/cli/update-watcher.ts": "f673d86280795715b56729493ac665f285f8bb058259d958f326cecea4a8e140",
+    "packages/daemon/src/cli/help.ts": "c7cd6bcc78884ddaba57f7c3771645368badc11575dfb38428e311998c45c139",
+    "packages/daemon/src/cli/autostart-state.ts": "5b6ac611af2f746f1289d1b52fe9f5a46895d018f4ecddd9c7d9217eb08a15b3",
+    "packages/daemon/src/cli/cmd-ls.ts": "0499c4a32a277e7460dae7b41ae0ee7e720019e280faf35723d358a6d4d7b227",
+    "packages/daemon/src/cli/hub-question-census.ts": "3e73ceb2edecbaf39eb38c80db71fac0c3585952c5ef9115453799217554b2ca",
+    "packages/daemon/src/cli/shell-path.ts": "2f609a26d1930f50823ef93fc04ce1f2ba38f43ec528bf9412aed9815bee3574",
+    "packages/daemon/src/cli/keygen.ts": "5f8975f4846572e79d54941b0acdaef0ccee451889120cf22632ab37ca33c9c2",
+    "packages/daemon/src/cli/capability-client.ts": "91f509138f039c379e452e45837a2408be75c0b19f5740707c003653af6b8caf",
+    "packages/daemon/src/cli/arg-parser.ts": "ab97db444e2eb1d3ace14df588b6fb31dc32849e2e37a8d7ac46bb9e719673ce",
+    "packages/daemon/src/cli/session-state.ts": "4dacf73e8905993c0ba98a78456ff8392545064bc7ce5fd7d7d6bd71f8a987ae",
+    "packages/daemon/src/cli/target-resolver.ts": "223e3cf6c6836bf3d7e15d37351d59925c055646193b4622f250a7f7528ab07a",
+    "packages/daemon/src/cli/wrapper-state.ts": "9fd0babdc313079e75ec498a0076f2a8591ba9a89ae24c962337217925468e9d",
+    "packages/daemon/src/cli/cmd-relay.ts": "6711de27f4f34df415eac1cc693ca41d2471d6554f6878ac4756c23b03626d00",
+    "packages/daemon/src/cli/cmd-config.ts": "2ffd79523b39f7920e9f96f9f96bb2b2f6ef9d23daa5591aa2812bd6a60741bd",
+    "packages/daemon/src/cli/status-bar.ts": "8ad121f37054e26eb0910b14d4f9c9463fc7f3e599376a8d5b518083262a70e0",
+    "packages/daemon/src/cli/question-resolution.ts": "7f791f37e5b8e0c5289a86d2bc3fc6f2fef281600cde18aa3c4487e53a4b56df",
+    "packages/daemon/src/cli/cmd-reload.ts": "21d0cefa912408a0a65fa943dfa63643440d8597d80ad9546294f54e0805d1a8",
+    "packages/daemon/src/cli/daemon-target.ts": "e83f56bf354ae3845342c71339507cc5d3db81b8b9afbdaff58414b93eaac424",
+    "packages/daemon/src/cli/hub-client-tracker.ts": "6c72ac0473704d186bdb5e81724b84cc1135160f770d215b3f5f8615c6fd084b",
+    "packages/daemon/src/cli/capabilities.ts": "7ed6dbc66269bc188d6cb8a4aaa038dda250ddd72c9afbe995430763f59c4edd",
+    "packages/daemon/src/cli/key-export.ts": "ccb2e270eb6ece1e129075b3ea286e9ad5d79277b2f444b548c28b15af6d9d35",
+    "packages/daemon/src/cli/transcript-watcher-setup.ts": "88d8b478f407612bafef32d047359ba782c2794b26249ec79b241f039cb748cf",
+    "packages/daemon/src/cli/service-templates.ts": "f80ca2588bcb34ab78522bd2df13145fd001c8f1de028ec279eee8fdb2ae6ff7",
+    "packages/daemon/src/cli/cmd-kill.ts": "b324704119783b9fb3d5a882de0e5b6b36a0aae0a328b4108d0575803a9d9dd1",
+    "packages/daemon/src/cli/resolve-local-session.ts": "6342c42e88c4d8741f45bc6d9f6556c7afb29268eebabcb080054ad94e6cd720",
+    "packages/daemon/src/cli/machine.ts": "ae2e2952bdb363a38b49d9ccd31cd5ad9db9ff945c9ac25b29be02dadddeb854",
+    "packages/daemon/src/cli/current-session.ts": "6c73a04a5b2691a0291be57913930f707b411777bb16f9514bae9328b7951ecc",
+    "packages/daemon/src/cli/cmd-keys.ts": "011ec541c709270b237df8e5162cb43be2721d28dae6ed0942cde8f1a912eb53",
+    "packages/daemon/src/cli/recent-client.ts": "755246ef644abeb4e89428062a30f8fdd7f4eb37466656cff30699715e7af612",
+    "packages/daemon/src/cli/prompt-passphrase.ts": "2bdf68f035566f03e75d7399d38370c8267f35b8c721fd2be5065a73107ee692",
+    "packages/daemon/src/cli/logger.ts": "bfebac9d3f9089aad97fd0e9ea35888a6f2bd8581f5fb8f1cf858133c214d94a",
+    "packages/daemon/src/cli/kill-client.ts": "63a47f5ab4a1f133f875a027922f9b33c5f1e2dd0456b372cc6592016d8fb16c",
+    "packages/daemon/src/cli/ls-client.ts": "306d4fe4dbf801cd6a5d534f5a51671506d6a0932f65d1bed640cfa211843ae0",
+    "packages/daemon/src/cli/cmd-daemon.ts": "5f5a19ee2258e80f66ba3485f04f4db6fec2030209e463326812a2642cfea4c3",
+    "packages/daemon/src/cli/log-rotation.ts": "3ef0bc7bf683026ef21db8884d03f5764ff063e357610ab2d1356e426e65a4a2",
+    "packages/daemon/src/cli/statusline-installer.ts": "c56f4cdd01dc803f60de6f0f9d6748bc37597fbd74aae0bd3a1f58aece0d01f3",
+    "packages/daemon/src/cli/process-guards.ts": "62e5965731b8bca07d42951f4498801f275f66278ea2939e6cfbc5a2239cb116",
+    "packages/daemon/src/cli/session-close.ts": "5f166ba2ff3cd413cbd0e1da9e9f24d0cd89b9833205042e3e607c682ac65294",
+    "packages/daemon/src/cli/transcript-fallback.ts": "e2cbcd55a4ed7bfec2b3f1ad1aa0459419fe0d866a31f1d6e86b4290b30ab1ae",
+    "packages/daemon/src/cli/version-drift.ts": "f9ba6f7941286cd7488281f41949f8ae485cd9e711f51c783252529acd27eb59",
+    "packages/daemon/src/cli/authorize.ts": "fa57351a6a5839b0e51cb17e20b283564c825f9f74f488e150bb72bc3a69c55f",
+    "packages/daemon/src/cli/detach-client.ts": "9746f991a9aca927dcd8418ecb9ac1124a65f951f57628a3cce8ab99d0729d02",
+    "packages/daemon/src/cli/claude-binding.ts": "023ceedd435cfcf0ecc40645d02fe0be507881b681a9b1ea3b8ade8d32ae3916",
+    "packages/daemon/src/cli/pty-quiescence-gate.ts": "6508c7cca2f2a2d04fd5dbd754b093f10ea62f7c44679925de64d3aaa7e2241c",
+    "packages/daemon/src/cli/auto-approve-removal.ts": "071d3a32f1de7d8f04f26fab26394173b8bfa3d76323a1392397450830def2eb",
+    "packages/daemon/src/cli/hold-policy.ts": "c37f6acf2c0ab87786f2dc106e7ceb3f82f6312bf3fefda48e57924071dc35d2",
+    "packages/daemon/src/cli/daemon-manager.ts": "ff0f19f1b971b830e3ec19bf18ca936c5dc3f1896392ac024a91386c819d4bc7",
+    "packages/daemon/src/cli/cmd-recent.ts": "fc43366c83013225c247a1ded53575dafdcbd99e015906b534189cb2d325411a",
+    "packages/daemon/src/cli/path-resolver.ts": "3966c6ecacf9e1181ef646699d74766dc0067d57f105aa305a8115033bbc9dec",
+    "packages/daemon/src/cli/launch-harness.ts": "61e7d16ba9f87da425bff0d180e3ee9e4aa6e3b32caac5b1c6d6a9d297d74c80",
+    "packages/daemon/src/cli/attach-client.ts": "dd0e585e744dd23cf83ad05ed6f4c42f55e20b01371c03b4e5673431d0266614",
+    "packages/daemon/src/cli/directory-picker.ts": "da08daadb0c40f3d390f85523e276bd09dfe521d6196006677ce63e833bf264c",
+    "packages/daemon/src/cli/detach-scanner.ts": "ec36c5053416c4026becc5451605810460c5c092d0c62ae8fd25f9bb56d30898",
+    "packages/daemon/src/cli/qrcode.d.ts": "abda5018083c6289c339267e3ed5574f0f4bb6f5c613b3f0660e9fb9a71fac87",
+    "packages/daemon/src/cli/startup-env.ts": "6c826b7ef053403d163e26a6247be90bfef8affdfe328a14d4f87b0c31d01cf4",
+    "packages/daemon/src/cli/live-sessions-watcher.ts": "8591665922003b112994ce29dc2e103702e61bd5f43d169696f67dcbc477fa77",
+    "packages/daemon/src/cli/session-phases/message-api-setup.ts": "86c1b7925c663a90e59fd6e41b9fd284d4f5b5c32d5502e68635f9855213bf5c",
+    "packages/daemon/src/cli/session-phases/pty-session-setup.ts": "fa9d5ace3c18f6f46566436c53febc3dee7d7e910946c63b4cbbecb9d4cc6923",
+    "packages/daemon/src/cli/session-phases/hook-bridge-setup.ts": "8111d1ca349ca56ad2a975875bacb2f513904e13b54a0c1d696d239704510a12",
+    "packages/daemon/src/cli/handlers/connection-events.ts": "4551c454e138f04ec32d3a3c1d0e00db209db33801b3652e1dee1f780827b643",
+    "packages/daemon/src/cli/handlers/recent-repositories-events.ts": "e5b22b60dcbd9b5bc64fbd0579bf183ddeca09098ec9d608a223d57096899810",
+    "packages/daemon/src/cli/handlers/image-insertion-events.ts": "66a7821d05b1778b2bec673d5f5d90a9e8751aab2e3714a51708b9acd9d67251",
+    "packages/daemon/src/cli/handlers/structured-chat-events.ts": "80b8646352bbe8e8eb8c7a7f9ba8b0cc66207212d45dd339f34f24c2da2b51a7",
+    "packages/daemon/src/cli/handlers/pty-message-fanout.ts": "521b23e19f80a95467d7add0364383c868875b5e28db7e7f9d64c29105c4a461",
+    "packages/daemon/src/cli/handlers/session-list-entries.ts": "0a9f3f3761ed9bb048a9c95d8fb56f968bebafb12a2d818fe5fe4853e7f6f977",
+    "packages/daemon/src/cli/handlers/trivial-events.ts": "460195f09fd33fe36db59c2b6df97eb96dcc4fcd4045b67c303a56ef5076c24b",
+    "packages/daemon/src/cli/handlers/prompt-up.ts": "723db858fa039a6c4dbc48fd603bc8b71e4365a91a1185d9e9dd3121c92048f0",
+    "packages/daemon/src/cli/handlers/input-events.ts": "03b7a3a2ed751c16560960e8490027baca2c1d4d46809edc662d7efc17f9d7fc",
+    "packages/daemon/src/cli/handlers/session-events.ts": "c9aabf1c13deec0fd3ca4ef9b41ae5032f521a1bf175bb770415e89966373b87",
+    "packages/daemon/src/cli/handlers/screen-menu.ts": "74644c23024063c58977bfb3dd349d324cfcb735668da2e5c87fab3913fe33cf",
+    "packages/daemon/src/cli/handlers/pending-question-resend.ts": "10921d43cca9fc2a623d81bc1bb4dddb06ca5a1dd4253d6ca521495f2c10a03c",
+    "packages/daemon/src/cli/handlers/transcript-events.ts": "0900ad1d99c4bcb3e42e525115df7c1491d46f704da0dd018741746aacedcb5e",
+    "packages/daemon/src/cli/handlers/resume-session-events.ts": "cfee26bc54735ca4af5cb3dd82973d8875f4009eb8429e9c4f6ee85f39dfd017",
+    "packages/daemon/src/cli/handlers/create-session-events.ts": "4dfd82b812b5dba5648d45734cc104973d912d91c81c3e1744a232a51dfc0eff",
+    "packages/daemon/src/cli/handlers/resolved-answer-cache.ts": "2560988e01f8b9090f952bc627edb95f393d0a2eca984d6e59a7426ec1ddccb7",
+    "packages/daemon/src/parser/output-processor.ts": "dc861672bc9438a41aa63ec87ef0ad429e0f45148338f3230493c69ab3dce50f",
+    "packages/daemon/src/parser/status-parser.ts": "f401b4e6fa1cf52743b10e92996752f714d985d7c70aaa2fe162d9ea15ea8b46",
+    "packages/daemon/src/parser/ansi.ts": "1b8584e830d3a6bdd2a5a8e3341fcb66c7649a74d9e4e367529f6bb6b388e0ca",
+    "packages/daemon/src/parser/bullet-engine.ts": "c606c493482380d948bdd3bf1f8fcfed6a7db2b309e036c0f886c4ac8a6d174f",
+    "packages/daemon/src/parser/question-parser.ts": "df1e3d33af75a6120bdfe33131e5903db5f641312c8a9727a32c9f91cd8cebaa",
+    "packages/daemon/src/parser/index.ts": "229a58da94879ea94850dc94957144e800b0798ce55b411ca07f969a3410d02d",
+    "packages/daemon/src/mdns/advertise-decision.ts": "44badf4e5bee677c7f27202a3aeab04808829c0a80c68b025019154b37a4cc86",
+    "packages/daemon/src/mdns/mdns-publisher.ts": "19eb259b02cab3809d3d5090cabec9b269bb6be3f74b9a34e8c541c2306f6577",
+    "packages/daemon/src/mdns/mdns-browser.ts": "ac9fa80a086cb07fc6406fb4c4186fcaebe229cc0792c9ee3d328dc0da9184ca",
+    "packages/daemon/src/mdns/vpn-discovery.ts": "c905caa717e5ac98835d64228b1819cdffd17ca695f3e6c689ad2a78660385e5",
+    "packages/daemon/src/mdns/constants.ts": "d31749d014647faea4773c71b9d21c7ee8e6814716a4c10a71f66aa785a73cf0",
+    "packages/daemon/src/mdns/index.ts": "df34be2478c1eda228db9d77a99c288a6d26918b704915ec663c151aabcce8c7",
+    "packages/daemon/src/storage/restricted-json.ts": "c9856a78683a956447ad18909d8d980bbf7a4c105191878b7a2140e3e6c7de5f",
+    "packages/daemon/src/storage/secure-push-activation.ts": "527b6590943552a128f2f83113c0cacb73d1a14451f78bdec98f628874ec821d",
+    "packages/daemon/src/storage/authority-epoch.ts": "8ce4f36b199be289b93d180aa6fffa52f020ecd8f7a84eb62ee3f576bae79b0e",
+    "packages/daemon/src/storage/secure-push-subscriptions.ts": "5403fa93acc60be004c5ff087f34cb72553d7b27c0dbb0cf54ecc34ba3da76a9",
+    "packages/daemon/src/storage/local-daemon-endpoints.ts": "dbaa2b2a2f698cf13ec78ed6be60545b070b9fc4baf5984c73d97359b823e3db",
+    "packages/daemon/src/storage/interprocess-file-lock.ts": "19b444b862f33a4cd703f4a2d0fff56ac946470c51d42fae46b6a67c49ba0ab3",
+    "packages/daemon/src/storage/relay-enrollments.ts": "2d21957fcb53787e3288253b7f4eae618060da9fa62e769c2fe40944c840b413",
+    "packages/daemon/src/tunnel/reservations.ts": "44023351b33bfb89238ba6c3361fd7136296c461a62c3509db5e4b87a34cdc83",
+    "packages/daemon/src/tunnel/managed-tunnel-storage.ts": "5041ac37ef9e31a3cc0616f759bfef5050e56d7c0f3fcf91e5e01d41325b35ed",
+    "packages/daemon/src/tunnel/admitted-read.ts": "dc85362ba48eb3c0ed1401d85c2d4f81a8348eaabd7f521da51a68b66955e9ac",
+    "packages/daemon/src/tunnel/image-decode.ts": "30fd449ad41e3d9c19b142109c3b047b74555047e2c05530e3506a04ff20ed60",
+    "packages/daemon/src/tunnel/admission.ts": "d55ba9a00852f2c66874c37c51b688eeef03c46e4c3007d665674f3af3d1ff6d",
+    "packages/daemon/src/tunnel/image-worker-command.ts": "34067b54e046b3e7a11568e9e17d601688e21a68adaf85623581d3d9ffa4ddd9",
+    "packages/daemon/src/tunnel/native-assets.d.ts": "cb3902dc5d3d152f9e7e861550c59b182f08dedb8c454a7633179f97bfb51907",
+    "packages/daemon/src/tunnel/browser-link-session-host.ts": "31ed39519a82d78f11cd8fa071093d6b7c922c3bf0c42d98c8a2c9d2deb02448",
+    "packages/daemon/src/tunnel/download-preparation.ts": "7ba4f789bb651d2749278155ff63f089cddd3d9fa18e8d37a9b2735a17e6fcc7",
+    "packages/daemon/src/tunnel/browser-link-producer.ts": "a56a7a006ca4f1b7d697b67e144761e1432a582a9a3219b3a6370dc6a333450b",
+    "packages/daemon/src/tunnel/file-download-session-host.ts": "0a185cc1f0d6e73520014751fbd7c397b0ae82f723592fd70f71a6017e8917aa",
+    "packages/daemon/src/tunnel/image-insertion-coordinator.ts": "5d087ca28874e86423fe0a53e101892bf29435a05b9520839efca4e980d7d022",
+    "packages/daemon/src/tunnel/journal-settlement.ts": "b37be42a41f8dfe9ebb60918de2f258cd949ac84a0006447df2b1ed50ccdb4ba",
+    "packages/daemon/src/tunnel/image-staging-service.ts": "0df856a727f4071280febf1b30234ffeda4584ec56abadf618228289c1f75f56",
+    "packages/daemon/src/tunnel/browser-link-service.ts": "465f07acea063cdaa107568cb9547d563e0e5a9dc3251a713ce747ac1fb21edb",
+    "packages/daemon/src/tunnel/file-download-service.ts": "68368e41cda79bb0ed81686206c3c9fef0ed50d9355ca9858a19a5f41bad2859",
+    "packages/daemon/src/tunnel/image-admission.ts": "7488a7be5fc8b126e930118fd8d6cdc1fd7f25851e51ccbe7f03c79cf2a8d429",
+    "packages/daemon/src/tunnel/journal-schema.ts": "1f964a3131b4b777fa71f58abde671af8f16bf8725e413b14cb3e735b0f0d245",
+    "packages/daemon/src/tunnel/recovery-error.ts": "54a34fee68e468f0ee204ebcc1e8974475935974cfbd2730a4c4d3ff41f73260",
+    "packages/daemon/src/tunnel/browser-link-command.ts": "9e8c96201535e548595db0876378a6909c24b6a48f530cd629a093213195d56c",
+    "packages/daemon/src/tunnel/recovery-native.ts": "bfdca7a2b84082c35c917002952fa0fdb12e004b3dfd18c91a2da9c03a123a48",
+    "packages/daemon/src/tunnel/image-insertion-lease.ts": "e90ffc586b6276e6078cac37443db127a8f699bafbc305ef3f20aba3129ada6a",
+    "packages/daemon/src/tunnel/private-ops.ts": "bc73f3ce510e06c0ba24e1ca13f490338e94ce647d0b3e7bb8c620c24971bf6f",
+    "packages/daemon/src/tunnel/recovery.ts": "9d13d870ca914c26f2db402435ea2bc001b2a7ae72de56fff5f98e7d6295d068",
+    "packages/daemon/src/tunnel/recovery-native.c": "e926ec1e6227feec3d06ee42f195df3ed6b0ef2f80e29098091b53936b4b298a",
+    "packages/daemon/src/tunnel/image-worker.ts": "a0e6413ec1fff437207bad5dbd710def1d8152f282b1a5f5340c38c30c0c1517",
+    "packages/daemon/src/tunnel/image-process.ts": "6ec38ac0a3bf26362abe0087cba24d709ab900bbbc5ae71b66055bcd380b8562",
+    "packages/daemon/src/tunnel/image-codecs.d.ts": "89e928a1c3232043dc763fc8c642afb8387337ce5ce4b6606705491ac1d00baa",
+    "packages/daemon/src/adapters/telegram-adapter.ts": "f468774ae7182036866d7bc43d9e04008f7a5a7873b153fcc1574620c19d66ff",
+    "packages/daemon/src/adapters/adapter-registry.ts": "519312d9cc0d38df8249dbbc751af2687bfddc290fc9f422e466ada1677b721c",
+    "packages/daemon/src/adapters/websocket-adapter.ts": "5318c91a1d148aa00438e1ff10d0beb39ccb22ac6faba7d7dd4b47b0c12d852a",
+    "packages/daemon/src/adapters/index.ts": "689e0768c8df42affea98b238684277fae4e4532ae2f07fa8bb91df630838dc4",
+    "packages/daemon/src/adapters/telegram-ui.ts": "162a2882084ecb263cf1d51196a7abf0e96cb94fc30b44ec478db48b6b012b9f",
+    "packages/daemon/src/adapters/connection-adapter.ts": "487fd5a94547639e124abecd13e4ae127814a4c638c8a250a64f644ebae2d5f4",
+    "packages/daemon/src/harness/claude-session.ts": "53561534ffc8126703e831da05869235564b04d75699a901824d75d81b41eed2",
+    "packages/daemon/src/harness/submission-sequence.ts": "6706e05abb4d68fe13d77ca747ea3ba4a8e9094811b05ae6a714dbb4d26dc6a1",
+    "packages/daemon/src/harness/types.ts": "9c4de3a88859a761cd67d826da77acaa7226a5b4201027fcc902be54747b2ccb",
+    "packages/daemon/src/harness/decision.ts": "6f0f6c544d165d88c12d6ae61ccbe2d4c1ce9e3f5e1460a5885a8c58d5c75544",
+    "packages/daemon/src/harness/claude-args.ts": "54a9fa892c186658770a30a3034dda057b65eb657855a704b9c68432c8fc5ee2",
+    "packages/daemon/src/harness/claude-transcript-path.ts": "c4b729f234db15c19e4ad1e89d40c59367853804d32ae72903653f907953f084",
+    "packages/daemon/src/harness/registry.ts": "143b9d11a69d1c3145a23221e74aa4000e24716f5f7b46a2a4a98f8699164145",
+    "packages/daemon/src/harness/claude.ts": "1afc376687caa879b8b48648d0df428124fbd3b29f4bca73333f18a778a3b34f",
+    "packages/daemon/src/harness/index.ts": "4e6c8be32fd3847663d513dd1c61f15f22a021483ce7991a18cdc1f2f9c41442",
+    "packages/daemon/src/harness/codex/codex-socket.ts": "278915e9c338f6735664d5177a0a0e4b6099d62cb490835d6e36ad42549275b7",
+    "packages/daemon/src/harness/codex/approval-cards.ts": "c32c649c3ac46490a0fe7970e211d54b111e5240856c6d693cccacedd0eba637",
+    "packages/daemon/src/harness/codex/app-server-protocol.ts": "a7978c7df14b0b30841727193fb5290b535bdf09047683e0821fe5f8f6fc1a13",
+    "packages/daemon/src/harness/codex/safe-text.ts": "0e23768c6b967c0f9b9a78e70ab0d19f92499374c245c9fbe2afdc897debb83c",
+    "packages/daemon/src/harness/codex/codex-session.ts": "43355aab271e943724dceda45a97c5141ef5875793c8319994d1d58b3f8b0eb5",
+    "packages/daemon/src/harness/codex/terminal-words.ts": "8a38baa3d217f7d41c65a1bf16d606cbcf9bf566ea113467bc98078d157a2bc1",
+    "packages/daemon/src/harness/codex/ws-frames.ts": "31bd73949cf9bbc6c2f8658b7fb8f7ec707efa14528977e552dd38bac821082a",
+    "packages/daemon/src/harness/codex/thread-tracker.ts": "98d05e08c40d8c39fc4c5d2a876205704df0e99e1d10b98c719eefe865a0ceb7",
+    "packages/daemon/src/harness/codex/app-server-client.ts": "f0c7f9312bd3e0d039b428d251fdd76e4718f9c8713940d3fbd4f49d63cc282f",
+    "packages/daemon/src/harness/codex/codex-args.ts": "c1b6ea50741837a53bbfb708b7b774fae3aed066f43dc621c41a305bbd471819",
+    "packages/daemon/src/harness/codex/thread-protocol.ts": "a4556885ad85d6248e9aecd15e66fde543475eb7e084cf02453c11b5cf57cd91",
+    "packages/daemon/src/harness/codex/codex-chat.ts": "6ea1feb14cbcb61cc37685611982b5dda06deb410801fe5dad51b40ba556428b",
+    "packages/daemon/src/harness/codex/unix-ws.ts": "1e8969532bb681276b23add1ca160c27a94b4cad19272cf3d7af1503509f8488",
+    "packages/daemon/src/harness/codex/codex.ts": "401d818865ffef5119c1d302860c8e94bbd97b85d540d3e6aedb4a23c8d468b1",
+    "packages/daemon/src/harness/codex/codex-decisions.ts": "1f7fa43a0c031d069aecdd1010a8114d5d55a3d5d211dde857630c654e29224e",
+    "packages/daemon/src/harness/codex/startup-output.ts": "7c660f3d9b0f85c0d2b04b7c502f9fee172268f53700506cce97194d03dac9ce",
+    "packages/daemon/src/harness/codex/codex-text-writer.ts": "44f1019aa52698f12a7b64082b449b2bc65002172dec1fef6aab601200d7db92",
+    "packages/daemon/src/harness/codex/codex-turns.ts": "561e195fd864514d50c4c5663b8347bf5573ee2de767b7be663f417f0628c14c",
+    "packages/daemon/src/harness/codex/describe-error.ts": "abae1e9d553660c68ffe218750ffa4a30d6daa80cbd85468caa95cebf4a6c6f4",
+    "packages/daemon/src/harness/codex/attach-hint.ts": "23bd73b4affbedf58a927fda340f159bf171a4152d23f46019cd34e95671949d",
+    "packages/daemon/src/harness/codex/thread-id.ts": "4a8bfed8f030bf6c27afb75db11f4449baaf7351c060f52a1a6404088bc66d52",
+    "packages/daemon/src/hooks/hook-types.ts": "067d080effce9e148574e1317e30fd345fe1329b73be74fa3821963dcd67807b",
+    "packages/daemon/src/hooks/foreign-session-escalator.ts": "5f666527dadf8acfa59bf734c50d1490c49b30f270c67101160aff1ba87135e7",
+    "packages/daemon/src/hooks/tool-display-summary.ts": "a2870f72940f62386162c9eccc3ad42a94a0e96c88c77cbc1d35c3819b84a5aa",
+    "packages/daemon/src/hooks/session-lock-classifier.ts": "0bedab6ec0f3410bf99ebb160bf35af306c897aab36799fab4a0ec7141a656bf",
+    "packages/daemon/src/hooks/tool-question.ts": "2a3f321b416ebe806c5cb84a833a33ca439940016407d12b5fa80249dfc923dc",
+    "packages/daemon/src/hooks/structured-answers.ts": "411ecfeb0e454cdafdee648f653484a5d7f68a99ad96a02d2f974c2b3737eceb",
+    "packages/daemon/src/hooks/hook-config-manager.ts": "b98fef48de013e6dbf1a2b0746cf0aeb5856b83e4b2a4ceb1a7faeee719b853a",
+    "packages/daemon/src/hooks/subagent-context-tracker.ts": "135dabe3250c933cc19179db4df6b559d5899948780308e22429297af4816f19",
+    "packages/daemon/src/hooks/tool-summary.ts": "3dff13191709b9b06a353947ee96e73e2bc97fa383be70951f688737c9ec8609",
+    "packages/daemon/src/hooks/hook-event-bridge.ts": "b4b212144afdf79c8f00150b659617704290e3ec0c6d621fa75ee0ee656977e5",
+    "packages/daemon/src/hooks/hook-server.ts": "331ac3f209fabd1c6e6617588fe39c5b207394890ca4535beff85af56a98c9ee",
+    "packages/daemon/src/hooks/index.ts": "54977996b334160693a36d3cdca8151a687fc17e30c0cb3a60039fbeb6ec34c8",
+    "packages/daemon/src/api/subagent-view-registry.ts": "1b14bf31a913b904ce05bb10b833bd99631cb8adbc4c25521c7f664d16679eeb",
+    "packages/daemon/src/api/question-dedup.ts": "5cf7ab1b9b5ee6e8bde91104c23f1340efe854ca673fc887c7d1fec7e19917a5",
+    "packages/daemon/src/api/live-questions.ts": "1dde166140ff37afb08fd788b0356c56d5502ed9ae6b9671e362d713b25b4445",
+    "packages/daemon/src/api/message-api.ts": "62923eab2009df45c785a953b578329606645be401552e2fa53f63064aa79638",
+    "packages/daemon/src/api/bullet-content-registry.ts": "213112c0d8b4974de6647b2564d19113ca143940ffc7fc5ce1b628fb5da4385f",
+    "packages/daemon/src/api/question-presence-tracker.ts": "8e04b302ed17aac1dc1441d9b16421487126a831966737535862b58dc8928bf0",
+    "packages/daemon/src/api/index.ts": "8824dd166cf3c47e4271f133a46fb3b6efc42d07370b6a7cfc1c215213761234",
+    "packages/daemon/src/notifications/secure-push-store.ts": "0898dedd4b68328f94376f2a518417d787ccbc3852e141488e6595dcf06f3b4a",
+    "packages/daemon/src/notifications/secure-push-service.ts": "304b71d41d780ac3f0c37e39a3cd6e52ce5c0a3e2b3eeb5a22bc7c8cdcf98963",
+    "packages/daemon/src/notifications/push-client.ts": "676740b0c6a4ad0e7aac1c5632da00bc4ee80077a58bfee6fd310764b6ef13ec",
+    "packages/daemon/src/notifications/device-token-store.ts": "1077b054ea103c9f61c0da6ef2b07bb12d71ec334b1f1f07831c6aaf027e0b23",
+    "packages/daemon/src/notifications/harness-denied.ts": "79d4fe630c2a9cd332452bada7c05d700a0ed0bb49d95b572318fa6f8cb5786b",
+    "packages/daemon/src/notifications/secure-push-transport.ts": "c3220bcb26f6f1ca283f3af6670bede6261b6e54a9b15406e970ebafe6e3ac78",
+    "packages/daemon/src/notifications/turn-events.ts": "10c7219b9d68f9fa0ae33f692a2dbb04756ab71f7accf540f4b5a59ec1c1fd9f",
+    "packages/daemon/src/notifications/push-dedup.ts": "49be79eabe686c4aea62b14aa161a9875f322e114a023775ba7208aed5fcd562",
+    "packages/daemon/src/notifications/notification-dispatcher.ts": "3b90a44ec40ea479b5bd0d334a9cc8a1892020767c06d2ca19650c0ec1b2005a",
+    "packages/daemon/src/notifications/claude-turn-stop.ts": "133074e43bda626329609a501874548044e59b8c7072ffcbc5ecc31de057bcc3",
+    "packages/daemon/src/notifications/push-preferences.ts": "ea08d8448b531104da6717a108eaf08f14aa151654acca735ed2609a34e3001e",
+    "packages/daemon/src/notifications/secure-push-contexts.ts": "6016f11626ed94bd861e9e358dfb6ad80a86ac4b2e74d58520f7e51a22026748",
+    "packages/daemon/src/notifications/legacy-push-policy.ts": "0a85766f22434a8f19d76b4faa9d65e47310990130a069ab937668f15160ef90",
+    "packages/daemon/src/notifications/turn-timer.ts": "b158a0c1f45eca0c6f04ed4a7b060a7f23d939f98e70db356b5609ecf33cd8fa",
+    "packages/daemon/src/notifications/turn-failed.ts": "87fa2c7b0e8cbb5dc67875079a717a3c39d5d8a4ac93264a934789dab1d5973f",
+    "packages/daemon/src/debug/provenance.ts": "bd37a40a13a44df34248a8dfabf4d0d076eaf7d3cd8bd89ea8090bc0ccce186f",
+    "packages/daemon/src/remote/relay-device-store.ts": "011a61c886684bd8cf79ba876825ca73b405563b5ab13100b85cd98bb1f052a0",
+    "packages/daemon/src/remote/worker-control.ts": "50b37ac8e9bc33efc2942c1800ec8d1e9ce380178bc7aa5c2b27ba1b5f434a3b",
+    "packages/daemon/src/remote/native-answer-ledger.ts": "11213a1dbd31634a933dab289d51c81da2c63dd1d8a58d3f2314460533b01ba6",
+    "packages/daemon/src/remote/relay-url.ts": "fc6bd7c0359e97290baf1901c37aa2cfbcc1a6a0aabe00d4b0320ab34d96a0f7",
+    "packages/daemon/src/remote/hub-relay.ts": "2c8474259930453bf7e1cc0a9fecb593548879af3cfd9425cbe3062e01f78023",
+    "packages/daemon/src/remote/child-proxy.ts": "2813545da836f5d6122100fa063b04ac516a5fa4ca20b20a8fc004e54529b332",
+    "packages/daemon/src/session/pending-question-created-at-tracker.ts": "724bb2c390b973fe66f5b91b695ea1fb13d7c4190d274737fc83fdb657d393a7",
+    "packages/daemon/src/session/legacy-writers.ts": "9d638d1302bfd5bb259a83c4efdb19066acb1ab5f70dd3422841537fa2c5f8b1",
+    "packages/daemon/src/session/session-registry-file.ts": "3b332c6ba0db937700ccaeb03dee7d9861ba3cf4602930170f05d6143031d2c3",
+    "packages/daemon/src/session/process-alive.ts": "0d96aea53385d4ba57205995ea28d5c396d81d79a472ccd65aede3733779a269",
+    "packages/daemon/src/session/shell-quote.ts": "100d08d2ac1f7dddc8c378a0055c441a50399c455595c15fc9e5b59ef72bec94",
+    "packages/daemon/src/session/question-trace.ts": "a79696715e6c5b3eb5a96a1a170a6f852423cfc970a3d77ff09d241b457d192e",
+    "packages/daemon/src/session/question-store.ts": "f1dacac11542c4445957e4a06178235c3b91ec6c243de8289d43757cf8eb6641",
+    "packages/daemon/src/session/session-store.ts": "09be5d7fd76a382315df11f20d9ef63c2180a8dd5817928a34dcc0d1a81f779b",
+    "packages/daemon/src/session/session-name.ts": "45ada3efa08a449af3bea2972a2cd1212ccf0bf4b59560a95724a89d33f07fe8",
+    "packages/daemon/src/session/pending-question-label.ts": "186dae31f8bac6e9f420a64e916aef89d10bf8009ff5ab5edd6162710ad56fd2",
+    "packages/daemon/src/session/index.ts": "ab45f6ec6743123c905f2170d54ca04e60e2e9a8488196289d3c6556b2b894d9",
+    "packages/daemon/src/session/transcript-index.ts": "8aa80e9c2f410afff8c7262fabcab92e467f58e6b40371aad2ee7420b25b9aa8",
+    "packages/daemon/src/session/port-utils.ts": "cc15c15ae5f1c0741e8430496eaf015770ccf1dbf2e55a26f8f159f95ec0ee15",
+    "packages/daemon/src/session/session-registry.ts": "846241f9f3c3b8fac8e4143e0e17a9b12c140f207f831df6ad649c204bbd70ab",
+    "packages/daemon/src/session/session-binding-store.ts": "487dfee139242bbb60f758c7253744acd0dd4059b7c27085d01f10561bb24dad",
+    "packages/shared/src/identity.ts": "5330989cff7565d890d287d3f9d42a393bedfa0dce36792a62925981c9fbc21d",
+    "packages/shared/src/pairing.ts": "a831f9a5e7c5781beeda014534f51ce99f225f462da17b5b30f81ef635167a27",
+    "packages/shared/src/error-utils.ts": "9ace185dac65f212d6d3d04faa5372220f9d36e0eb59b4fe9d8472ddd7082946",
+    "packages/shared/src/async-utils.ts": "841cabd9ea75bb166a21b31192842c77f235bd7e8d9a73172bb8b817d9f660b6",
+    "packages/shared/src/daemon-ports.ts": "44bb76e6680d825a7768e0305ebf2abd82c916cb8e45d95b8d36d3786bc5906f",
+    "packages/shared/src/structured-chat.ts": "bbeaa847fd5a11aedf6040ffd7b40479fa2d691c454c8741a9333df841988a6f",
+    "packages/shared/src/terminal-view.ts": "7c373cd23d6ffbeaf071f60e8af84076c3e7b75e49f7aabe7f153f3765f1a5f8",
+    "packages/shared/src/crypto.ts": "6a45be8370a8f66795384d9f79e85a4d25fa64799c637e9230e8dc0fa381d991",
+    "packages/shared/src/issue-closing.ts": "2f79e56efd37bb05bb103bc4a0465a4ac49bb93c0ced00d509b4afc07a181287",
+    "packages/shared/src/file-download.ts": "7171fe7e6851855d8e30093756504e827505354aa71c3023962c3c7e62886f68",
+    "packages/shared/src/display-text.ts": "021117a793093652275a62930ab3e3e542f363aec9234b6655706b648834b401",
+    "packages/shared/src/types.ts": "06fb99ab51a4d0e353f9de67342b4139d76d9f6bf2a4c969bade0ea8aa0103d3",
+    "packages/shared/src/relay-messages.ts": "02f7056ed046e656d8f31f0090ea1336dea570c4782bcb1819094bd8de4e9d71",
+    "packages/shared/src/native-bridge.ts": "e922dfe8ed4ae0de29e159208122d566cda653da406de750dcfa36da4922cb58",
+    "packages/shared/src/secure-push-messages.ts": "6ed923196dc600a2883e8aa9e6cc6de77fb3779ae928e2677f43c604f9c596e2",
+    "packages/shared/src/protocol.ts": "1db740d75629742a886bda92e6696ff3a916412a4a7210881a72b893c71c5fa1",
+    "packages/shared/src/image-staging.ts": "d78f821d1bde36b25c4c42d33deb1e1d01021635a4d259b19b4465982428a01e",
+    "packages/shared/src/dispatch.ts": "e6b4b453b363f4f6852e5553b95157d13bc43e64dfd11cd56bd0dd5461a0de75",
+    "packages/shared/src/browser-links.ts": "fa0b86a525ea3d931c517e4321b84fa09a516bc97759afe27ebda4f38bfb064b",
+    "packages/shared/src/ed25519-public-key.ts": "9511c79845d3121524f13b25e601df1b0b80c17d47390dc56d769c2681d3eefd",
+    "packages/shared/src/index.ts": "d2e3c3b0e8e0b545b3541537567f00007fdb15848ee04a3ea127e552b2fb9b8e",
+    "packages/shared/src/file-download-ingress.ts": "38131c10e1ac6919372e8ef053d468b50662b116ebe5834f257fa1e55e6767ec",
+    "packages/shared/src/image-staging-ingress.ts": "4e0e34a1bffd75643a75a47c829eaf714c92a4da50bd3278f7144d8f4a307522",
+    "packages/shared/src/protocol-version.ts": "cf41b9c8a7659153ba80c5f6a8b0ccc57e1271051447b846287e468796821dbd",
+    "packages/shared/src/harness.ts": "c4e549ea89143aa937da7d915a11c7520aeb145f10ad0352ec1f1aaf25d78651",
+    "packages/shared/src/permission-defaults.ts": "ae733fef5b5dab0a21617ba1b7bab7f3239d07a6119ed82d120601fcec7cca00",
+    "packages/shared/src/image-wire.ts": "84473a25c2534801260c1997877ed21b58132d9957e8cfa5663762fcfa952685",
+    "packages/shared/src/image-insertion.ts": "a45547d27449ca6e88655f9aa2dfc1a1875e3a80697a15caa5b7939e0bc8ec34",
+    "packages/shared/src/relay/push.ts": "d220f5d67b27b28ece6db1c79df9bc366f1079f3f1d530565aa3f5857b5e5fc1",
+    "packages/shared/src/relay/envelope.ts": "785945ce7aa77c68994a1018e2866953428d0afe70444ff1b50ba4d40111d189",
+    "packages/shared/src/relay/pairing.ts": "b4378d2f9174f58ba29e5f96ec152214affe3466e5512e6935723d0dfca77364",
+    "packages/shared/src/relay/bytes.ts": "395588c0eb77196f5f802070bb48b86cb2db5c0dac51b096a2f082dd47761a1d",
+    "packages/shared/src/relay/errors.ts": "5e19039e70d8aa6c07f55736e0644490ce03315dfe961472e2c10e52380b52c9",
+    "packages/shared/src/relay/strict-json.ts": "cf840447c631c83969efe9a513c3fde749fa00a7608253cd0409a2a5fff97fde",
+    "packages/shared/src/relay/constants.ts": "1046b8440e29abdce56f8c11f78d9962637f59c3e588a703fc5b9c14e8017fc1",
+    "packages/shared/src/relay/channel.ts": "dc9bd08c3693e4d5c84b974d20f40c2008463630eb78ecfc808f181bac7d2134",
+    "packages/shared/src/relay/primitives.ts": "fb60352192bcf7b601cb17c3e9fb869f765150a6caef71a6097a53cc88670ed6",
+    "packages/shared/src/relay/seal.ts": "b1336fb42cb2e08fc03cd4418bc29079f63cf71e464f3a215ecf73b1b62106e3",
+    "packages/shared/src/relay/deterministic.ts": "c548df3dec203c21a4cb5732b8ec6c179bfbe156a936c23afed6cc1d5651ae09",
+    "packages/shared/src/relay/index.ts": "5c891161e7bb5f65bf2b27a21f685d08284b99b75a043de003ed293fc4a6c82c",
+    "packages/shared/src/relay/small-order.ts": "5d37eacebdf4924d1dda588d7c0c50081b6ddc2dedb68b3fc9bf0a96386f0fe2",
+    "packages/shared/src/relay/native-answer.ts": "d467fb10c48ac5f7470e7e8131ad6de0fe459750c2f18bba23e05a8fe8100963",
+    "packages/shared/src/relay/internal.ts": "905d0a0e536a466e2ad9382aeff1d2958e233f02c58c533868b985ab61a2cc74",
+    "packages/shared/src/relay/worker-wire.ts": "48020cc697345999ecaffdfe8c9e1f562c82cd9ed466779094f07b41cf76c3c2",
+    "packages/shared/src/relay/handshake.ts": "356f6f94b97e05cf35e34338bfb7a928307b957c6bcb30d1dc3ce3ce21289be4",
+    "scripts/terminal-engine/source.ts": "26509edc7b28324a007e4f0a162a078d7fac79802830fc2a83da1cef7079c8ef",
+    "scripts/terminal-engine/README.md": "7828a42b46ecd7a5a9f0f4b6b6ff5867f1282a0d34c378670ea296aaf277d5cb",
+    "scripts/terminal-engine/manifest.json": "d2868daadb2b01d5afd16e7cc33e9dd1dce8b1048a1df6d1c711b1146ba1551f",
+    "scripts/terminal-engine/lazy-attributes.patch": "b0780aa5576da8da7e8d4100b361a76df3376a1e44d5d7145fa98fccdc7e1285",
+    "scripts/terminal-engine/build.ts": "5e097ca5a9eff6b25dfb179a86d04980db00a0bcc8ad164cbdcec500c3e982e4",
+    "scripts/terminal-engine/upstream/BufferLine.test.ts.txt": "f9c16e0f1517b70dce1ae9d91801fa9dac6871f87afe2f507cc1d50edc3a2f55",
+    "scripts/terminal-engine/upstream/src-common-parser-Types.ts.txt": "53ca15be5cdd11a4adc5a973c4b88d3b1fe4d9002e1db8e86f2f8afa22f8fd88",
+    "scripts/terminal-engine/upstream/src-common-Types.ts.txt": "ad4fc729fa168148668992a00c80b8fa21a04061b5ce34a6a817c5c143319bec",
+    "scripts/terminal-engine/upstream/src-common-parser-Constants.ts.txt": "41a050f183a84c0198b74274029f9017debebd8c8cade95182b8542f9b71b32f",
+    "packages/daemon/tests/helpers/terminal-service-fixture.ts": "d0ff11d1671148ee2bc0dbad6e03a861411f4f2bd1f40b0fbd6ebf005dbb64dd",
+    "packages/daemon/tests/helpers/terminal-tls-pair.ts": "cf567d1f3d88da2576a48d970fb8b70cf44fa3e92efb5bad28881762709afe5a",
+    "packages/daemon/tests/helpers/terminal-budget-migration-proof.ts": "035d4a1e28a56a19e81193fa6963c131d379ff970c10246141e6264c473f5838",
+    "packages/daemon/tests/helpers/terminal-store-lock-holder.ts": "72e74dd1c26c0e71a456d264e66cebb950495f9ebeaea581aa0002692bc582f2",
+    "packages/daemon/tests/helpers/terminal-packet-peer.ts": "ed78bdaf233e4ef28dc8d639e8ce76d071a42573d14c4c47602b3e853db0ff41",
+    "packages/daemon/tests/helpers/terminal-native-pair.ts": "049ee40cc54dc6847b8c151e689be9ccd50a631382985308fe68fe2bfec871c7",
+    "packages/daemon/tests/helpers/terminal-output-child.ts": "ec5804cc62a387940c7a21f6dd3450839446c89e024b669fd04a0540ebacbeba",
+    "packages/daemon/tests/helpers/terminal-reservations-proof.ts": "b988ee9a7597572d7cc06de28766c0b61bb52726b30d25f0ef18533234aec95d",
+    "packages/daemon/tests/helpers/terminal-view-ownership-proof.ts": "a866b670754772e335a6d2c64b2bb732abb4ad86f96b2c228ca96dd2cc01dfed",
+    "packages/daemon/tests/helpers/terminal-service-resource-support.ts": "b1b0345fe95155b99232983ea8512905ba4700b3cb4fb7ac2c26e13c8b4e581f",
+    "packages/daemon/tests/helpers/terminal-raw-peer.ts": "91e59dab11d3c70f6f0f16e7e7c5b485083626646ce88ae6379a7a408214c135",
+    "scripts/terminal-service-resource-proof.ts": "e9e7ecd2dcc8a5398b3b6fda2d1e61495e50c07955f6ed20993a6d7ad025b9f3",
+    "scripts/terminal-service-combined-resource-proof.ts": "fc6e8afab9c13010be310baba392651bed859bc374e50fbaa747ab1d35295f80",
+    "scripts/terminal-service-held-proof.ts": "03ab05174ad30f6d4021ba3ce71754c059f3958e590486f11a6778eb94be624b",
+    "scripts/terminal-reservations-proof.ts": "cede069d33ec946213e8d55cd8bab0df75196eac9c6aeb928a4ccb274a763cb2",
+    "packages/daemon/tests/terminal/view-service.test.ts": "3e7cf5c85dbcd752fd673868bf11283ff88b62bad1ebc48724ba5fba043e1de2",
+    "packages/daemon/tests/terminal/engine-distribution.test.ts": "5614d3e23b0acc4db1b0a141b0d23e4299e0dec27dc8c3cf006a75fa4f2e6f77",
+    "packages/daemon/tests/terminal/capture-host.test.ts": "8d0e6ede768cce783ba73e4e9fbf40508c031796e06c497e602590f775482566",
+    "packages/daemon/tests/terminal/engine-source.test.ts": "57a2c7e32aa347409a22bd57d7e2a6eed359512fb9b77c77e4ac99530174bde7",
+    "packages/daemon/tests/terminal/view-ownership.test.ts": "61c2fc4098a850efbe2b3a8faf67fe969e3851b280965dc416d6769960e3810f",
+    "packages/daemon/tests/terminal/reservations.test.ts": "12e26eecf84c42afdaf832e681786efe9760f122ad0edd07cfb9af1ab91f86e6",
+    "packages/daemon/tests/terminal/tls-receipt.test.ts": "d368f7e5727aae98a4d2a8ea439abb198e80c0f60d76029bf50db8fad1ef76f9",
+    "packages/daemon/tests/terminal/screen.test.ts": "2cd53941f4b6dd65bc440fff008ade2231631e1e2c7f9edb0e91f8cfb8b14388",
+    "packages/daemon/tests/terminal/screen-wire.test.ts": "c37a65339d2c43a22b79279b6c2579073abf4cb6a5e99fa9c86dbe1b8eb5b6fe",
+    "packages/daemon/tests/fixtures/terminal-reservations-v1.ts": "ff0b20afb9c8e88b247ea3437ff7d11aa7956d66430755e0514bc4f03e6e38a1",
+    "packages/daemon/tests/fixtures/terminal-reservations-v1.json": "f5a3b5567fbff1bf8a791a1c3ae56bde60637bfd7c57e614c9fced657e7ad1a5",
+    "bun.lock": "caa654b42c7a6755776e889b78b1c1bd99acd4dc602d6c38782ffdd31e4a9778",
+    "tsconfig.json": "cfb4b4295f2840fb84fea931b9ef60a753ba79ae7e48b2e3e2a2515512345f66",
+    "package.json": "72dfc2ac28447c65c92dd50ff9b0cf5e8749b142aac07665aef85c4366f1a10b",
+    "bunfig.toml": "78725af8d2252a3f725b769efe9e454d24df1cfa11bbe06843131176ba046494",
+    "packages/shared/package.json": "e76d3a31e2f5675426f9651a7b0bf586cf535dfe56653bb516c393afa787a302",
+    "packages/daemon/package.json": "1acdd505063b69032c31fa1ba8621c99f41010862e44f298c775975a868e95a6",
+    "packages/daemon/tests/integration/terminal-capture-cli.test.ts": "05fa0741d23add8a273a148537d4dc847dcb900197a3f6a546209bfabc1f91cd",
+    "packages/web/tests/lib/client-to-daemon-conformance.test.ts": "b53d9d8645483d4ba30b0709cff81fea816746aea0eb6a9bcbd7626a85690cbb",
+    "packages/web/src/App.tsx": "551179eec4a348082c83e8ffb20851cc9f4cb0991d74ad831a74a94dd84ac99d",
+    "packages/web/src/main.tsx": "68d1e44554433253da9a2e74b7dea405eccea57280e2b8de3eb122f5b6b0c79b",
+    "packages/web/src/fontsource.d.ts": "5cdccfbb16452f169cec89185a6a1c4a455c63774dab696051f80a1c3dbe12ff",
+    "packages/web/src/types/index.ts": "082b5cbd0fd21b53ac37808c708d3e572632f00bd5862a4de602219f55882ef3",
+    "packages/web/src/components/StatusPill.tsx": "82987566a314f386103b5eb2e5558de1a7663e094b6469662a35dd5c35fcdcbf",
+    "packages/web/src/components/settings/NativeIdentityPanel.tsx": "ab19b0d36497dc34ed14eb219eddf2a212b1037b610eca6b0bfe502731e6e082",
+    "packages/web/src/components/settings/SettingsPanel.tsx": "edaedcc83636b25176276b0c074eb7643ff1589984483a380bc6e2160e0a0dbe",
+    "packages/web/src/components/settings/index.ts": "dbc69b2f89b7ae0e9f774ab829f268e89aaeccfc5b9ad5d9572ec18787cf15e2",
+    "packages/web/src/components/chat/QuestionCard.tsx": "7897122230381e4f23afad184dee0909f06d9b2a6862b4c3f7a61368de38cb48",
+    "packages/web/src/components/chat/BrowserLinks.tsx": "eeab85f4ca27e6567bbef3e9bbb9aafe78d93c410886a106f6740420b06e0e68",
+    "packages/web/src/components/chat/ChatHeader.tsx": "f887d76b5aa44f6830afa3ea86259472bcc6453bf7af222a16903cf39b7b2e32",
+    "packages/web/src/components/chat/ImageUpload.tsx": "84494b411d0c6a7917040e2e2591fd8de54cde59d3eba03551edeab099c991c5",
+    "packages/web/src/components/chat/ChatView.tsx": "f2943c07fdea1786f78fad6e17d41585153f8ff8f6e40f2919f7424339236e14",
+    "packages/web/src/components/chat/MessageList.tsx": "bac0bb47ca8fee5b9ce21f0d6bb846fa891f408f3bc4b542a14ca1963d96ff58",
+    "packages/web/src/components/chat/ToolUseCard.tsx": "46cd2d96b55308befc03e8bb68f486bc35348ff8df36890cbe2afc38fa121665",
+    "packages/web/src/components/chat/MessageBubble.tsx": "71983ce2278c9a949ab7f51d6df865e8dfa10c616442f54577f53fb6005b01da",
+    "packages/web/src/components/chat/index.ts": "3a4a3919b617727ab4e892f95a249eb8dc4d8f972a4d40470992cb4d92d55587",
+    "packages/web/src/components/chat/ChatMessage.tsx": "2f6f19a235b28f16ec13310c6dee42a9133ae0348c02fec3bdf7e74fc20416ca",
+    "packages/web/src/components/chat/InputArea.tsx": "dedcd7e59e19c15dc2a7dfc5defa37e74439e4c762436f1c126e6b77c5500e32",
+    "packages/web/src/components/chat/FileDownload.tsx": "2f961e778063b2cc756860381ca3219163021fbc70081796b39b8cd8a52792fb",
+    "packages/web/src/components/layout/AppLayout.tsx": "f6cd9feca6385e8b5c022edc7a6c87d4cc40d5586c011900db0ed362c22bcb5c",
+    "packages/web/src/components/layout/index.ts": "551cd9ab85cd2ce1e5b06dff5506b2fde68e9fa5199e894a5b44ffe7d991d13d",
+    "packages/web/src/components/session/RelayPairingForm.tsx": "6ed9bf05a9de75bd0572ecc31b43a6a7894431a59954befac2d548c51b4455d1",
+    "packages/web/src/components/session/SessionList.tsx": "d49f1bcbb7512b5f5b86fd8243e29237e0bc207a6e9479cc8fea0a3c2c1acd1e",
+    "packages/web/src/components/session/NewSessionModal.tsx": "7ef1ef5d76fa3e35910c46b2c406e983126cb73371bf9d32624ecc5b0edb4608",
+    "packages/web/src/components/session/SessionCard.tsx": "495ecb7a88c966dd4575c0091b504a44ea79ac7f687abcc1f0e221bd5d7fa222",
+    "packages/web/src/components/session/ConnectModal.tsx": "94e8130490a1881061a90a083e305c0bd7448b988cb7bd781891e20f491bb0c6",
+    "packages/web/src/components/session/RelayDevicesPanel.tsx": "1bbaa1567a8da78d8fb18c42fcb987c4c28c1144ac6fdbe59694b333211ac173",
+    "packages/web/src/components/session/index.ts": "d7dc7e5fc107eb67f85a126e339cb36db8dbd49a4f093330374b31de9a6a8c15",
+    "packages/web/src/components/session/RecentProjects.tsx": "a614162c2595b032c83c12fa90a2ff542a2a0d15c9870e907e558965f7d2c3f3",
+    "packages/web/src/components/session/ApprovalNeeded.tsx": "b5d60445a4c2e1fddae85b0517167bc79dae310224b814d38ef358517a47c19e",
+    "packages/web/src/hooks/useConnectionManager.ts": "017ad09f487932663ea28e6345c62dab1cef38d067b710f487f1a2d29d9ac57b",
+    "packages/web/src/hooks/useEdgeSwipeBack.ts": "beccfe4c1d49c8e95daf530541bcc18a3a95352f7ba88e1e47a85fb426edf2bf",
+    "packages/web/src/hooks/useKeyboard.ts": "6ea1176f593a863c1303b889f61f0c2b8422193e9f4968e796a19f231d567f96",
+    "packages/web/src/hooks/connection-manager-helpers.ts": "260bc3713f6f87390ea8d41f90bf39f0a57616b76be12e1d0d0a6225baf7137f",
+    "packages/web/src/hooks/index.ts": "78fdc2f4932d12fbf9eae269fa1b851ddbebe44f28d363f3a6cd1f2525adba60",
+    "packages/web/src/hooks/usePlatform.ts": "a3827d5d3f97cca61336b8a5e4823c01532afeaf48f5672029a4b124f4b8e474",
+    "packages/web/src/hooks/useLongPress.ts": "794683dd4dba66d29aa94db34154467fb0a659541c9e2a2631187b4ffe5b6a88",
+    "packages/web/src/lib/session-display.ts": "c3472cd54bfc22b0de60b2ca106a4717540fd1d0ccc797fd7c6300193e617d6d",
+    "packages/web/src/lib/image-draft.ts": "3706fbc81534aeddd0e4995c08f01cafb29361ca058cd9282d7b0b51d14a06b0",
+    "packages/web/src/lib/relay-transport.ts": "94c22128d6c94929fc3a07853f2ce7c2202b3e0c465cebd4b5cdb1db763db088",
+    "packages/web/src/lib/native-pairing-qr.ts": "c6fb0193b8881438eeefd8e6b8c1a6f500fcb6aa901cef0365bdaf7a31feea47",
+    "packages/web/src/lib/push-answer-resolver.ts": "38911245f8e18db8a0fa039728abeaa377a090d9dbf4203bf8e9b4fd98efdd32",
+    "packages/web/src/lib/identity-client.ts": "9a179f33c34de99ceac134d0c20dc46977eaf8c6aa81b3a580f6ee6ea897f35e",
+    "packages/web/src/lib/input-refusal.ts": "c99f38f863b4bc46ce4204f73128b7ef2e6216b56df683c8e0a6d75fa2359106",
+    "packages/web/src/lib/native-push-registration.ts": "5a28cb3b08e077602d6e836e15d02a73e1407a232b791f488b28bd443b6e73ca",
+    "packages/web/src/lib/connection-approval.ts": "96205c25529329bd2a163784238670f1a97b47c8a981772572caff16f605b4a3",
+    "packages/web/src/lib/session-dedup.ts": "c34a26e3164e6525032c71cd212bc8964899d59b6047a64eb9923797be802fad",
+    "packages/web/src/lib/question-collection.ts": "4bfda5b235201482c3d41d971e2f6f9bd6bff7e7d8061935341a80b9d13804b5",
+    "packages/web/src/lib/file-download-save.ts": "599076ad838e1ae019c420800df48111247af555774883362d6566dabd492cd7",
+    "packages/web/src/lib/relay-machine-channel.ts": "9efadfad1a9f63feba1f2467bb176a17f8d3bbfe56be34e5b972bca26a3f7ebf",
+    "packages/web/src/lib/auth-probe.ts": "dcf896f1c949d8a486a1ec0627db98d3f526576924b5cf682410a42906e4686b",
+    "packages/web/src/lib/message-resync.ts": "d1341e7d615af33d026a46a66ffccabb852d781c0b200aee236b3309a97335d8",
+    "packages/web/src/lib/message-ack-tracker.ts": "f9b400cca6ec7866a44a474068b92fa669d37bf286102c99c83c272895d958c0",
+    "packages/web/src/lib/notifications.ts": "93adeb4937e5fdc3bac1835aa049096c25fabe24d7d81f7aa4d03a54bf1939a9",
+    "packages/web/src/lib/structured-chat.ts": "b5decaad95654ee1baf935dedff574ff952fe57c197307ccc34870d9af96c482",
+    "packages/web/src/lib/message-dedup.ts": "1acc05b208f5f811e290a29bf176a3c140389787b72f24b8535c08f7409c5f91",
+    "packages/web/src/lib/message-filter.ts": "4360b3f33bd8f98ef902648d4375c1a3714e9bfff80a8e9f7e211f2089a8111b",
+    "packages/web/src/lib/resume-follow.ts": "9551a0907361a6948267e60d691d995d7e05e952ecfe2b4284d3add5b4cf4804",
+    "packages/web/src/lib/parse-content.ts": "0fc145284a0f7ed78c5f8ec36e8107322d5583879fb01467976b1993f4fc1aaa",
+    "packages/web/src/lib/platform.ts": "124dc6d7ba8ce5f74a88c5d7cb00536907c229b5ff084770e9f19f17588064a9",
+    "packages/web/src/lib/session-selection.ts": "625f680f4936c8f16f70bf73c99280de3cb87fb2b9c58866662e462c13c360e3",
+    "packages/web/src/lib/question-mapping.ts": "369a0cec2181e9617e86e1e5a320b71a1c9e78bf4db0c8eff73460bd439deb20",
+    "packages/web/src/lib/native-theme.ts": "b5095e0448cc19cf340c8c6fa03288a70d5b7a127b6e901ab2c75e9422b2dc67",
+    "packages/web/src/lib/push-answer-relay.ts": "54a461db355e01279d9fb28fc60c5cb17a34daddf3cdb9aebef08cc487a86c15",
+    "packages/web/src/lib/file-download.ts": "132c3528c23a674ecd0a9069dd7ef716c97f2d75b88127c909c4c534eedb67dc",
+    "packages/web/src/lib/native-host.ts": "e5102d5e592f47715595f69558c1da328617abc212ee154f627d95a1f879cd95",
+    "packages/web/src/lib/relay-browser-links.ts": "b98561b9f06a2345a2924c1f255c78cc4f32b9bd2577907a431f275d01eeb84c",
+    "packages/web/src/lib/question-merge.ts": "de68c4b1a30d63837c67031f795a3cd81e5b418bf026d905a581f2f0edfbbbd1",
+    "packages/web/src/lib/connection-id.ts": "3c8d20692d9aa2150a3ec32bc1c25689e0faf4162db0bc7f4ed347aaba09bc28",
+    "packages/web/src/lib/native-identity.ts": "ca1f9e75247952de70ff7a06324191813685577675306344606918a680a991f5",
+    "packages/web/src/lib/format-time.ts": "0d53fafb663ce7b1a9e6e5ae5220f60f5e0b130bae31e48953a220a0650ff2e6",
+    "packages/web/src/lib/native-bridge.ts": "9965e8f87e1e78e03c00adf8843fc5424448d193446e5d21f3e3813bda2111ad",
+    "packages/web/src/lib/keyboard-style.ts": "ef7137af0ed35033fa383226879d1890c0f856e0d395cdbd46e9920642500cd5",
+    "packages/web/src/lib/connection-banner.ts": "e3aa4cd78ac82398548f031600c954d57d1eea3cc20665bff7c11592d9837bec",
+    "packages/web/src/lib/client-signer.ts": "8ab695f2c23b0edb1d10cedc4c6f84814c7704bca300d545b916943b41572eaa",
+    "packages/web/src/lib/session-binding.ts": "db3ce931bc310ee8fa9b66a6e25322bca301226888d1740eda8d58c6f715f2c9",
+    "packages/web/src/lib/auq-form.ts": "7f3d1413b2e2da28c3b086ee7f14feafa49642fa3175e210d851d66c3606f5eb",
+    "packages/web/src/lib/port-discovery.ts": "96afea6c0cca1fa0b8faf532662e7b1ce73ec084c2d74ef8fae170f34f07e3b4",
+    "packages/web/src/lib/secure-push-subscriptions.ts": "811087b23d3fec6fec4ee239de63f772f5b12e4e81f1cb46b584b03cfaf00111",
+    "packages/web/src/lib/ack-waiter.ts": "6f2ad37fb48ed8943c3ee462c8753ee5dcdf37fb37ac890855a291b0a0defcdd",
+    "packages/web/src/lib/browser-links.ts": "d165ba98aefb2ce342d431b65cea11ceab85be42901ab7f60f27be84f9a49864",
+    "packages/web/src/lib/push-preferences.ts": "6ed60dd4ac0aeaff11cf50701eed893527268c390753caa12e5e4047bbb2b50d",
+    "packages/web/src/lib/haptics.ts": "5502c2bbf3cd0b9c69502a22c6cb3fba24ddfd5fc8ae133938d5f37b915848fc",
+    "packages/web/src/lib/session-eviction.ts": "4c0096c258922885eb75360660ae7d58f13ad1ca4d1e68f7487a96c4bfbd1f22",
+    "packages/web/src/lib/relay-file-download.ts": "9a285aea81ec829be521f63b72c245d8e5598f17d6ea063101022d15fc00c26f",
+    "packages/web/src/lib/native-push-trust.ts": "f8e64d07b3a88286c1f280318960b9178bad9608c81c5493d8d5eba59d19793f",
+    "packages/web/src/lib/index.ts": "23d92acedae6e98403efa7177fe23f33405846acbdb6f18903cd8019f73f9a4e",
+    "packages/web/src/lib/relay-pins.ts": "9326ca72473c4ab3768fe67e3d551e33b77c0c5d21c3b19e71411f2cabd3facb",
+    "packages/web/src/lib/theme.ts": "9cb51a2bafa1245887bceb5d4b6b389141787c432005cfaea29bd30ac4401a92",
+    "packages/web/src/lib/image-upload.ts": "4a8519cb30a7df7d9c449e2c8a0bf999b1d8bcc216993f3e91b86d9400e3dd8b",
+    "packages/web/src/lib/prompt-waiting.ts": "4456b4e9f18ee2b3a469f9d392a90b71f7e9d2c39b74dfc7c80ceb969e45608f",
+    "packages/web/src/lib/reply-format.ts": "90d671ba8e100086ffc104276f2b7844b0d2bea1c3935ec0ad511cfda035e5a2",
+    "packages/web/src/lib/websocket-client.ts": "4618fced7c400672dd1781a6a2ce7267e29d6438e4cba7933fd5c0de86f83d51",
+    "packages/web/src/lib/relay-requests.ts": "ad14173cff124fcd6fea109d61a901c4ec8e92149e0d7911159931073d48fab9",
+    "packages/daemon/tests/transcript-discovery-cwd.test.ts": "403fd1733d36f789d4db9cfcb87e8d7675a419583f68673f279b38d556403726",
+    "packages/daemon/tests/pty-child-env-secrets.test.ts": "abe032470f30c669d6fbce2065b22308941cb50c683a3105b35cc0af540ae28c",
+    "packages/daemon/tests/websocket-server-loopback-auth.test.ts": "e29dc4bcabf723313a737eaacfd6db634af85fb8390d639bc513a1870e586586",
+    "packages/daemon/tests/bullet-content-registry.test.ts": "1faa9084150802f4dbe9254b0a50790d03f61c3a3be9c565ed978ccbf4cb958e",
+    "packages/daemon/tests/protocol-messages.test.ts": "00e637754a85fc8fef3cd0fb0af190cc86249e86dc9fcef312425c85a927b28d",
+    "packages/daemon/tests/version-sync.test.ts": "f6b2d9ff4a366293d751283908a63849850f61bc4d9540d739f226660bfc6a7b",
+    "packages/daemon/tests/authority-nonblocking.test.ts": "74b07b370e70c7a15c05ce68dad5538619417fe10afeba56223d9b19736cc2b7",
+    "packages/daemon/tests/transcript-message-bridge.test.ts": "a29f4b476e15546b441e8e9486419589d8df90db6bd2cbda0d30066244b00699",
+    "packages/daemon/tests/adapter-registry.test.ts": "9a244a3f1281d2178602167ddc646e945ea83f8bcec11580b29ffd4390b40954",
+    "packages/daemon/tests/unset-remi-home.ts": "8b5cff9256985062f7191fbb84e6ebfeaa8c45480eb7c5d04c7e10fc6d38b01c",
+    "packages/daemon/tests/pairing-store-worker.ts": "66a578b7776366f30d9f63c9bfd91804de40f255fa60c735a4c4e9cfc414e67c",
+    "packages/daemon/tests/pairing-auth.test.ts": "ac304ebe7a3c39aae1ea8188a24f8799921a43a645c332ed7eacfb076acc6717",
+    "packages/daemon/tests/pairing-store.test.ts": "df89cfec4ae68ee0f8e7695c38df05a5e8b9a27c0743349e1a7ab03b727e079c",
+    "packages/daemon/tests/third-party-notices.test.ts": "a8611eb509930ca422518927d4f708fb0ad6338b4758de1f5ae7b76f1d7892cc",
+    "packages/daemon/tests/status-parser.test.ts": "96971d6d0cf4af90ade3921809127e92061d6c6ffced6948261b504459290108",
+    "packages/daemon/tests/question-parser.test.ts": "17f18e4e721fdea57563b482bda6145270c183bcdd54134918e469a93db9e463",
+    "packages/daemon/tests/transcript-discovery.test.ts": "8a4cf6a2d73a7c5e25740b275f445138280d540bdaf375122dc0d374140e2b67",
+    "packages/daemon/tests/pty-sigtstp.test.ts": "c1de78a9bdf9604926d921766aaf73dd8b046e5062ed847a516692d4a74d1bad",
+    "packages/daemon/tests/message-api.test.ts": "5f7abbb5f6aa0a147f8cfd81109a7a7a0d902e5c89f18748ae83a676e02bffe7",
+    "packages/daemon/tests/bullet-engine.test.ts": "70474b4c92eb40ab5e95af830b1438125ed527412437268a49e8a7d8ee6a9e00",
+    "packages/daemon/tests/telegram-ui.test.ts": "70f0443c5b816a38f25559285ab75288b4f309b489c71048b8adc10ee32459ea",
+    "packages/daemon/tests/session-registry.test.ts": "85cde7d1aa6be71647865877b356a36dace770a88dd58596928aec297062fea6",
+    "packages/daemon/tests/first-connect-approval.test.ts": "a38060bd549fb3ffd597811f98687672551b22644ea1283e6f83fd19aabd5e68",
+    "packages/daemon/tests/first-connect-process.test.ts": "b9f23cba6bd04705ebdf2ce53786f30502d69ec4dd4ee7a3561d3b9ed5f61a0a",
+    "packages/daemon/tests/question-presence-tracker.test.ts": "c501a973be915580107103de2c0e837db7431fbdc928d61e8b4accbf7e306f94",
+    "packages/daemon/tests/ci-coverage-threshold.test.ts": "3ccb1b4a5b80803216a7fc1512b6bbbe1d5525808a2ab75f1b7ef94ecc5ffa9e",
+    "packages/daemon/tests/question-identity-sources.test.ts": "4d4dd8530b9b3310262236250caa3ce9cadb9f1def474e6dd0e9ca7182525b13",
+    "packages/daemon/tests/cli-secure-push-teardown.test.ts": "b868b04fc4aba5ab1d5a437468762aa2f109212f230de8e667ec0da147269623",
+    "packages/daemon/tests/output-processor.test.ts": "c9dd7ab42e7532a5ba4cd82b7a786253d249b05e11fa361adc30817eb0c86ff6",
+    "packages/daemon/tests/question-snapshot-broadcast.test.ts": "86bd5de07c8541c1b9e99f4cfe061429831b64d46fe607efced5f5b25ab403f8",
+    "packages/daemon/tests/peer-helpers.test.ts": "bdddb6125dd147459853965e57541e742c5dac422d0827250f5988a435b64067",
+    "packages/daemon/tests/authenticator.test.ts": "3fcfd3b4bc0b805c2b22c7edbde578488a103a42eeacf1a4381a40a22d11d850",
+    "packages/daemon/tests/answer-results.test.ts": "f2531b4083eb629602ecad338f12ae6a1dd0ad498fc22f324bde29f8616d6867",
+    "packages/daemon/tests/approval-store-worker.ts": "620e186280c63dec7522c57678f75ef23d0caa7a2826342c780682789102ba80",
+    "packages/daemon/tests/ansi.test.ts": "311ca9f60175804af5787dfcec70af6b27d53bcbd4e8ab4e3bb61e33755056ce",
+    "packages/daemon/tests/license-boundary.test.ts": "e35b78d266ba37735753f92838632b4ed88600427d25ca48f8a603db34aaeb28",
+    "packages/daemon/tests/connection-unregister-ack-order.test.ts": "f11d2a6ae93a2db26925ba2e6da1f27525324ca6ae7da0596c7880db855e1179",
+    "packages/daemon/tests/telegram-adapter.test.ts": "1b879a0cbdbffa79db7ed17b806426ecdc4bfe1400f90d223f41d117baec16c2",
+    "packages/daemon/tests/lock-holder-worker.ts": "5f5b6e5eb26a2f8187c599fea78ce6964bc617f53c8853d160aeebbd2bd3b98a",
+    "packages/daemon/tests/pairing-decision-worker.ts": "3cf0a44635183efed4ea2b562143c662ecc94b4f714df3bbe348860c7a20a3f0",
+    "packages/daemon/tests/session-registry-file.test.ts": "dea7fa273ed79643932d543dc67f752bfaac773045ac6f16903761f6adb278ab",
+    "packages/daemon/tests/hello-ack-sources.test.ts": "76bbc7f105c5488b3369e7c31e4d20568b08d981d99d5d51374a62a266bbb473",
+    "packages/daemon/tests/config.test.ts": "d76967d629c7a33e41fee84a1608ef0443f1fc39b31d76015949c669cc03cbfc",
+    "packages/daemon/tests/pty-session-write-serialization.test.ts": "3a6aeb7e8fc8d6d2a6b304255b0338338de01f1a15666a0e036124bb913f0e43",
+    "packages/daemon/tests/transcript-watcher.test.ts": "2aad70b58c006040542ba0820773a596e29ddc494710a2b9e54f23e0b60e98e0",
+    "packages/daemon/tests/remi-home.test.ts": "b8149b31c00d1b80b5f3054dad79bace50ddfb0ec9b144728477cd7041ed1788",
+    "packages/daemon/tests/identity-store.test.ts": "839ea81da1276cde4631c48f290a6916c7fef7aed70d7713c3a2c435785e053a",
+    "packages/daemon/tests/connection-auth.test.ts": "d0a7b840e8872703ff939a5ed5e7eed732922c4ce2ec474f5ef0be40560dca28",
+    "packages/daemon/tests/session-registry-workspace.test.ts": "96d5fd015e0e5dbd8d80aa5016aaae9a7bc6bbb37dbed40a2703e2898f40a47d",
+    "packages/daemon/tests/push-client.test.ts": "5562c9b35b7367ab151a8134871f281ffed749a1c2d88d901ea4081f7fe6b607",
+    "packages/daemon/tests/auth-security-review.test.ts": "ab687d3e9de7fb6e78de1862a1bb1d347e874244b3453ef56ad3c11d56b0d38f",
+    "packages/daemon/tests/websocket-server.test.ts": "89502034ab4a12f92b64ea512680b2e957b6c8f8554940c6def882671707a950",
+    "packages/daemon/tests/session-store.test.ts": "2008eaa0a0f70207fe49a92e5f9a3c311907e7ef0d48e3f7ed677560969f3224",
+    "packages/daemon/tests/session-name.test.ts": "5d790c332962d346f58b86e1888a78ecbf73724ebbbb1bcb8e1661dd885dd78f",
+    "packages/daemon/tests/auto-approve/auto-approve-gate.test.ts": "48ddf79f6f5f6158b53ceca84618043776fa39ffc6c7ae372650efcf6a114f7f",
+    "packages/daemon/tests/auto-approve/multichoice.test.ts": "e0e1eecaf78fc45ca44e8a824edccd31a08091220c1be11a145d884922b38ceb",
+    "packages/daemon/tests/auto-approve/subagent-alert.test.ts": "a6a5abc0d4aedaf2f8f57108171cc4318f0d25b18ce5c6ffc157a14ced121b5b",
+    "packages/daemon/tests/pty/pty-capture.test.ts": "38ad0680f8cfb39b7f0eb31e601f579c3014875311968aeb95abff2e5faf19b2",
+    "packages/daemon/tests/config/daemon-tls.test.ts": "bdf265763c148ac880752ed51bd2f3fc052bca3b602037d4bd2d366da425a952",
+    "packages/daemon/tests/auth/authorization-epoch.test.ts": "599086bf47ce882cce4416a9705488a472fc2752483ca9a4a736beb469b47eec",
+    "packages/daemon/tests/auth/relay-enrollment-epoch.test.ts": "1a9fd03062222c7c474951d686d7e49d81c46ab5a306ba362e0bb84e69a4a8ed",
+    "packages/daemon/tests/ci/merge-bun-line-coverage.test.ts": "f981804a52be9c5a9135c2a0a5d12cf9a875bc309574c48a0bbd0774a3e6efb6",
+    "packages/daemon/tests/ci/run-bun-test-with-diagnostics.test.ts": "b3d6cf6a01f5ee0d765eedc2d65bf028289489542dfd964c9d60ee80a60e76c3",
+    "packages/daemon/tests/ci/run-bun-test-batches.test.ts": "ba0e5e711940426cd840e2f9a34e1910bb5aa891ead393888f01c6b5b6ba1e29",
+    "packages/daemon/tests/integration/daemon-explicit-args.test.ts": "bb2a3b6c4c53b1bcc3f0ccae1ada5c701f84748e3da8506ffad32cc2b9014e96",
+    "packages/daemon/tests/integration/browser-link-composition.test.ts": "39bff071779008817ab244cea319761f73df956d102872a8f211f16c1148cfe5",
+    "packages/daemon/tests/integration/hub-start-readiness.test.ts": "0d788f0f8a9e7c9cf6dbc43b18ecd01050c6edd19f02794f50355e2ea42045fb",
+    "packages/daemon/tests/integration/relay-file-discovery.test.ts": "ca303003c11e566f6ec8eed2206502d4e88c7725dd9dd62748211f649775cad9",
+    "packages/daemon/tests/integration/session-close-dismissal.test.ts": "5a03d01b511c345170f60d36333d1b1118fc03ceb100d6be1b04d0cc966b6c41",
+    "packages/daemon/tests/integration/stale-card-cancel.test.ts": "34f688f16448edce8996be0d3ef3da7f7e4803544d5a2c7a179b565fe5276414",
+    "packages/daemon/tests/integration/claude-stop-push.test.ts": "9ba1b2cd8878f35d6d8a7249404df7f66e7af864650d84374160a3d3c8211348",
+    "packages/daemon/tests/integration/session-notifier-registration.test.ts": "b85d333857665cd247d664c2d94ca0b82ed49f1ab847bea7b133f99eeba481d4",
+    "packages/daemon/tests/integration/file-download-cli.test.ts": "fae626f171365ffbeaf739a9fe70404367004cb3c29081622774c8b5cf3c6313",
+    "packages/daemon/tests/integration/same-cwd-no-cross-binding.test.ts": "3e863b39e276c4bda23f971a5d73efd89aeb179c684f7db31a57f51ac23d2b1e",
+    "packages/daemon/tests/integration/launch-characterization.test.ts": "8fa957b8925e5d34c972c67602f815056f43c150ae849f3132fb8e9868eccfe1",
+    "packages/daemon/tests/integration/hub-lifecycle.test.ts": "60f0f8ffd13e040aa46bc888e63f49802eeea2968c6847d931ecd3dd5dd9ce81",
+    "packages/daemon/tests/integration/hub-startup-output.test.ts": "557f537f70c09e4913208282b9e9f782ec5809d266cde79f0254e6355afc7591",
+    "packages/daemon/tests/integration/answer-effect-authority.test.ts": "0e0fefdecf5ed8f58a35304f435dc209243f2402dec52c43c4803d60d2b25008",
+    "packages/daemon/tests/integration/claude-wire-identity.test.ts": "3998c497e474aff741d8c87caeacabb62aa9d0135e9159676de61cb2edf001bd",
+    "packages/daemon/tests/integration/hook-display-text.test.ts": "f811ff93950d6c39a616d36dad51a7b609019bebe14c5de049635a71ac2b83c6",
+    "packages/daemon/tests/integration/hub-resume.test.ts": "7e524304a2b779d2483f0568784ea4be507ce7113d0b74a5704f318de7d3dc17",
+    "packages/daemon/tests/integration/key-provisioning.test.ts": "f472d4557d338c57e314770308201f2ce60d6c5aa1c7438fecc273ff2267c177",
+    "packages/daemon/tests/integration/remi-home-statusline.test.ts": "7d0a7f341577137cb29b1ba3e5f6c13f3706bd6ec597cecb88205137f40e2816",
+    "packages/daemon/tests/integration/direct-tls-local-routing.test.ts": "41de7ed3c916245431bbc138818e369627dcd042a8d78880b1ffc61e7daa3054",
+    "packages/daemon/tests/integration/hub-test-utils.ts": "ece9c2e52613803ef99d80b22e011606dbf806d2bc9eda343e91a80b02ab8aba",
+    "packages/daemon/tests/integration/hub-status.test.ts": "b8d4ef227596de46906f4ec186d11b36a7f33123cf1e8683c0558c8f6cdc0f82",
+    "packages/daemon/tests/integration/hub-serve.test.ts": "6bc45980cb60f9426ece39c4d5df4ad0cfd082abf50806d6e04be86530d80e44",
+    "packages/daemon/tests/integration/pair-hub.test.ts": "a382a322d44bc7cdc4c43bf4c68ba41c58ab8c80de1dc8891d0728c9faafc5c7",
+    "packages/daemon/tests/integration/codex-launch-characterization.test.ts": "356d4c6ce6ef22344ed6bfbe8ea0171d414b29059f84c450a9db108bcd1d66b2",
+    "packages/daemon/tests/integration/daemon-with-phone.ts": "c4816f914664b775a42483468f37ff3ec61a95e3140c28f7ca6348e311446a4a",
+    "packages/daemon/tests/integration/push-registration.test.ts": "d963976cda71443c5bf96c76d275f6f1a6707e8333ca4cbf4263a9076ac4cd82",
+    "packages/daemon/tests/integration/claude-wrapper-prompt-privacy.test.ts": "27eb92dd90843bc697cb70fbcd86c068899ecaf8a85e40282585742f9efb86e3",
+    "packages/daemon/tests/integration/codex-wire-identity.test.ts": "54c5a4bc20394cd93a7053de9073f526220373a18982327b4767481e46df3b32",
+    "packages/daemon/tests/integration/hub-create-session.test.ts": "e207726fdb582efdd5044a4901898c025bee7ed74e7e6272a0961ed5e4ebbca9",
+    "packages/daemon/tests/integration/hub-spawn-helper.test.ts": "e66d93e3a614b9fd0125ea561ccfe0c172b2c418fa7919b89b50c6feb502a811",
+    "packages/daemon/tests/transcript/transcript-binder.test.ts": "751b1e7ec1c370acf803cbdb0c15a8c369a6bbe6f4b59978007929beaaef3ae0",
+    "packages/daemon/tests/transcript/transcript-owner.test.ts": "c3c140eae5f817109d62cb5c0ffe9ad09dda115bf5434cc5573856c042434dc7",
+    "packages/daemon/tests/transcript/user-entry-provenance.test.ts": "d63b973da84f95a1c39b18a2df682b1f7dcbc6599969ccd4f4a2734fc2822861",
+    "packages/daemon/tests/transcript/transcript-watcher-errors.test.ts": "baba40b1048fccc5bc4bb20090b3c5404ba65867ad94e142800b919f6114f4ee",
+    "packages/daemon/tests/workspace/recent.test.ts": "a94354a08a549ccdd1e3dbda340d24d742bd68a3930f30b1e0d950489580644d",
+    "packages/daemon/tests/workspace/describe.test.ts": "0321a9550b68b1b51e174346e77c002bb9a43623c3394c9ca5e2de666f3d47d1",
+    "packages/daemon/tests/workspace/worktree.test.ts": "dee6570a5f327aef463e5edb5d8d0b71797fd5860f444050c2eef5a9fdaac865",
+    "packages/daemon/tests/workspace/recent-store.test.ts": "6c6deebad60bf33bbac5c3d587acd68aa202a86d6d54c738f529bfbb667b1969",
+    "packages/daemon/tests/server/connection-answer-message.test.ts": "53c87d4c4cd627a7d597e99a0fac1efa38f0ab30b62232881f2bea949b72743e",
+    "packages/daemon/tests/server/connection-secure-push.test.ts": "c28cfd7a7252f220232cace50531ca45b6b5c1edf72d93a6139aed3b60e8f586",
+    "packages/daemon/tests/server/relay-chat-upgrade.test.ts": "f3a7514dd2b9611d916dbce040e5fecbb709e23f567a1d06873470d7afe85803",
+    "packages/daemon/tests/server/capability-token.test.ts": "c126a749b34b195c0ae8af508eb5216cfc4782e5e4ca64974d8b25aac271fd93",
+    "packages/daemon/tests/server/websocket-server-tls.test.ts": "34fe2af69aa37374d7880775d56e3f6c042520391889cb3391ea1229551c96a7",
+    "packages/daemon/tests/server/origin-policy.test.ts": "9fa5b8e8b8442d7bf45fdef2948828cbf7fe9c1cb9c69a1768839b022b40bc56",
+    "packages/daemon/tests/server/handle-message-seam-guard.test.ts": "ae82ca27e074534a53990917fcaa4154c96c24f90f305436df4b0ba9527b32eb",
+    "packages/daemon/tests/server/browser-link-ingress.test.ts": "2c10ae829212310bff4843dd0c707a9a764e96ce5ed9b2b536768a1fb8fba0ab",
+    "packages/daemon/tests/server/file-download-ingress.test.ts": "1a0d97426f613862dd10998d7adadae72e1c933d8d4d430d4da44fc996ebe870",
+    "packages/daemon/tests/server/connection-revocation.test.ts": "262c48a540edc4ac506b07c9db82cd1e3b791fd9dc8d7dae25f48d9a384b9d66",
+    "packages/daemon/tests/server/create-session-extra.test.ts": "f3110638e91181353bb00af008f0112a155798be52610fd1ed6f96e2c5a64604",
+    "packages/daemon/tests/server/client-message-events.test.ts": "c94595b83553f253aaa46d5f2530a5f0d4a0deefac63d91463cc84484228649a",
+    "packages/daemon/tests/cli/cmd-keys.test.ts": "ec7504aaf9644ca8c641ab3424bdc5770ce18cf77f25c84842d00ed89e0a71fa",
+    "packages/daemon/tests/cli/path-resolver.test.ts": "a98ee99766b27d2a7de1832c345f7397e1ae63f7f70a14c719ba8c20f26a3d5f",
+    "packages/daemon/tests/cli/cmd-recent.test.ts": "6988a9f16e1b69d21f3fc6f07e85c7e3574e7ee682578cfa048d37d316339241",
+    "packages/daemon/tests/cli/detach-scanner.test.ts": "46512e9be2c18f74b0317cadd3bfab836cf0d45fd8db954f10c89c9acc65ae34",
+    "packages/daemon/tests/cli/cmd-migrate-permissions.test.ts": "3ed6209eedd365599951bcb5d3f2ed52ef6068328015d2ee757cd1428ddf906e",
+    "packages/daemon/tests/cli/transcript-fallback.test.ts": "b302837dceb48bd999960254a9780d7f8d819760ac75487b430e24ac4de1d571",
+    "packages/daemon/tests/cli/null-transcript-path.test.ts": "1dbaecd8101c69813af590346b3cabb45d24f1bece5438ac9dcf31f4f40f70ee",
+    "packages/daemon/tests/cli/statusline-installer.test.ts": "397ac7b687eaa87f376bdad8174adba5063487ce938c48dbf3070884de57f3f8",
+    "packages/daemon/tests/cli/cmd-ls.test.ts": "58dc3c183e75a622559a539e03daf01fe881e23c1247f7fb308d596388ae8bb7",
+    "packages/daemon/tests/cli/cmd-reload.test.ts": "6b14731aa84824abf4bdba09197988eab32b98c9554c38c108530c3f11a20a18",
+    "packages/daemon/tests/cli/transcript-path-golden.test.ts": "4a4f2936d0dbd9da956e2724cfa93abcf9b3a5d5765d217f67c7a7e2d4aa967a",
+    "packages/daemon/tests/cli/resolve-local-session.test.ts": "846de47247ed653fcf69487561c168789a9f62eeee5f4cb5ecf89beee2d63bcb",
+    "packages/daemon/tests/cli/update-watcher.test.ts": "3660c19c3f63b59bee80050ef6dd3df2bd9923bf7a0224a9ca32e29d32146024",
+    "packages/daemon/tests/cli/capabilities.test.ts": "d7eea27dc8900b30ce94ca62858fb31f4c1389afac8db1b2b307b14806f697e7",
+    "packages/daemon/tests/cli/log-file.test.ts": "5c5cc6abf1c450d0e5277b4da325cc00b4f8815daabc77f81e9f159b1af590d1",
+    "packages/daemon/tests/cli/authorize-inputs-process.test.ts": "4948537b3b7243b29ca4417cdd952ab726dd367bd7377876cf33be135225b894",
+    "packages/daemon/tests/cli/hub-question-census.test.ts": "c153b1e45d5495f6518d3522ec9e30f9ee6096e8df0bc06e8d7c8103d1f65f53",
+    "packages/daemon/tests/cli/daemon-manager-command.test.ts": "49fe41a0088998dd5fe8f6f1322926e1321768a0093f0bbb9e1caaf22cdd0801",
+    "packages/daemon/tests/cli/status-writer.test.ts": "305bf20d877cd9a77e99bf84c79d057720f3f04863692f26f0409b83c86e4f15",
+    "packages/daemon/tests/cli/cmd-kill.test.ts": "5f718abb0e8f5c6ea5701a4b063857f01441ab12e26635ce610eb2cdc157eafe",
+    "packages/daemon/tests/cli/ls-client.test.ts": "7726ab89fa96b16443c59829ac8e771b38f1987b3caa9737cfb9a2eb274bd5fb",
+    "packages/daemon/tests/cli/remote-new-client.test.ts": "a9f414ce5178b485eb5ecb9c277c53e525bc8d48ebdd208a0766f6dd55a17b92",
+    "packages/daemon/tests/cli/session-state.test.ts": "55a05dd694d503fdb7f72df9f3ae59ab12b3b4c1cb6dfd15f1f0fdd9866009f9",
+    "packages/daemon/tests/cli/pair-terminal.test.ts": "044961586c79a766d5ab4b19519d9a844b602ce037df2ac8ded4f6a43c9f52ed",
+    "packages/daemon/tests/cli/wrapper-suspend.test.ts": "42adcc03ab6cbc180b00fc5989c1e23083a87a755075d7f2e869cbd2402a7b5a",
+    "packages/daemon/tests/cli/default-harness-dispatch.test.ts": "48c4f45ab9bf426243f1177e843bfd2ad2355ac83c02746856f52f523564d56d",
+    "packages/daemon/tests/cli/question-resolution.test.ts": "96ca972696e2e43b3e223e59024d8c90345140865b19c717ff0bc7047d68c63f",
+    "packages/daemon/tests/cli/current-session.test.ts": "066ed3578c3d77dc6a6c03bf8e34abb48664f7a56c3149a1177819c6826737cc",
+    "packages/daemon/tests/cli/arg-parser.test.ts": "977e98684d659a77cda262f3f39337ee98db26fe2af425e021ac6bb4539d90f2",
+    "packages/daemon/tests/cli/attach-client.test.ts": "23d20dbb7ab6495db7042f5f025678eb40e5faadd90e707ec246f5375fc2c68f",
+    "packages/daemon/tests/cli/session-close.test.ts": "de90a835081d761b259c6c066a0d4e46074dc58e285c78111d3f4425fdd0617f",
+    "packages/daemon/tests/cli/shell-path.test.ts": "ac74657c9012ade90fb72916271c67cd425230c8b4453aeb0e032d5beb88acf9",
+    "packages/daemon/tests/cli/harness-wiring.test.ts": "919ffa401ad6fd7682bdf9707d31c7f3de3a14b31f4dfb4098d09eedd60285fe",
+    "packages/daemon/tests/cli/push-token-refresh-wiring.test.ts": "7a2cf4b656c2e597554eec7502835d84180e385691f54df94fdd7ca8525ce2c1",
+    "packages/daemon/tests/cli/cmd-unstick.test.ts": "0dd288392a233a5cd659251d288e45e2cd5ddba647e175b62c63868c67e93aa7",
+    "packages/daemon/tests/cli/target-resolver.test.ts": "2bcf2786b85b96cf9aafe3691ea0fa39d13eab998f320b07541e23af36f95025",
+    "packages/daemon/tests/cli/question-resolution-wiring.test.ts": "cd1e708fae7abd3480435981a1f6931620e99b1113d4e934f9a0824d500af29c",
+    "packages/daemon/tests/cli/kill-client.test.ts": "2a019cd7cbadb0a81d43dd1dd98e1527770d03a77f711eb811079e947fbf3e6e",
+    "packages/daemon/tests/cli/machine.test.ts": "e54e67d71f195d78e0bc9f149982532cd6e3e5deba2a326f3b2206397da3e747",
+    "packages/daemon/tests/cli/cleanup-budget.test.ts": "f010bb36855d7500f13aa73fc442f996fa3c6f94e9d9fe4375b5802c9f7abcd9",
+    "packages/daemon/tests/cli/live-sessions-watcher.test.ts": "c91512c414c9ceb0d6e133fcd9eb9bee7f6ed902ffb625255ae187cdc0c00798",
+    "packages/daemon/tests/cli/log-guard-wiring.test.ts": "730f72948e2ce395a5e38f796fde4ef6cae37863facbfe892c538ec74f5292d8",
+    "packages/daemon/tests/cli/auto-approve-removal.test.ts": "2904fed9e9cedd10b6851d7cd94d36e776ad9a8f16d6f27151c4c668ad8150fd",
+    "packages/daemon/tests/cli/get-recent-directories.test.ts": "9f7a4ca1783271dd596828f6b8e83468e78e4cab2a79ad72d5affa00f38e1747",
+    "packages/daemon/tests/cli/hold-policy.test.ts": "2521f790d2c59d474234ece7c30e1808b7cce5b4dfa0500d7359efeaa5fe3136",
+    "packages/daemon/tests/cli/session-resolver.test.ts": "d9b76f5f687551f24e937f416b92c772600e997847fee44d6cd2f5babf0fb103",
+    "packages/daemon/tests/cli/service-templates.test.ts": "69276c8dd378e4517c14fca331a9e3eee381aba95f12f964cb8283bc916ce1bb",
+    "packages/daemon/tests/cli/claude-binding.test.ts": "789e84525985330b0193657430f963ea5bbb8a70283b6d8333d3ab7c2602ba0c",
+    "packages/daemon/tests/cli/pair-flow.test.ts": "fb0307d0f6e13a336804bfc6294e923bd0231a456cfca09850a73eadfc820e99",
+    "packages/daemon/tests/cli/autostart-state.test.ts": "c380ee0fa03b8f12144cfc26e5a271a694c7770964c4defbd6da5a3d5a9b312b",
+    "packages/daemon/tests/cli/transcript-watcher-setup.test.ts": "88562a1066a0322b265cd372936d40f96a3eb78fc6bcf401c863785b813438bc",
+    "packages/daemon/tests/cli/cmd-daemon.test.ts": "375bb4f243c3b2ecf8b0ecd78c2bba0ad35c30471bd7adcab861d74eb362a756",
+    "packages/daemon/tests/cli/wrapper-state.test.ts": "1474e42dccb6564e03166431a98dd70290a0c15917c767a57aa26e04851c4864",
+    "packages/daemon/tests/cli/log-guard-stdio.test.ts": "2517570dd6565e28382f99ee690d367e714b26773c16f74e2dfce55165f8dcd4",
+    "packages/daemon/tests/cli/help.test.ts": "a844217e67f510358ea14ffebc93def03579370b8d4b0415d80440e1838b92a2",
+    "packages/daemon/tests/cli/launch-harness.test.ts": "6bbd363b01d2d39fadae5fae6c56430b81c22a565f58f2999edd8df7ba2d0a73",
+    "packages/daemon/tests/cli/daemon-manager.test.ts": "9f4bffa1473d5a7607c6954e6e6d029f45c175b8cce660f4d21c3172837e3034",
+    "packages/daemon/tests/cli/suspend-handler.test.ts": "28fe0134a3f12f88f89f37ae2df68ef8587fdcd028a13832f2195eeac652879e",
+    "packages/daemon/tests/cli/cmd-config.test.ts": "a93ed7410d3065589e506854ccca927808f8cf23bcc3588fa8f1b6f4e33ebcfa",
+    "packages/daemon/tests/cli/daemon-target.test.ts": "084471d4978b7b7d9fb8f794da5f817718e61e59b5800ac0dc51ddeab82a522d",
+    "packages/daemon/tests/cli/process-guards.test.ts": "73e6128e56352f4542d7881bf6056b21b5a3a2c05da4a41494a500fc48712598",
+    "packages/daemon/tests/cli/cmd-attach.test.ts": "a70d9d290e6a1663ab7c65da4ab1445677d5cb7c5babba1f0d498a9c67cdbc52",
+    "packages/daemon/tests/cli/startup-env.test.ts": "287f03630cf98bff66a7cb3c02e0195f1630465b1adf7b3e42c1acb5685d3c46",
+    "packages/daemon/tests/cli/hub-client-tracker.test.ts": "23368a35a5b5fd031b33f1507aca3cbd48b4e3714d337fbd1ca8966c98825147",
+    "packages/daemon/tests/cli/cmd-detach.test.ts": "9567fbf7794cd67725955ff7eabf37122917755182ec9ad49c33546174da56ca",
+    "packages/daemon/tests/cli/live-sessions-watcher-recovery.test.ts": "6a44430a03fc61206baf32f3eb0f5df8e55c16792a7931555d376438c9f20712",
+    "packages/daemon/tests/cli/log-rotation.test.ts": "ed09892e58640233bb83b8a79da6966dbe311ce3c136e459cd2338982d864751",
+    "packages/daemon/tests/cli/logger.test.ts": "419081f4552fcafdd70a960d12dffcf826ab1ebce27c343c30eff305697362b3",
+    "packages/daemon/tests/cli/pty-quiescence-gate.test.ts": "b2909c83d8adf14dbba46e41a609901aedd5866069242180f2358f4bde8804fa",
+    "packages/daemon/tests/cli/status-bar.test.ts": "631427d28d411cd460a335070d4b5eb45e207c718bc027c2817245a3d56e1a81",
+    "packages/daemon/tests/cli/session-phases/pty-spawn-params.test.ts": "f80836a773902843b6347349b22dfa2d303e0c8fdbcaaa198b50f2f41d7f1097",
+    "packages/daemon/tests/cli/session-phases/message-api-setup.test.ts": "f1416e1856a1bc56ede140031a22091239aeb12e065865faae009c91df6f9927",
+    "packages/daemon/tests/cli/session-phases/transcript-binder-drive.test.ts": "33e3f9e94569fe548628a563fc4d95bc9adee2aac8bba7696daac950098e0a4c",
+    "packages/daemon/tests/cli/session-phases/structured-answers-e2e.test.ts": "70752beac3b86a005340a94e1bfa8e1ba37a7a5bc02364a2a606b413a3ed4727",
+    "packages/daemon/tests/cli/session-phases/pty-session-setup.test.ts": "c378211aebdec45690294c50c4d329050bbd339b9565dc68de99301ce8e382dc",
+    "packages/daemon/tests/cli/session-phases/hook-bridge-setup.test.ts": "2f0468f8e53bf222766731316170fe6a9de591277a15d299c27a9bdcd91f18b6",
+    "packages/daemon/tests/cli/handlers/session-events-harness.test.ts": "9f87b97758b20cb54a7f0d8de33669e23b246c497fe20abd0fce09fa159e323c",
+    "packages/daemon/tests/cli/handlers/chat-not-accepted.test.ts": "8793bf2d4e4d190e1c6eafdbdd91abbd23fa8c3fb7ee309600e1e64788001a30",
+    "packages/daemon/tests/cli/handlers/transcript-events-harness.test.ts": "62dbdfacbc131c14c854686dac5ec111afe7e5f4d0f54e7d6e836d520b087bc8",
+    "packages/daemon/tests/cli/handlers/workspace-change.test.ts": "1133893326b0880a5d121cd82501e8ad1e1b86f499818dbb6a13b1fd33f1cdee",
+    "packages/daemon/tests/cli/handlers/recent-repositories-events.test.ts": "0e2ff866d2dd939f46a74896ce737bce89ecb34cfd44a2273651bf77efc45db5",
+    "packages/daemon/tests/cli/handlers/transcript-events-chat.test.ts": "4016ac96e2bfc54c57637ab3a67ca499ad2eb90441e4cb47fab1668251d33bc7",
+    "packages/daemon/tests/cli/handlers/resume-session-events.test.ts": "926541ec7d74ee8d6c11addda7e7672868ae7a3b62ac9e4623c95b933dbe3cba",
+    "packages/daemon/tests/cli/handlers/trivial-events.test.ts": "3ef34e0bb0d2dbf4360688f4535dcf0452fb74d769f6859b15aeef5802291c14",
+    "packages/daemon/tests/cli/handlers/hookless-menu-card.test.ts": "16d8d627b19fd59a021ec7b89e015404e36ee79488f63827ee80307f504444fe",
+    "packages/daemon/tests/cli/handlers/resume-session-events-wire.test.ts": "971f95fd5f655b7428ef34ef035d352395a89fb0d30755a65c3585f7c62ad127",
+    "packages/daemon/tests/cli/handlers/resolved-answer-cache.test.ts": "0cd4bc3c6a5cb51573714f4287d4f3b86a5d62831b814491e46f5a2308a8557b",
+    "packages/daemon/tests/cli/handlers/pty-message-fanout.test.ts": "6f240e68d7141b9bd7f5b714cf7e06e5ef0f2265d88795ea9c6971d3e1076480",
+    "packages/daemon/tests/cli/handlers/transcript-events.test.ts": "32ef06410ffbc00fe4befc1568ae0efc4d712196181f340311098251ad5f1b0e",
+    "packages/daemon/tests/cli/handlers/create-session-harness.test.ts": "a23b78ca426b565dd82a3a9aac8ab998234bfe535d48a7fed1947d4fcf1a67ba",
+    "packages/daemon/tests/cli/handlers/pending-question-resend.test.ts": "10f543d71352e157d5dce4ab9eed02cd1e8dc65b9df37c9d89b16526790d00d2",
+    "packages/daemon/tests/cli/handlers/screen-menu.test.ts": "5fff088582956815611b0acfa34b7121f0e26d5d7696e8a15ee2b60323efc4fd",
+    "packages/daemon/tests/cli/handlers/session-list-entries.test.ts": "d59481a6532d4e3cd04fb03aaf5eac25f29c6a49f8598a6c4458cbc3faaa9971",
+    "packages/daemon/tests/cli/handlers/chat-into-menu-trace-worker.ts": "7f2f38877556767a043f41891c7b2a3a45227fb794dac91ee520390bee82a289",
+    "packages/daemon/tests/cli/handlers/create-session-start.test.ts": "abd57e083b4e27a1cfe19b413e4e051130d6be3d69f974a92abc251c7978d9ee",
+    "packages/daemon/tests/cli/handlers/chat-into-menu.test.ts": "9dc3bbbbb7cf8858b1fd93948879e96446720b116701059df6113236a32fc35a",
+    "packages/daemon/tests/cli/handlers/resume-session-events-harness.test.ts": "f961ad7a7ac66cfc16124f9e55f30d6a3a67b40dca3882bcbfb991e3c5ebcc21",
+    "packages/daemon/tests/cli/handlers/connection-events.test.ts": "7a64a80fbf508026b4db92d13488e33f4f84ecaccbda987b0c7b217d6056ea43",
+    "packages/daemon/tests/cli/handlers/menu-test-helpers.ts": "14aa6c5aee951846a364839f75d40748ba8551cfabe63a57cadc2faf3199f517",
+    "packages/daemon/tests/cli/handlers/connection-events-identity.test.ts": "7403c41a7adb4eecc62d7c406a60d149cc33ac90add025b603c3f72d74f01998",
+    "packages/daemon/tests/cli/handlers/create-session-events.test.ts": "3607e865516b62d0f97897b3fb2d28f4b47d7e64c79ede23fa19b9bfa4553008",
+    "packages/daemon/tests/cli/handlers/session-events.test.ts": "1f2a3a46668080c714754e4f519da7417055821ca0d3ebc055647a31d4c82c1e",
+    "packages/daemon/tests/cli/handlers/chat-guard-output-processor.test.ts": "28b9c5cba1ee10a8ff6077bee296fdeced4b3cb0e68db19445707d99e8b7af49",
+    "packages/daemon/tests/cli/handlers/input-events.test.ts": "c972e921577b7f98e43da584882e0472657a8e1539b3ce742d7e5663c769ff01",
+    "packages/daemon/tests/cli/handlers/create-session-workspace.test.ts": "0def7384bcc8bd4e0f06839953406d786ec519fbaca1e19f9ab8b0244e333e05",
+    "packages/daemon/tests/parser/fixtures/claude-dialogs.ts": "d6b529a6a712c59ad5ffc00191f5e3036260a159da744da21d07b2ae34ae118d",
+    "packages/daemon/tests/mdns/advertise-decision.test.ts": "9a59586c096c82aed4b2663f8107cb8a746197a13280c27d62c6940ede6c3e08",
+    "packages/daemon/tests/mdns/mdns-publisher.test.ts": "c70d7be1c98acea6b5b7baf54010f38537e3fc4f0e81227f905d00193e248657",
+    "packages/daemon/tests/mdns/mdns-browser.test.ts": "cdb8a2a1cd89d8d7415c8c7caee040a2a0bdd354e8b0c1051bbac11fb5bb0774",
+    "packages/daemon/tests/mdns/vpn-discovery.test.ts": "42e0a703911e47c89e8525a6f64e9adad2017cc40b735026f65d59736460a1f2",
+    "packages/daemon/tests/storage/local-daemon-endpoints.test.ts": "3c72692c5bcd749c540b68fcca02abd04a68aed62c85a79f1c744fcd0f123f76",
+    "packages/daemon/tests/tunnel/browser-link-producer.test.ts": "33fe3d07a10605e7ebd69b30b4a85b4008b3c797612d5b991be0a7bbf0ad878e",
+    "packages/daemon/tests/tunnel/journal-adoption.test.ts": "85055e7ad2a5b3bbfb4858203a671d282f01ec6f9159783a4d3a296ea1c9dd8a",
+    "packages/daemon/tests/tunnel/image-entry.test.ts": "20f9139b9d5c8ade14da240a1f13ff9ec8d47270c0979bbf829ab67ef53516ae",
+    "packages/daemon/tests/tunnel/file-download-session-host.test.ts": "304bd1d75c527c70c09e99f539585169863c133cf1c4ba17bede28749fb338f0",
+    "packages/daemon/tests/tunnel/file-download-service.test.ts": "481344d7c11f2366d9838b961cb3a174c8c0e5629354e0a4462d8cfcd9beae0c",
+    "packages/daemon/tests/tunnel/journal-reference.test.ts": "88a2a4dff45dfd34f9aefce0169a372b6a518583ab94865f21a723bad1f9053f",
+    "packages/daemon/tests/tunnel/browser-link-service.test.ts": "66433fc442b29172d42010ba61c0e19c77ea68abba36f97f08584b292acb9737",
+    "packages/daemon/tests/tunnel/image-admission-adoption.test.ts": "762396cb0a43acb77244ff876cfec0d7d490324a8205d1f8b80a2e821ea4f211",
+    "packages/daemon/tests/tunnel/journal-staging.test.ts": "6af117b5bb462af040ae30ec25ee442ce2fa69a5fcb70e9dc87d4c98732d8d18",
+    "packages/daemon/tests/tunnel/image-decode-adoption.test.ts": "716e1459311fae4c3a8a0e1eef85ecdc7a4690c6002babb24b0d1e658510bcaa",
+    "packages/daemon/tests/tunnel/descriptors-adoption.test.ts": "3b57b0995e315813dc9e1c6bd0cbe70a2bbf421a3ec0b0ea9050d405cefde4c1",
+    "packages/daemon/tests/tunnel/reservations-adoption.test.ts": "6860895478690ab943dc5c55c5213cfaa02b37383b4032796d1e87f551f650bd",
+    "packages/daemon/tests/tunnel/image-staging-service.test.ts": "6fefee1e95ce6e32a430dc60be17321ab28dc84cdda3e657bb8bc51e4a3e60f0",
+    "packages/daemon/tests/tunnel/image-worker-adoption.test.ts": "c2c29e7d47362210f42014338066380afb6732ced271d21b1d5757027c5992ff",
+    "packages/daemon/tests/tunnel/native-helper-adoption.test.ts": "3a16cb2dea7eca454eecf72100e4fce25e8a4c8a1d074cd1b6b62c3327a6e72c",
+    "packages/daemon/tests/tunnel/managed-tunnel-storage.test.ts": "d9aa9f985c10df1928d2e5d86c1cced514959c1d9a06162101f855a759359845",
+    "packages/daemon/tests/harness/harness-boundary.test.ts": "096dfe1902fd228fa6d7932769595ec4bc9083485d34c7904b550f5d4222238f",
+    "packages/daemon/tests/harness/submission-sequence.test.ts": "7bb5d94a173ceb676768241c6bc3f73728b46e3f2f1e98a40a0cb0550f36699a",
+    "packages/daemon/tests/harness/claude-args.test.ts": "0070119626d064cd8c97fea5f01dba79d38c6fcc4e4b8b78626cb26f82cb1596",
+    "packages/daemon/tests/harness/registry.test.ts": "a1363f6fe6c12eef6cf3deb4c5a06d49dc69633bc8de665ea88e2701ba18b92f",
+    "packages/daemon/tests/harness/claude-pty-output.test.ts": "7e8e0ed4882b9bcf83e97cc5b67777120c2a5ea47f7bbbf992e3d2eca21482fd",
+    "packages/daemon/tests/harness/claude-session.test.ts": "c3538af1a9fdc37767e909ef21c99ec6b7657105dbac5b3e7b2dbf33eb45cc25",
+    "packages/daemon/tests/harness/claude-harness.test.ts": "fc83cfa75475e5c2e2279b1b3bf1b10d6694ca83178b067735aa00ceb0ef1b2a",
+    "packages/daemon/tests/harness/transcript-path-source.test.ts": "0849e861fee565f3066e57edaf401ad440e27fd540e2d2874a719563b063c3b7",
+    "packages/daemon/tests/harness/session-notifier-order.test.ts": "f7b72a96c6d464d1c88b72a271a53ca2bd35512f13a1e5e16fee66f15a4e56de",
+    "packages/daemon/tests/harness/codex/thread-tracker.test.ts": "9eee0278dbde8b2cd3fcba6edc5b0874d4057340679e03e38a6caf1a8adab707",
+    "packages/daemon/tests/harness/codex/app-server-client-hardening.test.ts": "3d670abb5a7ab865772f09d23cc990dc668503cdba62e5f548ad0c38b5bd0527",
+    "packages/daemon/tests/harness/codex/codex-session-turns-chat.test.ts": "0289a5a9f14e502121e5f9a41755232306322a8a93b5f684c5c7a2888b8eeb2a",
+    "packages/daemon/tests/harness/codex/app-server-client.test.ts": "b29c63d046052a36e22f558692da4ea82b629b11738dd8402a5cb34ea4f9c3d4",
+    "packages/daemon/tests/harness/codex/codex-text-writer.test.ts": "43472aebe8c5b2c389303b821a75993883fd7427180cd984e877d8a5892dce3d",
+    "packages/daemon/tests/harness/codex/app-server-protocol.test.ts": "75af907f9fb55b96461a5979cc067bf70f3dc1ce2c12cfe8748796e49e575ef4",
+    "packages/daemon/tests/harness/codex/ws-frames.test.ts": "a282219fc5609d192fd4afb08e959e4c057ff2e3127dea7433a61690264c5da3",
+    "packages/daemon/tests/harness/codex/codex-socket.test.ts": "516f353d6b401043b7e0db5a339bc29daa485bec4334a6d8aec13d61e47cdb36",
+    "packages/daemon/tests/harness/codex/codex-turns.test.ts": "ba897baa9fd209824642f62fa3ae2a20ddb3270dc384836b726cab43e80c26d6",
+    "packages/daemon/tests/harness/codex/codex-first-answer-wins.test.ts": "111ca355a915323b63640a31ed0dcd157a38e602608f0a71c4b269a580f24a37",
+    "packages/daemon/tests/harness/codex/approval-cards.test.ts": "95eb2e50c46eda4cea4849cdb995c51b7a06fcb62a03c1ee60b5f74b34a57625",
+    "packages/daemon/tests/harness/codex/codex-session.test.ts": "2766c8c670215d66fe47886e8b4404690bf200fb1de66fea504e9b81eb137c85",
+    "packages/daemon/tests/harness/codex/terminal-words.test.ts": "ff31a04dd5218e5d00291aae722933e039bf70201a284cb53e12ec514f371fb6",
+    "packages/daemon/tests/harness/codex/fixtures-redaction.test.ts": "82336b9f2f9807780c7eb64954eae16d33952166598fa9ef5b3e2ce79b5beb05",
+    "packages/daemon/tests/harness/codex/safe-text.test.ts": "1c863ee7d34687b338697f3d4955d8c7ffb71a9ee66523cfe72cbe527a529c4e",
+    "packages/daemon/tests/harness/codex/codex-decisions.test.ts": "b9519f978f28b117f44e1fb9f8561c0ae19ca4867cb878140fc70f1f0079c7d9",
+    "packages/daemon/tests/harness/codex/thread-protocol.test.ts": "77c49055370953b3f71f1b239b4f6360b42163c6efaa7b9190ca9a777a84bbbb",
+    "packages/daemon/tests/harness/codex/unix-ws.test.ts": "1ec11e4932a28c7be485eeabe78165131f534025703f52c49410a1d38df8c38a",
+    "packages/daemon/tests/harness/codex/codex-chat.test.ts": "94463fe18be4ab43bc4474c4281d3b043a49e30d1edb64ba66620b2d8457678d",
+    "packages/daemon/tests/harness/codex/attach-hint.test.ts": "4ce7b2c6c25a42b4554ee555c1a54bf04724ae0f155145ec51e10be3b8037ec6",
+    "packages/daemon/tests/harness/codex/codex-args.test.ts": "a55888a0ceca1a33cc125ab5a8da0ed7f50ad81c0d8d36350be02884adea4c0d",
+    "packages/daemon/tests/hooks/hook-server-port0.test.ts": "eb0b277e6a684999ac7391adb8377929f6589deefb1b88ba697ce1d034b90eb0",
+    "packages/daemon/tests/hooks/session-lock-classifier.test.ts": "eb253867a414a2389815b8bcc8c453d4fe4597ea645bd98bb9f86d3e7ad674e5",
+    "packages/daemon/tests/hooks/contract-drift.test.ts": "c61a520b647bf06a641a66bc5984cc909c91304214c69c847e81c90438fc5f12",
+    "packages/daemon/tests/hooks/tool-summary.test.ts": "0d7ae402f4762cef1bae20bd6b529413a66055ee84336acdabf0fb02f69441ad",
+    "packages/daemon/tests/hooks/hook-server-bridge-integration.test.ts": "4b97ea0ebdf78ea0cda279aa1d6fcdecf7f68d047b1a33087ef69f1b2bf8a73a",
+    "packages/daemon/tests/hooks/hook-config-manager.test.ts": "f130d885108125597d555ae447dcf0cc322a0d9d252646551ab0e73fc4023806",
+    "packages/daemon/tests/hooks/hook-diag-provenance.test.ts": "ff9462e2d626816522e4e15a10db1905f911c57f2a0c10d9c35027ed58544fbc",
+    "packages/daemon/tests/hooks/hook-event-bridge.test.ts": "58ed0e144c83dc9e6efa4e5277ef95b57b131ec00ff31a9f650aa80d3abffaf7",
+    "packages/daemon/tests/hooks/corpus-replay.test.ts": "53cdc637a371a55903628a13d851ff423631b37e6fb5570a52723d7b8f8cbc03",
+    "packages/daemon/tests/hooks/foreign-session-escalator.test.ts": "862b708caa69df5ad748f1bd921471f2d9b54e3cd7935e03bad826b02f097990",
+    "packages/daemon/tests/hooks/structured-answers.test.ts": "7cba0b0fa7a7bbb0fea79fede9e1a5e7a4896ca888426d96a58fabdea7691153",
+    "packages/daemon/tests/hooks/hook-server.test.ts": "993f91a730cecf641431da13b9599222168c164eb7181250ba5f7f75b3f0bc07",
+    "packages/daemon/tests/hooks/held-hook-transport.test.ts": "d253a3d8499874e57b6d508c61a322522d73cd74e822d784958fd11b64ccec3a",
+    "packages/daemon/tests/hooks/tool-display-summary.test.ts": "316c2ce943dfae1bb47ab5bf0ae68b458dd79caf96f418eb2f5ff7fac90a921a",
+    "packages/daemon/tests/hooks/hook-diag-provenance-worker.ts": "7c4a7a365b804c30de70aab3d8ea2cefb53bac71c671508236cb4a3df340f64f",
+    "packages/daemon/tests/hooks/tool-question.test.ts": "e863234c6cfe00fb633fac89a416c9c2beddded4699fd8c7d2ae699c77961b08",
+    "packages/daemon/tests/hooks/subagent-context-tracker.test.ts": "b65efad04a68d2b58a7d7246d4a76d582a284b49b992750c17f219a77bb5558a",
+    "packages/daemon/tests/hooks/fixtures/contract-spec.ts": "cd4d4b186773cd0b4033b7e5b564b1309c0beac91c815d1a92c541be47c608e0",
+    "packages/daemon/tests/hooks/fixtures/build-hook-corpus.ts": "48a71dd29c90e1373252bc0b3f07bf1b1448159fa632d6a16e22f41df635f17a",
+    "packages/daemon/tests/hooks/fixtures/build-hook-corpus.test.ts": "4342934727f875ff7a5686499ce79a2fa985b340e974c8e80916990a1408da48",
+    "packages/daemon/tests/api/question-identity.test.ts": "c09ee7f9d395dcefa909b794a02f3e21b8d07b1f99e74cbd1a9f970ba9561f32",
+    "packages/daemon/tests/api/live-questions.test.ts": "a61eeacaf25325e1d041779b3ba335a304e846fac1bc5b764b87adf45442e1e7",
+    "packages/daemon/tests/api/question-tracker-diagnostic-privacy.test.ts": "b647531d6149a506e540bc9b21778eea019eda562c14d5cbfa2c40a4b2c959aa",
+    "packages/daemon/tests/api/question-presence-tracker-render-resolution.test.ts": "8f8606f583571bd7cddb97bc4079a46a91227268f5fe9d93042a295ded87124f",
+    "packages/daemon/tests/api/question-presence-tracker-messageapi-integration.test.ts": "9d9ded823dcda985acc2217278058366b6a71fdd5aaa5d6bf2ffe4816d33b664",
+    "packages/daemon/tests/api/question-presence-tracker.test.ts": "8bd8b35b876158b4f0a494248e1b3d918b022252479a529a183772dc4a698704",
+    "packages/daemon/tests/api/subagent-view-registry.test.ts": "d13442d9d042b3a804f5821e783cbcef13158898a9831acc5ef847b2df68ba85",
+    "packages/daemon/tests/api/question-dedup.test.ts": "dc0a409f517aa1898ddfc18776d392d9df5ad76d0c890b512adba973e6b47ab7",
+    "packages/daemon/tests/fixtures/remi-home-probe.ts": "ecccc225a0e95046ffe78b6a0fb372a559eb76839dbf20f453d98558a8eccc42",
+    "packages/daemon/tests/fixtures/codex-app-server/approved-free-text.json": "71453c8a837e1b6d9d8b5914120425e25691cd5969f0c2bbc28c79d205ec5adf",
+    "packages/daemon/tests/fixtures/codex-app-server/index.json": "5b113e0578f0cd6633168fd583362a94be208ecfc235bd1664f3dba5fd4e1842",
+    "packages/daemon/tests/helpers/fixture-scan.ts": "8b8c466183ba25388054988a86e8056e5fe7c1e6b3f98a2b672bcb143ebfdde0",
+    "packages/daemon/tests/helpers/fake-agent-clis.test.ts": "8b7f75d0e333ce17a8cf66a9c8f29716aa98ad806c024d77a34f2f6c5ad000e3",
+    "packages/daemon/tests/helpers/strip-comments.ts": "eeb1352e8b69a5afbd463a3d0a22c2dcf6ab248669d1506afa1db16de9dba15b",
+    "packages/daemon/tests/helpers/fake-agent-clis.ts": "81c869e708edd3bff19f88160dda151b4ab1b5b1d2a030bd6f405d3485e9b1db",
+    "packages/daemon/tests/helpers/call-arguments.ts": "6f055f0471ca7870def572015a9230c2490e8447e7b39b1569811102a70107c3",
+    "packages/daemon/tests/helpers/browser-link-service-fixture.ts": "ae84b821e903795de8bd746976531efadd39d3568192379d77077b1378db83f1",
+    "packages/daemon/tests/helpers/module-specifiers.ts": "732a02ddbea20088741d16ec53e0ade0290bd13c7d60213dcae6f4e8214cd883",
+    "packages/daemon/tests/helpers/file-download-cli-fixture.ts": "8d3813c34112132f207408d66780e79fb683994555f95e989c424efde4cfd212",
+    "packages/daemon/tests/helpers/stamped-build.ts": "140c1bf5f886f91e26ce76cb14d7e1dad000b38747527f9fd082bd61d5275eb9",
+    "packages/daemon/tests/helpers/fake-app-server.ts": "c16ef3c3ec2e7e09c1e28eaba1a81aa908f7968ce9545f32d5001785204bfad9",
+    "packages/daemon/tests/helpers/scan-committed-fixtures-child.ts": "9665e949703d4621fdee7b7a79d0c1e7f4957c0b7c4aaa0f1f772c03e05215b3",
+    "packages/daemon/tests/helpers/timer-spy.ts": "fef5333ff1d0a62243b866062eda01179e4363d7ceae48f24773701f7a892172",
+    "packages/daemon/tests/helpers/unsafe-text.ts": "c9be050c7dc31444942bd1b4dbb64811cad84ece2d45429457c68e24eb0e0b9a",
+    "packages/daemon/tests/helpers/file-download-ingress-fixture.ts": "aa039b93fdbd11c95da66bea993108632f2561633f8ab9e70e6fd970d792c16d",
+    "packages/daemon/tests/helpers/file-download-service-fixture.ts": "53bc4ec0d76c01def71f3c52a3cef71dbf347864d2b881d26e73e7c298f7cd39",
+    "packages/daemon/tests/helpers/fake-app-server.test.ts": "b94d945fa5c4faa23771e1cefb9e3808f2b783e21f9035093e9667d97df5f396",
+    "packages/daemon/tests/helpers/codex-threads.ts": "b418762554f76458366351ad2bf1d69ae29c3e134c727e174eedd448687326b8",
+    "packages/daemon/tests/helpers/direct-tls-fixture.ts": "5e2d46720b6a48ade053da8ac7877bcbb71dd1420522e0e669c1b8f0768e912b",
+    "packages/daemon/tests/helpers/codex-fixtures.ts": "3a8bab74adadfde9f54ada7d8afaf7491d5279470632a12d28ae0ba5a8069f18",
+    "packages/daemon/tests/notifications/secure-push-store.test.ts": "8824dcf5d29666a7696ad07d486ccf102b545a37d72b9c93f648d8fe2eb0c96b",
+    "packages/daemon/tests/notifications/harness-denied.test.ts": "de1f39204d2f3ae6d2f837f2c572184723c02a6d76eca6c5a788927f2c05be64",
+    "packages/daemon/tests/notifications/device-token-store.test.ts": "c7a7c3ddbd435c00215bfc328a4bfa1ecac7b3da81bd46262f96003e8b01573c",
+    "packages/daemon/tests/notifications/legacy-push-retired.test.ts": "caee15e96dbb55007344819ef32dfda49a75ada0fa3b6042d4e21d8ed667b843",
+    "packages/daemon/tests/notifications/claude-turn-stop.test.ts": "35e238bc772761b08811fd74484da55df50d37cfe6f2732ff64ee2baaee52b6d",
+    "packages/daemon/tests/notifications/legacy-push-boundary.test.ts": "9f17dd8ad004b71f2caaad586ae06e55d0489aa54d78dcc7e6f46a818cebb8ee",
+    "packages/daemon/tests/notifications/push-event-boundaries.test.ts": "cc2e743fd44fb68cfed63bba2947236e7689a79b07f3fe3d95303e3ab53c7833",
+    "packages/daemon/tests/notifications/turn-events.test.ts": "98f3d6fb68191dbc4d87a91e7bd7a9faab283f7ff67f30bb772dccd084095a0b",
+    "packages/daemon/tests/notifications/legacy-push-errors.test.ts": "49a1d129d202f07c382fd54bbff9547d66f496430ffdd353bdd35888ae8a5195",
+    "packages/daemon/tests/notifications/secure-push-contexts.test.ts": "629cb96f7a648c315508719f086e2be0a02aa2cd4b2975cdb8288e3467d6b2bc",
+    "packages/daemon/tests/notifications/secure-push-lease.test.ts": "ed0bbaefe93177db7f343491276edb2fe1985c3e4013ef5498200d95db8acbe1",
+    "packages/daemon/tests/notifications/secure-push-service-log.test.ts": "e7594167f54185de09c508407757e452ba64e26b045b10509b1930d17864b6db",
+    "packages/daemon/tests/notifications/turn-failed.test.ts": "7602be9bf8b7f233b61823169fc74eaaa303f2062526b509b0fba87518af971d",
+    "packages/daemon/tests/notifications/device-token-lease.test.ts": "571d16edafecb66c348844c39310f9c1590fd919aeb9401d963e9c9baade6663",
+    "packages/daemon/tests/notifications/notification-dispatcher.test.ts": "2084983ca730ab8b758b8c276f8dbbe636b9b0138f62b5c8ec7e70fae7698374",
+    "packages/daemon/tests/notifications/push-dedup.test.ts": "d4f1e77b822bcd1d39b5c40f4a9fe3e97d03dcd14b25fc1773eaa8ff9c8763be",
+    "packages/daemon/tests/notifications/turn-timer.test.ts": "ade0e8ae9db9c630927cdcfdfaa2c05921bffe74f02b2f6df968e4b9e4869c64",
+    "packages/daemon/tests/notifications/push-preferences.test.ts": "0b7af3225f25b3846797691851a664f2abea4126351ced7881587b5071d4e61a",
+    "packages/daemon/tests/notifications/secure-push-init.test.ts": "ba4b36f8684a1f9a2fa1c525341d444eb9798a401d0249b3d08a781924ecc4b8",
+    "packages/daemon/tests/debug/test-harness-marker.ts": "d06fd2d414bdbb8d4cfb5815331fed99d358a382d11b854b11148aec85496f4b",
+    "packages/daemon/tests/debug/provenance.test.ts": "33f62bd85f8788cc9dc0770a9c8bc8e7d9d2eb600a097f8c626825d1cd580eed",
+    "packages/daemon/tests/remote/child-proxy-native-answer.test.ts": "df244172603c1779cc1d0cafe57b1f0aefee4f4b1f59c5007f0c7350da4d429b",
+    "packages/daemon/tests/remote/native-answer-ledger.test.ts": "d80c2545dae5cefe3525e5ad6ddbb2e079e5880138cdc58c93511215e676cf18",
+    "packages/daemon/tests/remote/hub-relay-fixture.ts": "84e8468003c4f8d8d9709611780064304112460797e77a2ad3f6465cc49df5f8",
+    "packages/daemon/tests/remote/hub-relay-browser-links.test.ts": "e509032240a54141da097ad1328df80d270179341069b26c1b034ed2aa342ba3",
+    "packages/daemon/tests/remote/hub-relay-secure-push.test.ts": "1d27b42d2777b49ad12ed3830259b7eadb04eab334a1645f2a118103df7d8d63",
+    "packages/daemon/tests/remote/hub-relay-file-download.test.ts": "0f284754f039915de8d4fe89ccc56b9e7887d9157e3bcdff52b9a815cf6fdda7",
+    "packages/daemon/tests/remote/fake-worker.ts": "82551e2aad5f8fae65f43a49dd5b9b90dd553907e4f55e9adbeca9818cd8f103",
+    "packages/daemon/tests/session/session-store-concurrency.test.ts": "f8081a78943eb17b306cf3b6efb96be8791422191fbb1a20c41206f7186aad0a",
+    "packages/daemon/tests/session/port-utils.test.ts": "9b5216ce2ef4c753e611a1a403b7de451b14f16c94b3be891e1cf72400af6c6c",
+    "packages/daemon/tests/session/port-test-helpers.ts": "ebf5c35b0cc0b81a16d03dbb139a1d397808c8a60d6b2f3aac8091e453986e09",
+    "packages/daemon/tests/session/pending-question-created-at-tracker.test.ts": "46af71f6f20942eac255fe98435cc99a8d51aae1bffe0de0fa8864143bae00a3",
+    "packages/daemon/tests/session/question-store-single-owner.test.ts": "b8d0e73a33f88397da3e81228089ee19ac58dbf056fb8a9144c0703158d09e14",
+    "packages/daemon/tests/session/session-registry-trace-worker.ts": "da5c0c7384f6a9bc8115da922383fd162b66b282c26eceb22136510e680a2443",
+    "packages/daemon/tests/session/question-containers-classification.test.ts": "72c7d0ad6f41bad4e0f09a5021a326c2187e184ce918ab94de0f846571abb2c4",
+    "packages/daemon/tests/session/question-trace-worker.ts": "c43a9aeee283c0c85848a26e4020a4b25c945081c18a56d2fa89cef275022cb8",
+    "packages/daemon/tests/session/question-trace-identity-worker.ts": "5b23eb8872f80e973c8cf18e8c930c8df8e784decbbe331a6c159d8a9c283252",
+    "packages/daemon/tests/session/question-trace.test.ts": "7c4d31deac071a9cf24e5e4dc865f3ba22077d6d9781fb502068870d030b8473",
+    "packages/daemon/tests/session/transcript-index.test.ts": "8b94b98b84e9eb4df4a3eb5c9ad335679252f557bc0d1466930dfce1464dc2ee",
+    "packages/daemon/tests/session/question-store.test.ts": "3aa82ec4313348e9a71b04d4081a2ab050f5498e1cb4ff1a99dfeba87b24d383",
+    "packages/daemon/tests/session/transcript-index-concurrency-worker.ts": "9fcc3f30b09176151a4b88b1c35b640e10603be0e43478aca1dc533bf900bcdf",
+    "packages/daemon/tests/session/pending-question-label.test.ts": "f7fd6f1e18ca483975eb43bad73a533961e8c487ddfe316cdb66b41c692fcec6",
+    "packages/daemon/tests/session/legacy-writers.test.ts": "17d245821629efcaecc23a114a75bcc8ec416e623537dcb0afc4f69a7bf3e9d1",
+    "packages/daemon/tests/session/question-trace-identity.test.ts": "67eab4947977107de4900952e0b36318187182e513b622e66b94cb1bb08481c9",
+    "packages/daemon/tests/session/resumable-claude-session.test.ts": "bee5244c6deb84be5b75b7266ba996ac0f75059980ba1724b7cd3428af96cd24",
+    "packages/daemon/tests/session/question-store-trace.test.ts": "206d228aae5062e813bf7269c2de902cbcf1d0b953ff3a7be8cf85a7ce692925",
+    "packages/daemon/tests/session/question-store-trace-worker.ts": "13049b246180226c7e0b6c8f985e7ac5b47692fb2687525b3a1bce67a0489c0c",
+    "packages/daemon/tests/session/store-concurrency-worker.ts": "56df8b3d76f8b3cf3173afda0beeb38a4b3bda16f8c4d5b4bc5db7ab82af0752",
+    "packages/daemon/tests/session/harness-aware-reads.test.ts": "8b71035f6e0a9a2292be6de5531bf5f2bdb3b287b45f52d7b78604966bb64c7a",
+    "packages/daemon/tests/session/process-alive.test.ts": "059afcbcaf6dc7a845178c869595cc3d2f42b421249ac53774b86f9304ee1ef9",
+    "packages/daemon/tests/session/transcript-index-concurrency.test.ts": "9ef5cc1a46ccc8cf65e0e9938fc815ea29eb4ac680378903c36e42b2c548b269",
+    "packages/daemon/tests/session/harness-identity-store.test.ts": "4f1bab0f48a747a437c647fe7027dd6639064b802dfcefe472c626ccf2031170",
+    "packages/daemon/tests/session/session-binding-store.test.ts": "931151fc386156ddc716ebafe8f5483f592830e0e1a9b48cbbeda6f0d4f1e808",
+    "packages/shared/tests/fixtures/pairing/vectors.json": "5bce977e44511efcf8482aaeedc7b5a4bba4a4562e29a51d9aa4e9a21f7432b1",
+    "packages/shared/tests/fixtures/pairing/generate.ts": "9c908ef6866a6f59e15c494fa91914ff21b324c06dad24355c25df7c1945be8e",
+    "packages/shared/tests/fixtures/file-download/vectors.json": "696efdf203c99be01ee7f61b16cf292604d83be59139ad4261e9c3e2da6dd4bd",
+    "packages/shared/tests/fixtures/structured-chat/vectors.json": "7e76e382ccb11042ad4eb08d0e91f54943b967037e437956001d5ad90a2cf457",
+    "packages/shared/tests/fixtures/relay-v2/push-vectors.json": "490c83162d2c8f122d5a79931ac327807da4a6d8b53c4bcc907358e2898fa5c4",
+    "packages/shared/tests/fixtures/relay-v2/native-answer-vectors.json": "35a1994241edfda8affb43e56e6a4942e439d46c0821fbc0fb1281a2f41a12d3",
+    "packages/shared/tests/fixtures/relay-v2/vectors.json": "d64d48636c97f4ac4064b46bc08f39a1b7c16181d1d224ba7790dececbd21084",
+    "packages/shared/tests/fixtures/protocol/file_fetch_cancel_result.json": "36a928c2612a13223c365672ec678a538226a51e77a27559baf431abadedf312",
+    "packages/shared/tests/fixtures/protocol/agent_output.json": "1ebe64a51b99e077c395f292948be992f807888e7951a7f3a227d9c2796559fc",
+    "packages/shared/tests/fixtures/protocol/answer_result.json": "5afe787316ca7ef57f86d0f62f3f01b64d311a7b369c1e76528a44c33cc956bc",
+    "packages/shared/tests/fixtures/protocol/session_terminal_read.json": "5b8a7c177f37cb6a99961bb3419cc76e3d2b3908d723b5b6a6e4d8c617d6d593",
+    "packages/shared/tests/fixtures/protocol/session_history_request.json": "916aed7d197594a3532ca91c0d4f5a0ed9391ef2a44970d2ec2e90cd36c918f1",
+    "packages/shared/tests/fixtures/protocol/hello_ack.json": "a4f8a2bd75101648585a6597bc3c5d688121f0f46c440f85e3055a1984f922e4",
+    "packages/shared/tests/fixtures/protocol/create_session_request_plain.json": "df05ce1185aa9c6b7bc40c4f1bec2daf7dd49587018d2e07890990f2f5da22db",
+    "packages/shared/tests/fixtures/protocol/error.json": "a017236dc7d1274e355c19dac36d4f7f0eee9d7a8cf5d7352b8d4d57896ac79a",
+    "packages/shared/tests/fixtures/protocol/relay_devices_response.json": "62db7b8c6cb65c6d9a13c47609ead084fe694406daf62596966e70c17cd0fe20",
+    "packages/shared/tests/fixtures/protocol/auth_result.json": "1e904493d35b303c255784ec2bdd4c38e883a6e8941392df1f2ff95d0f3ce8df",
+    "packages/shared/tests/fixtures/protocol/ack.json": "f342bd446fb26b0629499d00e1a7a166bcfaa8c969dd402ad634043424833e29",
+    "packages/shared/tests/fixtures/protocol/image_upload_cancel_result.json": "a28568524a311aa65aa10908623d6161ac2d6791380180173e5d32a06a4fba39",
+    "packages/shared/tests/fixtures/protocol/file_fetch_chunk.json": "fe8e3269cde51d4bbd8f556543449cdca642e05fdd6baba6456975c311ccafca",
+    "packages/shared/tests/fixtures/protocol/image_insert_result.json": "0531fbbc550806f7e26c706c7977cc50b7be239da6e94cb98129708d3ad880f2",
+    "packages/shared/tests/fixtures/protocol/question_snapshot.json": "76f52cb532ad313dd3554f32a77a9308f68634241f7eccf056bd8b8bed25d2f6",
+    "packages/shared/tests/fixtures/protocol/browser_link_receiver_request.json": "e7f84f6cf3868a411486bc5719ebc5b26de74c25953f5d91c28aea3e9fc9352f",
+    "packages/shared/tests/fixtures/protocol/relay_device_revoke_response.json": "c3c37c86f09cf638ccea3a7e4368afc077f3b7c26418e839afa70899e526bb30",
+    "packages/shared/tests/fixtures/protocol/session_list_response_machine.json": "4df793c0979ddfdac4e68a8eb7fd9f2ddd1f41265250e16bcbd6811f9c5ef712",
+    "packages/shared/tests/fixtures/protocol/recent_repositories_response.json": "98fb5845834fe7764e67310526e856ca12e31f1e5cddffb762d4a841f2438956",
+    "packages/shared/tests/fixtures/protocol/question_claude_terminal_prompt.json": "a943f5659161aea255bede432348a4dc91cda74ab25eaefcd895d4c498470b73",
+    "packages/shared/tests/fixtures/protocol/session_terminal_refused.json": "98122b2a4329bf7d018cbe22d197582773d7b5fc65f528eb2b95a3da0dc9524b",
+    "packages/shared/tests/fixtures/protocol/browser_link_receiver_result.json": "8e36f8612f63b22a7d7e6dab5ada677e228e730fca812d94992cdc7523ef6e47",
+    "packages/shared/tests/fixtures/protocol/file_fetch_cancel.json": "5c7457d60bc3aa4d13478b4241ad3d0131204c8715d08d0ff33a4bf7b425f0c6",
+    "packages/shared/tests/fixtures/protocol/image_upload_accepted.json": "a0f85d9ef95093c2141626f76b6694322a1c536521befb4cb0f226b0fbdc9076",
+    "packages/shared/tests/fixtures/protocol/question_codex_command.json": "b9d950a4b9b5d9f0f656630b04d3b0a6e4608a5fa157006ff6279fa0fa450708",
+    "packages/shared/tests/fixtures/protocol/hello_ack_legacy.json": "76f59ca64fe017fa551440b80683ed07dd4556d67165245152c478807449a672",
+    "packages/shared/tests/fixtures/protocol/bullet_expand_request.json": "605412f860df69f5616ca0388ae1dfc2f79989622a397156b574f8132a90688d",
+    "packages/shared/tests/fixtures/protocol/question_codex_terminal_only.json": "dcfeb2bfedc02001fb82eb3242ba4d7e24dad1e7f028d1736e5a404fd03d06d7",
+    "packages/shared/tests/fixtures/protocol/session_list_response_workspace.json": "6a2307262d3b07fc451e3a33b6547220930af9dc005ae6d092136fa89ea9cffd",
+    "packages/shared/tests/fixtures/protocol/file_fetch_accepted.json": "648ebe8830ca8a48b390456374f28161d80933e7534a15a4c72c955dd3cace74",
+    "packages/shared/tests/fixtures/protocol/terminal_resize.json": "e91f466b7a047f47e3bd949bcb4f0cfb8f72b292914453e15d31a2592c408b72",
+    "packages/shared/tests/fixtures/protocol/detach_session_ack.json": "6129f8bf4330347d33761e3f9a75adff78bbe256e464ab9604fbc9bc02f59f8f",
+    "packages/shared/tests/fixtures/protocol/session_terminal_close.json": "d33c4d19b08c1cfb5dbf618f5e3f182590cabf5520a1fb9e8e53e5366f7ffb79",
+    "packages/shared/tests/fixtures/protocol/session_update.json": "63b694006b7813a4d8338f31c7e3118ff8d227d7c044a335608cdbee4df8bc39",
+    "packages/shared/tests/fixtures/protocol/bullet_expand_response.json": "4fe7b03f67a81b0b8a6952243b88721545e3c4fa646c68af622b0d79a8c0de97",
+    "packages/shared/tests/fixtures/protocol/edit.json": "f1c160897f3c57674c40aa2b62b2a1ba705a1cd300b05ad7da8bbb0351afbcdc",
+    "packages/shared/tests/fixtures/protocol/kill_session_request.json": "5288dc7391e88bd843651738880527fea7f4798515532ec6fa661470cab72b11",
+    "packages/shared/tests/fixtures/protocol/session_history_response.json": "f54b8fa01e25243446d75d43bfe504a73ab6083db121fa4d1e072f2af52cb9ea",
+    "packages/shared/tests/fixtures/protocol/remi_status.json": "46d9af985967b9d3e5e23a1d47aa71223e022f3da87f5a7ac72c8bb78b53eb0e",
+    "packages/shared/tests/fixtures/protocol/hub_status.json": "73e0948bd9c4bcd6d4c2b3cb7cfbca49a299bbebd74390e96aef088c3856a627",
+    "packages/shared/tests/fixtures/protocol/question.json": "3d354bb2f37f08bfa9a08709abe757763e67f1b635d5b99270a5bb3646ae62cd",
+    "packages/shared/tests/fixtures/protocol/file_fetch_begin.json": "f6794bc5cc8ef462ebc5a85d1f72b07c9a3bd03b592565eea705fe4bdb348182",
+    "packages/shared/tests/fixtures/protocol/auth_challenge.json": "b40548559c70c16b9d27d07b4af24185152e6a9ec720264b53dd018da96a664f",
+    "packages/shared/tests/fixtures/protocol/chat_submit_request.json": "db3f230f76c044595be85f6c9a8ec878561186415db378a34d9691d0b9e9120c",
+    "packages/shared/tests/fixtures/protocol/question_resolved.json": "6a0e6c10d1cc88ab87ab1c02c8904bfdff0fdaf99d3ec717b4714a7f3ba814b9",
+    "packages/shared/tests/fixtures/protocol/image_upload_cancel.json": "f2750ad166675b695ae4454999a16719fd81576e06bd8d0d125c8f0fdb3cf2b1",
+    "packages/shared/tests/fixtures/protocol/secure_push_unregister_response.json": "607f5467b5c60685927835bffffd0669b2ef7cfc1e66583e9441d7bc6ccb1b5f",
+    "packages/shared/tests/fixtures/protocol/auth_response_pairing.json": "5c2952af5b19296ac4a57405f69fc4de263ff22efc515e3c1795eeb5b23904f4",
+    "packages/shared/tests/fixtures/protocol/kill_session_response.json": "783bc948c0325dc33290b4b43f893c1ca4b5ab32d1efacafb6d61039eb5db369",
+    "packages/shared/tests/fixtures/protocol/question_claude_plan_approval.json": "4855e4c248b0780423f81fb66bd9d3a0805a3450948a2f746d7e748af0a42ef3",
+    "packages/shared/tests/fixtures/protocol/unregister_device_token.json": "22cb000135bb7c20746b1b4adb2ec99594ff11be0e1a1d307fe78398c186055c",
+    "packages/shared/tests/fixtures/protocol/pong.json": "90cdb4c2feecd918e8aca7e809816bfd017bf40255390f28054bdbff5e5c037f",
+    "packages/shared/tests/fixtures/protocol/session_terminal_unchanged.json": "5723cccb24c91a25f45cc57b699d1ac3d53c069a6054336d9d1284a6e9990c28",
+    "packages/shared/tests/fixtures/protocol/create_session_request.json": "28c54ccd76fb0c5efc8594862e875ad8f01a708cda477777869257c048237050",
+    "packages/shared/tests/fixtures/protocol/session_terminal_opened.json": "6a174619fbe712ba51e94f11bc035a94b71427ce5236ba5b38166e6843672540",
+    "packages/shared/tests/fixtures/protocol/session_views.json": "c66239c32b9ef3043487f822b27fc1e86e290d81ad8db287dcf61effc66b7966",
+    "packages/shared/tests/fixtures/protocol/native_answer.json": "0670379a14560247f9ceb28fd23bcb72ccd22947704ad00e63a83efde98a5f6f",
+    "packages/shared/tests/fixtures/protocol/relay_device_revoke_request.json": "e42eae58d1a6359b05b256601ef6579eb36b537223556f5c8929afaee036f00d",
+    "packages/shared/tests/fixtures/protocol/detach_session.json": "3a7bb1d13945ab41a3bd84c472ebb72ce67e1d0dd4527cb605ff4994657a3259",
+    "packages/shared/tests/fixtures/protocol/create_session_response_workspace.json": "de689c6ad03d06af76ba74df007b208652d865eeeefd68960df3afd1ede95b6e",
+    "packages/shared/tests/fixtures/protocol/browser_link_receiver_ended.json": "cd66ca6141618450afb1259138d3ff093bca7a5c3b742222ec2cb9f3af62c83b",
+    "packages/shared/tests/fixtures/protocol/secure_push_register_request.json": "ac055d2eca2131d0f451b7c556a4da1980d4e12b0748df7ed6ea086428fbd463",
+    "packages/shared/tests/fixtures/protocol/image_upload_refused.json": "ef2cff9dcf2b71f2a14fa66f80fd18a77e8088678178ed539e38b79d412d5f61",
+    "packages/shared/tests/fixtures/protocol/question_claude_ask_user_question.json": "63cc460de069e5ce62f3988b4351633cd666196cf3224b21e6220948d5b13027",
+    "packages/shared/tests/fixtures/protocol/__unknown_type__.json": "78bde04690714d63c719fc085d1214db1687a2ec428caa1cb9572a64546e38a1",
+    "packages/shared/tests/fixtures/protocol/hello.json": "9cb53582d69a0fe2e12b4c0326f3d0f12de20d60fd945e7e7971a9b086750c94",
+    "packages/shared/tests/fixtures/protocol/hello_ack_machine.json": "d0d0ce07697e6f5e4bc2ffa6107ea01154c3b7ed44e2eeea8030ca78b0576d90",
+    "packages/shared/tests/fixtures/protocol/question_resolved_terminal.json": "1cfe492055109d1b2f353a97e81be92edae23e36f9778c72eaa66a8c212a3f9e",
+    "packages/shared/tests/fixtures/protocol/transcript_load_request.json": "81ca472122fd7f7f1b23d6d4c39f080f35e12bdad3068dddab3ce0b0842cc9de",
+    "packages/shared/tests/fixtures/protocol/file_fetch_refused.json": "3e250636d7b06e986be769a7027a35ee8c45f6212eb1e47013a5e562b692ccbd",
+    "packages/shared/tests/fixtures/protocol/session_list_response.json": "d53134d3c74cd264c3b659704fd55b27d30f80282ed356eabd1d10336f782699",
+    "packages/shared/tests/fixtures/protocol/file_fetch_result.json": "972c71907e00dd34fc8e541aa8495128f91d247eed668b85fef5699aa5cafb8e",
+    "packages/shared/tests/fixtures/protocol/register_device_token.json": "cfcf05d47235fc840948a2ce8b2ae3c8eb48b4eb1616ddba49f8e23443a875f6",
+    "packages/shared/tests/fixtures/protocol/secure_push_unregister_request.json": "52e0111f0003120abd8a7dd756e98453019fc4edce50104a0327dba17fc4f85c",
+    "packages/shared/tests/fixtures/protocol/transcript_load_complete.json": "9726dfb2c47b6817581b02779677bdb691bfc8d65ab0c962922a1ab92fe9c459",
+    "packages/shared/tests/fixtures/protocol/chat_submit_result.json": "98098c9d4ce9766fd70e41c359e60778961bd317d03543295fd56f27c61f21df",
+    "packages/shared/tests/fixtures/protocol/raw_pty_output.json": "d433cf38e37aabd182a5c2d8d2010edf119aba1a28a646a93ccded826da83426",
+    "packages/shared/tests/fixtures/protocol/session_terminal_snapshot.json": "c651973c901d2a8df8bd40200b0f658e2c2eae4cdb9f03f03c343f9fa7c17c35",
+    "packages/shared/tests/fixtures/protocol/image_upload_result.json": "54ac80bdbbadf1503dac41b1bc3db9694a5bf8c853c281a8b15347c92c4f988e",
+    "packages/shared/tests/fixtures/protocol/resume_session_request.json": "3aad06f45f0a5969f9da7c6054a5d66ed6892e3e5d4f33e056d09713ae055322",
+    "packages/shared/tests/fixtures/protocol/structured_agent_output.json": "011a728b738bdf1ef5af3a8c1f1a615da4a563801c307586dfdaec67fdd1e1b7",
+    "packages/shared/tests/fixtures/protocol/resume_session_response_child.json": "ea7616b91ecef4a34af08e5e7aefc5bdb538ad2d74743b025ed350caf86069ca",
+    "packages/shared/tests/fixtures/protocol/secure_push_register_response.json": "ece17e36fbbebb5861b4f3c55bfe664ae5a07ccb545d157f9833987cd34c18e6",
+    "packages/shared/tests/fixtures/protocol/recent_repositories_request.json": "b99e9f1c16df2b17b064a08205fa1833a208b9ecf895f3b1d78c8e96634dff38",
+    "packages/shared/tests/fixtures/protocol/image_upload_chunk.json": "fa223f41cefacf7b4633c5faf72d35231a245b739ae5829035d88e5e780b79ed",
+    "packages/shared/tests/fixtures/protocol/relay_devices_request.json": "27df19faa32ab6e298188e3d7ed82d7d1a492a5bfacef84347e9ff7ecc0a5d5c",
+    "packages/shared/tests/fixtures/protocol/image_upload_complete.json": "471081290c20b5d5263da92d46e7486b221bb9b5ac5a052d8ffc7784beb99b5b",
+    "packages/shared/tests/fixtures/protocol/session_list_request.json": "633b68dffdc59b330377dbc45f9cd4fd89ab49bdde6c734050635c5fbbb88f30",
+    "packages/shared/tests/fixtures/protocol/session_terminal_open.json": "aeb67e80ba379c4f154983ce6cd3179f3115de47ec3ccaa532654f9cdc69cc81",
+    "packages/shared/tests/fixtures/protocol/generate.ts": "0ab9394a15276fff03cc37423cb36c2876b22ed8552ad216e2527a78f9ce32cd",
+    "packages/shared/tests/fixtures/protocol/resume_session_response.json": "59412a3950124033091cd5ba3551f5398d4ad268d86abb793557384d5e8f2877",
+    "packages/shared/tests/fixtures/protocol/create_session_response.json": "6c076ce3a917a85422af78e4eb1df392ced1e28a8d288355801af06f2dcdbe45",
+    "packages/shared/tests/fixtures/protocol/file_fetch_complete.json": "e953688b8dcf767c831c3923e2c8f75b0b163daad1ce2b28c5f651d5d0dd5b42",
+    "packages/shared/tests/fixtures/protocol/transcript_content.json": "23fdef5d0311c455c13e87354e009ceff54444ed55857b4caece8f218d5602e0",
+    "packages/shared/tests/fixtures/protocol/ping.json": "e54a43ae16e2a25667ba0b51ac81389d96f199cca0f877505fa0d3b4c2326b02",
+    "packages/shared/tests/fixtures/protocol/file_fetch_read.json": "69052bb90557f8e1dee0f5f4edd14883533609cd4cffde67be5363a5e8dcc778",
+    "packages/shared/tests/fixtures/protocol/user_input.json": "2bf6a244351d9c116c18492e902366a8d3a3a8a1370e9d4551a13fa4a88b7613",
+    "packages/shared/tests/fixtures/protocol/session_terminal_closed.json": "2fdd72a3b32c225da03af5d5a6c0256360f5d45c3a6deb7bd2fde2ebd3bdaa19",
+    "packages/shared/tests/fixtures/protocol/image_upload_begin.json": "3c28ebe4b6e2ebf8be50abc969f87e2102db490f6554796ee2d0477178a9b9e4",
+    "packages/shared/tests/fixtures/protocol/auth_response.json": "a887599f7f06ee7b460bf18da9cc0681e78f4f5d60d4dbf8daf12d83aefcf417",
+    "packages/shared/tests/fixtures/protocol/session_rotated.json": "e5641040e63cae8c876e3acd2d4f5ee651afa05be3c57007265776015b311f40",
+    "packages/shared/tests/fixtures/protocol/browser_link_candidate.json": "da62936193bec5e896111dd4b76c482933bf0c55e63fa15d3ae0e1630c02548d",
+    "packages/shared/tests/fixtures/protocol/image_upload_chunk_ack.json": "7a24938a8b6cee7d048cf607e04c325246957d0161cdd3b4ad9198a02dcae1a8",
+    "packages/shared/tests/fixtures/protocol/answer.json": "829a4e2875b34af0830880ef102d91f275d2754f8ee77907b1f6b4357f8e6d93",
+    "packages/shared/tests/fixtures/protocol/replay_batch.json": "827c829af8154932178c79e63c9c0f4a3db6c95bbd74b8623ca98ff02a0d39ab",
+    "packages/shared/tests/fixtures/protocol/question_claude_permission.json": "f935af36e728b4a81e82b00d28775d75e2b3a834bab355dd15b29154db97d471",
+    "packages/shared/tests/fixtures/protocol/question_claude_terminal_only.json": "95475e199791990b6f1528ddfd7b6833f7d26d41565ff6d8445f81855615113f",
+    "packages/shared/tests/fixtures/protocol/create_session_request_workspace.json": "e6fda997fddb3ae2c18f59f340e72930b12b2d0b4751026258fd98fbd099d92c",
+    "packages/shared/tests/fixtures/protocol/daemon_update_available.json": "9e2b20484a15330af0360b97061a8846fd5a1be28222b28854ad92a535bc06c8",
+    "packages/shared/tests/fixtures/protocol/image_insert_request.json": "5d5a485d1708699e94a0dab132088663748691b76372e357a80e0c30c30420f6",
+    "packages/shared/tests/fixtures/protocol/builders.ts": "32a3eeb221f5291c85297769a4b6182870714e5121e4600634c1653cf53a0d25",
+    "packages/shared/tests/fixtures/browser-links/vectors.json": "dc35f665a5e145f9f2a809691783e73f6b23a8ed378465fef0b09a06f00845bb",
+    "packages/shared/tests/fixtures/image-staging/vectors.json": "32be64af0685e9cfe727d96ab3fd730f72abf2bef7b43d69369caa7adde9d1f4",
+    "packages/shared/tests/fixtures/image-staging/generate.ts": "73fb5f30609af925713f8b50da6b3520301b8e01274f360bc67ee8472b1bb71a",
+    "packages/shared/tests/fixtures/image-insertion/vectors.json": "de93e27e80b955b1be025ada07555541ff6526d76a2b28dff53a99a0ba6c2777",
+    "packages/shared/tests/fixtures/image-insertion/generate.ts": "6bc9701def56b7b9c156c831701b2d805ebe3885e45204bd56c2091f4cd90378",
+    "packages/shared/tests/fixtures/terminal-view/vectors.json": "00055820869d279b2a0d6cc0035f9fdf1279b6163aaae2adccfba9515991a9cf",
+    "scripts/terminal-service-expiry-proof.ts": "87538ad2d3009134d7d2074dbab32bfc8f31efaa33eea6e52fdc8b329a1a3303"
+  },
+  "historicalFailedGate": {
+    "target": "bun-linux-arm64",
+    "pin": "1.3.11",
+    "profile": "latin1",
+    "peakBytes": 1199295,
+    "budgetBytes": 1048576,
+    "status": "failed-preserved-not-regraded"
+  },
+  "review": {
+    "round1": "three Moderate findings fixed6001da93",
+    "round2": "no Critical or Important findings on edc893a3; subsequent fixture-only corrections driver verified, no third review"
+  },
+  "remaining": [
+    "all seven final-head hosted checks and actual at least3660-second relay soak",
+    "B4 encrypted semantic route and qualified production caller before advertisement",
+    "separate rendered/signed/device/deployed/provider acceptance"
+  ],
+  "wrapperReadiness": {
+    "status": "test startup precondition corrected; broader1615remainsopen",
+    "baseCommit": "d7056ffa8956e06dadae27ab1ca8f7acbe07bf57",
+    "baseline": "passed-wrapper-readiness-causal-control-only",
+    "candidate": "passed-wrapper-readiness-causal-control-only",
+    "controls": [
+      {
+        "phase": "before-ready",
+        "exitCode": 1
+      },
+      {
+        "phase": "after-ready",
+        "exitCode": 0
+      },
+      {
+        "phase": "before-ready-restored",
+        "exitCode": 1
+      }
+    ],
+    "scope": "actual pre-service source and current source both show unready-stop failure/handler-ready pass/restored-unready failure; sufficient mechanism, not a diagnosis of every old1615execution"
+  },
+  "fixtureLifecycle": {
+    "status": "current scenarios qualified after ownership/setup hardening; old intermittent cause unconfirmed",
+    "scope": "four adjacent scenarios in one process; per-call ownership and actual producer PID check; other actor paused under both real locks only while constructing initial pending frame/intent and resumed before measured load/No",
+    "oldFailurePreserved": "four-mib-acquisition-six-cells-result.json",
+    "diagnosticControls": "broad/narrow traces and exact restored old binary passed; no JIT/runtime diagnosis claimed"
+  },
+  "hostedCheckpoint": {
+    "head": "cae9c8a633d7ca57873e1042e33652581ce27e54",
+    "run": 40112569695,
+    "status": "failed-preserved",
+    "observations": "five obsolete close-expectation failures reproduced then replaced with current optional-pressure/signed-service checks; old overall CI child deadline also exceeded, cause unconfirmed; final-head hosted checks still required"
+  },
+  "sourceGuardReuse": {
+    "status": "verified-runtime-and-original-targets-unchanged",
+    "actualReceiptHash": "7108fb64d2ef5342baca003fb3534b1b45fccc90d4ac9990a0685d4e8c1555b3",
+    "runtimeHash": "8aacc6cb88335af5622a662d6d6bd34370fccea08dc26c5979e899a7114418f7",
+    "currentTestHash": "3e7cf5c85dbcd752fd673868bf11283ff88b62bad1ebc48724ba5fba043e1de2",
+    "scope": "only added an unrelated actual two-read contention case; complete previous test file and both causal target bodies byte-identical after removing that insertion"
+  }
+}

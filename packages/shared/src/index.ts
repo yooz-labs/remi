@@ -265,19 +265,31 @@ export { sleep } from './async-utils.ts';
 // Text a peer controls, made safe to show (#1178, #1211)
 export { boundedEscape, escapeUnsafeText, pushProse } from './display-text.ts';
 // The pairing link a machine shows as a QR (#1275, ADR 0037)
-export type { DecodedPairingLink, PairingCode, PairingCodeError } from './pairing.ts';
+export type {
+  DecodedPairingLink,
+  PairingCode,
+  PairingCodeError,
+  PairingCodeV1,
+  PairingCodeV2,
+  PairingHostClass,
+} from './pairing.ts';
 export {
   PAIRING_CODE_VERSION,
+  PAIRING_CODE_V2_VERSION,
+  PAIRING_CANDIDATE_HOSTS_MAX,
   PAIRING_NAME_MAX_CODE_POINTS,
   PAIRING_LINK_PREFIX,
   PAIRING_NONCE_BYTES,
   PAIRING_TTL_SECONDS,
   decodePairingLink,
   encodePairingLink,
+  classifyPairingHost,
   generatePairingNonce,
+  isPairingCandidateHost,
   isPairingHost,
   isPairingNonce,
   isPlainPairingText,
+  normalizePairingHost,
 } from './pairing.ts';
 // The protocol version and capabilities on hello_ack (#1237, ADR 0035)
 export type { HubSupport, HubSupportAck } from './protocol-version.ts';
@@ -288,14 +300,47 @@ export { isSmallOrderPublicKey } from './ed25519-public-key.ts';
 export * from './relay-messages.ts';
 
 export * from './secure-push-messages.ts';
+export * from './notification-host.ts';
 
 // Authenticated direct image staging (#1170, ADR 0041).
 export * from './image-staging.ts';
 // Accepted structural vocabulary; availability still requires the insertion caller gates.
 export * from './image-insertion.ts';
 export {
+  isFileDownloadCandidate,
+  isTerminalViewCandidate,
+  isBrowserLinkCandidate,
   isImageStagingCandidate,
   isImageInsertionCandidate,
   isStructuredChatCandidate,
 } from './image-staging-ingress.ts';
 export * from './structured-chat.ts';
+// Browser-link vocabulary; service availability is scoped to the current connection.
+export * from './browser-links.ts';
+// Structural file-download vocabulary; host admission and HTTPS/WSS release gates remain required.
+export * from './file-download.ts';
+export * from './file-download-ingress.ts';
+
+// Structural terminal view contract; no capability or runtime availability implied.
+export type {
+  SessionTerminalOpen,
+  SessionTerminalOpened,
+  SessionTerminalRead,
+  SessionTerminalSnapshot,
+  SessionTerminalUnchanged,
+  SessionTerminalClose,
+  SessionTerminalClosed,
+  SessionTerminalRefused,
+  TerminalViewMessage,
+  TerminalViewRequest,
+  TerminalViewBinding,
+  TerminalViewOperation,
+  TerminalViewRefusalCode,
+} from './terminal-view.ts';
+export {
+  TERMINAL_VIEW_LIMITS,
+  TERMINAL_VIEW_OPERATIONS,
+  TERMINAL_VIEW_REFUSAL_CODES,
+  decodeTerminalViewFrame,
+  encodeTerminalViewFrame,
+} from './terminal-view.ts';

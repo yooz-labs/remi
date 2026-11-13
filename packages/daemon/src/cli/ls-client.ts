@@ -14,7 +14,7 @@ import {
   type SessionRegistryFile,
 } from '../session/session-registry-file.ts';
 import { performAuthHandshake } from './auth-helper.ts';
-import { capabilityWsOptions } from './capability-client.ts';
+import { resolveDaemonWsTarget } from './daemon-target.ts';
 import {
   type DiscoveredEndpoint,
   FETCH_SESSIONS_TIMEOUT_MS,
@@ -198,14 +198,13 @@ export async function fetchSessions(
   port: number,
   timeout = 5000,
 ): Promise<DiscoverableSession[]> {
-  const url = `ws://${host}:${port}/ws`;
-
   return new Promise<DiscoverableSession[]>((resolve, reject) => {
     let settled = false;
     let authInProgress = false;
     let ws: WebSocket;
     try {
-      ws = new WebSocket(url, capabilityWsOptions() as never);
+      const target = resolveDaemonWsTarget(host, port);
+      ws = new WebSocket(target.url, target.options as never);
     } catch {
       reject(new Error(`Cannot connect to daemon at ${host}:${port}. Is remi running?`));
       return;

@@ -19,6 +19,28 @@ import { MESSAGE_DIRECTION } from '../src/protocol.ts';
 
 /** The Independent golden types: original #895 list plus explicit R3/R5/R6 additions. */
 const GOLDEN_TYPES = [
+  'session_terminal_open',
+  'session_terminal_opened',
+  'session_terminal_read',
+  'session_terminal_snapshot',
+  'session_terminal_unchanged',
+  'session_terminal_close',
+  'session_terminal_closed',
+  'session_terminal_refused',
+
+  'file_fetch_begin',
+  'file_fetch_accepted',
+  'file_fetch_read',
+  'file_fetch_chunk',
+  'file_fetch_complete',
+  'file_fetch_result',
+  'file_fetch_cancel',
+  'file_fetch_cancel_result',
+  'file_fetch_refused',
+  'browser_link_receiver_request',
+  'browser_link_receiver_result',
+  'browser_link_receiver_ended',
+  'browser_link_candidate',
   'chat_submit_request',
   'chat_submit_result',
   'image_insert_request',
@@ -34,6 +56,8 @@ const GOLDEN_TYPES = [
   'image_upload_refused',
 
   'native_answer',
+  'notification_host_request',
+  'notification_host_response',
   'secure_push_register_request',
   'secure_push_register_response',
   'secure_push_unregister_request',
@@ -93,12 +117,12 @@ const GOLDEN_TYPES = [
 ] as const;
 
 describe('protocol registry golden equality (#895)', () => {
-  test('GOLDEN_TYPES has exactly 70 entries with no duplicates', () => {
-    expect(GOLDEN_TYPES.length).toBe(70);
-    expect(new Set(GOLDEN_TYPES).size).toBe(70);
+  test('GOLDEN_TYPES has exactly 93 entries with no duplicates', () => {
+    expect(GOLDEN_TYPES.length).toBe(93);
+    expect(new Set(GOLDEN_TYPES).size).toBe(93);
   });
 
-  test('MESSAGE_DIRECTION keys are exactly the golden 68 types, no more, no fewer', () => {
+  test('MESSAGE_DIRECTION keys are exactly the golden 93 types, no more, no fewer', () => {
     const registryTypes = Object.keys(MESSAGE_DIRECTION).sort();
     const golden = [...GOLDEN_TYPES].sort();
     expect(registryTypes).toEqual(golden);
@@ -112,7 +136,7 @@ describe('protocol registry golden equality (#895)', () => {
   });
 
   /**
-   * Types the daemon's inbound switch has a REAL accepting case for.
+   * Types the daemon's inbound dispatch handles, including explicit refusals.
    *
    * Hand-transcribed from `packages/daemon/src/server/connection.ts`'s
    * `handleMessage` switch — deliberately not imported, for the same reason
@@ -128,6 +152,10 @@ describe('protocol registry golden equality (#895)', () => {
    * UNKNOWN_MESSAGE.
    */
   const INBOUND_ROUTED = [
+    // Registered syntax, deliberately unavailable until runtime adoption (#1612).
+    'session_terminal_open',
+    'session_terminal_read',
+    'session_terminal_close',
     'chat_submit_request',
     'image_insert_request',
     'image_upload_begin',

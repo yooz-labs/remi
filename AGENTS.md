@@ -83,7 +83,7 @@ bun run build && npx cap sync android && npx cap open android
 │  React + Capacitor (iOS / Android / Web / Desktop)               │
 │  Chat View (xterm.js) | Session List | Notifications             │
 └──────────────────────────┬───────────────────────────────────────┘
-                           │ WebSocket (direct; remi adds no encryption, ADR 0009)
+                           │ WebSocket (direct; WS or optional WSS, ADR 0009)
 ┌──────────────────────────▼───────────────────────────────────────┐
 │                 REMI DAEMON (server / dev machine)               │
 │  PTY Manager | Session Registry | Event Parser | WebSocket:8765  │
@@ -102,12 +102,12 @@ The harness reads `hookServer`, `PORT`, the websocket port and `[prompts]` throu
 `tests/harness/harness-boundary.test.ts` keeps `harness/types.ts`, `harness/decision.ts`, `cli/current-session.ts`, `cli/session-phases/pty-session-setup.ts` (the PTY spawn, which takes its command, environment and output sink as parameters), `cli/handlers/`, `api/` and `session/` from importing `hooks/`, `auto-approve/`, `transcript/`, `cli/session-phases/`, `cli/claude-binding` or the Claude screen parsers, apart from two documented handler imports (chat-seam debt; #1274 removed `session-events.ts`'s); fix the import rather than adding to that list.
 A second rule lets only `cli.ts` and `harness/` import `harness/index`, `harness/claude` or `harness/claude-session` at runtime, which keeps the launch path from becoming an import cycle.
 A third is an allowlist for `harness/codex/` (`CODEX_MAY_IMPORT` in the test): its own files, `node:*`, `@remi/shared`, `harness/types`, `harness/decision`, `cli/session-phases/pty-session-setup.ts` (and no other session phase) and, under `session/`, the session store, binding store, registry, live-sessions registry file, `legacy-writers` and `shell-quote`, plus `api/message-api` (the chat history's bullet structuring) and `notifications/turn-events` (as a type only, which a test pins); and only `cli.ts` may import `harness/codex/`, which is why `harness/index.ts` does not re-export it.
-`remi codex` is the Codex adapter (epic #1175, ADR 0033): it launches Codex, finds the session's thread on the shared app-server, reports its status, shows the thread's command approvals as phone cards (see "Codex approvals" below), pushes how each turn ended and serves the thread's chat (see "Codex turn events and chat" below), and typed chat from a client is refused (`PROMPT_WAITING`) (`.context/codex-epic-plan-2026-10.md`).
+`remi codex` is the Codex adapter (epic #1175, ADR 0033): it launches Codex, finds the session's thread on the shared app-server, reports its status, shows the thread's command approvals as phone cards (see `docs/agent-reference/harnesses-and-codex.md`, "Codex approvals"), pushes how each turn ended and serves the thread's chat (see `docs/agent-reference/harnesses-and-codex.md`, "Codex turn events and chat"), and typed chat from a client is refused (`PROMPT_WAITING`) (`.context/codex-epic-plan-2026-10.md`).
 Structured remote chat (#1207, proposed ADR0043) uses a separate strict submit/result pair and HarnessSession.structuredChat without typing text or Enter.
 The signed direct service checks the original grant, attachment, binding and runtime and holds the grant lock through the app-server send.
 The conditional structured_chat capability and web Send caller distinguish acceptance, refusal and uncertain delivery; unknown input is never automatically replayed.
 Legacy user_input remains refused for Codex. Relay child chat reuses the original grant/enrollment snapshot and the child's sequence owner; losing that owner retires the machine channel. Warm/cold native startup and accountless direct/relay admission controls are recorded; hosted checks and native UI remain separate gates. See docs/codex-remote-chat.md.
-The wire names the harness (`harness`, `harnessSessionId`, `hello_ack.harnesses`; see "Harness identity and `create_session_request`" below).
+The wire names the harness (`harness`, `harnessSessionId`, `hello_ack.harnesses`; see "Harness identity and `create_session_request`" in `docs/agent-reference/harnesses-and-codex.md`).
 `Harness` has no `command`: the PTY spawn takes an optional `launch: {command, childEnv}` and an `outputSink`, and absent `launch` it is the Claude launch; whatever the launch, the agent's process does not inherit remi's own secrets (`REMI_PASSPHRASE`, `REMI_PUSH_SECRET`, `TELEGRAM_BOT_TOKEN`; `pty/child-env.ts`, #1249), and a test fails if a secret-named string literal under `packages/daemon/src` is not on that list (except a short, named list of literals that are not environment variables, such as the push paths' error codes, which a second test keeps out of every environment read). That stops inheritance only: a same-user process can still read the daemon's environment and arguments (`ps eww`, `/proc/<pid>/environ`; #1252), and commands Codex runs execute in its shared app-server, which keeps its own environment; `CodexHarness.preflight` (not a `Harness` member) is what `cli.ts` calls before it boots a Codex launch.
 `Harness.transcriptPath` may return `null` (no transcript file), which every reader treats as "no file".
 The store reads are harness-aware (#1176): `getMostRecent('claude')` and `resolveStoredSession(..., {harness: 'claude'})` (Claude-only since #1179: nothing resolved a Codex record by remi id or prefix, so that branch is gone) skip or refuse a record of another harness, `findByClaudeSessionId` and `updateClaudeSessionId` are Claude-only, and `--sessions` labels a record `claude:<first 8 of its id>` or, for another harness, `<harness>:<last 8 of its id>` (a Codex thread id is a UUIDv7, whose first eight characters are a timestamp).
@@ -151,791 +151,54 @@ Key directories to know:
 
 ## Hub mode (`remi serve` / `remi start`)
 
-Epic #648 phase 1 (#542). The hub is a **session-less supervisor**: it binds
-the well-known port (18765 preferred, 20-port probe), runs the shared services
-(WebSocket, mDNS, the relay when enabled, Telegram, device tokens), serves the machine's
-session list (`daemonPorts` from `~/.remi/live-sessions/`), and spawns child
-`remi --daemon` session daemons on create-session requests. It **never**
-spawns Claude, never installs Claude hook config in its cwd, and never
-registers itself in live-sessions.
+The hub (epic #648) is a session-less supervisor.
+It binds the well-known port (18765 preferred, 20-port probe), runs the shared services (WebSocket, mDNS, the relay when enabled, Telegram, device tokens), serves the machine's session list, and spawns child `remi --daemon` session daemons on create-session requests.
+It never spawns Claude, never installs Claude hook config in its cwd, and never registers itself in live-sessions.
+`remi serve` is the foreground hub (the LaunchAgent entrypoint); `remi start` is the detached launcher; `remi stop` and `remi status` manage it.
+`daemon-status.json` belongs to the hub alone; every session daemon writes `status-<PORT>.json`.
+A `resume_session_request` that reaches the hub starts a child session daemon with `--resume` through the same `startSession` path as a create request (#1129), so the remote-argument allowlist and the held-session refusal apply.
+A daemon that hosts Codex refuses `resume_session_request` with `UNSUPPORTED`.
 
-- `remi serve` = foreground hub (the LaunchAgent/systemd entrypoint).
-- `remi start` = detached hub launcher; `remi stop`/`status` manage it.
-  `remi start` no longer creates a Claude session in the cwd.
-- The hub self-writes `~/.remi/daemon.pid`; `remi status`/`stop` fall back to
-  `daemon-status.json` (`mode: "hub"`) when the PID file is missing.
-- `daemon-status.json` belongs exclusively to the hub. Every session daemon
-  (hub-spawned children, which get `REMI_SPAWNED_CHILD=1`, and manually run
-  `remi --daemon`) writes a per-port `status-<PORT>.json` instead.
-- A session-less daemon answers `hello` with `hello_ack{sessionId: null}`;
-  clients then discover children via the session-list `daemonPorts` broadcast
-  (live-sessions watcher, all modes).
-- `--install` generates a LaunchAgent running `<PATH-resolved remi> serve`
-  with `KeepAlive.SuccessfulExit=false` (clean stop stays stopped; crash
-  exit(1) restarts).
-- A `create_session_request` may name a harness and its arguments (#1179, "Harness identity and
-  `create_session_request`" below). The hub itself is still session-less and Claude-only: it only
-  spawns the child daemon that hosts the Codex or Claude session.
-- A `resume_session_request` that reaches the hub starts a **child session daemon** with `--resume` (#1129; #1124 had refused it, because the shared handler used to run Claude inside the hub, and when that Claude exited the hub exited 0 and the LaunchAgent did not restart it).
-  The handler (`cli/handlers/resume-session-events.ts`) resolves the stored session as a daemon does (a remi id, a Claude id, or a transcript on disk), then calls `startSession` (`cli/handlers/create-session-events.ts`), the path a `create_session_request` takes, with `--resume <claude id>` in the stored directory.
-  So the remote-argument allowlist and the refusal of a Claude session a live remi session already holds apply to a resume exactly as to a create request that names `--resume`.
-  Resolution: a record of another harness is never resumed with Claude's flag, by its remi id or any other; a Claude id with several exited rows (every resume adds one) resolves to the newest, and two live rows are still refused as ambiguous (`findResumableByClaudeSessionId`); a session found only as a transcript resumes in the `cwd` the transcript recorded (`readTranscriptCwd`, the first 64 KiB), and only an old transcript with none falls back to decoding the project folder's name, which cannot be decoded when the project has a dash in its name.
-  The response is `resume_session_response{success, sessionId, port}`.
-  A failure from the child start carries `startSession`'s short, host-free text; a failure to resolve names the id the requester sent (written out and cut at 80 characters) and, for a missing directory, the session's own project path, but never the cause of an unreadable store, which only the log gets.
-  A stored id that is not a UUID is refused before the start, and a session already resumed through this hub in the last 15 seconds (or still being started) is refused as "just resumed": the new row learns its Claude id only once Claude binds, so a double tap or a second phone would otherwise pass the held check and start a second child that loses the race.
-  The hub attaches nobody and sends no `hello_ack`: the session is in the child, which a client reaches through the session list's `daemonPorts` and a direct connection.
-  The web client refreshes its list and opens the session when the child's `hello_ack` arrives (`lib/resume-follow.ts`), only if the person is still on the session they were on when they tapped Resume (not when the answer arrives, which a hub sends only after the child registers) and within 30 seconds, because a background event never replaces a choice (#688); a child that never says hello (a port the device cannot reach) is reported in the chat when the window ends. No Telegram path sends this request.
-  The hub still never runs Claude: `createResumeSessionHandlers` takes `childSessions` (a starter in hub mode, `null` for a session daemon or wrapper), not a flag, and the hub's branch returns before any path that calls `createNewSession` (a runtime branch, tested by giving the hub's handler a `createNewSession` that throws).
-  What was run: a real hub with a fake `claude` that records its argv (`integration/hub-resume.test.ts`), and LV-4's spawn and `--resume` through a hub with a real Claude Code (ADR 0033).
-  Not verified live: a real Claude's binding and hooks in a session resumed through a child.
-  A daemon that hosts Codex refuses `resume_session_request` with `UNSUPPORTED` (#1179); resuming a Codex thread through a hub is not built.
+Read [docs/agent-reference/hub-mode.md](docs/agent-reference/hub-mode.md) before changing the hub, `--install`, the child start path or resume resolution.
 
 ## Transport Options
 
-| Method | When to use |
-|---|---|
-| Direct connection | Same Wi-Fi, Tailscale, VPN, SSH tunnel |
-| Signaling relay | V2 hub daemon and web client in source, off by default; deployed/signed R7 acceptance pending |
+Direct connection (WS, or optional WSS) is the default; the signaling relay is v2, hub-owned and off by default (`remi serve --relay` or `network.relay = true`).
+**Direct connection needs `daemon.bind` (#880).**
+The default bind is `127.0.0.1`, so LAN direct, Tailscale direct and mDNS discovery stop until the user opts in (mDNS does not even advertise on a loopback bind).
+Do NOT recommend `tailscale serve` as the workaround: it is a same-host reverse proxy, every tailnet peer arrives as `127.0.0.1`, and #873 requires identity or a real local capability even on loopback.
+Recommend an SSH tunnel, or an explicit `bind` plus `--auth`.
+Authentication is on for every bind (`auth.enabled = "auto"`, #873), unless explicitly disabled with `--no-auth` or `auth.enabled = false`: an unknown key is never trusted automatically, it becomes a pending candidate that the person approves at the daemon machine (`remi keys`, `remi authorize <exact-fingerprint> --label <name>`).
+`remi pair` shows a QR link and approves the phone's fingerprint in the terminal (#1275, ADR 0037); no released app scans it yet.
+The Worker in this repository is v2 (R2) and is not deployed; the legacy `POST /push` stays on by default until the R7 gate.
+**There is no WebRTC** (#543); descriptions of peer-to-peer DTLS or TURN do not describe this source.
 
-**Direct connection now requires setting `daemon.bind` (#880).** The default is
-`127.0.0.1`, so a stock daemon accepts only loopback: SSH tunnels still work
-untouched, but **LAN direct, Tailscale direct (100.x) and mDNS
-discovery all stop** until the user opts in. mDNS does not even advertise on a
-loopback bind (`cli.ts` skips the publisher), so the daemon does not fail — it
-disappears, which is the confusing half.
-
-Do NOT recommend `tailscale serve` as the workaround. It is a same-host reverse
-proxy, so every tailnet peer arrives as `127.0.0.1` and loses its actual
-peer address. #873 requires identity or a real local capability even on loopback;
-keep the documented direct setup. Recommend an SSH tunnel, or an explicit `bind` plus
-`--auth`.
-
-**The v2 relay daemon is hub-owned and off by default (R3, #1198).**
-`remi serve --relay` or `network.relay = true` opts the hub in; `--no-relay` wins.
-Authentication must remain enabled. Session daemons do not register a relay.
-`HubRelay` owns Worker control, encrypted machine channels and capability-verified
-child proxies. `remi pair --relay` uses a real loopback capability endpoint and local TTY
-confirmation of the exact client fingerprint; no remote endpoint creates or
-confirms offers. `remi devices` lists/revokes enrollment; encrypted enrolled clients
-can also list/revoke, but cannot approve anyone or learn the local capability.
-Raw PTY frames are refused at registry, hub and child-proxy boundaries. Semantic
-answers return correlated actual child outcomes, and child discovery is aggregated
-by the hub without exposing child endpoints. See [the caller map and limits](docs/relay-daemon-v2.md).
-An orderly close leaves the pipe open after the hub's BYE, at most 2 s, for the client to close it
-(#1225): on the former Bun 1.3.11 pin the hub's own close can reset the connection, and a reset right after
-the BYE could lose it. A client that does not close in time gets the hub's close, which on 1.3.11
-can still arrive as the Worker's failure close (4400) after an intact BYE; the stream verdict, from
-the authenticated BYE, is what counts (measured on macOS only, `docs/relay-daemon-v2.md`). During
-the wait the hub opens each binary frame the peer sends: the reply BYE ends the stream clean, a data
-frame is dropped and nothing is acted on, and a frame that fails to open ends the wait with the
-failure close (4400).
-The old `RelayAdapter`, signaling code client and permanent code store are removed;
-`remi code` and `--permanent-code` refuse with migration guidance. The `kexSigningInput` compatibility encoding/export/fixtures remain unchanged;
-its legacy Authenticator methods have no current production callers. Direct
-Connection auth uses `createChallenge`/`verifyResponse`; detached direct `/answer` remains.
-This relay branch includes the web relay client (`App` → `ConnectModal` →
-`RelayPairingForm`), sealed secure-push sender and signed native-answer daemon
-contracts. `cli.ts` builds `SecurePushService` and `NativeAnswerLedger`; question,
-turn and harness-denied notifications call the secure sender, and
-`SecurePushTransport` seals the content before `/v2/push/<rid>`. The web app wires
-`SecurePushSubscriptions`. Swift background and Watch answers (#1242/#1201),
-deployed Worker, signed hardware acceptance and the R7 gate remain unfinished.
-Legacy plaintext `/push` is a separate path; the semantic channel does not protect it.
-
-**The Worker in this repository is v2 (R2, #1197), and it is not deployed.**
-It is one Durable Object per machine, named by the room id (the hash of the machine's public key), with no time-to-live: a socket is admitted by a signature over a Worker-issued nonce (the host by the machine key, a client by an enrolled device key or a single-use pairing ticket) before anything else happens, the enrolled set changes only on the host's `enroll` and `revoke`, and a client and the host's pipe are then paired and every message is forwarded unparsed.
-Its rate limits go through one global Durable Object (`GlobalLimiter`), and its numbers are unmeasured defaults.
-What it sees and what it does not, its routes and messages, its limits and the known gaps are in `docs/relay-worker-v2.md`; the deploy steps for the owner are in `docs/relay-worker-deploy-runbook.md`.
-`/connect/<code>` and `/answer/<code>` are deleted. R3 tests construct the real source hub and capability-verified controlled children against this Worker; shipped R4 clients and deployed acceptance remain pending.
-Those tests run the real Durable Object in workerd under Miniflare (`bun test packages/signaling`); that is not the deployed Cloudflare runtime, and the hibernation threshold, alarm precision and billing there are unverified.
-The legacy `POST /push` stays on by default on the Worker (only `LEGACY_PUSH_ENABLED` set to a false value turns it off) and behind the push secret, until the R7 gate flips the daemon's default; the sealed `POST /v2/push/<rid>` route (R5) sits beside it and needs both the machine signature and that bearer secret.
-
-**Authentication and local first-connect approval (#873).**
-`auth.enabled = "auto"` now enables authentication on every bind. Unknown keys
-never become trusted automatically: `Authenticator.verifyResponse` verifies a
-one-time challenge, canonical Ed25519 public key and derived fingerprint before
-storing an unsuccessful `UNKNOWN_KEY` candidate. Candidates hold only the public
-key, derived fingerprint and first-seen/expiry timestamps (32 keys, four kept for pairing claims (#1275), ten minutes,
-no retry extension). `remi keys` shows pending and authorized public keys;
-compare the client's fingerprint and run `remi authorize <exact-fingerprint>
---label phone` on the daemon machine, then retry with a fresh challenge.
-Explicit JSON/file authorization is still available; share only
-`remi export-key --public-only` output. Detached signed `/answer` requests use
-already authorized keys and never create candidates.
-`require_local_auth` has been removed; old values are ignored with a visible
-retirement notice. `--no-tofu` is accepted with a retirement notice and changes
-no trust behavior. Explicit `--no-auth` or `auth.enabled = false` still disables
-auth with a warning. A valid daemon capability over actual TCP loopback is the
-other admitted path; bare loopback clients are challenged. Pending/authorized
-mutations share an interprocess lock and atomic restricted files; approval
-persists the grant before deleting its candidate. Physical signed iPhone and
-signed sandboxed macOS acceptance remain unverified owner hardware gates.
-
-**Pairing by QR (#1275, [ADR 0037](.context/decisions/0037-pairing-by-qr-with-terminal-approval.md)).**
-No released app scans the code yet: the Swift scanner merged in #1277 reads an older query-string link and sends the nonce as a `pairing_nonce` URL parameter the daemon never reads; aligning it is #1283.
-`remi pair` (`cli/cmd-pair.ts`) shows a pairing link as a QR and as text: `remi://pair#` plus the base64url of a canonical JSON object (machine name, address, the machine's full Ed25519 key, a single-use 16-byte nonce, a five-minute expiry, `PROTOCOL_VERSION`), encoded and strictly decoded by `packages/shared/src/pairing.ts` against the vectors in `packages/shared/tests/fixtures/pairing/vectors.json`.
-It needs an interactive terminal and a running hub with authentication on and a bind that is not loopback (in any spelling, a trailing dot included) or link-local, which the hub records in `daemon-status.json` (`bind`, `auth`); for a wildcard bind it offers LAN addresses, then Tailscale, then the rest, then virtual bridges, never link-local (`--host` chooses, never loopback, unspecified or link-local).
-The phone checks `auth_challenge.serverPublicKey` against the link's key before it signs, and sends `pairingNonce` and `pairingLabel` in `auth_response` (not signed: the trust step is the fingerprint comparison; the label is the phone's own choice and proves nothing).
-After the signature verifies, `Authenticator.verifyPairing` claims the code through `IdentityStore.claimPairing`: the first verified key claims it and is registered as pending in the same transaction, in one of four pending slots kept for claims if the 28 ordinary ones are full; records hold the nonce's SHA-256, at most four are open, at most sixteen are kept (finished ones make room), and each is single use. An unknown, expired, used, cancelled or rejected code, or a malformed code or label, gets its own `auth_result` error and registers nothing; another key presenting a claimed code is counted with its fingerprint, and a refusal for a full queue is counted, for the terminal. Claim attempts are logged with the key's fingerprint and outcome, never the nonce, at most once a minute per key and outcome; the counts stop at 999 and a repeat at the cap writes nothing.
-A claimed code is held up to 20 s for the decision, read through the lock-free `peekPairing` so another process holding the store lock neither stalls nor fails it, and the wait ends when the connection closes (`verifyResponse`'s `isOpen`, passed by `connection.ts`). Approval answers with the ordinary success, rejection or cancellation with its error, no decision `PAIRING_PENDING`, after which the phone retries.
-At the terminal the person sees the phone's fingerprint and label, a warning naming any other key that tried the code, and the question; keys typed before the question are drained in raw mode and dropped. Approving takes the first four characters of the phone's fingerprint, never a `y` (they cannot be typed ahead, and typing them means reading it), and goes through `approvePairing(nonce, shownFingerprint)`, which shares one commit with `remi authorize` (`commitAuthorizationInsideTransaction`); anything else rejects and removes the pending key. While waiting, Ctrl-C, SIGTERM and SIGHUP cancel the code (exit 130, 143, 129; a key that claimed it stays an ordinary pending key); at the question Ctrl-C and SIGTERM reject (130, 143), and a closed terminal rejects with 1 or 129.
-The code authorizes nothing by itself; the direct WebSocket stays unencrypted by remi, so the nonce and label travel in clear like the rest of the session, and the single use and the fingerprint comparison are what stop a sniffed code from becoming access.
-
-**Provisioning a client key (#1303, [docs/PROVISIONING.md](docs/PROVISIONING.md)).**
-Approving a pending key, importing a public-only JSON (`remi authorize '{"publicKey":"<canonical base64>"}' --label <name>`, inline or as a file; other fields are ignored and the fingerprint is always derived from the key) and a pairing approval all end in the same `authorized_keys.json` record, the label naming the client and never the host.
-A grant belongs to a remi home (`$HOME/.remi` of the process, or `REMI_HOME`): the hub, every session daemon it starts, wrappers and the CLI share one store (writes take one interprocess lock, reads none), and `isAuthorized` reads the file on every authentication, so a grant or removal applies to the next fresh authentication at all of them with no restart (`tests/integration/key-provisioning.test.ts` runs a real hub, a child it starts and the real CLI to show it, for importing before the hub has ever run, approving, a different key under the same label, removal, rotation, and one identity on two machines).
-An unknown key is refused `UNKNOWN_KEY` with the connection closed and kept pending ten minutes from its first sighting (a retry neither extends nor duplicates it); the app builds `remi authorize <fingerprint> --label '<label>'` itself (it knows its fingerprint and the label), retries on a fresh connection, and the machine does not push an approval.
-Removal (`remi authorize --remove <fingerprint>`) refuses the key's next authentication and leaves it pending again, and does NOT close a connection already authenticated (#1305); signed `/answer` requests check the grant on each request.
-Importing an already authorized key exits 1 with "already authorized", which a bootstrap script must expect (the script in the docs is run from the file by the test).
-`remi authorize` accepts JSON objects with a string `publicKey`, derives the fingerprint, ignores harmless metadata, and refuses any own `encryptedPrivateKey`, `salt`, `iv` or `iterations` property before writing a grant, even when its value is null (#1320). Malformed JSON errors are content-free. Add-mode labels are validated as 1–64 well-formed Unicode code points with visible text, no leading ASCII hyphen, no C0/C1 controls and no other `escapeUnsafeText` characters; quotes and backslashes remain allowed. Labels are stored without normalization, while `remi keys` displays a bounded, safely escaped preview and preserves legacy records (#1321). The native `PublicClientIdentity.authorizeCommand` validation remains outside this daemon change.
-The machine fingerprint in `auth_challenge` is announced and unproven for a refused client (the machine signs only for a key it admits); a person reads the real one in the hub's startup line, `remi pair` or `remi export-key --public-only`.
-
-**There is no WebRTC.** No `RTCPeerConnection` or data channel exists here.
-The historical v1 design intended WebRTC after signaling but never built it
-(#543). The current v2 relay is a WebSocket ciphertext courier, implemented
-on the daemon side by R3. Descriptions of peer-to-peer DTLS or TURN do not
-describe this source.
+Read [docs/agent-reference/transport-auth-pairing.md](docs/agent-reference/transport-auth-pairing.md) before changing bind, TLS, the relay, authentication, pairing or key provisioning.
 
 ## Question Detection and Notifications
 
-The old flow diagram (from before the held-hook relay, #1125/#1126) is archived at `.context/archive/2026-h2/notification-and-session-flow.md`; this section is the current description, and #1145 tracks a new diagram.
+Question sources (daemon side): `HookEventBridge` (`PermissionRequest` hooks) and `OutputProcessor` (PTY-output parsing, the fallback when hooks are unavailable).
+The old flow diagram is archived at `.context/archive/2026-h2/notification-and-session-flow.md`; #1145 tracks a new one.
 
-**Question sources** (daemon side):
+Standing invariants, each with its evidence in the reference file:
 
-- `HookEventBridge` — emits questions from `PermissionRequest` hooks; suppresses redundant notifications.
-- `OutputProcessor` — PTY-output parsing (fallback when hooks are unavailable).
+- **remi relays permissions; Claude Code decides** (#1125, ADR 0030).
+  There is no auto-approve evaluator or rule layer, and remi never answers a permission without a human choice.
+  `AutoApproveGate` is a historical name for the relay.
+- **A binary prompt is answered through its held hook while Claude's own dialog stays visible** (#1126, ADR 0031).
+  The first answer wins; an answer maps the option's meaning to the hook response, never a position on Claude's screen; an empty response never decides anything.
+  AskUserQuestion and ExitPlanMode are held the same way with a structured `updatedInput` (#1127).
+- **No card answer is typed into the PTY for a hook-backed binary prompt.**
+  Where no hold stands behind a card (hook-less prompts, multi-choice permissions), a typed answer is checked against the screen first (#1134), and a refusal means "answer at the terminal".
+- **Chat text and Stop's `/exit` are refused while a prompt is up** (#1140, #1155), through the one `promptUp` signal; a typed Enter would confirm the highlighted option. Known limits: a terminal entry can age out while a dialog remains up, the no-tracker fallback fails open, and a PTY-parsed status can clear the observation; see "Limits" in [docs/agent-reference/questions-and-notifications.md](docs/agent-reference/questions-and-notifications.md).
+- **Cards follow their push categories.** A `terminalOnly` card has no answer controls; a standing grant is offered on the lock screen only as the middle `addRules` option of exactly [one-time Yes, an always-allow `addRules` rule, No] (`REMI_YNA`, whose middle action requires an unlocked device), never through dynamic buttons; every other standing option gets no APNS category. A card with `detail` gets no APNS category or dynamic lock-screen buttons; its full detail is shown in the app.
+- **Subagent permissions follow the terminal** (ADR 0004, amended by 0030 and 0031): a held card only when no local terminal exists (daemon or hub mode); `subagent_alert` covers calls that never prompt.
+- **Push is APNS only.**
+  The legacy plaintext push is ON by default until the R7 gate; enrolling a device over the relay latches it off for the whole machine, for good; the sealed secure path (R5) exists in source and is unverified on signed devices.
+  Every push has a `kind`; a client cannot mute APNS on its own (preferences ride up on `register_device_token`); never filter `dismiss`, except for a device that is gone (unregistered, past its lease, or APNS-rejected); a phone is pushed only while its lease holds.
+- **Redeploy the signaling server after any `packages/signaling/` change** (the owner does; the steps are in `docs/relay-worker-deploy-runbook.md`, and no agent deploys).
 
-**remi relays permissions; Claude Code decides them** (#1125,
-[ADR 0030](.context/decisions/0030-defer-permission-judgment-to-the-harness.md)).
-There is no auto-approve evaluator and no rule layer: remi never answers a
-permission without a human choice. `AutoApproveGate` (a historical name; it is
-the relay) owns every `PermissionRequest` hook response.
-
-**A binary prompt is answered through its held hook while Claude's own dialog
-stays visible** (#1126, [ADR 0031](.context/decisions/0031-held-hook-answers-with-native-dialog-visible.md)).
-Verified on Claude Code 2.1.287: the dialog renders about 0.1 s after the hook
-POST, during the hold. The gate stashes the card, holds the hook, and pushes
-the card at once by id (`holdForAnswer` -> `onHeldEscalate` ->
-`pushHeldHook`). The first answer wins:
-
-- **Phone:** `answerHeld` maps the card option's MEANING to the hook response,
-  never a position on Claude's screen: `Yes` -> `allow`; `No` -> `deny` (an
-  optional `message` on the answer reaches Claude as the tool result; the
-  protocol carries it, no client sends it yet; Cancel on a held card is a
-  No); a standing option -> `allow` + `updatedPermissions`,
-  only for `setMode` and an allow `addRules` (labeled "for this session"),
-  BOTH echoed with `destination: "session"` so a phone tap never writes a
-  settings file; `standingGrantFor` in `hook-event-bridge.ts` is the one
-  place that decides, and it stamps the option's `standingGrant` kind.
-  The web card reads that kind, never the label's wording (#1155): its hint
-  says "This session" for a standing option and "Allow once" only for the
-  plain Yes. Telegram does not read it; it keeps every label whole instead:
-  a button is cut at 32 characters, so when any label is cut the message
-  lists every label in full and numbers the buttons (no buttons when the list
-  does not fit in one message).
-  `addDirectories` is never offered (its echo did not stop the repeat
-  prompt). An answer the card does not offer is refused and the hold stays.
-  The lock screen's static "Yes, always" (`REMI_YNA`) is chosen only for an
-  `addRules` grant (`selectPushCategory`); a `setMode` card gets no
-  actionable category.
-- **Terminal Yes:** Claude runs the tool and never closes the held request.
-  `PermissionRequest` has no `tool_use_id`, so it is paired on arrival with
-  the in-flight `PreToolUse` of the same agent, tool and input (about 10 ms
-  earlier); the `PostToolUse`/`PostToolUseFailure` with that id releases the
-  hold with an empty response and dismisses the card. It arrives only when
-  the tool finishes, so during a long command the card stays up and a phone
-  answer is accepted and ignored by Claude. Two identical calls in flight are
-  not paired; a name + input match then releases the hold to the terminal
-  (card dismissed, prompt kept open, a "handed back to the terminal" notice
-  pushed), never closes it. Every release of a live hold that is not an
-  answer pushes a notice (`onReleasedToTerminal`).
-- **Terminal No / Esc:** Claude closes the held request. `HookServer` hands the
-  resolver `req.signal`; its abort (also a session end) dismisses the card
-  (an abort at Claude's own hook timeout is handled like the deadline, see
-  below). No hook fires for it, so a new
-  `UserPromptSubmit` also closes main prompts left open.
-- **Deadline:** in wrapper mode at `[prompts] hold_seconds` (default 90, 5
-  to 110: under the 2:00 auto-deny of auto-mode fallback prompts, which
-  counts during a hold, and the 600 s registered hook timeout) remi releases
-  its own hold with an empty response, the dialog stays, the card is
-  dismissed and an "answer at the terminal" notice is pushed (#733). A daemon
-  or hub session has no terminal of its own, so it holds for
-  `[prompts] daemon_hold_seconds` (default 3540, 5 to 3540) and registers
-  the hook with a 3600 s timeout (`DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT`;
-  Claude honors it, measured: a 650 s hold answered at 653.6 s ran the
-  tool); its notice says `remi attach`, the only way left to answer. An
-  abort within 5 s of the registered timeout (`hookTimeoutMs`) is Claude's
-  timeout, not a terminal No: released to the terminal with the notice,
-  like the deadline (which normally comes first). An auto-mode
-  fallback prompt still auto-denies at 2:00 there; Claude fires
-  `PermissionDenied` for it (measured), which dismisses the card and pushes
-  a `harness_denied` notice. The notice never claims the
-  prompt is still waiting (a terminal Yes may already have answered it); it
-  is dismissed when the prompt resolves, and a late phone answer does not
-  resolve it.
-
-An empty response never decides anything; it is what every non-answer path
-sends.
-
-**AskUserQuestion and ExitPlanMode are held the same way** (#1127, ADR 0031
-amendment): their dialogs render during the hold, and a phone answer
-resolves the hook with a structured `updatedInput` built in
-`hooks/structured-answers.ts`, never typed. Verified on Claude Code 2.1.287:
-
-- **AskUserQuestion:** one card for the whole call (each question's text,
-  header, options with descriptions, `multiSelect`). The phone sends
-  `selections` (option indices per question, or `text` for a single-select
-  question); the gate validates them against the tool input and answers
-  `{behavior:"allow", updatedInput:{...tool_input, answers}}`, `answers`
-  keyed by the raw question text, a multi-select as its labels joined with
-  ", ". An answer that leaves a question unanswered, gives a single-select
-  question anything but one option or its own text, gives a multi-select
-  question no option or text, or names an option that does not exist is
-  refused and the hold stays (never completed with a guess); so is every
-  answer to an input that does not parse exactly, whose card is marked
-  `terminalOnly` (no lock-screen category, no Telegram keyboard, "This
-  question can only be answered in the terminal (or Cancel)."). A single option answers
-  only a one-question single-select call: the lock screen sends its label,
-  Telegram its value, and on any held card a string that is one option's
-  value and a DIFFERENT option's label (numeric labels) is ambiguous and
-  refused, the hold kept. Cancel denies with "The user dismissed the
-  question."
-- **ExitPlanMode:** a `plan_approval` card with the plan as `detail` and
-  three options by meaning: "Approve, auto-accept edits" / "Approve, approve
-  edits manually" (`allow` + the tool input echoed as `updatedInput` + a
-  `setMode` `acceptEdits` / `default` with `destination: "session"`) and
-  "Keep planning" (`deny` with the phone's message or "Keep planning.";
-  Claude revises and asks again). `auto` is not offered (not knowable from
-  the payload); the terminal still offers it. Cancel keeps planning. A
-  subagent's plan (held in daemon or hub mode) offers "Approve" (`allow` +
-  `updatedInput`, no `setMode`: a mode would apply to the whole session)
-  and "Keep planning".
-- A terminal answer fires `PostToolUse` with the paired `tool_use_id` but a
-  different `tool_input` (`{questions, answers}`, or `{}` for a plan), so
-  the gate matches a paired id whatever the input. If the request was not
-  paired, a finished call of that tool that matches nothing releases the
-  one open hold of that tool and agent to the terminal (notice pushed);
-  with two or more, nothing is released. Deadlines, abort,
-  subagent routing and the chat guard are the binary prompt's.
-
-A **multi-choice string-label permission**, or a question-shaped tool that is
-not AskUserQuestion, is still answered `passthrough` and pushed by id at once
-(no structured hook answer was verified for either). The permission's answer
-is typed behind the #1134 guard. The question-shaped tool's card is
-`terminalOnly` (its dialog is Claude's permission prompt, not its questions):
-no Telegram buttons, no lock-screen category, and every phone answer is
-refused with the terminal wording, never typed. A structured `selections`
-answer for a card no hold stands behind is refused, never typed. An open card is also resolved by a matching `PreToolUse`/`PostToolUse`/
-`PermissionDenied`, a lead `Stop` or new user prompt (main), `SubagentStop`
-(that agent), `SessionEnd`, a transcript rotation, a real session close, or
-`remi unstick`; a dismissal is broadcast only for a card that was actually
-pushed. At a real close the registry hands the ids of the cards it still held
-to the close handler (`closeSession` clears the session first, so nothing else
-can look them up), which dismisses each one not already dismissed by the
-harness's own teardown, and the daemon waits up to 2 s for its pushes in
-flight before it exits (`drainPushDeliveries`, #1223). `remi
-unstick` does not close a LIVE hold: its dialog is on screen, so it is
-released to the terminal with a "handed back" notice (suppression kept),
-and a second unstick clears it.
-
-**No card answer is typed into the PTY for a hook-backed binary prompt**
-(raw input from `remi attach` and the phone's Escape button still reach the
-dialog by design: they are a person at the terminal). While a
-MAIN-agent hook is held, or a prompt waits in the terminal (`terminalPrompts`:
-a hold released at its deadline or early, or a rendered wrapper-mode subagent
-dialog) for less than the session's hold length, the tracker treats a PTY
-render as that dialog (`setHookPromptProbe` -> `hasOpenHookPrompt`), never as
-an orphan, so no typed card is rebuilt from it; for a wrapper-mode subagent
-prompt the phone keeps exactly one artifact, its notice. The probe is bounded
-on purpose (#1126 lead decision), since everything it counts suppresses a
-hook-less prompt's card (sandbox network, trust, an agent-team dialog). Only
-what does not render is excluded: a subagent HOLD (daemon mode) never counts,
-since its dialog does not render while held, neither in this probe nor in the
-tracker's other suppression input, the live-question check
-(`hasLiveQuestionOnScreen`, which skips a held subagent card; every other
-registered card still counts). A `terminalPrompts` entry stops
-counting after the hold length, and a subagent's entry is also cleared by
-that agent's next `PreToolUse` (`noteAgentToolCall`), `SubagentStop` or
-`SessionEnd`; past that a redraw takes the guarded hook-less path (#1134,
-fail closed). `handleAnswer` asks
-the gate first (`gateAnswerDeps`): a held card is answered through the hook,
-and a binary card whose hold has ended is refused (`closed`: answer at the
-terminal), never typed. While a main-agent hold is open its dialog is on
-screen, so `onUserInput` refuses chat text with `PROMPT_WAITING` even before
-the screen parse sees the menu (#1140; `promptUp`, below). Its message is
-`PROMPT_WAITING_HELD_MESSAGE`, which does not claim a dialog is up: after a
-terminal Yes the hold lasts until `PostToolUse`, so the refusal also covers
-the approved command's run (#1144).
-
-**A typed answer carries the screen's numbering** (#1134). This applies only
-where no held hook stands behind the card: hook-less prompts (sandbox network,
-trust, agent-team dialogs; not all of them reach the phone, the daemon's
-startup folder-trust dialog does not, #1147) and multi-choice cards
-(AskUserQuestion and ExitPlanMode are held since #1127). When a hook record merges onto a parsed prompt
-(`QuestionPresenceTracker.consumeAndMerge`), the card's options are the
-parse's options, labels and values unchanged; the hook contributes id, text,
-agent, source and tool metadata (including `allowsFreeText`: a permission
-dialog takes a pick, not text), never options. The parse carries no yes/no
-flags, so the merge sets `isYes`/`isNo` from labels that start with the exact
-word "Yes" or "No". Live, before #1134, `addDirectories` + `setMode`
-suggestions built a 4-option card over a 3-option dialog, the phone's "No"
-typed `4`, Claude ignored it, and the Enter that follows every typed answer
-confirmed "1. Yes".
-
-**Every typed phone answer is checked against the screen first.** Guards
-in `handleAnswer` before anything is typed (all refuse like a stale answer:
-STALE_ANSWER, card consumed, trace reason in parentheses). A refusal means
-"answer at the terminal": Claude's own dialog is still there.
-- a prompt must be on screen: the card's own prompt for a `source: 'pty'`
-  card (`prompt-not-current`, #920), any prompt for a hook card
-  (`no-prompt-on-screen`, #1002).
-- an option value must be on the menu the tracker last observed
-  (`observedPromptOptions`, wired by `trackerScreenDeps`) (`option-not-on-screen`),
-  and that screen option's label must EQUAL the card option's after
-  normalization (lowercase, all whitespace and box characters removed), or,
-  for a pick with a description (a card built from a tool's `questions`; a
-  `terminalOnly` card is refused before this check), equal it with
-  the description appended (`option-mismatch`). Nothing looser: it fails
-  closed; the accepted cost is false refusals on short, partial-frame or
-  reworded labels. A pushed-by-id card keeps the hook's numbering, so this
-  refuses its digit wherever the hook's list differs from Claude's.
-- free text is refused when the card has options and takes no text and a
-  numbered menu is on screen (`free-text-into-menu`), and always on a
-  pushed-by-id (`held`-stamped) card that has options and takes no text
-  (`free-text-on-held-card`). A structured `selections` answer on a card
-  no hold stands behind is refused before anything is typed
-  (`selections-not-held`, #1127). Free-form `user_input` (including a Telegram
-  text reply) is a separate path with its own guard, next.
-- a question is claimed while its answer is applied: a duplicate delivery of
-  the same choice (the lock screen sends every tap on two channels) reports
-  delivered and types nothing; a different concurrent answer is refused.
-
-**Chat text and Stop's `/exit` are refused while a prompt is up** (#1140,
-#1155). `onUserInput` types structured input (web chat, a Telegram text reply
-or custom text) followed by Enter, and a Stop (`onKillSessionRequest`) types
-`/exit` + Enter; into a Claude dialog the letters are ignored and the Enter
-confirms the highlighted option, usually "1. Yes", so a message or a Stop sent
-from the phone while a prompt waits would approve it. Both read ONE signal,
-`promptUp` (`cli/handlers/prompt-up.ts`, built once in `cli.ts` by
-`promptUpDeps` and spread into both handler factories; a source-level test pins
-that wiring), which says a prompt is up when any of three sources does:
-
-- `held`: a main-agent hook is held (`hasMainHold`; its dialog renders during
-  the hold);
-- `terminal`: a hook-backed prompt waits in the terminal (`hasOpenHookPrompt`
-  beyond a main hold: a hold released at its deadline or handed back early,
-  or a rendered wrapper-mode subagent dialog, each for at most the session's
-  hold length);
-- `menu`: the tracker observes a numbered selection box
-  (`observedPromptOptions`; `isNumberedMenu`: every option value is numeric),
-  which covers hook-less prompts.
-
-Before #1155 Stop read only the screen parse and the chat guard only the parse
-and a main hold, so a dialog the parse missed (or that a text status had
-cleared) got the typed Enter. While a prompt is up the chat guard types nothing
-and the sender gets an `error` with code `PROMPT_WAITING`, its message by
-source (`PROMPT_WAITING_HELD_MESSAGE`; `PROMPT_WAITING_TERMINAL_MESSAGE`,
-"Claude is waiting on a prompt in the terminal. Answer it there, press Esc from
-the app, or run remi unstick.", since the card is gone; or
-`PROMPT_WAITING_MESSAGE`:
-"Claude is waiting on a prompt. Answer it from its card or in the terminal (Esc
-dismisses it)."; all in `@remi/shared` with `createPromptWaitingError`), plus a
-trace record (`input_refused`, reason `chat-into-held-prompt`,
-`chat-into-terminal-prompt` or `chat-into-menu`). Telegram renders it as
-"Error: ..."; the web client marks the refused bubble failed from
-`details.messageId`. Stop types no `/exit` and force-closes the session
-instead.
-
-Deliberately typeable: raw input (`raw: true`, an attach client's keystrokes,
-the web client's Escape button and Telegram's `/interrupt`, which is how a menu
-gets answered or dismissed; its Escape is written exactly, no Enter); a
-subprocess `(y/n)` prompt, or Claude prose ending in "(y/n)", which observes
-options "y"/"n" and takes text; a free-text prompt (an empty option list); and
-anything when nothing is up. A raw write that fails is answered with
-`INPUT_NOT_DELIVERED`, and `/interrupt` then shows that error instead of
-"Interrupt sent". The parser returns `allowsFreeText: false` (and
-`optionsAreFallback: false`) for a Claude selection box, so a hook-less card is
-covered by the `free-text-into-menu` guard above and its Telegram card no
-longer says "reply with custom text"; a hook record's own flag still wins when
-one merges.
-
-What clears the observation (so what unlocks the chat): a status change with no
-agent, that is a main-agent hook event (PreToolUse, PostToolUse, Stop,
-`idle_prompt`, ...) or a PTY-parsed non-waiting status, including Claude's
-empty input prompt (a bare `❯` as the last non-empty line) read as idle while a
-prompt is believed up; and `clearPending`. A status carrying an `agent_id`
-(SubagentStart/SubagentStop, a teammate's notification) does NOT clear it: a
-background agent's activity says nothing about the main dialog. A subagent's
-Pre/PostToolUse never reaches the status pipeline at all.
-
-Limits, stated so nobody has to rediscover them. (1) Esc in the terminal fires
-no hook, so the observation outlives the dialog until a clear event above: the
-idle-prompt recognition when the redraw matches it (no capture of the redraw
-right after an Esc exists, so that exact frame is not claimed), otherwise the
-next status or Claude's own `idle_prompt` notification, which it sends only
-after the session has sat idle for a while. Until then the chat is refused (the
-card and the terminal still answer). (2) For chat and Stop, `submitInput` checks
-a synchronous caller guard inside its write queue before text and again after
-the 50 ms delay before Enter (#1488). Chat rechecks its captured session/PTY,
-attachment, binding, typed-chat support and `promptUp`; Stop rechecks its
-captured runtime, binding and `promptUp`, force-closing that runtime if invalid.
-If chat's context changes after text, Enter is withheld but some text may remain
-in the terminal: a correlated partial-input error gives the web message a
-"Not submitted" status without Retry. A late receipt or matching transcript
-text does not clear that uncertainty. (3) A PTY-parsed status is a text
-guess and can clear the observation while the menu is still up; for a
-hook-backed prompt the gate's half of `promptUp` still refuses then. (4) The
-no-tracker branch is effectively dead in production: `cli.ts` builds a tracker
-for every session, hook server or not. It exists for a caller that does not
-wire `promptUp` (tests, a future entry point) and it fails open (types the
-text), the opposite of the answer guards above. (5) A `terminal` entry counts
-for the session's hold length from when it is MARKED (the deadline release,
-the early hand-back, or the subagent dialog's render), not from the prompt's
-start: in wrapper mode up to `hold_seconds` (90 s) after a deadline release,
-about twice the hold from the start; in daemon or hub mode up to
-`daemon_hold_seconds` (about 59 minutes). A No answered at the terminal fires
-no hook, so the entry can outlive its dialog; in that window Stop
-force-closes instead of typing `/exit` (kept by lead decision: a forced close
-is always safe) and chat is refused. Ways out: an answer a hook sees (the tool
-runs, `Stop`, a new prompt; a subagent's next tool call or `SubagentStop`), a
-bare Esc sent through remi (web Esc button, Telegram `/interrupt`, an attach
-Esc key), which clears the MAIN agent's entries (`noteTerminalEscape`,
-#1155), and `remi unstick`. An Esc typed at a wrapper session's own terminal
-does not pass through remi and is not seen. The opposite direction: once an
-entry ages out, a dialog still on screen whose parse a text status cleared is
-no longer guarded (chat would be typed into it, Stop would type `/exit`).
-
-The parser joins a label's wrapped rows (and an AskUserQuestion description
-row) onto the option above, at most two rows, never across footer rows
-("Esc to cancel · ..."), dropping divider rows; it used to end the option list
-at the first such row and drop every later option, "No" included.
-
-
-**Subagent permissions follow the terminal**
-([ADR 0004](.context/decisions/0004-pty-as-arbiter-subagent-questions.md), amended
-by ADR 0030 and ADR 0031). A background subagent's dialog does NOT render while
-its hook is held (verified live), so the gate takes a required
-`hasLocalTerminal` (wrapper mode, fixed at session setup):
-
-- **Wrapper mode (a local terminal):** an `agent_id`-tagged `PermissionRequest`
-  is answered `passthrough` so its dialog renders, and parked
-  (`passSubagentToTerminal` → `QuestionPresenceTracker.parkAwaitingPTY` with
-  `onRender`). When the dialog renders, the phone gets an informational
-  "answer at the terminal" notice, never an answerable card; the notice is
-  dismissed when the prompt resolves. With no park path the notice is pushed
-  at once.
-- **Daemon or hub mode (no local terminal):** nobody could answer a rendered
-  dialog, so the request is escalated exactly like a main-agent prompt: held,
-  with an answerable card. A lead `Stop` spares it; that agent's
-  `SubagentStop` releases it. Claude does not fire `PermissionRequest` for a
-  call its own allow rules permit (measured on 2.1.287 for background,
-  foreground and main calls), so these holds are only for real prompts.
-
-**`subagent_alert` covers what never prompts** (#807, #1155;
-`auto-approve/subagent-alert.ts`, patterns in `[notifications]
-subagent_alert`). It is for any subagent, foreground or background (any
-`agent_id`-tagged call), never the main agent. Because a call the allow rules
-permit fires no
-`PermissionRequest`, the alert is fed from the tool hooks, in both modes: an
-agent-tagged `PreToolUse` whose call matches a pattern is remembered, a
-`PermissionRequest` or `PermissionDenied` for that call forgets it, and its
-`PostToolUse` or `PostToolUseFailure` delivers the alert (rate-limited,
-daemon-wide); `SubagentStop` forgets the agent's unfinished calls. One call
-therefore produces at most one phone artifact: a call that prompts gets its
-"answer at the terminal" notice (wrapper mode) or its held card (daemon or
-hub mode), the actionable one, and never an alert as well; a call that ran
-without asking gets the alert. The alert arrives when the call finishes (the
-first moment remi knows it ran unasked), so a long command's alert comes at
-its end. Before #1155 it was fed from the subagent `PermissionRequest`
-passthrough, the one event the allowlisted case never fires.
-
-**Old auto-approve settings.** An old `config.toml` with an `[auto_approve]`
-table still loads; the daemon warns once at boot (daemon, `remi serve`,
-`remi config`; not again in a hub-spawned session daemon, and `remi start`
-reports only removed flags) naming the ignored keys, and `--auto-approve*`
-flags are accepted and ignored so old LaunchAgent plists keep starting.
-`auto_approve.subagent_alert` is honored as a deprecated fallback when
-`[notifications] subagent_alert` is unset, and gets its own "move it" line
-instead of being listed as ignored. `remi migrate-permissions` prints the old
-`allow`/`deny` lists as a Claude Code `permissions` block for the user to
-paste into `~/.claude/settings.json`; it never writes a file. It never emits a
-rule broader than the old entry (a bare `Bash` allow, which remi never
-applied, is not carried over), and deny entries change meaning: remi matched
-them as substrings anywhere in a command, Claude Code matches from the start
-of each subcommand, so a migrated deny is narrower and mid-command patterns
-(`push --force`) are not carried over. Everything not carried over is listed
-on stderr with its reason.
-
-**Notification channel — APNS push only** (no local notifications for questions):
-
-- Daemon sends WebSocket `question` (in-app display) AND APNS push (lock screen), by one of two paths (#1200).
-- **Legacy plaintext push is ON by default.**
-  `notifications.legacy_push_enabled` defaults to `true` until secure push ships end to end; the default flips at the R7 gate (owner decision).
-  The daemon POSTs the text to the signaling Worker's `/push` with the push secret (`--push-secret` or `REMI_PUSH_SECRET`), and the Worker needs `PUSH_SECRET` (and `LEGACY_PUSH_ENABLED` not set to a false value) to forward it to APNS. A hub hands its push secret to the session daemons it spawns through their environment, never their argv.
-  Its recipients are the device tokens a phone registered with `register_device_token`, counted only while the path is enabled and has a secret (`legacyChannelOpen`): `legacy_push_enabled = false`, or no push secret, makes old tokens no recipients and the event `no_channel`, not an error-level "legacy failed" per token.
-  The sender throws `LegacyPushError`, whose message is one fixed code and whose `status` and `tokenInvalid` fields drive the classifiers: a 429 or a 5xx the Worker did not mark `tokenInvalid` is retried (2 retries, 400 ms then 800 ms), `tokenInvalid` prunes the token, a lost response (`LEGACY_PUSH_UNCERTAIN`) is never retried.
-- **The activation latch is machine-wide and one-way.**
-  `secure_push_activation.json` is written when a device is enrolled over the relay (pairing), when a relay peer's authority is captured, when a secure subscription registers, when an enrollment is removed while any exists, and when a legacy send finds an enrolled device (`withLegacyPushEligibility`).
-  From then on the legacy sender refuses for good (`LEGACY_PUSH_NOT_ELIGIBLE`, reported as `no_channel`) whatever `legacy_push_enabled` says, for EVERY device token on the machine, including a phone connected directly that never touched the relay; a corrupt latch or enrollment file refuses too.
-  **Relay enrollment retires legacy push for every device on the machine. Secure delivery then needs a registered per-device key and token and a running secure sender. The web subscription wiring exists in source, but deployed and signed-device acceptance remain unverified.**
-- **The secure path** seals each push to a per-device key and sends it through the signed `POST /v2/push/<rid>` route (`notifications/secure-push-*.ts`).
-  It exists only when the daemon opts into the relay (`--relay` or `network.relay = true`) with an unlocked machine identity, a deployment push secret, and a `signaling_url` that is a bare `https`/`wss` origin (no path, query or fragment).
-  Otherwise `cli.ts` builds no service (it logs why, with the failure class and no message text) and the hub answers `secure_push_register_request` with `UNSUPPORTED` instead of acknowledging a subscription nothing could serve (#1200).
-  The registration's `pushPrefs` pass `sanitizePushPreferences` at the store and in the hub branch, so a malformed or unknown preference registers and delivers.
-- Signaling server (Cloudflare Worker) relays push payloads to APNS.
-- iOS categories `REMI_YN`, `REMI_YNA`, `REMI_MULTI` registered in `AppDelegate.swift`. Their actions are positional (`OPT_i` sends option i) and the first two have hardcoded titles, so `selectPushCategory` picks by meaning, not count (#1134): `REMI_YN` only for exactly [one-time Yes, No]; `REMI_YNA` only for exactly [one-time Yes, an always-allow rule, No], the middle option marked `standingGrant: 'addRules'` (#1126: only there is its static "Yes, always" title true; a `setMode` or unmarked standing option gets no category; its "Yes, always" button is the only static action that requires an unlocked device). A one-time Yes is an option labeled exactly "Yes"; any other Yes is a standing grant, as is any Yes after the first option and a session-grant action. A card with a standing option in any other layout gets NO category (a plain notification, answered in the app), because `REMI_MULTI`'s buttons do not require an unlocked device. No card with a standing option gets the `dynOptions` hint, `REMI_YNA` included: the extension builds its dynamic buttons without `.authenticationRequired`, so a standing grant behind one could be tapped while locked. A permission card with `detail` gets no category and no `dynOptions` either (`hasUnseenDetail`, #1178): a Codex command cut for the lock screen or one that runs in another directory, and, since #1200, every Claude tool input whose summary was shortened (a Bash command or a `command`, `path`, `url` or `description` field over `SUMMARY_MAX`, 120 characters, which `hook-event-bridge.ts` keeps whole in `detail`), on the legacy and the secure path alike.
-Its Yes needs the app, where the whole card is, and its push shows the ask, not the start of the detail. Every other 2-4 option card gets `REMI_MULTI`, except by kind (`pushCategoryFor`, #1127): an AskUserQuestion card gets `REMI_MULTI` (with `dynOptions`) only when it is one single-select question, whose tap (the option's label) answers that option through the held hook, and none otherwise; a plan approval never gets a category (approving a plan is not a lock-screen tap). When the Notification Service Extension does not run, `REMI_MULTI` shows all four static "Option N" buttons whatever the option count; a button with no option behind it sends no answer (`RemiAnswerRelay` finds no `opt_n` and defers to the app), and any answer that does arrive still passes the `handleAnswer` guards (an iOS follow-up will add 2- and 3-button categories).
-
-**Push classes and who can mute them** (#968):
-
-Every push carries an explicit `kind`. Before that field existed the classes
-were told apart by a NEGATIVE test ("no `questionId`, no `category`") which
-could not distinguish turn-complete from a subagent alert at all — on the wire
-those two are both exactly `{token, title, body}`.
-
-| `kind` | Fires on | Mutable per device |
-|---|---|---|
-| `question` | permission prompt, AskUserQuestion, plan approval; an "answer at the terminal" notice (hold deadline, wrapper-mode subagent dialog; no actions, own collapse key `notice-<questionId>`; a repeat pushes again) | yes, `pushPrefs.questions` |
-| `turn_complete` | `Stop` after a turn ≥ `turn_complete_min_seconds` (#914); for Codex a `turn/completed` with status `completed` of the same length (#1180); no collapse key, each turn stacks on the lock screen, on the secure path too | yes, `pushPrefs.turnComplete` |
-| `subagent_alert` | a subagent's (foreground or background) call matching `[notifications] subagent_alert` finished without ever prompting (#1155); no collapse key, each alert stacks | no — the pattern list IS the control |
-| `harness_denied` | `PermissionDenied`: Claude Code's auto-mode classifier blocked a call, or auto-denied an unanswered fallback prompt at 2:00 (#1126); informational, never a card; one collapse key per session (`harness-denied-<sessionId>`), so a blocked loop replaces its notice | yes, `pushPrefs.harnessDenied` |
-| `turn_failed` | `StopFailure`: a turn ended on an API error (usage or rate limit, authentication, and similar; #1153), or a Codex `turn/completed` with status `failed` (the title says "Codex stopped", #1180); informational, never a card (nothing in Claude waits, so there is nothing to answer); readable reason from `error`, an excerpt of `last_assistant_message` (Codex: its error message); one collapse key per session (`turn-failed-<sessionId>`), so a different failure replaces the previous notice; one alert per failure (`turnFailureKey`: main agent or subagent, and the reason) until the notice is cleared (#1226: at a usage limit every turn fails, a subagent's included, and each one used to alert the phone again) | yes, `pushPrefs.turnFailed`, default on; **not** muted by `notifications.on_turn_complete = false` |
-| `dismiss` | quiet `content-available` clearing a resolved card | **no, deliberately** |
-
-- **A client cannot mute APNS on its own.** The path is daemon → Worker → APNS
-  and never consults the client, so a client-side switch is decoration. It
-  literally was: `settings.notifications` was written by the settings panel and
-  read by nothing. Preferences ride up on `register_device_token` (idempotent
-  and keyed by token, so a toggle change is just a re-register) and the daemon
-  filters its per-token fan-out in `notifications/push-preferences.ts`. Until
-  #1258 the `cli.ts` wiring dropped them, so every device was stored with the
-  defaults and muting did nothing; sibling daemons now also adopt the newest
-  registration (its preferences included) from the shared store.
-- **On the legacy path, a phone is pushed only while its lease holds** (#1254,
-  owner decision; the secure path has no lease yet, see the end of this item).
-  The registration lives while the phone keeps connecting: the app
-  re-registers on every connection, and the daemon renews the lease while the
-  connection stays open and stamps it when the connection closes; a phone
-  connected to a daemon never expires there (`isLive`). Disconnecting the
-  machine in the app (`unregister_device_token`, #690, sent only while the
-  machine is reachable) ends it at once; otherwise a phone not seen for
-  `[notifications] push_lease_hours` (default 24; 0 never expires) is dropped
-  from memory and from `device-tokens.json` the next time any daemon sharing
-  the file reads it. Every push path re-reads the file first
-  (`refreshFromDisk`, #1259 review), so an expiry, a removal or a mute
-  recorded by a sibling daemon applies to the next push. It covers a phone
-  that removed the machine while the daemon was unreachable, which the
-  unregister cannot reach. The Worker-side revocation (a phone telling the
-  Worker directly) is R7 work. The store file is written owner-only (0600).
-  Only the legacy path has the lease today. A secure subscription has none
-  yet; the owner's lease decision covers it too, and that change is planned
-  for R7 (#1272). Until then it is read from disk under the interprocess lock
-  at every fan-out (`SecurePushStore.listCurrent`), so a mute, an unregister
-  or a revoke recorded by another process applies to the next push, and it
-  ends only on the app's `secure_push_unregister_request` over the relay, on
-  `remi devices revoke`, or on `remi authorize --remove` (a subscription is
-  current only while its authorized key and its enrollment are). A phone that
-  dropped the machine while the hub was unreachable keeps being sent sealed
-  pushes until one of those.
-- **Never filter `dismiss`.** A muted device can still hold a card delivered
-  before the mute; dropping its dismissal strands that card on the lock screen
-  of the device that asked for less noise. The one exception is a device that
-  is gone: unregistered, or (on the legacy path) rejected by APNS or past its
-  lease, gets nothing, dismissals included, so a card it still holds stays
-  until the app opens.
-  The next main-agent tool call or
-  `Stop` after a `turn_failed` push sends one (same collapse key, only while a
-  `turn_failed` push is outstanding), so a stale "Claude stopped" does not
-  outlive the agent working again. A new prompt does not (#1226): at a usage
-  limit it fails too, and clearing on it re-alerted the phone on every retry.
-  A session closing, a failed launch and process cleanup retire the secure runtime FIRST (no
-  new or actionable push), let the disposal run, then dismiss every pushed question card nothing
-  dismissed (`dismissUndismissedQuestions`: `closeSession` clears the session before it announces
-  the close, and the gate announces a held card only while it is still registered, so a real close
-  dismissed nothing before), wait up to 3 s for the dismissals (`SecurePushService.drain`) and
-  only then finish the runtime (`retireSecurePushRuntime` / `closeSecurePushRuntime` in
-  `cli.ts`); a dismissal that went out uncertain or failed is sent again with a fresh nonce by
-  the next dismissal. At a real close the registry's pending ids are dismissed first, through
-  the session's dispatcher on both paths (#1223, above), so `dismissUndismissedQuestions` sends
-  only what that missed; the legacy sends are drained by `drainPushDeliveries` at cleanup.
-- **Legacy push text is plaintext to the Worker and APNS.** `turn_failed` carries up
-  to 140 characters of `last_assistant_message` (or a string `error_details`)
-  in its body, the same posture as `turn_complete` (the first 200 characters
-  of Claude's last message) and a question's text: the daemon POSTs it to the signaling
-  Worker's `/push`, which forwards it to APNS, outside the relay data channel
-  and its encryption. This is what ships by default today (see the first bullets of this
-  section). The secure path seals the content to the device's push key, so the Worker and
-  APNS receive sealed bytes plus delivery metadata (the device token, the collapse key, the
-  push class alert or background, timing and size; the event kind is sealed). The app
-  subscribes through Settings and `SecurePushSubscriptions` when it has a native identity and a
-  relay machine; no signed build has been verified yet. Tracked by the
-  relay and push privacy work (`.context/strategy-2026-10.md` section 9); the relay channel
-  has its own state (#543, #881).
-- **Secure collapse keys and repeats (#1200).** One lock-screen slot per notification:
-  a question's own id, `notice-<questionId>`, one per session for `harness_denied`, one per
-  episode for `turn_failed`; `turn_complete` and `subagent_alert` get a slot per occurrence, as
-  legacy never collapsed them. A collapse key decides whether a notification REPLACES the
-  earlier one, never whether it is sent: an identical `harness_denied`, `turn_failed` or notice
-  repeat advances the revision and pushes again, while a question or an explicit occurrence id
-  (a prompt or turn id) coalesces its duplicate frames. Only slots that can still deliver
-  count against the 32 per session: a dismissed, expired or no-longer-registered entry is
-  retained for dismissal and replay correctness but holds no slot. A question whose meaning
-  exceeds 64 KiB is pushed as bounded information without actions, never dropped.
-- **A muted fan-out reports `no_channel`, not `pushed`.** Claiming delivery
-  for a fan-out of zero says a card reached a lock screen it never appears on.
-  The same holds for a legacy channel that is disabled, has no secret or is latched off, and
-  for a dismissal with nothing to clear (`skipped:no_prior_push`); a secure refusal logs its
-  class (`refused:capacity`, `refused:stale`, `refused:invalid`, ...), never content or ids.
-- Malformed preferences fail toward DELIVERING (`sanitizePushPreferences`), for a secure
-  registration as well as the legacy one. A
-  wrongly-delivered notification is a nuisance; a wrongly-dropped one is the
-  product failing at its only job.
-- `notifications.on_turn_complete = false` in `config.toml` stays the
-  machine-wide master switch for `turn_complete` and wins over any per-device
-  preference for it. It does NOT silence `turn_failed` (#1153): a failed turn
-  is the one turn end a user must not miss by default, and only the per-device
-  `turnFailed` preference mutes it.
-
-**Constraints from real logs (2026-04-12 analysis, updated #718 2026-07-06):**
-
-- Bash `PermissionRequest` may have `permission_suggestions=undefined` (no suggestions), a legacy plain-string label array (e.g. Edit's `["Yes","Always","No"]`), or — since ~Claude Code 2.0.54 — a STRUCTURED array of typed "permission update entries" (`addRules`, `addDirectories`, `setMode`, `removeRules`, `replaceRules`, `removeDirectories`, each carrying `behavior`/`destination`; ground truth: code.claude.com/docs/en/hooks).
-- Notification message is plain text ("Claude needs your permission to use Bash"), no numbered options, and never carries `permission_suggestions` at all.
-- Claude Code does NOT always offer a fixed option count. `optionsFromSuggestions` (hook-event-bridge.ts) builds a binary card by MEANING (#1126): [Yes] + one standing option per offerable suggestion (`setMode`, allow `addRules`; never `addDirectories`) + [No], capped at 4 total; with nothing offerable, the honest Yes/No 2-set (`optionsAreFallback: true`). A multi-choice string-label set maps label by label to picks. This is the hook's view, not the screen's (Claude's dialog does not render one option per suggestion, #1134), which is why a held card is answered through the hook and never typed.
-- Numbered option text appears only in the terminal UI, not in hook events.
-- `HookEventBridge` builds the option set at hook time; a binary card is held and pushed at once, and its answer is the hook response (#1126).
-- A standing option is answered by echoing its `permission_suggestions` entry (`QuestionOption.suggestionIndex`) as `{behavior:"allow", updatedPermissions:[...]}` on the held hook. Verified live on Claude Code 2.1.287 (#1126 spike F4) for `setMode` and `addRules`; every echo is sent with `destination: "session"` (lead decision), and an echoed `addDirectories` did not stop the repeat prompt, so it is never offered.
-- Redeploy the signaling server after any `packages/signaling/` change (the owner does; the steps are in `docs/relay-worker-deploy-runbook.md`, and no agent deploys).
-
-### Protocol version and capabilities (#1237, ADR 0035)
-
-Every `hello_ack` carries `protocolVersion` (`PROTOCOL_VERSION` in `@remi/shared`, now 1; `createHelloAck` stamps it, so no path omits it) and `capabilities`, the daemon's `DAEMON_CAPABILITIES` (`cli/capabilities.ts`) on the connection ack and both resume acks (`hello-ack-sources.test.ts` fails a new ack path that omits them; the bare `Connection`'s ack, which production never sends, lists none).
-The version changes only on a breaking change; an additive change never changes it. `protocol-fixtures-additive.test.ts` holds five messages to that; for the rest it is a review rule, and a breaking change raises `PROTOCOL_VERSION` by hand.
-A capability names an additive feature a client cannot see in the messages themselves (a request field an older daemon would ignore); it is added by the change that ships the feature, documented in `PROTOCOL_CAPABILITIES`, and a test refuses an undocumented one.
-It lists `workspaces` (#1236), the first; everything before #1237 is the baseline of version 1, and an ack without the fields is from an older daemon (golden `hello_ack_legacy`).
-Clients decide with `hubSupport(ack, needs)`, never by comparing `daemonVersion`; an ack without a version counts as version 1, and the versions must match exactly. Nothing calls it yet (no TypeScript client needs a capability), and the native apps are its first users.
-`serverVersion` is a constant (`'1.0.0'` on the daemon's acks, `'0.1.0'` from a bare `Connection`), kept because the WebView Mac app's decoder requires it.
-
-### The decision object (#1235, ADR 0038)
-
-A "the agent needs you" moment is the `question` message's `Question` (`Decision` in `@remi/shared` is an alias), frozen for the native apps.
-- **`Question.answerPath`** (optional) says how a phone answer reaches the harness:
-  - `structured`: a held hook, or Codex's JSON-RPC response;
-  - `keystroke`: typed behind the screen guards; a rendered prompt, a multi-choice permission, an elicitation;
-  - `none`: every `terminalOnly` card.
-
-  The gate tells the tracker which path a pushed card takes (`onHeldEscalate(id, path)`), and one stamp in `message-api-setup.ts` writes it, forcing `none` for a terminal-only card. Absent is unknown.
-- **`question_resolved.resolvedBy`** (optional) says what resolved a card, sent only where the daemon knows:
-  - `phone` or `lockscreen` (the `/answer` endpoint): a phone answer that reached the agent;
-  - `terminal`: a run paired by `tool_use_id`;
-  - `harness`: a paired `PermissionDenied`, `SessionEnd`, a rotation, a subagent that ended with its hold open, Claude's process exiting (what ended the prompt, not who caused it: a person's /exit ends a session too);
-  - `timeout`: remi's hold deadline.
-
-  Nothing is named for a terminal No or Esc (no hook fires), Claude's hook timeout, a name-only match (a `PermissionDenied` included), an elicitation's result (a user's hook or a typed chat message can answer it), a Stop or new prompt sweep, Codex's `serverRequest/resolved` or exit, unstick, or a close remi made. A refused or late phone answer is now `cancelled`, not `answered`; `reason` is coarse and a client labels from `resolvedBy` when present. `phone` means remi delivered that answer first, not that it decided (ADR 0038), and a `none` card still takes a Cancel.
-- **The resolver.** Every dismissal goes through `createQuestionResolver` (`cli/question-resolution.ts`), which sends each card's resolution and its lock-screen dismissal once, so the first that names a cause wins; one that named none can be followed by one that does, never the reverse. It forgets a card the registry holds again.
-- **`kind` is open.** A client renders an unknown kind as a generic card, never as Allow/Deny. Sandbox and trust prompts have no kind (`source: 'pty'`). `localRender` stays off the wire.
-
-### Workspaces: a session in a new worktree (#1236 phase A, ADR 0036)
-
-`create_session_request.workspace` names a repository on the daemon's machine (absolute or under `~`; any directory in it, or a linked worktree) and optionally `worktree: {branch, base?}`; the daemon lists the `workspaces` capability, and a client checks it first because an older daemon ignores the field.
-`parseWorkspaceRequest` (`workspace/worktree.ts`) checks the values as text before a port is probed (no control character, no leading hyphen, at most 200 characters, no `@{` in a branch); a `directory` that is set and resolves elsewhere is refused.
-Once a port is held, `prepareWorkspace` finds the main worktree (`git worktree list --porcelain -z`, first entry, git 2.36 or later; bare refused), checks the branch (`check-ref-format --branch`, then one `for-each-ref`: it must not exist or be a folder of an existing branch, or the reverse; new branches only), resolves the base to a commit (default `HEAD`), claims `<parent>/remi-worktrees/<name>-<branch>` (every `/` a `-`) with an exclusive `mkdir` so two requests that map to one directory cannot both reach git, and runs `git worktree add -b <branch> <path> <commit>` in it.
-Git runs with no shell, no standard input, no prompt, `core.fsmonitor` off, no inherited `GIT_*` or remi secret, in its own process group; one 60-second deadline covers the preparation, and at it the group (hooks included) is ended.
-The repository's own hooks and filters run, as for the person at the machine.
-The child starts in the worktree, and `create_session_response.workspace` says `{repository, directory, worktree?: {branch, base}}` (the base as the commit); a resume with a new worktree is refused.
-A failed `git worktree add` that left a complete worktree on the branch (a hook failed) is used, with `notice` saying so; any other failure is refused, saying whether the branch stays, and the log lists what is left. The hub removes only its own empty claim.
-A refusal tells the client nothing it did not send; the log has git's reason, escaped.
-Nothing deletes a worktree (owner decision, #1233), including one whose session failed to start: the failure's log line names it.
-Phase B: a daemon's own session-list entry carries `workspace: {repository, directory, branch}` (branch null when HEAD is detached), read from git for the session's directory (`describeWorkspace`, `workspace/describe.ts`) so a worktree a person made and a branch checked out later both show. `WorkspaceCache` answers the list from its last read and refreshes an entry older than 10 seconds in the background (that first list still shows the previous read), keeps the last answer when git cannot answer (logged once per reason), and the registry primes it when the session registers; until the first read finishes the entry has no `workspace`. Both phases resolve the repository with `resolveRepository` (`workspace/git.ts`): a submodule or a separate-git-dir checkout is its own repository; only a linked worktree reads the worktree list.
-Phase C: `recent_repositories_request {limit?}` lists main worktrees from recent session records and retained successful hub starts (#1284; `RecentRepositoryStore`, `workspace/recent-store.ts`), most recently used first, each once, with `lastUsedAt`. The hub remembers at most 20 repositories in `recent-repositories.json` under its remi home, with no age expiry, after successful creates (with or without `workspace`) and resumes through the shared starter; wrappers still contribute through their session records. This retains a main repository after its linked worktree is removed or its session ages out. History holds only repository and time, uses restricted atomic writes and an interprocess transaction that yields while waiting, and a failed write is logged without reporting the child start as failed. The walk (`recentRepositoriesReport`, `workspace/recent.ts`) still excludes gone directories, files, paths git cannot resolve, non-repositories, bare repositories and unsafe paths. The limit is 1 to 20 as asked, above 20 is 20, otherwise 10; one 5-second deadline covers every directory check and git call (the source reads come before it); concurrent requests share one walk. An unreadable source contributes nothing while the other still answers; damaged history gets a content-free log line. The wire and `workspaces` capability are unchanged.
-
-### Harness identity and `create_session_request` (epic #1175 phase 5, #1179, ADR 0033)
-
-What ships, read against `packages/shared/src/protocol.ts` and `packages/daemon/src`. The black-box tests here use a fake `claude` and `codex` and the stand-in app-server. LV-4 ran live on 2026-10-04 (Codex 0.160.0, Claude Code 2.1.289, a hub from source with an isolated home); ADR 0033's "LV-4 results" section records what it showed, item by item, and what it did not run.
-
-- **Dual-emit.** `hello_ack` (when it carries the binding), `question` and the daemon's own entry in the session list carry `harness` and `harnessSessionId`; the requested list and the live-sessions broadcast build that entry in one place (`buildSessionList`, `cli/handlers/session-list-entries.ts`, #1274), so they cannot differ. For Claude `harnessSessionId` equals `claudeSessionId` (a `hello_ack` keeps null on both); for Codex `claudeSessionId` is omitted and `harnessSessionId` is null on a `hello_ack` until the thread is learned, and left off a `question` or a list entry while null. Nothing depends on it: answers are addressed by `questionId`, and a client's answer still echoes only `claudeSessionId` (the signaling Worker rebuilds answers from a fixed list). One value produces both ids in `createHelloAck` and `createQuestion`, so they cannot differ, and every production question path passes that value (the transport adapters' `sendQuestion`, which did not, had no caller and was removed; `tests/question-identity-sources.test.ts` reads the daemon's source for a call without one). The Claude transcripts a daemon finds on disk (`source: 'transcript'`), a hub's session-less ack (a hub hosts nothing) and the resume acks name no harness; absence reads as Claude. The session-less ack a daemon that is not a hub sends in the brief window before its session exists names its `harness` alone (`hubMode`), so a Codex daemon never reads as Claude by an absent field.
-- **`hello_ack.harnesses`** lists the harnesses a daemon can start on EVERY ack it sends: those it has an adapter for (`HarnessRegistry`, built in `cli.ts`) whose command resolves on the PATH the process has now (the command is never run; `Bun.which` ignores a PATH changed after startup, so the PATH is passed). An older hub omits it and ignores `create_session_request.harness`, starting Claude, so the CLI sender (`remi codex --host`, `remi new --host --harness codex`) sends a harness or arguments only to a daemon that lists the harness. Codex is advertised by PATH presence; LV-4 ran on 2026-10-04, partly (ADR 0033, "LV-4 results"), and the owner may still want it gated.
-- **`create_session_request.harness` and `.args`** are checked before a port is probed or anything is spawned (`checkHarnessRequest`): a known harness id, an adapter, its command on PATH, `args` against that harness's remote allowlist (`validateClaudeRemoteArgs`; `validateCodexRemoteArgs` from Phase 2), and for Codex the older-daemon gate and, for a `resume <uuid>`, the held-thread check (a thread a live session holds is refused here, before a child is spawned; the client reads only "That Codex thread is already open in a live remi session on the host", with no id and no port, and the hub's log names the holder and its port; the person running `remi codex resume` at the machine reads the full text with an address that can be pasted into a shell, `heldThreadRefusal`). A Claude `--resume <uuid>` has the same check, whether or not the request names the harness: a session a live remi session already holds is refused before the spawn (two active records of one session otherwise), with a generic client text ("That Claude session is already open in a live remi session on the host") and the holder in the log. The older-daemon gate skips a record whose version string is exactly the daemon's own (`ownVersion`): the same build has the same shim, so a PR-stamped build (`bump-version.sh set 0.7.16-p1204.1`, the one recommended for LV-4) can create Codex sessions beside its own sessions, wrappers and hub, while a record with no version, another version that does not parse, or a lower parsable one is still an older remi (the assumption is that a version string identifies a build). The `directory` of EVERY create request is refused when it is not a string, starts with a hyphen (a child would re-parse it as a flag), or holds a control character (any C0 control, DEL or C1 control: NUL, tab, newline, carriage return and escape among them; `directoryRefusal`; no real client sends one), and the one place the hub logs it writes it out escaped, so a bidi override or a zero-width space, which a path may hold, cannot act on the owner's terminal through `remi logs`. A refusal is `create_session_response{success:false, error}` and spawns nothing. What the client reads is short and host-free: the gate says an older remi is running and to update or stop it, a failed spawn says only that the session could not be started; the pids, files, paths and the failure itself go to the hub's log. The child is started with the inherited flags, then `--harness <id>`, then `--` and the arguments, last, so no remote argument can be read as a remi flag. A request naming no harness is the Claude spawn it always was. Claude allows `--resume`/`-r <uuid>` (the UUID comes out lowercase), `--fork-session` only beside a `--resume`, and `--model <name>` (no leading hyphen); `--continue`/`-c` is refused (the launch injects `--session-id`, which Claude very likely rejects beside it: unverified, so closed). A Codex request may carry `-m`, `-s read-only` and `resume <uuid>` (lowercased); a remote request may only TIGHTEN the host's posture, so `-s workspace-write` is refused, and so is `-a` in every spelling and with every value: Codex 0.160.0 rejects `-a untrusted` (exit 2, which killed the child) and accepts `on-request` and `never`, and neither can be shown to tighten an approval policy the host's own configuration may already have set stricter (`REMOTE_APPROVAL_REFUSAL`). LV-4 ran `resume <uuid>` through a hub for Codex (refused while a live session holds the thread; resumed headless once it stopped) and `--resume` for Claude; a Claude session resumed through a hub came back in the permission mode of its earlier life (seen with `acceptEdits`; `bypassPermissions` was not tried).
-- **A daemon reads its harness arguments only from after `--`** (`ParsedArgs.explicitArgs`, tokens after the first `--` and nothing else; `passthroughArgs` is the wrapper's, with strays and the `--`). For Claude a stray word is still ignored, so an existing LaunchAgent plist starts as before; `remi codex --daemon` validates the arguments with the local Codex validator and REFUSES a loose word (exit 2, `looseArgs`: it would start Codex without what was asked). `remi codex --host` and `remi new --host` send only what follows `--` and refuse a loose word (exit 2, nothing sent), because the host's own defaults would otherwise apply with no warning; `--resume` with `--host` is refused the same way (remi's own flag, which the parser consumes, so it is not a loose word: it used to start a LOCAL store lookup), with a message that says to put it after `--`; the notice's remedy line is not repeated by the CLI, which attaches itself, and what a daemon sends that the CLI prints is safe to print: its errors and the notice are escaped (a field that is not a string reads as a fixed fallback, never a throw, and `harnesses` counts only as an array), and a success whose session id is not a UUID or whose port is not an integer from 1 to 65535 is refused, since both are printed and the port is attached to.
-- **What a headless success does not say.** `create_session_response.success` means the child daemon was spawned and registered. A Codex session the hub starts has no terminal, so Codex may stop at an Update or Trust prompt that remi never answers (remi types nothing into a Codex PTY): the response then carries `notice`, built by the hub from the new session: line one says the condition (it may be waiting at an Update or Trust prompt, or may already have exited: the hub answers once the child has registered, before Codex is launched), line two the way out, `remi attach <host>:<port>/<id8>` for THIS session (a bare `remi attach` takes the newest one) with the hedge that this has not been checked against a real Codex. The messages a Codex session sends itself follow the same rule (`TerminalWords`): a link that cannot be reached, a thread that is never found (which also says it may be an Update or Trust prompt), an answer Codex did not confirm or that could not be sent, and a card only a terminal can answer name `remi attach <host>:<port>/<id8>` when the session was not launched with a terminal (a hub's child, `remi codex --daemon`), and keep the terminal wording for a wrapper session. The web client does not show the notice (no UI change in this phase). Unverified live: that `remi attach` dismisses such a prompt.
-- **Still unverified after LV-4** (ADR 0033, "LV-4 results"; the hub path was exercised by a raw `create_session_request`, not by the CLI sender against a real Codex): the headless Update and Trust prompts and `remi attach` as the way out (no modal appeared in any launch, so the notice's advice stays unverified); an approval card for a hub-created session; `remi codex --host` from a second machine; and the web label. Codex stays advertised by PATH presence (H1).
-- **Resume.** A `resume_session_request` to a daemon that hosts Codex is refused `UNSUPPORTED` before any path runs.
-- **Live-sessions.** An entry may carry `harness` (absent means Claude, so a Claude entry is byte-identical to before; Codex daemons and wrappers write it). The transcript binder's sibling and port-claim checks and the foreign-session escalator no longer count a daemon that hosts Codex as a Claude sibling (`couldBeClaudeEntry`; an entry naming no harness, Claude, or a harness this build does not know still counts, the file's fail-safe). There is no Codex-side reader of live-sessions entries: the thread tracker's sibling guard reads the store, which is already harness-aware.
-- **Web.** A harness other than Claude is named by a small label next to the status pill on the session card and the chat header; a harness this build does not know (a newer daemon's) is named as text, cut to 16 characters with control and bidi characters written out, so it does not look like Claude; a Claude session, or one from an older daemon, renders identical markup. Nothing else changed in the UI.
-
-### Codex approvals (`remi codex`, epic #1175 phase 4, ADR 0033)
-
-**remi relays Codex's approval; Codex decides.**
-Like Claude's held prompts (above), a Codex approval reaches the phone as a card, a phone answer decides nothing by itself, and the first answer wins; unlike Claude's there is no hook and no hold: Codex keeps the request pending and its TUI keeps the overlay up.
-Read against `harness/codex/` (`approval-cards.ts`, `codex-decisions.ts`, wired in `codex-session.ts`):
-
-- **What becomes a card.** `CodexDecisions` is the session's `DecisionChannel`. A server request of the shared app-server about the session's own thread (the tracked thread, or a descendant of it, `ThreadTracker.role`) becomes a card; `present` is `messageApi.handleQuestion(q, {held: true})`, so `held` is stamped (the push always reaches the lock screen and free text is refused) and the eviction guard pins every live actionable card. A request about any other thread is ignored and never answered. Ids are one daemon-global counter, so a request is keyed `(threadId, requestId)`, and the thread's role is read again at the answer.
-- **What is answerable.** Only a plain command approval (`item/commandExecution/requestApproval` with `kind: 'command'`, no `approvalId`, no extra permissions, no network context or policy amendment) of the main thread. Options are built by meaning from the request's own `availableDecisions` (absent means `accept` and `decline`): Yes is `accept`; "Yes, and don't ask again for this command this session" is `acceptForSession`, offered only when listed (`standingGrant: 'session'`, no lock-screen category); No is `cancel` when listed (what the TUI's own No sends), else `decline`. The object-form decisions (`acceptWithExecpolicyAmendment`, `applyNetworkPolicyAmendment`) write a persistent policy and are never offered. Codex has never offered `acceptForSession`: none of 7 real command approvals on 0.160.0 listed it (they listed `accept`, an amendment object and `cancel`), so that option is unreachable in practice there and what Codex does with it is unknown (the code stays, labeled unverified). A phone No and the header X (Cancel) send `cancel`, which is Codex's own No: it declines the command, the command does not run and the turn is INTERRUPTED ("Conversation interrupted"), so a phone No ends the turn (verified live, 2026-10-04).
-- **What a card shows of the command.** `Allow Codex to run: <command>`, then `In directory: <cwd>` when the command does not run in the session's own directory (compared with `resolve`, which does not follow symlinks: LV-3 (k)), then Codex's stated reason. The real command text is `/bin/zsh -lc '<command>'`, so Codex's shell wrapper counts toward the 120-character cut below. A request whose `cwd` is missing, null, empty or not text is `terminalOnly`: the person could not see where the command runs (all six real frames of the spike carry it). A command over 120 characters is cut the way Claude's hook cards cut one (80 characters, a count of what is hidden, 30), because the dangerous part is as likely at the end, but never inside an escape (a boundary that falls inside one moves to its end), and the whole command is in `detail`. A card with `detail` (a cut command, or another directory) gets no lock-screen category and no dynamic buttons, so Yes needs the app, where the whole card is; its push shows the ask, and Telegram shows the whole command with its buttons only when they fit in one message ("Command truncated", no buttons otherwise). A command whose escaped text is over 20000 characters is `terminalOnly`.
-- **Text a server chooses is escaped and bounded.** The characters in the set listed once in ADR 0033's phase 4 amendment (item 3: controls, invisible and bidi characters, the line separators, the Tags block) come out as visible text, `\uXXXX` or, above the Basic Multilingual Plane, `\u{XXXXX}` (`escapeUnsafeText`, never dropped), in every card builder and in the attach client's banner (which also hardens Claude's banner; Claude's hook cards build their own text and are not changed here). Not every invisible character is in it (variation selectors, the combining grapheme joiner and Hangul fillers are shown as they are). Free text is cut at 2000 characters, labels and names at 200, option descriptions at 500, the directory at 500, an elicitation URL's host at 200, a command's reason at 300; a card keeps 8 questions of 12 options and 20 permission names. A cut says what it hid, in one of three forms: "[N characters hidden]" after a cut text, "[N more options hidden]", "[N more questions hidden]" or "[N more hidden]" for dropped items, and Claude's "… [N chars hidden] …" in the middle of a long command.
-- **Everything else is a `terminalOnly` card or nothing.** A file change, extra permissions, a user-input question, an MCP elicitation, a command that asks for more than itself, a subagent's request (whether it reaches this connection at all, and is replayed to a connection that resumed only the main thread, is unverified), a request whose fields do not parse: a card that says what Codex asks and has no answer controls; every answer is refused, and Cancel clears the card from the phone and sends nothing (the TUI's overlay stays); the app's X reads "Dismiss (answer in the terminal)" (`cancelDismissesOnly`) and a card with no options shows no input. A method with no card (`item/tool/call`, token refresh, attestation, time, the legacy approvals) is ignored by name and never answered; `AppServerClient` has no way to send an error response.
-- **Nothing is typed.** The answer and Cancel handlers type into the PTY only when `answerHeld` says `unknown`; `CodexDecisions` never does, for any id, so a phone answer, Cancel and free text type nothing, and there is no `screen` for a typed answer's guards. The black-box test (`integration/codex-launch-characterization.test.ts`, "approvals") sends every variant through a real websocket and a fake `codex` that counts its stdin, with a raw `q` as the positive control. `hasMainHold` and `hasOpenHookPrompt` say false: nothing reads them for Codex (chat is refused earlier, a Stop force-closes).
-- **First answer wins, and an answer Codex does not confirm.** `serverRequest/resolved` for a card remi did not answer (the TUI answered first, or another client) dismisses it on every client (`question_resolved`, reason `cancelled`, as for Claude's terminal answers); a phone answer a moment too late is `STALE_ANSWER` from the answer handler (verified live, 2026-10-04: the terminal answering first sent every phone client `cancelled`, and a late phone Yes got `STALE_ANSWER` from remi; that Codex ignores a late answer was not re-tested, the spike covers it). When both answer at once the phone shows "answered" although Codex ignored the loser, as Claude's does. A delivered answer is a frame written to a socket: 10 s after it with no `serverRequest/resolved`, the person gets "Codex has not confirmed the answer; check the terminal" (a second Yes or a second client's Cancel before `question_resolved` arrives is closed and does not touch that timer). A send that fails is logged by cause and tells the person to try again from the new card or answer in the terminal.
-- **No deadline.** Claude's holds are bounded by hook timeouts remi cannot lift. A Codex request waits in the app-server without one, and the card mirrors it, so a card on a lock screen stays answerable for as long as Codex waits; expiring the card would strand a request that is still pending.
-- **The link.** When it drops, every card is retired at once (not answerable, still shown); the replay after the re-attach (`ThreadTracker.onAttached`) creates a new card with a new id and dismisses the retired one, and a card the replay did not bring back within 3 s was resolved while the link was down and is dismissed; with no re-attach the retired cards are dismissed after 30 s. A rotation, `remi unstick` and the session ending dismiss every card. A card dismissed by Cancel (`terminalOnly`) or `remi unstick` comes back at the next replay because the request is still pending; a flapping link pushes the card again at each replay; more than 64 requests at once dismiss the oldest live cards (they stay answerable in the terminal). A dropped link does not cancel or decline a pending request (verified live, 2026-10-04, R1: a probe and real remi killed with -9, even remi and the TUI together; the prompt stayed up and the SAME request id was replayed to the next `thread/resume`). Nothing dismisses a live card from a status change: `serverRequest/resolved` is reported for an answer, an Esc in the TUI, `turn/interrupt` and an RPC `cancel` (verified live), so no status-based dismissal is needed (F3 settled).
-- **Rotation keeps approval authority.** A `/new` in the TUI, or a plain `codex` window in the same directory opened while the session is idle (it looks the same), re-binds the session, and approvals then come from the new thread. Not closed (same user, same machine); never silent: every rotation sends "remi now follows a new Codex thread; approvals come from it" and logs `rotated from <last 8> to <last 8>` (residual R4, confirmed live 2026-10-04: a plain `codex` window re-bound an idle session and the message reached the phone).
-- **Logs and what persists.** No command, cwd, prompt or full thread id: a thread id is shown as its last eight characters (UUIDv7 prefixes collide: two threads created within about 65 s share their first eight; remi's own and Claude's v4 ids keep their first eight), a string request id and a method name are cut and escaped, the question-detected line and the registry's cap-eviction warning log a length for a Codex session (`redactQuestionLogs`). The live-sessions file, the hub census and the menu-bar notifications get a fixed label (`pendingLabel`: "Permission: Codex command" or "Codex asks for approval"), never the text. The card text and `detail` reach connected clients over supported transports (WebSocket and Telegram) because the person must see them; the legacy push carries the cut ask (title 120, body 200 characters) in plaintext to the Worker and APNS, while secure recipients use the sealed push path described above; the v2 relay daemon is off by default and hub-only; its ready channel carries encrypted semantic messages and refuses raw PTY frames (R3, docs/relay-daemon-v2.md). The web relay client and sealed secure-push/native-answer daemon contracts exist on this relay branch. Swift background actions and deployed/signed R7 acceptance remain unfinished. Legacy plaintext push is separate from sealed `/v2/push`. Nothing else persists the text: the replay buffer is memory only, `sessions.json` and the opt-in question trace hold no text. **One exception, the startup line** (`startup-output.ts`, added after LV-4): when a headless Codex (a hub's child or `remi codex --daemon`) exits within 10 seconds of its spawn, before it names a thread, the log gets one line with the first and last 1 KB of what it printed, so a flag error is not opaque. After redaction it holds Codex's own text with every UUID cut to its last eight characters and the session's directory and the home directory shown as `<cwd>` and `~`; it can still hold anything else Codex printed (a config excerpt, a URL, a prompt it echoed), and a path or id cut by the 1 KB limit shows as a fragment. It is escaped, on one line, at most 4096 characters plus a `[cut]` marker when truncated, and never logged for a wrapper session (its terminal already shows the error), for a stop or shutdown remi asked for, or for a session that named its thread. The captured copy is only logged: an attached client reads the same bytes as raw PTY frames, by design.
-
-**Live verification: LV-1, LV-2 and LV-3 were run on 2026-10-04 against the owner's real Codex 0.160.0, by a spike agent. The epic gate holds.**
-Verified live (the ids are the plan's LV-3 letters):
-(a) a phone Yes (the card's Yes, `accept`) ran the command and the overlay closed, and both phone clients got `question_resolved` reason `answered`;
-(b) answering in the TUI first sent `question_resolved` reason `cancelled` to every phone client, and a late phone Yes got `STALE_ANSWER` from remi itself;
-(c) a phone No sends `cancel` (it is in the frame's `availableDecisions`): Codex marks the item declined and the turn INTERRUPTED ("Conversation interrupted"), the command does not run, exactly like the TUI's own No, so a phone No ends the turn;
-(d) R1: a dropped subscriber (a probe killed with -9, and real remi killed with -9) does NOT cancel or decline a pending approval: the TUI overlay stays up, the same request id is replayed to the next `thread/resume`, and answering it in the TUI produces `serverRequest/resolved`;
-(g) an Esc in the TUI on an approval, `turn/interrupt` over RPC and an RPC `cancel` each produce `serverRequest/resolved` and the card is dismissed;
-(i) a pending request survives a subscriber drop, even remi and the TUI together, and is replayed with the same id;
-(j) a plain `codex` window in the same directory re-binds an idle remi session (R4 residual confirmed), and the rotation message reached the phone client;
-(k) Codex reports the REALPATH as `cwd` (the frame, the TUI's directory line and `thread/started`) even when launched from a symlinked path, so a session's own directory shows no "In directory" line and keeps Yes and No;
-(e) CORRECTION: remi sends no `thread/unsubscribe` anywhere (dispose only closes the socket); a probe's `thread/unsubscribe` is harmless and a normal exit leaves the thread loaded.
-LV-1: the hand-rolled client's handshake works against the real server (`initialize` answered in 2 ms with result keys `userAgent`, `codexHome`, `platformFamily`, `platformOs`; the 101 response carries `x-codex-websocket-max-unfragmented-message-bytes: 16777216` and no extensions; `optOutNotificationMethods` is accepted and effective; `thread/loaded/list` and `server/diagnostics` are answered; R3 is answered), except the keepalive: Codex answers EVERY ping with TWO identical pongs, which made the old client drop the link with "no pong within 10000 ms" about every 70 s and re-create a pending card with a new id each time (fixed: a pong with no ping outstanding is ignored and a ping timer is never armed twice).
-LV-2: `thread/started` for the TUI thread arrives within about 0.8 s of the spawn, `cwd` equals the scratch directory's realpath, identity is written to `sessions.json` at that moment before any message; the ephemeral `threadSource: "thread_title"` helper thread (0 environments, no path) appears about 1 s after the first message and is ignored; `thread/resume` fails -32600 "no rollout found for thread id <uuid>" before the first message (the exact text matches the fixture) and succeeds about 1 s after it; no `.claude/settings.local.json` and no change to `~/.claude/settings.json`; `thread/started` carries NO client marker (a plain window and a remi-spawned one are indistinguishable; `source` is "vscode", `originator` is daemon-global); a TUI `/resume` of a thread already loaded in the daemon emits no `thread/started`; words after `--` are read as prompt text (verified only with `help` and `completion bash`; `-- exec x` and `login` were NOT run); and `-i <missing.png> resume <uuid>`: Codex's parser swallowed `resume` and the uuid as image paths and the TUI started a FRESH session and auto-submitted the images (a verified hazard: remi's refusal of `-i` with `resume` is right).
-
-**Still not seen:** (h) a subagent's request (whether it is addressed to a connection that resumed only the main thread, and replayed); (f) what Codex does with `acceptForSession`, which was NOT in `availableDecisions` in any of 7 real command approvals on 0.160.0 (they listed `accept`, an `acceptWithExecpolicyAmendment` object and `cancel`), so the option "Yes, and don't ask again for this command this session" is unreachable in practice there (the code and its unverified label stay); `-- exec x` and `-- login`; a TUI `/resume` of an unloaded thread. (The cold start of the daemon with it stopped, R2, was seen by LV-4 through a hub child: the Codex TUI itself starts the shared daemon, and `daemon stop` leaves its `pid-update-loop` helper running; ADR 0033, "LV-4 results".)
-
-**Facts seen live that shape what remi can do:**
-- A `kill -9` of remi also ends the user's Codex TUI: the child gets SIGHUP when remi's PTY master closes (the same wrapper-owns-the-PTY posture as Claude), while the pending approval stays pending on the daemon.
-- With Codex's "Approve for me" (approvalPolicy on-request with the default reviewer, status line "Read Only (Approve for me)"), Codex's Guardian approves a command automatically and sends NO `requestApproval` to any client: remi shows nothing and cannot answer, so no card and no push exist for those commands. Guardian frames do exist (`item/autoApprovalReview/started`, `item/autoApprovalReview/completed`, and a `guardianWarning` text); remi does not handle them (this corrects the plan, which said no Guardian frames had been captured).
-- `originator` is a daemon-global value set by the first client that initialized: after a `remi` client initialized first, every later TUI-created thread read the originator "remi" (R8).
-- Server request ids start at 0 (the first real id was 0), so an id is never tested for truthiness (a test pins it).
-
-### Codex turn events and chat (`remi codex`, epic #1175 phase 6, ADR 0033)
-
-What ships, read against `notifications/turn-events.ts`, `notifications/claude-turn-stop.ts`, `notifications/turn-timer.ts`, `notifications/turn-failed.ts`, `harness/codex/codex-turns.ts`, `harness/codex/codex-chat.ts`, `harness/codex/safe-text.ts`, `packages/shared/src/display-text.ts` and their wiring in `codex-session.ts` and `cli.ts`.
-Automated tests use captured frames plus the labeled stand-in app-server for cases not captured. A bounded live LV-5 check ran on 2026-10-05 against Codex 0.160.0 with GPT-6.1-Sol on one controlled account. It covered two completed turns, three interrupted turns, one failed turn, two item-list responses and one resumed catch-up; it did not run in automated tests.
-
-**Turn events.**
-- **One sink for both harnesses.** `createTurnEventSink` (`notifications/turn-events.ts`) holds what `onTurnStop` used to do inline: the `turn_complete` gate (`shouldNotifyTurnComplete`), who wants the push (`tokensWanting`, the per-device preference), the text and the fan-out, plus `turnFailed` and `turnSucceeded` for the `turn_failed` notice. `cli.ts` builds it once and reads the config, the devices, the signaling endpoint, the push secret and the session name when a turn ends. Claude's half is `createClaudeTurnStop` (`notifications/claude-turn-stop.ts`, registered as the second `Stop` listener `onTurnStop`): the #914 session filter first (an early return: a sibling's Stop neither reads nor clears this session's timer mark), then the elapsed time from the timer and the mark's clearing (a re-entry keeps the mark), then `turnCompleted`; it is built from the harness's filter, the turn timer, the primary session id and the sink, and tested with the real timer and sink. Claude's `StopFailure` wiring (`createTurnFailedRoutes` from the hook bridge) is unchanged; the sink calls the same function over the same map for the failure it is handed.
-- **The mapping** (`createCodexTurns`, fed every notification of the app-server). Only a `turn/completed` of the session's own thread counts (`ThreadTracker.role` is `main`; a subagent's turns and another window's are ignored), and a turn id already announced is not announced again (the last 64 are remembered; an id over 200 characters is treated as no id and announced each time). `completed`: `turnCompleted` with `elapsedMs = turn.durationMs` and the text of the last `agentMessage` whose `phase` is `final_answer` (a message with no phase is "unknown" and is never taken for it), then `turnSucceeded`. `failed`: `turnFailed` naming Codex, `turn.error.message` as the details and `codexErrorInfo` as the code only when it is a string; it carries no earlier answer. `interrupted`: `turnSucceeded` only (nobody is told a turn was interrupted). Any other status is logged without its value and does nothing.
-- **Interrupted is observed in a bounded capture.** A local WebSocket protocol client sent the daemon's phone-No answer and Codex reported `interrupted`; a real TUI Esc and an app-server `turn/interrupt` did the same. An early interrupt attempt returned -32600; a retry after the turn started succeeded. The earlier decline run still answered `decline` (`expA-decline.jsonl:65`) and reported `completed` (`:141`): it does not stand in for these three probes.
-- **Same gates as Claude.** `notifications.on_turn_complete`, `turn_complete_min_seconds` (default 60: the real 5.5-second turn of the spike does not push), the per-device `turnComplete` preference, a message to show, and an unknown duration fails toward silence. A turn with no `final_answer` message has nothing to show, so it stays silent, as an empty `last_assistant_message` does for Claude, and logs ONE line without content (with the turn's items view when Codex gave one). LV-5 observed `final_answer` on the sampled model only; it does not establish behavior for other models. A failed turn is never muted by `on_turn_complete`; only the device's `turnFailed` preference mutes it.
-- **The notice** is "<session>: Codex stopped" (`buildTurnFailedText` takes an agent name, Claude when absent), then a reason phrase for the string codes with a clear reason (`usageLimitExceeded` reads "Usage limit reached"; the documented Claude codes' phrases are unchanged, and any other code is shown as is), then Codex's own words (140 characters), one collapse key per session like Claude's. A later `completed` or `interrupted` turn, or an `item/completed` of Codex's own work on the main thread (#1226), clears it with the quiet dismissal; a `failed` one does not. A repeated failure alerts once until then, like Claude's.
-- **What the turn pushes display is made safe** (`@remi/shared`, `packages/shared/src/display-text.ts`). Failure titles, codes and agent-type labels are visibly escaped and bounded. Completed-turn prose and failure excerpts have the shared unsafe characters removed, except U+200D (the zero-width joiner), so family emoji stay joined; tag characters are removed, so subdivision-flag emoji lose their tags. Claude's `last_assistant_message` is passed through `pushProse` before whitespace normalization and truncation. For Codex only, a completed answer with nothing visible after filtering reaches the shared sink without an answer, so its gate makes no `turn_complete` push and Codex logs one content-free line. Claude's gate still checks the raw message's `.trim()` before display filtering; the sink sends the built body without a post-filter empty-body check. `codex-chat.ts` still leaves chat prose as the model wrote it. Claude's original `StopFailure` input still forms `turnFailureKey`, so display filtering does not change failure deduplication.
-- **Turns remi did not see.** A turn that ended while remi was not attached (before the first attach, or while the link was down) pushes nothing, and a stale "Codex stopped" stays until the next completed or interrupted turn.
-- **Plaintext and logs.** The push carries the final answer (200 characters) or the failure text in plaintext to the Worker and APNS, like Claude's `turn_complete` and `turn_failed`. Nothing a turn says reaches a log line, and neither does a thread id.
-- **Not done.** A `harness_denied` equivalent (Guardian frames). A `turn/started` deliberately does not clear a stale failure notice, as a new prompt does not for Claude (#1226): a turn's start is not evidence it will get further than the last one.
-
-**Chat.**
-- **The seam.** `HarnessSession.chat` (`HarnessChat.readHistory(emit): Promise<number>`) is set by Codex only. The transcript handler asks `chatFor(remiSessionId)` first, before any file lookup, streams what the chat emits to the requesting connection, then sends `transcript_load_complete` with the count, or `LOAD_FAILED` when the read fails (what was sent before the failure stays sent). A send to the requester that is refused (its connection is gone) ends the read at once, with no error sent to a dead connection. Claude's sessions have no chat and take the transcript-file path as before.
-- **History** is `thread/items/list {threadId, sortDirection: 'asc', limit: 100, cursor}` pages, oldest first, following `nextCursor` until it is null; each page is emitted as it arrives, through a MessageAPI of its own, so the session's message stream is untouched. It is bounded: a cursor that comes back (any earlier one, not only the last) ends the read, and so do 1000 pages (both logged); a 60-second deadline is checked after each non-final page, so the request in flight can exceed it by up to its 15-second timeout. A waiting read does not inherit the running read's failure. One explicit read of a session runs at a time with one waiting (two phones that connect together are both served), and a third is refused with a clear error. A thread with nothing written yet ("no rollout found" on the first page, what `thread/resume` says before the first message) is an empty history; every other failure is a `LOAD_FAILED` whose text carries the code and none of the server's words. A session that has not learned its thread has no history and asks nothing.
-- **The mapping.** `userMessage` is a user message (its text parts joined by a newline); `agentMessage` is an assistant message (commentary and final answer alike); a finished `commandExecution` is an assistant tool entry named `shell` (input `{command}`, the result, each cut to 500 code points, whole characters and then written out safely as above, an error for `failed`, `declined` or a non-zero exit); one still `inProgress` is skipped (its completion arrives live, and a client keeps the first copy of an entry it sees); `reasoning`, plans, file changes, tool calls, hook prompts, blank and image-only messages and any item type remi does not know are skipped. The entry id is the item id, so a history read, a catch-up and a live frame of one item carry the same `entryUuid`.
-- **Live.** Each `item/completed` of the main thread goes to every client through the launch context's `sendAndRecord`, structured by the session's own MessageAPI (as Claude's binder does, so the structured agent output goes out too), once per item (the last 1024 delivered ids are remembered; ids over 200 characters are rejected). A failed live send retains its built message for retry so structured output is not duplicated. A subagent's items and another window's are not this chat.
-- **Catch-up at each attach.** Items completed before attach are not announced live, so catch-up reads one complete page (requested `limit: 100`, at most 100 raw returned entries, a 3-second request timeout). An oversized page or a continuing cursor is skipped, logged without content, and left to an explicit history read. Catch-up sends only `transcript_content`, through its own MessageAPI: the web renders its included structure, so there is no extra structured output in replay or Telegram. The live hold starts before `thread/resume` is sent, including items in its response's socket chunk; a failed attach releases it in arrival order unless a read is still running. Live items follow the history; overflow at the 257th item flushes the held queue in order and abandons collected history. A rotation drops the old thread's collected history and filters held items by current role; a follow-up read handles the new thread. Another attach can keep the hold across follow-up reads, with no overall hold deadline; each request has its 3-second timeout and overflow bounds the queue. Failure does not break attach, reconnect does not resend delivered items, and disposal builds or sends neither transcript nor structured output.
-- **Typed chat stays refused** (`acceptsTypedChat: false`, `PROMPT_WAITING`): Phase 6 gives Codex a chat to read, not one to type into.
-- **Limits.** History exists only for a live session (an exited session has no daemon to ask). Subagent chat is not served. The web client shows a `shell` entry as a plain "shell" chip (it summarizes only `Bash`).
-
-**LV-5 live evidence and remaining limits** (the redacted 20-frame source selection is [`lv5.jsonl`](packages/daemon/tests/fixtures/codex-app-server/lv5.jsonl); its index labels reasoning-item strings redacted):
-(a) Two real `thread/items/list` requests used `sortDirection: "asc"` and `limit: 100`; both responses had `data` entries with `turnId`, `item`, `startedAtMs`, and `completedAtMs`, plus `nextCursor` and `backwardsCursor`. The first response had the controlled first prompt and its final answer; the second had six rows. A separate ascending `limit: 1` check on the same owned thread followed the returned cursor from a `userMessage` page to an `agentMessage` page and ended with `nextCursor: null`; those request/results are private receipts and are not in `lv5.jsonl`. Larger histories were not checked.
-(b) Before the first user message, `thread/items/list` returned -32601 and `thread/resume` returned -32600; after the first write, both worked. The early `thread/items/list` response is method-specific, not a general claim that the app-server lacks the method.
-(c) The two captured list pages from this controlled GPT-6.1-Sol account contained no injected environment or instruction message. This does not establish a model-wide rule.
-(d) The local WebSocket phone-No path, TUI Esc and `turn/interrupt` each produced `status: "interrupted"` with durations 24638, 15572 and 12091 ms. An early interrupt attempt returned -32600 and the retry after turn start succeeded. A bad-model probe produced `status: "failed"` after 243 ms, with `codexErrorInfo: "other"`, the captured message, and null `additionalDetails`/`misalignment`.
-(e) The observer received one `turn/completed` for each of five subscribed turns (one long completed, three interrupted, one failed). The first minimal completed turn preceded observer subscription. Only the sampled model/account was checked; neither models generally nor turns without `final_answer` were tested.
-(f) The long turn's `durationMs` and observer wall time were both 66965 ms; it ran shell `sleep 61`, not a CPU workload.
-(g) The captured long-turn command's `item/completed` id appears exactly once in the second captured `thread/items/list` page.
-(h) Initial-attach event ordering was not measured. On a later successful resume, catch-up delivered ten `transcript_content` entries, including the first prompt exactly once, and no `structured_agent_output`. The phone-No path used a local WebSocket protocol client, not a physical iPhone; no APNS delivery or device matrix was tested.
+Read [docs/agent-reference/questions-and-notifications.md](docs/agent-reference/questions-and-notifications.md) before changing question detection, hook handling, answer paths, the chat guard, push classes, push preferences, leases or the secure push path.
 
 ### No local model
 
@@ -953,6 +216,35 @@ hand.
 | `[Y/n/a]`, `[Y/n/q]` | `a\n` (all) |
 | `1)`, `1.` | numbered selection |
 | `>`, `Enter:` | free text |
+
+## Protocol, Workspaces and Harnesses
+
+Short form; the detail and the live-verification evidence are in the reference files named at the end.
+
+- **Protocol version and capabilities (#1237, ADR 0035).**
+  Every `hello_ack` carries `protocolVersion` (now 1) and `capabilities` (`DAEMON_CAPABILITIES`).
+  The version changes only on a breaking change, by hand; an additive change never changes it, and a new capability is added by the change that ships the feature.
+  Clients decide with `hubSupport(ack, needs)`, never by comparing `daemonVersion`.
+- **The decision object (#1235, ADR 0038).**
+  A "the agent needs you" moment is the `question` message's `Question`, frozen for the native apps.
+  `answerPath` (`structured`, `keystroke`, `none`) says how an answer reaches the harness; `question_resolved.resolvedBy` says what resolved a card, only where the daemon knows; every dismissal goes through `createQuestionResolver`; `kind` is open.
+- **Workspaces (#1236, ADR 0036).**
+  `create_session_request.workspace` names a repository and optionally a new worktree; the daemon lists the `workspaces` capability, and a client checks it first.
+  Git runs with no shell, no prompt and a 60-second deadline; nothing deletes a worktree (owner decision, #1233).
+- **Harness identity (epic #1175 phase 5, ADR 0033).**
+  `harness` and `harnessSessionId` are dual-emitted; `hello_ack.harnesses` lists the harnesses whose command is on the PATH; a client sends `harness` or `args` only to a daemon that lists the harness.
+  `create_session_request.harness` and `.args` are checked before a port is probed (`checkHarnessRequest`); for Codex, a remote request may only tighten the host's posture; a daemon reads harness arguments only from after `--`.
+  A headless Codex success means the child registered, not that Codex is past its Update or Trust prompt.
+- **Codex approvals (phase 4).**
+  remi relays, Codex decides.
+  Only a plain command approval of the main thread is answerable; everything else is a `terminalOnly` card or nothing; no phone answer, Cancel, free text or chat is typed into a Codex PTY, while raw input from `remi attach`, the web Escape button and `/interrupt` is still passed through; first answer wins; there is no deadline, because the request waits in the app-server without one.
+- **Codex turn events and chat (phase 6).**
+  One `createTurnEventSink` serves both harnesses; Codex's `turn/completed` maps to `turn_complete` or `turn_failed` with the same gates as Claude; history is served from `thread/items/list`; typed chat to Codex stays refused (`PROMPT_WAITING`).
+
+Read before changing the area:
+
+- [docs/agent-reference/protocol-and-workspaces.md](docs/agent-reference/protocol-and-workspaces.md): version and capabilities, the decision object, workspaces.
+- [docs/agent-reference/harnesses-and-codex.md](docs/agent-reference/harnesses-and-codex.md): harness identity and `create_session_request`, Codex approvals, Codex turn events and chat, LV-1 to LV-5 evidence.
 
 ## Core Principles
 

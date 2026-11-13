@@ -119,7 +119,7 @@ describe('the Claude launch feeds PTY output to its OutputProcessor (#1176)', ()
       },
       sessionId,
     );
-    const session = harness.createSession({
+    const session = await harness.createSession({
       sessionId,
       workingDirectory: tmpDir,
       extraArgs: [],

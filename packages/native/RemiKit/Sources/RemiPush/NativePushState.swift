@@ -25,9 +25,12 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
         let endpoint: String
         let authority: Authority
         let relayUrl: String?
-        init(rid: Data, machinePublicKey: Data, endpoint: String, authority: Authority, relayUrl: String? = nil) {
+        let notificationRelayUrl: String?
+        init(rid: Data, machinePublicKey: Data, endpoint: String, authority: Authority, relayUrl: String? = nil,
+             notificationRelayUrl: String? = nil) {
             self.rid = rid; self.machinePublicKey = machinePublicKey; self.endpoint = endpoint
             self.authority = authority; self.relayUrl = relayUrl
+            self.notificationRelayUrl = notificationRelayUrl
         }
     }
     struct ContentRecord: Equatable {
@@ -92,7 +95,7 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
                     try execute("DELETE FROM identity_authority")
                     try execute("UPDATE authority_generation SET generation=generation+1 WHERE slot=1")
                     try execute("PRAGMA user_version=2")
-                } else if ![2, 3, 4, 5].contains(version) || application != 1380798514 { throw NativePushStateError.corrupt }
+                } else if ![2, 3, 4, 5, 6].contains(version) || application != 1380798514 { throw NativePushStateError.corrupt }
                 if try integer("PRAGMA user_version") == 2 {
                     try execute("CREATE TABLE machine_trust (rid BLOB PRIMARY KEY CHECK(length(rid)=16), machine_key BLOB NOT NULL CHECK(length(machine_key)=32), endpoint TEXT NOT NULL, device_key BLOB NOT NULL CHECK(length(device_key)=32), identity_revision TEXT NOT NULL CHECK(length(identity_revision)=36), requires_unlock INTEGER NOT NULL CHECK(requires_unlock IN(0,1)), generation INTEGER NOT NULL CHECK(generation>0))")
                     try execute("PRAGMA user_version=3")
@@ -105,6 +108,11 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
                 if try integer("PRAGMA user_version") == 4 {
                     try execute("ALTER TABLE machine_trust ADD COLUMN relay_url TEXT")
                     try execute("PRAGMA user_version=5")
+                }
+                if try integer("PRAGMA user_version") == 5 {
+                    // A notification route is never a completed foreground Relay route (#1680).
+                    try execute("ALTER TABLE machine_trust ADD COLUMN notification_relay_url TEXT")
+                    try execute("PRAGMA user_version=6")
                 }
                 guard try integer("SELECT generation FROM authority_generation WHERE slot=1") >= 0 else {
                     throw NativePushStateError.corrupt
@@ -146,17 +154,26 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
         connectionLock.lock(); defer { connectionLock.unlock() }
         return try integer("SELECT generation FROM authority_generation WHERE slot=1")
     }
-    /// Only the native verified-READY caller installs this public completed trust.
+    /// Foreground relay trust comes from verified READY; notification-only trust
+    /// comes from the current authenticated direct host bootstrap (#1680).
     /// Identity writers install public Dpk authority, never machine trust.
     func installMachineTrust(_ trust: MachineTrust, generation: Int64) throws {
         try Self.validateTrust(trust)
         try transaction {
             guard generation > 0, try authorityGeneration() == generation,
                   try currentAuthority() == trust.authority else { throw NativePushStateError.changed }
+            if trust.notificationRelayUrl != nil, let existing = try machineTrust(rid: trust.rid),
+               existing.relayUrl != nil {
+                guard existing.authority == trust.authority, existing.machinePublicKey == trust.machinePublicKey,
+                      existing.endpoint == trust.endpoint, existing.relayUrl == trust.notificationRelayUrl else {
+                    throw NativePushStateError.changed
+                }
+                return
+            }
             if try machineTrust(rid: trust.rid) == nil {
                 guard try integer("SELECT count(*) FROM machine_trust") < Int64(maximumMachines) else { throw NativePushStateError.capacity }
             }
-            try statement("INSERT INTO machine_trust VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(rid) DO UPDATE SET machine_key=excluded.machine_key,endpoint=excluded.endpoint,device_key=excluded.device_key,identity_revision=excluded.identity_revision,requires_unlock=excluded.requires_unlock,generation=excluded.generation,relay_url=excluded.relay_url") { stmt in
+            try statement("INSERT INTO machine_trust (rid,machine_key,endpoint,device_key,identity_revision,requires_unlock,generation,relay_url,notification_relay_url) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(rid) DO UPDATE SET machine_key=excluded.machine_key,endpoint=excluded.endpoint,device_key=excluded.device_key,identity_revision=excluded.identity_revision,requires_unlock=excluded.requires_unlock,generation=excluded.generation,relay_url=excluded.relay_url,notification_relay_url=excluded.notification_relay_url") { stmt in
                 try bind(trust.rid, to: stmt, at: 1)
                 try bind(trust.machinePublicKey, to: stmt, at: 2)
                 try bind(trust.endpoint, to: stmt, at: 3)
@@ -166,6 +183,8 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
                       sqlite3_bind_int64(stmt, 7, generation) == SQLITE_OK else { throw NativePushStateError.unavailable }
                 if let route = trust.relayUrl { try bind(route, to: stmt, at: 8) }
                 else { guard sqlite3_bind_null(stmt, 8) == SQLITE_OK else { throw NativePushStateError.unavailable } }
+                if let route = trust.notificationRelayUrl { try bind(route, to: stmt, at: 9) }
+                else { guard sqlite3_bind_null(stmt, 9) == SQLITE_OK else { throw NativePushStateError.unavailable } }
                 try complete(stmt)
             }
         }
@@ -174,7 +193,7 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
         guard rid.count == 16 else { throw NativePushStateError.invalid }
         connectionLock.lock(); defer { connectionLock.unlock() }
         // One SQLite statement sees one consistent cross-process snapshot.
-        return try statement("SELECT t.machine_key,t.endpoint,t.device_key,t.identity_revision,t.requires_unlock,t.relay_url FROM machine_trust t JOIN identity_authority a ON a.slot=1 AND a.public_key=t.device_key AND a.revision=t.identity_revision AND a.requires_unlock=t.requires_unlock JOIN authority_generation g ON g.slot=1 AND g.generation=t.generation WHERE t.rid=?") { stmt in
+        return try statement("SELECT t.machine_key,t.endpoint,t.device_key,t.identity_revision,t.requires_unlock,t.relay_url,t.notification_relay_url FROM machine_trust t JOIN identity_authority a ON a.slot=1 AND a.public_key=t.device_key AND a.revision=t.identity_revision AND a.requires_unlock=t.requires_unlock JOIN authority_generation g ON g.slot=1 AND g.generation=t.generation WHERE t.rid=?") { stmt in
             try bind(rid, to: stmt, at: 1)
             let status = sqlite3_step(stmt)
             if status == SQLITE_DONE { return nil }
@@ -182,7 +201,8 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
                   [0, 1].contains(sqlite3_column_int(stmt, 4)) else { throw NativePushStateError.corrupt }
             let trust = MachineTrust(rid: rid, machinePublicKey: try blob(stmt, 0), endpoint: try text(stmt, 1),
                 authority: Authority(publicKey: try blob(stmt, 2), revision: try text(stmt, 3), requiresAppUnlock: sqlite3_column_int(stmt, 4) == 1),
-                relayUrl: sqlite3_column_type(stmt, 5) == SQLITE_NULL ? nil : try text(stmt, 5))
+                relayUrl: sqlite3_column_type(stmt, 5) == SQLITE_NULL ? nil : try text(stmt, 5),
+                notificationRelayUrl: sqlite3_column_type(stmt, 6) == SQLITE_NULL ? nil : try text(stmt, 6))
             try Self.validateTrust(trust)
             guard sqlite3_step(stmt) == SQLITE_DONE else { throw NativePushStateError.corrupt }
             return trust
@@ -193,6 +213,20 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
     func completedMachineTrusts() throws -> [MachineTrust] {
         connectionLock.lock(); defer { connectionLock.unlock() }
         let rids: [Data] = try statement("SELECT rid FROM machine_trust WHERE relay_url IS NOT NULL ORDER BY rid") { stmt in
+            var result = [Data]()
+            while true {
+                let status = sqlite3_step(stmt)
+                if status == SQLITE_DONE { return result }
+                guard status == SQLITE_ROW, result.count < maximumMachines else { throw NativePushStateError.corrupt }
+                result.append(try blob(stmt, 0))
+            }
+        }
+        return try rids.compactMap { try machineTrust(rid: $0) }
+    }
+
+    func notificationMachineTrusts() throws -> [MachineTrust] {
+        connectionLock.lock(); defer { connectionLock.unlock() }
+        let rids: [Data] = try statement("SELECT rid FROM machine_trust WHERE relay_url IS NOT NULL OR notification_relay_url IS NOT NULL ORDER BY rid") { stmt in
             var result = [Data]()
             while true {
                 let status = sqlite3_step(stmt)
@@ -418,7 +452,7 @@ final class NativePushState: NativeIdentityAuthorityBarrier {
         var canonical = url
         canonical.port = url.port
         guard canonical.string == trust.endpoint else { throw NativePushStateError.invalid }
-        if let relay = trust.relayUrl {
+        for relay in [trust.relayUrl, trust.notificationRelayUrl].compactMap({ $0 }) {
             guard relay.utf8.count <= 512, !relay.contains("%"),
                   var route = URLComponents(string: relay), route.scheme == "wss",
                   route.user == nil, route.password == nil, route.query == nil, route.fragment == nil,

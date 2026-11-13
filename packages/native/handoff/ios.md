@@ -36,12 +36,12 @@ The Mac track uses RemiUI too. Publish components early and keep their APIs smal
 - **Done when** every component has previews in light and dark mode and at the largest Dynamic Type size, and the owner has reviewed screenshots in the PR.
 
 **M1b: the iPhone screens, with preview data only.**
-- [ ] **Screens:** home (sessions by machine, cards on top), the session, pairing (the steps to run on the machine), empty and first-run states, built from the M1a components.
+- [ ] **Screens:** the Inbox (cards that need the person) with sessions in the drawer, the session, pairing (the steps to run on the machine), empty and first-run states, built from the M1a components.
 - **Done when** every screen has previews in light and dark mode and at the largest Dynamic Type size, and the owner has reviewed screenshots in the PR.
 
 **M2: live, on RemiKit.**
 - [ ] **Use RemiKit's connection and store** as the Mac track lands them (#1241); until then, keep building against the preview data.
-- [ ] **Answer cards by their meaning.** The rules are in the root AGENTS.md: a held card through the hook; nothing typed for a `terminalOnly` card; a card with `detail` only in the app.
+- [ ] **Answer cards by their meaning.** The daemon's rules are in [Question Detection and Notifications](../../../docs/agent-reference/questions-and-notifications.md): a held card through the hook; a `terminalOnly` card has no answer controls; a card with `detail` is answered in the app only.
 - [ ] **Reach a machine:** the iPhone simulator reaches a hub on `127.0.0.1`. A real device needs the machine's `daemon.bind` set and its approval (#873), so show the steps.
 - **Done when** the owner answers a real card from the simulator against a hub started from source.
 

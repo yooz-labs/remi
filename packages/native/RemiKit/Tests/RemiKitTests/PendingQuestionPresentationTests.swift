@@ -56,7 +56,7 @@ struct PendingQuestionPresentationTests {
 
         let item = try #require(RemiPendingQuestionPresentation.groups(
             machines: [machine],
-            viewsBySession: ["session": [SessionViewMeta(agentId: "reviewer", agentType: "Code reviewer", active: true)]]
+            viewsBySession: [MachineSessionKey(machineID: machine.id, sessionID: "session"): [SessionViewMeta(agentId: "reviewer", agentType: "Code reviewer", active: true)]]
         ).first?.items.first)
 
         #expect(item.model.sessionName == "Native app")

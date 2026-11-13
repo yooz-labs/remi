@@ -119,6 +119,8 @@ test('scan, claim, approve at the terminal, then hello_ack and the session list'
       .find((l) => l.includes('remi://pair#')) ?? '';
   const decoded = decodePairingLink(line.slice(line.indexOf('remi://pair#')).trim());
   if (!decoded.ok) throw new Error(`the link was refused: ${decoded.error}`);
+  if (decoded.code.v !== 1)
+    throw new Error(`expected default v1 pairing link, found v${decoded.code.v}`);
 
   // The phone.
   const phone = await unlockIdentity(phoneIdentity);

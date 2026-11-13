@@ -58,7 +58,7 @@ fi
 project="$native_dir/Remi.xcodeproj"
 project_file="$project/project.pbxproj"
 mac_source="$native_dir/Mac/MacLiveRootView.swift"
-phone_source="$native_dir/iPhone/HomeScreen.swift"
+phone_source="$native_dir/iPhone/InboxScreen.swift"
 for required in "$project_file" "$mac_source" "$phone_source"; do
     [ -f "$required" ] || {
         echo "ERROR: missing required source: $required" >&2

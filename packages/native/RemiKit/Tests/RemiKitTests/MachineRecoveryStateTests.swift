@@ -44,4 +44,30 @@ import Testing
         #expect(RemiMachineRecoveryState.resolve(status: .connecting, isRelay: false) == .none)
         #expect(RemiMachineRecoveryState.resolve(status: .connected, isRelay: true) == .none)
     }
+
+    @Test func everyStateThatNeedsThePersonHasPlainCopy() {
+        let states: [RemiMachineRecoveryState] = [
+            .waitingForDirectApproval(fingerprint: "ab"),
+            .waitingForRelayConfirmation(fingerprint: "ab"),
+            .retryableOffline,
+            .retryableUnavailable(reason: nil),
+            .relayOffline,
+            .relayNeedsFreshPairing(reason: nil),
+        ]
+        for state in states {
+            #expect(state.title?.isEmpty == false)
+            #expect(state.detail(machineName: "Studio")?.contains("Studio") == true)
+        }
+        #expect(RemiMachineRecoveryState.none.title == nil)
+        #expect(RemiMachineRecoveryState.none.detail(machineName: "Studio") == nil)
+    }
+
+    @Test func reasonReplacesTheGenericSentenceAndPrefixesRelayPairing() {
+        #expect(RemiMachineRecoveryState.retryableUnavailable(reason: "Port closed")
+            .detail(machineName: "Studio") == "Port closed")
+        #expect(RemiMachineRecoveryState.relayNeedsFreshPairing(reason: "Token expired.")
+            .detail(machineName: "Studio") == "Token expired. Create a fresh relay pairing token on Studio.")
+        #expect(RemiMachineRecoveryState.relayNeedsFreshPairing(reason: "")
+            .detail(machineName: "Studio") == "Create a fresh relay pairing token on Studio.")
+    }
 }

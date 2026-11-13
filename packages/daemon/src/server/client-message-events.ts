@@ -41,12 +41,16 @@ import type {
   AnswerExtras,
   ChatSubmitRequest,
   CreateSessionRequestMessage,
+  FileDownloadIngressResult,
   ImageInsertionIngressResult,
   ImageStagingIngressResult,
   NativeAnswerMessage,
+  NotificationHostRequest,
   PushPreferences,
   UUID,
 } from '@remi/shared';
+import type { BrowserLinkReceiverRequest } from '../../../shared/src/browser-links.ts';
+import type { TerminalIngress } from '../terminal/ingress.ts';
 
 /**
  * What a create request asks of a harness (#1179), as it arrived: untrusted JSON, so `unknown`.
@@ -84,12 +88,16 @@ export function createSessionExtra(
  * message-id echoing without breaking existing positional callers.
  */
 export interface ClientMessageEventArgs {
+  onTerminalView: [ingress: TerminalIngress];
+  onFileDownload: [ingress: Exclude<FileDownloadIngressResult, { kind: 'uncorrelatable' }>];
+  onBrowserLinkReceiver: [request: BrowserLinkReceiverRequest];
   onStructuredChat: [request: ChatSubmitRequest];
   onImageInsert: [ingress: Exclude<ImageInsertionIngressResult, { kind: 'uncorrelatable' }>];
   /** Strictly decoded request or bounded lookup hints; authority stays on the host (#1170). */
   onImageUpload: [ingress: Exclude<ImageStagingIngressResult, { kind: 'uncorrelatable' }>];
   /** Signed native proof; its child-owned ledger is separate from ordinary answer aliases (#1201). */
   onNativeAnswer: [message: NativeAnswerMessage];
+  onNotificationHostRequest: [message: NotificationHostRequest];
   /** User input received. `messageId` is the wire message's own id (#681),
    *  carried so a rejection (e.g. NOT_ACTIVE_CONNECTION) can name the
    *  specific bubble that was dropped. */
@@ -166,10 +174,14 @@ export interface ClientMessageEventArgs {
  * assertion) so the two cannot silently drift apart.
  */
 export const CLIENT_MESSAGE_EVENT_KEYS = [
+  'onTerminalView',
+  'onFileDownload',
+  'onBrowserLinkReceiver',
   'onStructuredChat',
   'onImageInsert',
   'onImageUpload',
   'onNativeAnswer',
+  'onNotificationHostRequest',
   'onUserInput',
   'onAnswer',
   'onBulletExpandRequest',
@@ -231,7 +243,13 @@ export type ClientMessageEvents = {
           | import('@remi/shared').AnswerOutcome
           | Promise<void>
           | Promise<import('@remi/shared').AnswerOutcome>
-      : K extends 'onUserInput' | 'onImageUpload' | 'onImageInsert' | 'onStructuredChat'
+      : K extends
+            | 'onUserInput'
+            | 'onImageUpload'
+            | 'onImageInsert'
+            | 'onStructuredChat'
+            | 'onBrowserLinkReceiver'
+            | 'onFileDownload'
         ? void | Promise<void>
         : void;
 };
@@ -253,7 +271,13 @@ export type ClientMessageEventsWithConnectionId = {
           | import('@remi/shared').AnswerOutcome
           | Promise<void>
           | Promise<import('@remi/shared').AnswerOutcome>
-      : K extends 'onUserInput' | 'onImageUpload' | 'onImageInsert' | 'onStructuredChat'
+      : K extends
+            | 'onUserInput'
+            | 'onImageUpload'
+            | 'onImageInsert'
+            | 'onStructuredChat'
+            | 'onBrowserLinkReceiver'
+            | 'onFileDownload'
         ? void | Promise<void>
         : void;
 };

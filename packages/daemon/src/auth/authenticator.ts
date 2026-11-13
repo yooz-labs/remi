@@ -302,6 +302,11 @@ export class Authenticator {
     console.log(line);
   }
 
+  /** Reread the grant for an exact identity already verified by this authenticator (#1305). */
+  isConnectionAuthorized(publicKey: string, fingerprint: string): boolean {
+    return this.store.isAuthorized(publicKey, fingerprint);
+  }
+
   /**
    * Verify a detached, connection-independent signed request (#575, P4a).
    *

@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { DirectoryRoot, FileAdmission } from './admission';
+import { AdmittedRead } from './admitted-read';
 import { type CopyCheckpoint, type PrivateOps, copyToPrivate } from './private-copy';
 
 export function copyProbe(temporary: string, ops: PrivateOps): string[] {
@@ -75,6 +76,30 @@ export function copyProbe(temporary: string, ops: PrivateOps): string[] {
   ]) {
     const f = fixture(value);
     try {
+      const reader = AdmittedRead.capture(f.source);
+      assert(reader, 'admitted source cursor captured');
+      assert.equal(reader.byteLength, value.length, 'admitted source cursor length');
+      if (value.length)
+        assert.throws(() => reader.finish(), /unavailable/, 'incomplete cursor refuses finish');
+      let cursorBytes = 0;
+      const sourceHash = createHash('sha256');
+      while (reader.bytesRead < reader.byteLength) {
+        const chunk = reader.readNext();
+        assert(chunk.length > 0 && chunk.length <= 32768, 'bounded source cursor read');
+        assert.deepEqual(chunk, value.subarray(cursorBytes, cursorBytes + chunk.length));
+        sourceHash.update(chunk);
+        cursorBytes += chunk.length;
+      }
+      const finished = reader.finish();
+      assert.equal(cursorBytes, value.length, 'admitted source cursor exact bytes');
+      assert.deepEqual(
+        finished,
+        { byteLength: value.length, sha256: sourceHash.digest('hex') },
+        'admitted source cursor digest',
+      );
+      assert(reader.isCurrent(), 'finished cursor supports effect-time source validation');
+      assert.throws(() => reader.readNext(), /unavailable/, 'finished cursor refuses read');
+      assert.throws(() => reader.finish(), /unavailable/, 'finished cursor refuses repeat finish');
       const artifact = copyToPrivate(f.source, f.scratch, ops);
       assert(artifact, 'valid private copy');
       try {
@@ -120,6 +145,39 @@ export function copyProbe(temporary: string, ops: PrivateOps): string[] {
     } finally {
       f.close();
     }
+  }
+  const beforeCapture = fixture();
+  try {
+    fs.appendFileSync(beforeCapture.filename, 'changed');
+    assert.equal(
+      AdmittedRead.capture(beforeCapture.source),
+      null,
+      'source cursor refuses changed admission',
+    );
+  } finally {
+    beforeCapture.close();
+  }
+  const replacedRoot = fixture();
+  try {
+    fs.renameSync(replacedRoot.project, `${replacedRoot.project}-moved`);
+    fs.mkdirSync(replacedRoot.project, { mode: 0o700 });
+    assert.equal(
+      AdmittedRead.capture(replacedRoot.source),
+      null,
+      'source cursor refuses replaced root',
+    );
+  } finally {
+    replacedRoot.close();
+  }
+  const beforeFinish = fixture();
+  try {
+    const reader = AdmittedRead.capture(beforeFinish.source);
+    assert(reader, 'finish-control source cursor');
+    while (reader.bytesRead < reader.byteLength) reader.readNext();
+    fs.writeFileSync(beforeFinish.filename, Buffer.alloc(65536, 0x62));
+    assert.throws(() => reader.finish(), /unavailable/, 'source cursor finish refuses mutation');
+  } finally {
+    beforeFinish.close();
   }
   checks.push('empty nonempty and 10 MiB private copies with exact bytes digest and mode');
 
