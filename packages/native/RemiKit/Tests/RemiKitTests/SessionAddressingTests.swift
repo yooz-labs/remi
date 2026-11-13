@@ -75,6 +75,15 @@ struct SessionAddressingTests {
             from: JSONSerialization.data(withJSONObject: payload))
     }
 
+    private func questionMessage(sessionID: String, claudeSessionId: String? = nil) throws -> QuestionMessage {
+        var payload = try #require(try JSONSerialization.jsonObject(
+            with: FixtureConformanceTests.fixture("question")) as? [String: Any])
+        payload["sessionId"] = sessionID
+        if let claudeSessionId { payload["claudeSessionId"] = claudeSessionId }
+        return try JSONDecoder().decode(QuestionMessage.self,
+            from: JSONSerialization.data(withJSONObject: payload))
+    }
+
     @Test func transcriptsAreKeptPerMachine() throws {
         let fixture = try twoMachines()
         defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
@@ -97,6 +106,191 @@ struct SessionAddressingTests {
         #expect(store.removeMachine(fixture.routes[0]))
         #expect(store.transcriptsBySession[keyA] == nil)
         #expect(store.transcriptsBySession[keyB]?.map(\.content) == ["from B"])
+    }
+
+    @Test func sameQuestionIDInDifferentSessionsDoesNotReplaceAnotherCard() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store
+        let original = try #require(store.machines.first { $0.id == fixture.ids.a }?.questions.first)
+        let secondSession = "00000000-0000-4000-8000-00000000b002"
+        let second = try questionMessage(sessionID: secondSession)
+        #expect(second.question.id == original.question.id)
+        let generation = try #require(store.connectionGenerations[fixture.routes[0]])
+        store.receive(.question(second), from: fixture.routes[0], generation: generation)
+
+        let a = try #require(store.machines.first { $0.id == fixture.ids.a })
+        let b = try #require(store.machines.first { $0.id == fixture.ids.b })
+        #expect(Set(a.questions.filter { $0.question.id == original.question.id }.map(\.sessionId)) ==
+                Set([original.sessionId, secondSession]))
+        #expect(b.questions.contains { $0.sessionId == original.sessionId && $0.question.id == original.question.id })
+
+        let resolution: [String: Any] = ["type": "question_resolved", "id": UUID().uuidString,
+            "timestamp": "2026-10-31T00:00:00.000Z", "sessionId": secondSession,
+            "questionId": second.question.id, "reason": "answered"]
+        let resolved = try JSONDecoder().decode(QuestionResolvedMessage.self,
+            from: JSONSerialization.data(withJSONObject: resolution))
+        store.receive(.questionResolved(resolved), from: fixture.routes[0], generation: generation)
+        let afterA = try #require(store.machines.first { $0.id == fixture.ids.a })
+        let afterB = try #require(store.machines.first { $0.id == fixture.ids.b })
+        #expect(afterA.questions.contains { $0.sessionId == original.sessionId && $0.question.id == original.question.id })
+        #expect(!afterA.questions.contains { $0.sessionId == secondSession && $0.question.id == original.question.id })
+        #expect(afterB.questions.contains { $0.sessionId == original.sessionId && $0.question.id == original.question.id })
+    }
+
+    @Test func questionLookupRequiresExactSessionAndMachine() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store
+        let original = try #require(store.machines.first { $0.id == fixture.ids.a }?.questions.first)
+        let sessionA = original.sessionId, sessionB = "00000000-0000-4000-8000-00000000b002"
+        let generationA = try #require(store.connectionGenerations[fixture.routes[0]])
+        let generationB = try #require(store.connectionGenerations[fixture.routes[1]])
+        store.receive(.question(try questionMessage(sessionID: sessionA, claudeSessionId: "binding-a")),
+            from: fixture.routes[0], generation: generationA)
+        store.receive(.question(try questionMessage(sessionID: sessionB, claudeSessionId: "binding-b")),
+            from: fixture.routes[0], generation: generationA)
+        store.receive(.question(try questionMessage(sessionID: sessionA, claudeSessionId: "binding-other-machine")),
+            from: fixture.routes[1], generation: generationB)
+        let a = try #require(store.machines.first { $0.id == fixture.ids.a })
+        let b = try #require(store.machines.first { $0.id == fixture.ids.b })
+        let id = original.question.id
+        #expect(a.question(sessionID: sessionA, questionID: id)?.claudeSessionId == "binding-a")
+        #expect(a.question(sessionID: sessionB, questionID: id)?.claudeSessionId == "binding-b")
+        #expect(b.question(sessionID: sessionA, questionID: id)?.claudeSessionId == "binding-other-machine")
+        #expect(b.question(sessionID: sessionB, questionID: id) == nil)
+        #expect(a.question(sessionID: sessionA, questionID: "missing") == nil)
+    }
+
+    @Test func questionSnapshotReconcilesOnlyItsSession() throws {
+        let sessionA = "00000000-0000-4000-8000-00000000a001"
+        let sessionB = "00000000-0000-4000-8000-00000000b002"
+        let questionA = try questionMessage(sessionID: sessionA)
+        let questionB = try questionMessage(sessionID: sessionB)
+        let questionID = questionA.question.id
+        #expect(questionB.question.id == questionID)
+        var state = MachineState(
+            endpoint: MachineEndpoint(host: "127.0.0.1", port: 18790),
+            displayName: "Test"
+        )
+        state.questions = [questionA, questionB]
+
+        let afterEmptySnapshot = MachineStore.reconcilingQuestionSnapshot(
+            in: state,
+            sessionId: sessionA,
+            liveQuestionIDs: []
+        )
+        #expect(afterEmptySnapshot.questions == [questionB])
+
+        let afterLiveSnapshot = MachineStore.reconcilingQuestionSnapshot(
+            in: state,
+            sessionId: sessionB,
+            liveQuestionIDs: [questionID]
+        )
+        #expect(Set(afterLiveSnapshot.questions.map(\.sessionId)) == Set([sessionA, sessionB]))
+        #expect(afterLiveSnapshot.questions.count == 2)
+    }
+
+    @Test func nativeQuestionComparisonsRequireSessionScope() throws {
+        let packages = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let native = packages.appendingPathComponent("native")
+        let questionComparison = try NSRegularExpression(
+            pattern: #"\bquestion\.id\b\s*==|==\s*\bquestion\.id\b|\bquestionId\b\s*==|==\s*\bquestionId\b"#
+        )
+        let sessionComparison = try NSRegularExpression(pattern: #"\bsessionId\s*=="#)
+        let exactMachineStateLookup = try NSRegularExpression(
+            pattern: #"store\.machine\s*\(\s*withIdentifier:\s*machineID\s*\)\s*\?\.question\s*\(\s*sessionID:\s*sessionID\s*,\s*questionID:\s*questionID\s*\)"#
+        )
+        let rootViews: Set<String> = ["iPhone/PhoneLiveRootView.swift", "Mac/MacLiveRootView.swift"]
+
+        for directoryName in ["iPhone", "Mac"] {
+            let directory = native.appendingPathComponent(directoryName, isDirectory: true)
+            let enumerator = try #require(
+                FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil)
+            )
+            let sourceFiles = enumerator.compactMap { $0 as? URL }
+                .filter { $0.pathExtension == "swift" }
+                .sorted { $0.path < $1.path }
+            #expect(!sourceFiles.isEmpty, "packages/native/\(directoryName) has no Swift source files")
+
+            for sourceFile in sourceFiles {
+                let relativePath = String(sourceFile.path.dropFirst(native.path.count + 1))
+                let source = try String(contentsOf: sourceFile, encoding: .utf8)
+                let nsSource = source as NSString
+                let matches = questionComparison.matches(
+                    in: source,
+                    range: NSRange(location: 0, length: nsSource.length)
+                )
+
+                for match in matches {
+                    var openBraces: [Int] = []
+                    for index in 0..<match.range.location {
+                        switch nsSource.character(at: index) {
+                        case 123:
+                            openBraces.append(index)
+                        case 125:
+                            _ = openBraces.popLast()
+                        default:
+                            break
+                        }
+                    }
+
+                    guard let openingBrace = openBraces.last else {
+                        let line = nsSource.substring(to: match.range.location).filter { $0 == "\n" }.count + 1
+                        #expect(Bool(false), "\(relativePath):\(line) has a question id comparison outside a scoped predicate")
+                        continue
+                    }
+
+                    var depth = 0
+                    var closingBrace: Int?
+                    braceScan: for index in openingBrace..<nsSource.length {
+                        switch nsSource.character(at: index) {
+                        case 123:
+                            depth += 1
+                        case 125:
+                            depth -= 1
+                            if depth == 0 {
+                                closingBrace = index
+                                break braceScan
+                            }
+                        default:
+                            break
+                        }
+                    }
+
+                    guard let closingBrace else {
+                        let line = nsSource.substring(to: match.range.location).filter { $0 == "\n" }.count + 1
+                        #expect(Bool(false), "\(relativePath):\(line) has an unclosed question predicate")
+                        continue
+                    }
+
+                    let predicate = nsSource.substring(
+                        with: NSRange(location: openingBrace + 1, length: closingBrace - openingBrace - 1)
+                    )
+                    let predicateSource = predicate as NSString
+                    let hasSession = sessionComparison.firstMatch(
+                        in: predicate,
+                        range: NSRange(location: 0, length: predicateSource.length)
+                    ) != nil
+                    let line = nsSource.substring(to: match.range.location).filter { $0 == "\n" }.count + 1
+                    #expect(hasSession, "\(relativePath):\(line) has a question id comparison without sessionId")
+                }
+
+                if rootViews.contains(relativePath) {
+                    #expect(matches.isEmpty, "\(relativePath) must use MachineState's scoped lookup")
+                    let helperMatches = exactMachineStateLookup.matches(
+                        in: source,
+                        range: NSRange(location: 0, length: nsSource.length)
+                    )
+                    #expect(helperMatches.count == 1, "\(relativePath) must pass machineID, sessionID, and questionID to MachineState")
+                }
+            }
+        }
     }
 
     @Test func sameSessionIDOnTwoMachinesIsAddressedIndependently() async throws {

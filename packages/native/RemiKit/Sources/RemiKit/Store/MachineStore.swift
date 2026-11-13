@@ -186,6 +186,7 @@ public struct MachineState: Sendable, Equatable, Identifiable {
         sessionActivity[session.sessionId]?.status ?? session.status
     }
     public var hasLoadedSessions: Bool
+    /// Questions are unique by (`sessionId`, `question.id`); different sessions may reuse an id (#1732).
     public var questions: [QuestionMessage]
     public var capabilities: [String]
     /// The protocol version and capabilities of the latest `hello_ack` from this machine's active
@@ -193,6 +194,15 @@ public struct MachineState: Sendable, Equatable, Identifiable {
     public internal(set) var helloAck: HubSupportAck?
     public var harnesses: [String]
     public var activeSessions: [DiscoverableSession] { sessions.filter { $0.source == "daemon" } }
+
+    /// Looks up by both session and question id because sessions may reuse an id (#1732).
+    public func question(sessionID: String, questionID: String) -> QuestionMessage? {
+        questionIndex(sessionID: sessionID, questionID: questionID).map { questions[$0] }
+    }
+
+    func questionIndex(sessionID: String, questionID: String) -> Int? {
+        questions.firstIndex { $0.sessionId == sessionID && $0.question.id == questionID }
+    }
 
     public init(endpoint: MachineEndpoint, displayName: String, configuredDisplayName: Bool = false) {
         self.endpoint = endpoint
@@ -1875,30 +1885,29 @@ public final class MachineStore {
     }
 
     public func localQuestionNotification(for destination: RemiNavigationDestination) -> LocalQuestionNotificationPlan? {
-        guard let machine = machine(withIdentifier: destination.machineID),
+        guard let questionID = destination.questionID,
+              let machine = machine(withIdentifier: destination.machineID),
               machine.status == .connected, machine.endpoint.relayPin == nil,
               let route = routeBySession[sessionKey(machineID: machine.id, sessionID: destination.sessionID)], route.relayPin == nil,
               parentByConnection[route] == machine.endpoint,
               let generation = connectionGenerations[route],
-              let current = machine.questions.first(where: {
-                  $0.sessionId == destination.sessionID && $0.question.id == destination.questionID &&
-                      $0.question.agentId == destination.agentID
-              }) else { return nil }
+              let current = machine.question(sessionID: destination.sessionID, questionID: questionID),
+              current.question.agentId == destination.agentID else { return nil }
         return LocalQuestionNotificationPlan(machineID: machine.id, message: current, generation: generation)
     }
 
     public func answerLocalNotification(_ plan: LocalQuestionNotificationPlan,
                                         identifier: String) async -> LocalNotificationAnswerOutcome {
         let destination = plan.destination
-        guard !Task.isCancelled,
+        guard let questionID = destination.questionID,
+              !Task.isCancelled,
               let machine = machine(withIdentifier: destination.machineID),
               machine.status == .connected, machine.endpoint.relayPin == nil,
               let route = routeBySession[sessionKey(machineID: machine.id, sessionID: destination.sessionID)], route.relayPin == nil,
               parentByConnection[route] == machine.endpoint,
               let generation = connectionGenerations[route], let connection = connections[route],
-              let current = machine.questions.first(where: {
-                  $0.sessionId == destination.sessionID && $0.question.id == destination.questionID
-              }), let value = plan.answerValue(identifier: identifier, current: current,
+              let current = machine.question(sessionID: destination.sessionID, questionID: questionID),
+              let value = plan.answerValue(identifier: identifier, current: current,
                     machineID: machine.id, generation: generation) else { return .refused }
         guard localNotificationAnswers.count < 8, !localNotificationAnswers.contains(destination) else { return .busy }
         localNotificationAnswers.insert(destination)
@@ -2327,7 +2336,10 @@ public final class MachineStore {
         }
         target.sessions = mergeSessions(target.sessions, with: source.sessions)
         target.sessionActivity.merge(source.sessionActivity) { current, _ in current }
-        for question in source.questions where !target.questions.contains(where: { $0.question.id == question.question.id }) {
+        for question in source.questions where target.questionIndex(
+            sessionID: question.sessionId,
+            questionID: question.question.id
+        ) == nil {
             target.questions.append(question)
         }
         if endpoint == parent, target.connectionPreference.permits(endpoint),
@@ -2664,8 +2676,14 @@ public final class MachineStore {
             }
         case .question(let message):
             routeBySession[MachineSessionKey(machineID: machines[index].id, sessionID: message.sessionId)] = endpoint
-            machines[index].questions.removeAll { $0.question.id == message.question.id }
-            machines[index].questions.append(message)
+            if let existingIndex = machines[index].questionIndex(
+                sessionID: message.sessionId,
+                questionID: message.question.id
+            ) {
+                machines[index].questions[existingIndex] = message
+            } else {
+                machines[index].questions.append(message)
+            }
             let resolvedID = Self.resolvedQuestionID(
                 machineID: machines[index].id,
                 sessionID: message.sessionId,
@@ -2875,8 +2893,8 @@ public final class MachineStore {
     ) -> [MachineState] {
         states.map { state in
             var state = state
-            state.questions.removeAll {
-                $0.sessionId == sessionId && $0.question.id == questionId
+            while let questionIndex = state.questionIndex(sessionID: sessionId, questionID: questionId) {
+                state.questions.remove(at: questionIndex)
             }
             return state
         }
@@ -2887,12 +2905,16 @@ public final class MachineStore {
         machineIndex: Int,
         machineID: String
     ) {
-        guard let message = machines[machineIndex].questions.first(where: {
-            $0.sessionId == resolution.sessionId && $0.question.id == resolution.questionId
-        }) else { return }
-
-        machines[machineIndex].questions.removeAll {
-            $0.sessionId == resolution.sessionId && $0.question.id == resolution.questionId
+        guard let questionIndex = machines[machineIndex].questionIndex(
+            sessionID: resolution.sessionId,
+            questionID: resolution.questionId
+        ) else { return }
+        let message = machines[machineIndex].questions[questionIndex]
+        while let questionIndex = machines[machineIndex].questionIndex(
+            sessionID: resolution.sessionId,
+            questionID: resolution.questionId
+        ) {
+            machines[machineIndex].questions.remove(at: questionIndex)
         }
         let id = Self.resolvedQuestionID(
             machineID: machineID,
