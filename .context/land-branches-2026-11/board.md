@@ -48,8 +48,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 33 | daily | every dispatch on every platform; the plan approval covers this limit |
-| Codex Luna today | 8 | 12 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
+| Agents today | 30 | 34 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Codex Luna today | 8 | 13 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 3 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
 | Claude Sonnet today | 16 | 12 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
 | Claude Opus today | 4 | 4 | daily | lead wakes, lead-tier steps, advisor consults |
@@ -84,7 +84,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | P02 | iPad Board implementation (outline) | - | worker-hard | xcode, simulator | - | outline | P01 | - | - | - | lead writes the card at CP3 after the owner approves P01 |
 | A01 | [Account switching design](cards/A01-account-switching-design.md) | - | lead | - | - | done | L99 | - | 2026-11-13T12:31-08:00 | 1d | todo when L99 done (owner: blocked until every landing step is done or dropped); no code |
 | A02 | [Fable review](cards/A02-account-switching-fable-review.md) | - | frontier | - | - | done | A01 | - | 2026-11-13T13:00-08:00 | 4h | owner-requested Fable (claude-fable-5-2) |
-| A03 | [Account switching checkpoint](cards/A03-account-switching-checkpoint.md) | - | lead | - | - | active | A02 | - | 2026-11-13T13:07-08:00 | 1d | Fable findings F1-F12 (all fix) sent to the A01 author a290e7ce to fold into ADR 0049/epic/competitive review; then CP4 owner questions (ADR Q1-Q14) |
+| A03 | [Account switching checkpoint](cards/A03-account-switching-checkpoint.md) | - | lead | - | - | done | A02 | - | 2026-11-13T13:07-08:00 | 1d | Fable findings F1-F12 (all fix) sent to the A01 author a290e7ce to fold into ADR 0049/epic/competitive review; then CP4 owner questions (ADR Q1-Q14) |
 | CP1 | CP1 go or adjust for L07 and L08 | - | - | - | - | done | - | - | - | - | manager sets done when L01 to L06 are done or dropped and the lead's CP1 decision is recorded; now gates only L07's unpark |
 | L14 | [image-availability #1313](cards/L14-image-availability.md) | - | worker | xcode | - | done | L03 | 1737 | 2026-11-13T06:11-08:00 | 1d | delta clean; waiting hosted: native rerun after the #1739 flake, relay soak; then merge gate (Part of #1313, closing refs []) |
 
