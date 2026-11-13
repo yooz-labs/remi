@@ -37,6 +37,7 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T00:57-08:00 | Q18: Codex danger-full-access extended from native-only (Q10) to L02 and every other Codex card that needs it; same bounds (clean worktree, push only the card's branch, develop-unchanged check) | owner |  |
 | 2026-11-13T01:02-08:00 | L03 advisor ruling (c): the Luna finding (child key pin has no proof of possession before auth_response) is a description defect, accepted as a documented protocol limit; fix = PR body and test wording, a 'copied' peer test, follow-up issue (owner files); no production change | advisor |  |
 | 2026-11-13T01:06-08:00 | Owner (2026-11-13, chat): the manager may file and comment on issues, and open, edit, comment on and close PRs, in addition to merging into develop; still no main, no force-push, no branch or worktree deletion without a question | owner |  |
+| 2026-11-13T01:10-08:00 | Owner (2026-11-13, chat): the manager and the lead (not workers or reviewers) may push to develop, push builds to TestFlight, and delete branches and worktrees that are done; main, force-push and anything for workers stay excluded | owner |  |
 
 ## Log
 
@@ -61,3 +62,4 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T01:00-08:00 | L01 delta review: 4 of 5 round-1 findings resolved; 1 Important introduced by the fix (standing-grant lock-screen bullet wrong). Fix r3 queued; Luna budget at its limit until the daily reset at next tick; last review round, no third |
 | 2026-11-13T01:02-08:00 | L03 fix round dispatched (terra, full access, thread 01a1d424-f58c); owner action needed: file the follow-up issue from L03/r2/issue-body.md |
 | 2026-11-13T01:06-08:00 | Filed #1735 (bind direct client auth signature to the server key) from the L03 advisor ruling; the L03 fix worker's PR body and test labels get the number after its run (manager edits the PR body once the worker finishes) |
+| 2026-11-13T01:10-08:00 | Owner widened authority again: develop pushes, TestFlight uploads, deleting done branches and worktrees (manager and lead only); L13 cleanup commands can be run by the manager after its checks |

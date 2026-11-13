@@ -13,7 +13,7 @@
 2026-11-12: Merge gate: fresh base, named checks, closing-reference scan, DV after each merge.
 2026-11-12: A01 stays behind L99 (owner instruction).
 
-2026-11-13: Owner: manager may file/comment issues and open/edit/close PRs (not main, no force-push, no deletions).
+2026-11-13: Owner: manager and lead (never workers) may file issues, open/edit/close PRs, push to develop, upload to TestFlight, delete done branches and worktrees. Not main, no force-push.
 
 ## Open risks
 2026-11-12: develop has no CI on push; DV is the only check (R12).
