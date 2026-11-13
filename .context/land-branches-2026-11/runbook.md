@@ -1,12 +1,12 @@
 # Runbook: land-branches-2026-11
 
 The manager follows this file literally, one tick at a time, with the `project:manager-loop` skill.
-Paths below are absolute; `PACK` means `/Volumes/S1/worktrees/remi/land-branches-plan/.context/land-branches-2026-11`, `BOARD` means `PACK/board.md`, and `MB` means `python3 /Users/yahya/.claude/plugins/cache/research-skills/project/0.12.0/skills/manager-loop/scripts/manager_board.py`.
+Paths below are absolute; `PACK` means `/Volumes/S1/worktrees/remi/land-branches-plan/.context/land-branches-2026-11`, `BOARD` means `PACK/board.md`, `MAIN` means `/Users/yahya/Documents/git/yooz/remi` (the main checkout, always on `develop`), and `MB` means `python3 /Users/yahya/.claude/plugins/cache/research-skills/project/0.12.0/skills/manager-loop/scripts/manager_board.py`.
 
 ## 1. Where the pack lives
 
 - The pack and board are on branch `chore/land-branches-plan` in worktree `/Volumes/S1/worktrees/remi/land-branches-plan`.
-  The main checkout `/Users/yahya/Documents/git/yooz/remi` stays on `develop`; never switch its branch.
+  `MAIN` stays on `develop`; never switch its branch.
 - Board commits go to `chore/land-branches-plan` only (`docs: board, <what changed>`), locally every tick; push that branch only at checkpoints (`git -C /Volumes/S1/worktrees/remi/land-branches-plan push origin chore/land-branches-plan`); no CI job runs on a push of that branch.
 - Evidence: `/Volumes/S1/yooz/remi/artifacts/land-branches-2026-11/<step>/r<round>/` (one folder per dispatch); never in the repository.
 
@@ -17,15 +17,17 @@ The owner runs, after approving the plan:
 ```bash
 git -C /private/tmp/claude-501/-Users-yahya-Documents-git-yooz-remi/4a896ae1-b937-4436-9997-64e23e8a81fb/scratchpad/wt-plan status --short   # expect only node_modules, pnpm-lock.yaml, pnpm-workspace.yaml (generated, untracked)
 git -C /Users/yahya/Documents/git/yooz/remi worktree remove --force /private/tmp/claude-501/-Users-yahya-Documents-git-yooz-remi/4a896ae1-b937-4436-9997-64e23e8a81fb/scratchpad/wt-plan
+git -C /private/tmp/claude-501/-Users-yahya-Documents-git-yooz-remi/4a896ae1-b937-4436-9997-64e23e8a81fb/scratchpad/wt-agents status --short   # expect the same generated files only; it holds chore/agents-md-split
+git -C /Users/yahya/Documents/git/yooz/remi worktree remove --force /private/tmp/claude-501/-Users-yahya-Documents-git-yooz-remi/4a896ae1-b937-4436-9997-64e23e8a81fb/scratchpad/wt-agents
 git -C /Users/yahya/Documents/git/yooz/remi worktree add /Volumes/S1/worktrees/remi/land-branches-plan chore/land-branches-plan
 mkdir -p /Volumes/S1/yooz/remi/locks /Volumes/S1/yooz/remi/artifacts/land-branches-2026-11
 cd /Volumes/S1/worktrees/remi/land-branches-plan && bun install
 ```
 
-The branch's commits are safe in the shared refs; `--force` only discards the scratch worktree's generated untracked files.
-
-Then the pack review (plan Appendix A), then the `/loop` start prompt (plan 0.1).
-Optional live view: `nohup MB serve BOARD --port 8765 > /tmp/board-serve.log 2>&1 & disown`.
+Both branches' commits are safe in the shared refs; `--force` only discards each scratch worktree's generated untracked files.
+If Q14 says install: `cp PACK/codex-landing.rules ~/.codex/rules/land-branches-2026-11.rules` (the owner runs it, and removes it when the loop ends).
+Then the `/loop` start prompt (plan 0.1).
+Optional live view (port 8765 belongs to the remi daemon; use 8799): `nohup python3 /Users/yahya/.claude/plugins/cache/research-skills/project/0.12.0/skills/manager-loop/scripts/manager_board.py serve /Volumes/S1/worktrees/remi/land-branches-plan/.context/land-branches-2026-11/board.md --port 8799 > /tmp/board-serve.log 2>&1 & disown`.
 
 ## 3. What to read
 
@@ -37,17 +39,34 @@ Optional live view: `nohup MB serve BOARD --port 8765 > /tmp/board-serve.log 2>&
 
 | Need | How |
 | --- | --- |
-| Codex worker | the command in section 5, run in the background with `run_in_background: true` |
-| Claude reviewer or synthesis | Agent tool, `subagent_type: project:pr-review-toolkit`, `model: sonnet`, `run_in_background: true`, name `rv-<step>-<chunk or lens>` |
-| Lead wake, advisor | Agent tool, `model: opus`, `run_in_background: true`; brief per section 9 or `references/escalation.md` |
-| A02 Fable advisor | Agent tool, `model: claude-fable-5-2`, `run_in_background: true` (owner-requested, A02 only) |
+| Codex worker | section 5, run in the background (`run_in_background: true`) |
+| Codex Luna reviewer (Q9) | section 5, reviewer variant |
+| Claude reviewer, synthesis, cross-chunk, delta | Agent tool: `subagent_type: project:pr-review-toolkit`, `model: sonnet`, `effort: xhigh` (the review-panel protocol asks for Sonnet at xhigh), `run_in_background: true`, `description: "rv L03 contract"` (step and lens) |
+| Lead wake, advisor, lead-tier step (P01, A01, A03) | Agent tool: `model: opus`, `effort: xhigh` (owner rule for lead work), `run_in_background: true`, `description` naming the step; brief per section 9, `references/escalation.md`, or preamble + card + live facts; no `isolation` parameter (the manager creates the worktree first, section 5) |
+| A02 Fable advisor | Agent tool: `model: fable` (the model id is `claude-fable-5-2`), `run_in_background: true`, `description: "A02 Fable review"`; owner-requested, A02 only |
 | Message a live Claude agent | SendMessage |
 | Ask the owner | `MB ask` first, then AskUserQuestion (at most 4 questions per call) |
 | Notify | PushNotification, at most one per event class per day |
 | Wait | Monitor with a time limit; never an unbounded poll |
 | Wake | ScheduleWakeup: 1800 s while workers run, 3600 s while waiting on people; `stop: true` when the board is `done` or `paused` |
 
-## 5. Dispatching a Codex worker
+Agent tool model values are only `sonnet`, `opus`, `haiku` and `fable`; there is no `name` parameter.
+
+## 5. Worktrees and dispatch
+
+### Worktrees (the manager creates them before dispatch)
+
+| Case | Command | Steps |
+| --- | --- | --- |
+| Existing worktree | check `git -C MAIN worktree list` lists it and `git -C WT status --porcelain --untracked-files=no` is empty | L02 to L08, L14 (paths on the cards) |
+| Existing branch, no worktree | `git -C MAIN worktree add WT BRANCH`, then `cd WT && bun install` | L09 (`/Volumes/S1/worktrees/remi/bun142-pins`, `chore/issue-1273-bun142-pins`); an L01 fix (`/Volumes/S1/worktrees/remi/agents-md-split`, `chore/agents-md-split`) |
+| New branch | `git -C MAIN fetch origin && git -C MAIN worktree add -b BRANCH WT origin/develop`, then `cd WT && bun install` | P01 (`feature/issue-ISSUE-ipad-board`), A01 (`feature/issue-1157-account-switching-design`; A03 reuses it), RB (`patch/revert-MERGE8`) |
+| Detached, once | `git -C MAIN worktree add --detach /Volumes/S1/worktrees/remi/develop-verify origin/develop`, then `bun install` | DV |
+| Read-only | no worktree; Claude reviewers read by hash with `git -C MAIN`; Codex reviewers run with `-C MAIN -s read-only` | L01 check, every reviewer |
+
+The manager never removes a worktree; L13 hands the owner the commands.
+
+### Codex worker command
 
 Model by tier: worker `gpt-6-luna` with `model_reasoning_effort=max`; worker-hard `gpt-6.1-terra` with `model_reasoning_effort=xhigh`.
 `WT` is the card's worktree, `GITDIR` is `git -C WT rev-parse --git-dir`, `EVID` the evidence folder.
@@ -63,58 +82,79 @@ codex exec -m gpt-6-luna -c model_reasoning_effort=max \
 ```
 
 - `PROMPT` is `PACK/cards/README.md`, then the card verbatim, then the live facts (section 6).
-- Native Swift cards (Needs include `xcode`; owner answer Q10, 2026-11-12): replace the `-s workspace-write` line and the two `sandbox_workspace_write` lines with `-s danger-full-access`, only in a clean worktree: `git -C WT status --porcelain --untracked-files=no` prints nothing before dispatch; otherwise do not dispatch, log it and ask the owner.
-  Every other Codex card (no `xcode` in Needs) stays `workspace-write` with the roots above.
-- Right after start: read the `thread.started` id from `EVID/codex-events.jsonl`; its rollout under `~/.codex/sessions/2026/11/<dd>/rollout-*-<thread id>.jsonl` must show `cwd` = WT, the expected model and effort; otherwise stop it and dispatch again.
-- Write the thread id, model and effort on the Agents row (`MB set BOARD Agents <name> --new ...`).
-- Before each dispatch: `MB card PACK/cards/<card>.md`, `MB spend BOARD "Agents today"`, and the platform row (`"Codex Luna today"` or `"Codex Terra today"`).
-  A refused `spend` on a Codex row: do not dispatch on Claude instead; ask the parity question (section 12).
+- Native Swift cards (Needs include `xcode`; Q10, 2026-11-12): replace the `-s workspace-write` line and the two `sandbox_workspace_write` lines with `-s danger-full-access`, only when `git -C WT status --porcelain --untracked-files=no` prints nothing; otherwise do not dispatch, log it and ask the owner.
+  Every other Codex card stays `workspace-write`.
+- Cards with no PR (L13, DV): the report schema's `pr` is 0 (L13) or the merged PR's number (DV); `head_sha` is the commit the card names.
+- Right after start: read the `thread.started` id from `EVID/codex-events.jsonl`; its rollout under `~/.codex/sessions/2026/11/DD/rollout-*-THREAD.jsonl` must show `cwd` = WT and the expected model and effort; otherwise stop it and dispatch again.
+- Write the thread id, model and effort on the Agents row (`MB set BOARD Agents AGENT --new ...`).
+- Before each dispatch: `MB card PACK/cards/CARD.md`, `MB spend BOARD "Agents today"`, and the platform row (`"Codex Luna today"` or `"Codex Terra today"`).
+  A refused `spend` on a Codex row: never dispatch on Claude instead; ask the parity question (section 12).
+
+### Codex reviewer variant (Q9 Luna second reviewer)
+
+```bash
+codex exec -m gpt-6-luna -c model_reasoning_effort=max -s read-only \
+  -C /Users/yahya/Documents/git/yooz/remi --json -o EVID/codex-last-message.md \
+  "PROMPT" > EVID/codex-events.jsonl 2> EVID/codex-stderr.log
+```
+
+No `--output-schema` (the reviewer returns the review JSON of its card).
+A Luna reviewer counts against Codex Luna capacity: dispatch it only when the steps `active` on `codex-luna` plus running Luna reviewers number fewer than 2; it spends `"Agents today"` and `"Codex Luna today"`.
+
+### After every full-access run
+
+Record `git ls-remote origin refs/heads/develop` at dispatch.
+After the run: if `develop` moved, every new commit must be a merge the manager made (on the board) or a version bump (`chore: bump version to`); anything else stops all dispatching and goes to the owner at once.
+Also `gh pr list --state merged --search "merged:>=DISPATCH_TIME"` lists only merges the manager made.
 
 ## 6. Live facts added at dispatch
 
 Copied from the board and from `git`/`gh` at dispatch time, never from an earlier prompt:
 
-- `origin/develop` head (`git -C /Users/yahya/Documents/git/yooz/remi fetch origin && git -C /Users/yahya/Documents/git/yooz/remi rev-parse origin/develop`);
+- `origin/develop` head (`git -C MAIN fetch origin && git -C MAIN rev-parse origin/develop`);
 - the PR number and head commit, when the step has a PR;
 - for a fix round: the round number, the decided findings with their outcomes, and the line "This card was started earlier. Continue from the worktree: run `git status` and `git log --oneline -10` first.";
-- for a reviewer: `Lens group: <name>`, `Base: <merge-base sha>`, `Head: <head sha>` (the reviewer reads those commits, never a moving worktree);
-- the owner answers that the card names (Q2 for native cards, while it is open: "Q2 unanswered" means the card's stall rule is a stop condition).
+- for a reviewer: `Lens group`, `Base` (merge-base), `Head` (the reviewer reads those commits, never a moving worktree), and for delta reviews `Round1Head`;
+- the owner answers the card names (Q2 for native cards; while Q2 is open a stall is a stop condition; Q11 and Q12 for L07, L08, L14).
 
 ## 7. First tick of a session
 
 1. `date`, then `MB tick BOARD --manager mba-claude-sonnet --state running --next 30m`.
    Refused (another lease): schedule one wake at the printed expiry and stop.
 2. Check `lead.md`: `test "$(wc -l < PACK/lead.md)" -le 40 && test "$(wc -c < PACK/lead.md)" -le 3000`.
-   If it fails: `MB log BOARD "lead.md over cap"` and `MB propose BOARD "lead prunes lead.md" --why "over the 40-line or 3,000-character cap"`; the next lead wake's brief starts with "Prune lead.md to the cap first"; keep reading the file meanwhile.
-3. Reconcile: for each step in `active` or `review`, read its PR (`gh pr view N --json headRefOid,state,isDraft,mergeStateStatus`) and its worktree (`git -C WT status --short`, `git -C WT log --oneline -3`); the PR and worktree are right; correct the board and `MB log` the correction.
+   If it fails: `MB log BOARD "lead.md over cap"` and `MB propose BOARD "lead prunes lead.md" --why "over the 40-line or 3,000-character cap"`; the next lead wake's brief starts with "Prune lead.md to the cap first".
+3. Reconcile: for each step in `active` or `review`, read its PR (`gh pr view N --json headRefOid,state,isDraft,mergeStateStatus`) and its worktree (`git -C WT status --short`, `git -C WT log --oneline -3`); the PR and worktree are right; correct the board and `MB log` it.
    A step with no live worker: dispatch again with the continuation line (section 6).
 4. `test -d /Volumes/S1/yooz/remi/locks || mkdir -p /Volumes/S1/yooz/remi/locks`.
-5. First session only: ask the questions still `open` on the board (on 2026-11-12: Q2, Q3, Q7) in one batch; never re-ask a `closed` one.
+5. Ask the questions still `open` on the board in batches of at most four (on 2026-11-12: Q2, Q3, Q7, Q11 to Q15); never re-ask a `closed` one.
 
 ## 8. The tick
 
 The skill's tick, with these project rules:
 
-- **Order inside one tick:** owner answers (apply the mapping in section 11), worker reports, reviews, failing checks, conflicts, timeboxes, dates, checkpoints, then fill free slots.
-- **L99 rule:** when every step L01 to L12 (L10 included) is `done` or `dropped`, set L99 `done` (`MB set BOARD Steps L99 State=done`), set A01 to `todo`, set P01 to `todo` once the iPad issue exists (ask the owner to run its command in `PACK/issues-to-file.md`; its number is P01's live fact), and wake the lead for CP2 (section 9).
-- **Steps waiting on a question** stay `owner` until the answer; never dispatch them earlier.
-- **Reviewer concurrency:** before dispatching a reviewer or synthesis agent, count Agents rows with Slot `claude-sonnet` and State `running`; dispatch only when fewer than 2; otherwise leave it queued for the next tick.
-  Reviewers spend `"Agents today"` and `"Claude Sonnet today"`.
-- **Xcode lock:** native gates run as `lockf -k -t 7200 /Volumes/S1/yooz/remi/locks/xcode.lock <command>`; two native implementers may be active at once; they queue only on the lock.
-  The manager runs no Xcode command itself, except P01's precondition check through the Xcode MCP server.
+- **Order:** owner answers (section 11), worker reports, reviews, failing checks, conflicts, timeboxes, dates, checkpoints, then fill free slots.
+- **CP1 rule:** when L01 to L06 are each `done` or `dropped`, wake the lead for CP1 (go or adjust for L07, L08, L14); when `board-log.md` has the lead's `CP1:` decision, set CP1 `done`.
+- **L99 rule:** when L01 to L12, L14 and CP1 are each `done` or `dropped`, set L99 `done`, set A01 to `todo`, set P01 to `todo` once the iPad issue exists (ask the owner to run its command in `PACK/issues-to-file.md`; its number is P01's live fact), and wake the lead for CP2.
+- **Dropped dependency:** when a step becomes `dropped`, list every step whose Depends names it; at the next lead wake the lead decides for each (drop it too, or remove the dependency with `MB set ... Depends=...` and a `decide` line); the manager never edits Depends on its own.
+- **L09 rule:** dispatch L09 only while no step with Needs `xcode` is in `review`; merge it only while no other step is `active` or `review`.
+- **Steps waiting on a question** stay `owner` until the answer.
+- **Reviewer concurrency:** before dispatching a Claude reviewer, count Agents rows with Slot `claude-sonnet` and State `running`; dispatch only when fewer than 2.
+  Claude reviewers spend `"Agents today"` and `"Claude Sonnet today"`.
+- **Big reviews one at a time:** do not start the L07 and L08 round-1 reviews in the same day (risk R5).
+- **Xcode lock:** native gates run as `lockf -k -t 7200 /Volumes/S1/yooz/remi/locks/xcode.lock COMMAND`; the manager runs no Xcode command itself, except P01's precondition check through the Xcode MCP server.
 
 ## 9. The intermittent lead and lead.md
 
-The lead is Claude Opus, woken only for: a checkpoint (`PACK/checkpoints.md`), an advisor ruling that changes a card, two failed approaches on a step, a red `develop` after a merge, or an outline card to complete.
-It is not a standing slot; it spends `"Agents today"` and `"Claude Opus today"`, and in the late phases it waits for a free Opus session (the `claude-opus` slot) unless `develop` is red.
+The lead is Claude Opus, woken only for: a checkpoint (`PACK/checkpoints.md`), an advisor ruling that changes a card, two failed approaches on a step, a red `develop`, a dropped dependency, or an outline card to complete.
+It is not a standing slot; it spends `"Agents today"` and `"Claude Opus today"`, and while a lead-tier step holds `claude-opus` it waits, unless `develop` is red.
 
 Lead brief (one message):
 
 ```text
 You are the lead of yooz-labs/remi land-branches-2026-11 (read-only for product code).
 Read first: PACK/lead.md, then `MB status BOARD`, then only what this wake names.
-Wake reason: <checkpoint or event>, with links.
-Decide, then: edit cards or the plan only where the decision requires it, in one commit on chore/land-branches-plan; record each decision with `MB decide BOARD "<text>" --by lead`; rewrite lead.md (format below).
+Wake reason: CHECKPOINT OR EVENT, with links.
+Decide, then: edit cards or the plan only where the decision requires it, in one commit on chore/land-branches-plan; record each decision with `MB decide BOARD "TEXT" --by lead`; rewrite lead.md (format below).
 Do not dispatch, merge, or edit the board's Parity, Slots or Budget.
 ```
 
@@ -122,7 +162,7 @@ Do not dispatch, merge, or edit the board's Parity, Slots or Budget.
 Four sections only: `## Decisions in force`, `## Open risks`, `## Next intentions`, `## Pending owner questions`.
 One line per item, starting with its date (`2026-11-14: ...`), newest first within a section.
 At every update the lead overwrites or prunes: a resolved risk, a done intention or an answered question leaves the file; history goes to `board-log.md` (`MB log` or `MB decide`), never to lead.md.
-The manager checks the cap at the first tick of every session and after every lead wake (the command in section 7, step 2); over the cap it flags as in section 7 and does not brief a new lead wake on anything else until the file is pruned.
+The manager checks the cap at the first tick of every session and after every lead wake (section 7, step 2); over the cap it flags as there and briefs no other lead wake until the file is pruned.
 
 ## 10. Events
 
@@ -130,35 +170,39 @@ The manager checks the cap at the first tick of every session and after every le
 
 Verify by observation, stop at the first failure (skill, "Verify by observation"):
 1. `gh pr view N --json headRefOid,baseRefName` equals the report's head and `develop`.
-2. `gh pr diff N --name-only` stays inside the card's Scope (for L07 and L08 also inside the file list of their chunk table, plus files the develop merge brought in).
-3. Re-run the card's Acceptance command that is cheapest and not native, or read the quoted gate output in the evidence folder the card names.
+2. `gh pr diff N --name-only` stays inside the card's Scope (for L07 and L08 also inside their chunk tables, plus files the develop merge brought in).
+3. Re-run the card's cheapest non-native Acceptance command, or read the quoted gate output in the evidence folder the card names.
 4. Every fix has a revert check or a test that fails without it.
 5. Deviations are listed and triaged (accept, send back, or ask the lead).
-Then set the step `review` and dispatch round 1 (plan section 3) while CI runs.
+6. After a full-access run, the `develop` check in section 5.
+Then set the step `review` and dispatch its review (plan section 3; for L02, L03 and L09 the form Q13 chose) while CI runs.
+If Q13 is still open when L02, L03 or L09 reaches this point, set the step `owner` with Next "waits on Q13" instead.
 
 ### A review returns
 
-- Record each reviewer's status; every dispatched reviewer is accounted for (a silent one at 20 minutes: proceed with the reports received and record the missing lens).
-- For L07 and L08: when all 8 chunk reports are in, dispatch the synthesis card; outcomes start from its list.
-- Every finding starts as `fix`; send the list to the implementer (same worktree, fix round card = the step's card plus the decided findings).
+- Every dispatched reviewer is accounted for. A reviewer silent at 20 minutes is dispatched again once with the same card; silent again, one advisor consult performs that lens itself, read-only. Never proceed with a report missing.
+- L07 and L08: the synthesis card starts only when every `contract` chunk report, the cross-chunk report and (L08) both L08-R4 reports are in.
+- Every finding starts as `fix`; send the list to the implementer (same worktree; fix-round card = the step's card plus the decided findings).
 - Fix-round tier: worker-hard (`codex-terra`) when any accepted finding is Critical or touches authentication, authorization, encryption, data integrity or concurrency; otherwise the step's own tier.
   A step whose implementer was Codex keeps Codex for fixes unless the skill's handover conditions hold (`references/platforms.md`, "Handing a card from one platform to another").
 - Proposed rejects of a round: one advisor consult covering all of them; record the ruling with `MB decide` and a PR comment.
-- Round 1 substantial (`review-convergence.md` rules 1 to 5): round 2 with one Sonnet reviewer on the fix commits, brief from [RV-delta](cards/RV-delta.md).
-  Rule 4 (authorization, encryption, data integrity, concurrency) applies to every accepted fix in L03, L06 and L08-R4.
+- Round 1 substantial (`review-convergence.md` rules 1 to 5): round 2 per [RV-delta](cards/RV-delta.md); for L07 and L08 one delta reviewer per touched chunk.
+  Large fixes (rules 2, 3 or 5) go into a fix PR whose base is the step PR's head branch; merging that fix PR needs Q15; a fix PR into a `patch/*` branch gets no native CI (`native-app.yml` runs on PRs into `main`, `develop` and `feature/**`), so its local native gates are the evidence and the step PR's CI reruns after it merges.
+  Rule 4 applies to every accepted fix in L03, L06, L08-R4 and L14.
 
 ### Checks
 
-- Usual durations seen on these PRs: `Test` workers up to 14 minutes, `Build and Test (Native)` 12 to 14 minutes, `local-relay` (Relay R7 local gate) 64 to 65 minutes.
-  Check at 30 minutes; the relay gate at 75 minutes; a job past twice its usual time is hung (cancel, rerun once, file an issue if `timeout-minutes` is missing).
-- Failing because of the diff: two fix attempts (fix round), then the advisor with the failing log.
-- Failing without the diff (fails on `develop` too, infrastructure, or a known flake such as #1634's signal 11 or `DirectConnectionDeadlineTests` timing): one `gh run rerun <id> --failed`, then file an issue with the log and continue other steps; the same gate step flaky twice in seven days goes to the lead (diagnosis card).
-- No checks on a head (L02 today): push of the develop merge starts them; if none start in 5 minutes, check `gh pr view N --json mergeable` and the path filters, run the local gates, and ask the owner if a required check stays pending.
+- Usual durations: `Test` workers up to 14 minutes, `Build and Test (Native)` 12 to 14 minutes, `local-relay` 64 to 65 minutes when it runs the soak.
+  Check at 30 minutes; the relay gate at 75 minutes; a job past twice its usual time is hung: cancel, rerun once, and hand the owner an issue command if `timeout-minutes` is missing.
+- Failing because of the diff: two fix attempts, then the advisor with the failing log.
+- Failing without the diff (fails on `develop` too, infrastructure, or a known #1634 flake: signal 11 in the test helper, `DirectConnectionDeadlineTests` timing): one `gh run rerun RUN_ID --failed`; then write the log excerpt to `EVID/flake.md` and hand the owner `gh issue comment 1634 --repo yooz-labs/remi --body-file EVID/flake.md` (a #1634 match) or `gh issue create --repo yooz-labs/remi --title TITLE --body-file EVID/flake.md` (anything else); continue other steps.
+  The same gate step flaky twice in seven days goes to the lead (diagnosis card).
+- No checks on a head: the next push starts them; if none start in 5 minutes, check `gh pr view N --json mergeable` and the path filters; "no checks reported" never counts as passing.
 
 ### A merge conflict
 
-The branch's worker merges `origin/develop` into the branch (`git merge origin/develop`), resolves, reruns its gates and pushes once; never a rebase, never a force-push.
-A manual resolution after round 2 already ran (L05 today): one advisor consult reads `git show --cc <merge sha>` and rules; no third review round.
+The branch's worker merges `origin/develop` into the branch, resolves, reruns its gates and pushes once; never a rebase, never a force-push.
+A manual resolution after round 2 already ran (L05 today): one advisor consult reads `git show --cc MERGE_SHA` and rules; no third review round.
 
 ### Timebox, silence, usage limit
 
@@ -168,43 +212,49 @@ A manual resolution after round 2 already ran (L05 today): one advisor consult r
 
 ### An owner answer
 
-Apply section 11, `MB decide BOARD "<answer>" --by owner`, set the question `closed`.
+Apply section 11, `MB decide BOARD "ANSWER" --by owner`, set the question `closed`.
 
-### Merge
+### Merge gate (all must hold; plan 0.4)
 
-When the merge gate passes (plan 0.4): `gh pr ready N` if still draft, `gh pr merge N --merge`, then `MB set BOARD Steps <id> State=done`, close the step's agents, and `MB log`.
-After each merge: watch `develop`'s next push run (`gh run list --branch develop --limit 3`); a red `develop` stops all merges and goes to the advisor.
+1. Every review report dispatched for the step is in (none missing), every finding has an outcome, and every `fix` finding is verified on the final head by its named test or repro (run it, or read the implementer's quoted output for that exact head).
+2. No accepted Critical is open.
+3. Fresh base: `git -C MAIN fetch origin && git -C MAIN log --format=%s HEAD_SHA..origin/develop` lists only `chore: bump version to ...` subjects; otherwise the worker merges `origin/develop` into the branch and the checks run again.
+4. Checks on the final head: `gh pr checks N` lists `CI Scope`, `Lint`, `Type Check`, `Test`, `Spelling`, `Relay Scope` and `local-relay`, each passing or skipping, none pending or failing; a PR that touches `packages/native/` also has `Build and Test (Native)` passing (not skipping); a PR that touches `packages/daemon/`, `packages/shared/`, `packages/signaling/`, `tests/integration/` or `.github/` has `local-relay` passing after more than 55 minutes (the real soak).
+5. Closing references: `git -C MAIN log --format=%B origin/develop..HEAD_SHA | bun -e 'import { extractClosingReferences } from "/Users/yahya/Documents/git/yooz/remi/packages/shared/src/issue-closing.ts"; console.log(JSON.stringify(extractClosingReferences(await Bun.stdin.text())))'`, plus the PR title through the same command; for each issue listed that the step does not close on purpose, notify the owner before merging and, after the merge, hand the owner `gh issue reopen N --repo yooz-labs/remi --comment "Reopened: closed by a commit message in PR #PR, not finished."` (known: #1313 from native-images' `40fb479f`).
+6. Step extras: L09 needs the owner's phone check (Q1) and the L09 rule; P01 and A03 need the owner's approval; L08 under Q11 option b needs the owner's written sign-off.
+
+Then: `gh pr ready N` if still draft, `gh pr merge N --merge`, `MB set BOARD Steps ID State=done`, close the step's agents, `MB log`.
+
+### After a merge
+
+1. Wait (Monitor, at most 10 minutes) until `gh run list --workflow auto-bump-dev.yml --branch develop --limit 1 --json status,headSha` shows a completed run for the merge and `origin/develop` has the bump commit; no other merge before that.
+2. Dispatch [DV](cards/DV-develop-verify.md) on the new tip (worker tier, Needs `xcode`, full access in the detached worktree).
+3. DV red: `develop` is red; stop all merges, one advisor consult, then ask the owner: fix forward (the lead writes a card) or revert ([RB](cards/RB-revert-merge.md), dispatched only on the owner's answer).
 
 ## 11. Owner questions and what each answer does
 
-Answered by the owner on 2026-11-12 and already applied on the board: Q1 keep, Q4 fold, Q5 park, Q6 fold, Q8 approve (commands only), Q9 yes (L03, L06, L08-R4 only), Q10 full access for native cards in a clean worktree; the defaults (Parity, Slots, Budget, merge authority) were approved as proposed.
-Still open: Q2, Q3, Q7.
-The question texts and options are on the board; the mapping (rows for answered questions stay for reference):
+Answered on 2026-11-12 and applied: Q1 keep, Q4 fold (suspended by Q11), Q5 park, Q6 fold, Q8 approve (commands only), Q9 yes (L03, L06, L08-R4), Q10 full access for native cards in a clean worktree; defaults approved.
+Open: Q2, Q3, Q7, Q11, Q12, Q13, Q14, Q15.
 
 | Q | Answer | Board change |
 | --- | --- | --- |
-| Q1 #1512 phone gate | keep | L09 `todo`; after its gates pass it goes `owner` until the owner reports the phone acceptance |
-| | waive | L09 `todo`; the PR body records the waiver; the manager may merge |
-| | defer | L09 `dropped`; branch kept |
-| Q2 Mac test gate | bounded attempt, then hosted | native cards apply their Q2-A gate text |
+| Q2 Mac test gate | bounded attempt, then hosted | native cards: a timeout or a stall before a test bundle loads is recorded with its log path and the card continues on hosted `swift test` plus local `swift test` |
 | | require local | a native step whose Mac test stalls goes `owner` |
-| Q2 answered (Q10 already answered) | any answer | L03 and L04 `todo` (every later native step depends on L03) |
+| | either answer | L03 and L04 `todo` |
 | Q3 #1731 fix | approve | L06 `todo` |
-| | not now | L06 `dropped`; branch kept |
-| Q4 image-availability | fold | nothing until L13 |
-| | land first | `MB propose` "lead writes a card for image-availability before L08"; lead wake |
-| Q5 #1711 | park | L11 `dropped`; branch kept |
-| | land | L11 `todo` |
-| | delete | L11 `dropped`; L13 adds the branch to the delete list |
-| Q6 #1641 | fold | L12 `dropped`; branch kept |
-| | land | L12 `todo` (after Q2 and Q10 are answered) |
+| | not now | L06 `dropped`, branch kept; L08 does not depend on L06 |
 | Q7 #1727 files | any answer | the owner acts; L10 `done` when the owner says so; a "push" answer adds a lead wake to decide whether a #1727 card follows |
-| Q8 drop list | approve | L13 includes every listed branch |
-| | keep some | L13 includes only the ones the answer names |
-| Q9 Luna second reviewer | yes (answered) | add one Codex Luna reviewer on top of the Sonnet panel: RV-panel with lens `contract` for L03 and L06, and the L08-R4 chunk card plus RV-chunk-common with lens `contract` for L08; dispatch per section 5 with `gpt-6-luna`, `-s read-only`, and spend `"Codex Luna today"` |
-| | no | Sonnet only |
-| Q10 Codex sandbox | full access (answered) | section 5 variant for `xcode` steps, clean worktree only |
-| | workspace-write | keep; a sandbox denial in a native gate raises the parity question |
+| Q11 #1313 | a: image-availability alone | L14 `todo`; L08 `dropped` (native-images parked, branch kept, not deleted) |
+| | b: native-images dormant | L08 `todo`; L14 `dropped` (folded; branch deleted at L13) |
+| Q12 #1720 | park | L07 `dropped` (branch kept); L13 lists it under Kept |
+| | land review-only | L07 `todo` |
+| Q13 review rounds | a: recorded rounds plus one delta | L02, L03, L09 get one RV-delta review from their recorded head (#1657 `26fbf947`, #1728 `5c1f9380`, #1512 `3a654273`) to the final head; an empty diff needs no review |
+| | b: fresh round 1 | plan section 3 panels |
+| | c: waive | no review for those three; merge gate items 2 to 6 still apply |
+| Q14 Codex rules | install | the owner copies the rules (section 2); the manager confirms with `codex execpolicy check --rules ~/.codex/rules/land-branches-2026-11.rules gh pr merge 1` printing `forbidden` |
+| | do not install | rely on the preamble and the section 5 `develop` check |
+| Q15 fix-PR merges | yes | the manager may merge a review-fix PR into its step PR's head branch after its delta review and local gates |
+| | no | the owner merges fix PRs; the step waits `owner` |
 
 ## 12. The parity question
 
@@ -214,9 +264,10 @@ Form: "Update the parity to ... (Recommended) / Move this card to Claude Opus fo
 ## 13. Never
 
 - Everything in the skill's "Never" list.
-- Switch the main checkout's branch, or touch another worktree than the card's.
+- Switch `MAIN`'s branch, or touch a worktree other than the card's (creating it in section 5 is the exception).
 - Commit, push or read the contents of the untracked files in `/Volumes/S1/worktrees/remi/store-callback-order`.
-- Delete a branch or a worktree, close an issue, or file an issue: hand the exact commands to the owner (L13, issues-to-file.md).
-- Merge into `main`, merge L09 against Q1, merge the P01 or A03 PRs before the owner approves.
+- Delete a branch or a worktree, close, reopen, comment on or file an issue: hand the exact commands to the owner.
+- Merge into `main`; merge L09 against Q1; merge P01, A03, or L08 under Q11 option b before the owner approves; merge a fix PR without Q15.
 - Use the frontier tier anywhere but A02.
 - Mark a test as skipped, or loosen a gate, to get a check green.
+- Proceed with a review report missing.

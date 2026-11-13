@@ -1,0 +1,15 @@
+# Codex execpolicy rules for land-branches-2026-11 workers (forbidden commands).
+# Verified with codex-cli 0.167.0 on 2026-11-12:
+#   codex execpolicy check --rules THIS_FILE gh pr merge 1728 --merge  -> "decision":"forbidden"
+#   codex execpolicy check --rules THIS_FILE gh pr view 1             -> no match
+# Not verified: that `codex exec` loads a file placed in ~/.codex/rules, or that it applies
+# rules under -s danger-full-access. Installing it changes the owner's global Codex config (Q14).
+prefix_rule(pattern = ["gh", "pr", "merge"], decision = "forbidden")
+prefix_rule(pattern = ["gh", "pr", "close"], decision = "forbidden")
+prefix_rule(pattern = ["gh", "issue"], decision = "forbidden")
+prefix_rule(pattern = ["gh", "release"], decision = "forbidden")
+prefix_rule(pattern = ["git", "push", "--force"], decision = "forbidden")
+prefix_rule(pattern = ["git", "push", "-f"], decision = "forbidden")
+prefix_rule(pattern = ["git", "push", "origin", "develop"], decision = "forbidden")
+prefix_rule(pattern = ["git", "push", "origin", "main"], decision = "forbidden")
+prefix_rule(pattern = ["git", "rebase"], decision = "forbidden")

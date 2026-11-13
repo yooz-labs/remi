@@ -11,4 +11,7 @@
 | R7 | #1512 changes CI to Bun 1.4.2 while PRs are open; #1206 (a 1.4.2 hang) is still open | `Test` jobs after L09 merges | L09 | L09 stays last; if a hang recurs, file it on #1206 and ask the owner whether to revert | owner |
 | R8 | A PR body overstates what ships (native-images ships gated off; #1720 and #1707 lack signed-device acceptance) | the body at the merge gate | L05, L07, L08 | send back inside the round: the body says what ships and what is unverified | manager (literal) |
 | R9 | The local Bun (1.4.4) differs from CI's pin (1.3.11) | a local TS gate passes and CI fails, or the reverse | L02, L09 | hosted CI is authoritative; record both | manager |
+| R11 | A commit message closes an issue on merge (`close-on-develop.yml`); native-images' `40fb479f` says "closed #1313" | merge gate item 5 output | every merge | owner told before the merge; reopen command after it | owner |
+| R12 | `develop` turns red unseen (no CI on `develop` pushes; no required checks) | the DV card after each merge | every merge | stop merging; advisor; owner chooses fix forward or revert (RB) | owner |
+| R13 | A full-access native worker merges, closes, posts or pushes outside its branch | `git ls-remote origin refs/heads/develop` and merged-PR list after each run | every full-access run | stop all dispatching; owner | owner |
 | R10 | Disk on `/Volumes/S1` (1.1 TB free on 2026-11-12) fills with DerivedData | `df -h /Volumes/S1` under 100 GB | each checkpoint | ask the owner before deleting anything not created by this plan | owner |
