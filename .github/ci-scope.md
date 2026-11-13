@@ -793,7 +793,8 @@ content, executable, path or mode change still restores all gates.
 ## Complete Test execution experiment (#1206)
 
 The proposed Test runner discovers the complete filesystem test population using
-Bun 1.3.11's pinned suffix/loader/default directory rules and root preloads. It
+Bun's default suffix/loader/directory rules, as pinned on 1.3.11 and rechecked on
+1.4.2 for #1273 (Bun 1.4.2 found the runner's same 518 files), and root preloads. It
 runs exactly two sequential processes: `remote-new-client.test.ts` alone, then
 every other discovered file together. No new per-test timeout, filter, skip,
 retry or parallel batch is introduced. The target has a manual exact case
