@@ -45,7 +45,7 @@ public struct RemiSessionGrouping: Equatable, Sendable {
         self.recent = recent
     }
 
-    private static func sorted(_ sessions: [RemiSessionSummary]) -> [RemiSessionSummary] {
+    static func sorted(_ sessions: [RemiSessionSummary]) -> [RemiSessionSummary] {
         sessions.sorted { lhs, rhs in
             let left = lhs.lastActivity ?? ""
             let right = rhs.lastActivity ?? ""

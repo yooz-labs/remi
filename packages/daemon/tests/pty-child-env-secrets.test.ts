@@ -101,13 +101,14 @@ function daemonSources(): string[] {
 }
 
 /**
- * Secret-named literals that are not environment variables the daemon reads: two error codes of
- * the relay epic's push paths (#1200) and the Worker's own `PUSH_SECRET`, named in a comment.
+ * Secret-named literals that are not environment variables the daemon reads: fixed push error
+ * codes and the Worker's own `PUSH_SECRET`, named in a comment.
  * The second test below checks that none of them is read from the environment.
  */
 const NOT_ENVIRONMENT = new Set([
   'LEGACY_PUSH_SECRET_REQUIRED',
   'SECURE_PUSH_SECRET',
+  'LOCAL_PUSH_SECRET',
   'PUSH_SECRET',
 ]);
 

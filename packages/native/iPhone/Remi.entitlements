@@ -13,5 +13,7 @@
 	</array>
 	<key>aps-environment</key>
 	<string>$(APNS_ENVIRONMENT)</string>
+	<key>com.apple.developer.usernotifications.time-sensitive</key>
+	<true/>
 </dict>
 </plist>

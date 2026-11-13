@@ -14,6 +14,12 @@ export interface SecurePushTransportOptions {
   readonly pushSecret?: string;
   readonly maxAttempts?: 1 | 2 | 3;
   readonly retryDelayMs?: number;
+  /** Capability-proved local hub submission. Null means no network invocation was made. */
+  readonly forward?: (
+    body: string,
+    snapshot: SecurePushSnapshot,
+    signal: AbortSignal,
+  ) => Promise<Response> | null;
 }
 export interface OwnedLoopbackPushTestOptions extends SecurePushTransportOptions {
   readonly ownedOrigin: string;
@@ -31,7 +37,8 @@ export type SecurePushRefusal =
   | 'EXPIRED'
   | 'STORE_ERROR'
   | 'INVALID_CONTENT'
-  | 'NOT_PREPARED';
+  | 'NOT_PREPARED'
+  | 'LOCAL_HUB_UNAVAILABLE';
 export type SecurePushPreparation =
   | { readonly outcome: 'prepared'; readonly prepared: PreparedSecurePush }
   | { readonly outcome: 'refused'; readonly reason: SecurePushRefusal };
@@ -118,11 +125,13 @@ async function resultBody(response: Response): Promise<r.PushSubmitResult> {
   }
   return r.decodePushSubmitResult(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
 }
+export { resultBody as readPushSubmitResultResponse };
 export class SecurePushTransport {
   private readonly store: SecurePushStore;
   private readonly signer: r.Signer;
   private readonly audience: string;
   private readonly authorization: string | undefined;
+  private readonly forward: SecurePushTransportOptions['forward'];
   private readonly maxAttempts: number;
   private readonly retryDelayMs: number;
   private readonly prepared = new WeakMap<PreparedSecurePush, PrivatePreparation>();
@@ -149,6 +158,7 @@ export class SecurePushTransport {
     if (options.pushSecret !== undefined && (!secret || !/^[\x21-\x7e ]+$/.test(secret)))
       throw new Error('SECURE_PUSH_SECRET');
     this.authorization = secret ? `Bearer ${secret}` : undefined;
+    this.forward = options.forward;
     this.maxAttempts = options.maxAttempts ?? 3;
     this.retryDelayMs = options.retryDelayMs ?? 100;
     if (
@@ -348,9 +358,19 @@ export class SecurePushTransport {
             () => controller.abort(),
             Math.min(12000, captured.expiresAt * 1000 - Date.now()),
           );
-          attempts++;
           try {
             // This invocation and every eligibility check above share the SAME synchronous lock.
+            if (this.forward) {
+              const response = this.forward(captured.body, captured.snapshot, controller.signal);
+              if (response === null) {
+                clearTimeout(timer);
+                controller.abort();
+                return { reason: 'LOCAL_HUB_UNAVAILABLE' as const };
+              }
+              attempts++;
+              return { response, controller, timer };
+            }
+            attempts++;
             const response = fetch(captured.url, {
               method: 'POST',
               headers: {

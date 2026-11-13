@@ -310,6 +310,9 @@ export function buildSecureApnsRequest(
           title: 'Remi needs your attention',
           body: 'Open Remi to view this notification.',
         },
+        // The extension replaces the card and sets the real sound; this keeps the fallback (an
+        // extension that could not open the capsule) from arriving silent.
+        sound: 'default',
         'mutable-content': 1,
         'content-available': 1,
         category: '',

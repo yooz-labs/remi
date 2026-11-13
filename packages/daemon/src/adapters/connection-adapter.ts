@@ -82,6 +82,8 @@ export interface AdapterMetadata {
  * single `onMessage(msg: ProtocolMessage)`) would break that adapter.
  */
 export interface AdapterEvents extends ClientMessageEventsWithConnectionId {
+  /** Capability-proved loopback HTTP submission; never an ordinary client protocol event. */
+  onLocalPushForward?: (request: Request) => Promise<Response>;
   /** New connection established */
   onConnect: (connectionId: UUID, metadata: AdapterMetadata) => void;
 

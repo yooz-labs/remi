@@ -104,6 +104,9 @@ export class WebSocketAdapter implements ConnectionAdapter {
     }
 
     const serverEvents: Partial<ServerEvents> = {
+      onLocalPushForward: (request) =>
+        this.events.onLocalPushForward?.(request) ??
+        Promise.resolve(new Response('Unavailable', { status: 503 })),
       onStart: (port) => {
         console.log(`WebSocket adapter listening on port ${port}`);
       },

@@ -19,6 +19,7 @@ struct PhoneDrawerView: View {
     let onManageMachines: () -> Void
     let onResumeSession: (String, String) -> Void
     let onNewSessionHere: (String, String) -> Void
+    let onSelectBoard: () -> Void
     let onSelectInbox: () -> Void
     let onSelectSession: (RemiSessionSummary) -> Void
     let onNewSession: () -> Void
@@ -52,6 +53,7 @@ struct PhoneDrawerView: View {
         onManageMachines: @escaping () -> Void = {},
         onResumeSession: @escaping (String, String) -> Void = { _, _ in },
         onNewSessionHere: @escaping (String, String) -> Void = { _, _ in },
+        onSelectBoard: @escaping () -> Void,
         onSelectInbox: @escaping () -> Void,
         onSelectSession: @escaping (RemiSessionSummary) -> Void,
         onNewSession: @escaping () -> Void,
@@ -70,6 +72,7 @@ struct PhoneDrawerView: View {
         self.onManageMachines = onManageMachines
         self.onResumeSession = onResumeSession
         self.onNewSessionHere = onNewSessionHere
+        self.onSelectBoard = onSelectBoard
         self.onSelectInbox = onSelectInbox
         self.onSelectSession = onSelectSession
         self.onNewSession = onNewSession
@@ -280,15 +283,27 @@ struct PhoneDrawerView: View {
     private var listContent: some View {
         let groups = displayed
         let context = rowContext
+        // From every session, not the filtered list, so a search does not hide them; indexed once
+        // per pass. Like the list's own order, the membership is live while a drag freezes rows.
+        let projects = RemiProjectSessions(sessions: sessions)
         return LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
-            PhoneDrawerInboxRow(
+            PhoneDrawerDestinationRow(
+                title: "Board",
+                symbol: "square.grid.2x2",
+                count: 0,
+                isSelected: destination == .board,
+                action: { if !blocksTaps { onSelectBoard() } }
+            )
+            PhoneDrawerDestinationRow(
+                title: "Inbox",
+                symbol: "tray",
                 count: questionCount,
                 isSelected: destination == .inbox,
                 action: { if !blocksTaps { onSelectInbox() } }
             )
-            section("Needs you", groups.needsYou, context)
-            section("Active", groups.active, context)
-            section("Recent", groups.recent, context)
+            section("Needs you", groups.needsYou, context, projects)
+            section("Active", groups.active, context, projects)
+            section("Recent", groups.recent, context, projects)
             if groups.isEmpty { emptyStateView }
         }
         .padding(.horizontal, RemiTheme.Spacing.xs)
@@ -380,7 +395,10 @@ struct PhoneDrawerView: View {
     }
 
     @ViewBuilder
-    private func section(_ title: LocalizedStringKey, _ rows: [RemiSessionSummary], _ context: RowContext) -> some View {
+    private func section(
+        _ title: LocalizedStringKey, _ rows: [RemiSessionSummary], _ context: RowContext,
+        _ projects: RemiProjectSessions
+    ) -> some View {
         if !rows.isEmpty {
             Text(title)
                 .font(RemiTheme.Typography.eyebrow)
@@ -397,6 +415,8 @@ struct PhoneDrawerView: View {
                     machineLabel: context.labels[session.machineID],
                     canRunOnMachine: context.connected.contains(session.machineID),
                     action: { if !blocksTaps { onSelectSession(session) } },
+                    otherSessions: projects.others(than: session),
+                    onSelectOther: { other in if !blocksTaps { onSelectSession(other) } },
                     onResume: { onResumeSession(session.machineID, session.id) },
                     onNewSessionHere: { onNewSessionHere(session.machineID, session.projectPath) }
                 )
@@ -405,7 +425,9 @@ struct PhoneDrawerView: View {
     }
 }
 
-private struct PhoneDrawerInboxRow: View {
+private struct PhoneDrawerDestinationRow: View {
+    let title: LocalizedStringKey
+    let symbol: String
     let count: Int
     let isSelected: Bool
     let action: () -> Void
@@ -413,8 +435,8 @@ private struct PhoneDrawerInboxRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: RemiTheme.Spacing.s) {
-                Image(systemName: "tray")
-                Text("Inbox")
+                Image(systemName: symbol)
+                Text(title)
                 Spacer(minLength: RemiTheme.Spacing.xs)
                 if count > 0 { PhoneDrawerCountBadge(count: count) }
             }
@@ -434,7 +456,15 @@ private struct PhoneDrawerInboxRow: View {
 
 private struct PhoneDrawerSessionRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.projectMenu) private var projectMenu
+    @Environment(\.phoneDrawerBlocksTaps) private var blocksTaps
+    @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
     @ScaledMetric(relativeTo: .body) private var statusDotSize = RemiTheme.Size.statusDot
+    @State private var frame = PhoneRowFrame()
+    @State private var isHovering = false
+    @FocusState private var rowFocused: Bool
+    @State private var menuOpenedCount = 0
     let session: RemiSessionSummary
     let isSelected: Bool
     let isLastKnown: Bool
@@ -442,58 +472,81 @@ private struct PhoneDrawerSessionRow: View {
     /// True when the session's machine is connected, so Resume and New session here can work.
     let canRunOnMachine: Bool
     let action: () -> Void
+    /// The project's other sessions, offered under a long press.
+    let otherSessions: [RemiSessionSummary]
+    let onSelectOther: (RemiSessionSummary) -> Void
     let onResume: () -> Void
     let onNewSessionHere: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            HStack(alignment: .center, spacing: RemiTheme.Spacing.s) {
-                texts
-                Spacer(minLength: RemiTheme.Spacing.xs)
-                indicator
-            }
-            .padding(.horizontal, RemiTheme.Spacing.s)
-            .padding(.vertical, RemiTheme.Spacing.xs)
-            .frame(minHeight: RemiTheme.Size.minimumTapTarget)
-            .background(isSelected ? RemiTheme.Color.elevatedSurface : .clear, in: .rect(cornerRadius: RemiTheme.Radius.control))
-            .contentShape(.rect)
+        HStack(alignment: .center, spacing: RemiTheme.Spacing.s) {
+            texts
+            Spacer(minLength: RemiTheme.Spacing.xs)
+            indicator
         }
-        .buttonStyle(.plain)
+        // A pointer or a keyboard has no long press: the same menu opens from this while the row
+        // is hovered or has focus. Over the row, so showing it does not move the text.
+        .overlay(alignment: .trailing) {
+            if isHovering || rowFocused { moreButton.padding(.trailing, RemiTheme.Spacing.xl) }
+        }
+        .padding(.horizontal, RemiTheme.Spacing.s)
+        .padding(.vertical, RemiTheme.Spacing.xs)
+        .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+        .background(isSelected ? RemiTheme.Color.elevatedSurface : .clear, in: .rect(cornerRadius: RemiTheme.Radius.control))
+        .contentShape(.rect)
+        // A tap opens the session and a long press opens the menu; SwiftUI lets only one of them
+        // fire, so a long press is never also a tap, and a cancelled touch leaves nothing behind.
+        .onTapGesture(perform: action)
+        .onLongPressGesture(minimumDuration: 0.4) { presentMenu() }
         .contentShape(.hoverEffect, .rect(cornerRadius: RemiTheme.Radius.control))
         .hoverEffect(.highlight)
+        .onHover { isHovering = $0 }
+        // Reachable from a hardware keyboard: focus the row, then Return or Space opens it.
+        .focusable()
+        .focused($rowFocused)
+        .onKeyPress(.return) { action(); return .handled }
+        .onKeyPress(.space) { action(); return .handled }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(presentation.accessibilityLabel)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .contextMenu { menuItems }
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame.rect = $0 }
+        // The long press has no VoiceOver equivalent of its own.
+        .accessibilityAction(named: "More actions") { presentMenu() }
+        .sensoryFeedback(.impact(weight: .light), trigger: menuOpenedCount) { _, _ in hapticsEnabled }
+    }
+
+    private var moreButton: some View {
+        Button { presentMenu() } label: {
+            Image(systemName: "ellipsis")
+                .foregroundStyle(.secondary)
+                .frame(width: RemiTheme.Size.minimumTapTarget, height: RemiTheme.Size.minimumTapTarget)
+                .background(.regularMaterial, in: .circle)
+                .contentShape(.circle)
+        }
+        .buttonStyle(.plain)
+        .accessibilityHidden(true)
     }
 
     private var presentation: PhoneDrawerSessionPresentation {
         PhoneDrawerSessionPresentation(session: session, isLastKnown: isLastKnown, machineLabel: machineLabel)
     }
 
-    @ViewBuilder
-    private var menuItems: some View {
-        if session.canResume && canRunOnMachine {
-            Button(session.isResuming ? "Resuming" : "Resume", systemImage: "play.fill", action: onResume)
-                .disabled(session.isResuming)
+    /// Opens the project's menu beside this row, drawn by the root above the whole screen.
+    private func presentMenu() {
+        // Not while the drawer is being dragged: the row is moving, so its frame is not its place.
+        guard let projectMenu, !blocksTaps else { return }
+        menuOpenedCount += 1
+        let close = { withAnimation(.snappy) { projectMenu.wrappedValue = nil } }
+        let content = PhoneProjectMenuContent(
+            session: session, otherSessions: otherSessions, isLastKnown: isLastKnown,
+            machineLabel: machineLabel, canRunOnMachine: canRunOnMachine,
+            onSelectOther: onSelectOther, onResume: onResume, onNewSessionHere: onNewSessionHere,
+            close: close)
+        withAnimation(.snappy) {
+            projectMenu.wrappedValue = PhoneProjectMenu(
+                id: "\(session.machineID)|\(session.id)", anchor: frame.rect,
+                requiresConnection: canRunOnMachine, content: AnyView(content))
         }
-        if canRunOnMachine {
-            Button("New session here", systemImage: "plus.rectangle.on.folder", action: onNewSessionHere)
-        }
-        Button("Copy directory", systemImage: "doc.on.doc") {
-            Self.copyLocally(session.projectPath)
-        }
-        Button("Copy session ID", systemImage: "doc.on.doc") {
-            Self.copyLocally(session.id)
-        }
-    }
-
-    /// Local only, so Universal Clipboard does not sync a path or an id to other devices.
-    private static func copyLocally(_ value: String) {
-        UIPasteboard.general.setItems(
-            [[UTType.plainText.identifier: value]],
-            options: [.localOnly: true]
-        )
     }
 
     private var texts: some View {
@@ -521,6 +574,18 @@ private struct PhoneDrawerSessionRow: View {
     private var indicator: some View {
         if session.openQuestionCount > 0 {
             PhoneDrawerCountBadge(count: session.openQuestionCount)
+        } else if session.status == .working {
+            // The same green as the Mac's Working badge. The badge where the row has room (the
+            // iPad sidebar); a dot on the narrow iPhone drawer and at the largest text sizes,
+            // where a badge would crowd the title and subtitle.
+            if dynamicTypeSize.isAccessibilitySize || horizontalSizeClass == .compact {
+                Circle()
+                    .fill(RemiTheme.Color.activityDot)
+                    .frame(width: statusDotSize, height: statusDotSize)
+                    .accessibilityHidden(true)
+            } else {
+                RemiStatusBadge(status: .working)
+            }
         } else {
             Circle()
                 .fill(Color.secondary.opacity(session.isLive ? 0.7 : 0.3))

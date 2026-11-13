@@ -2,6 +2,7 @@ import { afterAll, expect, test } from 'bun:test';
 import {
   chmodSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -15,6 +16,7 @@ import { PassThrough } from 'node:stream';
 import {
   CONTROLLER_MS,
   TARGET,
+  aggregateWorkers,
   caseMultiset,
   discoverTests,
   laneDeadlineMs,
@@ -118,6 +120,19 @@ test('discovery equals actual Bun headers across suffixes/extensions, hidden fil
 
 test('partition includes target once and every other file exactly once', () => {
   expect(partitionTests(['other.test.ts', TARGET])).toEqual([[TARGET], ['other.test.ts']]);
+  const complete = [
+    TARGET,
+    'packages/daemon/tests/one.test.ts',
+    'packages/web/two.test.ts',
+    'tests/three.test.ts',
+  ];
+  const lanes = partitionTests(complete);
+  expect(lanes).toEqual([
+    [TARGET],
+    ['packages/daemon/tests/one.test.ts'],
+    ['packages/web/two.test.ts', 'tests/three.test.ts'],
+  ]);
+  expect(lanes.flat()).toEqual(complete);
   for (const files of [[], [TARGET], [TARGET, TARGET], ['other.test.ts']])
     expect(() => partitionTests(files)).toThrow();
 });
@@ -126,14 +141,18 @@ test('lane budgets retain the controller ceiling and reserved cleanup at every b
   expect(CONTROLLER_MS).toBe(22 * 60_000);
   for (const elapsed of [0, 1000, 300_000, CONTROLLER_MS - 10_001]) {
     expect(laneDeadlineMs(0, elapsed)).toBeLessThanOrEqual(300_000);
-    for (const index of [0, 1]) {
+    for (const index of [0, 1, 2]) {
       expect(laneDeadlineMs(index, elapsed)).toBeGreaterThan(0);
+      expect(laneDeadlineMs(index, elapsed)).toBe(
+        Math.min(index === 0 ? 300_000 : 1_200_000, CONTROLLER_MS - elapsed - 10_000),
+      );
       expect(elapsed + laneDeadlineMs(index, elapsed) + 10_000).toBeLessThanOrEqual(CONTROLLER_MS);
     }
   }
-  for (const elapsed of [-1, Number.NaN, Number.POSITIVE_INFINITY, CONTROLLER_MS - 10_000])
-    expect(() => laneDeadlineMs(1, elapsed)).toThrow();
-  expect(() => laneDeadlineMs(2, 0)).toThrow();
+  for (const index of [0, 1, 2])
+    for (const elapsed of [-1, Number.NaN, Number.POSITIVE_INFINITY, CONTROLLER_MS - 10_000])
+      expect(() => laneDeadlineMs(index, elapsed)).toThrow();
+  for (const index of [-1, 0.5, 3, Number.NaN]) expect(() => laneDeadlineMs(index, 0)).toThrow();
 });
 
 test('actual Bun reporter C0 titles retain reported bytes and separate hook assertion accounting', async () => {
@@ -312,7 +331,7 @@ test('missing/duplicate/malformed/foreign ownership evidence fails closed', () =
 
 function suiteFixture(fail: boolean): string {
   const home = fixture();
-  source(home, '.gitignore', 'node_modules\ncoverage/test-lanes/\ntest-output.txt\n');
+  source(home, '.gitignore', 'node_modules\ncoverage/\ntest-output.txt\n');
   source(
     home,
     TARGET,
@@ -373,7 +392,7 @@ function suiteFixture(fail: boolean): string {
   return home;
 }
 
-test('actual two-process controller publishes ONLY a complete validated summary, preserving manifest and source evidence', async () => {
+test('actual controller publishes ONLY a complete validated summary, preserving manifest and source evidence', async () => {
   const home = suiteFixture(false);
   const out = output();
   const err = output();
@@ -385,11 +404,11 @@ test('actual two-process controller publishes ONLY a complete validated summary,
   expect(evidence.files).toBe(2);
   expect(evidence.cases).toHaveLength(2);
   expect(evidence.assertions).toBe(2);
-  const budget = JSON.parse(readFileSync(path.join(directory, 'rest/budget.json'), 'utf8'));
-  // The real target process completed quickly. Its unused controller allocation
-  // belongs to the same complete rest cohort, with the existing ceiling intact.
-  expect(budget.deadlineMs).toBeGreaterThan(20 * 60_000);
-  expect(budget.elapsedMs + budget.deadlineMs + budget.cleanupReserveMs).toBe(CONTROLLER_MS);
+  const budget = JSON.parse(readFileSync(path.join(directory, 'rest-1/budget.json'), 'utf8'));
+  expect(budget.deadlineMs).toBe(20 * 60_000);
+  expect(budget.elapsedMs + budget.deadlineMs + budget.cleanupReserveMs).toBeLessThanOrEqual(
+    CONTROLLER_MS,
+  );
   await expect(runSuite(home, directory, summary)).rejects.toThrow();
 });
 
@@ -417,7 +436,7 @@ test('actual failing rest assertion leaves NO threshold input and retains failur
     expect(failure.evidence).toHaveLength(1);
     expect(failure.evidence[0].lane).toBe('target');
     expect(failure.evidence[0].exit).toBe(0);
-    const report = readFileSync(path.join(directory, 'rest/junit.xml'), 'utf8');
+    const report = readFileSync(path.join(directory, 'rest-1/junit.xml'), 'utf8');
     expect(report).toContain('failures="1"');
     expect(report).toContain('<failure type="AssertionError"');
     expect(report).toContain('>AssertionError: expect(received).toBe(expected)');
@@ -440,6 +459,91 @@ test('actual failing rest assertion leaves NO threshold input and retains failur
       })}`,
     );
   }
+});
+
+test('actual partial workers cannot publish coverage; aggregate requires every same-source report and verified cleanup', async () => {
+  const home = suiteFixture(false);
+  source(
+    home,
+    'packages/daemon/owned.test.ts',
+    "import {test,expect} from 'bun:test';test('owned daemon',()=>expect(1).toBe(1));\n",
+  );
+  const input = path.join(home, 'coverage/test-workers');
+  mkdirSync(input, { recursive: true });
+  const summary = path.join(home, 'test-output.txt');
+  for (const index of [0, 1, 2]) {
+    await runSuite(
+      home,
+      path.join(input, `worker-${index}`),
+      summary,
+      { stdout: output().stream, stderr: output().stream },
+      index,
+    );
+    expect(existsSync(summary)).toBe(false);
+    if (index < 2)
+      expect(() =>
+        aggregateWorkers(home, input, path.join(home, 'coverage/missing'), summary),
+      ).toThrow('Missing');
+  }
+  const workerHomes = ['target', 'rest-1', 'rest-2'].map(
+    (name, index) =>
+      JSON.parse(readFileSync(path.join(input, `worker-${index}`, name, 'worker.json'), 'utf8'))
+        .home,
+  );
+  for (const [index, name] of ['target', 'rest-1', 'rest-2'].entries()) {
+    const budget = JSON.parse(
+      readFileSync(path.join(input, `worker-${index}`, name, 'budget.json'), 'utf8'),
+    );
+    expect(budget.controllerMs).toBe(CONTROLLER_MS);
+    expect(budget.cleanupReserveMs).toBe(10_000);
+    expect(budget.deadlineMs).toBe(index === 0 ? 300_000 : 1_200_000);
+    expect(budget.elapsedMs + budget.deadlineMs + budget.cleanupReserveMs).toBeLessThanOrEqual(
+      CONTROLLER_MS,
+    );
+  }
+  expect(new Set(workerHomes).size).toBe(3);
+  for (const workerHome of workerHomes) expect(existsSync(workerHome)).toBe(false);
+  // This owned component control runs serially on one machine. The production
+  // CLI requires distinct actual Linux boot IDs from separate hosted VMs.
+  expect(() =>
+    aggregateWorkers(home, input, path.join(home, 'coverage/same-machine'), summary, true),
+  ).toThrow('distinct machines');
+  for (const [file, mutate] of [
+    [
+      'worker-1/worker-success.json',
+      (row: Record<string, unknown>) => ({ ...row, runtime: 'wrong' }),
+    ],
+    ['worker-1/manifest.json', (row: Record<string, unknown>) => ({ ...row, workerIndex: 2 })],
+    [
+      'worker-1/rest-1/actual.json',
+      (row: Record<string, unknown>) => ({ ...row, cleanupVerified: false }),
+    ],
+    ['worker-1/rest-1/actual.json', (row: Record<string, unknown>) => ({ ...row, exit: 1 })],
+    ['worker-1/rest-1/actual.json', (row: Record<string, unknown>) => ({ ...row, cases: [] })],
+  ] as const) {
+    const target = path.join(input, file);
+    const saved = readFileSync(target, 'utf8');
+    writeFileSync(target, JSON.stringify(mutate(JSON.parse(saved))));
+    try {
+      expect(() =>
+        aggregateWorkers(home, input, path.join(home, 'coverage/rejected'), summary),
+      ).toThrow();
+      expect(existsSync(summary)).toBe(false);
+    } finally {
+      writeFileSync(target, saved);
+    }
+  }
+  aggregateWorkers(home, input, path.join(home, 'coverage/complete'), summary);
+  expect(readFileSync(summary, 'utf8')).toContain('All files');
+  const complete = JSON.parse(
+    readFileSync(path.join(home, 'coverage/complete/success.json'), 'utf8'),
+  );
+  expect(complete.files).toBe(3);
+  expect(complete.cases).toHaveLength(3);
+  expect(complete.assertions).toBe(3);
+  expect(() =>
+    aggregateWorkers(home, input, path.join(home, 'coverage/complete'), summary),
+  ).toThrow('existing');
 });
 
 test('new, removed and source-mode/discovery changes remain visible, not silently omitted', () => {
@@ -476,7 +580,7 @@ test('actual checkout public-template inputs and partition retain the production
   expect(prepared.files).toContain(TARGET);
   expect(prepared.before['.env.example']?.sha256).toMatch(/^[0-9a-f]{64}$/);
   expect(prepared.lanes[0]).toEqual([TARGET]);
-  expect(prepared.lanes[1].length + 1).toBe(prepared.files.length);
+  expect(prepared.lanes.slice(1).flat().length + 1).toBe(prepared.files.length);
 });
 
 test('only a tracked canonical root public example is readable; real/nested/untracked env paths refuse', () => {

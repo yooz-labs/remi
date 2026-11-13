@@ -9,6 +9,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { type Question, type UUID, createIdentity, generateId, relayV2 } from '@remi/shared';
 import { IdentityStore } from '../../src/auth/identity-store.ts';
+import { buildSecurePushText } from '../../src/notifications/notification-dispatcher.ts';
 import {
   SecurePushContexts,
   type SecurePushEvent,
@@ -89,6 +90,18 @@ beforeEach(async () => {
 afterEach(() => {
   setSystemTime();
   for (const dir of directories.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a concise preview of an otherwise binary permission cannot create an allow action', () => {
+  const q = { ...ask(), text: 'Review this exact action before approval. '.repeat(8) };
+  questions.add(q);
+  const preview = buildSecurePushText('owned', q);
+  expect(preview.reviewOnly).toBe(true);
+  expect(Array.from(preview.body).length).toBeLessThanOrEqual(160);
+  const context = contexts.capture(runtime, snapshot, { ...questionEvent(q), ...preview });
+  expect(context?.payload.type).toBe('informational');
+  expect(context?.payload.actionable).toBe(false);
+  expect(questions.questions.get(q.id)?.text).toBe(q.text);
 });
 
 test('answered and dismissed questions free their slot: the 33rd question is still captured (#1200, B1)', () => {

@@ -3,14 +3,14 @@ import Testing
 @testable import RemiUI
 
 @Suite struct PhoneDrawerSessionPresentationTests {
-    private func session(name: String, project: String, questions: Int = 0) -> RemiSessionSummary {
+    private func session(name: String, project: String, questions: Int = 0, status: RemiSessionStatus = .idle) -> RemiSessionSummary {
         RemiSessionSummary(
             id: "s",
             machineName: "Studio",
             name: name,
             harness: "Claude",
             project: project,
-            status: .idle,
+            status: status,
             openQuestionCount: questions
         )
     }
@@ -28,6 +28,14 @@ import Testing
     @Test func subtitleJoinsProjectAndMachineOtherwise() {
         let presentation = PhoneDrawerSessionPresentation(session: session(name: "Native iOS", project: "remi"))
         #expect(presentation.subtitle == "remi · Studio")
+    }
+
+    @Test func aRunningSessionIsAnnouncedNotOnlyColored() {
+        let running = PhoneDrawerSessionPresentation(session: session(name: "cli", project: "cli", status: .working))
+        #expect(running.accessibilityLabel == "cli, project cli, on Studio, working")
+        let waiting = PhoneDrawerSessionPresentation(
+            session: session(name: "cli", project: "cli", questions: 1, status: .needsYou))
+        #expect(!waiting.accessibilityLabel.contains("working"))
     }
 
     @Test func accessibilityLabelIsCompleteInBothCases() {

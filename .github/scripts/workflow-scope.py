@@ -25,28 +25,28 @@ SOAK_SKIP_PREVIOUS = {**SOAK_SKIP, "run": SOAK_SKIP["run"].replace(
 
 COVERAGE_TEST_RUN = (
     "set -o pipefail\n"
-    "bun scripts/ci/run-bun-test-batches.ts 2>&1 | tee test-batches-output.txt\n"
+    "bun scripts/ci/run-bun-test-batches.ts --worker=${{ matrix.worker }} 2>&1 | tee test-batches-output.txt\n"
 )
-WRAPPED_TEST_COMMAND = "bun scripts/ci/run-bun-test-batches.ts"
+WRAPPED_TEST_COMMAND = "bun scripts/ci/run-bun-test-batches.ts --worker=${{ matrix.worker }}"
 WRAPPED_TEST_ARGV = "[process.execPath, 'test', ...process.argv.slice(2)]"
 COVERAGE_TEST_ENV = {"E2E_BUNDLER": "esbuild"}
 TEST_MEASUREMENT_PROVENANCE = {
-    "previous_command": "bun scripts/ci/run-bun-test-with-diagnostics.ts --coverage --coverage-reporter=text --coverage-reporter=lcov",
+    "previous_command": "bun scripts/ci/run-bun-test-batches.ts",
     "wrapped_command": WRAPPED_TEST_COMMAND,
     "coverage_pipeline": "2>&1 | tee test-batches-output.txt",
     "environment": COVERAGE_TEST_ENV,
     "bundler_reason": "#1206: the same Linux ARM64 139-file prefix timed out in Bun.build and passed with esbuild; full hosted acceptance remains required.",
     "threshold_input": "test-output.txt contains one validated line-only union row",
-    "partition": "remote-new-client.test.ts alone; every other discovered file together; no retries",
+    "partition": "isolated target, daemon and other complete cohorts on separate hosted VMs; no retries",
     "bounds_ms": {"target": 300000, "rest": 1200000, "controller": 1320000},
-    "reason": "#1206: two sequential fresh processes with explicit target ownership and a manual case/source contract; original stall root cause remains unknown.",
+    "reason": "#1626: active-progress runs exceeded the rest-worker budget; separate VMs preserve TCP isolation, complete source-bound evidence and unchanged worker budgets. Earlier stalls remain undiagnosed.",
 }
 TEST_EVIDENCE = {
     "name": "Upload test evidence",
     "if": "always() && needs.scope.result == 'success' && needs.scope.outputs.test != 'false'",
     "uses": "actions/upload-artifact@v4",
     "with": {"name": "test-evidence-${{ github.run_id }}-${{ github.run_attempt }}",
-             "path": "coverage/test-lanes/\ntest-batches-output.txt\ntest-output.txt\n",
+             "path": "coverage/test-workers/\ncoverage/test-aggregate/\ntest-batches-output.txt\ntest-output.txt\n",
              "if-no-files-found": "error", "retention-days": "14"},
 }
 
@@ -200,7 +200,7 @@ def validate():
     assert ci["jobs"]["sync-develop"]["needs"] == ["auto-release"]
     assert ci["jobs"]["sync-develop"]["if"] == "needs.auto-release.outputs.released == 'true'"
     for workflow, job_name, flag in ((ci, "lint", "lint"), (ci, "typecheck", "typecheck"),
-                                    (ci, "test", "test"), (relay, "local-relay", "relay"),
+                                    (relay, "local-relay", "relay"),
                                     (workflows["macos-app.yml"], "build-test", "macos")):
         job = workflow["jobs"][job_name]
         assert job["needs"] == ["scope"] and job["if"] == "${{ !cancelled() }}"
@@ -245,13 +245,17 @@ def validate():
             {"uses": "actions/checkout@v5", "with": {"fetch-depth": "0"}},
             {"uses": "./.github/actions/ci-scope", "id": "scope"},
         ]
+    # Pin the complete worker and aggregate mappings, including fail-fast=false,
+    # all three distinct hosted jobs, same-run artifacts and failed-worker refusal.
+    assert ci["jobs"]["test-workers"] == CONTRACTS["test_worker_job"]
+    assert ci["jobs"]["test"] == CONTRACTS["test_aggregate_job"]
     test_runs = [step.get("run", "") for step in ci["jobs"]["test"]["steps"]]
     for key, expected in CONTRACTS["measurement_sha256"].items():
         file, job, name = key.split("/", 2)
         run = next(step["run"] for step in workflows[file]["jobs"][job]["steps"]
                    if step.get("name") == name)
         assert hashlib.sha256(run.encode()).hexdigest() == expected, key
-    coverage_step = next(step for step in ci["jobs"]["test"]["steps"]
+    coverage_step = next(step for step in ci["jobs"]["test-workers"]["steps"]
                          if step.get("name") == "Test with coverage")
     assert ci["jobs"]["test"]["steps"].count(TEST_EVIDENCE) == 1
     assert coverage_step["run"] == COVERAGE_TEST_RUN
@@ -262,7 +266,7 @@ def validate():
         for step in job.get("steps", []):
             if step is not coverage_step:
                 assert "E2E_BUNDLER" not in step.get("env", {}), "Worker bundler leaked to another step"
-    assert CONTRACTS["measurement_provenance"]["ci.yml/test/Test with coverage"] == TEST_MEASUREMENT_PROVENANCE
+    assert CONTRACTS["measurement_provenance"]["ci.yml/test-workers/Test with coverage"] == TEST_MEASUREMENT_PROVENANCE
     runner = (root / "scripts/ci/run-bun-test-with-diagnostics.ts").read_text()
     assert runner.count(f"runChild({WRAPPED_TEST_ARGV})") == 1
     assert "if (import.meta.main)" in runner

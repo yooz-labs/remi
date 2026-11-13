@@ -7,9 +7,10 @@
  * over reading the rollout file) and announces each finished one live (`item/completed`).
  * Both go through one mapping:
  *
- * - `userMessage` is a user message, its text parts joined;
+ * - `userMessage` is a user message, its text parts joined; recognized async question
+ *   replies are rendered as Question/Answer prose (#1687);
  * - `agentMessage` is an assistant message (commentary and final answer alike: the TUI
- *   shows both);
+ *   shows both); recognized async question metadata supplies readable question text;
  * - `commandExecution` is an assistant tool entry named `shell`: the command as the
  *   tool's input and its output as the result, 500 characters each as Claude bounds a
  *   tool (cut first, on a code point, then every control, invisible and bidirectional
@@ -48,6 +49,8 @@
  *   pages is hundreds of replayed messages, and the replay buffer (1000 messages, of which a
  *   late client replays the last 200) would lose its earlier records, the rotation and link
  *   notices among them.
+ *   Async question metadata has a separate bounded recovery read, with replies collected
+ *   before pending cards are inferred. It never replays the longer conversation.
  * - It goes out as `transcript_content` ONLY, structured by a MessageAPI of its own, as an
  *   explicit read does: the web client draws an entry from the structure inside its
  *   `transcript_content`, and a `structured_agent_output` as well would double the replay and,
@@ -109,6 +112,12 @@ import {
   AppServerDisconnectedError,
   AppServerRpcError,
 } from './app-server-client.ts';
+import {
+  type AsyncQuestionHistory,
+  asyncQuestionHistoryCollector,
+  readableAsyncQuestion,
+  readableAsyncReply,
+} from './async-question-codec.ts';
 import { describeError } from './describe-error.ts';
 import { firstCodePoints } from './safe-text.ts';
 import { type ThreadItemInfo, parseThreadItem } from './thread-protocol.ts';
@@ -155,6 +164,9 @@ export interface CodexChatDeps {
   catchUpRequestTimeoutMs?: number;
   /** Test seam: a monotonic clock in milliseconds, for the deadline of an explicit read (default `performance.now`). */
   clockMs?: () => number;
+  /** Source recovery never outlives its main-thread/link epoch. */
+  questionEpoch?: () => object | null;
+  onQuestionHistory?: (threadId: string, history: AsyncQuestionHistory) => void;
 }
 
 export interface CodexChat extends HarnessChat {
@@ -202,10 +214,10 @@ function entryOf(item: ThreadItemInfo): Entry | null {
       return item.text.trim() === ''
         ? null
         : { kind: 'text', id: item.id, role: 'user', text: item.text };
-    case 'agentMessage':
-      return item.text.trim() === ''
-        ? null
-        : { kind: 'text', id: item.id, role: 'assistant', text: item.text };
+    case 'agentMessage': {
+      const text = item.asyncQuestion ? readableAsyncQuestion(item.asyncQuestion) : item.text;
+      return text.trim() === '' ? null : { kind: 'text', id: item.id, role: 'assistant', text };
+    }
     case 'commandExecution':
       // A running command is sent when it completes (`item/completed`); a client keeps the first
       // copy of an entry it sees, so sending it now would hide its result.
@@ -267,8 +279,13 @@ function buildMessage(
   completedAtMs: number | null,
   messageApi: Pick<MessageAPI, 'handleMessage' | 'getMessage'>,
 ): TranscriptContentMessage | null {
-  const text = entry.kind === 'text' ? entry.text : '';
-  const display = entry.kind === 'text' ? entry.text : `Used ${SHELL_TOOL}`;
+  const text =
+    entry.kind === 'text'
+      ? entry.role === 'user'
+        ? readableAsyncReply(entry.text)
+        : entry.text
+      : '';
+  const display = entry.kind === 'text' ? text : `Used ${SHELL_TOOL}`;
   const role = entry.kind === 'text' ? entry.role : 'assistant';
   const message: Message = {
     id: generateId(),
@@ -359,6 +376,28 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
   const built = new Map<string, TranscriptContentMessage>();
   let disposed = false;
 
+  function questionCollector(threadId: string) {
+    const epoch = deps.questionEpoch?.();
+    const collector = asyncQuestionHistoryCollector();
+    return {
+      item(item: ThreadItemInfo) {
+        if (item.type === 'agentMessage' && item.asyncQuestion)
+          collector.source(item.asyncQuestion);
+        else if (item.type === 'userMessage') collector.reply(item.text);
+      },
+      finish(complete: boolean) {
+        if (
+          !disposed &&
+          complete &&
+          epoch &&
+          deps.questionEpoch?.() === epoch &&
+          deps.threadRole(threadId) === 'main'
+        )
+          deps.onQuestionHistory?.(threadId, collector.finish(true));
+      },
+    };
+  }
+
   const remember = (id: string): void => {
     delivered.add(id);
     if (delivered.size > LIVE_MEMORY) {
@@ -388,6 +427,7 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
     threadId: string,
     limits: { maxPages: number; maxItems?: number; timeoutMs?: number; deadlineMs?: number },
     onEntry: (entry: Entry, completedAtMs: number | null) => void,
+    onItem?: (item: ThreadItemInfo) => void,
   ): Promise<PagesEnd> {
     const asked = new Set<string>();
     const startedAt = clockMs();
@@ -458,6 +498,7 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
         remainingItems -= result['data'].length;
 
       for (const { item, completedAtMs } of page.items) {
+        if (item !== null) onItem?.(item);
         const entry = item === null ? null : entryOf(item);
         if (entry !== null) onEntry(entry, completedAtMs);
       }
@@ -479,6 +520,7 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
     if (threadId === null) return 0;
 
     const history = new MessageAPI({ sessionId });
+    const questions = questionCollector(threadId);
     const seen = new Set<string>();
     let count = 0;
     const end = await readPages(
@@ -492,7 +534,9 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
         emit(message);
         count += 1;
       },
+      questions.item,
     );
+    questions.finish(end === 'complete');
     if (end === 'looped')
       deps.log('the app-server repeated a history cursor; the history read stopped');
     else if (end === 'capped')
@@ -578,6 +622,7 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
     const threadId = deps.threadId();
     if (threadId === null) return;
     const collected: Array<{ entry: Entry; completedAtMs: number | null }> = [];
+    const questions = questionCollector(threadId);
     let end: PagesEnd | null = null;
     try {
       end = await readPages(
@@ -588,6 +633,7 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
           timeoutMs: deps.catchUpRequestTimeoutMs ?? CATCH_UP_REQUEST_TIMEOUT_MS,
         },
         (entry, completedAtMs) => collected.push({ entry, completedAtMs }),
+        questions.item,
       );
     } catch (error) {
       const why = error instanceof CodexHistoryError ? error.message : describeError(error);
@@ -606,8 +652,10 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
       deps.log(
         'the chat catch-up was skipped: the thread is longer than one page of 100 items (or its cursor repeated), so an explicit history read has it',
       );
+      if (deps.onQuestionHistory) void requestQuestionRecovery();
       return;
     }
+    questions.finish(true);
     // Transcript only, by an API of its own: no structured output reaches every connection.
     const api = new MessageAPI({ sessionId });
     for (const { entry, completedAtMs } of collected) deliver(entry, completedAtMs, api);
@@ -615,6 +663,46 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
 
   let catching: Promise<void> | null = null;
   let again = false;
+  let recovering: Promise<void> | null = null;
+  let recoverAgain = false;
+
+  async function recoverQuestions(): Promise<void> {
+    do {
+      recoverAgain = false;
+      const threadId = deps.threadId();
+      if (disposed || !threadId || !deps.onQuestionHistory) return;
+      const questions = questionCollector(threadId);
+      try {
+        const end = await readPages(
+          threadId,
+          {
+            maxPages: HISTORY_MAX_PAGES,
+            deadlineMs: EXPLICIT_READ_DEADLINE_MS,
+            timeoutMs: CATCH_UP_REQUEST_TIMEOUT_MS,
+          },
+          () => {},
+          questions.item,
+        );
+        questions.finish(end === 'complete');
+        if (end !== 'complete')
+          deps.log('async question recovery was incomplete; no pending cards inferred');
+      } catch (error) {
+        deps.log(`async question recovery failed (${describeError(error)})`);
+      }
+    } while (recoverAgain && !disposed);
+  }
+
+  function requestQuestionRecovery(): Promise<void> {
+    if (recovering) {
+      recoverAgain = true;
+      return recovering;
+    }
+    const task = recoverQuestions().finally(() => {
+      if (recovering === task) recovering = null;
+    });
+    recovering = task;
+    return task;
+  }
 
   return {
     async readHistory(emit) {
@@ -682,6 +770,7 @@ export function createCodexChat(deps: CodexChatDeps): CodexChat {
 
     dispose() {
       disposed = true;
+      recoverAgain = false;
       hold = null;
       again = false;
       built.clear();

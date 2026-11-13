@@ -1,4 +1,5 @@
 import Foundation
+import RemiKit
 import RemiPush
 
 public enum RemiQuestionState: Sendable, Equatable {
@@ -250,21 +251,55 @@ public struct RemiMachineSummary: Identifiable, Sendable, Equatable {
     }
 }
 
+/// A local delivery outcome. None of these states proves harness acceptance (#1710).
+public enum RemiOutgoingState: Sendable, Equatable, CaseIterable {
+    case sending, handedOff, refused, uncertain
+    public static let retentionNotice = "Available while Remi is running; copy before closing."
+
+    public init(delivery: OutgoingMessage.Delivery) {
+        self = switch delivery {
+        case .sending: .sending
+        case .handedOff: .handedOff
+        case .refused: .refused
+        case .uncertain: .uncertain
+        }
+    }
+
+    public var title: String {
+        switch self {
+        case .sending: "Sending"
+        case .handedOff: "Handed to connection"
+        case .refused: "Message refused"
+        case .uncertain: "Delivery uncertain"
+        }
+    }
+
+    public var guidance: String {
+        switch self {
+        case .sending: "Waiting for the connection."
+        case .handedOff: "Agent acceptance is unconfirmed. Check the session before sending again."
+        case .refused: "The daemon refused this input. Inspect the terminal or waiting prompt before sending again."
+        case .uncertain: "Some or all input may have arrived. Inspect the terminal and conversation before sending again."
+        }
+    }
+}
+
 public enum RemiTranscriptEntry: Identifiable, Sendable, Equatable {
     case user(id: String, text: String)
+    case pending(id: String, text: String, state: RemiOutgoingState)
     case agent(id: String, text: String)
     case tool(id: String, name: String, summary: String)
     case error(id: String, text: String)
 
     public var id: String {
         switch self {
-        case .user(let id, _), .agent(let id, _), .tool(let id, _, _), .error(let id, _): id
+        case .user(let id, _), .pending(let id, _, _), .agent(let id, _), .tool(let id, _, _), .error(let id, _): id
         }
     }
 
     public var searchableText: String {
         switch self {
-        case .user(_, let text), .agent(_, let text), .error(_, let text):
+        case .user(_, let text), .pending(_, let text, _), .agent(_, let text), .error(_, let text):
             text
         case .tool(_, let name, let summary):
             "\(name)\n\(summary)"
@@ -273,7 +308,7 @@ public enum RemiTranscriptEntry: Identifiable, Sendable, Equatable {
 
     public var copyText: String {
         switch self {
-        case .user(_, let text), .agent(_, let text), .error(_, let text):
+        case .user(_, let text), .pending(_, let text, _), .agent(_, let text), .error(_, let text):
             text
         case .tool(_, let name, let summary):
             "\(name)\n\(summary)"

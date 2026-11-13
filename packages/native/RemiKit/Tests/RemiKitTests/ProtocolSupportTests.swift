@@ -20,10 +20,10 @@ struct ProtocolSupportTests {
             HubCapability.allCases.map(\.rawValue)
                 == [
                     "workspaces", "image_staging", "image_insertion", "structured_chat", "browser_links",
-                    "file_download", "terminal_view",
+                    "file_download", "notifications", "terminal_view",
                 ])
         #expect(HubCapability.terminalView.isAdvertisedByDaemons == false)
-        #expect(HubCapability.allCases.filter(\.isAdvertisedByDaemons).count == 6)
+        #expect(HubCapability.allCases.filter(\.isAdvertisedByDaemons).count == 7)
     }
 
     @Test func capabilityTextMatchesTheSharedRegistry() throws {

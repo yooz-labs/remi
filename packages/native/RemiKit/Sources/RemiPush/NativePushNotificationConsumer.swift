@@ -11,7 +11,7 @@ final class NativePushNotificationConsumer: @unchecked Sendable {
         let carrier: Data?
         init(identifier: String, userInfo: [AnyHashable: Any]) {
             self.identifier = identifier
-            carrier = (try? JSONSerialization.data(withJSONObject: userInfo["remiPush"] as Any))
+            carrier = NativePushCodec.carrierBytes(userInfo["remiPush"])
         }
     }
     enum DismissOutcome: Equatable { case removed(Int), ignored, unavailable }
@@ -48,7 +48,10 @@ final class NativePushNotificationConsumer: @unchecked Sendable {
         // Capture only strict, owned capsule bytes across the queue hop.
         let captured: NativePushCodec.Carrier
         do {
-            captured = try NativePushCodec.parseCarrier(JSONSerialization.data(withJSONObject: userInfo["remiPush"] as Any))
+            guard let bytes = NativePushCodec.carrierBytes(userInfo["remiPush"]) else {
+                completion(.unavailable); return
+            }
+            captured = try NativePushCodec.parseCarrier(bytes)
         } catch { completion(.unavailable); return }
         queue.async { [self] in
             let userInfo: [AnyHashable: Any] = ["remiPush": captured.userInfo]
@@ -118,9 +121,12 @@ final class NativePushNotificationConsumer: @unchecked Sendable {
             content.body == "Open Remi to view this notification." && content.categoryIdentifier.isEmpty
     }
     /// The foreground adapter independently verifies original bytes and exact
-    /// displayed text. A signed card carries no category, so any category is
-    /// unverified authority and is refused. The fixed generic no-action fallback
-    /// grants no authentication, route or option authority.
+    /// displayed text. A notification with a category is refused here, and that is
+    /// intended: the extension gives a verified card its category (its answer
+    /// buttons), and while the app is in the foreground the card is already in the
+    /// app, so the banner stays hidden. Only a verified card with no category and the
+    /// fixed generic no-action fallback present, and neither grants authentication,
+    /// route or option authority.
     func allowsPresentation(_ content: UNNotificationContent) -> Bool {
         if Self.isGenericFallback(content) { return true }
         do {

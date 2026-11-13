@@ -684,7 +684,7 @@ on stderr with its reason.
 - Daemon sends WebSocket `question` (in-app display) AND APNS push (lock screen), by one of two paths (#1200).
 - **Legacy plaintext push is ON by default.**
   `notifications.legacy_push_enabled` defaults to `true` until secure push ships end to end; the default flips at the R7 gate (owner decision).
-  The daemon POSTs the text to the signaling Worker's `/push` with the push secret (`--push-secret` or `REMI_PUSH_SECRET`), and the Worker needs `PUSH_SECRET` (and `LEGACY_PUSH_ENABLED` not set to a false value) to forward it to APNS. A hub hands its push secret to the session daemons it spawns through their environment, never their argv.
+  The daemon POSTs the text to the signaling Worker's `/push` with the push secret (`--push-secret` or `REMI_PUSH_SECRET`), and the Worker needs `PUSH_SECRET` (and `LEGACY_PUSH_ENABLED` not set to a false value) to forward it to APNS. A hub passes its push secret to spawned session daemons through their environment only while legacy eligibility remains open; after secure activation it strips that credential (#1679). Same-user process inspection remains possible (#1252).
   Its recipients are the device tokens a phone registered with `register_device_token`, counted only while the path is enabled and has a secret (`legacyChannelOpen`): `legacy_push_enabled = false`, or no push secret, makes old tokens no recipients and the event `no_channel`, not an error-level "legacy failed" per token.
   The sender throws `LegacyPushError`, whose message is one fixed code and whose `status` and `tokenInvalid` fields drive the classifiers: a 429 or a 5xx the Worker did not mark `tokenInvalid` is retried (2 retries, 400 ms then 800 ms), `tokenInvalid` prunes the token, a lost response (`LEGACY_PUSH_UNCERTAIN`) is never retried.
 - **The activation latch is machine-wide and one-way.**
@@ -692,7 +692,7 @@ on stderr with its reason.
   From then on the legacy sender refuses for good (`LEGACY_PUSH_NOT_ELIGIBLE`, reported as `no_channel`) whatever `legacy_push_enabled` says, for EVERY device token on the machine, including a phone connected directly that never touched the relay; a corrupt latch or enrollment file refuses too.
   **Relay enrollment retires legacy push for every device on the machine. Secure delivery then needs a registered per-device key and token and a running secure sender. The web subscription wiring exists in source, but deployed and signed-device acceptance remain unverified.**
 - **The secure path** seals each push to a per-device key and sends it through the signed `POST /v2/push/<rid>` route (`notifications/secure-push-*.ts`).
-  It exists only when the daemon opts into the relay (`--relay` or `network.relay = true`) with an unlocked machine identity, a deployment push secret, and a `signaling_url` that is a bare `https`/`wss` origin (no path, query or fragment).
+  A hub requires relay opt-in (`--relay` or `network.relay = true`), an unlocked machine identity, a deployment push secret, and a `signaling_url` that is a bare `https`/`wss` origin (no path, query or fragment). An authenticated session daemon can instead forward its signed sealed submissions through the capability-protected local hub; the hub rechecks current recipient authority and registered runtime metadata before adding its provider credential (#1679). This is a machine-user capability boundary, not kernel-authenticated process identity.
   Otherwise `cli.ts` builds no service (it logs why, with the failure class and no message text) and the hub answers `secure_push_register_request` with `UNSUPPORTED` instead of acknowledging a subscription nothing could serve (#1200).
   The registration's `pushPrefs` pass `sanitizePushPreferences` at the store and in the hub branch, so a malformed or unknown preference registers and delivers.
 - Signaling server (Cloudflare Worker) relays push payloads to APNS.
@@ -726,7 +726,7 @@ those two are both exactly `{token, title, body}`.
   registration (its preferences included) from the shared store.
 - **A phone is pushed only while its lease holds** (#1254, #1272, owner decision).
   Both legacy registrations and secure subscriptions use
-  `[notifications] push_lease_hours` (default 24; 0 never expires).
+  `[notifications] push_lease_hours` (default 720 hours / 30 days since #1677; 0 never expires).
   Legacy registrations renew on registration, while connected and on close;
   a locally connected legacy token never expires there (`isLive`). Secure
   subscriptions renew on registration, when an enrolled relay channel becomes

@@ -3,8 +3,8 @@ import Foundation
 /// Native effect boundary (#1200).
 /// The codec alone never authorizes publication or deletion.
 /// Consumers independently reopen the original carrier and recheck this boundary
-/// after waits, immediately before publishing or removing content. No native
-/// answer action exists before R6: a verified card opens the app.
+/// after waits, immediately before publishing or removing content. Answer actions
+/// separately reverify their signed choice; Review request only opens the app.
 final class NativePushEffect {
     struct Prepared {
         let push: NativePushCodec.VerifiedPush

@@ -125,7 +125,8 @@ final class MacNotificationDelegate: NSObject, NSApplicationDelegate, UNUserNoti
         didReceive response: UNNotificationResponse
     ) async {
         if RemiPushStore.isSecureNotification(content: response.notification.request.content, identifier: response.actionIdentifier) {
-            if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+            if response.actionIdentifier == UNNotificationDefaultActionIdentifier ||
+                RemiPushStore.isForegroundNotificationAction(response.actionIdentifier) {
                 let carrier = NativeRelayNotifications.carrier(from: response.notification.request.content.userInfo)
                 await NativeRelayNotifications.shared.openDefaultTap(carrier: carrier)
             } else if response.actionIdentifier != UNNotificationDismissActionIdentifier {
@@ -194,7 +195,7 @@ enum MacNotificationCoordinator {
             content.categoryIdentifier = LocalQuestionNotificationPlan.categoryIdentifier
             content.body = plan.body
         }
-        content.sound = .default
+        RemiPushPresentation.apply(.question, sessionID: destination.sessionID, to: content)
         content.userInfo = destinationUserInfo(destination)
         let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
         do { try await UNUserNotificationCenter.current().add(request) }
@@ -268,29 +269,40 @@ private struct MacMenuBarStatusLabel: View {
     let pendingCount: Int
     let identityAvailable: Bool
 
+    /// The letter's shape, read once from the asset catalog (`nil`, not a crash, if it is missing).
+    private static let glyphMask: NSImage? = NSImage(named: "MenuBarGlyph")
+
+    private var status: RemiMenuBarStatus {
+        RemiMenuBarStatus(pendingCount: pendingCount, identityAvailable: identityAvailable)
+    }
+
     var body: some View {
         HStack(spacing: RemiTheme.Spacing.xxs) {
-            Image(systemName: systemImage)
-            if identityAvailable && pendingCount > 0 {
-                Text(pendingCount, format: .number)
+            icon
+            if let count = status.count {
+                Text(count, format: .number)
                     .font(.caption.weight(.semibold))
                     .monospacedDigit()
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text(accessibilityLabel))
+        .accessibilityLabel(Text(status.accessibilityLabel))
     }
 
-    private var systemImage: String {
-        guard identityAvailable else { return "exclamationmark.triangle" }
-        return pendingCount > 0 ? "questionmark.bubble.fill" : "questionmark.bubble"
-    }
-
-    private var accessibilityLabel: LocalizedStringResource {
-        guard identityAvailable else { return "Remi unavailable" }
-        if pendingCount == 0 { return "Remi, no pending requests" }
-        if pendingCount == 1 { return "Remi, 1 pending request" }
-        return "Remi, \(pendingCount) pending requests"
+    /// Remi's "r" in a square, outlined while nothing waits and filled while something does (a
+    /// template image, so the menu bar tints it). Without an identity, or if the mask cannot be
+    /// read, the symbols the item used before.
+    @ViewBuilder
+    private var icon: some View {
+        if !identityAvailable {
+            Image(systemName: "exclamationmark.triangle")
+        } else if let mask = Self.glyphMask,
+                  let image = RemiMenuBarIcon.image(needsYou: status.needsYou, mask: mask) {
+            // Explicitly a template, so the bar's tint applies even beside the count.
+            Image(nsImage: image).renderingMode(.template)
+        } else {
+            Image(systemName: status.needsYou ? "questionmark.bubble.fill" : "questionmark.bubble")
+        }
     }
 }
 

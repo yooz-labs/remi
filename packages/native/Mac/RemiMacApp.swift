@@ -17,7 +17,9 @@ struct RemiMacApp: App {
                     identityUnavailableView
                 }
             }
-            .frame(minWidth: 760, minHeight: 560)
+            // Three columns (210 + 380 + the conversation) need about 900 points; narrower left the
+            // conversation roughly 170 points wide.
+            .frame(minWidth: 900, minHeight: 560)
             .task { if scenePhase == .active { notifications.activate() } }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { notifications.activate() }

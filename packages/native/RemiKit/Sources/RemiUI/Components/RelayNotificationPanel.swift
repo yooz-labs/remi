@@ -2,15 +2,17 @@ import RemiKit
 import RemiPush
 import SwiftUI
 
-/// Choices come only from the independently reopened signed capsule. No static
-/// notification action categories are installed in this milestone (#1242).
+/// Choices and navigation come only from the independently reopened signed capsule.
 public struct RelayNotificationPanel: View {
     private let store: MachineStore
     private let onClose: () -> Void
+    private let onOpenSession: ((MachineSessionKey) -> Void)?
 
-    public init(store: MachineStore, onClose: @escaping () -> Void) {
+    public init(store: MachineStore, onClose: @escaping () -> Void,
+                onOpenSession: ((MachineSessionKey) -> Void)? = nil) {
         self.store = store
         self.onClose = onClose
+        self.onOpenSession = onOpenSession
     }
 
     public var body: some View {
@@ -32,6 +34,12 @@ public struct RelayNotificationPanel: View {
                                 Task { await store.answerRelayNotification(choice: choice) }
                             }
                         )
+                        if let destination = store.notificationSessionDestination, let onOpenSession {
+                            Button("Open session", systemImage: "arrow.up.forward.app") {
+                                onOpenSession(destination)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
 
                         if card.kind == .question, store.relayNotificationChoices.isEmpty {
                             Label("Open the session to review and answer this question.", systemImage: "arrow.up.forward.app")

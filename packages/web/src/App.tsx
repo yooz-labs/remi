@@ -1963,6 +1963,12 @@ function App() {
       case 'recent_repositories_response':
         break;
 
+      // #1679: paired native clients bootstrap notification-only enrollment.
+      // Web secure subscriptions continue to use their existing encrypted path.
+      case 'notification_host_request':
+      case 'notification_host_response':
+        break;
+
       default:
         assertNever(message);
     }

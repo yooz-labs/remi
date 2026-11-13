@@ -42,7 +42,10 @@ struct DirectConnectionDeadlineTests {
             identity: ClientIdentity(), stateHandler: { state in Task { await states.append(state) } },
             eventHandler: { _ in })
         await connection.start()
-        let until = ContinuousClock.now.advanced(by: .seconds(3))
+        // The connection's own limit is 100 ms. The wait here only has to be longer than a loaded
+        // CI runner can delay it, so a hang still fails but a slow runner does not: three seconds
+        // was missed on shared runners (the same test failed on several unrelated pull requests).
+        let until = ContinuousClock.now.advanced(by: .seconds(15))
         while !(await states.reachedTimeout), ContinuousClock.now < until {
             try await Task.sleep(for: .milliseconds(10))
         }

@@ -1,5 +1,11 @@
 # Plan: the roadmap
 
+## Native activity and conversation recovery (2026-10-26, #1673)
+
+The native apps must consume existing `session_update` and `remi_status` events without changing discovery metadata or harness identity. Clear ephemeral activity when the owning route is lost. Reload a selected transcript when its authenticated route becomes available or changes generation; never replay chat or answers. Regression gates cover existing shared protocol fixtures, live-state precedence over a later census, per-machine isolation, stale generations, connection loss and read readiness. Rendered and signed-device acceptance remain separate from source checks.
+
+APNs delivery remains under investigation against #1667; this phase does not change subscriptions, leases, relay enrollment, answer authority, or notification policy.
+
 ## Backend session continuation (2026-10-22, #1595)
 
 The current [backend capability plan](issue-1595-backend-plan.md) separates existing
@@ -34,6 +40,14 @@ resource/quota/held-No cells with causal controls. The fixed-delta review is
 complete; merge requires final-head hosted checks and the actual relay soak.
 B4 encrypted routing and the qualified caller precede capability advertisement.
 Original failures remain recorded; see the service report for scope and controls.
+Develop integration (2026-10-30) retains the three isolated CI workers and current
+worker/controller/cleanup caps. Fresh local source/static/actual-lease and six-cell
+compiled/resource/held-No controls pass on measured tree `a8812f4fb03bd3e815fea691a447368400f59858`
+and source manifest `85c4b21df442df772fb8b7d4d269e804d71bb52b7e90e29eae9c4afdee9ec505`; the exact receipt
+is in `docs/terminal-view-service-integration-qualification.json`. At this local
+qualification checkpoint, no push or PR merge had occurred. Fresh final-head
+hosted checks and the actual 61-minute same-child
+soak remain required; the old hosted soak is historical evidence only.
 Transferred-media preview cleanup uses the owner-confirmed oldest-cache eviction
 when full, preserving explicit Save/export and host source files.
 
@@ -976,3 +990,22 @@ The owner's authenticated App Store Connect session confirmed Yooz Remi app
 shared app-version script. The portal requests Account Holder acceptance of an
 updated Developer Program License Agreement before updates/new submissions;
 no agreement acceptance, signing or upload was performed here.
+
+## Paired-device notification scope (2026-10-26, #1677/#1678)
+
+Implement the approved notification-only admission foundation with a separate enrollment file and current grant/enrollment epochs. Notification channels may register/unregister a secure recipient or submit a valid signed notification answer; general application ingress, broadcasts and incidental child output stay unavailable. This phase has no production enrollment caller or capability advertisement. Follow [notification-scope-plan.md](notification-scope-plan.md) for the tests and the selected rolling 30-day renewal policy that later phases implement.
+
+## Paired host notification registration (2026-10-26, #1679)
+
+Add identity-bound direct bootstrap for encrypted notification registration, rolling 30-day inactive expiry with explicit Continue, and hub-owned forwarding of sealed session events. The host contract, negative-path controls and device acceptance limits are in [notification-host-plan.md](notification-host-plan.md). Native automatic registration and concise verified notification actions remain subsequent phases; source checks do not establish physical APNs or Watch delivery.
+
+## Native paired-device notification registration (2026-10-26, #1680)
+
+Native clients bootstrap a notification-only route from their authenticated direct host, register over a bounded encrypted channel, and keep that route out of saved foreground routes. Foreground use renews subscriptions; inactive expiry shows Continue, and Revoke intent survives app restart. Follow [notification-native-plan.md](notification-native-plan.md) for the identity/route/consent controls and signed-device acceptance limits.
+## Registered question delivery (2026-10-26, #1674)
+
+Deliver question pushes to valid registered recipients even when a client is attached; keep preferences, validity checks and deduplication. Bound secure previews for cards that already require opening the app, without shortening a one-tap permission's authoritative ask. The owner approved the broader paired-device plan and selected automatic active renewal with Continue/Revoke after 30 days inactive (#1677). Signed APNs, extension and Watch acceptance remain separate gates.
+
+## Concise notification presentation (2026-10-26, #1681)
+
+Use Allow once/Deny for exact verified binary choices, and keep complete signed action titles only when short. Otherwise publish a foreground Review request action without answer authority. Signed question metadata keeps app-only questions time-sensitive; completed turns receive Open session. Notification panels can open the matched paired session to review its full current content. The deterministic preview and immutable-action checks are in [notification-actions-plan.md](notification-actions-plan.md); owner APNs/NSE/iPhone/Watch receipts remain required for device acceptance.

@@ -885,3 +885,15 @@ The optional installed-server control waits for actual active status before requ
 These accountless controls establish local RPC admission and omission of policy overrides, not successful model execution or sandbox enforcement.
 Account-backed model checks need separate bounded owner approval.
 At this phase there is no production caller or advertised remote-chat capability, and #1207 remains open.
+
+## Asynchronous question frontend (#1687, 2026-10-26)
+
+Read-only inspection of installed Codex 0.164.0 and the owner's supplied reply establishes a separate frontend shape: an `agentMessage` with `delivery: "async"`, a `call_...` item ID and `questions: [{title, options}]`. Its answer is an explicit user message containing `<send_user_message_question_reply>` and an array of `{answer, question, questionItemId}`. The last field is the JSON tuple `["request_user_input_async", sourceCallID, originalQuestionIndex]`. This is separate from the native `item/tool/requestUserInput` permission/result path, whose existing terminal-only behavior is retained.
+
+Remi strictly bounds and recognizes this metadata, retains source text separately from escaped display, and presents it through the existing multi-question card. Recognized transcript sources and replies become readable questions and answers. Complete bounded history recovery collects replies before presenting pending questions; an incomplete read infers nothing. Metadata recovery does not replay a long conversation, and a replaced main-thread/link epoch cannot recover its cards.
+
+An explicit card answer uses the existing Codex text writer's single start/steer operation, with the original question indices and exact user-reply envelope. Current signed-device or full relay proxy authority, grant incarnation, attachment, durable binding and runtime are captured before the wait and checked under the original grant lock at the exact send. Capability-only utility clients cannot acquire this authority. There are no permission results, PTY writes, sandbox/config overrides or automatic retries on this path. Cancel clears the Remi card locally and sends nothing to Codex.
+
+Codex's text API provides no atomic question claim across frontends. Remi admits at most one submission per local card lifetime, observes outside replies, and refuses a card that changed before send; it does not claim global first-answer arbitration. Lost confirmation retains `answer_result` uncertainty and removes local retry authority. RPC acceptance is not model completion or proof that another frontend has rendered the answer.
+
+The existing secure notification pipeline handles these complex forms with a concise Review request action and the current full form in the app. This phase adds no Remi public message family or lock-screen allow authority. Physical APNs, phone and Watch acceptance remain separate from transport/component controls. `/resume` inside Codex remains the independent ownership limitation documented above; directory recency is never an identity signal.

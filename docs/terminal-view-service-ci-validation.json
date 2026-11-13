@@ -1,5 +1,5 @@
 {
-  "status": "local-ci-budget-controls-passed-hosted-completion-pending",
+  "status": "local-ci-budget-and-phase-controls-passed-hosted-completion-pending",
   "backendQualificationHead": "baf2357ddb4067fb967e14caa455482238c10323",
   "failedHostedRun": 40118771573,
   "observed": {
@@ -68,12 +68,33 @@
   ],
   "backendEvidenceReuse": {
     "compiledInputChanges": [],
-    "sourceInputChanges": ["packages/daemon/tests/ci/run-bun-test-batches.test.ts"],
-    "scope": "only an unrelated CI self-test changes in the conservative source manifest; backend runtime, all320 selected source cases and their dependency inputs, actual lease graph and all compiled qualification inputs are unchanged"
+    "sourceInputChanges": [
+      "packages/daemon/tests/ci/run-bun-test-batches.test.ts",
+      "packages/daemon/tests/ci/run-bun-test-with-diagnostics.test.ts"
+    ],
+    "scope": "Only the two CI self-tests differ in the conservative source manifest. The 320 selected backend cases, their runtime and dependency inputs, lease graph and compiled qualification inputs are unchanged."
   },
   "inputHashes": {
     "scripts/ci/run-bun-test-batches.ts": "02709f14af7850abc7d3795340e7bee5d7fe3192a6105f6149ea77a165dcea4b",
-    "packages/daemon/tests/ci/run-bun-test-batches.test.ts": "3fb3833b6a9277ca3abc3bd4751d643551a239e1a071be7f002ec0a4f469c4a4"
+    "packages/daemon/tests/ci/run-bun-test-batches.test.ts": "3fb3833b6a9277ca3abc3bd4751d643551a239e1a071be7f002ec0a4f469c4a4",
+    "packages/daemon/tests/ci/run-bun-test-with-diagnostics.test.ts": "0c8c0e2b63a8df7fdc37786bba60e0a8f1e1f9c7eca2200d58bdb54fa9219ba0"
   },
-  "remaining": "hosted complete suite, complete case/ownership manifest, union coverage >=60%, and all required checks must pass; no failing check waiver"
+  "remaining": "hosted complete suite, complete case/ownership manifest, union coverage >=60%, and all required checks must pass; no failing check waiver",
+  "secondFailedHostedRun": 40127928111,
+  "secondObserved": {
+    "passingRestCases": 10581,
+    "skippedRestCases": 38,
+    "failingRestCases": 1,
+    "restFiles": 507,
+    "restSeconds": 1249.4,
+    "failure": "fixed-sleep delayed-header test observed legitimate quietMs=0 when output arrived during asynchronous diagnostic capture"
+  },
+  "phaseControl": {
+    "fixture": "actual child emits its header only after two real pre-header quiet samples, exits only after a real post-header quiet sample",
+    "diagnosticAfterMs": 40,
+    "diagnosticEveryMs": 40,
+    "childTimeoutMs": 2000,
+    "productionDiagnosticChanges": false,
+    "originalByteAndTopologyAssertionsPreserved": true
+  }
 }

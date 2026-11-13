@@ -7,7 +7,7 @@ public struct RemiStatusBadge: View {
 
     public var body: some View {
         HStack(spacing: RemiTheme.Spacing.xxs) {
-            Circle().fill(tint).frame(width: RemiTheme.Size.statusDot, height: RemiTheme.Size.statusDot)
+            Circle().fill(dot).frame(width: RemiTheme.Size.statusDot, height: RemiTheme.Size.statusDot)
             Text(label).font(RemiTheme.Typography.metadata.weight(.semibold))
         }
         .foregroundStyle(tint)
@@ -31,5 +31,15 @@ public struct RemiStatusBadge: View {
     }
 
     private var tint: Color { status == .needsYou ? RemiTheme.Color.attentionInk : .secondary }
-    private var background: Color { status == .needsYou ? RemiTheme.Color.attention : RemiTheme.Color.surface }
+
+    /// Working has its own green dot; the text stays neutral so the badge is quiet.
+    private var dot: Color { status == .working ? RemiTheme.Color.activityDot : tint }
+
+    private var background: Color {
+        switch status {
+        case .needsYou: RemiTheme.Color.attention
+        case .working: RemiTheme.Color.activityWash
+        default: RemiTheme.Color.surface
+        }
+    }
 }

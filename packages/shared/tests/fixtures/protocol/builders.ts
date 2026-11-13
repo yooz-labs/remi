@@ -23,6 +23,10 @@ import { identityFromClaudeId } from '../../../src/harness.ts';
 import { decodeImageInsertionFrame } from '../../../src/image-insertion.ts';
 import { decodeImageStagingFrame } from '../../../src/image-staging.ts';
 import {
+  createNotificationHostRequest,
+  createNotificationHostResponse,
+} from '../../../src/notification-host.ts';
+import {
   createAck,
   createAgentOutput,
   createAnswer,
@@ -334,6 +338,14 @@ function terminalVector<K extends Extract<keyof ProtocolMessageMap, `session_ter
 }
 
 export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => ProtocolMessageMap[K] } = {
+  notification_host_request: () => createNotificationHostRequest('enable'),
+  notification_host_response: () =>
+    createNotificationHostResponse('fixture-request-id', {
+      success: true,
+      state: 'registration_required',
+      relayUrl: 'wss://relay.example',
+      expiresAt: null,
+    }),
   session_terminal_open: () => terminalVector('session_terminal_open'),
   session_terminal_opened: () => terminalVector('session_terminal_opened'),
   session_terminal_read: () => terminalVector('session_terminal_read'),

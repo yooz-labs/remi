@@ -1,5 +1,12 @@
 import Foundation
 
+/// The complete `answer_result` outcome vocabulary in the shared protocol.
+enum AnswerResultWireOutcome: String {
+    case delivered, stale, uncertain, conflict, busy
+    case staleBinding = "stale-binding"
+    case sessionNotFound = "session-not-found"
+}
+
 /// Receipt of a semantic answer is distinct from its outcome (#1242, relay R3).
 public struct AnswerResultMessage: Decodable, Sendable, Equatable {
     public let type: String
@@ -574,4 +581,17 @@ public struct SessionUpdateMessage: Decodable, Sendable, Equatable {
     public let id: String
     public let timestamp: String
     public let session: SessionWireState
+}
+
+/// Ephemeral daemon activity, also sent immediately after Hello (#754).
+/// Only activity is consumed; discovery still owns membership and harness identity.
+public struct RemiStatusMessage: Decodable, Sendable, Equatable {
+    public struct Snapshot: Decodable, Sendable, Equatable {
+        public let sessionStatus: String
+    }
+    public let type: String
+    public let id: String
+    public let timestamp: String
+    public let sessionId: String
+    public let status: Snapshot
 }

@@ -664,7 +664,7 @@ test('native ledger lease expiry after claim leaves the real held hook unanswere
     beforeApply: () => {
       const file = join(f.directory, 'secure_push_subscriptions.json');
       const data = JSON.parse(readFileSync(file, 'utf8'));
-      data.subscriptions[0].lastSeenAt = Date.now() - 24 * 60 * 60 * 1000 - 1;
+      data.subscriptions[0].lastSeenAt = Date.now() - 31 * 24 * 60 * 60 * 1000;
       writeFileSync(file, JSON.stringify(data));
     },
   });

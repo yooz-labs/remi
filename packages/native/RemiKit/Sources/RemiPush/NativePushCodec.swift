@@ -57,6 +57,12 @@ enum NativePushCodec {
         }
     }
     private static let safeInteger: Int64 = 9_007_199_254_740_991
+    /// Foundation can raise an Objective-C exception for a non-JSON value, which
+    /// Swift error handling cannot catch. Treat malformed notification input as absent.
+    static func carrierBytes(_ value: Any?) -> Data? {
+        guard let value, JSONSerialization.isValidJSONObject(value) else { return nil }
+        return try? JSONSerialization.data(withJSONObject: value)
+    }
     static func parseCarrier(_ bytes: Data) throws -> Carrier {
         try carrier(StrictJSON.parse(bytes, maximum: 4096))
     }
@@ -69,7 +75,8 @@ enum NativePushCodec {
         let recipient: NativePushKeyStore.Key
         let generation: Int64
         do {
-            guard let currentTrust = try state.machineTrust(rid: rid), currentTrust.relayUrl != nil,
+            guard let currentTrust = try state.machineTrust(rid: rid),
+                  currentTrust.relayUrl != nil || currentTrust.notificationRelayUrl != nil,
                   let currentKey = try keys.load() else { throw NativePushCodecError.unavailable }
             trust = currentTrust; recipient = currentKey; generation = try state.authorityGeneration()
             guard generation > 0, try state.currentAuthority() == trust.authority else { throw NativePushCodecError.changed }

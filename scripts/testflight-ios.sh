@@ -9,6 +9,7 @@ TEAM_ID="${REMI_APPLE_TEAM_ID:-9DQ459HAZB}"
 APP_ID="live.yooz.remi"
 EXTENSION_ID="live.yooz.remi.native-push-service"
 OUT_DIR="${REMI_ARCHIVE_DIR:-$REPO_ROOT/build/ios-native}"
+DERIVED_DATA_DIR="${REMI_DERIVED_DATA_DIR:-$OUT_DIR/DerivedData}"
 CONFIG="$REPO_ROOT/config/app-release.json"
 DO_UPLOAD=false
 PREFLIGHT_ONLY=false
@@ -79,7 +80,8 @@ OVERRIDES=(MARKETING_VERSION="$MARKETING" CURRENT_PROJECT_VERSION="$BUILD"
   INFOPLIST_KEY_CFBundleDisplayName=Remi REMI_SOURCE_COMMIT="$SOURCE_COMMIT"
   CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM="$TEAM_ID")
 SETTINGS=$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
-  -destination 'generic/platform=iOS' -showBuildSettings "${OVERRIDES[@]}")
+  -destination 'generic/platform=iOS' -derivedDataPath "$DERIVED_DATA_DIR" \
+  -showBuildSettings "${OVERRIDES[@]}")
 grep -Fq "PRODUCT_BUNDLE_IDENTIFIER = $APP_ID" <<<"$SETTINGS" || fail "resolved app bundle ID is not $APP_ID"
 grep -Fq "MARKETING_VERSION = $MARKETING" <<<"$SETTINGS" || fail "resolved marketing version is not $MARKETING"
 grep -Fq "CURRENT_PROJECT_VERSION = $BUILD" <<<"$SETTINGS" || fail "resolved build is not $BUILD"
@@ -115,9 +117,11 @@ echo "[2/7] Archiving native $SCHEME"
 SIGNING_ARGS=()
 if [ "$UNSIGNED_ARCHIVE" = true ]; then
   SIGNING_ARGS=(CODE_SIGNING_ALLOWED=NO)
+else
+  SIGNING_ARGS=(-allowProvisioningUpdates)
 fi
 ARCHIVE_CMD=(xcodebuild clean archive -project "$PROJECT" -scheme "$SCHEME" -configuration Release
-  -destination 'generic/platform=iOS' -archivePath "$ARCHIVE_PATH" -allowProvisioningUpdates
+  -destination 'generic/platform=iOS' -archivePath "$ARCHIVE_PATH" -derivedDataPath "$DERIVED_DATA_DIR"
   -skipPackagePluginValidation "${OVERRIDES[@]}")
 if [ "${#AUTH_ARGS[@]}" -gt 0 ]; then ARCHIVE_CMD+=("${AUTH_ARGS[@]}"); fi
 if [ "${#SIGNING_ARGS[@]}" -gt 0 ]; then ARCHIVE_CMD+=("${SIGNING_ARGS[@]}"); fi

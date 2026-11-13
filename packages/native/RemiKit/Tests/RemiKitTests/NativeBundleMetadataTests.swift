@@ -33,6 +33,28 @@ struct NativeBundleMetadataTests {
         #expect(entitlements["com.apple.developer.networking.multicast"] == nil)
     }
 
+    /// A question is delivered as Time Sensitive (RemiPushPresentation); without the entitlement
+    /// the system quietly delivers it as an ordinary alert, which Focus can silence.
+    @Test(arguments: ["Mac", "iPhone"])
+    func appsDeclareTimeSensitiveNotifications(_ target: String) throws {
+        let entitlements = try #require(PropertyListSerialization.propertyList(
+            from: Data(contentsOf: Self.native.appendingPathComponent("\(target)/Remi.entitlements")), format: nil) as? [String: Any])
+        #expect(entitlements["com.apple.developer.usernotifications.time-sensitive"] as? Bool == true)
+    }
+
+    /// The iPhone target runs on the iPad as a native app, so it declares all four orientations
+    /// itself instead of leaving the iPad's list to a default: a partial list is rejected at upload.
+    @Test func theIPadDeclaresEveryOrientation() throws {
+        let plist = try #require(PropertyListSerialization.propertyList(
+            from: Data(contentsOf: Self.native.appendingPathComponent("iPhone/Info.plist")), format: nil) as? [String: Any])
+        let orientations = try #require(plist["UISupportedInterfaceOrientations~ipad"] as? [String])
+        #expect(Set(orientations) == [
+            "UIInterfaceOrientationPortrait", "UIInterfaceOrientationPortraitUpsideDown",
+            "UIInterfaceOrientationLandscapeLeft", "UIInterfaceOrientationLandscapeRight",
+        ])
+        #expect(plist["UIRequiresFullScreen"] == nil)
+    }
+
     @Test(arguments: ["Mac", "iPhone"])
     func privateAddressPolicyDoesNotDisablePublicTransportSecurity(_ target: String) throws {
         let plist = try #require(PropertyListSerialization.propertyList(

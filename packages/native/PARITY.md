@@ -81,8 +81,7 @@ What the code does:
   `remi.mac.selected-machine` plus a bare `remi.mac.selected-session`, not as a qualified key;
   the qualified key is used when jumping between sessions.
 - Sidebar: `MacMachineProblemRows` and `MacMachineSidebarRow` take copy and labels from
-  `RemiMachineStripPresentation` and `RemiMachineRecoveryState`. The machine switcher menu
-  announces the selected machine.
+  `RemiMachineStripPresentation` and `RemiMachineRecoveryState`.
 - Commands: the Go menu and Find in Conversation (`MacCommands`). Enable rules are
   `RemiMacCommandAvailability` and `RemiNeedsYouJump`. Next Needs You works across machines;
   Previous and Next Session follow the filtered list the sidebar shows; Reconnect is off while

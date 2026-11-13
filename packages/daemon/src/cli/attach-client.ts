@@ -334,6 +334,8 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
    */
   function renderMessage(msg: ProtocolMessage, inReplay = false): void {
     const handlers: MessageHandlers<keyof ProtocolMessageMap, void> = {
+      notification_host_request: 'ignore',
+      notification_host_response: 'ignore',
       session_terminal_open: 'ignore',
       session_terminal_opened: 'ignore',
       session_terminal_read: 'ignore',

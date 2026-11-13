@@ -165,12 +165,10 @@ const TITLE_MAX = 120;
  * paragraphs (real captures in `~/.remi/hook-diag.jsonl` include
  * multi-paragraph reviewer summaries, per `hook-bridge-setup.ts`'s
  * `STOP_LOG_MESSAGE_MAX` comment) -- far more than a lock screen shows before
- * the OS itself truncates. 200 matches the existing `BODY_MAX` convention in
- * `notification-dispatcher.ts` for the same surface, long enough to carry a
- * real excerpt of what Claude said, short enough that the push payload stays
- * bounded regardless of how verbose the turn was.
+ * the OS itself truncates. Keep a short 160-character excerpt plus ellipsis
+ * for the notification; the full answer remains in the session (#1681).
  */
-const BODY_MAX = 200;
+const BODY_MAX = 160;
 
 /** Collapse whitespace (including embedded newlines) to single spaces, same
  *  reason `notification-dispatcher.ts` and `hook-bridge-setup.ts` do it for

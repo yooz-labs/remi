@@ -536,7 +536,8 @@ describe('Claude hook display escaping (#1189, #1211)', () => {
     if (!capturedAsk || !askBuilders) throw new Error('AskUserQuestion push path missing');
     expect(askMessage.question).toEqual(capturedAsk);
     expect(askBuilders.legacy.body).toContain(escapeUnsafeText(askOption.label));
-    expect(askBuilders.secure.body).toContain(escapeUnsafeText(askStep.question));
+    expect(askBuilders.secure.body).toBe('1 question needs your input. Open Remi to review.');
+    expect(askBuilders.secure.body.length).toBeLessThanOrEqual(160);
     expect(askBuilders.telegram.text).toContain(escapeUnsafeText(askStep.question));
     for (const field of [
       askQuestion.text,
@@ -589,7 +590,10 @@ describe('Claude hook display escaping (#1189, #1211)', () => {
     if (!capturedPlan || !planBuilders) throw new Error('ExitPlanMode push path missing');
     expect(planMessage.question).toEqual(capturedPlan);
     expect(planBuilders.legacy.body).toContain(escapeUnsafeText(planInput.plan));
-    expect(planBuilders.secure.body).toContain(escapeUnsafeText(planInput.plan));
+    expect(planBuilders.secure.body).toBe(
+      'Plan ready for review. Open Remi to approve or keep planning.',
+    );
+    expect(planBuilders.secure.body.length).toBeLessThanOrEqual(160);
     expect(planBuilders.telegram.text).toContain(escapeUnsafeText(planInput.plan));
     expectSafeDisplay(planQuestion.detail ?? '');
     expectSafeDisplay(planBuilders.legacy.body);

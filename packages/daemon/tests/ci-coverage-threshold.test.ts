@@ -69,7 +69,7 @@ afterAll(() => {
 });
 
 describe('CI test step keeps its output for the threshold check', () => {
-  test('the suite runs once: its output goes to the file the check reads, and a failure still fails the step', () => {
+  test('each worker runs once and only the complete aggregate supplies the threshold input', () => {
     const workflow = readFileSync(workflowPath, 'utf8');
     const step = workflowStep('Test with coverage');
     const command = 'bun scripts/ci/run-bun-test-batches.ts';
@@ -79,7 +79,18 @@ describe('CI test step keeps its output for the threshold check', () => {
     expect(step).toContain(command);
     expect(step).toContain('        env:\n          E2E_BUNDLER: esbuild\n');
     expect(workflow.split('E2E_BUNDLER: esbuild')).toHaveLength(2);
-    expect(workflow.split(command)).toHaveLength(2);
+    const workerCommand = `${command} --worker=\${{ matrix.worker }}`;
+    const aggregateCommand = `${command} --aggregate`;
+    const aggregate = workflowStep('Aggregate coverage');
+    expect(step).toContain(workerCommand);
+    expect(aggregate).toContain('set -o pipefail');
+    expect(aggregate).toContain(`${aggregateCommand} 2>&1 | tee test-batches-output.txt`);
+    expect(aggregate).not.toContain('tee test-output.txt');
+    expect(workflow.split(workerCommand)).toHaveLength(2);
+    expect(workflow.split(aggregateCommand)).toHaveLength(2);
+    expect(workflow.split(command)).toHaveLength(3);
+    expect(workflow).toContain('worker: [0, 1, 2]');
+    expect(workflow).toContain('needs: [scope, test-workers]');
     const runner = readFileSync(join(repoRoot, 'scripts/ci/run-bun-test-batches.ts'), 'utf8');
     expect(runner.split('await runChild(argv,')).toHaveLength(2);
     expect(runner).toContain('partitionTests(files)');

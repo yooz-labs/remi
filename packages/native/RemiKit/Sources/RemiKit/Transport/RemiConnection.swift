@@ -95,7 +95,8 @@ public enum RemiInboundEvent: Sendable, Equatable {
     case resumeSessionResponse(ResumeSessionResponseMessage)
     case killSessionResponse(KillSessionResponseMessage)
     case sessionUpdate(SessionUpdateMessage)
-    case error(ErrorMessage)
+    case remiStatus(RemiStatusMessage)
+    case error(ErrorMessage, chatOrigin: UUID? = nil)
     case relayReady
     case answerResult(AnswerResultMessage)
     case pushRegistration(RelayPushResponse)
@@ -150,6 +151,8 @@ public actor RemiConnection {
     private var singleAttempt = false
     private var applicationHello = true
     #if DEBUG
+    private var ownedChatSendReturn: (@Sendable () async throws -> Void)?
+    func ownedSetChatSendReturn(_ callback: (@Sendable () async throws -> Void)?) { ownedChatSendReturn = callback }
     private var ownedBeforeH2: (@Sendable () async throws -> Void)?
     #endif
     private var ready = false
@@ -164,7 +167,10 @@ public actor RemiConnection {
     private var pendingAuthentication: PendingAuthentication?
     /// The key that authenticated this direct connection. Relay authority comes from the pin.
     private var authenticatedServerPublicKey: Data?
+    private let notificationAuthorityEpoch = RelayRegistrationEpoch()
     private var applicationAdmitted = false
+    private var chatSocketID: UUID?
+    private var chatSocketAuthenticated = false
     private var relayHelloBuffer = RelayHelloBuffer()
     private var initialDirectHelloPending = false
     private var directOpeningCompleted = false
@@ -221,6 +227,19 @@ public actor RemiConnection {
     func configureOneShot() throws {
         guard !shouldRun else { throw RelayFailure.state }
         singleAttempt = true; applicationHello = false
+    }
+
+    /// The live direct handshake supplies bootstrap authority, never response fields.
+    func notificationHostKey() throws -> Data {
+        guard configuration.relayPin == nil, applicationAdmitted,
+              case .connected = state, let key = authenticatedServerPublicKey else { throw RelayFailure.closed }
+        return key
+    }
+
+    func notificationHostPermit() throws -> (Data, @Sendable () throws -> Void) {
+        let key = try notificationHostKey()
+        let epoch = notificationAuthorityEpoch, captured = epoch.capture()
+        return (key, { guard epoch.matches(captured) else { throw RelayFailure.closed } })
     }
     #if DEBUG
     nonisolated var ownedExpectedMachineID: String? { expectedMachineID }
@@ -345,7 +364,35 @@ public actor RemiConnection {
         try await deliver(try encoder.encode(message), validateBeforeSend: validateBeforeSend)
     }
 
-    private func deliver(_ data: Data, validateBeforeSend: (@Sendable () throws -> Void)?) async throws {
+    /// A local socket identity, never a wire field or an authorization grant (#1710).
+    func chatOrigin() -> UUID? { applicationAdmitted ? chatSocketID : nil }
+
+    enum ChatSendResult: Sendable { case handedOff, notInvoked, uncertain }
+    private final class ChatAttempt {
+        let origin: UUID
+        var invoked = false
+        init(origin: UUID) { self.origin = origin }
+    }
+
+    /// Sends once on the captured socket. A throw after invocation cannot prove non-delivery.
+    func sendChat(_ message: UserInputMessage, origin: UUID) async -> ChatSendResult {
+        let attempt = ChatAttempt(origin: origin)
+        do {
+            try await deliver(try encoder.encode(message), validateBeforeSend: nil, chatAttempt: attempt)
+            #if DEBUG
+            try await ownedChatSendReturn?()
+            #endif
+            return .handedOff
+        } catch { return attempt.invoked ? .uncertain : .notInvoked }
+    }
+
+    private func validateChatOrigin(_ attempt: ChatAttempt?) throws {
+        guard let attempt else { return }
+        guard applicationAdmitted, chatSocketID == attempt.origin else { throw RelayFailure.closed }
+    }
+
+    private func deliver(_ data: Data, validateBeforeSend: (@Sendable () throws -> Void)?,
+                         chatAttempt: ChatAttempt? = nil) async throws {
         guard let socket else { throw URLError(.notConnectedToInternet) }
         if configuration.relayPin != nil {
             guard relayChannel != nil, !relayClosing, pendingSends < 64 else { throw RelayFailure.closed }
@@ -356,18 +403,25 @@ public actor RemiConnection {
                 await prior?.value
                 guard self.socket === socket, let channel = self.relayChannel else { throw RelayFailure.closed }
                 try validateBeforeSend?()
+                // A stale local intent is not a failure of this replacement channel. Reject
+                // before sealing consumes its sequence, outside the transport-failure catch.
+                try validateChatOrigin(chatAttempt)
                 let frame: Data
                 do { frame = try channel.seal(data) }
                 catch {
                     if channel.closed {
+                        retireChatOrigin()
                         socket.cancel(with: .init(rawValue: 4400) ?? .policyViolation, reason: Data("closed".utf8))
                     }
                     throw error
                 }
                 do {
+                    // No await separates the queue-time origin check, seal and invocation.
+                    chatAttempt?.invoked = true
                     try await socket.send(.data(frame))
                 } catch {
                     channel.fail()
+                    retireChatOrigin()
                     socket.cancel(with: .init(rawValue: 4400) ?? .policyViolation,
                         reason: Data("closed".utf8))
                     throw error
@@ -379,6 +433,8 @@ public actor RemiConnection {
         } else {
             guard applicationAdmitted else { throw RelayFailure.closed }
             try validateBeforeSend?()
+            try validateChatOrigin(chatAttempt)
+            chatAttempt?.invoked = true
             try await socket.send(.data(data))
         }
     }
@@ -408,6 +464,7 @@ public actor RemiConnection {
                 let authenticationStarted = directOpeningCompleted || pendingAuthentication != nil || authenticatedServerPublicKey != nil
                 if configuration.relayPin != nil {
                     if let channel = relayChannel { eventHandler(.relayStreamEnded(clean: channel.peerEnded && !channel.failed)) }
+                    retireChatOrigin()
                     socket?.cancel(with: .init(rawValue: 4400) ?? .policyViolation, reason: Data("closed".utf8))
                 }
                 closeSocket()
@@ -472,6 +529,7 @@ public actor RemiConnection {
         pendingAuthentication = nil
         directDeadlineFailure = nil
         let task = session.webSocketTask(with: configuration.url)
+        retireChatOrigin()
         socket = task
         armDirectDeadline(task, after: configuration.directConnectTimeout, opening: true)
         task.resume()
@@ -505,6 +563,7 @@ public actor RemiConnection {
     }
 
     private func handle(_ data: Data, on task: URLSessionWebSocketTask) async throws {
+        guard socket === task else { throw RelayFailure.closed }
         let envelope = try decoder.decode(Envelope.self, from: data)
         if configuration.relayPin != nil && ["auth_challenge", "auth_result", "raw_pty_output", "terminal_resize"].contains(envelope.type) {
             throw RelayFailure.type
@@ -606,6 +665,8 @@ public actor RemiConnection {
             transition(to: .connected(sessionId: message.sessionId))
             let authority = configuration.relayPin.flatMap { try? RelayCrypto.unb64($0.machinePublicKey) }
                 ?? authenticatedServerPublicKey
+            chatSocketID = UUID()
+            chatSocketAuthenticated = authority != nil
             eventHandler(.hello(message, authorityPublicKey: authority))
             for buffered in relayHelloBuffer.drain() {
                 guard applicationAdmitted, socket === task else { throw RelayFailure.closed }
@@ -656,6 +717,8 @@ public actor RemiConnection {
             ))
         case "session_update":
             eventHandler(.sessionUpdate(try decoder.decode(SessionUpdateMessage.self, from: data)))
+        case "remi_status":
+            eventHandler(.remiStatus(try decoder.decode(RemiStatusMessage.self, from: data)))
         case "error":
             let message = try decoder.decode(ErrorMessage.self, from: data)
             // Direct Hello also supports auth-disabled hubs. An authenticated hub
@@ -666,15 +729,21 @@ public actor RemiConnection {
                 return
             }
             guard applicationAdmitted else { throw RemiConnectionError.malformedMessage }
-            eventHandler(.error(message))
+            eventHandler(.error(message, chatOrigin: chatSocketAuthenticated ? chatSocketID : nil))
         case "answer_result":
             let result = try decoder.decode(AnswerResultMessage.self, from: data)
-            guard ["delivered", "stale", "conflict", "busy", "uncertain"].contains(result.outcome) else { throw RelayFailure.malformed }
+            guard AnswerResultWireOutcome(rawValue: result.outcome) != nil else { throw RelayFailure.malformed }
             if let pending = rpcWaiters[result.requestId], case .answer(let session, let question) = pending.expected,
                Data(result.sessionId.utf8) == Data(session.utf8), Data(result.questionId.utf8) == Data(question.utf8) {
                 finishRPC(result.requestId, result: .success(.answer(result)))
             }
             eventHandler(.answerResult(result))
+        case "notification_host_response":
+            guard configuration.relayPin == nil, applicationAdmitted else { throw RelayFailure.malformed }
+            let result = try NotificationHostResponse.decode(data)
+            if let pending = rpcWaiters[result.requestId], case .notificationHost = pending.expected {
+                finishRPC(result.requestId, result: .success(.notificationHost(result)))
+            }
         case "secure_push_register_response", "secure_push_unregister_response":
             let result = try RelayPushResponse.decode(data)
             if let pending = rpcWaiters[result.requestId], case .push(let type, let version) = pending.expected,
@@ -714,7 +783,14 @@ public actor RemiConnection {
         else { try await task.send(.data(encoder.encode(message))) }
     }
 
+    private func retireChatOrigin() {
+        chatSocketID = nil
+        chatSocketAuthenticated = false
+    }
+
     private func closeSocket() {
+        retireChatOrigin()
+        notificationAuthorityEpoch.replace()
         ready = false
         let waiting = readyWaiters; readyWaiters.removeAll()
         for waiter in waiting.values { waiter.resume(throwing: RelayFailure.closed) }
@@ -775,6 +851,7 @@ public actor RemiConnection {
         let room = RelayCrypto.room(machine)
         let task = session.webSocketTask(with: url)
         task.maximumMessageSize = RelayCrypto.maxFrame
+        retireChatOrigin()
         socket = task
         relayClosing = false
         var phase = "nonce"
@@ -794,6 +871,7 @@ public actor RemiConnection {
                 guard case .data(let bytes) = frame else { channel.fail(); throw RelayFailure.type }
                 guard let plaintext = try channel.open(bytes) else {
                     relayClosing = true
+                    retireChatOrigin()
                     armRelayDeadline(task, after: .seconds(1))
                     try await sendRelayBye(on: task)
                     eventHandler(.relayStreamEnded(clean: !channel.failed))
@@ -897,6 +975,7 @@ public actor RemiConnection {
             do { try await Task.sleep(until: deadline, clock: .continuous) } catch { return }
             guard socket === task, shouldRun, !applicationAdmitted else { return }
             directDeadlineFailure = opening ? .unreachable : .authentication
+            retireChatOrigin()
             task.cancel(with: .goingAway, reason: nil)
         }
     }
@@ -910,6 +989,7 @@ public actor RemiConnection {
         relayDeadline = Task {
             do { try await Task.sleep(for: max(.zero, boundedDelay)) } catch { return }
             guard self.socket === task else { return }
+            retireChatOrigin()
             task.cancel(with: .init(rawValue: 4400) ?? .policyViolation, reason: Data("closed".utf8))
         }
     }

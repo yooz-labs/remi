@@ -208,12 +208,4 @@ import Testing
         #expect(two.compactMap { Strip.machineID(for: $0, in: list) } == ["b", "c"])
         #expect(Strip.machineID(for: .summary(count: 3), in: [machine("a")]) == nil)
     }
-
-    @Test func menuAnnouncesTheSelectedMachine() {
-        let studio = machine("m1", questions: 2)
-        #expect(Strip.menuAccessibilityLabel(selected: studio) == "Machine Mac m1, connected, 2 waiting, selected")
-        #expect(Strip.menuAccessibilityLabel(selected: studio, label: "Mac (m1.local:18765)")
-            == "Machine Mac (m1.local:18765), connected, 2 waiting, selected")
-        #expect(Strip.menuAccessibilityLabel(selected: nil) == "Machine, none selected")
-    }
 }
