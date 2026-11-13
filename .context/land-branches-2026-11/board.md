@@ -71,7 +71,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | L02 | [Terminal relay probe #1657](cards/L02-terminal-relay-qualification.md) | - | worker | - | - | done | - | 1657 | 2026-11-12T21:30 | 1d | probe ok on Bun 1.3.11, fails 1.4.4 (#1738); hosted CI on 833ada41 pending (soak); own diff unchanged, no RV-delta; merge when green (Q19) |
 | L04 | [Question session identity #1732](cards/L04-question-session-identity.md) | - | worker | xcode | - | done | - | 1734 | 2026-11-12T22:10 | 1d | merge gate: fix r3 verified (head bab01d67, wide-pin revert, Mac lookup revert); waiting on native CI; then merge, reopen #1732 |
 | L05 | [Notification preferences #1707](cards/L05-notification-preferences.md) | - | worker | xcode | - | done | L03 | 1707 | 2026-11-13T06:11-08:00 | 1d | PR ready; waiting hosted checks (native, relay scope) at 28341b5a; then merge gate (no third review round) |
-| L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | - | review | L03 | 1736 | 2026-11-13T06:04-08:00 | 2d | RV-delta running; hosted native passed (opt-in step ran, one rerun after DirectAdmission flake), local-relay soak pending; then merge gate |
+| L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | - | review | L03 | 1736 | 2026-11-13T06:04-08:00 | 2d | delta clean; waiting local-relay soak on e18c8c13; then gh pr ready, merge gate (check RemiConnection.swift overlap with #1737), merge, bump, DV, cleanup |
 | L07 | [Local notification order #1720](cards/L07-local-notification-order.md) | - | worker | xcode | - | blocked | L04, CP1 | - | - | 3d | parked until #1727 is resolved (Q12); counts as settled for L99; branch kept |
 | L08 | [Native images #1313](cards/L08-native-images.md) | - | worker-hard | xcode | - | dropped | L03, CP1 | - | - | 3d | parked as evidence (Q11 a): branch kept, not deleted; chunk cards are reference only |
 | L09 | [Bun 1.4.2 pins #1512](cards/L09-bun142-pins.md) | - | worker-hard | - | claude-opus | active | L01 | 1512 | 2026-11-13T06:14-08:00 | 2d | fix r2 (Critical: CI runner contract hard-coded to the 1.3.11 revision; docs; notes); then hosted checks, owner phone check (Q1), merge gate |
@@ -158,4 +158,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | codex-DV5 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T07:10 | done |
 | codex-DV6 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T07:50 | done |
 | codex-DV7 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T08:30 | thread DV r7 on cb346c5a |
-| rv-L06d | reviewer | extra | sonnet xhigh | L06 | 2026-11-13T08:30 | running (delta d9f8699b..e18c8c13) |
+| rv-L06d | reviewer | extra | sonnet xhigh | L06 | 2026-11-13T08:30 | done |
