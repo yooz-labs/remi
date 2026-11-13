@@ -19,8 +19,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Manager id | mba-claude-sonnet |
 | State | running |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | 2026-11-13T02:13-08:00 |
-| Next tick | 2026-11-13T02:43-08:00 |
+| Last tick | 2026-11-13T06:21-08:00 |
+| Next tick | 2026-11-13T06:51-08:00 |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-12T19:05-08:00 |
 
@@ -141,7 +141,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | rv-L04-delta | reviewer | claude-sonnet | sonnet xhigh | L04 | 2026-11-13T01:50 | done |
 | codex-L04fix3 | implementer | codex-luna | gpt-6-luna max | L04 | 2026-11-13T01:58 | done |
 | codex-DV1 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T02:30 | done |
-| codex-L02d | implementer | codex-luna | gpt-6-luna max | L02 | 2026-11-13T05:55 | thread r5 pinned bun probe |
+| codex-L02d | implementer | codex-luna | gpt-6-luna max | L02 | 2026-11-13T05:55 | done |
 | codex-L06 | implementer | codex-terra | gpt-6.1-terra xhigh | L06 | 2026-11-13T06:20 | thread r1 negative controls |
 | codex-DV4 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T06:15 | done |
 | sonnet-L05 | implementer | claude-sonnet | sonnet high | L05 | 2026-11-13T06:35 | running af3918dd (Luna full, owner: run on Sonnet) |
