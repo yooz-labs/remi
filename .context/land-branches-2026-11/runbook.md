@@ -15,10 +15,14 @@ Paths below are absolute; `PACK` means `/Volumes/S1/worktrees/remi/land-branches
 The owner runs, after approving the plan:
 
 ```bash
-git -C /Users/yahya/Documents/git/yooz/remi worktree remove /private/tmp/claude-501/-Users-yahya-Documents-git-yooz-remi/4a896ae1-b937-4436-9997-64e23e8a81fb/scratchpad/wt-plan
+git -C /private/tmp/claude-501/-Users-yahya-Documents-git-yooz-remi/4a896ae1-b937-4436-9997-64e23e8a81fb/scratchpad/wt-plan status --short   # expect only node_modules, pnpm-lock.yaml, pnpm-workspace.yaml (generated, untracked)
+git -C /Users/yahya/Documents/git/yooz/remi worktree remove --force /private/tmp/claude-501/-Users-yahya-Documents-git-yooz-remi/4a896ae1-b937-4436-9997-64e23e8a81fb/scratchpad/wt-plan
 git -C /Users/yahya/Documents/git/yooz/remi worktree add /Volumes/S1/worktrees/remi/land-branches-plan chore/land-branches-plan
 mkdir -p /Volumes/S1/yooz/remi/locks /Volumes/S1/yooz/remi/artifacts/land-branches-2026-11
+cd /Volumes/S1/worktrees/remi/land-branches-plan && bun install
 ```
+
+The branch's commits are safe in the shared refs; `--force` only discards the scratch worktree's generated untracked files.
 
 Then the pack review (plan Appendix A), then the `/loop` start prompt (plan 0.1).
 Optional live view: `nohup MB serve BOARD --port 8765 > /tmp/board-serve.log 2>&1 & disown`.
