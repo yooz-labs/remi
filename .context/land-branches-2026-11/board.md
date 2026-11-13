@@ -19,8 +19,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Manager id | mba-claude-sonnet |
 | State | running |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | 2026-11-13T09:31-08:00 |
-| Next tick | 2026-11-13T10:01-08:00 |
+| Last tick | 2026-11-13T09:57-08:00 |
+| Next tick | 2026-11-13T10:27-08:00 |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-12T19:05-08:00 |
 
@@ -74,7 +74,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | - | review | L03 | 1736 | 2026-11-13T06:04-08:00 | 2d | all checks green at e18c8c13 but RemiConnection.swift overlaps #1737 (merged after its CI base): develop merged clean (1e4b18b4, pushed), CI rerun incl. soak; advisor checks the interaction; then ready, merge gate |
 | L07 | [Local notification order #1720](cards/L07-local-notification-order.md) | - | worker | xcode | - | blocked | L04, CP1 | - | - | 3d | parked until #1727 is resolved (Q12); counts as settled for L99; branch kept |
 | L08 | [Native images #1313](cards/L08-native-images.md) | - | worker-hard | xcode | - | dropped | L03, CP1 | - | - | 3d | parked as evidence (Q11 a): branch kept, not deleted; chunk cards are reference only |
-| L09 | [Bun 1.4.2 pins #1512](cards/L09-bun142-pins.md) | - | worker-hard | - | - | review | L01 | 1512 | 2026-11-13T06:14-08:00 | 2d | fix r2 pushed 6c2782ca (contract recaptured on 1.4.2, docs, notes); waiting hosted (test-workers must pass on 1.4.2, soak); then owner phone check (Q1), merge only when no other step active/review |
+| L09 | [Bun 1.4.2 pins #1512](cards/L09-bun142-pins.md) | - | worker-hard | - | - | review | L01 | 1512 | 2026-11-13T06:14-08:00 | 2d | owner phone check with the built hub (artifacts L09/phone-test/README.md); merge after L06 and the owner's pass (macOS job failure is #1744, environment) |
 | L12 | [WSS writer tests #1641](cards/L12-native-wss-characterization.md) | - | worker | xcode | - | dropped | - | - | - | 4h | Q6 fold into the first #1641 implementation PR; branch kept |
 | L11 | [Compact preview probes #1711](cards/L11-compact-preview.md) | - | worker | - | - | dropped | - | - | - | 4h | Q5 park: branch kept, no PR; not in the L13 delete list |
 | L10 | [#1727 local files check](cards/L10-store-callback-owner-check.md) | - | - | - | - | done | - | - | - | - | verify the #1727 push landed (git ls-remote); then waits on Q16 (PR wanted?) |
