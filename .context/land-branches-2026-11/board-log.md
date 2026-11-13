@@ -107,3 +107,4 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T07:21-08:00 | DV r5 on 89fc64a1 green (952 tests; the optional --help call was my extra, not a gate). Hosted CI on PR 1512 confirms the Critical: test-workers fail 'Unsupported target contract' (the Opus fix round is in flight). L02 worktree and branch deleted (merged). |
 | 2026-11-13T07:42-08:00 | L05 merged (PR 1707 -> fac561eb, bump faa335d7): all required checks green incl. native and soak, merge-tree clean, no overlap, closing refs []; DV r6 dispatched |
 | 2026-11-13T07:43-08:00 | L05 worktree and branch deleted (merged) |
+| 2026-11-13T07:59-08:00 | DV r6 on faa335d7 green (957 tests, baseline suites skipped). L06 Terra pushed e18c8c13 (report pending, hosted native and soak running). L09 fix still in flight; PR 1512 test-workers still red from the stale contract. L14 soak pending. |
