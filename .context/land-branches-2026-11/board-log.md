@@ -63,3 +63,9 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T01:02-08:00 | L03 fix round dispatched (terra, full access, thread 01a1d424-f58c); owner action needed: file the follow-up issue from L03/r2/issue-body.md |
 | 2026-11-13T01:06-08:00 | Filed #1735 (bind direct client auth signature to the server key) from the L03 advisor ruling; the L03 fix worker's PR body and test labels get the number after its run (manager edits the PR body once the worker finishes) |
 | 2026-11-13T01:10-08:00 | Owner widened authority again: develop pushes, TestFlight uploads, deleting done branches and worktrees (manager and lead only); L13 cleanup commands can be run by the manager after its checks |
+| 2026-11-13T01:24-08:00 | budget reset (daily): Agents today was 16 |
+| 2026-11-13T01:24-08:00 | budget reset (daily): Codex Luna today was 8 |
+| 2026-11-13T01:24-08:00 | budget reset (daily): Codex Terra today was 2 |
+| 2026-11-13T01:24-08:00 | budget reset (daily): Claude Sonnet today was 5 |
+| 2026-11-13T01:24-08:00 | budget reset (daily): Claude Opus today was 1 |
+| 2026-11-13T01:25-08:00 | tick 4: L04 fix verified (head 4bfccf4c, 5 files in scope, 3 revert checks, closing ref #1732 known); RV-delta dispatched. L03 worker stopped on a contradictory revert requirement; advisor parenthetical resolves it (different-key case is the pin revert check); continuation dispatched with #1735. L01 fix r3 dispatched. L02 r4 failed the positive probe under local Bun 1.4.4 (client socket close; CI pins 1.3.11): manager pushed the local develop merge (051e9900) to PR 1657 so hosted CI is the evidence; budgets reset at tick |
