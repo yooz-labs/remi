@@ -74,15 +74,15 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | - | done | L03 | 1736 | 2026-11-13T06:04-08:00 | 2d | all checks green at e18c8c13 but RemiConnection.swift overlaps #1737 (merged after its CI base): develop merged clean (1e4b18b4, pushed), CI rerun incl. soak; advisor checks the interaction; then ready, merge gate |
 | L07 | [Local notification order #1720](cards/L07-local-notification-order.md) | - | worker | xcode | - | blocked | L04, CP1 | - | - | 3d | parked until #1727 is resolved (Q12); counts as settled for L99; branch kept |
 | L08 | [Native images #1313](cards/L08-native-images.md) | - | worker-hard | xcode | - | dropped | L03, CP1 | - | - | 3d | parked as evidence (Q11 a): branch kept, not deleted; chunk cards are reference only |
-| L09 | [Bun 1.4.2 pins #1512](cards/L09-bun142-pins.md) | - | worker-hard | - | - | review | L01 | 1512 | 2026-11-13T06:14-08:00 | 2d | owner phone check with the built hub (artifacts L09/phone-test/README.md); merge after L06 and the owner's pass (macOS job failure is #1744, environment) |
+| L09 | [Bun 1.4.2 pins #1512](cards/L09-bun142-pins.md) | - | worker-hard | - | - | blocked | L01 | 1512 | 2026-11-13T06:14-08:00 | 2d | parked until the owner reports the Bun 1.4.2 phone result (hub in artifacts L09/phone-test); hosted green except #1744 macOS runner; then merge gate, DV, cleanup |
 | L12 | [WSS writer tests #1641](cards/L12-native-wss-characterization.md) | - | worker | xcode | - | dropped | - | - | - | 4h | Q6 fold into the first #1641 implementation PR; branch kept |
 | L11 | [Compact preview probes #1711](cards/L11-compact-preview.md) | - | worker | - | - | dropped | - | - | - | 4h | Q5 park: branch kept, no PR; not in the L13 delete list |
 | L10 | [#1727 local files check](cards/L10-store-callback-owner-check.md) | - | - | - | - | done | - | - | - | - | verify the #1727 push landed (git ls-remote); then waits on Q16 (PR wanted?) |
-| L99 | Landing complete (CP2) | - | - | - | - | blocked | - | - | - | - | manager sets done when L01 to L12, L14 and CP1 are done or dropped, and L07 is done, dropped or parked (runbook 8) |
-| L13 | [Cleanup commands](cards/L13-cleanup-commands.md) | - | worker | - | - | todo | L99 | - | - | 2h | then the owner runs cleanup.md |
-| P01 | [iPad Board design](cards/P01-ipad-board-design.md) | - | lead | xcode, simulator | - | blocked | L99 | - | - | 1d | todo when L99 done; iPad issue filed first; Xcode MCP precondition; CP3 |
+| L99 | Landing complete (CP2) | - | - | - | - | done | - | - | - | - | manager sets done when L01 to L12, L14 and CP1 are done or dropped, and L07 is done, dropped or parked (runbook 8) |
+| L13 | [Cleanup commands](cards/L13-cleanup-commands.md) | - | worker | - | - | done | L99 | - | - | 2h | then the owner runs cleanup.md |
+| P01 | [iPad Board design](cards/P01-ipad-board-design.md) | - | lead | xcode, simulator | - | todo | L99 | - | - | 1d | blocked: the iPad issue exists (#1745) but the Xcode MCP is unavailable in this session (stale bridge; /mcp reconnect not available): needs a session with working Xcode tools |
 | P02 | iPad Board implementation (outline) | - | worker-hard | xcode, simulator | - | outline | P01 | - | - | - | lead writes the card at CP3 after the owner approves P01 |
-| A01 | [Account switching design](cards/A01-account-switching-design.md) | - | lead | - | - | blocked | L99 | - | - | 1d | todo when L99 done (owner: blocked until every landing step is done or dropped); no code |
+| A01 | [Account switching design](cards/A01-account-switching-design.md) | - | lead | - | claude-opus | active | L99 | - | 2026-11-13T12:31-08:00 | 1d | todo when L99 done (owner: blocked until every landing step is done or dropped); no code |
 | A02 | [Fable review](cards/A02-account-switching-fable-review.md) | - | frontier | - | - | todo | A01 | - | - | 4h | owner-requested Fable (claude-fable-5-2) |
 | A03 | [Account switching checkpoint](cards/A03-account-switching-checkpoint.md) | - | lead | - | - | todo | A02 | - | - | 1d | ends at owner CP4; no merge before approval |
 | CP1 | CP1 go or adjust for L07 and L08 | - | - | - | - | done | - | - | - | - | manager sets done when L01 to L06 are done or dropped and the lead's CP1 decision is recorded; now gates only L07's unpark |
@@ -161,3 +161,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | rv-L06d | reviewer | extra | sonnet xhigh | L06 | 2026-11-13T08:30 | done |
 | advisor-L06m | advisor | extra | opus xhigh | L06 | 2026-11-13T09:15 | running (merge interaction with #1737 in RemiConnection.swift) |
 | codex-DV8 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T10:40 | done |
+| opus-A01 | implementer | claude-opus | opus xhigh | A01 | 2026-11-13T12:10 | running a290e7ce (lead-tier design draft, draft PR, no code) |
