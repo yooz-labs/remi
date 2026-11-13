@@ -19,8 +19,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Manager id | mba-claude-sonnet |
 | State | running |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | 2026-11-13T08:43-08:00 |
-| Next tick | 2026-11-13T09:13-08:00 |
+| Last tick | 2026-11-13T09:04-08:00 |
+| Next tick | 2026-11-13T09:34-08:00 |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-12T19:05-08:00 |
 
@@ -48,12 +48,12 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 30 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Agents today | 30 | 31 | daily | every dispatch on every platform; the plan approval covers this limit |
 | Codex Luna today | 8 | 11 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 3 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
 | Claude Sonnet today | 16 | 12 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
-| Claude Opus today | 4 | 3 | daily | lead wakes, lead-tier steps, advisor consults |
-| Advisor consults | 8 | 3 | never | lead tier (Opus), whole plan |
+| Claude Opus today | 4 | 4 | daily | lead wakes, lead-tier steps, advisor consults |
+| Advisor consults | 8 | 4 | never | lead tier (Opus), whole plan |
 | Fable consults | 1 | 0 | never | A02 only, owner-requested |
 | Agents this wave | 0 | 0 | wave | unused: this plan has no waves |
 
@@ -71,7 +71,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | L02 | [Terminal relay probe #1657](cards/L02-terminal-relay-qualification.md) | - | worker | - | - | done | - | 1657 | 2026-11-12T21:30 | 1d | probe ok on Bun 1.3.11, fails 1.4.4 (#1738); hosted CI on 833ada41 pending (soak); own diff unchanged, no RV-delta; merge when green (Q19) |
 | L04 | [Question session identity #1732](cards/L04-question-session-identity.md) | - | worker | xcode | - | done | - | 1734 | 2026-11-12T22:10 | 1d | merge gate: fix r3 verified (head bab01d67, wide-pin revert, Mac lookup revert); waiting on native CI; then merge, reopen #1732 |
 | L05 | [Notification preferences #1707](cards/L05-notification-preferences.md) | - | worker | xcode | - | done | L03 | 1707 | 2026-11-13T06:11-08:00 | 1d | PR ready; waiting hosted checks (native, relay scope) at 28341b5a; then merge gate (no third review round) |
-| L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | - | review | L03 | 1736 | 2026-11-13T06:04-08:00 | 2d | delta clean; waiting local-relay soak on e18c8c13; then gh pr ready, merge gate (check RemiConnection.swift overlap with #1737), merge, bump, DV, cleanup |
+| L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | - | review | L03 | 1736 | 2026-11-13T06:04-08:00 | 2d | all checks green at e18c8c13 but RemiConnection.swift overlaps #1737 (merged after its CI base): develop merged clean (1e4b18b4, pushed), CI rerun incl. soak; advisor checks the interaction; then ready, merge gate |
 | L07 | [Local notification order #1720](cards/L07-local-notification-order.md) | - | worker | xcode | - | blocked | L04, CP1 | - | - | 3d | parked until #1727 is resolved (Q12); counts as settled for L99; branch kept |
 | L08 | [Native images #1313](cards/L08-native-images.md) | - | worker-hard | xcode | - | dropped | L03, CP1 | - | - | 3d | parked as evidence (Q11 a): branch kept, not deleted; chunk cards are reference only |
 | L09 | [Bun 1.4.2 pins #1512](cards/L09-bun142-pins.md) | - | worker-hard | - | - | review | L01 | 1512 | 2026-11-13T06:14-08:00 | 2d | fix r2 pushed 6c2782ca (contract recaptured on 1.4.2, docs, notes); waiting hosted (test-workers must pass on 1.4.2, soak); then owner phone check (Q1), merge only when no other step active/review |
@@ -159,3 +159,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | codex-DV6 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T07:50 | done |
 | codex-DV7 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T08:30 | done |
 | rv-L06d | reviewer | extra | sonnet xhigh | L06 | 2026-11-13T08:30 | done |
+| advisor-L06m | advisor | extra | opus xhigh | L06 | 2026-11-13T09:15 | running (merge interaction with #1737 in RemiConnection.swift) |
