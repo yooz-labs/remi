@@ -249,6 +249,7 @@ public actor RemiConnection {
     private var learnedDirectServerPublicKey: String?
     private let notificationAuthorityEpoch = RelayRegistrationEpoch()
     private var applicationAdmitted = false
+    private var relayAdmittedAt: ContinuousClock.Instant?
     private var chatSocketID: UUID?
     private var chatSocketAuthenticated = false
     private var relayHelloBuffer = RelayHelloBuffer()
@@ -554,6 +555,8 @@ public actor RemiConnection {
             transition(to: .connecting(attempt: attempt))
             do {
                 try await connectAndReceive()
+                // Capture before closeSocket clears the verified Hello and channel.
+                let admittedRelayEpisode = hasHealthyAdmittedRelayEpisode
                 closeSocket()
                 if singleAttempt { shouldRun = false; return }
                 if case .awaitingLocalApproval = state { return }
@@ -563,12 +566,15 @@ public actor RemiConnection {
                     transition(to: .rejected(reason: "The recovery connection ended before admission."))
                     return
                 }
+                if admittedRelayEpisode { attempt = 0 }
             } catch {
                 if !shouldRun || Task.isCancelled { return }
                 if error is CancellationError && directDeadlineFailure == nil { return }
                 let directFailure = directDeadlineFailure
                 // closeSocket() below resets this; a socket lost after admission is not a login failure.
                 let wasAdmitted = applicationAdmitted
+                // Capture the health snapshot before closeSocket clears admission and channel.
+                let admittedRelayEpisode = hasHealthyAdmittedRelayEpisode
                 let authenticationStarted = directOpeningCompleted || pendingAuthentication != nil || authenticatedServerPublicKey != nil
                 if configuration.relayPin != nil {
                     if let channel = relayChannel { eventHandler(.relayStreamEnded(clean: channel.peerEnded && !channel.failed)) }
@@ -606,10 +612,18 @@ public actor RemiConnection {
                     }
                     return
                 }
-                if configuration.relayPin != nil && (!relayEnrolled || attempt >= 5 || error is RelayFailure) {
-                    shouldRun = false
-                    transition(to: .rejected(reason: "The relay connection closed. Pair again if this machine has not been saved."))
-                    return
+                if configuration.relayPin != nil {
+                    // RelayFailure and unenrolled pairing remain terminal. A transport or BYE
+                    // close, including revocation, retries until subsequent refusals reach the cap.
+                    // A transport error inside handle() is wrapped as RelayFailure.malformed (#1741).
+                    let decision = Self.relayRetryDecision(enrolled: relayEnrolled, error: error,
+                        healthyAdmittedEpisode: admittedRelayEpisode, attempt: attempt)
+                    attempt = decision.attempt
+                    if !decision.retry {
+                        shouldRun = false
+                        transition(to: .rejected(reason: "The relay connection closed. Pair again if this machine has not been saved."))
+                        return
+                    }
                 }
                 if configuration.relayPin == nil && !Self.shouldRetryDirectFailure(
                     error: error, deadlineUnreachable: directFailure == .unreachable, wasAdmitted: wasAdmitted
@@ -627,14 +641,24 @@ public actor RemiConnection {
             }
 
             guard shouldRun && !Task.isCancelled else { return }
-            let delay = Self.reconnectDelay(forAttempt: attempt)
-            transition(to: .retrying(attempt: attempt, delaySeconds: delay))
+            // Display value, not budget: a reset still displays the first retry as 1.
+            let retryAttempt = max(1, attempt)
+            let delay = Self.reconnectDelay(forAttempt: retryAttempt)
+            transition(to: .retrying(attempt: retryAttempt, delaySeconds: delay))
             do {
                 try await Task.sleep(for: .seconds(delay))
             } catch {
                 return
             }
         }
+    }
+
+    /// Snapshot only before closeSocket(): applicationAdmitted is set by the verified
+    /// application hello_ack on the live encrypted channel. One-shot RPCs return earlier.
+    private var hasHealthyAdmittedRelayEpisode: Bool {
+        configuration.relayPin != nil && applicationHello && ready && applicationAdmitted
+            && relayChannel != nil && socket != nil
+            && relayAdmittedAt.map { $0.duration(to: .now) >= Self.relayHealthyEpisode } == true
     }
 
     private func connectAndReceive() async throws {
@@ -801,6 +825,7 @@ public actor RemiConnection {
                 learnedDirectServerPublicKey = authenticatedServerPublicKey.base64EncodedString()
             }
             applicationAdmitted = true
+            if configuration.relayPin != nil { relayAdmittedAt = .now }
             directDeadline?.cancel()
             directDeadline = nil
             relayDeadline?.cancel()
@@ -943,6 +968,7 @@ public actor RemiConnection {
         pendingAuthentication = nil
         authenticatedServerPublicKey = nil
         applicationAdmitted = false
+        relayAdmittedAt = nil
         relayHelloBuffer = RelayHelloBuffer()
         initialDirectHelloPending = false
         directOpeningCompleted = false
@@ -1149,6 +1175,17 @@ public actor RemiConnection {
     private func transition(to newState: RemiConnectionState) {
         state = newState
         stateHandler(newState)
+    }
+
+    static let relayHealthyEpisode: Duration = .seconds(30)
+    private static let relayRetryCap = 5
+
+    /// RelayFailure and an unenrolled pairing are terminal even after admission.
+    static func relayRetryDecision(enrolled: Bool, error: any Error,
+                                   healthyAdmittedEpisode: Bool, attempt: Int) -> (retry: Bool, attempt: Int) {
+        guard enrolled, !(error is RelayFailure) else { return (false, attempt) }
+        let nextAttempt = healthyAdmittedEpisode ? 0 : attempt
+        return (nextAttempt < relayRetryCap, nextAttempt)
     }
 
     public nonisolated static func reconnectDelay(forAttempt attempt: Int) -> Double {

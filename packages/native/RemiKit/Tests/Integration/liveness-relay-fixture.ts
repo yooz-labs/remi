@@ -1,0 +1,177 @@
+/** Fault-injecting source HubRelay + Worker; real route logic, canned application replies. */
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createInterface } from 'node:readline';
+import {
+  type ProtocolMessage,
+  createHelloAck,
+  createSessionListResponse,
+  relayV2,
+} from '@remi/shared';
+import { IdentityStore } from '../../../../daemon/src/auth/identity-store';
+import { HubRelay } from '../../../../daemon/src/remote/hub-relay';
+import { RelayDeviceStore } from '../../../../daemon/src/remote/relay-device-store';
+import { SessionRegistryFile } from '../../../../daemon/src/session/session-registry-file';
+import { decodeHello } from '../../../../shared/src/relay/envelope';
+import { startWorker } from '../../../../signaling/tests/e2e/harness';
+
+const publicKey = process.argv[2];
+if (!publicKey) throw new Error('owned public identity required');
+console.log = (...args) => console.error(...args);
+const directory = mkdtempSync(join(tmpdir(), 'remi-idle-relay-'));
+const trust = new IdentityStore(directory);
+await trust.generate();
+await trust.addAuthorizedKey(publicKey, 'owned-native-idle');
+await new RelayDeviceStore(directory, trust).add(publicKey, 'owned-native-idle');
+const identity = await trust.unlock();
+const worker = await startWorker();
+let admissions = 0;
+let preHelloMode = process.argv[3] === 'prehello' ? 'drop' : 'off';
+let preHelloDrops = 0;
+let pairHellosWithoutOffer = 0;
+const inputs: string[] = [];
+const relay = new HubRelay(
+  {
+    relayUrl: worker.wsUrl,
+    identity,
+    trust,
+    dir: directory,
+    registry: new SessionRegistryFile(join(directory, 'live')),
+    log: (message) => {
+      if (message === 'Relay control admitted') admissions++;
+    },
+  },
+  {
+    onConnect: (id) => {
+      if (preHelloMode !== 'off') {
+        const peer = observable.peers.get(id);
+        if (!peer || peer.stage !== 'ready') throw new Error('Expected owned READY peer');
+        preHelloDrops++;
+        if (preHelloMode === 'bye') void peer.channel?.bye();
+        else if (preHelloMode === 'delayed') {
+          preHelloMode = 'drop';
+          setTimeout(() => peer.ws.close(1011, 'owned delayed loss before hello_ack'), 30_100);
+        } else peer.ws.close(1011, 'owned loss before application hello');
+        return;
+      }
+      relay.sendRaw(id, createHelloAck('owned-idle-relay', null));
+    },
+    onSessionListRequest: (id, request) => {
+      relay.sendRaw(id, createSessionListResponse([], request));
+    },
+  },
+);
+// Observe entry to the actual production route, then delegate unchanged. This is an ingress
+// trace of real authenticated frames, not a replacement handler or an expected outcome stub.
+const observable = relay as unknown as {
+  route(peer: unknown, message: ProtocolMessage): Promise<void>;
+  openPeer(id: string): void;
+  revoke(fingerprint: string): Promise<{ success: boolean; edgeAcknowledged: boolean }>;
+  offers: Map<string, unknown>;
+  control?: { command(value: unknown): Promise<boolean> };
+  peers: Map<
+    string,
+    {
+      stage: string;
+      ws: WebSocket;
+      channel?: { send(bytes: Uint8Array): Promise<void>; bye(): Promise<void> };
+    }
+  >;
+};
+const openPeer = observable.openPeer.bind(relay);
+observable.openPeer = (id) => {
+  openPeer(id);
+  const peer = observable.peers.get(id);
+  peer?.ws.addEventListener('message', (event) => {
+    if (peer.stage !== 'hello' || observable.offers.size !== 0) return;
+    try {
+      if (decodeHello(event.data).mode === 'pair') pairHellosWithoutOffer++;
+    } catch {
+      // This trace counts only a valid pairing hello with no offer.
+    }
+  });
+};
+const route = observable.route.bind(relay);
+observable.route = async (peer, message) => {
+  if (message.type === 'user_input') inputs.push(message.id);
+  await route(peer, message);
+};
+const lines = createInterface({ input: process.stdin });
+let cleanup: Promise<void> | undefined;
+function stop() {
+  cleanup ??= (async () => {
+    lines.close();
+    await relay.stop();
+    await worker.stop();
+    rmSync(directory, { recursive: true, force: true });
+  })();
+  return cleanup;
+}
+process.once('SIGTERM', () => {
+  void stop();
+});
+process.once('SIGINT', () => {
+  void stop();
+});
+async function admitted(after: number) {
+  const deadline = Date.now() + 10000;
+  while (admissions <= after) {
+    if (Date.now() >= deadline) throw new Error('owned relay admission deadline');
+    await Bun.sleep(10);
+  }
+}
+const out = (value: object) => process.stdout.write(`${JSON.stringify(value)}\n`);
+try {
+  await relay.start();
+  await admitted(0);
+  if (process.argv[3] === 'pair-no-offer') {
+    // Admit only this synthetic pairing attempt at the Worker. No HubRelay offer exists,
+    // so its real pairing policy must refuse the authenticated client's Hello.
+    const hash = await relayV2.admitTagHash(await relayV2.admitTag(new Uint8Array(32).fill(42)));
+    if (!(await observable.control?.command({ t: 'pairing', ticketHash: hash, ttlSeconds: 60 }))) {
+      throw new Error('Owned pairing admission setup failed');
+    }
+  }
+  out({
+    kind: 'ready',
+    relayURL: worker.wsUrl,
+    machinePublicKey: relayV2.b64u(new Uint8Array(Buffer.from(identity.publicKeyRaw, 'base64'))),
+  });
+  for await (const line of lines) {
+    if (line === 'prehello-on') {
+      preHelloMode = 'drop';
+      out({ kind: 'prehello-on' });
+    } else if (line === 'prehello-bye' || line === 'prehello-delayed') {
+      preHelloMode = line === 'prehello-bye' ? 'bye' : 'delayed';
+      out({ kind: line });
+    } else if (line === 'revoke') {
+      const key = trust.loadAuthorizedKeys().keys.find((entry) => entry.publicKey === publicKey);
+      if (!key) throw new Error('Owned key not found');
+      const result = await observable.revoke(key.fingerprint);
+      if (!result.success || !result.edgeAcknowledged) throw new Error('Owned revocation failed');
+      out({ kind: 'revoke' });
+    } else if (line === 'drop' || line === 'corrupt' || line === 'text' || line === 'bye') {
+      const ready = [...observable.peers.values()].filter((peer) => peer.stage === 'ready');
+      if (ready.length !== 1)
+        throw new Error(`Expected one owned ready peer, found ${ready.length}`);
+      const peer = ready[0];
+      if (!peer) throw new Error('Owned ready peer disappeared');
+      if (line === 'drop') {
+        // Close only the owned server-side pipe, without emitting an authenticated BYE.
+        peer.ws.close(1011, 'owned synthetic transport loss');
+      } else if (line === 'text') {
+        peer.ws.send('unexpected text after READY');
+      } else {
+        if (!peer.channel) throw new Error('Expected owned encrypted channel');
+        if (line === 'bye') await peer.channel.bye();
+        else await peer.channel.send(new TextEncoder().encode('{'));
+      }
+      out({ kind: line === 'drop' ? 'dropped' : line });
+    } else if (line === 'stats')
+      out({ kind: 'stats', inputs, preHelloDrops, pairHellosWithoutOffer });
+    else if (line === 'stop') break;
+  }
+} finally {
+  await stop();
+}
