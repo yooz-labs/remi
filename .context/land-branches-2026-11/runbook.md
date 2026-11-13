@@ -63,7 +63,8 @@ codex exec -m gpt-6-luna -c model_reasoning_effort=max \
 ```
 
 - `PROMPT` is `PACK/cards/README.md`, then the card verbatim, then the live facts (section 6).
-- If Q10 says full access for native cards, replace the `-s workspace-write` line and the two `sandbox_workspace_write` lines with `-s danger-full-access` for steps whose Needs include `xcode`.
+- Native Swift cards (Needs include `xcode`; owner answer Q10, 2026-11-12): replace the `-s workspace-write` line and the two `sandbox_workspace_write` lines with `-s danger-full-access`, only in a clean worktree: `git -C WT status --porcelain --untracked-files=no` prints nothing before dispatch; otherwise do not dispatch, log it and ask the owner.
+  Every other Codex card (no `xcode` in Needs) stays `workspace-write` with the roots above.
 - Right after start: read the `thread.started` id from `EVID/codex-events.jsonl`; its rollout under `~/.codex/sessions/2026/11/<dd>/rollout-*-<thread id>.jsonl` must show `cwd` = WT, the expected model and effort; otherwise stop it and dispatch again.
 - Write the thread id, model and effort on the Agents row (`MB set BOARD Agents <name> --new ...`).
 - Before each dispatch: `MB card PACK/cards/<card>.md`, `MB spend BOARD "Agents today"`, and the platform row (`"Codex Luna today"` or `"Codex Terra today"`).
@@ -77,7 +78,7 @@ Copied from the board and from `git`/`gh` at dispatch time, never from an earlie
 - the PR number and head commit, when the step has a PR;
 - for a fix round: the round number, the decided findings with their outcomes, and the line "This card was started earlier. Continue from the worktree: run `git status` and `git log --oneline -10` first.";
 - for a reviewer: `Lens group: <name>`, `Base: <merge-base sha>`, `Head: <head sha>` (the reviewer reads those commits, never a moving worktree);
-- the owner answers that the card names (Q2, Q10 for native cards; Q9 for reviews).
+- the owner answers that the card names (Q2 for native cards, while it is open: "Q2 unanswered" means the card's stall rule is a stop condition).
 
 ## 7. First tick of a session
 
@@ -88,7 +89,7 @@ Copied from the board and from `git`/`gh` at dispatch time, never from an earlie
 3. Reconcile: for each step in `active` or `review`, read its PR (`gh pr view N --json headRefOid,state,isDraft,mergeStateStatus`) and its worktree (`git -C WT status --short`, `git -C WT log --oneline -3`); the PR and worktree are right; correct the board and `MB log` the correction.
    A step with no live worker: dispatch again with the continuation line (section 6).
 4. `test -d /Volumes/S1/yooz/remi/locks || mkdir -p /Volumes/S1/yooz/remi/locks`.
-5. First session only: if the Questions table is empty, record Q1 to Q10 (section 11) and ask them in three batches.
+5. First session only: ask the questions still `open` on the board (on 2026-11-12: Q2, Q3, Q7) in one batch; never re-ask a `closed` one.
 
 ## 8. The tick
 
@@ -176,8 +177,9 @@ After each merge: watch `develop`'s next push run (`gh run list --branch develop
 
 ## 11. Owner questions and what each answer does
 
-Ask at the first tick, in three batches: (Q2, Q10, Q9, Q3), (Q1, Q4, Q5, Q6), (Q7, Q8).
-The question texts and options are on the board; the mapping:
+Answered by the owner on 2026-11-12 and already applied on the board: Q1 keep, Q4 fold, Q5 park, Q6 fold, Q8 approve (commands only), Q9 yes (L03, L06, L08-R4 only), Q10 full access for native cards in a clean worktree; the defaults (Parity, Slots, Budget, merge authority) were approved as proposed.
+Still open: Q2, Q3, Q7.
+The question texts and options are on the board; the mapping (rows for answered questions stay for reference):
 
 | Q | Answer | Board change |
 | --- | --- | --- |
@@ -186,7 +188,7 @@ The question texts and options are on the board; the mapping:
 | | defer | L09 `dropped`; branch kept |
 | Q2 Mac test gate | bounded attempt, then hosted | native cards apply their Q2-A gate text |
 | | require local | a native step whose Mac test stalls goes `owner` |
-| Q2 and Q10 both answered | any answers | L03 and L04 `todo` (they wait on both; every later native step depends on L03) |
+| Q2 answered (Q10 already answered) | any answer | L03 and L04 `todo` (every later native step depends on L03) |
 | Q3 #1731 fix | approve | L06 `todo` |
 | | not now | L06 `dropped`; branch kept |
 | Q4 image-availability | fold | nothing until L13 |
@@ -199,9 +201,9 @@ The question texts and options are on the board; the mapping:
 | Q7 #1727 files | any answer | the owner acts; L10 `done` when the owner says so; a "push" answer adds a lead wake to decide whether a #1727 card follows |
 | Q8 drop list | approve | L13 includes every listed branch |
 | | keep some | L13 includes only the ones the answer names |
-| Q9 Luna second reviewer | yes | add one Codex Luna reviewer (RV-panel, lens `contract`) to L03, L06 and L08-R4 |
+| Q9 Luna second reviewer | yes (answered) | add one Codex Luna reviewer on top of the Sonnet panel: RV-panel with lens `contract` for L03 and L06, and the L08-R4 chunk card plus RV-chunk-common with lens `contract` for L08; dispatch per section 5 with `gpt-6-luna`, `-s read-only`, and spend `"Codex Luna today"` |
 | | no | Sonnet only |
-| Q10 Codex sandbox | full access | section 5 variant for `xcode` steps |
+| Q10 Codex sandbox | full access (answered) | section 5 variant for `xcode` steps, clean worktree only |
 | | workspace-write | keep; a sandbox denial in a native gate raises the parity question |
 
 ## 12. The parity question

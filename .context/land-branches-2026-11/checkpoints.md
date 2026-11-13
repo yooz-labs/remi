@@ -5,7 +5,7 @@ The lead reads only what its row lists, decides, updates cards if needed, and re
 
 | ID | Trigger | Lead reads | Lead produces | Owner |
 | --- | --- | --- | --- | --- |
-| CP0 | before the first tick | the whole pack | pack-review dispositions (plan Appendix A) | approves the plan, Parity, Slots, Budget, merge authority; answers Q1 to Q10 |
+| CP0 | before the first tick | the whole pack | pack-review dispositions (plan Appendix A) | approved the defaults and answered Q1, Q4, Q5, Q6, Q8, Q9, Q10 on 2026-11-12; Q2, Q3, Q7 open |
 | CP1 | L01 to L06 each `done` or `dropped` | `status`, the merged PR list, any open advisor rulings, `risks.md` R1 to R4 | go or adjust for L07 and L08 (chunk cards still right after the develop merges?) | digest only |
 | CP2 | L99 `done` | `status`, `risks.md`, the L13 command list | confirm the late phases may start; P01 and A01 to `todo` | runs L13's commands |
 | CP3 | P01's design PR is ready | the design doc, the simulator evidence | the P02 card (implementation slices, visual acceptance gate) | approves or changes the design; merges the design PR or tells the manager to |

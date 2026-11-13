@@ -44,7 +44,7 @@ every review report is in, every finding has an outcome, no accepted Critical is
 Never merged by the manager:
 
 - anything into `main` (releases are the owner's);
-- #1512 (L09) unless Q1 says the phone gate is met or waived;
+- #1512 (L09) until the owner reports the physical-phone acceptance (Q1: keep the gate);
 - the P01 design PR and the A03 design PR: they merge only after the owner approves them at their checkpoints;
 - a PR that relaxes a gate's assertion (to the lead).
 
@@ -63,7 +63,7 @@ Every owner question waits for an answer; silence is never an answer.
 | Lead (intermittent) and ordinary escalation advisor | lead | Claude Opus (`opus`), xhigh |
 | Implementers | worker / worker-hard | Codex `gpt-6-luna` max / `gpt-6.1-terra` xhigh |
 | Reviewers | reviewer | Claude Sonnet xhigh (owner's global rule) |
-| Optional second reviewer | reviewer | Codex `gpt-6-luna` max, only where Q9 says |
+| Second reviewer (Q9) | reviewer | Codex `gpt-6-luna` max, on top of Sonnet, for L03, L06 and chunk L08-R4 only |
 | A02 account-switching advisor review | frontier | Claude Fable, `claude-fable-5-2` |
 
 **Fable is an owner-requested use, not a default.**
@@ -87,15 +87,15 @@ Observed on 2026-11-12 between 18:55 and 19:30 PST with `git fetch --prune`, `gi
 | `patch/issue-1731-idle-recovery` | #1731 | no PR, head `ea7064fd`, 4 test commits plus wip `ea7064fd`; 0 behind; the wip diff equals `approved-fix-candidate.patch` in the #1731 artifacts, whose focused run passed 5 tests; the issue says owner approval of that fix plan is pending | **Land** (L06) after Q3 |
 | `patch/issue-1720-local-notification-order` | #1720 | no PR, head `8225b2eb`, 42 commits (39 non-merge), 28 behind, 39 native files, +5,256; merges clean on develop; its last commit adds the same test lines as #1732's `e6cca52e`, so it conflicts once L04 lands | **Land** (L07) as ONE PR with chunked review |
 | `feature/issue-1313-native-images` | #1313 | no PR, head `82db1172`, 154 commits (151 non-merge), 0 behind, 39 files (38 native, 1 daemon line pair), +6,727; image ingress ships gated off (`imageIngressQualified = false`); conflicts with the #1728 head in `RemiConnection.swift` | **Land** (L08) as ONE PR with chunked review, after L03 and L06 |
-| `feature/issue-1313-image-availability` | #1313 | no PR, head `38f5691d`, 3 commits; not an ancestor of native-images, but a strict subset: two commits are patch-identical to native-images' last two, and the third's files equal native-images' except one reflowed signature line | **Fold** into native-images (Q4); delete after L08 merges |
-| `chore/issue-1273-bun142-pins` | #1273, PR #1512 | open, DIRTY, head `3a654273`, 787 behind; 6 workflows, CI scripts, AGENTS.md, plan.md, relay tests; body: keep unmerged until physical-phone acceptance; develop still pins Bun 1.3.11 | **Land last** (L09) if Q1 allows |
-| `feature/issue-1641-native-wss-route` | #1641 | no PR, head `0c075a28`, 1 commit, 28 behind, one 92-line Swift test characterizing the legacy route writer | **Owner question** (Q6): recommended fold into the first #1641 implementation PR; L12 lands it alone if the owner prefers |
-| `feature/issue-1711-compact-preview` | #1711 | no PR, head `fda985af`, 1 commit, 79 behind, 6 feasibility files under `scripts/preview-proof/` (Python using system Pillow, C probes); no consumer | **Owner question** (Q5): recommended park (keep branch, no PR) |
+| `feature/issue-1313-image-availability` | #1313 | no PR, head `38f5691d`, 3 commits; not an ancestor of native-images, but a strict subset: two commits are patch-identical to native-images' last two, and the third's files equal native-images' except one reflowed signature line | **Fold** into native-images (Q4, owner 2026-11-12); delete after L08 merges, by owner commands (L13) |
+| `chore/issue-1273-bun142-pins` | #1273, PR #1512 | open, DIRTY, head `3a654273`, 787 behind; 6 workflows, CI scripts, AGENTS.md, plan.md, relay tests; body: keep unmerged until physical-phone acceptance; develop still pins Bun 1.3.11 | **Land last** (L09); the phone gate stays (Q1, owner 2026-11-12): merged only after the owner's phone check |
+| `feature/issue-1641-native-wss-route` | #1641 | no PR, head `0c075a28`, 1 commit, 28 behind, one 92-line Swift test characterizing the legacy route writer | **Fold** into the first #1641 implementation PR (Q6, owner 2026-11-12); branch kept; L12 dropped |
+| `feature/issue-1711-compact-preview` | #1711 | no PR, head `fda985af`, 1 commit, 79 behind, 6 feasibility files under `scripts/preview-proof/` (Python using system Pillow, C probes); no consumer | **Park** (Q5, owner 2026-11-12): branch kept, no PR; L11 dropped |
 | `patch/issue-1727-store-callback-order` | #1727 | **local only**, worktree `/Volumes/S1/worktrees/remi/store-callback-order` at `4a525a14` (no commits of its own), no remote branch; 3 untracked files (7,002, 20,157 and 3,949 bytes) that may derive from real transcripts; not read by the lead | **Owner check first** (L10, Q7); nothing is committed or pushed by any agent |
-| `patch/issue-1717-apns-test-scheduling` | #1717 | 2 commits; its one file equals develop's (landed through #1719, `32aa9483`); issue #1717 still open | **Drop**: delete branch, close #1717 pointing at #1719 (Q8, owner commands in L13) |
-| `chore/native-build-21` | - | PR #1672 closed, superseded by #1704; develop's build number is already 22 | **Drop** (Q8) |
-| `patch/issue-1346-secure-push-expiry-fixture` | #1346 (closed) | PR #1347 closed, its commit included in #1345 | **Drop** (Q8) |
-| `feature/issue-1195-epic-relay` | - | 0 commits ahead of develop | **Drop**: fully merged (Q8) |
+| `patch/issue-1717-apns-test-scheduling` | #1717 | 2 commits; its one file equals develop's (landed through #1719, `32aa9483`); issue #1717 still open | **Drop**: delete branch, close #1717 pointing at #1719 (Q8 approved: owner commands in L13) |
+| `chore/native-build-21` | - | PR #1672 closed, superseded by #1704; develop's build number is already 22 | **Drop** (Q8 approved: owner commands in L13) |
+| `patch/issue-1346-secure-push-expiry-fixture` | #1346 (closed) | PR #1347 closed, its commit included in #1345 | **Drop** (Q8 approved: owner commands in L13) |
+| `feature/issue-1195-epic-relay` | - | 0 commits ahead of develop | **Drop**: fully merged (Q8 approved: owner commands in L13) |
 
 ## 2. Steps
 
@@ -113,9 +113,9 @@ Tiers map to models through the board's Parity table.
 | L06 | [L06](cards/L06-idle-recovery.md) | #1731 narrow fix finished per its approved plan and merged | worker-hard | L03 | 2d |
 | L07 | [L07](cards/L07-local-notification-order.md) | #1720 as one PR, chunk-reviewed, merged | worker | L03, L04, L05 | 3d |
 | L08 | [L08](cards/L08-native-images.md) | native-images as one PR, chunk-reviewed, merged | worker-hard | L03, L06 | 3d |
-| L09 | [L09](cards/L09-bun142-pins.md) | #1512 refreshed, checked, reviewed; merged only as Q1 allows | worker-hard | L01, L07, L08 | 2d |
-| L12 | [L12](cards/L12-native-wss-characterization.md) | only if Q6 says land: #1641 tests in a small PR | worker | - | 4h |
-| L11 | [L11](cards/L11-compact-preview.md) | only if Q5 says land: #1711 probes in a small PR | worker | - | 4h |
+| L09 | [L09](cards/L09-bun142-pins.md) | #1512 refreshed, checked, reviewed; merged only after the owner's phone check (Q1) | worker-hard | L01, L07, L08 | 2d |
+| L12 | [L12](cards/L12-native-wss-characterization.md) | dropped (Q6: fold into the first #1641 implementation PR; branch kept) | worker | - | 4h |
+| L11 | [L11](cards/L11-compact-preview.md) | dropped (Q5: park; branch kept) | worker | - | 4h |
 | L10 | [L10](cards/L10-store-callback-owner-check.md) | the owner checks the #1727 untracked files (owner step) | - | - | - |
 | L99 | (manager rule) | landing complete: every L step done or dropped; lead checkpoint CP2 | - | - | - |
 | L13 | [L13](cards/L13-cleanup-commands.md) | exact cleanup commands handed to the owner | worker | L99 | 2h |
@@ -125,7 +125,7 @@ Tiers map to models through the board's Parity table.
 | A02 | [A02](cards/A02-account-switching-fable-review.md) | Fable advisor review of the A01 draft | frontier | A01 | 4h |
 | A03 | [A03](cards/A03-account-switching-checkpoint.md) | A02 findings folded in; owner checkpoint | lead | A02 | 1d |
 
-L03 and L04 start in `owner` (wait on Q2 and Q10), L06 in `owner` (Q3), L09 in `owner` (Q1), L11 and L12 in `owner` (Q5, Q6), L10 in `owner` (Q7).
+L03 and L04 start in `owner` (wait on Q2), L06 in `owner` (Q3), L10 in `owner` (Q7); L09 is `todo` behind its dependencies; L11 and L12 are `dropped` (Q5, Q6).
 P01 and A01 start `blocked`; the manager sets them `todo` when L99 is `done` (runbook).
 The board counts a `dropped` dependency as unmet, which is why the late steps depend on L99, not on each L step.
 
@@ -137,14 +137,14 @@ codex-luna (2)   L01 ───────────────────�
                  L04 ──────────────┐                           │
 codex-terra (1)  L03 ──┬── L05 (luna) ──┴── L07 (luna, chunked) ┤
                        └── L06 (Q3) ── L08 (chunked) ──────────┴── L09 (Q1)
-owner            L10 (Q7)   L11 (Q5)   L12 (Q6)
+owner            L10 (Q7)   (L11, L12 dropped: Q5 park, Q6 fold)
 all L done/dropped ── L99 ──┬── L13 cleanup (owner runs commands)
                             ├── P01 iPad design (opus) ── owner CP3 ── P02 (outline)
                             └── A01 (opus) ── A02 (fable) ── A03 (opus) ── owner CP4
 claude-sonnet (2): reviewers and synthesis only; xcode lock: one native gate run at a time
 ```
 
-At the first tick the dispatch plan places L01 and L02 on `codex-luna` (checked with `manager_board.py status`); once Q2 and Q10 are answered, L03 goes to `codex-terra` and L04 to the first free Luna slot (L01 frees one quickly).
+At the first tick the dispatch plan places L01 and L02 on `codex-luna` (checked with `manager_board.py status`); once Q2 is answered, L03 goes to `codex-terra` and L04 to the first free Luna slot (L01 frees one quickly).
 The Xcode lock, not the slots, serializes the native gate runs of L03, L04, L05 and later steps, so two native implementers may work at once and queue only for gate runs.
 
 ## 3. Review policy
@@ -161,7 +161,7 @@ Every PR follows `project:pr-review-toolkit`'s `review-convergence.md`: round 1,
 | P01, A01-A03 docs PRs | 1 Sonnet reviewer | then the owner checkpoint |
 
 The earlier review rounds that #1728, #1657 and #1512 describe in their bodies have no record on the PR, so this landing runs their round 1 fresh (decided by the lead; the owner may override).
-Q9 asks whether a Codex Luna second reviewer joins the security-path reviews (L03, L06, and chunk R4 of L08), where the implementer family of the existing commits is unknown (every commit carries the owner's git identity).
+Owner answer Q9: a Codex Luna second reviewer joins the security-path reviews (L03, L06, and chunk R4 of L08), on top of Sonnet, because the implementer family of the existing commits is unknown (every commit carries the owner's git identity).
 
 Finding outcomes: every finding starts as `fix`.
 The implementer may propose `reject` (one-sentence reason) or `issue` (only for code the PR did not touch); all proposed rejects of one round go to one advisor consult, whose ruling the manager records with `decide` and on the PR.
@@ -190,7 +190,7 @@ Line counts are against `origin/develop` on 2026-11-12, before the develop merge
 **Synthesis budget:** the 8 chunk reports (at most 40 findings) plus the cited lines of each Critical or Important finding; it deduplicates, verifies those it can by reading the cited lines, and returns one list; it adds no new findings.
 Per big PR, round 1 costs 9 Sonnet agents; at 2 concurrent Sonnet sessions that is about five reviewer turns.
 
-## 4. Capacity, Parity and budgets (defaults the owner approves with this plan)
+## 4. Capacity, Parity and budgets (approved by the owner as proposed, 2026-11-12)
 
 Owner capacity: Claude Code up to 2 Sonnet and 1 Opus sessions; Codex up to 2 Luna and 1 Terra sessions.
 Slots on the board mirror it: `codex-terra` 1 (worker-hard), `codex-luna` 2 (worker), `claude-opus` 1 (lead), `claude-sonnet` 2 (reviewers and synthesis only, never a step), `claude-fable` 1 (A02 only).
@@ -225,8 +225,10 @@ Implementation of the account-switching epic waits for CP4 and a new plan.
 ## Appendix A: pack review
 
 The skill requires an executability reviewer (worker tier) and a design reviewer (lead tier) before the first tick, each finding with a disposition here.
-Status on 2026-11-12: **not run**; the lead was asked to write the pack only.
-Run both before the owner starts the loop; record dispositions below.
+Status on 2026-11-12: **in progress**; two independent reviewers are reading the pack.
+Record their dispositions below before the owner starts the loop.
+
+Owner approval (CP0, 2026-11-12, in chat): the Parity, Slots and Budget defaults and the merge authority (develop only, merge commits) were approved as proposed; Q1, Q4, Q5, Q6, Q8, Q9 and Q10 were answered and applied (board Questions, `board-log.md` Decisions); Q2, Q3 and Q7 stay open.
 
 | Reviewer | Finding | Disposition |
 | --- | --- | --- |
@@ -236,7 +238,7 @@ Run both before the owner starts the loop; record dispositions below.
 ## Appendix B: facts the lead could not verify
 
 - Whether local Mac `xcodebuild ... test` still stalls before loading a bundle (Q2).
-- Whether Codex `workspace-write` with the listed writable roots can run SwiftPM and `xcodebuild` (they write under `~/Library`); Q10.
+- Whether Codex `workspace-write` with the listed writable roots can run SwiftPM and `xcodebuild` (they write under `~/Library`); moot for native cards after Q10 (full access in a clean worktree).
 - Whether the #1720 branch's tests pass at its head: its last commit is a test-first reproduction of the #1732 defect, which is expected to fail until L04 lands; no native CI ran on branches without a PR.
 - Whether the 3 untracked #1727 files contain sensitive content (not read on purpose).
 - `packages/native/AGENTS.md` says the hosted native job is "the only place the Mac `xcodebuild test` is known to run", but `native-app.yml` runs `swift test` and four `xcodebuild build` commands, no `xcodebuild test`; the `RemiMac` scheme's only testable is `RemiKitTests`, which `swift test` runs, so the tests run but not under Xcode's Mac test runner; filed as a doc fix in [issues-to-file.md](issues-to-file.md).
