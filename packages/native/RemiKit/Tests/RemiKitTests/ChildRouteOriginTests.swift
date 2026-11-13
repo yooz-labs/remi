@@ -5,6 +5,42 @@ import Testing
 #if DEBUG
 @MainActor
 struct ChildRouteOriginTests {
+    @Test func consolidationKeepsSameQuestionIDFromDifferentSessions() throws {
+        let first = MachineEndpoint(host: "192.0.2.10", port: 28000)
+        let second = MachineEndpoint(host: "192.0.2.20", port: 28002)
+        let store = MachineStore(endpoints: [first, second], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
+        store.start(); defer { store.stop() }
+        let firstGeneration = try #require(store.connectionGenerations[first])
+        let secondGeneration = try #require(store.connectionGenerations[second])
+        let id = "00000000-0000-4000-8000-000000000001"
+        let firstSession = "00000000-0000-4000-8000-00000000a001"
+        let secondSession = "00000000-0000-4000-8000-00000000b002"
+        func question(_ session: String) throws -> QuestionMessage {
+            try frame(["type": "question", "sessionId": session,
+                       "question": ["id": id, "text": "Synthetic", "options": [],
+                                    "allowsFreeText": false, "isAnswered": false]])
+        }
+        store.receive(.hello(try hello()), from: first, generation: firstGeneration)
+        store.receive(.question(try question(firstSession)), from: first, generation: firstGeneration)
+        // An admitted legacy Hello can omit a descriptor; a later session-list
+        // response on that same route may provide it and consolidate the routes.
+        let legacy = try JSONDecoder().decode(HelloAckMessage.self,
+            from: FixtureConformanceTests.fixture("hello_ack_legacy"))
+        store.receive(.hello(legacy), from: second, generation: secondGeneration)
+        // The exact same pair arriving from a second route must be deduplicated
+        // during consolidation, while the distinct session below remains.
+        store.receive(.question(try question(firstSession)), from: second, generation: secondGeneration)
+        store.receive(.question(try question(secondSession)), from: second, generation: secondGeneration)
+        #expect(store.machines.count == 2)
+        store.receive(.sessions(try sessions(ports: [])), from: second, generation: secondGeneration)
+        let merged = try #require(store.machines.first)
+        #expect(store.machines.count == 1)
+        let matchingQuestions = merged.questions.filter { $0.question.id == id }
+        #expect(matchingQuestions.count == 2)
+        #expect(Set(matchingQuestions.map(\.sessionId)) ==
+                Set([firstSession, secondSession]))
+    }
+
     // These synchronous tests supply fixtures at the real Store's post-verification boundary.
     // Transport authentication is tested separately.
     // stop() retires generations before its queued connection tasks can start.
@@ -14,12 +50,12 @@ struct ChildRouteOriginTests {
         store.start()
         defer { store.stop() }
         let generation = try #require(store.connectionGenerations[origin])
-        store.receive(.hello(try hello()), from: origin, generation: generation)
+        try admitRootAtStoreSeam(store, endpoint: origin, generation: generation)
         store.receive(.sessions(try sessions(ports: [28003])), from: origin, generation: generation)
         let child = try #require(store.connectionGenerations.keys.first { $0.port == 28003 })
         let childGeneration = try #require(store.connectionGenerations[child])
         #expect(store.ownedConnectionMachineIDs[child] == store.machines.first?.machineID)
-        store.receive(.hello(try hello()), from: child, generation: childGeneration)
+        store.receive(.hello(try hello(), authorityPublicKey: Data(repeating: 7, count: 32)), from: child, generation: childGeneration)
         let message = try JSONDecoder().decode(TranscriptContentMessage.self,
             from: FixtureConformanceTests.fixture("transcript_content"))
         store.receive(.transcript(message), from: child, generation: childGeneration)
@@ -84,13 +120,13 @@ struct ChildRouteOriginTests {
         store.start()
         defer { store.stop() }
         let first = try #require(store.connectionGenerations[old])
-        store.receive(.hello(try hello()), from: old, generation: first)
+        try admitRootAtStoreSeam(store, endpoint: old, generation: first)
         store.receive(.sessions(try sessions(ports: [28003])), from: old, generation: first)
         let child = try #require(store.connectionGenerations.keys.first { $0.port == 28003 })
         let childGeneration = try #require(store.connectionGenerations[child])
         store.addMachine(current)
         let next = try #require(store.connectionGenerations[current])
-        store.receive(.hello(try hello()), from: current, generation: next)
+        try admitRootAtStoreSeam(store, endpoint: current, generation: next)
         let message = try JSONDecoder().decode(TranscriptContentMessage.self,
             from: FixtureConformanceTests.fixture("transcript_content"))
         store.receive(.transcript(message), from: child, generation: childGeneration)
@@ -224,10 +260,10 @@ struct ChildRouteOriginTests {
         let store = MachineStore(endpoints: [old], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
         store.start()
         let first = try #require(store.connectionGenerations[old])
-        store.receive(.hello(try hello()), from: old, generation: first)
+        try admitRootAtStoreSeam(store, endpoint: old, generation: first)
         store.addMachine(current)
         let next = try #require(store.connectionGenerations[current])
-        store.receive(.hello(try hello()), from: current, generation: next)
+        try admitRootAtStoreSeam(store, endpoint: current, generation: next)
         #expect(store.machines.count == 1)
         #expect(store.machines.first?.routes.first == old)
         return (store, old, current, next)
@@ -238,6 +274,14 @@ struct ChildRouteOriginTests {
             ["id": try MachineIdentityVerifier.machineID(forPublicKey: Data(repeating: 7, count: 32)),
              "name": "Unit Mac", "platform": "darwin", "remiVersion": "0.8.0", "harnesses": ["claude"], "capabilities": []]
         }
+    }
+
+    /// The suite supplies a post-verification Store event; the separate real
+    /// socket controls prove authentication and parent-fence admission.
+    private func admitRootAtStoreSeam(_ store: MachineStore, endpoint: MachineEndpoint, generation: UUID) throws {
+        let authority = Data(repeating: 7, count: 32)
+        store.ownedObserveParentHello(endpoint, key: authority)
+        store.receive(.hello(try hello(), authorityPublicKey: authority), from: endpoint, generation: generation)
     }
 
     private func hello() throws -> HelloAckMessage {
