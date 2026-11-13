@@ -48,9 +48,9 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 23 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Agents today | 30 | 24 | daily | every dispatch on every platform; the plan approval covers this limit |
 | Codex Luna today | 8 | 8 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
-| Codex Terra today | 4 | 2 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
+| Codex Terra today | 4 | 3 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
 | Claude Sonnet today | 16 | 10 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
 | Claude Opus today | 4 | 3 | daily | lead wakes, lead-tier steps, advisor consults |
 | Advisor consults | 8 | 3 | never | lead tier (Opus), whole plan |
@@ -71,7 +71,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | L02 | [Terminal relay probe #1657](cards/L02-terminal-relay-qualification.md) | - | worker | - | - | review | - | 1657 | 2026-11-12T21:30 | 1d | probe ok on Bun 1.3.11, fails 1.4.4 (#1738); hosted CI on 833ada41 pending (soak); own diff unchanged, no RV-delta; merge when green (Q19) |
 | L04 | [Question session identity #1732](cards/L04-question-session-identity.md) | - | worker | xcode | - | done | - | 1734 | 2026-11-12T22:10 | 1d | merge gate: fix r3 verified (head bab01d67, wide-pin revert, Mac lookup revert); waiting on native CI; then merge, reopen #1732 |
 | L05 | [Notification preferences #1707](cards/L05-notification-preferences.md) | - | worker | xcode | - | review | L03 | 1707 | 2026-11-13T06:11-08:00 | 1d | PR ready; waiting hosted checks (native, relay scope) at 28341b5a; then merge gate (no third review round) |
-| L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | - | review | L03 | 1736 | 2026-11-13T06:04-08:00 | 2d | 3 Sonnet reviewers running (head d9f8699b), advisor only for a contested security finding; soak pending |
+| L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | codex-terra | active | L03 | 1736 | 2026-11-13T06:04-08:00 | 2d | fix r2 (advisor: 30 s health condition; CI step for opt-in suite; findings L06/r2); then RV-delta, hosted incl. soak, merge gate |
 | L07 | [Local notification order #1720](cards/L07-local-notification-order.md) | - | worker | xcode | - | blocked | L04, CP1 | - | - | 3d | parked until #1727 is resolved (Q12); counts as settled for L99; branch kept |
 | L08 | [Native images #1313](cards/L08-native-images.md) | - | worker-hard | xcode | - | dropped | L03, CP1 | - | - | 3d | parked as evidence (Q11 a): branch kept, not deleted; chunk cards are reference only |
 | L09 | [Bun 1.4.2 pins #1512](cards/L09-bun142-pins.md) | - | worker-hard | - | - | review | L01 | 1512 | 2026-11-13T06:14-08:00 | 2d | RV-delta (Sonnet) on the PR's own 20-file diff, owner phone check (Q1), hosted checks at 91f78fbe; PR body closing keyword changed to Part of #1273 |
@@ -151,5 +151,6 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | advisor-L05 | advisor | extra | opus xhigh | L05 | 2026-11-13T07:05 | done |
 | codex-L14fix | implementer | codex-luna | gpt-6-luna max | L14 | 2026-11-13T07:30 | running (thread 01a1d554-0434) |
 | rv-L06 | reviewer | extra | sonnet xhigh x3 | L06 | 2026-11-13T07:50 | done |
-| advisor-L06 | advisor | extra | opus xhigh | L06 | 2026-11-13T08:10 | running (reset policy: unbounded 1 Hz after admitted-then-dropped episodes) |
+| advisor-L06 | advisor | extra | opus xhigh | L06 | 2026-11-13T08:10 | done |
 | rv-L09 | reviewer | extra | sonnet xhigh | L09 | 2026-11-13T08:30 | running a8dd54cf (delta, PR own diff) |
+| codex-L06fix | implementer | codex-terra | gpt-6.1-terra xhigh | L06 | 2026-11-13T08:45 | thread fix round (A, F2-F10) |

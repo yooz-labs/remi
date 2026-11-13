@@ -45,6 +45,7 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T06:14-08:00 | Owner (2026-11-13, chat): slots are for workers only; PR reviewers, advisors and the lead are extra to the slots (reviewers no longer wait for or consume a Claude Sonnet worker slot) | owner |  |
 | 2026-11-13T06:14-08:00 | Slots are for workers only; reviewers, advisor and lead extra (owner); L09 given to an Opus worker since Terra is busy | manager |  |
 | 2026-11-13T06:28-08:00 | L05 advisor ruling (Opus): merge 28341b5a resolution is sound (one hunk in MacLiveRootView kept both sides; PR-only and develop-only files identical to their own diffs; no id-only question lookup returned after #1734; no stale PR dependencies) | advisor |  |
+| 2026-11-13T06:56-08:00 | L06 advisor ruling (Opus): the unconditional reset after any admitted Hello is a real defect (1 Hz loop trips the Worker's 10/min limits and ends in rejected; BYE path regressed vs baseline): add a 30 s monotonic-clock health condition inside this PR, narrowing the owner-approved Q3 reset without adding authority; lead decision recorded for the owner | lead |  |
 
 ## Log
 
@@ -96,3 +97,4 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T06:43-08:00 | L06 report verified: PR 1736 head d9f8699b, 3 files in scope, 5 controls pass (10 tests), two mutation outcomes recorded, closing refs checked; 3 Sonnet reviewers dispatched |
 | 2026-11-13T06:50-08:00 | L06 round 1: contract 1 Moderate (no episode-health condition on the reset, unbounded 1 Hz loop) + 2 Minor; verification 1 Important (10 controls env-gated, skipped in hosted CI) + 2 Moderate + 2 Minor; maintainability 1 Important (same) + 3 Moderate + 1 Minor. Contested policy finding sent to an Opus advisor; the pre-existing handle() wrapper issue filed; triage and fix round follow the ruling |
 | 2026-11-13T06:55-08:00 | L09 report: PR 1512 head 91f78fbe (develop merged 981123e1 + one fix accepting runner blob 915d257e beside develop's 7d7cc4af), Bun 1.4.4 breaks relay close assertions (focused tests pass on 1.4.2), native-app.yml keeps 1.3.11; manager edited the PR body: 'Fixes #1273' -> 'Part of #1273'; RV-delta dispatched |
+| 2026-11-13T06:57-08:00 | L06 fix round dispatched to Terra (full access) with the advisor-ruled 30 s health condition and F2-F10; Terra slot |
