@@ -1,8 +1,8 @@
 # Remi reference: protocol, decision object and workspaces
 
-Moved verbatim out of `AGENTS.md` to keep it under the instruction-size limit; `AGENTS.md` keeps the summary and the standing invariants.
+Moved verbatim out of `AGENTS.md` to keep it under the instruction-size limit; `AGENTS.md` keeps the summary and the standing invariants. Section headings use level two under this title.
 
-#### Protocol version and capabilities (#1237, ADR 0035)
+## Protocol version and capabilities (#1237, ADR 0035)
 
 Every `hello_ack` carries `protocolVersion` (`PROTOCOL_VERSION` in `@remi/shared`, now 1; `createHelloAck` stamps it, so no path omits it) and `capabilities`, the daemon's `DAEMON_CAPABILITIES` (`cli/capabilities.ts`) on the connection ack and both resume acks (`hello-ack-sources.test.ts` fails a new ack path that omits them; the bare `Connection`'s ack, which production never sends, lists none).
 The version changes only on a breaking change; an additive change never changes it. `protocol-fixtures-additive.test.ts` holds five messages to that; for the rest it is a review rule, and a breaking change raises `PROTOCOL_VERSION` by hand.
@@ -11,7 +11,7 @@ It lists `workspaces` (#1236), the first; everything before #1237 is the baselin
 Clients decide with `hubSupport(ack, needs)`, never by comparing `daemonVersion`; an ack without a version counts as version 1, and the versions must match exactly. Nothing calls it yet (no TypeScript client needs a capability), and the native apps are its first users.
 `serverVersion` is a constant (`'1.0.0'` on the daemon's acks, `'0.1.0'` from a bare `Connection`), kept because the WebView Mac app's decoder requires it.
 
-#### The decision object (#1235, ADR 0038)
+## The decision object (#1235, ADR 0038)
 
 A "the agent needs you" moment is the `question` message's `Question` (`Decision` in `@remi/shared` is an alias), frozen for the native apps.
 - **`Question.answerPath`** (optional) says how a phone answer reaches the harness:
@@ -30,7 +30,7 @@ A "the agent needs you" moment is the `question` message's `Question` (`Decision
 - **The resolver.** Every dismissal goes through `createQuestionResolver` (`cli/question-resolution.ts`), which sends each card's resolution and its lock-screen dismissal once, so the first that names a cause wins; one that named none can be followed by one that does, never the reverse. It forgets a card the registry holds again.
 - **`kind` is open.** A client renders an unknown kind as a generic card, never as Allow/Deny. Sandbox and trust prompts have no kind (`source: 'pty'`). `localRender` stays off the wire.
 
-#### Workspaces: a session in a new worktree (#1236 phase A, ADR 0036)
+## Workspaces: a session in a new worktree (#1236 phase A, ADR 0036)
 
 `create_session_request.workspace` names a repository on the daemon's machine (absolute or under `~`; any directory in it, or a linked worktree) and optionally `worktree: {branch, base?}`; the daemon lists the `workspaces` capability, and a client checks it first because an older daemon ignores the field.
 `parseWorkspaceRequest` (`workspace/worktree.ts`) checks the values as text before a port is probed (no control character, no leading hyphen, at most 200 characters, no `@{` in a branch); a `directory` that is set and resolves elsewhere is refused.

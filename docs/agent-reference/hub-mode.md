@@ -1,6 +1,6 @@
 # Remi reference: hub mode
 
-Moved verbatim out of `AGENTS.md` to keep it under the instruction-size limit; `AGENTS.md` keeps the summary and the standing invariants.
+Moved verbatim out of `AGENTS.md` to keep it under the instruction-size limit; `AGENTS.md` keeps the summary and the standing invariants. Cross-file section references name their source file.
 
 ## Hub mode (`remi serve` / `remi start`)
 
@@ -26,8 +26,8 @@ registers itself in live-sessions.
 - `--install` generates a LaunchAgent running `<PATH-resolved remi> serve`
   with `KeepAlive.SuccessfulExit=false` (clean stop stays stopped; crash
   exit(1) restarts).
-- A `create_session_request` may name a harness and its arguments (#1179, "Harness identity and
-  `create_session_request`" below). The hub itself is still session-less and Claude-only: it only
+- A `create_session_request` may name a harness and its arguments (#1179; see the "Harness identity and
+  `create_session_request`" section of [harnesses-and-codex.md](harnesses-and-codex.md)). The hub itself is still session-less and Claude-only: it only
   spawns the child daemon that hosts the Codex or Claude session.
 - A `resume_session_request` that reaches the hub starts a **child session daemon** with `--resume` (#1129; #1124 had refused it, because the shared handler used to run Claude inside the hub, and when that Claude exited the hub exited 0 and the LaunchAgent did not restart it).
   The handler (`cli/handlers/resume-session-events.ts`) resolves the stored session as a daemon does (a remi id, a Claude id, or a transcript on disk), then calls `startSession` (`cli/handlers/create-session-events.ts`), the path a `create_session_request` takes, with `--resume <claude id>` in the stored directory.

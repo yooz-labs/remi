@@ -1,12 +1,12 @@
 # Remi reference: transport, authentication and pairing
 
-Moved verbatim out of `AGENTS.md` to keep it under the instruction-size limit; `AGENTS.md` keeps the summary and the standing invariants.
+Moved verbatim out of `AGENTS.md` to keep it under the instruction-size limit; `AGENTS.md` keeps the summary and the standing invariants. Repository-root links are prefixed with `../../` so they resolve from this file.
 
 ## Transport Options
 
 | Method | When to use |
 |---|---|
-| Direct connection | Default WS over a private network/tunnel, or optional HTTPS/WSS ([setup](docs/DIRECT-TLS.md)) |
+| Direct connection | Default WS over a private network/tunnel, or optional HTTPS/WSS ([setup](../../docs/DIRECT-TLS.md)) |
 | Signaling relay | V2 hub daemon and web client in source, off by default; deployed/signed R7 acceptance pending |
 
 **Direct connection now requires setting `daemon.bind` (#880).** The default is
@@ -44,7 +44,7 @@ confirms offers. `remi devices` lists/revokes enrollment; encrypted enrolled cli
 can also list/revoke, but cannot approve anyone or learn the local capability.
 Raw PTY frames are refused at registry, hub and child-proxy boundaries. Semantic
 answers return correlated actual child outcomes, and child discovery is aggregated
-by the hub without exposing child endpoints. See [the caller map and limits](docs/relay-daemon-v2.md).
+by the hub without exposing child endpoints. See [the caller map and limits](../../docs/relay-daemon-v2.md).
 An orderly close leaves the pipe open after the hub's BYE, at most 2 s, for the client to close it
 (#1225): on the Bun 1.3.11 pin the hub's own close can reset the connection, and a reset right after
 the BYE could lose it. A client that does not close in time gets the hub's close, which on 1.3.11
@@ -95,7 +95,7 @@ mutations share an interprocess lock and atomic restricted files; approval
 persists the grant before deleting its candidate. Physical signed iPhone and
 signed sandboxed macOS acceptance remain unverified owner hardware gates.
 
-**Pairing by QR (#1275, [ADR 0037](.context/decisions/0037-pairing-by-qr-with-terminal-approval.md)).**
+**Pairing by QR (#1275, [ADR 0037](../../.context/decisions/0037-pairing-by-qr-with-terminal-approval.md)).**
 No released app scans the code yet. Native source preserves the whole decoded v1/v2 payload from the scanner or Pairing code form through `AddMachineRequest` to `MachineStore.beginPairing` (#1574). Its memory-only coordinator tries permitted Local candidates before Tailscale, advances only after transport reachability failure, and keeps approval/store/queue retries on the same candidate. Only authenticated Hello admits the same socket and persists full-key-pinned address hints; nonce and label are sent in `auth_response`, never in the WebSocket URL, and cleared before adoption. Compatible native distribution and signed phone acceptance remain pending.
 `remi pair` (`cli/cmd-pair.ts`) shows a `remi://pair#` link as a QR and text. V1 keeps its exact single-host field order and remains the default. Opt-in v2 has the exact `v,name,hosts,port,key,nonce,exp,proto` order, one to four hosts, the same machine key/nonce/expiry/protocol across candidates, a 2048-character link and 1527-byte decoded-JSON limit; its strict codec rejects duplicate normalized targets and loopback, unspecified and link-local candidates. Both versions are encoded and strictly decoded by `packages/shared/src/pairing.ts` against the shared vectors; protocol version stays 1.
 It needs an interactive terminal and a running hub with authentication on and a bind that is not loopback (in any spelling, a trailing dot included) or link-local, which the hub records in `daemon-status.json` (`bind`, `auth`); for a wildcard bind it offers LAN addresses, then Tailscale, then the rest, then virtual bridges, never link-local (`--host` chooses, never loopback, unspecified or link-local).
@@ -106,7 +106,7 @@ A claimed code is held up to 20 s for the decision, read through the lock-free `
 At the terminal the person sees the phone's fingerprint and label, a warning naming any other key that tried the code, and the question; keys typed before the question are drained in raw mode and dropped. Approving takes the first four characters of the phone's fingerprint, never a `y` (they cannot be typed ahead, and typing them means reading it), and goes through `approvePairing(nonce, shownFingerprint)`, which shares one commit with `remi authorize` (`commitAuthorizationInsideTransaction`); anything else rejects and removes the pending key. While waiting, Ctrl-C, SIGTERM and SIGHUP cancel the code (exit 130, 143, 129; a key that claimed it stays an ordinary pending key); at the question Ctrl-C and SIGTERM reject (130, 143), and a closed terminal rejects with 1 or 129.
 The code authorizes nothing by itself; the direct WebSocket stays unencrypted by remi, so the nonce and label travel in clear like the rest of the session, and the single use and the fingerprint comparison are what stop a sniffed code from becoming access.
 
-**Provisioning a client key (#1303, [docs/PROVISIONING.md](docs/PROVISIONING.md)).**
+**Provisioning a client key (#1303, [docs/PROVISIONING.md](../../docs/PROVISIONING.md)).**
 Approving a pending key, importing a public-only JSON (`remi authorize '{"publicKey":"<canonical base64>"}' --label <name>`, inline or as a file; other fields are ignored and the fingerprint is always derived from the key) and a pairing approval all end in the same `authorized_keys.json` record, the label naming the client and never the host.
 A grant belongs to a remi home (`$HOME/.remi` of the process, or `REMI_HOME`): the hub, every session daemon it starts, wrappers and the CLI share one store (writes take one interprocess lock, reads none), and `isAuthorized` reads the file on every authentication, so a grant or removal applies to the next fresh authentication at all of them with no restart (`tests/integration/key-provisioning.test.ts` runs a real hub, a child it starts and the real CLI to show it, for importing before the hub has ever run, approving, a different key under the same label, removal, rotation, and one identity on two machines).
 An unknown key is refused `UNKNOWN_KEY` with the connection closed and kept pending ten minutes from its first sighting (a retry neither extends nor duplicates it); the app builds `remi authorize <fingerprint> --label '<label>'` itself (it knows its fingerprint and the label), retries on a fresh connection, and the machine does not push an approval.

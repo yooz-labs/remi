@@ -168,7 +168,7 @@ Direct connection (WS, or optional WSS) is the default; the signaling relay is v
 The default bind is `127.0.0.1`, so LAN direct, Tailscale direct and mDNS discovery stop until the user opts in (mDNS does not even advertise on a loopback bind).
 Do NOT recommend `tailscale serve` as the workaround: it is a same-host reverse proxy, every tailnet peer arrives as `127.0.0.1`, and #873 requires identity or a real local capability even on loopback.
 Recommend an SSH tunnel, or an explicit `bind` plus `--auth`.
-Authentication is on for every bind (`auth.enabled = "auto"`, #873): an unknown key is never trusted automatically, it becomes a pending candidate that the person approves at the daemon machine (`remi keys`, `remi authorize <exact-fingerprint> --label <name>`).
+Authentication is on for every bind (`auth.enabled = "auto"`, #873), unless explicitly disabled with `--no-auth` or `auth.enabled = false`: an unknown key is never trusted automatically, it becomes a pending candidate that the person approves at the daemon machine (`remi keys`, `remi authorize <exact-fingerprint> --label <name>`).
 `remi pair` shows a QR link and approves the phone's fingerprint in the terminal (#1275, ADR 0037); no released app scans it yet.
 The Worker in this repository is v2 (R2) and is not deployed; the legacy `POST /push` stays on by default until the R7 gate.
 **There is no WebRTC** (#543); descriptions of peer-to-peer DTLS or TURN do not describe this source.
@@ -190,11 +190,12 @@ Standing invariants, each with its evidence in the reference file:
   AskUserQuestion and ExitPlanMode are held the same way with a structured `updatedInput` (#1127).
 - **No card answer is typed into the PTY for a hook-backed binary prompt.**
   Where no hold stands behind a card (hook-less prompts, multi-choice permissions), a typed answer is checked against the screen first (#1134), and a refusal means "answer at the terminal".
-- **Chat text and Stop's `/exit` are refused while a prompt is up** (#1140, #1155), through the one `promptUp` signal; a typed Enter would confirm the highlighted option.
+- **Chat text and Stop's `/exit` are refused while a prompt is up** (#1140, #1155), through the one `promptUp` signal; a typed Enter would confirm the highlighted option. Known limits: a terminal entry can age out while a dialog remains up, the no-tracker fallback fails open, and a PTY-parsed status can clear the observation; see "Limits" in [docs/agent-reference/questions-and-notifications.md](docs/agent-reference/questions-and-notifications.md).
+- **Cards follow their push categories.** A `terminalOnly` card has no answer controls; a standing grant gets no lock-screen category; and a card with `detail` is answered in the app only.
 - **Subagent permissions follow the terminal** (ADR 0004, amended by 0030 and 0031): a held card only when no local terminal exists (daemon or hub mode); `subagent_alert` covers calls that never prompt.
 - **Push is APNS only.**
   The legacy plaintext push is ON by default until the R7 gate; enrolling a device over the relay latches it off for the whole machine, for good; the sealed secure path (R5) exists in source and is unverified on signed devices.
-  Every push has a `kind`; a client cannot mute APNS on its own (preferences ride up on `register_device_token`); never filter `dismiss`; a phone is pushed only while its lease holds.
+  Every push has a `kind`; a client cannot mute APNS on its own (preferences ride up on `register_device_token`); never filter `dismiss`, except for a device that is gone (unregistered, past its lease, or APNS-rejected); a phone is pushed only while its lease holds.
 - **Redeploy the signaling server after any `packages/signaling/` change** (the owner does; the steps are in `docs/relay-worker-deploy-runbook.md`, and no agent deploys).
 
 Read [docs/agent-reference/questions-and-notifications.md](docs/agent-reference/questions-and-notifications.md) before changing question detection, hook handling, answer paths, the chat guard, push classes, push preferences, leases or the secure push path.
@@ -231,12 +232,12 @@ Short form; the detail and the live-verification evidence are in the reference f
   `create_session_request.workspace` names a repository and optionally a new worktree; the daemon lists the `workspaces` capability, and a client checks it first.
   Git runs with no shell, no prompt and a 60-second deadline; nothing deletes a worktree (owner decision, #1233).
 - **Harness identity (epic #1175 phase 5, ADR 0033).**
-  `harness` and `harnessSessionId` are dual-emitted; `hello_ack.harnesses` lists what a daemon can start; a client sends `harness` or `args` only to a daemon that lists the harness.
-  `create_session_request.harness` and `.args` are checked before a port is probed (`checkHarnessRequest`); a remote request may only tighten the host's posture; a daemon reads harness arguments only from after `--`.
+  `harness` and `harnessSessionId` are dual-emitted; `hello_ack.harnesses` lists the harnesses whose command is on the PATH; a client sends `harness` or `args` only to a daemon that lists the harness.
+  `create_session_request.harness` and `.args` are checked before a port is probed (`checkHarnessRequest`); for Codex, a remote request may only tighten the host's posture; a daemon reads harness arguments only from after `--`.
   A headless Codex success means the child registered, not that Codex is past its Update or Trust prompt.
 - **Codex approvals (phase 4).**
   remi relays, Codex decides.
-  Only a plain command approval of the main thread is answerable; everything else is a `terminalOnly` card or nothing; nothing is ever typed into a Codex PTY; first answer wins; there is no deadline, because the request waits in the app-server without one.
+  Only a plain command approval of the main thread is answerable; everything else is a `terminalOnly` card or nothing; no phone answer, Cancel, free text or chat is typed into a Codex PTY, while raw input from `remi attach`, the web Escape button and `/interrupt` is still passed through; first answer wins; there is no deadline, because the request waits in the app-server without one.
 - **Codex turn events and chat (phase 6).**
   One `createTurnEventSink` serves both harnesses; Codex's `turn/completed` maps to `turn_complete` or `turn_failed` with the same gates as Claude; history is served from `thread/items/list`; typed chat to Codex stays refused (`PROMPT_WAITING`).
 
@@ -244,6 +245,7 @@ Read before changing the area:
 
 - [docs/agent-reference/protocol-and-workspaces.md](docs/agent-reference/protocol-and-workspaces.md): version and capabilities, the decision object, workspaces.
 - [docs/agent-reference/harnesses-and-codex.md](docs/agent-reference/harnesses-and-codex.md): harness identity and `create_session_request`, Codex approvals, Codex turn events and chat, LV-1 to LV-5 evidence.
+
 ## Core Principles
 
 1. **Local pairing** — a short-lived token and exact fingerprint confirmation in the machine owner's terminal, without an account.

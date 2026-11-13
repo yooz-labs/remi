@@ -1,6 +1,6 @@
 # Remi reference: question detection and notifications
 
-Moved verbatim out of `AGENTS.md` to keep it under the instruction-size limit; `AGENTS.md` keeps the summary and the standing invariants.
+Moved verbatim out of `AGENTS.md` to keep it under the instruction-size limit; `AGENTS.md` keeps the summary and the standing invariants. Repository-root links are prefixed with `../../` so they resolve from this file.
 
 ## Question Detection and Notifications
 
@@ -12,13 +12,13 @@ The old flow diagram (from before the held-hook relay, #1125/#1126) is archived 
 - `OutputProcessor` — PTY-output parsing (fallback when hooks are unavailable).
 
 **remi relays permissions; Claude Code decides them** (#1125,
-[ADR 0030](.context/decisions/0030-defer-permission-judgment-to-the-harness.md)).
+[ADR 0030](../../.context/decisions/0030-defer-permission-judgment-to-the-harness.md)).
 There is no auto-approve evaluator and no rule layer: remi never answers a
 permission without a human choice. `AutoApproveGate` (a historical name; it is
 the relay) owns every `PermissionRequest` hook response.
 
 **A binary prompt is answered through its held hook while Claude's own dialog
-stays visible** (#1126, [ADR 0031](.context/decisions/0031-held-hook-answers-with-native-dialog-visible.md)).
+stays visible** (#1126, [ADR 0031](../../.context/decisions/0031-held-hook-answers-with-native-dialog-visible.md)).
 Verified on Claude Code 2.1.287: the dialog renders about 0.1 s after the hook
 POST, during the hold. The gate stashes the card, holds the hook, and pushes
 the card at once by id (`holdForAnswer` -> `onHeldEscalate` ->
@@ -318,7 +318,7 @@ at the first such row and drop every later option, "No" included.
 
 
 **Subagent permissions follow the terminal**
-([ADR 0004](.context/decisions/0004-pty-as-arbiter-subagent-questions.md), amended
+([ADR 0004](../../.context/decisions/0004-pty-as-arbiter-subagent-questions.md), amended
 by ADR 0030 and ADR 0031). A background subagent's dialog does NOT render while
 its hook is held (verified live), so the gate takes a required
 `hasLocalTerminal` (wrapper mode, fixed at session setup):
