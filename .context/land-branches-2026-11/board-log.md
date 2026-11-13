@@ -44,6 +44,7 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T06:13-08:00 | Owner (2026-11-13, chat): the rule that a Codex card never falls back to Claude is wrong: Codex and Claude worker slots are both used and maximized (a worker card goes to whichever platform has a free fitting slot); PR reviewers are Claude Sonnet only, the advisor is Claude Opus only (the Luna second reviewer of Q9 is superseded; no Codex reviewers), and the lead is the current session (no separate lead agent) | owner |  |
 | 2026-11-13T06:14-08:00 | Owner (2026-11-13, chat): slots are for workers only; PR reviewers, advisors and the lead are extra to the slots (reviewers no longer wait for or consume a Claude Sonnet worker slot) | owner |  |
 | 2026-11-13T06:14-08:00 | Slots are for workers only; reviewers, advisor and lead extra (owner); L09 given to an Opus worker since Terra is busy | manager |  |
+| 2026-11-13T06:28-08:00 | L05 advisor ruling (Opus): merge 28341b5a resolution is sound (one hunk in MacLiveRootView kept both sides; PR-only and develop-only files identical to their own diffs; no id-only question lookup returned after #1734; no stale PR dependencies) | advisor |  |
 
 ## Log
 
@@ -90,3 +91,4 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T06:22-08:00 | tick 7: L02 r5: probe passes under pinned Bun 1.3.11, fails under 1.4.4 on the same head; filed #1738 (relevant to #1273/#1512); L02 head 833ada41 (develop merged 0c397251), hosted CI pending. Draft PRs now exist: #1736 (L06, Terra still running), #1737 (L14, Sonnet worker waiting on gates). L05 not pushed yet. L09 Opus worker running (told about #1738). |
 | 2026-11-13T06:26-08:00 | L05 report: merge 28341b5a pushed, one conflict (MacLiveRootView) kept both, Mac test failure = baseline plus a 3s-wait flake in APNsCallbackOrderTests (patch note, to file); advisor dispatched. L14 report: PR 1737 ready, head 6fa27711, 11 files, closing refs []; 3 Sonnet reviewers dispatched |
 | 2026-11-13T06:27-08:00 | filed the APNsCallbackOrderTests 3 s wait flake issue (L05 patch note) |
+| 2026-11-13T06:28-08:00 | L05 advisor: resolution sound; PR 1707 marked ready; hosted checks started |

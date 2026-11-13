@@ -70,7 +70,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | L03 | [Direct child key #1728](cards/L03-direct-child-key.md) | - | worker-hard | xcode | - | done | - | 1728 | 2026-11-12T21:30 | 2d | develop merged into branch (477f1680, clean), PR ready; waiting hosted checks incl. local-relay soak; then merge gate (no further review round) |
 | L02 | [Terminal relay probe #1657](cards/L02-terminal-relay-qualification.md) | - | worker | - | - | review | - | 1657 | 2026-11-12T21:30 | 1d | probe ok on Bun 1.3.11, fails 1.4.4 (#1738); hosted CI on 833ada41 pending (soak); own diff unchanged, no RV-delta; merge when green (Q19) |
 | L04 | [Question session identity #1732](cards/L04-question-session-identity.md) | - | worker | xcode | - | done | - | 1734 | 2026-11-12T22:10 | 1d | merge gate: fix r3 verified (head bab01d67, wide-pin revert, Mac lookup revert); waiting on native CI; then merge, reopen #1732 |
-| L05 | [Notification preferences #1707](cards/L05-notification-preferences.md) | - | worker | xcode | - | review | L03 | 1707 | 2026-11-13T06:11-08:00 | 1d | advisor (Opus) on conflict resolution; PR still draft; then ready, hosted checks, merge gate |
+| L05 | [Notification preferences #1707](cards/L05-notification-preferences.md) | - | worker | xcode | - | review | L03 | 1707 | 2026-11-13T06:11-08:00 | 1d | PR ready; waiting hosted checks (native, relay scope) at 28341b5a; then merge gate (no third review round) |
 | L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | codex-terra | active | L03 | - | 2026-11-13T06:04-08:00 | 2d | after L03; plan's negative controls; 3 Sonnet reviewers plus 1 Luna (Q9) |
 | L07 | [Local notification order #1720](cards/L07-local-notification-order.md) | - | worker | xcode | - | blocked | L04, CP1 | - | - | 3d | parked until #1727 is resolved (Q12); counts as settled for L99; branch kept |
 | L08 | [Native images #1313](cards/L08-native-images.md) | - | worker-hard | xcode | - | dropped | L03, CP1 | - | - | 3d | parked as evidence (Q11 a): branch kept, not deleted; chunk cards are reference only |
@@ -148,4 +148,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | sonnet-L14 | implementer | claude-sonnet | sonnet high | L14 | 2026-11-13T06:35 | done |
 | opus-L09 | implementer | claude-opus | opus xhigh | L09 | 2026-11-13T06:45 | running a6a64c52 (Terra busy; Claude slot used) |
 | rv-L14 | reviewer | extra | sonnet xhigh x3 | L14 | 2026-11-13T07:05 | running contract a88d411e, verification a225562d, maintainability a751bc59 |
-| advisor-L05 | advisor | extra | opus xhigh | L05 | 2026-11-13T07:05 | running abcefc68 (conflict resolution) |
+| advisor-L05 | advisor | extra | opus xhigh | L05 | 2026-11-13T07:05 | done |
