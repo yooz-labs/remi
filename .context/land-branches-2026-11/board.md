@@ -66,7 +66,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | ID | Title | Wave | Tier | Needs | Slot | State | Depends | PR | Started | Timebox | Next |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| L01 | [AGENTS.md split #1733](cards/L01-agents-md-split.md) | - | worker | - | claude-sonnet | review | - | 1733 | 2026-11-12T21:30 | 4h | delta review running; hosted native rerun; then merge gate |
+| L01 | [AGENTS.md split #1733](cards/L01-agents-md-split.md) | - | worker | - | - | active | - | 1733 | 2026-11-12T21:30 | 4h | fix r3 (one wording fix, findings in L01/r3) next tick when Luna budget resets; then merge gate (no third review) |
 | L03 | [Direct child key #1728](cards/L03-direct-child-key.md) | - | worker-hard | xcode | codex-luna | review | - | 1728 | 2026-11-12T21:30 | 2d | advisor ruling on Luna finding (child key pin, no proof of possession); then fix round or doc correction |
 | L02 | [Terminal relay probe #1657](cards/L02-terminal-relay-qualification.md) | - | worker | - | codex-luna | active | - | 1657 | 2026-11-12T21:30 | 1d | merge develop, start checks; then one RV-delta review from 26fbf947 (Q13) |
 | L04 | [Question session identity #1732](cards/L04-question-session-identity.md) | - | worker | xcode | codex-luna | active | - | 1734 | 2026-11-12T22:10 | 1d | fix round (V1,V2,M1-M3) then RV-delta; owner notice before merge: old commit says Fixes #1732 (cannot be rewritten, issue will close) |
@@ -131,7 +131,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | rv-L04-contract | reviewer | claude-sonnet | sonnet xhigh | L04 | 2026-11-12T22:48 | done |
 | rv-L04-verif | reviewer | claude-sonnet | sonnet xhigh | L04 | 2026-11-12T22:48 | done |
 | codex-L02c | implementer | codex-luna | gpt-6-luna max | L02 | 2026-11-13T01:10 | thread 01a1d421 round 4 full access |
-| rv-L01-delta | reviewer | claude-sonnet | sonnet xhigh | L01 | 2026-11-13T01:10 | running aeaff18f |
+| rv-L01-delta | reviewer | claude-sonnet | sonnet xhigh | L01 | 2026-11-13T01:10 | done |
 | rv-L04-maint | reviewer | claude-sonnet | sonnet xhigh | L04 | 2026-11-13T01:10 | done |
 | advisor-L03 | advisor | claude-opus | opus xhigh | L03 | 2026-11-13T01:10 | running af821a9d |
 | codex-L04fix | implementer | codex-luna | gpt-6-luna max | L04 | 2026-11-13T01:20 | thread 01a1d422 fix round (5 findings) |
