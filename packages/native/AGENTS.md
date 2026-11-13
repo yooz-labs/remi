@@ -116,3 +116,5 @@ The items marked #1233 are the owner's decisions; the rest were set with the sca
   - a test that pins a behavior is committed before the change that satisfies it, where that applies.
 - **No AI attribution** in commits or PRs (no `Co-Authored-By` lines).
 - **In each PR,** say what was verified and how. A screenshot of the previews helps the design review.
+
+- The opt-in real Worker relay idle controls and their pinned Bun command are documented in `RelayIdleRecoverySourceTests`.

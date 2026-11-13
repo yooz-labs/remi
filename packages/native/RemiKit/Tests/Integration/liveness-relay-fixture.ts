@@ -1,4 +1,4 @@
-/** Real Worker/DO, HubRelay and native peer; observes metadata without replacing route logic. */
+/** Fault-injecting source HubRelay + Worker; real route logic, canned application replies. */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,17 +19,17 @@ import { startWorker } from '../../../../signaling/tests/e2e/harness';
 const publicKey = process.argv[2];
 if (!publicKey) throw new Error('owned public identity required');
 console.log = (...args) => console.error(...args);
-const directory = mkdtempSync(join(tmpdir(), 'remi-delivery-relay-'));
+const directory = mkdtempSync(join(tmpdir(), 'remi-idle-relay-'));
 const trust = new IdentityStore(directory);
 await trust.generate();
-await trust.addAuthorizedKey(publicKey, 'owned-native-delivery');
-await new RelayDeviceStore(directory, trust).add(publicKey, 'owned-native-delivery');
+await trust.addAuthorizedKey(publicKey, 'owned-native-idle');
+await new RelayDeviceStore(directory, trust).add(publicKey, 'owned-native-idle');
 const identity = await trust.unlock();
 const worker = await startWorker();
 let admissions = 0;
-let dropBeforeHello = process.argv[3] === 'prehello';
+let preHelloMode = process.argv[3] === 'prehello' ? 'drop' : 'off';
 let preHelloDrops = 0;
-let refusedPairHellos = 0;
+let pairHellosWithoutOffer = 0;
 const inputs: string[] = [];
 const relay = new HubRelay(
   {
@@ -44,14 +44,18 @@ const relay = new HubRelay(
   },
   {
     onConnect: (id) => {
-      if (dropBeforeHello) {
+      if (preHelloMode !== 'off') {
         const peer = observable.peers.get(id);
         if (!peer || peer.stage !== 'ready') throw new Error('Expected owned READY peer');
         preHelloDrops++;
-        peer.ws.close(1011, 'owned loss before application hello');
+        if (preHelloMode === 'bye') void peer.channel?.bye();
+        else if (preHelloMode === 'delayed') {
+          preHelloMode = 'drop';
+          setTimeout(() => peer.ws.close(1011, 'owned delayed loss before hello_ack'), 30_100);
+        } else peer.ws.close(1011, 'owned loss before application hello');
         return;
       }
-      relay.sendRaw(id, createHelloAck('owned-delivery-relay', null));
+      relay.sendRaw(id, createHelloAck('owned-idle-relay', null));
     },
     onSessionListRequest: (id, request) => {
       relay.sendRaw(id, createSessionListResponse([], request));
@@ -63,6 +67,7 @@ const relay = new HubRelay(
 const observable = relay as unknown as {
   route(peer: unknown, message: ProtocolMessage): Promise<void>;
   openPeer(id: string): void;
+  revoke(fingerprint: string): Promise<{ success: boolean; edgeAcknowledged: boolean }>;
   offers: Map<string, unknown>;
   control?: { command(value: unknown): Promise<boolean> };
   peers: Map<
@@ -81,7 +86,7 @@ observable.openPeer = (id) => {
   peer?.ws.addEventListener('message', (event) => {
     if (peer.stage !== 'hello' || observable.offers.size !== 0) return;
     try {
-      if (decodeHello(event.data).mode === 'pair') refusedPairHellos++;
+      if (decodeHello(event.data).mode === 'pair') pairHellosWithoutOffer++;
     } catch {
       // This trace counts only a valid pairing hello with no offer.
     }
@@ -135,9 +140,18 @@ try {
   });
   for await (const line of lines) {
     if (line === 'prehello-on') {
-      dropBeforeHello = true;
+      preHelloMode = 'drop';
       out({ kind: 'prehello-on' });
-    } else if (line === 'drop' || line === 'corrupt' || line === 'bye') {
+    } else if (line === 'prehello-bye' || line === 'prehello-delayed') {
+      preHelloMode = line === 'prehello-bye' ? 'bye' : 'delayed';
+      out({ kind: line });
+    } else if (line === 'revoke') {
+      const key = trust.loadAuthorizedKeys().keys.find((entry) => entry.publicKey === publicKey);
+      if (!key) throw new Error('Owned key not found');
+      const result = await observable.revoke(key.fingerprint);
+      if (!result.success || !result.edgeAcknowledged) throw new Error('Owned revocation failed');
+      out({ kind: 'revoke' });
+    } else if (line === 'drop' || line === 'corrupt' || line === 'text' || line === 'bye') {
       const ready = [...observable.peers.values()].filter((peer) => peer.stage === 'ready');
       if (ready.length !== 1)
         throw new Error(`Expected one owned ready peer, found ${ready.length}`);
@@ -146,19 +160,16 @@ try {
       if (line === 'drop') {
         // Close only the owned server-side pipe, without emitting an authenticated BYE.
         peer.ws.close(1011, 'owned synthetic transport loss');
+      } else if (line === 'text') {
+        peer.ws.send('unexpected text after READY');
       } else {
         if (!peer.channel) throw new Error('Expected owned encrypted channel');
         if (line === 'bye') await peer.channel.bye();
         else await peer.channel.send(new TextEncoder().encode('{'));
       }
       out({ kind: line === 'drop' ? 'dropped' : line });
-    } else if (line === 'restart') {
-      const previous = admissions;
-      await relay.stop();
-      await relay.start();
-      await admitted(previous);
-      out({ kind: 'restarted' });
-    } else if (line === 'stats') out({ kind: 'stats', inputs, preHelloDrops, refusedPairHellos });
+    } else if (line === 'stats')
+      out({ kind: 'stats', inputs, preHelloDrops, pairHellosWithoutOffer });
     else if (line === 'stop') break;
   }
 } finally {
