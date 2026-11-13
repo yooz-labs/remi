@@ -23,6 +23,15 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-12T19:58-08:00 | Q10: Codex danger-full-access for native Swift cards only, in a clean worktree; every other Codex card stays workspace-write | owner | owner answer in chat, 2026-11-12 |
 | 2026-11-12T19:58-08:00 | Defaults approved as proposed: Parity, Slots, daily budget (30; Luna 8, Terra 4, Sonnet 16, Opus 4; advisors 8, Fable 1), merge authority develop only with merge commits | owner | owner answer in chat, 2026-11-12 |
 | 2026-11-12T20:13-08:00 | Q4 answer (fold image-availability into native-images) is suspended: new evidence in the #1313 artifacts says native-images should not land as a dormant PR; Q11 asks again | lead | design review, 2026-11-12; owner answered Q4 without this evidence |
+| 2026-11-12T21:20-08:00 | Q2: One bounded xcodebuild test attempt under the Xcode lock with a timeout; on a stall rely on hosted swift test and log it | owner | owner answer in chat, 2026-11-12 |
+| 2026-11-12T21:20-08:00 | Q3: Approve the #1731 fix; L06 completes the plan's negative controls and lands after L03 | owner | owner answer in chat, 2026-11-12 |
+| 2026-11-12T21:20-08:00 | Q7: Files are synthetic; the manager session pushed them to patch/issue-1727-store-callback-order; whether a PR is wanted is Q16 | owner | owner answer in chat, 2026-11-12 |
+| 2026-11-12T21:20-08:00 | Q11: Image-availability only: land it as its own PR (L14) after L03; park native-images on its branch as evidence; L08 dropped (parked) | owner | owner answer in chat, 2026-11-12 |
+| 2026-11-12T21:20-08:00 | Q12: Park #1720 until #1727 is resolved; L07 parked, not dropped | owner | owner answer in chat, 2026-11-12 |
+| 2026-11-12T21:20-08:00 | Q13: Accept the recorded review rounds plus one delta review from each recorded head for #1728, #1657, #1512 | owner | owner answer in chat, 2026-11-12 |
+| 2026-11-12T21:20-08:00 | Q14: Install the Codex rules file for the loop; the owner runs the copy command; the develop-unchanged check stays | owner | owner answer in chat, 2026-11-12 |
+| 2026-11-12T21:20-08:00 | Q15: The manager may merge a large review-fix PR into its step PR's head branch only, after the same merge gate; never into develop directly | owner | owner answer in chat, 2026-11-12 |
+| 2026-11-12T21:20-08:00 | Q4 (fold image-availability into native-images) is superseded by Q11: image-availability lands alone; native-images is parked | owner | owner answer to Q11, 2026-11-12 |
 
 ## Log
 
@@ -30,3 +39,4 @@ The manager reads the newest rows through `status`, never the whole file.
 |---|---|
 | 2026-11-12T19:58-08:00 | Owner answered Q1, Q4, Q5, Q6, Q8, Q9, Q10 and approved the defaults; Q2, Q3, Q7 stay open |
 | 2026-11-12T20:13-08:00 | Pack review (executability, design) applied: CP1 and L14 added, L07 L08 L09 A01 dependencies changed, Q11 to Q14 asked |
+| 2026-11-12T21:20-08:00 | Owner answered Q2, Q3, Q7, Q11 to Q15; L03 L04 L06 L14 todo; L08 dropped (parked); L07 parked; Q16 asked for #1727 |
