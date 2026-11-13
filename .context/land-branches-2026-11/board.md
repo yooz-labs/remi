@@ -83,8 +83,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | P01 | [iPad Board design](cards/P01-ipad-board-design.md) | - | lead | xcode, simulator | - | todo | L99 | - | - | 1d | blocked: the iPad issue exists (#1745) but the Xcode MCP is unavailable in this session (stale bridge; /mcp reconnect not available): needs a session with working Xcode tools |
 | P02 | iPad Board implementation (outline) | - | worker-hard | xcode, simulator | - | outline | P01 | - | - | - | lead writes the card at CP3 after the owner approves P01 |
 | A01 | [Account switching design](cards/A01-account-switching-design.md) | - | lead | - | - | done | L99 | - | 2026-11-13T12:31-08:00 | 1d | todo when L99 done (owner: blocked until every landing step is done or dropped); no code |
-| A02 | [Fable review](cards/A02-account-switching-fable-review.md) | - | frontier | - | - | active | A01 | - | 2026-11-13T13:00-08:00 | 4h | owner-requested Fable (claude-fable-5-2) |
-| A03 | [Account switching checkpoint](cards/A03-account-switching-checkpoint.md) | - | lead | - | - | todo | A02 | - | - | 1d | ends at owner CP4; no merge before approval |
+| A02 | [Fable review](cards/A02-account-switching-fable-review.md) | - | frontier | - | - | done | A01 | - | 2026-11-13T13:00-08:00 | 4h | owner-requested Fable (claude-fable-5-2) |
+| A03 | [Account switching checkpoint](cards/A03-account-switching-checkpoint.md) | - | lead | - | - | active | A02 | - | 2026-11-13T13:07-08:00 | 1d | Fable findings F1-F12 (all fix) sent to the A01 author a290e7ce to fold into ADR 0049/epic/competitive review; then CP4 owner questions (ADR Q1-Q14) |
 | CP1 | CP1 go or adjust for L07 and L08 | - | - | - | - | done | - | - | - | - | manager sets done when L01 to L06 are done or dropped and the lead's CP1 decision is recorded; now gates only L07's unpark |
 | L14 | [image-availability #1313](cards/L14-image-availability.md) | - | worker | xcode | - | done | L03 | 1737 | 2026-11-13T06:11-08:00 | 1d | delta clean; waiting hosted: native rerun after the #1739 flake, relay soak; then merge gate (Part of #1313, closing refs []) |
 
@@ -162,4 +162,5 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | advisor-L06m | advisor | extra | opus xhigh | L06 | 2026-11-13T09:15 | running (merge interaction with #1737 in RemiConnection.swift) |
 | codex-DV8 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T10:40 | done |
 | opus-A01 | implementer | claude-opus | opus xhigh | A01 | 2026-11-13T12:10 | done |
-| fable-A02 | advisor | extra | fable | A02 | 2026-11-13T12:45 | running (Fable review of PR 1747 head 13bf96cd) |
+| fable-A02 | advisor | extra | fable | A02 | 2026-11-13T12:45 | done |
+| opus-A01b | implementer | claude-opus | opus xhigh | A03 | 2026-11-13T13:30 | running a290e7ce (fold A02 findings) |
