@@ -1,10 +1,10 @@
-# Card L14: image availability notice and frame guard (#1313), only if Q11 says option a
+# Card L14: image availability notice and frame guard (#1313)
 
 Status: ready
 Tier: worker
 Timebox: M, 1 day; escalate at 2 days or two failed approaches
 Needs: xcode
-Depends: L03; dispatched only when Q11's answer is option a
+Depends: L03 (Q11 option a, owner 2026-11-12)
 Branch: feature/issue-1313-image-availability (no PR yet; head `38f5691d` on 2026-11-12, 3 commits, 0 behind develop at `1cbdcc6f`)
 Worktree: `/Volumes/S1/worktrees/remi/image-availability` (exists, clean)
 Plan: plan.md sections 1 and 2, L14; Q11
@@ -19,7 +19,7 @@ The smallest caller-bearing #1313 slice lands as its own PR: the composer explai
 - The #1313 artifacts name this branch as the smallest slice with a real caller: `/Volumes/S1/yooz/remi/artifacts/native-image-1313-20261030/split-and-dependency-inventory.md` and `reviewable-slices-current-20261031.md`.
 - Its commits carry no issue-closing keyword (checked with the repository's own `extractClosingReferences`); native-images' commit `40fb479f` does, and is not in this branch.
 - L03 (#1728) merges first; `git merge-tree` showed this branch merging cleanly after #1728 and #1731.
-- If Q11 chose option a, `feature/issue-1313-native-images` stays parked as evidence (L08 dropped).
+- `feature/issue-1313-native-images` stays parked on its branch as evidence (L08 dropped, Q11); nothing from it is merged here.
 
 ## Scope
 

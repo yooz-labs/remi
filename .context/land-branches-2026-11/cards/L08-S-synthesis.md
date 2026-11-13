@@ -1,6 +1,6 @@
 # Card L08-S: synthesis of the chunked review (native-images)
 
-Status: ready
+Status: dropped (reference only: native-images is parked, Q11 option a, owner 2026-11-12)
 Tier: reviewer
 Timebox: S, 1 hour
 Needs: none

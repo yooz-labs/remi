@@ -17,7 +17,7 @@ Critical or Important defects that the round-1 fixes introduce or fail to resolv
 
 - Live facts: PR number, `Round1Head` (the head round 1 reviewed), `Head` (after the fixes), and the round-1 findings with their outcomes (fix, reject with reason, issue).
 - Big PRs (L07, L08): one delta reviewer per chunk whose files the fixes touched, each limited to that chunk's paths (`git diff Round1Head..Head -- FILES`); fixes large enough to be substantial under rules 2, 3 or 5 arrive as a fix PR whose base is the big PR's head branch, and this card reviews that fix PR.
-- Under Q13 option a, this card is also the one review of changes since a PR's recorded rounds: `Round1Head` is then the recorded reviewed head (#1728 `5c1f9380`, #1657 `26fbf947`, #1512 `3a654273`).
+- Q13 (owner, 2026-11-12): this card is also the one review of changes since a PR's recorded rounds: `Round1Head` is then the recorded reviewed head (#1728 `5c1f9380`, #1657 `26fbf947`, #1512 `3a654273`).
 - Instruction from `review-convergence.md`: "Report only Critical or Important defects that the fixes introduce or fail to resolve. Do not re-flag rejected findings or code outside the fix diff."
 
 ## Scope

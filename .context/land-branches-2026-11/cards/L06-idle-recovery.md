@@ -7,7 +7,7 @@ Needs: xcode
 Depends: L03
 Branch: patch/issue-1731-idle-recovery (no PR yet; head `ea7064fd` on 2026-11-12)
 Worktree: `/Volumes/S1/worktrees/remi/native-idle-recovery` (exists, clean)
-Plan: plan.md section 2, L06; dispatched only after Q3 approves
+Plan: plan.md section 2, L06; Q3 approved by the owner on 2026-11-12
 
 ## Goal
 

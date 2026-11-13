@@ -1,6 +1,6 @@
 # Card L08: native image attachments (#1313), one PR
 
-Status: ready
+Status: dropped (parked as evidence, Q11 option a, owner 2026-11-12); reference only, never dispatched
 Tier: worker-hard
 Timebox: XL, 3 days including the chunked review; escalate at 5 days or two failed approaches
 Needs: xcode

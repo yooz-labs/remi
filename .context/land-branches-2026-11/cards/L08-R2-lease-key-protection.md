@@ -1,6 +1,6 @@
 # Card L08-R2: chunk review, lease, key, protection (native-images)
 
-Status: ready
+Status: dropped (reference only: native-images is parked, Q11 option a, owner 2026-11-12)
 Tier: reviewer
 Timebox: S, 1 hour per reviewer
 Needs: none

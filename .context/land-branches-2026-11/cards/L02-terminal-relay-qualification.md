@@ -26,7 +26,7 @@ Everything else is out of scope.
 
 ## Decided design
 
-Settled: merge, do not rebase; the probe stays manual (not added to `bun test` discovery); no production code changes; the review form after this card follows Q13 (recorded round 1 in `docs/terminal-relay-prefix-qualification.json`: 0 Critical, 0 Important, 1 Moderate, resolved).
+Settled: after this card the step gets one RV-delta review from its recorded head `26fbf947` to the final head (Q13, owner 2026-11-12); merge, do not rebase; the probe stays manual (not added to `bun test` discovery); no production code changes; the review form after this card follows Q13 (recorded round 1 in `docs/terminal-relay-prefix-qualification.json`: 0 Critical, 0 Important, 1 Moderate, resolved).
 The implementer may choose: the wording of the body's added paragraph.
 
 ## Acceptance

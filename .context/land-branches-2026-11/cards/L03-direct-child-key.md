@@ -29,7 +29,7 @@ Everything else is out of scope.
 
 ## Decided design
 
-Settled: the PR's design stands (two earlier review rounds are recorded in the body and as run logs under the artifacts folder; the review form after this card follows Q13); no change to trust, route or relay behavior; the scratch branches are named in the body as evidence and not merged.
+Settled: after this card the step gets one RV-delta review from its recorded head `5c1f9380` to the final head (Q13, owner 2026-11-12); the PR's design stands (two earlier review rounds are recorded in the body and as run logs under the artifacts folder; the review form after this card follows Q13); no change to trust, route or relay behavior; the scratch branches are named in the body as evidence and not merged.
 The implementer may choose: nothing in production code in this card; fixes come only from decided findings.
 
 ## Acceptance

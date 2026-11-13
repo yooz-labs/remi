@@ -1,6 +1,6 @@
 # Card L07-S: synthesis of the chunked review (#1720 local notification order)
 
-Status: ready
+Status: parked (reference only until #1720 is unparked, Q12, owner 2026-11-12)
 Tier: reviewer
 Timebox: S, 1 hour
 Needs: none

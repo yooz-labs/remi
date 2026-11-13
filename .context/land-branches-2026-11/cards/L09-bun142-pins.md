@@ -29,7 +29,7 @@ Everything else is out of scope; no test is deleted or weakened, no gate is rela
 
 ## Decided design
 
-Settled: merge, never rebase; in `AGENTS.md` keep develop's split layout and move any text the PR changed into the matching `docs/agent-reference/` file; in `.context/plan.md` keep both sides' entries; in the CI scope scripts keep develop's logic and re-apply the PR's change; every `bun-version` and `BUN_VERSION` in executing workflows reads 1.4.2 after the merge.
+Settled: after this card the step gets one RV-delta review from its recorded head `3a654273` to the final head (Q13, owner 2026-11-12); merge, never rebase; in `AGENTS.md` keep develop's split layout and move any text the PR changed into the matching `docs/agent-reference/` file; in `.context/plan.md` keep both sides' entries; in the CI scope scripts keep develop's logic and re-apply the PR's change; every `bun-version` and `BUN_VERSION` in executing workflows reads 1.4.2 after the merge.
 The implementer may choose: the mechanics of each resolution within those rules.
 
 ## Acceptance

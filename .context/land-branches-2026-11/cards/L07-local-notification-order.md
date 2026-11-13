@@ -1,6 +1,6 @@
 # Card L07: local notification order (#1720), one PR
 
-Status: ready
+Status: parked (Q12, owner 2026-11-12: park until #1727 is resolved); not dispatched; kept for when #1727 is resolved
 Tier: worker
 Timebox: XL, 3 days including the chunked review; escalate at 5 days or two failed approaches
 Needs: xcode

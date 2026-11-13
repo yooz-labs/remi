@@ -1,6 +1,6 @@
 # Card L07-R3: chunk review, recovery and forget (#1720 local notification order)
 
-Status: ready
+Status: parked (reference only until #1720 is unparked, Q12, owner 2026-11-12)
 Tier: reviewer
 Timebox: S, 1 hour per reviewer
 Needs: none

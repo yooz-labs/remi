@@ -16,7 +16,7 @@ Plan: plan.md section 1 and runbook section 13
 ## Context
 
 - The manager never deletes branches or worktrees; the owner runs these commands.
-- Branches in scope: every L step's branch that is `done` (merged), the drop list Q8 approved (`patch/issue-1717-apns-test-scheduling`, `chore/native-build-21`, `patch/issue-1346-secure-push-expiry-fixture`, `feature/issue-1195-epic-relay`, the three `scratch/issue-1724-*`, `feature/issue-1313-image-availability` after L08), (Q8 approved by the owner on 2026-11-12, as commands only).
+- Branches in scope: every L step's branch that is `done` (merged), the drop list Q8 approved (`patch/issue-1717-apns-test-scheduling`, `chore/native-build-21`, `patch/issue-1346-secure-push-expiry-fixture`, `feature/issue-1195-epic-relay`, the three `scratch/issue-1724-*`), (Q8 approved by the owner on 2026-11-12, as commands only).
 - Branches kept on purpose get no delete command; list them under "Kept": `feature/issue-1711-compact-preview` (Q5 park), `feature/issue-1641-native-wss-route` (Q6 fold), and any step branch that is `dropped`.
 - Worktrees live under `/Volumes/S1/worktrees/remi/`; DerivedData under `/Volumes/S1/derived/remi-NAME`.
 
@@ -52,4 +52,4 @@ A branch marked landed is not an ancestor of `origin/develop`; a worktree has un
 ## Report
 
 The preamble's report with `pr` set to 0 (this card opens no PR) and `head_sha` set to the pack-branch commit, plus the count of branches per group.
-Branch groups depend on Q11 and Q12: a parked branch (native-images under Q11 option a, #1720 under Q12 park) goes under "Kept".
+Kept (owner answers of 2026-11-12): `feature/issue-1313-native-images` (Q11, parked evidence), `patch/issue-1720-local-notification-order` (Q12, parked), `patch/issue-1727-store-callback-order` (Q16 decides), plus the Q5 and Q6 branches; `feature/issue-1313-image-availability` is deleted only after L14 merges.
