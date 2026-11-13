@@ -1,13 +1,26 @@
-# Account continuation epic: issue drafts (not filed)
+# Account continuation epic: issue drafts
 
-Design: [ADR 0049](decisions/0049-account-switching.md) (proposed).
-Status: draft from card A01 of land-branches-2026-11, revised with the A02 advisor review (F1 to F12); nothing here is filed.
+Design: [ADR 0049](decisions/0049-account-switching.md), accepted as the direction by the owner on 2026-11-13.
+Status: phases 1, 2, 3, 4 and 5A are approved and ready to file; phases 5, 5B and 6 are not filed yet (they follow phase 5A passing, and phase 6 has an unmet condition, ADR 0049 "Owner decisions").
+Drafted in card A01 of land-branches-2026-11 and revised with the A02 advisor review (F1 to F12) and the owner's answers.
 Each issue below has a title and a body for `gh issue create --title "<title>" --body-file <body>`.
 Each body sits between `~~~markdown` fences, with one paragraph or list item per line, as GitHub renders it.
-Replace `EPIC` with the epic's issue number after filing it, and `PHASE-N` with the phase issue numbers.
-Phases 1 to 5B can be filed at once; phase 5 is not started before phase 5A passes; phase 6 is filed only to record the decisions it waits on.
+The five approved bodies end with "Part of #1157" and name each other by title; the unfiled ones keep `EPIC` and `PHASE-N` placeholders, to be replaced when they are filed.
 
-## Epic
+## Owner decisions that the phases depend on (2026-11-13)
+
+- Q3: warn at 90 and offer at 95 percent, configurable, 98 available (phase 3, phase 5).
+- Q4, Q5: continuation material is a brief or summary in a new session; with no headroom, remi's deterministic brief, with wait, `/usage-credits` and `/model` beside it (phase 4, phase 5).
+- Q6: continuation targets are only the person's own individual subscriptions, never team, business or enterprise seats (phase 1 records the expected login kind; phase 5 enforces it).
+- Q7: register Claude's `PostCompact` hook after the dead-remi latency check (phase 4).
+- Q8: a new per-device push kind `usage_warning` (phase 3).
+- Q9: a phone may start a continuation only with an in-app confirmation, never from the lock screen (phase 5).
+- Q10: `--remi-profile` and `REMI_PROFILE` (phase 1).
+- Q12: a local keyed account fingerprint (phase 3).
+- Q13: profiles and usage are free in remi (phases 1 to 3).
+- Q1, Q2, Q11: opt-in automatic switching per profile pair is allowed in principle after vendor confirmation, but no vendor will be asked, so phase 6 is not approved to start (not dropped); phase 5 stays unfiled until phase 5A passes and the owner says go.
+
+## Epic (reference; not required for filing the approved phases)
 
 Title: `Epic: account profiles, usage visibility and confirmed continuation (Claude Code and Codex)`
 
@@ -18,7 +31,7 @@ People and teams often hold several accounts with the same provider, and a sessi
 
 ## Design
 
-ADR 0049 (proposed) records what Claude Code (2.1.323, then 2.1.325) and codex-cli 0.167.0 and their vendors' documentation actually expose, what is not known, the provider terms that bear on switching accounts, and the decisions below. It builds on #1157 (profiles) and the profile contract in `.context/issue-1595-backend-plan.md`; it does not restart them.
+ADR 0049, accepted as the direction by the owner on 2026-11-13, records what Claude Code (2.1.323, then 2.1.325) and codex-cli 0.167.0 and their vendors' documentation actually expose, what is not known, the provider terms that bear on switching accounts, the decisions, and the owner's answers. It builds on #1157 (profiles) and the profile contract in `.context/issue-1595-backend-plan.md`; it does not restart them.
 
 ## Positioning
 
@@ -26,14 +39,14 @@ Per-session profiles are table stakes: on 2026-11-13 other tools already pin acc
 
 ## Phases
 
-1. PHASE-1 Per-session account profiles for Claude Code and Codex, with the effective login checked (useful alone: a session runs under the account its project or the person chose, and remi says when something else would be used).
-2. PHASE-2 Profile paths, remote choice, remote visibility and the session badge.
-3. PHASE-3 Usage visibility per profile, read-only (what each CLI already reports, with source and age; a warning notice; a local account fingerprint).
-4. PHASE-4 Compaction on request and the handoff brief (same account).
-5. PHASE-5A Characterize the usage-limit state of both harnesses (owner-run gate before PHASE-5).
-6. PHASE-5 Continue a session on another of the person's profiles, confirmed by the person.
-7. PHASE-5B Characterize resuming the same conversation under another account.
-8. PHASE-6 One-shot continuation armed per session: not started; waits on owner decisions and written vendor answers.
+1. Profiles phase 1: per-session account profiles, with the effective login checked (approved).
+2. Profiles phase 2: profile paths, remote choice, remote visibility and the session badge (approved).
+3. Profiles phase 3: usage visibility per profile, read-only, with a local account fingerprint (approved).
+4. Profiles phase 4: compaction on request and the handoff brief (approved).
+5. Profiles phase 5A: characterize the usage-limit state of both harnesses, owner-run (approved).
+6. Phase 5: confirmed continuation on another of the person's profiles (not filed until phase 5A passes and the owner says go).
+7. Phase 5B: characterize resuming the same conversation under another account (not filed yet).
+8. Phase 6: opt-in automatic continuation per profile pair (not approved to start; needs a vendor answer or the owner's written acceptance of the terms risk).
 
 ## Rules that hold in every phase
 
@@ -41,7 +54,7 @@ remi never reads, copies, stores, prints or relays a credential or token; each C
 
 Login always runs the CLI's own flow in the person's terminal; a phone shows status and the command, never performs a login (#1157 hard rule 2).
 
-No automatic switching between accounts (#1157 hard rule 3) unless the owner amends that rule for PHASE-6.
+No automatic switching between accounts (#1157 hard rule 3) until phase 6 is approved.
 
 No email, workspace name or account identifier is logged, stored or sent to a client; a profile is shown by its label, and an account identifier survives only as a keyed hash kept on the machine.
 
@@ -49,13 +62,7 @@ No feature, product or command name uses "Claude Code" or "Anthropic" (the Claud
 
 Tests use the real daemon, hub and parsers with fake `claude` and `codex` executables on `PATH` and the labeled stand-in app-server, as the repository already does; nothing that replaces remi's own logic is mocked. Anything that needs a real login or a model call is an owner-run gate, listed as such. Facts about a CLI are rechecked on the installed version at every phase gate, because the CLIs update themselves.
 
-## Vendor questions
-
-Ask now: Anthropic through the channel its legal page names ("contact sales"), OpenAI through a channel the owner chooses. PHASE-5 is released after an answer or 30 days of silence; PHASE-6 needs written answers.
-
-## Open owner questions
-
-ADR 0049 lists thirteen (Q1 to Q13), each with a recommended option. Phases 1 to 4 do not depend on Q1, Q2 or Q11.
+Part of #1157
 ~~~
 
 ## Phase 1
@@ -63,11 +70,15 @@ ADR 0049 lists thirteen (Q1 to Q13), each with a recommended option. Phases 1 to
 Title: `Profiles phase 1: per-session account profiles for Claude Code and Codex`
 
 ~~~markdown
-Part of EPIC. Builds on #1157 (its phase 1 `profile-core` and phase 4 `profile-harnesses`) and the profile contract in `.context/issue-1595-backend-plan.md`. Design: ADR 0049, D1.
+Builds on #1157 (its phase 1 `profile-core` and phase 4 `profile-harnesses`) and the profile contract in `.context/issue-1595-backend-plan.md`. Design: ADR 0049 (accepted as the direction, 2026-11-13), D1.
 
 ## Goal
 
 A session runs under the account its profile selects, for Claude Code and Codex, from the terminal and from a hub, and remi refuses or warns when the credential the harness would actually use is not that profile's login. Useful alone: a person with a work and a personal subscription can keep a work repository on the work account without aliases, and learns when a project setting or an environment variable would silently use another credential.
+
+## Owner decisions this phase follows (ADR 0049, 2026-11-13)
+
+Q10: the selectors are `--remi-profile <id>` and `REMI_PROFILE`. Q6: later continuation targets are only the person's own individual subscriptions, so each profile records the kind of login it expects now. Q13: profiles are free in remi.
 
 ## Scope
 
@@ -95,7 +106,7 @@ An explicit profile that is unknown or logged out refuses to start, naming `remi
 
 ## Out of scope
 
-Transcript, status line and probe paths (PHASE-2), protocol fields and the phone (PHASE-2), usage and the account fingerprint (PHASE-3).
+Transcript, status line and probe paths, protocol fields and the phone (Profiles phase 2); usage and the account fingerprint (Profiles phase 3).
 
 ## Acceptance criteria
 
@@ -114,6 +125,8 @@ Transcript, status line and probe paths (PHASE-2), protocol fields and the phone
 ## Test approach
 
 Real daemon and hub from source with a temporary `REMI_HOME`; fake `claude` and `codex` executables on `PATH` that record their argv, the values of `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, and the names (not values) of credential variables present; their `auth status` and `login status` subcommands print the documented shapes, which tests remi's handling of the CLI's answer, not the CLI. A characterization test runs the installed `claude auth status --json` against empty scratch directories with placeholder strings, as ADR 0049 V27 did (no account, no model call), and is skipped when `claude` is absent. The real config parser and resolver are used for the precedence matrix. The existing child-environment secret test is extended to the profile scrub list. The owner-run gate uses real logins and is recorded by the owner; agents never run it.
+
+Part of #1157
 ~~~
 
 ## Phase 2
@@ -121,11 +134,15 @@ Real daemon and hub from source with a temporary `REMI_HOME`; fake `claude` and 
 Title: `Profiles phase 2: profile paths, remote choice and the session badge`
 
 ~~~markdown
-Part of EPIC. Depends on PHASE-1. Completes the remaining scope of #1157 (`profile-paths`, `profile-phone`). Design: ADR 0049, D1, D6 and D7.
+Depends on Profiles phase 1. Completes the remaining scope of #1157 (`profile-paths`, `profile-phone`). Design: ADR 0049 (accepted as the direction, 2026-11-13), D1, D6 and D7.
 
 ## Goal
 
 Everything remi does for a session follows that session's profile, a phone can create a session in a profile and see which profile each session uses, and the person decides which profiles' sessions remote devices may see.
+
+## Owner decisions this phase follows (ADR 0049, 2026-11-13)
+
+Q13: profiles are free in remi, including remote choice. Q9 (for the later continuation phase): a phone acts on another account only with an in-app confirmation, never from the lock screen, so the profile fields added here carry no lock-screen action.
 
 ## Scope
 
@@ -154,18 +171,24 @@ Web client: a profile badge on the session card and chat header, and a profile p
 ## Test approach
 
 Temporary profile directories holding synthetic transcripts read by the real discovery code; the real installer against temporary settings files; two-sided conformance tests that construct the real daemon handler and the real web decoder (ADR 0014); hub integration with fake `claude` recording its environment; web component tests for the badge and picker. Owner-run gate: a session started from the phone in a mapped folder lands in the right profile.
+
+Part of #1157
 ~~~
 
 ## Phase 3
 
-Title: `Usage visibility per profile (read-only)`
+Title: `Profiles phase 3: usage visibility per profile (read-only)`
 
 ~~~markdown
-Part of EPIC. Depends on PHASE-2. Design: ADR 0049, D2, D3, D7 and D11, and its section on what "98 percent" can be measured against.
+Depends on Profiles phase 2. Design: ADR 0049 (accepted as the direction, 2026-11-13), D2, D3, D7 and D11, and its section on what "98 percent" can be measured against.
 
 ## Goal
 
 The person sees how much of each account's plan usage is spent, from what each CLI already reports to its own clients, with the source and the age of every number, gets one warning before a limit, and remi can tell when two profiles are the same account or when the account under a profile changed.
+
+## Owner decisions this phase follows (ADR 0049, 2026-11-13)
+
+Q3: `warn_percent` defaults to 90 and `offer_percent` to 95, both configurable from 50 to 99, so 98 stays available. Q8: the warning is a new per-device push kind, `usage_warning`. Q12: a local keyed account fingerprint. Q13: usage visibility is free in remi.
 
 ## Scope
 
@@ -175,11 +198,11 @@ Claude: surface Claude Code's own wait after a usage limit from the `Notificatio
 
 Codex: the session's app-server client calls `account/rateLimits/read` at attach and after each `turn/completed`, and merges `account/rateLimits/updated`; it keeps `primary`, `secondary` and `rateLimitsByLimitId` windows (`usedPercent`, `windowDurationMins`, `resetsAt`), `ordinaryUsageAllowed`, `rateLimitReachedType`, `Account.type` and `planType`, and drops `accountId`, email and workspace names on receipt.
 
-Account fingerprint: a keyed hash (an HMAC with a random key generated on the machine, in an owner-only file under the remi home) of each provider account identifier received (Codex `accountId`), never sent, logged or shown, attached to every observation. Claude `auth_success` and Codex `account/updated` discard the profile's snapshot until a fresh observation; an observation with a new fingerprint starts a new snapshot. For Claude the fingerprint is "unknown" unless PHASE-1's gate found a stable identifier.
+Account fingerprint: a keyed hash (an HMAC with a random key generated on the machine, in an owner-only file under the remi home) of each provider account identifier received (Codex `accountId`), never sent, logged or shown, attached to every observation. Claude `auth_success` and Codex `account/updated` discard the profile's snapshot until a fresh observation; an observation with a new fingerprint starts a new snapshot. For Claude the fingerprint is "unknown" unless the Profiles phase 1 gate found a stable identifier.
 
 One snapshot per profile, shared by its sessions, each window with percentage, length, reset time, source and observation time; observations merge per window by observation time (an older one never overwrites a newer one; a sparse Codex update replaces only the fields it carries); "unknown" is a value, never an estimate; an API-key profile shows "billed per request".
 
-Protocol: a usage snapshot on request and on change for authenticated clients, behind a capability, with fixtures. A new push kind `usage_warning` (mutable per device; ADR 0019 amendment) sent once per profile, window and reset period when the largest window crosses `warn_percent` (default 90, settable 50 to 99) at a turn end.
+Protocol: a usage snapshot on request and on change for authenticated clients, behind a capability, with fixtures. The push kind `usage_warning` (mutable per device; ADR 0019 amendment) is sent once per profile, window and reset period when the largest window crosses `warn_percent` at a turn end.
 
 Web client: a usage panel per profile and the warning.
 
@@ -190,24 +213,30 @@ Web client: a usage panel per profile and the warning.
 - [ ] `ordinaryUsageAllowed: false` is shown as blocked whatever the percentages say; `null` is shown as unknown.
 - [ ] Two Codex profiles logged in to the same account are reported as the same account; an `account/updated` or a changed fingerprint discards the profile's snapshot.
 - [ ] A profile never observed shows "unknown"; a value shows its age; an API-key profile shows "billed per request".
-- [ ] The warning is sent once per profile, window and reset period, respects the device preference, and is never sent for an unknown value.
+- [ ] `usage_warning` is sent once per profile, window and reset period at the configured `warn_percent` (default 90), respects the device preference, and is never sent for an unknown value.
 - [ ] No email, account id, workspace name or credential appears in any file, log line, push or client message (a test scans them); the fingerprint key file is owner-only.
 
 ## Test approach
 
 Run the real generated status line script with the documentation's example input on standard input and check the recorded file and the printed text. Drive the real Codex app-server client against the labeled stand-in app-server, which answers `account/rateLimits/read` and sends `account/rateLimits/updated` and `account/updated` frames built from the installed CLI's generated schema and labeled synthetic (like `synthetic-from-schema.jsonl`), because the redaction rules drop captured account frames. The real hook server receives the documented `Notification` `auth_success` payload. Push tests use the real dispatcher with a local HTTP sink. Owner-run gate: on a real subscription the panel agrees with `/usage` (Claude) and `/status` (Codex) within one turn.
+
+Part of #1157
 ~~~
 
 ## Phase 4
 
-Title: `Compaction on request and the handoff brief`
+Title: `Profiles phase 4: compaction on request and the handoff brief`
 
 ~~~markdown
-Part of EPIC. Depends on PHASE-1; independent of PHASE-3. Design: ADR 0049, D4 and option C2.
+Depends on Profiles phase 1; independent of Profiles phase 3. Design: ADR 0049 (accepted as the direction, 2026-11-13), D4 and option C2.
 
 ## Goal
 
-From the terminal or a phone, the person can compact a session on its current account and get a handoff brief of the work so far. Useful alone (a long session can be compacted remotely), and the two building blocks of PHASE-5.
+From the terminal or a phone, the person can compact a session on its current account and get a handoff brief of the work so far. Useful alone (a long session can be compacted remotely), and the two building blocks of the later confirmed-continuation phase.
+
+## Owner decisions this phase follows (ADR 0049, 2026-11-13)
+
+Q7: register Claude's `PostCompact` hook, after measuring that a stopped remi does not delay compaction. Q4 and Q5: continuation material will be a brief or summary in a new session, and with no headroom remi's deterministic brief, so the brief built here must stand on its own without a model call.
 
 ## Scope
 
@@ -230,23 +259,29 @@ Protocol: `compact_request/result` and `handoff_brief_request/result`, behind ca
 - [ ] Codex: completion is reported from the `contextCompaction` item on the right thread; an item on another thread is ignored.
 - [ ] The deadline reports "not confirmed" without touching the session.
 - [ ] The brief is the same for the same inputs, bounded, and states what it could not read.
-- [ ] Hook registration still excludes `PreCompact`, and the latency measurement with a stopped remi is recorded in the PR.
+- [ ] Hook registration still excludes `PreCompact`, and the latency measurement with a stopped remi is recorded in the PR before `PostCompact` is registered by default.
 
 ## Test approach
 
 The real hook server receiving the documented `PostCompact` and `SessionStart` payloads; the guarded write path against a real PTY running a fake `claude` that records its input; the real Codex client against the stand-in app-server emitting the `contextCompaction` item lifecycle; the brief builder on the repository's redacted transcript corpus and a temporary git repository. Owner-run gates: one real `/compact` through remi on each harness, and the stopped-remi latency check, both need an account.
+
+Part of #1157
 ~~~
 
 ## Phase 5A
 
-Title: `Characterize the usage-limit state of Claude Code and Codex (gate before phase 5)`
+Title: `Profiles phase 5A: characterize the usage-limit state of Claude Code and Codex`
 
 ~~~markdown
-Part of EPIC. A go or no-go characterization, owner-run, that gates PHASE-5's limit-wait path (ADR 0049 V30, gap G16, D5 and D8). No product code beyond what capture needs.
+A go or no-go characterization, owner-run, that gates the later confirmed-continuation phase's limit-wait path (ADR 0049, accepted as the direction 2026-11-13: V30, gap G16, D5 and D8). No product code beyond what capture needs.
 
 ## Goal
 
-Learn, on the installed versions, exactly what a session looks like to remi when a plan usage limit pauses it, so PHASE-5 can act in that state without typing into a screen it does not understand.
+Learn, on the installed versions, exactly what a session looks like to remi when a plan usage limit pauses it, so a continuation can act in that state without typing into a screen remi does not understand.
+
+## Owner decisions this phase follows (ADR 0049, 2026-11-13)
+
+The confirmed-continuation phase is not filed until this phase passes and the owner says go; no vendor will be asked (Q2), so no other release rule applies. Opt-in automatic switching (Q1) is not approved to start, and this phase does not build any part of it.
 
 ## Questions
 
@@ -260,20 +295,22 @@ Both: whether `/model` or `/usage-credits` can be sent safely in that state, or 
 
 - [ ] Each question answered on the owner's machine with remi's opt-in hook trace and a PTY capture of a session that reached a real limit (opportunistically, when one is reached in normal work), recorded in `.context/` with versions and with account details, prompts and output text redacted.
 - [ ] A screen and hook signature for the Claude limit wait that remi's parser can match exactly, with a negative control (a permission menu and a trust menu do not match it).
-- [ ] A go or no-go for D5's limit-wait path per harness, and the stop path to use.
+- [ ] A go or no-go for ADR 0049 D5's limit-wait path per harness, and the stop path to use.
 - [ ] No credential file opened, printed or copied.
 
 ## Test approach
 
-Owner-run, because reaching a usage limit needs a real account. Agents may prepare the capture configuration and turn the recorded signature into fixtures for PHASE-5's tests afterwards.
+Owner-run, because reaching a usage limit needs a real account. Agents may prepare the capture configuration and turn the recorded signature into fixtures for the confirmed-continuation phase's tests afterwards.
+
+Part of #1157
 ~~~
 
-## Phase 5
+## Phase 5 (not filed: after phase 5A passes and the owner says go)
 
 Title: `Continue a session on another of the person's profiles (confirmed)`
 
 ~~~markdown
-Part of EPIC. Depends on PHASE-2, PHASE-3, PHASE-4 and PHASE-5A, and on owner answers to ADR 0049 Q2, Q3, Q5, Q6 and Q9. Released after a vendor answer or 30 days of silence after the questions are sent (Q2). Design: ADR 0049, D3, D5, D7, D8 and D11.
+Part of EPIC. Depends on PHASE-2, PHASE-3, PHASE-4 and PHASE-5A, and on the owner's go after PHASE-5A passes. The owner answered ADR 0049's questions on 2026-11-13: no vendor is asked (Q2), so the 30-day release rule does not apply; targets are only the person's own individual subscriptions (Q6); a phone starts a continuation only with an in-app confirmation (Q9); offer at 95 percent by default (Q3); material is a brief or summary in a new session (Q4, Q5). Design: ADR 0049, D3, D5, D7, D8 and D11.
 
 ## Goal
 
@@ -312,12 +349,12 @@ Protocol and web client for the offer, the confirmation screen, the progress and
 Hub integration with two profiles and fake `claude` and `codex` executables that record their environment and first input, replay PHASE-5A's recorded limit screens, and exit with the documented failures; the real prompt tracker and the stand-in app-server create the "prompt up" and "approval live" states; temporary profile directories with differing `settings.json` and `config.toml` drive the real diff; failures are injected through the fake executables, never by replacing remi's handlers. The owner-run gate needs two real logins and model calls.
 ~~~
 
-## Phase 5B
+## Phase 5B (not filed yet)
 
 Title: `Characterize resuming the same conversation under another profile`
 
 ~~~markdown
-Part of EPIC. A go or no-go characterization for PHASE-5's `resume` mode (ADR 0049 option C3, gaps G8 and G9, owner question Q4). No product code.
+Part of EPIC. A go or no-go characterization for PHASE-5's `resume` mode (ADR 0049 option C3, gaps G8 and G9, owner question Q4, answered: the default stays a brief or summary in a new session). No product code.
 
 ## Goal
 
@@ -346,23 +383,23 @@ Both: does the first turn after the move send the whole history to the new accou
 Owner-run with throwaway sessions, because it needs real logins and model calls. Agents may prepare the script and read only the CLI's own outputs.
 ~~~
 
-## Phase 6
+## Phase 6 (not approved to start; not dropped)
 
-Title: `One-shot continuation armed per session (waits on owner decisions and vendor answers)`
+Title: `Opt-in automatic continuation per profile pair (waits on a vendor answer or the owner's written acceptance of the terms risk)`
 
 ~~~markdown
-Part of EPIC. Not started. Depends on PHASE-5 and on three decisions: the owner amending #1157 hard rule 3 (ADR 0049 Q1), written answers from the vendor concerned (Q2), and the shape (Q11, recommended: this one).
+Part of EPIC. Not started. Depends on PHASE-5. The owner allowed it in principle on 2026-11-13 (ADR 0049 Q1 (b): build it after vendor confirmation, opt-in per profile pair) and decided not to ask the vendors (Q2), so its condition is unmet. Before it is filed it needs either a vendor's written answer or an explicit written acceptance by the owner of the terms risk, recorded in ADR 0049 "Owner decisions".
 
 ## Why it waits
 
-Automatic rotation to keep working past a usage limit reads against provider terms read for ADR 0049: OpenAI's Services Agreement forbids customers to "violate or circumvent Usage Limits or otherwise configure the Services to avoid Usage Limits" (3.3(i)), where "Usage Limits" means limits "described in the applicable Order Form or Documentation", and Anthropic's Usage Policy forbids to "Intentionally bypass or interfere with capabilities, restrictions, or guardrails established within our products" and to "create multiple accounts, to avoid detection, circumvent product guardrails", while Claude Code's legal page says advertised plan limits "assume ordinary, individual usage". OpenAI's consumer Terms of Use could not be read (HTTP 403) and are unverified. No text read allows automatic switching between one person's own accounts.
+Automatic switching to keep working past a usage limit reads against provider terms quoted in ADR 0049: OpenAI's Services Agreement forbids customers to "violate or circumvent Usage Limits or otherwise configure the Services to avoid Usage Limits" (3.3(i)), where "Usage Limits" means limits "described in the applicable Order Form or Documentation", and Anthropic's Usage Policy forbids to "Intentionally bypass or interfere with capabilities, restrictions, or guardrails established within our products" and to "create multiple accounts, to avoid detection, circumvent product guardrails", while Claude Code's legal page says advertised plan limits "assume ordinary, individual usage". OpenAI's consumer Terms of Use could not be read (HTTP 403) and are unverified. No text read allows automatic switching between one person's own accounts.
 
-## The only shape it may take
+## Shape, when it is reconsidered
 
-Not standing rotation. The person arms, in the app, one continuation for one session onto one chosen target; it fires at most once, on the authoritative limit event (a turn failed on the usage limit, or the characterized limit wait), and expires at the source window's reset. Only between one person's own individual subscriptions, never to or from a team, business or enterprise seat; never while a prompt or approval is live; a notice when armed, when it fires and when it expires; all of PHASE-5's preconditions, confirm-screen contents and steps, with the confirmation given at arming time.
+Opt-in per profile pair, as the owner's answer names; the narrower shape ADR 0049 recommended (armed per session, one shot, expiring at the source window's reset) is settled then. In any shape: only between one person's own individual subscriptions, never to or from a team, business or enterprise seat; never while a prompt or approval is live; a notice when it is enabled, when it fires and when it is disabled; one setting that turns it off; all of PHASE-5's preconditions, confirm-screen contents and steps, with the confirmation given when the person opts in.
 
 ## Acceptance criteria
 
-- [ ] The owner's decisions on Q1 and Q11 and the vendor's written answer are linked here before any code.
-- [ ] If any of them is no, this issue is closed as not planned and ADR 0049 records why.
+- [ ] The vendor's written answer, or the owner's written acceptance of the terms risk, is linked here and recorded in ADR 0049 before any code.
+- [ ] If neither is ever given, this issue stays unfiled; if the owner withdraws Q1 (b), ADR 0049 records why.
 ~~~
