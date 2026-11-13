@@ -140,6 +140,8 @@ WORKER_LISTENER_RUNNERS = {
     "packages/signaling/tests/e2e/worker-listener-process.mjs": "5e068470685ab46ac092728219cd3b4805bb9779",
 }
 WORKER_LISTENER_RELAY = "7d7cc4af1333789734d022f097b47c61913f9a62"
+# The reviewed #1273 pin moves only that runner's BUN_VERSION from 1.3.11 to 1.4.2.
+BUN_142_RELAY = "915d257ee25f0b7d41f9d68a5eca114166386e0f"
 # Dormant codec ownership is exact; registering/exporting it restores R7 (#1170).
 STAGING_SOURCE = "packages/shared/src/image-staging.ts"
 STAGING_INPUTS = {
@@ -1203,7 +1205,7 @@ def isolated_test_runner_matches(path, expected_blob, entry):
     ) or (
         path == ".github/workflows/relay-r7.yml" and
         expected_blob == "9fa98da60f588ba52b7af22f6e09db8003e60700" and
-        entry == ("100644", WORKER_LISTENER_RELAY)
+        entry in {("100644", WORKER_LISTENER_RELAY), ("100644", BUN_142_RELAY)}
     )
 
 
