@@ -183,6 +183,7 @@ public enum RemiInboundEvent: Sendable, Equatable {
 public enum RemiConnectionError: Error, Sendable, Equatable {
     case nonTextFrame
     case malformedMessage
+    case imageIngressViolation
     case authentication(String)
 }
 
@@ -434,7 +435,8 @@ public actor RemiConnection {
     }
 
     /// Sends a frame already encoded and validated by its strict codec (`encodedFrame()` of the
-    /// terminal-view and file-fetch families), through the same path as `send`.
+    /// terminal-view and file-fetch families), through the same path as `send`. Image-family
+    /// frames are refused before the socket is called.
     /// Refused with `PaneTransportBlocked` unless this connection's route may carry the family
     /// (`PaneTransportPolicy.current`), so no caller can bypass the policy.
     public func sendEncodedFrame(_ frame: String) async throws {
@@ -445,12 +447,27 @@ public actor RemiConnection {
         if let reason = policy.reason(viaRelay: configuration.relayPin != nil) {
             throw PaneTransportBlocked(reason: reason)
         }
-        try await deliver(Data(frame.utf8), validateBeforeSend: nil)
+        let data = Data(frame.utf8)
+        try await deliver(data, validateBeforeSend: nil)
     }
 
+    /// Sends one message after refusing image-family frames before the socket is called.
+    /// Outgoing frames are expected to be well-formed JSON from JSONEncoder or WireJSON.serialized().
     public func send<T: Encodable & Sendable>(_ message: T,
         validateBeforeSend: (@Sendable () throws -> Void)? = nil) async throws {
-        try await deliver(try encoder.encode(message), validateBeforeSend: validateBeforeSend)
+        let data = try encoder.encode(message)
+        try await deliver(data, validateBeforeSend: validateBeforeSend)
+    }
+
+    /// The generic and pane senders do not own image authority, even if a pane policy is
+    /// mistakenly permissive. A future image sender must use its own qualified boundary.
+    private static func refuseImageFrames(_ data: Data) throws {
+        let isImage: Bool
+        do { isImage = try ImageIngressPreflight.outgoingIsImage(data) }
+        catch { throw PaneTransportBlocked(reason: "Cannot safely verify the outgoing message type.") }
+        guard !isImage else {
+            throw PaneTransportBlocked(reason: "Image frames cannot be sent through this connection.")
+        }
     }
 
     /// A local socket identity, never a wire field or an authorization grant (#1710).
@@ -482,6 +499,7 @@ public actor RemiConnection {
 
     private func deliver(_ data: Data, validateBeforeSend: (@Sendable () throws -> Void)?,
                          chatAttempt: ChatAttempt? = nil) async throws {
+        try Self.refuseImageFrames(data)
         guard let socket else { throw URLError(.notConnectedToInternet) }
         if configuration.relayPin != nil {
             guard relayChannel != nil, !relayClosing, pendingSends < 64 else { throw RelayFailure.closed }
@@ -558,6 +576,14 @@ public actor RemiConnection {
                     socket?.cancel(with: .init(rawValue: 4400) ?? .policyViolation, reason: Data("closed".utf8))
                 }
                 closeSocket()
+                if let connectionError = error as? RemiConnectionError,
+                   connectionError == .imageIngressViolation {
+                    shouldRun = false
+                    transition(to: .rejected(
+                        reason: "The incoming frame was oversized or its type could not be verified safely."
+                    ))
+                    return
+                }
                 if configuration.relayPin == nil, let reason = Self.directPolicyRejectionDescription(error) {
                     // A local OS-policy refusal is terminal, not evidence that
                     // another transport may bypass the selected layer (#1583).
@@ -654,6 +680,18 @@ public actor RemiConnection {
 
     private func handle(_ data: Data, on task: URLSessionWebSocketTask) async throws {
         guard socket === task else { throw RelayFailure.closed }
+        // Refuse oversized image frames before the general decoder can allocate their fields.
+        // Small image-family frames remain unsupported below and never enable ingress.
+        do {
+            try ImageIngressPreflight.refuseOversizedImage(data)
+        } catch let error as WireFrameError {
+            switch error {
+            case .oversize, .malformedJSON:
+                throw RemiConnectionError.imageIngressViolation
+            case .invalid:
+                throw error
+            }
+        }
         let envelope = try decoder.decode(Envelope.self, from: data)
         if configuration.relayPin != nil && ["auth_challenge", "auth_result", "raw_pty_output", "terminal_resize"].contains(envelope.type) {
             throw RelayFailure.type
