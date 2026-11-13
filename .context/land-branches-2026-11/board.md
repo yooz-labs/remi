@@ -16,11 +16,11 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Plan | .context/land-branches-2026-11/plan.md |
 | Repo | yooz-labs/remi |
 | Integration branch | develop |
-| Manager id | - |
-| State | paused |
+| Manager id | mba-claude-sonnet |
+| State | running |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | - |
-| Next tick | - |
+| Last tick | 2026-11-12T21:25-08:00 |
+| Next tick | 2026-11-12T21:55-08:00 |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-12T19:05-08:00 |
 
@@ -48,9 +48,9 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 0 | daily | every dispatch on every platform; the plan approval covers this limit |
-| Codex Luna today | 8 | 0 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
-| Codex Terra today | 4 | 0 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
+| Agents today | 30 | 3 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Codex Luna today | 8 | 2 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
+| Codex Terra today | 4 | 1 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
 | Claude Sonnet today | 16 | 0 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
 | Claude Opus today | 4 | 0 | daily | lead wakes, lead-tier steps, advisor consults |
 | Advisor consults | 8 | 0 | never | lead tier (Opus), whole plan |
@@ -66,9 +66,9 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | ID | Title | Wave | Tier | Needs | Slot | State | Depends | PR | Started | Timebox | Next |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| L01 | [AGENTS.md split #1733](cards/L01-agents-md-split.md) | - | worker | - | - | todo | - | 1733 | - | 4h | verbatim-move check, then 1 docs reviewer (RV-panel, docs) |
-| L03 | [Direct child key #1728](cards/L03-direct-child-key.md) | - | worker-hard | xcode | - | todo | - | 1728 | - | 2d | one bounded Mac test attempt (Q2); then one RV-delta review from 5c1f9380 (Q13) plus Luna (Q9) |
-| L02 | [Terminal relay probe #1657](cards/L02-terminal-relay-qualification.md) | - | worker | - | - | todo | - | 1657 | - | 1d | merge develop, start checks; then one RV-delta review from 26fbf947 (Q13) |
+| L01 | [AGENTS.md split #1733](cards/L01-agents-md-split.md) | - | worker | - | codex-luna | active | - | 1733 | 2026-11-12T21:30 | 4h | verbatim-move check, then 1 docs reviewer (RV-panel, docs) |
+| L03 | [Direct child key #1728](cards/L03-direct-child-key.md) | - | worker-hard | xcode | codex-terra | active | - | 1728 | 2026-11-12T21:30 | 2d | one bounded Mac test attempt (Q2); then one RV-delta review from 5c1f9380 (Q13) plus Luna (Q9) |
+| L02 | [Terminal relay probe #1657](cards/L02-terminal-relay-qualification.md) | - | worker | - | codex-luna | active | - | 1657 | 2026-11-12T21:30 | 1d | merge develop, start checks; then one RV-delta review from 26fbf947 (Q13) |
 | L04 | [Question session identity #1732](cards/L04-question-session-identity.md) | - | worker | xcode | - | todo | - | - | - | 1d | implement per #1732; then 3 Sonnet reviewers |
 | L05 | [Notification preferences #1707](cards/L05-notification-preferences.md) | - | worker | xcode | - | todo | L03 | 1707 | - | 1d | merge develop; advisor checks the resolution; no third review |
 | L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | - | todo | L03 | - | - | 2d | after L03; plan's negative controls; 3 Sonnet reviewers plus 1 Luna (Q9) |
@@ -77,7 +77,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | L09 | [Bun 1.4.2 pins #1512](cards/L09-bun142-pins.md) | - | worker-hard | - | - | todo | L01 | 1512 | - | 2d | after L01, while no native PR is in review; one RV-delta review from 3a654273 (Q13); merged only after the owner's phone check (Q1) |
 | L12 | [WSS writer tests #1641](cards/L12-native-wss-characterization.md) | - | worker | xcode | - | dropped | - | - | - | 4h | Q6 fold into the first #1641 implementation PR; branch kept |
 | L11 | [Compact preview probes #1711](cards/L11-compact-preview.md) | - | worker | - | - | dropped | - | - | - | 4h | Q5 park: branch kept, no PR; not in the L13 delete list |
-| L10 | [#1727 local files check](cards/L10-store-callback-owner-check.md) | - | - | - | - | owner | - | - | - | - | verify the #1727 push landed (git ls-remote); then waits on Q16 (PR wanted?) |
+| L10 | [#1727 local files check](cards/L10-store-callback-owner-check.md) | - | - | - | - | done | - | - | - | - | verify the #1727 push landed (git ls-remote); then waits on Q16 (PR wanted?) |
 | L99 | Landing complete (CP2) | - | - | - | - | blocked | - | - | - | - | manager sets done when L01 to L12, L14 and CP1 are done or dropped, and L07 is done, dropped or parked (runbook 8) |
 | L13 | [Cleanup commands](cards/L13-cleanup-commands.md) | - | worker | - | - | todo | L99 | - | - | 2h | then the owner runs cleanup.md |
 | P01 | [iPad Board design](cards/P01-ipad-board-design.md) | - | lead | xcode, simulator | - | blocked | L99 | - | - | 1d | todo when L99 done; iPad issue filed first; Xcode MCP precondition; CP3 |
@@ -107,7 +107,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Q13 | L03 | #1728, #1657, #1512 record earlier review rounds outside the PR. How many rounds now? | Accept the recorded rounds plus one delta review of changes since (Recommended) / Fresh full round 1, cap resets / Waive review: merge on gates | none | 2026-11-13T12:00 | closed | Accept the recorded review rounds plus one delta review from each recorded head for #1728, #1657, #1512 (owner, 2026-11-12T21:20-08:00) |
 | Q14 | L03 | Install the pack's Codex forbidden-command rules (gh pr merge/close, gh issue, force push) into ~/.codex/rules for the loop? | Install for the loop, remove at the end (Recommended) / Do not install; rely on the preamble and the develop check | none | 2026-11-13T12:00 | closed | Install the Codex rules file for the loop; the owner runs the copy command; the develop-unchanged check stays (owner, 2026-11-12T21:20-08:00) |
 | Q15 | L07 | Merge authority was develop only. May the manager merge a large review-fix PR into its step PR's head branch after its delta review and gates? | Yes, fix PRs into a step's head branch only (Recommended) / No: the owner merges fix PRs | none | 2026-11-16T12:00 | closed | The manager may merge a large review-fix PR into its step PR's head branch only, after the same merge gate; never into develop directly (owner, 2026-11-12T21:20-08:00) |
-| Q16 | L10 | The #1727 prototype tests are now pushed to patch/issue-1727-store-callback-order (9e7ddf41). Open a PR? | No PR yet: keep the branch until a #1727 implementation card exists (Recommended) / Open a draft PR now for visibility / Open a PR for review and landing in this plan | none | 2026-11-16T12:00 | open |  |
+| Q16 | L10 | The #1727 prototype tests are now pushed to patch/issue-1727-store-callback-order (9e7ddf41). Open a PR? | No PR yet: keep the branch until a #1727 implementation card exists (Recommended) / Open a draft PR now for visibility / Open a PR for review and landing in this plan | none | 2026-11-16T12:00 | answered | No PR yet; keep the branch as pushed evidence until a #1727 implementation card exists (owner, 2026-11-12T21:23-08:00) |
 
 ## Proposals
 
@@ -118,3 +118,6 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Agent | Role | Slot | Model | Step | Started | State |
 |---|---|---|---|---|---|---|
+| codex-L01 | implementer | codex-luna | gpt-6-luna max | L01 | 2026-11-12T21:30 | thread 01a1d35d-5358 |
+| codex-L02 | implementer | codex-luna | gpt-6-luna max | L02 | 2026-11-12T21:30 | thread 01a1d35d-546a |
+| codex-L03 | implementer | codex-terra | gpt-6.1-terra xhigh | L03 | 2026-11-12T21:30 | thread 01a1d35d-5641 |

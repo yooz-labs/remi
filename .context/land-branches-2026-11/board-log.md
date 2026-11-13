@@ -32,6 +32,7 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-12T21:20-08:00 | Q14: Install the Codex rules file for the loop; the owner runs the copy command; the develop-unchanged check stays | owner | owner answer in chat, 2026-11-12 |
 | 2026-11-12T21:20-08:00 | Q15: The manager may merge a large review-fix PR into its step PR's head branch only, after the same merge gate; never into develop directly | owner | owner answer in chat, 2026-11-12 |
 | 2026-11-12T21:20-08:00 | Q4 (fold image-availability into native-images) is superseded by Q11: image-availability lands alone; native-images is parked | owner | owner answer to Q11, 2026-11-12 |
+| 2026-11-12T21:23-08:00 | Q16: no PR for #1727 yet | owner |  |
 
 ## Log
 
@@ -40,3 +41,5 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-12T19:58-08:00 | Owner answered Q1, Q4, Q5, Q6, Q8, Q9, Q10 and approved the defaults; Q2, Q3, Q7 stay open |
 | 2026-11-12T20:13-08:00 | Pack review (executability, design) applied: CP1 and L14 added, L07 L08 L09 A01 dependencies changed, Q11 to Q14 asked |
 | 2026-11-12T21:20-08:00 | Owner answered Q2, Q3, Q7, Q11 to Q15; L03 L04 L06 L14 todo; L08 dropped (parked); L07 parked; Q16 asked for #1727 |
+| 2026-11-12T21:23-08:00 | L10: push verified at 9e7ddf41; Q16 owner: no PR yet |
+| 2026-11-12T21:25-08:00 | dispatched L01 (luna, -C main, thread 01a1d35d-5358), L02 (luna, thread 01a1d35d-546a), L03 (terra, full access, thread 01a1d35d-5641); develop at 1cbdcc6f; rules file confirmed forbidden for gh pr merge |
