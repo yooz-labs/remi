@@ -41,6 +41,7 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T05:46-08:00 | Q19: merge gate item 3 (fresh base) relaxed: a PR may merge when its branch merges cleanly with develop (git merge-tree), shares no changed file with the commits merged since its last CI run, and DV verifies the develop tip after every merge; a red DV stops all merges | owner |  |
 | 2026-11-13T05:55-08:00 | Q20: DV baseline extended: the environment-dependent 'owned empty launch directory required' failures in PairingAttemptTests and PairingSourceTests are the local baseline; DV reruns with both skipped and everything else must pass; hosted native CI is the authority for those suites | owner |  |
 | 2026-11-13T06:10-08:00 | Owner (2026-11-13, chat): do not wait for a free Luna slot: when the Codex Luna slots are full, run worker cards (L05, L14) on Claude Sonnet implementers instead | owner |  |
+| 2026-11-13T06:13-08:00 | Owner (2026-11-13, chat): the rule that a Codex card never falls back to Claude is wrong: Codex and Claude worker slots are both used and maximized (a worker card goes to whichever platform has a free fitting slot); PR reviewers are Claude Sonnet only, the advisor is Claude Opus only (the Luna second reviewer of Q9 is superseded; no Codex reviewers), and the lead is the current session (no separate lead agent) | owner |  |
 
 ## Log
 
@@ -82,3 +83,4 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-13T06:04-08:00 | L06 dispatched (terra, full access); L05 waits for a free Luna slot (L02 r5 and DV r4 running) |
 | 2026-11-13T06:05-08:00 | cleanup (owner authority): removed worktrees agents-md-split, question-session-identity, direct-child-key and their local branches (remote branches were already auto-deleted on merge); deleted the three scratch/issue-1724-* evidence branches |
 | 2026-11-13T06:11-08:00 | L05 and L14 dispatched as Claude Sonnet implementers (owner: do not wait for Luna): agents af3918dd (L05, #1707 merge with develop) and a402841c (L14, image-availability) |
+| 2026-11-13T06:13-08:00 | Owner correction recorded: slots on both platforms maximized; reviews Sonnet, advisor Opus, lead = this session; Luna second reviewer dropped |
