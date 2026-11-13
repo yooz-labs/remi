@@ -222,7 +222,8 @@ function decode(value: string): string {
       ? Number.parseInt(entity.slice(2), 16)
       : Number(entity.slice(1));
     requireValue(
-      // Bun 1.3.11's reporter emits numeric NUL in test titles; retain its reported bytes.
+      // Bun 1.3.11's reporter emitted numeric NUL in test titles and 1.4.2 omits C0 bytes;
+      // retain whatever bytes the reporter actually wrote.
       code >= 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff),
       'Invalid XML scalar',
     );
