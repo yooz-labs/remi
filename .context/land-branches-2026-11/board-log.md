@@ -43,3 +43,7 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-12T21:20-08:00 | Owner answered Q2, Q3, Q7, Q11 to Q15; L03 L04 L06 L14 todo; L08 dropped (parked); L07 parked; Q16 asked for #1727 |
 | 2026-11-12T21:23-08:00 | L10: push verified at 9e7ddf41; Q16 owner: no PR yet |
 | 2026-11-12T21:25-08:00 | dispatched L01 (luna, -C main, thread 01a1d35d-5358), L02 (luna, thread 01a1d35d-546a), L03 (terra, full access, thread 01a1d35d-5641); develop at 1cbdcc6f; rules file confirmed forbidden for gh pr merge |
+| 2026-11-12T21:51-08:00 | L01 report verified (head b379ea64, scope ok, 8 lost lines all classified, develop unchanged); RV docs reviewer dispatched |
+| 2026-11-12T21:53-08:00 | L03 report: head unchanged 5c1f9380, PR body extended, iPhone build ok, local swift test only passes with --skip PairingAttemptTests; Mac test failed on the same baseline (not a stall); Q17 asked |
+| 2026-11-12T21:53-08:00 | L02 round 1 stopped: node_modules symlinks pointed at removed worktree terminal-service (manager cleanup of 2026-11-12); replaced with real bun install; redispatched as round 3 with continuation (local merge commit 051e9900) |
+| 2026-11-12T21:53-08:00 | L04 dispatched (luna, full access, thread 01a1d377-3dec); L01 RV docs reviewer running |

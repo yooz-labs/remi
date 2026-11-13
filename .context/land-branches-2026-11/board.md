@@ -19,8 +19,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Manager id | mba-claude-sonnet |
 | State | running |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | 2026-11-12T21:25-08:00 |
-| Next tick | 2026-11-12T21:55-08:00 |
+| Last tick | 2026-11-12T21:51-08:00 |
+| Next tick | 2026-11-12T22:21-08:00 |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-12T19:05-08:00 |
 
@@ -48,10 +48,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 3 | daily | every dispatch on every platform; the plan approval covers this limit |
-| Codex Luna today | 8 | 2 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
+| Agents today | 30 | 6 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Codex Luna today | 8 | 4 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 1 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
-| Claude Sonnet today | 16 | 0 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
+| Claude Sonnet today | 16 | 1 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
 | Claude Opus today | 4 | 0 | daily | lead wakes, lead-tier steps, advisor consults |
 | Advisor consults | 8 | 0 | never | lead tier (Opus), whole plan |
 | Fable consults | 1 | 0 | never | A02 only, owner-requested |
@@ -66,10 +66,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | ID | Title | Wave | Tier | Needs | Slot | State | Depends | PR | Started | Timebox | Next |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| L01 | [AGENTS.md split #1733](cards/L01-agents-md-split.md) | - | worker | - | codex-luna | active | - | 1733 | 2026-11-12T21:30 | 4h | verbatim-move check, then 1 docs reviewer (RV-panel, docs) |
-| L03 | [Direct child key #1728](cards/L03-direct-child-key.md) | - | worker-hard | xcode | codex-terra | active | - | 1728 | 2026-11-12T21:30 | 2d | one bounded Mac test attempt (Q2); then one RV-delta review from 5c1f9380 (Q13) plus Luna (Q9) |
+| L01 | [AGENTS.md split #1733](cards/L01-agents-md-split.md) | - | worker | - | claude-sonnet | review | - | 1733 | 2026-11-12T21:30 | 4h | verbatim-move check, then 1 docs reviewer (RV-panel, docs) |
+| L03 | [Direct child key #1728](cards/L03-direct-child-key.md) | - | worker-hard | xcode | - | owner | - | 1728 | 2026-11-12T21:30 | 2d | one bounded Mac test attempt (Q2); then one RV-delta review from 5c1f9380 (Q13) plus Luna (Q9) |
 | L02 | [Terminal relay probe #1657](cards/L02-terminal-relay-qualification.md) | - | worker | - | codex-luna | active | - | 1657 | 2026-11-12T21:30 | 1d | merge develop, start checks; then one RV-delta review from 26fbf947 (Q13) |
-| L04 | [Question session identity #1732](cards/L04-question-session-identity.md) | - | worker | xcode | - | todo | - | - | - | 1d | implement per #1732; then 3 Sonnet reviewers |
+| L04 | [Question session identity #1732](cards/L04-question-session-identity.md) | - | worker | xcode | codex-luna | active | - | - | 2026-11-12T22:10 | 1d | implement per #1732; then 3 Sonnet reviewers |
 | L05 | [Notification preferences #1707](cards/L05-notification-preferences.md) | - | worker | xcode | - | todo | L03 | 1707 | - | 1d | merge develop; advisor checks the resolution; no third review |
 | L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | - | todo | L03 | - | - | 2d | after L03; plan's negative controls; 3 Sonnet reviewers plus 1 Luna (Q9) |
 | L07 | [Local notification order #1720](cards/L07-local-notification-order.md) | - | worker | xcode | - | blocked | L04, CP1 | - | - | 3d | parked until #1727 is resolved (Q12); counts as settled for L99; branch kept |
@@ -108,6 +108,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Q14 | L03 | Install the pack's Codex forbidden-command rules (gh pr merge/close, gh issue, force push) into ~/.codex/rules for the loop? | Install for the loop, remove at the end (Recommended) / Do not install; rely on the preamble and the develop check | none | 2026-11-13T12:00 | closed | Install the Codex rules file for the loop; the owner runs the copy command; the develop-unchanged check stays (owner, 2026-11-12T21:20-08:00) |
 | Q15 | L07 | Merge authority was develop only. May the manager merge a large review-fix PR into its step PR's head branch after its delta review and gates? | Yes, fix PRs into a step's head branch only (Recommended) / No: the owner merges fix PRs | none | 2026-11-16T12:00 | closed | The manager may merge a large review-fix PR into its step PR's head branch only, after the same merge gate; never into develop directly (owner, 2026-11-12T21:20-08:00) |
 | Q16 | L10 | The #1727 prototype tests are now pushed to patch/issue-1727-store-callback-order (9e7ddf41). Open a PR? | No PR yet: keep the branch until a #1727 implementation card exists (Recommended) / Open a draft PR now for visibility / Open a PR for review and landing in this plan | none | 2026-11-16T12:00 | answered | No PR yet; keep the branch as pushed evidence until a #1727 implementation card exists (owner, 2026-11-12T21:23-08:00) |
+| Q17 | - | L03: local Mac/Swift tests hit the 32 documented PairingAttemptTests failures (not a stall); hosted native CI passed them on the same head. Accept hosted as evidence and proceed to review? (log has detail) | Accept hosted, proceed to review (Recommended) / Require local fix first / Hold L03 | none | 2026-11-13T09:00 | open |  |
 
 ## Proposals
 
@@ -118,6 +119,9 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Agent | Role | Slot | Model | Step | Started | State |
 |---|---|---|---|---|---|---|
-| codex-L01 | implementer | codex-luna | gpt-6-luna max | L01 | 2026-11-12T21:30 | thread 01a1d35d-5358 |
-| codex-L02 | implementer | codex-luna | gpt-6-luna max | L02 | 2026-11-12T21:30 | thread 01a1d35d-546a |
-| codex-L03 | implementer | codex-terra | gpt-6.1-terra xhigh | L03 | 2026-11-12T21:30 | thread 01a1d35d-5641 |
+| codex-L01 | implementer | codex-luna | gpt-6-luna max | L01 | 2026-11-12T21:30 | done |
+| codex-L02 | implementer | codex-luna | gpt-6-luna max | L02 | 2026-11-12T21:30 | done |
+| codex-L03 | implementer | codex-terra | gpt-6.1-terra xhigh | L03 | 2026-11-12T21:30 | done |
+| rv-L01-docs | reviewer | claude-sonnet | sonnet xhigh | L01 | 2026-11-12T21:58 | running a995b808 |
+| codex-L02b | implementer | codex-luna | gpt-6-luna max | L02 | 2026-11-12T22:10 | thread 01a1d376-e5af (round 3, after dependency repair) |
+| codex-L04 | implementer | codex-luna | gpt-6-luna max | L04 | 2026-11-12T22:10 | thread 01a1d377-3dec |
