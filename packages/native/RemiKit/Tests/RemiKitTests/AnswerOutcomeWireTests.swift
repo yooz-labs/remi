@@ -120,6 +120,12 @@ final class OwnedAnswerPeer: @unchecked Sendable {
         return (startRequestedAt, listenerReadyAt, port, failure, lastListenerState)
     }
 
+    fileprivate func listenerReadyElapsedSinceStart() -> Duration? {
+        lock.lock(); defer { lock.unlock() }
+        guard let startRequestedAt, let listenerReadyAt else { return nil }
+        return startRequestedAt.duration(to: listenerReadyAt)
+    }
+
     private func connectionWaitSnapshot() -> (readyAt: ContinuousClock.Instant?, rejectedAt: ContinuousClock.Instant?,
                                                 endedAt: ContinuousClock.Instant?, lastState: String?) {
         lock.lock(); defer { lock.unlock() }
@@ -472,11 +478,23 @@ struct AnswerOutcomeWireTests {
 
     @Test func listenerReadyBeforeDeadlineSurvivesLatePoll() async throws {
         let peer = try OwnedAnswerPeer(mode: "unused")
+        let clock = ContinuousClock()
         peer.start()
         do {
-            // Keep the waiter asleep beyond its short deadline while the real listener starts.
+            let readinessDeadline = clock.now.advanced(by: .seconds(30))
+            var readyElapsed: Duration?
+            while clock.now < readinessDeadline {
+                if peer.snapshot().port != nil {
+                    readyElapsed = peer.listenerReadyElapsedSinceStart()
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let elapsed = try #require(readyElapsed)
+            let timeout = elapsed + .milliseconds(50)
+            // Poll well after the observed ready instant and its short deadline.
             try await Task.sleep(for: .milliseconds(300))
-            let port = try await peer.waitForPort(timeout: .milliseconds(50))
+            let port = try await peer.waitForPort(timeout: timeout)
             #expect(port > 0)
         } catch {
             #expect(await peer.stop())
