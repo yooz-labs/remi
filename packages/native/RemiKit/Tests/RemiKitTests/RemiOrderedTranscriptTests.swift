@@ -184,7 +184,7 @@ struct RemiOrderedTranscriptTests {
         #expect(transcript.map(\.content) == Array(repeating: "updated", count: entryCount))
     }
 
-    @Test func machineStoreApplyUsesOrderedTranscriptWithoutRemoveAll() throws {
+    @Test func machineStoreTranscriptPathsUseTheOrderedStore() throws {
         let packageRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -193,12 +193,20 @@ struct RemiOrderedTranscriptTests {
             contentsOf: packageRoot.appendingPathComponent("Sources/RemiKit/Store/MachineStore.swift"),
             encoding: .utf8
         )
-        let applyStart = try #require(source.range(of: "private static func apply("))
-        let applySource = source[applyStart.lowerBound...]
-        let nextMethod = try #require(applySource.range(of: "\n    /// Whether the key"))
-        let applyBody = String(applySource[..<nextMethod.lowerBound])
+        let receiveStart = try #require(source.range(of: "case .transcript(let message):"))
+        let receiveSource = source[receiveStart.lowerBound...]
+        let receiveEnd = try #require(receiveSource.range(of: "\n        case .sessionViews"))
+        let receiveBody = String(receiveSource[..<receiveEnd.lowerBound])
 
-        #expect(applyBody.contains("transcript.apply(message)"))
-        #expect(!applyBody.contains("removeAll"))
+        let finishStart = try #require(source.range(of: "private func finishTranscriptLoad("))
+        let finishSource = source[finishStart.lowerBound...]
+        let finishEnd = try #require(finishSource.range(of: "\n    /// Whether the key"))
+        let finishBody = String(finishSource[..<finishEnd.lowerBound])
+
+        #expect(receiveBody.contains("staged.apply(message)"))
+        #expect(receiveBody.contains("transcript.apply(message)"))
+        #expect(finishBody.contains("transcript.apply(message)"))
+        #expect(!receiveBody.contains("removeAll"))
+        #expect(!finishBody.contains("removeAll"))
     }
 }

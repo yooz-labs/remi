@@ -1854,9 +1854,10 @@ public final class MachineStore {
         transcriptKeyByRequest = transcriptKeyByRequest.filter { $0.value != key }
         // What arrived is shown even when the load did not finish; only a complete one counts as cached.
         if let staged = transcriptStaging.removeValue(forKey: key) {
-            var transcript = transcriptsBySession[key] ?? RemiOrderedTranscript()
+            let transcript = transcriptsBySession[key] ?? RemiOrderedTranscript()
             // Merge only after replay so the previously published transcript stays visible in flight.
-            for message in staged { Self.apply(message, to: &transcript) }
+            for message in staged { transcript.apply(message) }
+            // Reassign the same reference so Observation publishes the transcript change.
             transcriptsBySession[key] = transcript
         }
         transcriptLoadStartedOn[key] = nil
@@ -1865,15 +1866,6 @@ public final class MachineStore {
             transcriptLoadedOn[key] = generation
         }
         transcriptsLoading.remove(key)
-    }
-
-    /// An entry replaces the one with its id (and moves to the end, where a streaming update belongs),
-    /// or is added.
-    private static func apply(
-        _ message: TranscriptContentMessage,
-        to transcript: inout RemiOrderedTranscript
-    ) {
-        transcript.apply(message)
     }
 
     /// Whether the key is a session of its machine's own daemon (listed with source "daemon").
@@ -2997,12 +2989,13 @@ public final class MachineStore {
         case .transcript(let message):
             let key = MachineSessionKey(machineID: machines[index].id, sessionID: message.sessionId)
             if transcriptsLoading.contains(key) {
-                var staged = transcriptStaging[key] ?? RemiOrderedTranscript()
-                Self.apply(message, to: &staged)
+                let staged = transcriptStaging[key] ?? RemiOrderedTranscript()
+                staged.apply(message)
                 transcriptStaging[key] = staged
             } else {
-                var transcript = transcriptsBySession[key] ?? RemiOrderedTranscript()
-                Self.apply(message, to: &transcript)
+                let transcript = transcriptsBySession[key] ?? RemiOrderedTranscript()
+                transcript.apply(message)
+                // Reassign the same reference so Observation publishes the transcript change.
                 transcriptsBySession[key] = transcript
             }
         case .sessionViews(let message):

@@ -1,8 +1,24 @@
-/// An ordered transcript with O(1) UUID lookup and amortized O(1) replacement.
+/// A mutable reference-type transcript used on MachineStore's main actor.
 ///
-/// Replacing an existing entry unlinks it and appends its replacement, preserving
-/// the order that MachineStore has historically exposed. Removed node slots are
-/// compacted occasionally, so duplicate updates do not scan the transcript.
+/// This type is not `Sendable`. Do not pass it between actors or mutate it while
+/// consuming one of its sequence iterators.
+///
+/// Each `entryUuid` maps to one node in the ordered linked list. A new UUID is
+/// appended. A duplicate replaces its message and is appended at the end.
+/// The UUID dictionary provides expected O(1) lookup.
+///
+/// Replaced nodes remain as tombstones until at least 64 replacements have
+/// accumulated and tombstones are no fewer than live entries. Compaction then
+/// visits at most as many live nodes as accumulated tombstones, making the
+/// compaction work amortized O(1) per replacement.
+///
+/// `entries` allocates an O(n) array snapshot on each call and reserves the
+/// current live count. The Mac board uses `suffix(_:)` to visit only its newest
+/// entries.
+///
+/// MachineStore writes a mutated transcript reference back into
+/// `transcriptsBySession` only to notify Observation. The write-back does not
+/// copy or replace the reference.
 public final class RemiOrderedTranscript: Sequence {
     public typealias Element = TranscriptContentMessage
 
@@ -52,8 +68,15 @@ public final class RemiOrderedTranscript: Sequence {
 
     public var count: Int { liveCount }
 
+    public var underestimatedCount: Int { liveCount }
+
     /// An array snapshot in transcript order for UI and storage readers.
-    public var entries: [Element] { Array(self) }
+    public var entries: [Element] {
+        var snapshot: [Element] = []
+        snapshot.reserveCapacity(liveCount)
+        snapshot.append(contentsOf: self)
+        return snapshot
+    }
 
     /// Returns the newest entries in transcript order without traversing older ones.
     public func suffix(_ maxLength: Int) -> [Element] {
