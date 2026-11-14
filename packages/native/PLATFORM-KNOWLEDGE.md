@@ -104,7 +104,7 @@ Every fact below carries its source; anything marked NOT FOUND was looked for an
 
 1. A layout decision reads the horizontal size class or the width the view was actually given (`RemiLayoutMode`, `onGeometryChange`), never `UIDevice`, `userInterfaceIdiom`, orientation, a device name or `UIScreen.main`.
 2. Folding, unfolding, Split View, a window drag and an external display are all the same event: the size changes while the app runs. State a person is holding (a draft, the focused tile, scroll position) lives above the layout switch so a size change does not rebuild it; #1629 already does this for the draft.
-3. The Board's column count comes from the width of the Board's own pane (the window minus the sidebar), through `RemiBoardOrder.columnCount`, so it is the same rule on an iPad, in a narrow iPad window, on the unfolded Duo and in the Mac window.
+3. The Board's column count comes from the width of the Board's own pane (the window minus the sidebar), through `RemiBoardOrder.columnCount`, so it is the same rule on an iPad, in a narrow iPad window, on the unfolded Duo and in the Mac window. The owner requires several columns on an iPad in portrait too (2026-11-13), which is why the sidebar sits beside the Board only from 1000 pt windows and a card may be as narrow as 300 pt; the numbers are in [handoff/ipad-board.md](handoff/ipad-board.md).
 4. Any change to the shell or the Board is accepted at the sizes in [VISUAL-ACCEPTANCE.md](VISUAL-ACCEPTANCE.md), including an iPad and an iPhone Duo pose; "checked on iPad and on iPhone Duo" without a receipt is not evidence.
 5. The iOS 27.1 SDK moves toolbars and tab bars on the Duo inner display. Re-check the shell when the toolchain moves, and record the Xcode build.
 

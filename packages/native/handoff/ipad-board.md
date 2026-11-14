@@ -7,7 +7,7 @@ Written 2026-11-13 against `develop` `b4a53f0d` (0.8.3-dev.26) and Xcode 27.2.
 
 The native app shows session cards in several columns, and as many rows as the content needs, whenever the window is wide: an iPad full screen, an iPad window the person made large (including on an external display on iPadOS 27.x), and the unfolded iPhone Duo.
 One column stays exactly as it is today wherever the window is narrow, so the iPhone is unchanged.
-The Board decides from the width it is given, never from the device.
+The Board decides from the width it is given, never from the device, and an iPad in portrait gets several columns as well (owner requirement, 2026-11-13).
 
 ## Precondition result
 
@@ -56,28 +56,40 @@ Evidence (`P01/` in the artifact folder; exact build of `b4a53f0d`, receipt `P01
 
 ### The rule
 
-The Board decides its column count from the width of its own pane, which is the window minus the sidebar when the sidebar shows:
+Owner requirement (2026-11-13): an iPad in portrait gets several columns too, not only a wide landscape window.
+Two things stood in the way of that with the first draft of this rule: a 340 pt sidebar beside the Board took a third of a portrait iPad, and a 340 pt minimum card width asked too much of what was left.
+So the rule has two parts.
 
-`pane = window width - sidebar (340 pt when shown, else 0)`
+1. **The sidebar sits beside the Board only when the window is at least 1000 pt wide**; below that it is an overlay the person brings in with the system toggle, so the Board keeps the whole width. A person's explicit choice (shown or hidden) wins over the default and is kept per window.
+2. **The Board decides its column count from the width of its own pane**, measured where the Board is laid out (`onGeometryChange`), never from a device or the sidebar's assumed state:
+
 `available = pane - 2 x 16 pt margin`
-`columns = RemiBoardOrder.columnCount(width: available, minimumTile: 340, spacing: 12)`, at most 6
+`columns = RemiBoardOrder.columnCount(width: available, minimumTile: 300, spacing: 12)`, at most 6, which is `floor((available + 12) / 312)`
 
-| Window | Pane | Columns |
-|---|---|---|
-| iPhone, any | under 724 | 1 (unchanged) |
-| iPad mini portrait, 744 pt, sidebar shown | 404 | 1 |
-| iPad Pro 13-inch landscape, 1376 pt, sidebar shown | 1036 | 2 |
-| iPad Pro 13-inch landscape, sidebar hidden | 1376 | 3 |
-| iPhone Duo outer display, portrait, 466 pt | 466 | 1 |
-| iPhone Duo inner display, portrait, 669 pt, sidebar shown | 329 | 1 |
-| iPhone Duo inner display, landscape, 951 pt, sidebar hidden | 951 | 2 |
-| iPhone Duo inner display, landscape, 951 pt, sidebar shown | 611 | 1 |
-| Two columns need | 724 | window 1064 pt with the sidebar, 724 pt without |
-| Three columns need | 1076 | window 1416 pt with the sidebar, 1076 pt without |
+The Mac keeps its 340 pt minimum for its freeform frames; the iPad and Duo Board uses a 300 pt minimum card.
 
+| Window | Sidebar | Pane | Columns |
+|---|---|---|---|
+| iPhone, any | overlay | under 644 | 1 (unchanged) |
+| iPhone Duo outer display, portrait, 466 pt | overlay | 466 | 1 |
+| iPhone Duo inner display, portrait, 669 pt | overlay | 669 | 2 |
+| iPhone Duo inner display, landscape, 951 pt | overlay | 951 | 2 |
+| iPad mini, portrait, 744 pt | overlay | 744 | 2 |
+| iPad mini, landscape, 1133 pt | beside | 793 | 2 |
+| iPad Air or Pro 11-inch, portrait, 834 pt | overlay | 834 | 2 |
+| iPad Pro 13-inch, portrait, 1032 pt | beside | 692 | 2 |
+| iPad Pro 13-inch, portrait, sidebar hidden | overlay | 1032 | 3 |
+| iPad Pro 11-inch, landscape, 1194 pt | beside | 854 | 2 |
+| iPad Pro 13-inch, landscape, 1376 pt | beside | 1036 | 3 |
+| iPad Pro 13-inch, landscape, sidebar hidden | overlay | 1376 | 4 |
+| Two columns need | | 644 | pane 644 pt (window 984 pt with the sidebar beside) |
+| Three columns need | | 956 | pane 956 pt |
+| Four columns need | | 1268 | pane 1268 pt |
+
+Windows between 644 and 1000 pt wide are two columns without a sidebar beside them, and a window that a person drags down to almost phone width is one column with the overlay, exactly like the iPhone; from 1000 pt the sidebar sits beside the Board, and the iPad Pro 13-inch in portrait (1032 pt) is the narrowest such window, with two columns, or three if the person hides the sidebar.
 At one column the screen is today's screen: same stack, same readable cap, same ordering, so no iPhone regression.
-At two or more the readable cap does not apply to the whole pane; each column's cards fill their column (the width is `(available - 12 x (columns - 1)) / columns`, at least 340 pt) and the columns are centered if six columns are not reached.
-The iPhone Duo uses the same rule, with the point widths from the simulator profile (466 pt outer, 669 by 951 pt inner): the unfolded display reports regular size classes, so the shell shows the sidebar, and with a 340 pt sidebar the pane is too narrow for two columns even in landscape; hiding the sidebar gives two columns in landscape (question 5).
+At two or more the readable cap does not apply to the whole pane; each column's cards fill their column (`(available - 12 x (columns - 1)) / columns`, at least 300 pt) and the columns are centered when the cap on six columns is reached.
+The iPhone Duo uses the same rule with the point widths from the simulator profile (466 pt outer, 669 by 951 pt inner): the unfolded display reports regular size classes, and below 1000 pt wide the sidebar is an overlay, so the inner display gets two columns in portrait and in landscape.
 
 ### Placement
 
@@ -116,8 +128,8 @@ Each is one pull request into `develop`, with the visual gate from `VISUAL-ACCEP
 
 | Slice | What | Tests |
 |---|---|---|
-| 1 | The pure resolver in `RemiUI` (pane width and sidebar state to columns and tile width, with hysteresis) and its tests; no view change | Swift Testing: the table above, both sides of each threshold, six-column cap, zero and negative widths |
-| 2 | `PhoneBoardScreen` lays cards in the resolved columns, one column unchanged | a source test that one column renders the existing stack; previews at 3 widths; the visual gate above |
+| 1 | The pure resolver in `RemiUI` (pane width to columns and tile width with the 300 pt minimum, the 1000 pt sidebar default, hysteresis) and its tests; no view change | Swift Testing: every row of the table above, both sides of each threshold (643 and 644, 955 and 956, 999 and 1000), the six-column cap, zero and negative widths |
+| 2 | `PhoneBoardScreen` lays cards in the resolved columns, one column unchanged, and the shell's sidebar visibility follows the 1000 pt rule with the person's choice kept | a source test that one column renders the existing stack; previews at 3 widths; the visual gate above |
 | 3 | Per-card density on iPad through the existing menu, including from a card in the second column | state tests for `sizes`; the visual gate |
 | 4 | Fold and resize robustness: a draft and focus survive a width change; no animation storm at a threshold | a focus-retention test, a resizable-simulator drag recorded in the receipt |
 | 5 | An iPad on a real external display and the Duo poses, recorded by the owner or on the Duo simulator | the receipt lists what was run and what was not |
@@ -126,9 +138,9 @@ Each is one pull request into `develop`, with the visual gate from `VISUAL-ACCEP
 ## Owner decisions
 
 1. **Device family and listing.** The project already builds the iPhone target as a universal app (iPhone and iPad) and a test pins its iPad orientations; #1629's "stays iPhone" is stale. Recommended: confirm the iPad as a supported device and check in App Store Connect that the TestFlight and store listing show it. Alternative: set the family back to iPhone, which would run the app in iPhone compatibility mode on iPad and does not serve this goal.
-2. **Minimum window width for two columns.** Recommended: the rule above (a 724 pt pane, so 1064 pt with the sidebar shown). Alternative: a 300 pt minimum tile, which gives two columns on a 13-inch iPad in portrait with the sidebar shown, at the cost of narrower cards.
+2. **The card minimum and the sidebar threshold.** The owner requires multi-column in portrait, so the rule is a 300 pt minimum card and a sidebar that sits beside the Board only from 1000 pt windows. Recommended: exactly that. Alternative: a 320 pt minimum card (the iPad mini portrait still gets two columns, the Duo inner display in portrait gets one) or a 900 pt threshold.
 3. **Freeform resizing on iPad.** Recommended: no, density presets only in slices 1 to 5, and revisit slice 6 after the owner has used it with a pointer. Alternative: port the Mac frames now.
 4. **A selected session beside the Board.** Recommended: out of scope here; design it after slice 2 ships, because it changes navigation. Alternative: add it to this track.
-5. **Sidebar on the Duo inner display.** On the unfolded Duo the regular size class shows a 340 pt sidebar, which leaves 329 pt in portrait and 611 pt in landscape, one column either way. Recommended: start with the sidebar hidden on the inner display so landscape gets two columns, with the system toggle to bring it back. Alternative: keep it shown, as on the iPad, and accept one column on the Duo.
+5. **Where the sidebar toggle lives when it is an overlay.** With the overlay below 1000 pt the system toggle in the navigation bar is the only way to the session list on a portrait iPad and on the Duo inner display. Recommended: keep the system toggle and also open the overlay on a left-edge swipe, as the phone drawer does. Alternative: add a persistent compact rail of machine and session icons beside the Board at 600 to 1000 pt.
 6. **Duo poses through Device Hub.** The runtime is installed and the simulator device exists; the folded and unfolded poses can only be driven and captured in Device Hub, a visible GUI run. Recommended: the owner announces a session where this is done for slice 2 and the screenshots go into the receipt. Alternative: accept "not run" for the Duo until a real device is available.
 7. **External display.** What iPadOS 27.x does with an app on an external display is not in the Apple text read. Recommended: the owner connects an iPad to a display once the first slice is on TestFlight and reports whether the window is resizable and interactive; slice 5 follows that result.
