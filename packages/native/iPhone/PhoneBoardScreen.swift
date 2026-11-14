@@ -44,10 +44,8 @@ struct PhoneBoardScreen: View {
     @State private var machineFilter: String?
     @State private var onlyNeedsYou = false
     @State private var showFinished = false
-    /// Width assigned to this pane by its parent, measured from the Board scroll view.
-    @State private var boardPaneWidth: CGFloat = 0
-    /// Starts narrow so the first frame keeps the existing one-column layout.
-    @State private var columnCount = 1
+    /// The sole resolved column state; starts narrow so the first frame keeps the one-column stack.
+    @State private var columnLayout = RemiBoardColumns.resolve(paneWidth: 0)
     /// When each loaded machine entered `loadedMachines`, for the settling grace period.
     @State private var loadedAt: [String: Date] = [:]
     @State private var graceTick = 0
@@ -128,12 +126,8 @@ struct PhoneBoardScreen: View {
     private func boardScroll(
         ordered: [RemiSessionSummary], order: [String], liveOrder: [String], reader: ScrollViewProxy
     ) -> some View {
-        let columnLayout = RemiBoardColumns.resolve(
-            paneWidth: boardPaneWidth,
-            previousColumnCount: columnCount
-        )
         return ScrollView {
-            if columnCount == 1 {
+            if columnLayout.columnCount == 1 {
                 singleColumnStack(ordered: ordered, order: order, liveOrder: liveOrder, reader: reader)
             } else {
                 multipleColumnStack(
@@ -148,14 +142,16 @@ struct PhoneBoardScreen: View {
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
         } action: { width in
-            let resolved = RemiBoardColumns.resolve(paneWidth: width, previousColumnCount: columnCount)
-            guard width != boardPaneWidth || resolved.columnCount != columnCount else { return }
-            boardPaneWidth = width
-            columnCount = resolved.columnCount
+            let resolved = RemiBoardColumns.resolve(
+                paneWidth: width,
+                previousColumnCount: columnLayout.columnCount
+            )
+            if resolved != columnLayout { columnLayout = resolved }
         }
         .scrollDismissesKeyboard(.interactively)
     }
 
+    /// Shared feedback, machine, filter and empty-state rows for both stack variants.
     @ViewBuilder
     private func boardHeader(isEmpty: Bool) -> some View {
         if let errorMessage {
@@ -170,6 +166,7 @@ struct PhoneBoardScreen: View {
         if isEmpty { emptyState }
     }
 
+    /// The pre-columns stack, kept unchanged for one column by `handoff/ipad-board.md`.
     private func singleColumnStack(
         ordered: [RemiSessionSummary], order: [String], liveOrder: [String], reader: ScrollViewProxy
     ) -> some View {
@@ -187,6 +184,8 @@ struct PhoneBoardScreen: View {
         .animation(RemiTheme.Motion.standard, value: order)
     }
 
+    /// Uses a full-pane header and a centered card group without the readable-column cap. Its one
+    /// flat tile tree keeps a card's identity when placement moves it between columns.
     private func multipleColumnStack(
         ordered: [RemiSessionSummary],
         order: [String],
@@ -194,23 +193,18 @@ struct PhoneBoardScreen: View {
         reader: ScrollViewProxy,
         columnLayout: RemiBoardColumns
     ) -> some View {
-        let columns = RemiBoardColumns.place(
-            ordered,
-            columnCount: columnCount,
-            cardHeight: density.estimatedHeight
-        )
+        let columns = RemiBoardColumns.place(Array(ordered.indices), columnCount: columnLayout.columnCount)
         return LazyVStack(spacing: RemiTheme.Spacing.s) {
             boardHeader(isEmpty: ordered.isEmpty)
             if !ordered.isEmpty {
-                HStack(alignment: .top, spacing: RemiBoardColumns.spacing) {
-                    ForEach(columns.indices, id: \.self) { columnIndex in
-                        LazyVStack(spacing: RemiTheme.Spacing.s) {
-                            ForEach(columns[columnIndex]) { session in
-                                tile(session, order: order, liveOrder: liveOrder, reader: reader)
-                                    .id(RemiBoardOrder.key(for: session))
-                            }
-                        }
-                        .frame(width: columnLayout.cardWidth, alignment: .top)
+                RemiBoardColumnsLayout(
+                    columns: columns,
+                    columnWidth: columnLayout.cardWidth,
+                    spacing: RemiBoardColumns.spacing
+                ) {
+                    ForEach(ordered) { session in
+                        tile(session, order: order, liveOrder: liveOrder, reader: reader)
+                            .id(RemiBoardOrder.key(for: session))
                     }
                 }
                 .frame(width: columnLayout.groupWidth, alignment: .top)
@@ -219,6 +213,7 @@ struct PhoneBoardScreen: View {
         }
         .padding(.vertical, RemiTheme.Spacing.m)
         .padding(.horizontal, RemiBoardColumns.margin)
+        .animation(RemiTheme.Motion.standard, value: order)
     }
 
     /// Moves the cursor to the next live tile: scrolls it into view first, because a lazy stack
@@ -432,8 +427,28 @@ private struct GraceWindow: Hashable {
 }
 
 @MainActor private func boardPreviewScreen() -> PhoneBoardScreen {
+    let templates = RemiPreviewData.sessions.filter(\.isLive)
+    let sessions = (0..<8).map { index in
+        let template = templates[index % templates.count]
+        return RemiSessionSummary(
+            id: "board-preview-\(index + 1)",
+            machineID: template.machineID,
+            machineIdentityID: template.machineIdentityID,
+            machineName: template.machineName,
+            name: "\(template.name) \(index + 1)",
+            harness: template.harness,
+            project: template.project,
+            projectPath: template.projectPath,
+            lastActivity: template.lastActivity,
+            status: template.status,
+            lastMessage: template.lastMessage,
+            openQuestionCount: template.openQuestionCount,
+            isLive: true,
+            canTerminate: template.canTerminate
+        )
+    }
     PhoneBoardScreen(
-        sessions: RemiPreviewData.sessions,
+        sessions: sessions,
         machines: RemiPreviewData.machines,
         loadedMachines: [],
         questions: [],
@@ -466,28 +481,28 @@ private struct GraceWindow: Hashable {
     }
 }
 
-#Preview("Board, 466 pt") {
+#Preview("Board, 466 pt pane") {
     NavigationStack {
         boardPreviewScreen()
     }
     .frame(width: 466)
 }
 
-#Preview("Board, 744 pt") {
+#Preview("Board, 744 pt pane") {
     NavigationStack {
         boardPreviewScreen()
     }
     .frame(width: 744)
 }
 
-#Preview("Board, 1033 pt") {
+#Preview("Board, 1032 pt pane") {
     NavigationStack {
         boardPreviewScreen()
     }
-    .frame(width: 1_033)
+    .frame(width: 1_032)
 }
 
-#Preview("Board, 1376 pt") {
+#Preview("Board, 1376 pt pane") {
     NavigationStack {
         boardPreviewScreen()
     }
