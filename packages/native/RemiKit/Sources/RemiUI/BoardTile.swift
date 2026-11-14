@@ -40,21 +40,25 @@ public struct RemiBoardTileExtras {
     /// ``RemiTileSize/estimatedHeight``. The size's heights (420 and 640) are made for the Mac's
     /// wide columns; a phone's one narrow column wraps text more and wants shorter cards (240
     /// and 440), so the phone screen sets its own. The tile scales it with the text size like
-    /// its own heights, and a waiting question still grows the tile past it.
+    /// its own heights, and can grow past it when the screen opts in or a question needs room.
     public var height: CGFloat?
     /// Set only by the Mac board for continuous sizing and direct-manipulation affordances.
     public var placement: RemiBoardTilePlacement?
+    /// Lets a screen use this height as a minimum so the tile can grow with its content.
+    public var growsToContent: Bool
 
     public init(
         sizeChoices: [RemiTileSize] = [.compact, .regular, .large],
         height: CGFloat? = nil,
         preview: (() -> AnyView)? = nil,
-        placement: RemiBoardTilePlacement? = nil
+        placement: RemiBoardTilePlacement? = nil,
+        growsToContent: Bool = false
     ) {
         self.sizeChoices = sizeChoices
         self.height = height
         self.preview = preview
         self.placement = placement
+        self.growsToContent = growsToContent
     }
 }
 
@@ -144,9 +148,8 @@ public struct RemiBoardTile<Question: View>: View {
         if let placement = extras.placement { return placement.size.height }
         return size.showsFeed ? (extras.height ?? size.estimatedHeight) * heightScale : nil
     }
-    /// A waiting tile with its question on it grows to the question's content instead of
-    /// holding the size's height, which a long question could overflow.
-    private var growsToContent: Bool { needsYou && question != nil }
+    /// Waiting questions and screens that opt in grow to their content instead of clipping it.
+    private var growsToContent: Bool { extras.growsToContent || (needsYou && question != nil) }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {

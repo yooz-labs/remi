@@ -176,6 +176,26 @@ public enum RemiTileSize: String, Codable, CaseIterable, Sendable {
         }
     }
 
+    /// The phone Board's packing and minimum tile heights for each phone density.
+    public var phoneCardHeight: CGFloat {
+        switch self {
+        case .row: 96
+        case .compact: estimatedHeight
+        case .regular: 240
+        case .large: 440
+        }
+    }
+
+    /// Explicit phone sizes apply only when the Board has room for multiple columns.
+    public static func effectivePhoneSize(
+        toolbarDensity: RemiTileSize,
+        explicitSize: RemiTileSize?,
+        columnCount: Int
+    ) -> RemiTileSize {
+        guard columnCount >= 2 else { return toolbarDensity }
+        return explicitSize ?? toolbarDensity
+    }
+
     /// Match the content density to a manually sized Mac Board card.
     public static func boardDensity(forHeight height: CGFloat) -> Self {
         guard height.isFinite else { return .regular }
@@ -287,7 +307,10 @@ public struct RemiBoardState: Codable, Equatable, Sendable {
     public mutating func unpin(_ key: String) { pinnedSlots[key] = nil }
 
     public func size(for key: String) -> RemiTileSize { sizes[key] ?? .regular }
+    public func explicitSize(for key: String) -> RemiTileSize? { sizes[key] }
     public mutating func setSize(_ size: RemiTileSize, for key: String) { sizes[key] = size }
+    public mutating func clearSize(for key: String) { sizes[key] = nil }
+    public mutating func clearSizes() { sizes.removeAll() }
 
     public var savedFrames: [String: RemiBoardFrame] { frames }
     public func frame(for key: String) -> RemiBoardFrame? { frames[key] }

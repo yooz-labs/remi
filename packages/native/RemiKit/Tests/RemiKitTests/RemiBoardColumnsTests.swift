@@ -230,6 +230,35 @@ import Testing
         #expect(RemiBoardColumns.place(items, columnCount: 3) == [["a", "d"], ["b", "e"], ["c"]])
     }
 
+    @Test func placeUsesLiteralUnequalHeightTables() {
+        let items = ["a", "b", "c", "d", "e"]
+        let heights: [CGFloat] = [440, 96, 96, 96, 96]
+        let twoColumns = RemiBoardColumns.place(items, columnCount: 2, heights: heights)
+        let threeColumns = RemiBoardColumns.place(items, columnCount: 3, heights: heights)
+
+        #expect(twoColumns == [["a"], ["b", "c", "d", "e"]])
+        #expect(threeColumns == [["a"], ["b", "d"], ["c", "e"]])
+
+        let originalPositions = Dictionary(uniqueKeysWithValues: items.enumerated().map { ($1, $0) })
+        for columns in [twoColumns, threeColumns] {
+            #expect(columns.flatMap { $0 }.sorted() == items.sorted())
+            for column in columns {
+                let positions = column.compactMap { originalPositions[$0] }
+                #expect(positions == positions.sorted())
+            }
+        }
+    }
+
+    @Test func placeDefaultsMissingHeightsAndIgnoresExtraHeights() {
+        let items = ["a", "b", "c", "d", "e"]
+        let regularFallbackHeights: [CGFloat] = [440, 240, 240, 240, 240]
+        let expected = RemiBoardColumns.place(items, columnCount: 2, heights: regularFallbackHeights)
+
+        #expect(RemiBoardColumns.place(items, columnCount: 2, heights: [440]) == expected)
+        #expect(RemiBoardColumns.place(items, columnCount: 2, heights: regularFallbackHeights + [1]) == expected)
+        #expect(RemiBoardColumns.place([String](), columnCount: 3, heights: [440]) == [[], [], []])
+    }
+
     @Test func placeKeepsTheSameItemsAcrossColumnCounts() {
         let items = ["a", "b", "c", "d", "e"]
         let twoColumns = RemiBoardColumns.place(items, columnCount: 2)

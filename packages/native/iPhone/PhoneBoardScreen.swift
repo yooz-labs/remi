@@ -2,6 +2,17 @@ import RemiKit
 import RemiUI
 import SwiftUI
 
+private struct PhoneBoardPreviewStateKey: EnvironmentKey {
+    static let defaultValue: RemiBoardState? = nil
+}
+
+private extension EnvironmentValues {
+    var phoneBoardPreviewState: RemiBoardState? {
+        get { self[PhoneBoardPreviewStateKey.self] }
+        set { self[PhoneBoardPreviewStateKey.self] = newValue }
+    }
+}
+
 /// The phone's landing view: every active session as a card, in the density the person chose
 /// (compact, medium or long, like a mail list). A card can be typed into in place, a long press
 /// previews the conversation, and the cards that need the person come first.
@@ -34,6 +45,7 @@ struct PhoneBoardScreen: View {
     let onDismissError: () -> Void
     let onDismissNotice: () -> Void
 
+    @Environment(\.phoneBoardPreviewState) private var phoneBoardPreviewState
     @AppStorage("remi.phone.board") private var boardStorage = ""
     @AppStorage("remi.phone.board.density") private var densityStorage = RemiTileSize.regular.rawValue
     @State private var board = RemiBoardState()
@@ -53,6 +65,14 @@ struct PhoneBoardScreen: View {
     @State private var focusTask: Task<Void, Never>?
 
     private var density: RemiTileSize { RemiTileSize.phoneDensity(stored: densityStorage) }
+
+    private func effectiveSize(for session: RemiSessionSummary) -> RemiTileSize {
+        RemiTileSize.effectivePhoneSize(
+            toolbarDensity: density,
+            explicitSize: board.explicitSize(for: RemiBoardOrder.key(for: session)),
+            columnCount: columnLayout.columnCount
+        )
+    }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { timeline in
@@ -114,9 +134,10 @@ struct PhoneBoardScreen: View {
     private func content(now: Date) -> some View {
         let ordered = arranged(now: now)
         let order = ordered.map(RemiBoardOrder.key(for:))
-        // The cursor goes only to a tile with a working composer, and in the compact density
-        // there are none.
-        let liveOrder = density.showsComposer ? ordered.filter(\.isLive).map(RemiBoardOrder.key(for:)) : []
+        // The cursor goes only to live tiles whose effective size has a working composer.
+        let liveOrder = ordered
+            .filter { $0.isLive && effectiveSize(for: $0).showsComposer }
+            .map(RemiBoardOrder.key(for:))
         return ScrollViewReader { reader in
             boardScroll(ordered: ordered, order: order, liveOrder: liveOrder, reader: reader)
         }
@@ -193,7 +214,12 @@ struct PhoneBoardScreen: View {
         reader: ScrollViewProxy,
         columnLayout: RemiBoardColumns
     ) -> some View {
-        let columns = RemiBoardColumns.place(Array(ordered.indices), columnCount: columnLayout.columnCount)
+        let heights = ordered.map { effectiveSize(for: $0).phoneCardHeight }
+        let columns = RemiBoardColumns.place(
+            Array(ordered.indices),
+            columnCount: columnLayout.columnCount,
+            heights: heights
+        )
         return LazyVStack(spacing: RemiTheme.Spacing.s) {
             boardHeader(isEmpty: ordered.isEmpty)
             if !ordered.isEmpty {
@@ -235,10 +261,10 @@ struct PhoneBoardScreen: View {
         )
     }
 
-    /// The tiles on screen that have a working composer: none in the compact density, which
-    /// hides the composers. A draft left anywhere else must not freeze the order.
+    /// The tiles on screen that have a working composer. A draft in a compact row must not freeze
+    /// the order, while a draft in any visible composer still does.
     private var composerKeys: Set<String> {
-        density.showsComposer ? Set(filtered.filter(\.isLive).map(RemiBoardOrder.key(for:))) : []
+        Set(filtered.filter { $0.isLive && effectiveSize(for: $0).showsComposer }.map(RemiBoardOrder.key(for:)))
     }
 
     private func arranged(now: Date) -> [RemiSessionSummary] {
@@ -254,6 +280,7 @@ struct PhoneBoardScreen: View {
         _ session: RemiSessionSummary, order: [String], liveOrder: [String], reader: ScrollViewProxy
     ) -> some View {
         let key = RemiBoardOrder.key(for: session)
+        let size = effectiveSize(for: session)
         let waiting = questions.first {
             $0.machineID == session.machineID && $0.sessionID == session.id && $0.state == .pending
         }
@@ -261,7 +288,7 @@ struct PhoneBoardScreen: View {
         return RemiBoardTile(
             session: session,
             tileKey: key,
-            size: density,
+            size: size,
             isPinned: board.isPinned(key),
             entries: entries,
             draft: Binding(get: { drafts[key] ?? "" }, set: { drafts[key] = $0 }),
@@ -275,6 +302,11 @@ struct PhoneBoardScreen: View {
                     focusNext(after: key, in: liveOrder, reader: reader)
                 }
                 return sent
+            },
+            onSetSize: { selectedSize in
+                board.setSize(selectedSize, for: key)
+                if selectedSize == .row && focus == key { focus = nil }
+                saveBoard()
             },
             onTogglePin: {
                 if board.isPinned(key) {
@@ -292,9 +324,12 @@ struct PhoneBoardScreen: View {
                     onCancel: { onCancel(card.machineID, card.sessionID, card.questionID) }
                 )
             },
-            extras: RemiBoardTileExtras(sizeChoices: [], height: density == .large ? 440 : 240) {
-                AnyView(RemiBoardPreview(session: session, entries: entries))
-            }
+            extras: RemiBoardTileExtras(
+                sizeChoices: columnLayout.columnCount >= 2 ? RemiTileSize.phoneDensities : [],
+                height: size.phoneCardHeight,
+                preview: { AnyView(RemiBoardPreview(session: session, entries: entries)) },
+                growsToContent: columnLayout.columnCount >= 2
+            )
         )
     }
 
@@ -302,11 +337,16 @@ struct PhoneBoardScreen: View {
 
     private var densityMenu: some View {
         Menu {
-            Picker("Card size", selection: Binding(get: { density }, set: { densityStorage = $0.rawValue })) {
+            Picker("Card size", selection: Binding(get: { density }, set: { size in
+                board.clearSizes()
+                saveBoard()
+                densityStorage = size.rawValue
+            })) {
                 ForEach(RemiTileSize.phoneDensities, id: \.self) { size in
                     Text(size.densityTitle).tag(size)
                 }
             }
+            Text("Choosing a size here resets every card to that size.")
         } label: {
             Label("Card size", systemImage: "rectangle.grid.1x2")
         }
@@ -413,7 +453,7 @@ struct PhoneBoardScreen: View {
     private func loadBoard() {
         guard !boardLoaded else { return }
         boardLoaded = true
-        board = RemiBoardState(storage: boardStorage)
+        board = phoneBoardPreviewState ?? RemiBoardState(storage: boardStorage)
     }
 
     private func saveBoard() { boardStorage = board.storageValue }
@@ -426,7 +466,7 @@ private struct GraceWindow: Hashable {
     let tick: Int
 }
 
-@MainActor private func boardPreviewScreen() -> PhoneBoardScreen {
+@MainActor private func boardPreviewScreen(mixedSizes: Bool = false) -> some View {
     let templates = RemiPreviewData.sessions.filter(\.isLive)
     let sessions = (0..<8).map { index in
         let template = templates[index % templates.count]
@@ -446,6 +486,12 @@ private struct GraceWindow: Hashable {
             isLive: true,
             canTerminate: template.canTerminate
         )
+    }
+    var previewBoard = RemiBoardState()
+    if mixedSizes {
+        previewBoard.setSize(.large, for: RemiBoardOrder.key(for: sessions[0]))
+        previewBoard.setSize(.row, for: RemiBoardOrder.key(for: sessions[1]))
+        previewBoard.setSize(.regular, for: RemiBoardOrder.key(for: sessions[2]))
     }
     return PhoneBoardScreen(
         sessions: sessions,
@@ -473,6 +519,7 @@ private struct GraceWindow: Hashable {
         onDismissError: {},
         onDismissNotice: {}
     )
+    .environment(\.phoneBoardPreviewState, previewBoard)
 }
 
 #Preview("Board") {
@@ -498,6 +545,13 @@ private struct GraceWindow: Hashable {
 #Preview("Board, 1032 pt pane") {
     NavigationStack {
         boardPreviewScreen()
+    }
+    .frame(width: 1_032)
+}
+
+#Preview("Board, 1032 pt pane, mixed sizes") {
+    NavigationStack {
+        boardPreviewScreen(mixedSizes: true)
     }
     .frame(width: 1_032)
 }
