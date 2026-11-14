@@ -191,16 +191,15 @@ import Testing
 
     @Test func placePreservesSingleColumnOrderAndPartitionsDeterministically() {
         let items = ["a", "b", "c", "d", "e", "f", "g"]
-        let oneColumn = RemiBoardColumns.place(items, columnCount: 1, cardHeight: RemiTileSize.regular.estimatedHeight)
-        let twoColumns = RemiBoardColumns.place(items, columnCount: 2, cardHeight: RemiTileSize.regular.estimatedHeight)
-        let threeColumns = RemiBoardColumns.place(items, columnCount: 3, cardHeight: RemiTileSize.regular.estimatedHeight)
+        let oneColumn = RemiBoardColumns.place(items, columnCount: 1)
+        let twoColumns = RemiBoardColumns.place(items, columnCount: 2)
+        let threeColumns = RemiBoardColumns.place(items, columnCount: 3)
 
         #expect(oneColumn == [items])
         #expect(twoColumns == [["a", "c", "e", "g"], ["b", "d", "f"]])
         #expect(threeColumns == [["a", "d", "g"], ["b", "e"], ["c", "f"]])
         #expect(
-            RemiBoardColumns.place(items, columnCount: 2, cardHeight: RemiTileSize.regular.estimatedHeight)
-                == twoColumns
+            RemiBoardColumns.place(items, columnCount: 2) == twoColumns
         )
 
         let originalPositions = Dictionary(uniqueKeysWithValues: items.enumerated().map { ($1, $0) })
@@ -214,27 +213,32 @@ import Testing
     }
 
     @Test func placeSupportsEmptyAndMoreColumnsThanItems() {
-        #expect(RemiBoardColumns.place([String](), columnCount: 3, cardHeight: RemiTileSize.compact.estimatedHeight)
-            == [[], [], []])
-        #expect(RemiBoardColumns.place(["a", "b"], columnCount: 5, cardHeight: RemiTileSize.compact.estimatedHeight)
-            == [["a"], ["b"], [], [], []])
+        #expect(RemiBoardColumns.place([String](), columnCount: 3) == [[], [], []])
+        #expect(RemiBoardColumns.place(["a", "b"], columnCount: 5) == [["a"], ["b"], [], [], []])
     }
 
-    @Test func placeKeepsTheSameKeysAcrossColumnCountsAndUsesDensityEstimate() {
+    @Test func placeClampsNonpositiveColumnCountsToOne() {
+        #expect(RemiBoardColumns.place(["a"], columnCount: 0) == [["a"]])
+        #expect(RemiBoardColumns.place(["a"], columnCount: -1) == [["a"]])
+        #expect(RemiBoardColumns.place([String](), columnCount: 0) == [[]])
+        #expect(RemiBoardColumns.place([String](), columnCount: -1) == [[]])
+    }
+
+    @Test func placeUsesLiteralRoundRobinTables() {
         let items = ["a", "b", "c", "d", "e"]
-        let sizes: [RemiTileSize] = [.row, .compact, .regular, .large]
+        #expect(RemiBoardColumns.place(items, columnCount: 2) == [["a", "c", "e"], ["b", "d"]])
+        #expect(RemiBoardColumns.place(items, columnCount: 3) == [["a", "d"], ["b", "e"], ["c"]])
+    }
 
-        for size in sizes {
-            let heights = Array(repeating: size.estimatedHeight, count: items.count)
-            let expected = RemiBoardOrder.columns(heights: heights, count: 2).map { column in
-                column.map { items[$0] }
-            }
-            let twoColumns = RemiBoardColumns.place(items, columnCount: 2, cardHeight: size.estimatedHeight)
-            let threeColumns = RemiBoardColumns.place(items, columnCount: 3, cardHeight: size.estimatedHeight)
+    @Test func placeKeepsTheSameItemsAcrossColumnCounts() {
+        let items = ["a", "b", "c", "d", "e"]
+        let twoColumns = RemiBoardColumns.place(items, columnCount: 2)
+        let threeColumns = RemiBoardColumns.place(items, columnCount: 3)
 
-            #expect(twoColumns == expected, "\(size) uses its estimated card height")
-            #expect(Set(twoColumns.flatMap { $0 }) == Set(threeColumns.flatMap { $0 }))
-        }
+        #expect(Set(twoColumns.flatMap { $0 }) == Set(items))
+        #expect(Set(threeColumns.flatMap { $0 }) == Set(items))
+        #expect(twoColumns.flatMap { $0 }.count == items.count)
+        #expect(threeColumns.flatMap { $0 }.count == items.count)
     }
 
     private func startWidth(for columnCount: Int) -> CGFloat {
