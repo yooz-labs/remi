@@ -48,6 +48,7 @@ Port deltas include strict JSON string decoding through `JSONDecoder`, because
 payload bytes remain unchanged; display escaping preserves its visible `\\uFEFF`
 representation. Actual shared-source scalar corpus, malformed token, duplicate
 field and payload/title boundary tests pin this adapter.
+Reads pass the shared `NativeKeychainReadContext` (#1768).
 
 Persisted signing uses a separate no-mutation version2 record verification:
 it cannot migrate raw seeds, create credentials, or reconcile public authority.
