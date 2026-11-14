@@ -22,6 +22,8 @@ A short design doc, verified against current Apple documentation and the iPad si
 - Precondition: the Xcode MCP server answers on this host (it was not responding at the coordinator's last check). Check it first; if it does not answer, use `xcrun simctl` and `xcodebuild` directly and say so.
 - Never connect a simulator to the owner's real hub on port 18765 (`packages/native/AGENTS.md`).
 
+- Owner addition (2026-11-13): the same Board must also serve the open (unfolded) display of a foldable iPhone. Design by available width and size class, not by device name; name what is verified about foldables on the current SDK (documentation) and what is unverified (no simulator for it may exist).
+
 ## Scope
 
 May change: a new design doc `packages/native/handoff/ipad-board.md` (or the location `packages/native/AGENTS.md` names for designs), and screenshots under `/Volumes/S1/yooz/remi/artifacts/land-branches-2026-11/P01/`.

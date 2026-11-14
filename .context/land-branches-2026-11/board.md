@@ -17,10 +17,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Repo | yooz-labs/remi |
 | Integration branch | develop |
 | Manager id | mba-claude-sonnet |
-| State | paused |
+| State | running |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | 2026-11-13T13:35-08:00 |
-| Next tick | - |
+| Last tick | 2026-11-13T17:47-08:00 |
+| Next tick | 2026-11-13T18:02-08:00 |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-12T19:05-08:00 |
 
@@ -48,8 +48,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 34 | daily | every dispatch on every platform; the plan approval covers this limit |
-| Codex Luna today | 8 | 13 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
+| Agents today | 30 | 36 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Codex Luna today | 8 | 15 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 3 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
 | Claude Sonnet today | 16 | 12 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
 | Claude Opus today | 4 | 4 | daily | lead wakes, lead-tier steps, advisor consults |
@@ -74,19 +74,20 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | L06 | [Relay idle recovery #1731](cards/L06-idle-recovery.md) | - | worker-hard | xcode | - | done | L03 | 1736 | 2026-11-13T06:04-08:00 | 2d | all checks green at e18c8c13 but RemiConnection.swift overlaps #1737 (merged after its CI base): develop merged clean (1e4b18b4, pushed), CI rerun incl. soak; advisor checks the interaction; then ready, merge gate |
 | L07 | [Local notification order #1720](cards/L07-local-notification-order.md) | - | worker | xcode | - | blocked | L04, CP1 | - | - | 3d | parked until #1727 is resolved (Q12); counts as settled for L99; branch kept |
 | L08 | [Native images #1313](cards/L08-native-images.md) | - | worker-hard | xcode | - | dropped | L03, CP1 | - | - | 3d | parked as evidence (Q11 a): branch kept, not deleted; chunk cards are reference only |
-| L09 | [Bun 1.4.2 pins #1512](cards/L09-bun142-pins.md) | - | worker-hard | - | - | blocked | L01 | 1512 | 2026-11-13T06:14-08:00 | 2d | parked until the owner reports the Bun 1.4.2 phone result (hub in artifacts L09/phone-test); hosted green except #1744 macOS runner; then merge gate, DV, cleanup |
+| L09 | [Bun 1.4.2 pins #1512](cards/L09-bun142-pins.md) | - | worker-hard | - | - | done | L01 | 1512 | 2026-11-13T06:14-08:00 | 2d | merged 1be22ee1 after the owner's phone check; bump b4a53f0d; DV r10 running; #1273 stays open |
 | L12 | [WSS writer tests #1641](cards/L12-native-wss-characterization.md) | - | worker | xcode | - | dropped | - | - | - | 4h | Q6 fold into the first #1641 implementation PR; branch kept |
 | L11 | [Compact preview probes #1711](cards/L11-compact-preview.md) | - | worker | - | - | dropped | - | - | - | 4h | Q5 park: branch kept, no PR; not in the L13 delete list |
 | L10 | [#1727 local files check](cards/L10-store-callback-owner-check.md) | - | - | - | - | done | - | - | - | - | verify the #1727 push landed (git ls-remote); then waits on Q16 (PR wanted?) |
 | L99 | Landing complete (CP2) | - | - | - | - | done | - | - | - | - | manager sets done when L01 to L12, L14 and CP1 are done or dropped, and L07 is done, dropped or parked (runbook 8) |
 | L13 | [Cleanup commands](cards/L13-cleanup-commands.md) | - | worker | - | - | done | L99 | - | - | 2h | then the owner runs cleanup.md |
-| P01 | [iPad Board design](cards/P01-ipad-board-design.md) | - | lead | xcode, simulator | - | todo | L99 | - | - | 1d | blocked: the iPad issue exists (#1745) but the Xcode MCP is unavailable in this session (stale bridge; /mcp reconnect not available): needs a session with working Xcode tools |
+| P01 | [iPad Board design](cards/P01-ipad-board-design.md) | - | lead | xcode, simulator | claude-opus | done | L99 | 1754 | 2026-11-13T16:05-08:00 | 1d | merged 08be291a, bump a76c7fce (0.8.3-dev.27); worktree, branch and DerivedData deleted; evidence kept in artifacts P01/ |
 | P02 | iPad Board implementation (outline) | - | worker-hard | xcode, simulator | - | outline | P01 | - | - | - | lead writes the card at CP3 after the owner approves P01 |
 | A01 | [Account switching design](cards/A01-account-switching-design.md) | - | lead | - | - | done | L99 | - | 2026-11-13T12:31-08:00 | 1d | todo when L99 done (owner: blocked until every landing step is done or dropped); no code |
 | A02 | [Fable review](cards/A02-account-switching-fable-review.md) | - | frontier | - | - | done | A01 | - | 2026-11-13T13:00-08:00 | 4h | owner-requested Fable (claude-fable-5-2) |
 | A03 | [Account switching checkpoint](cards/A03-account-switching-checkpoint.md) | - | lead | - | - | done | A02 | - | 2026-11-13T13:07-08:00 | 1d | Fable findings F1-F12 (all fix) sent to the A01 author a290e7ce to fold into ADR 0049/epic/competitive review; then CP4 owner questions (ADR Q1-Q14) |
 | CP1 | CP1 go or adjust for L07 and L08 | - | - | - | - | done | - | - | - | - | manager sets done when L01 to L06 are done or dropped and the lead's CP1 decision is recorded; now gates only L07's unpark |
 | L14 | [image-availability #1313](cards/L14-image-availability.md) | - | worker | xcode | - | done | L03 | 1737 | 2026-11-13T06:11-08:00 | 1d | delta clean; waiting hosted: native rerun after the #1739 flake, relay soak; then merge gate (Part of #1313, closing refs []) |
+| P02a | [Board column resolver, slice 1](cards/P02a-board-columns-resolver.md) |  | worker | xcode | codex-luna | active | P01 | 1755 | 2026-11-13T17:25-08:00 | 4h | round-1 triaged (all accepted except public init; sidebar literals kept); Luna fix round dispatched (r2); then ONE delta review, then merge gate |
 
 ## Questions
 
