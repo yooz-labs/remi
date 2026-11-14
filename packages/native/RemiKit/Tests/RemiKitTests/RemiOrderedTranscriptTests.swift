@@ -165,6 +165,7 @@ struct RemiOrderedTranscriptTests {
     }
 
     // The counter is self-reported, so the source guard also rejects common uncounted scans.
+#if DEBUG
     @Test(arguments: [1_000, 4_000])
     func replayedDuplicatesUseLinearElementWork(_ entryCount: Int) throws {
         let template = try fixtureTemplate()
@@ -184,6 +185,7 @@ struct RemiOrderedTranscriptTests {
         #expect(transcript.map(\.entryUuid) == history.map(\.entryUuid))
         #expect(transcript.map(\.content) == Array(repeating: "updated", count: entryCount))
     }
+#endif
 
     @Test func machineStoreTranscriptPathsUseTheOrderedStore() throws {
         let packageRoot = URL(fileURLWithPath: #filePath)

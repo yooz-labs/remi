@@ -73,6 +73,7 @@ extension SessionAddressingTests {
         #expect(!store.isLoadingTranscript(machineID: fixture.ids.a, sessionID: sid))
     }
 
+#if DEBUG
     @Test func reconnectReplayKeepsHistoryOrderWithoutDuplicates() throws {
         let fixture = try twoMachines()
         defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
@@ -111,6 +112,7 @@ extension SessionAddressingTests {
         #expect(store.transcriptsBySession[key]?.map(\.entryUuid) == expected)
         #expect(store.transcriptsBySession[key]?.map(\.content) == messages.map(\.content))
     }
+#endif
 
     @Test func aLiveEntryAfterTheLoadIsPublishedAtOnce() throws {
         let fixture = try twoMachines()
