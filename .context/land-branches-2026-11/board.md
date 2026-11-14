@@ -48,8 +48,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 74 | daily | every dispatch on every platform; the plan approval covers this limit |
-| Codex Luna today | 8 | 34 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
+| Agents today | 30 | 76 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Codex Luna today | 8 | 35 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 4 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
 | Claude Sonnet today | 16 | 12 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
 | Claude Opus today | 4 | 4 | daily | lead wakes, lead-tier steps, advisor consults |
@@ -93,7 +93,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | P03 | Per-card density and content-height cards at 2+ columns (slice 3, #1745, #1759) |  |  |  |  | done |  |  | 2026-11-13T22:59-08:00 |  | merged 8364bb35; DV r13 green |
 | P05a | Corner resize handles stepping card size on iPad (issue 1763, part 1) |  |  |  |  | active |  |  | 2026-11-14T00:46-08:00 |  | Luna P05a r1 running in board-handles (stacked on PR 1761 head 14df3331); then review panel, merge gate (after 1761 merges), DV |
 | F1634 | Harden ImageIngressSocketTests peer startup wait (#1634 part 1) |  |  |  |  | active |  |  | 2026-11-14T00:23-08:00 |  | fix round r3 running (Luna resumed); then ONE delta, merge gate, DV |
-| P05b | Card column span via the corner handle (issue 1763, part 2) |  |  |  |  | todo |  |  |  |  | after P05a merges: worktree board-span, dispatch Luna |
+| P05b | Card column span via the corner handle (issue 1763, part 2) |  |  |  |  | active |  |  | 2026-11-14T02:32-08:00 |  | Luna P05b r1 running in board-span (stacked on PR 1765 head f8b61545); then review panel, merge after 1765 |
 | F1634b | Investigate the swiftpm-testing-helper signal 11 (#1634 part 2) |  |  |  |  | active |  |  | 2026-11-14T01:59-08:00 |  | Terra F1634b r1 running in flake-1634b (investigation, tests only) |
 
 ## Questions
