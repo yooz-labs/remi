@@ -18,7 +18,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { AgentStatus, Message, UUID } from '@remi/shared';
-import { MessageAPI } from '../../../src/api/message-api.ts';
+import { MessageAPI, type SessionWorkEvent } from '../../../src/api/message-api.ts';
 import {
   type CodexLaunchDeps,
   CodexLaunchRefusal,
@@ -187,7 +187,7 @@ describe('CodexHarness', () => {
       sendMessage: () => {},
     });
     launched.push(session);
-    return { session, sessionId, messages, statuses };
+    return { session, sessionId, messages, statuses, messageApi };
   }
 
   const record = (over: Partial<StoredSession>): StoredSession => ({
@@ -705,7 +705,15 @@ describe('CodexHarness', () => {
       });
       deps.sessionRegistry.registerSession(sessionId, workDir, session.pty, messageApi);
       launched.push(session);
-      return { session, sessionId, registry: deps.sessionRegistry, raw, others, messages };
+      return {
+        session,
+        sessionId,
+        registry: deps.sessionRegistry,
+        raw,
+        others,
+        messages,
+        messageApi,
+      };
     }
 
     const exited = (session: HarnessSession) =>
@@ -721,6 +729,21 @@ describe('CodexHarness', () => {
       expect(entries[0]).toContain(ERROR);
       expect(entries[0]).toContain('code 2');
       expect(entries[0]).toContain('before it named a thread');
+    });
+
+    test('what Codex prints on its PTY reaches the message API as a keep-awake activity work event (#1773)', async () => {
+      fakeCodex(ERROR, 2);
+      const { session, messageApi } = createSending(buildDeps(startServer()));
+      const events: SessionWorkEvent[] = [];
+      const unsubscribe = messageApi.subscribeWorkEvents((event) => events.push(event));
+      try {
+        await session.start();
+        await exited(session);
+        // The fake app-server emitted no notification, so the PTY sink is the only source.
+        expect(events.some((event) => event.type === 'activity')).toBe(true);
+      } finally {
+        unsubscribe();
+      }
     });
 
     test('the captured copy goes to the log alone: an attached client gets the bytes once, as raw frames, and no other message carries them', async () => {
@@ -1008,6 +1031,24 @@ describe('CodexHarness', () => {
         harness: 'codex',
         harnessSessionId: id,
       });
+    });
+
+    test('an app-server notification reaches the message API as a keep-awake activity work event (#1773)', async () => {
+      const { server, messageApi } = await startedSession();
+      const events: SessionWorkEvent[] = [];
+      const unsubscribe = messageApi.subscribeWorkEvents((event) => events.push(event));
+      try {
+        await sleep(200);
+        // The fake codex prints nothing on its PTY in this group.
+        expect(events.filter((event) => event.type === 'activity')).toEqual([]);
+        server.emit(tui(crypto.randomUUID()), { broadcast: true });
+        await until(
+          () => events.some((event) => event.type === 'activity'),
+          'an activity work event',
+        );
+      } finally {
+        unsubscribe();
+      }
     });
 
     test('waiting on approval is waiting, active is thinking, idle is idle, and a repeat reports nothing new', async () => {
