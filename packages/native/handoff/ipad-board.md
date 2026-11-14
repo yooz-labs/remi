@@ -76,6 +76,7 @@ The Mac keeps its 340 pt minimum for its freeform frames; the iPad and Duo Board
 | iPhone Duo inner display, landscape, 951 pt | overlay | 951 | 2 |
 | iPad mini, portrait, 744 pt | overlay | 744 | 2 |
 | iPad mini, landscape, 1133 pt | beside | 793 | 2 |
+| iPad mini, landscape, sidebar hidden | overlay | 1133 | 3 |
 | iPad Air or Pro 11-inch, portrait, 834 pt | overlay | 834 | 2 |
 | iPad Pro 13-inch, portrait, 1032 pt | beside | 692 | 2 |
 | iPad Pro 13-inch, portrait, sidebar hidden | overlay | 1032 | 3 |
