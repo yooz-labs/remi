@@ -28,6 +28,11 @@ import Testing
         #expect(RemiBoardCardResize.step(from: .compact, direction: 0) == .regular)
     }
 
+    @Test func widthTitleUsesSingularForOneColumnAndPluralForMultipleColumns() {
+        #expect(RemiBoardCardResize.widthTitle(for: 1) == "1 column wide")
+        #expect(RemiBoardCardResize.widthTitle(for: 2) == "2 columns wide")
+    }
+
     @Test func topCornerMirrorsTheBottomCorner() {
         #expect(RemiBoardCardResize.size(startingAt: .regular, verticalTranslation: -100, topCorner: true) == .large)
         #expect(RemiBoardCardResize.size(startingAt: .regular, verticalTranslation: 72, topCorner: true) == .row)
@@ -81,6 +86,33 @@ import Testing
         )
     }
 
+    @Test func noOpFirstResizeCallbackClaimsTheCornerBeforeAConcurrentResize() throws {
+        let nativeRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let screen = try String(
+            contentsOf: nativeRoot.appendingPathComponent("iPhone/PhoneBoardScreen.swift"),
+            encoding: .utf8
+        )
+        let update = try sourceSlice(
+            screen,
+            from: "private func updateCardResizePreview(",
+            to: "private func finishCardResize("
+        )
+        let ownershipGuard = try sourceSlice(update, from: "let activeDrag = cardResizeDrags[key]", to: "var drag = activeDrag")
+        #expect(ownershipGuard.contains("if let activeDrag, activeDrag.topCorner != topCorner { return false }"))
+
+        let noOpBranch = try sourceSlice(
+            update,
+            from: "guard next.size != drag.previewSize || next.span != drag.previewSpan else {",
+            to: "drag.previewSize = next.size"
+        )
+        #expect(noOpBranch.contains("if activeDrag == nil { cardResizeDrags[key] = drag }"))
+        #expect(noOpBranch.contains("return true"))
+    }
+
     @Test func sourceGuardsCoverResizeHandleWiring() throws {
         let nativeRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -118,23 +150,28 @@ import Testing
         #expect(resize.contains("RemiTheme.Size.minimumTapTarget - (RemiTheme.Spacing.s + RemiTheme.Spacing.xs)"))
         #expect(tile.contains(".highPriorityGesture(dragGesture)"))
         #expect(tile.contains("DragGesture(minimumDistance: 1, coordinateSpace: .global)"))
-        #expect(tile.contains("if !onDragChanged($0.translation.height, top) { ignoresDrag = true }"))
-        #expect(tile.contains("if !ignoresDrag { onDragEnded($0.translation.height, top) }"))
+        #expect(tile.contains("if !onDragChanged($0.translation, top) { ignoresDrag = true }"))
+        #expect(tile.contains("if !ignoresDrag { onDragEnded($0.translation, top) }"))
         #expect(tile.contains("if isDragging && !dragDidEnd && !ignoresDrag { onDragCancelled(top) }"))
         #expect(tile.contains("width: RemiTheme.Size.minimumTapTarget"))
         #expect(tile.contains("content.hoverEffect(.highlight)"))
         #expect(tile.contains(".accessibilityLabel(\"Resize card\")"))
-        #expect(tile.contains(".accessibilityValue(sizeTitle)"))
-        #expect(tile.contains(".accessibilityAction(named: \"Make taller\") { onStep(1) }"))
-        #expect(tile.contains(".accessibilityAction(named: \"Make shorter\") { onStep(-1) }"))
-        #expect(tile.contains(".onKeyPress(.upArrow) { onStep(-1); return .handled }"))
-        #expect(tile.contains(".onKeyPress(.downArrow) { onStep(1); return .handled }"))
-        #expect(tile.contains("Drag up to make the card taller."))
-        #expect(tile.contains("Drag down to make the card taller."))
-        #expect(tile.contains("Use the up and down arrow keys to change its size."))
+        #expect(tile.contains(".accessibilityValue(\"\\(sizeTitle), \\(widthTitle)\")"))
+        #expect(tile.contains(".accessibilityAction(named: \"Widen\") { onStep(1, 0) }"))
+        #expect(tile.contains(".accessibilityAction(named: \"Narrow\") { onStep(-1, 0) }"))
+        #expect(tile.contains(".accessibilityAction(named: \"Make taller\") { onStep(0, 1) }"))
+        #expect(tile.contains(".accessibilityAction(named: \"Make shorter\") { onStep(0, -1) }"))
+        #expect(tile.contains(".onKeyPress(.leftArrow) { onStep(-1, 0); return .handled }"))
+        #expect(tile.contains(".onKeyPress(.rightArrow) { onStep(1, 0); return .handled }"))
+        #expect(tile.contains(".onKeyPress(.upArrow) { onStep(0, -1); return .handled }"))
+        #expect(tile.contains(".onKeyPress(.downArrow) { onStep(0, 1); return .handled }"))
+        #expect(tile.contains("Drag up to make the card taller and right to widen."))
+        #expect(tile.contains("Drag down to make the card taller and right to widen."))
+        #expect(tile.contains("the left and right arrow keys to change width"))
+        #expect(tile.contains("the up and down arrow keys to change height"))
         #expect(tile.contains("guard wasDragging, !dragging else { return }"))
         #expect(tile.contains("if !dragDidEnd && !ignoresDrag { onDragCancelled(top) }"))
-        #expect(tile.contains("if !onDragChanged($0.translation.height, top) { ignoresDrag = true }"))
+        #expect(tile.contains("if !onDragChanged($0.translation, top) { ignoresDrag = true }"))
         #expect(screen.contains("guard presentation.isMultiColumn else { return nil }"))
         #expect(screen.contains(".onChange(of: columnLayout.columnCount) { _, _ in cardResizeDrags = [:] }"))
         #expect(screen.contains("cardResizeDrags = cardResizeDrags.filter { live.contains($0.key) }"))
@@ -143,7 +180,7 @@ import Testing
         #expect(screen.contains("else { return effectiveSize(for: session) }"))
         #expect(screen.contains("onDragEnded: { translation, topCorner in"))
         #expect(screen.contains("onDragCancelled: { topCorner in cancelCardResize(for: key, topCorner: topCorner) }"))
-        #expect(screen.contains("RemiBoardCardResize.step(from: currentSize, direction: direction)"))
+        #expect(screen.contains("RemiBoardCardResize.step(from: currentSize, direction: sizeDirection)"))
 
         let update = try sourceSlice(
             screen,
@@ -165,17 +202,22 @@ import Testing
         #expect(update.contains("if let activeDrag, activeDrag.topCorner != topCorner { return false }"))
         #expect(update.contains("var drag = activeDrag ?? CardResizeDrag("))
         #expect(update.contains("guard drag.topCorner == topCorner else { return false }"))
+        #expect(update.contains("guard next.size != drag.previewSize || next.span != drag.previewSpan else {"))
         #expect(update.contains("if activeDrag == nil { cardResizeDrags[key] = drag }"))
         #expect(!update.contains("board.setSize"))
+        #expect(!update.contains("board.setSpan"))
         #expect(!update.contains("saveBoard()"))
-        #expect(finish.contains("let changed = finalSize != drag.startSize"))
-        #expect(finish.contains("if changed { board.setSize(finalSize, for: key) }"))
+        #expect(finish.contains("let sizeChanged = final.size != drag.startSize"))
+        #expect(finish.contains("let spanChanged = final.span != drag.startSpan"))
+        #expect(finish.contains("if sizeChanged { board.setSize(final.size, for: key) }"))
+        #expect(finish.contains("if spanChanged { board.setSpan(final.span, for: key) }"))
         #expect(finish.contains("cardResizeDrags[key] = nil"))
-        #expect(finish.contains("if changed { saveBoard() }"))
+        #expect(finish.contains("if sizeChanged || spanChanged { saveBoard() }"))
         #expect(finish.components(separatedBy: "saveBoard()").count - 1 == 1)
         #expect(cancel.contains("guard let drag = cardResizeDrags[key], drag.topCorner == topCorner else { return }"))
         #expect(cancel.contains("cardResizeDrags[key] = nil"))
         #expect(!cancel.contains("board.setSize"))
+        #expect(!cancel.contains("board.setSpan"))
         #expect(!cancel.contains("saveBoard()"))
     }
 

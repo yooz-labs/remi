@@ -225,18 +225,20 @@ public enum RemiTileSize: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// What the person arranged on a board: legacy pinned slots and sizes, plus explicit Mac frames.
+/// What the person arranged on a board: legacy pins, phone sizes and spans, plus explicit Mac frames.
 /// Automatic positions are computed by ``RemiBoardOrder`` and are not written to storage.
 ///
 /// Mac stores a pin's slot in the full board order, even when a filter hides other tiles.
 public struct RemiBoardState: Codable, Equatable, Sendable {
     private var pinnedSlots: [String: Int] = [:]
     private var sizes: [String: RemiTileSize] = [:]
+    private var spans: [String: Int] = [:]
     private var frames: [String: RemiBoardFrame] = [:]
 
     private enum CodingKeys: String, CodingKey {
         case pinnedSlots
         case sizes
+        case spans
         case frames
     }
 
@@ -247,6 +249,8 @@ public struct RemiBoardState: Codable, Equatable, Sendable {
         pinnedSlots = Self.decodeValues(Int.self, in: container, forKey: .pinnedSlots)
             .mapValues { max(0, $0) }
         sizes = Self.decodeValues(RemiTileSize.self, in: container, forKey: .sizes)
+        spans = Self.decodeValues(Int.self, in: container, forKey: .spans)
+            .filter { $0.value >= 1 }
         // Decode each frame independently. One bad tile must not discard valid frames, pins or
         // preset sizes from the rest of the stored board.
         frames = Self.decodeValues(RemiBoardFrame.self, in: container, forKey: .frames)
@@ -257,6 +261,7 @@ public struct RemiBoardState: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(pinnedSlots, forKey: .pinnedSlots)
         try container.encode(sizes, forKey: .sizes)
+        try container.encode(spans, forKey: .spans)
         if !frames.isEmpty { try container.encode(frames, forKey: .frames) }
     }
 
@@ -316,6 +321,23 @@ public struct RemiBoardState: Codable, Equatable, Sendable {
     /// Removes every explicit per-card size choice.
     public mutating func clearSizes() { sizes.removeAll() }
 
+    /// Reads the chosen width, defaulting to one column; display code clamps it to the current Board width.
+    public func span(for key: String) -> Int { max(1, spans[key] ?? 1) }
+    /// The width explicitly chosen for this card, or nil when unset.
+    public func explicitSpan(for key: String) -> Int? { spans[key] }
+    /// Stores the chosen width without clamping it to the current column count; values below 1 clear the choice.
+    public mutating func setSpan(_ span: Int, for key: String) {
+        guard span >= 1 else {
+            spans[key] = nil
+            return
+        }
+        spans[key] = span
+    }
+    /// Whether at least one card has an explicit width choice.
+    public var hasExplicitSpans: Bool { !spans.isEmpty }
+    /// Removes every explicit per-card width choice.
+    public mutating func clearSpans() { spans.removeAll() }
+
     public var savedFrames: [String: RemiBoardFrame] { frames }
     public func frame(for key: String) -> RemiBoardFrame? { frames[key] }
 
@@ -341,10 +363,11 @@ public struct RemiBoardState: Codable, Equatable, Sendable {
         return true
     }
 
-    /// Clears manual frames and legacy pins/sizes to restore the automatic layout.
+    /// Clears manual frames, pins, sizes and spans to restore the automatic layout.
     public mutating func resetLayout() {
         pinnedSlots.removeAll()
         sizes.removeAll()
+        spans.removeAll()
         frames.removeAll()
     }
 
@@ -367,11 +390,12 @@ public struct RemiBoardState: Codable, Equatable, Sendable {
         func gone(_ key: String) -> Bool {
             connectedMachines.contains(RemiBoardOrder.machineID(ofKey: key)) && !live.contains(key)
         }
-        let before = (pinnedSlots.count, sizes.count, frames.count)
+        let before = (pinnedSlots.count, sizes.count, spans.count, frames.count)
         pinnedSlots = pinnedSlots.filter { !gone($0.key) }
         sizes = sizes.filter { !gone($0.key) }
+        spans = spans.filter { !gone($0.key) }
         frames = frames.filter { !gone($0.key) }
-        return before != (pinnedSlots.count, sizes.count, frames.count)
+        return before != (pinnedSlots.count, sizes.count, spans.count, frames.count)
     }
 }
 
@@ -513,16 +537,22 @@ public enum RemiBoardOrder {
         Array(entries.suffix(size.feedEntries))
     }
 
-    /// Packs tiles into columns in reading order: each goes under the shortest column so far
-    /// (the left one on a tie), so tiles of different sizes leave no gaps. Returns the
-    /// indices of `heights` in each column.
-    public static func columns(heights: [CGFloat], count: Int, spacing: CGFloat = 12) -> [[Int]] {
+    /// Compatibility wrapper over ``RemiBoardColumns/placements(itemCount:columnCount:heights:spans:spacing:)``
+    /// for span-one items. The phone screen uses that placement engine directly; this method maps
+    /// its placements to per-column index lists for existing callers.
+    public static func columns(
+        heights: [CGFloat],
+        count: Int,
+        spacing: CGFloat = RemiBoardColumns.spacing
+    ) -> [[Int]] {
         var result = [[Int]](repeating: [], count: max(count, 1))
-        var filled = [CGFloat](repeating: 0, count: result.count)
-        for (index, height) in heights.enumerated() {
-            let column = filled.indices.min { (filled[$0], $0) < (filled[$1], $1) } ?? 0
-            result[column].append(index)
-            filled[column] += height + spacing
+        for placement in RemiBoardColumns.placements(
+            itemCount: heights.count,
+            columnCount: count,
+            heights: heights,
+            spacing: spacing
+        ) {
+            result[placement.firstColumn].append(placement.itemIndex)
         }
         return result
     }

@@ -13,6 +13,35 @@ public struct RemiBoardCardPresentation: Equatable, Sendable {
     public var growsToContent: Bool { isMultiColumn }
 }
 
+/// The placement of one input item in the flat Board tile tree.
+/// `itemIndex` is a zero-based index into the caller's input; `firstColumn` is a zero-based
+/// column index; `span` is a count of adjacent columns.
+public struct RemiBoardColumnPlacement: Equatable, Sendable {
+    public let itemIndex: Int
+    public let firstColumn: Int
+    public let span: Int
+
+    public init(itemIndex: Int, firstColumn: Int, span: Int) {
+        self.itemIndex = itemIndex
+        self.firstColumn = firstColumn
+        self.span = span
+    }
+
+    /// Whether this placement covers valid columns in a Board with the given count.
+    public func isValid(columnCount: Int) -> Bool {
+        let columns = max(columnCount, 1)
+        return firstColumn >= 0
+            && firstColumn <= columns
+            && span >= 1
+            && span <= columns - firstColumn
+    }
+
+    /// The card's width in points, including the gaps between its columns.
+    public func width(columnWidth: CGFloat, spacing: CGFloat) -> CGFloat {
+        CGFloat(span) * columnWidth + CGFloat(span - 1) * spacing
+    }
+}
+
 /// Resolves a Board pane width into a responsive group of readable card columns.
 ///
 /// While a column is held during a one-column drop, `cardWidth` can be up to
@@ -84,23 +113,62 @@ public struct RemiBoardColumns: Equatable, Sendable {
         return Self(columnCount: columnCount, cardWidth: cardWidth, groupWidth: groupWidth)
     }
 
-    /// Places items by their phone card heights, with a regular card height for any missing
-    /// entries. Extra heights are ignored. Counts below 1 are treated as 1. The result always
-    /// has that many columns, including empty columns, and preserves input order within each.
+    /// Screen-facing placement engine used by PhoneBoardScreen. It places items in reading order
+    /// into the adjacent window whose tallest column is shortest; ties choose the leftmost window.
+    /// `itemCount` and `columnCount` are counts; heights and spacing are points, and spans are
+    /// column counts. Missing heights use the regular phone card height, missing spans use one,
+    /// and spans clamp to the available columns. Extra heights and spans are ignored.
+    public static func placements(
+        itemCount: Int,
+        columnCount: Int,
+        heights: [CGFloat] = [],
+        spans: [Int] = [],
+        spacing: CGFloat = RemiBoardColumns.spacing
+    ) -> [RemiBoardColumnPlacement] {
+        let columns = max(columnCount, 1)
+        let itemHeights = (0..<max(itemCount, 0)).map { index in
+            heights.indices.contains(index) ? heights[index] : RemiTileSize.regular.phoneCardHeight
+        }
+        var filled = [CGFloat](repeating: 0, count: columns)
+        var result: [RemiBoardColumnPlacement] = []
+
+        for (index, height) in itemHeights.enumerated() {
+            let span = min(max(spans.indices.contains(index) ? spans[index] : 1, 1), columns)
+            var firstColumn = 0
+            var startHeight = CGFloat.greatestFiniteMagnitude
+            for candidate in 0...(columns - span) {
+                let windowHeight = filled[candidate..<(candidate + span)].max() ?? 0
+                if windowHeight < startHeight {
+                    firstColumn = candidate
+                    startHeight = windowHeight
+                }
+            }
+
+            result.append(RemiBoardColumnPlacement(itemIndex: index, firstColumn: firstColumn, span: span))
+            let nextHeight = startHeight + height + spacing
+            for column in firstColumn..<(firstColumn + span) {
+                filled[column] = nextHeight
+            }
+        }
+        return result
+    }
+
+    /// Compatibility wrapper for span-one items, mapped back into columns. The screen uses
+    /// ``placements(itemCount:columnCount:heights:spans:spacing:)`` to keep each tile in one flat layout.
     public static func place<Item>(
         _ items: [Item],
         columnCount: Int,
         heights: [CGFloat] = []
     ) -> [[Item]] {
-        let itemHeights = items.indices.map { index in
-            heights.indices.contains(index) ? heights[index] : RemiTileSize.regular.phoneCardHeight
+        var result = [[Item]](repeating: [], count: max(columnCount, 1))
+        for placement in placements(
+            itemCount: items.count,
+            columnCount: columnCount,
+            heights: heights
+        ) {
+            result[placement.firstColumn].append(items[placement.itemIndex])
         }
-        return RemiBoardOrder.columns(
-            heights: itemHeights,
-            count: columnCount
-        ).map { indices in
-            indices.map { items[$0] }
-        }
+        return result
     }
 
     /// Applies design rule 1 from `packages/native/handoff/ipad-board.md`, "The rule".

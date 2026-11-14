@@ -1,7 +1,20 @@
 import Foundation
 
-/// Maps a vertical drag on a phone Board card to its nearest phone density.
+/// Maps a phone Board card drag to its nearest density and adjacent-column span.
 public enum RemiBoardCardResize {
+    /// The density and column span selected from one drag whose translations are measured in points.
+    public struct Adjustment: Equatable, Sendable {
+        /// The phone density selected by the vertical translation.
+        public let size: RemiTileSize
+        /// The selected width, measured as a count of columns.
+        public let span: Int
+
+        public init(size: RemiTileSize, span: Int) {
+            self.size = size
+            self.span = span
+        }
+    }
+
     /// Extra trailing space that combines with tile and control padding to clear the 44 pt handle square.
     static let trailingControlInset =
         RemiTheme.Size.minimumTapTarget - (RemiTheme.Spacing.s + RemiTheme.Spacing.xs)
@@ -44,5 +57,87 @@ public enum RemiBoardCardResize {
         let step = direction > 0 ? 1 : direction < 0 ? -1 : 0
         let nextIndex = min(max(currentIndex + step, 0), densities.count - 1)
         return densities[nextIndex]
+    }
+
+    /// Maps a starting span in columns and a horizontal translation in points to the nearest span,
+    /// using a column width and spacing in points and a count of available columns. Midpoint ties
+    /// follow the drag direction. The result is clamped to 1...columnCount; the caller decides
+    /// whether and what to store.
+    public static func span(
+        startingAt startingSpan: Int,
+        horizontalTranslation: CGFloat,
+        columnWidth: CGFloat,
+        spacing: CGFloat,
+        columnCount: Int
+    ) -> Int {
+        let columns = max(columnCount, 1)
+        let start = min(max(startingSpan, 1), columns)
+        guard horizontalTranslation.isFinite,
+              columnWidth.isFinite, columnWidth > 0,
+              spacing.isFinite, spacing >= 0
+        else { return start }
+
+        let proposedWidth = cardWidth(for: start, columnWidth: columnWidth, spacing: spacing)
+            + horizontalTranslation
+        var nearestSpan = start
+        var nearestDistance = CGFloat.infinity
+        for candidate in 1...columns {
+            let candidateWidth = cardWidth(for: candidate, columnWidth: columnWidth, spacing: spacing)
+            let distance = abs(candidateWidth - proposedWidth)
+            if distance < nearestDistance {
+                nearestSpan = candidate
+                nearestDistance = distance
+            } else if distance == nearestDistance,
+                      (horizontalTranslation > 0 && candidate > nearestSpan
+                       || horizontalTranslation < 0 && candidate < nearestSpan) {
+                nearestSpan = candidate
+            }
+        }
+        return nearestSpan
+    }
+
+    /// Steps one displayed span; direction is +1 for wider and -1 for narrower.
+    public static func step(span: Int, direction: Int, columnCount: Int) -> Int {
+        let columns = max(columnCount, 1)
+        let current = min(max(span, 1), columns)
+        let step = direction > 0 ? 1 : direction < 0 ? -1 : 0
+        return min(max(current + step, 1), columns)
+    }
+
+    /// The VoiceOver width value for a one-based span in columns.
+    public static func widthTitle(for span: Int) -> String {
+        let width = max(span, 1)
+        return width == 1 ? "1 column wide" : "\(width) columns wide"
+    }
+
+    /// Maps both axes from one drag origin, so height and width can change together.
+    public static func adjustment(
+        startingAt startingSize: RemiTileSize,
+        span startingSpan: Int,
+        translation: CGSize,
+        topCorner: Bool,
+        columnWidth: CGFloat,
+        spacing: CGFloat,
+        columnCount: Int
+    ) -> Adjustment {
+        Adjustment(
+            size: size(
+                startingAt: startingSize,
+                verticalTranslation: translation.height,
+                topCorner: topCorner
+            ),
+            span: span(
+                startingAt: startingSpan,
+                horizontalTranslation: translation.width,
+                columnWidth: columnWidth,
+                spacing: spacing,
+                columnCount: columnCount
+            )
+        )
+    }
+
+    private static func cardWidth(for span: Int, columnWidth: CGFloat, spacing: CGFloat) -> CGFloat {
+        RemiBoardColumnPlacement(itemIndex: 0, firstColumn: 0, span: span)
+            .width(columnWidth: columnWidth, spacing: spacing)
     }
 }
