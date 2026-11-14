@@ -265,6 +265,7 @@ import Testing
         #expect(observer.contains("update.identitiesToPost"))
         #expect(observer.contains("update.identitiesToRemove"))
         #expect(observer.contains("questionNotificationPolicyState = update.state"))
+        #expect(!observer.contains("knownQuestionIDs = newValue"))
         #expect(!observer.contains("notificationBaselineEstablished"))
     }
 
