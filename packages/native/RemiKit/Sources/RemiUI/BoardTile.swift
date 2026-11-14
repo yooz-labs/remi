@@ -657,7 +657,7 @@ public struct RemiBoardTile<Question: View>: View {
     private func send() {
         guard canSend else { return }
         let text = draft
-        sendState = RemiBoardTileSendState(isSending: true)
+        sendState = RemiBoardTileSendState(isSending: true, sendFailed: sendState.sendFailed)
         Task {
             let sent = await onSend(text)
             sendState = sent ? RemiBoardTileSendState() : RemiBoardTileSendState(sendFailed: true)

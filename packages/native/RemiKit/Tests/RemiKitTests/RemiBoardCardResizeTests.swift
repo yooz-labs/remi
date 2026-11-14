@@ -174,6 +174,7 @@ import Testing
         #expect(tile.contains("if !onDragChanged($0.translation, top) { ignoresDrag = true }"))
         #expect(screen.contains("guard presentation.isMultiColumn else { return nil }"))
         #expect(screen.contains(".onChange(of: columnLayout.columnCount) { _, _ in columnLayoutDidChange() }"))
+        #expect(screen.contains("cardResizeDrags = [:]"))
         #expect(screen.contains("cardResizeDrags = cardResizeDrags.filter { live.contains($0.key) }"))
         #expect(screen.contains("guard presentation.isMultiColumn,"))
         #expect(screen.contains("return drag.previewSize"))

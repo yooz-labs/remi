@@ -109,10 +109,11 @@ During `isInteractivelyResizing` nothing animates except the column count change
 
 ### Fold, unfold, Split View, external display
 
-All of these are the same event, a size change: the Board never reads orientation or the device, and a size change must not rebuild a focused composer.
-The Board keeps its `@State` above the column layout, cards keep stable ids across a column change, and a column change only moves cards.
-A card's keyed in-flight or failed send state survives a one-to-two-column rebuild, and focus is restored after the new tile exists when that live card still has a composer; real focus and keyboard behavior across a fold, rotation, or window resize and duplicate-send prevention during a slow send remain unverified.
-A test pins the first of these: changing the width resolves a different column count for the same ordered list and the same keys.
+All of these are the same event, a size change: the Board never reads orientation or the device.
+The Board keeps drafts, send state, and focus above the column layout; cards move between columns, except between one and two columns, where the one-column `LazyVStack` is replaced and the tile is rebuilt.
+Send state survives by construction because it lives in `PhoneBoardScreen`, but this has not yet been observed on a device. Focus is reasserted 60 ms after the column count changes when that card still has a composer; real focus and keyboard behavior across a fold, rotation, or window resize and duplicate-send prevention during a slow send remain unverified.
+Resolved widths are pinned by `RemiBoardColumnsTests.designTableResolvesEveryPaneWidth`; `RemiBoardColumnsTests.placeKeepsTheSameItemsAcrossColumnCounts` pins the same cards in placement, and `RemiBoardCardPresentationTests.phoneBoardKeepsOneColumnAndUsesSpanningPlacementForMultiColumn` guards the shared ordered list and keys.
+A layout change cancels a pending next-card focus and reasserts the old focused card; this overlap is rare, and focus is not lost.
 
 ### What is shared with the Mac and what is not
 
@@ -134,7 +135,7 @@ Each is one pull request into `develop`, with the visual gate from `VISUAL-ACCEP
 | 1 | The pure resolver in `RemiUI` (pane width to columns and tile width with the 300 pt minimum, the 1000 pt sidebar default, hysteresis) and its tests; no view change | Swift Testing: every row of the table above, both sides of each threshold (643 and 644, 955 and 956, 999 and 1000), the six-column cap, zero and negative widths |
 | 2 | `PhoneBoardScreen` lays cards in the resolved columns, one column unchanged, and the shell's sidebar visibility follows the 1000 pt rule with the person's choice kept | a source test that one column renders the existing stack; previews at 3 widths; the visual gate above |
 | 3 | Per-card density on iPad through the existing menu, including from a card in the second column | state tests for `sizes`; the visual gate |
-| 4 | Fold and resize robustness: a draft and focus survive a width change; no animation storm at a threshold | a focus-retention test, a resizable-simulator drag recorded in the receipt |
+| 4 | Fold and resize robustness: keyed send state, pure send and focus rules, source guards; no animation storm at a threshold | source tables and guards; focus-retention and resizable-simulator drag evidence remains owed to the owner GUI run; no simulator drag is recorded in this worker receipt |
 | 5 | An iPad on a real external display and the Duo poses, recorded by the owner or on the Duo simulator | the receipt lists what was run and what was not |
 | 6 (optional) | Pointer-first freeform frames on iPad, if question 3 says yes | reuse of `RemiBoardFrame` tests |
 

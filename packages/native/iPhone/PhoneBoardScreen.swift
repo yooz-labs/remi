@@ -67,7 +67,9 @@ struct PhoneBoardScreen: View {
     @State private var loadedAt: [String: Date] = [:]
     @State private var graceTick = 0
     @FocusState private var focus: String?
+    /// The single pending-focus task shared by `focusNext` and `columnLayoutDidChange`.
     @State private var focusTask: Task<Void, Never>?
+    /// Focus captured immediately before `columnLayout` changes, before the composer observer can clear it.
     @State private var focusBeforeColumnChange: String?
 
     private var density: RemiTileSize { RemiTileSize.phoneDensity(stored: densityStorage) }
@@ -143,7 +145,7 @@ struct PhoneBoardScreen: View {
     }
 
     /// Forgets pins, sizes and spans of sessions a settled machine no longer lists, plus stale resize
-    /// drags, drafts, and interactions. Finished sessions still count as live so their pins remain.
+    /// drags, drafts, send states, and interactions. Finished sessions still count as live so their pins remain.
     /// Saves only when persisted Board state was removed.
     private func pruneBoard() {
         let live = Set(sessions.map(RemiBoardOrder.key(for:)))
@@ -153,7 +155,7 @@ struct PhoneBoardScreen: View {
         })
         if board.prune(live: live, connectedMachines: settled) { saveBoard() }
         cardResizeDrags = cardResizeDrags.filter { live.contains($0.key) }
-        tileSendStates = tileSendStates.filter { live.contains($0.key) }
+        tileSendStates = RemiBoardOrder.keeping(tileSendStates, live: live, settledMachines: settled)
         drafts = RemiBoardOrder.keeping(drafts, live: live, settledMachines: settled)
         interactions = RemiBoardOrder.keeping(interactions, live: live, settledMachines: settled)
     }
@@ -197,6 +199,7 @@ struct PhoneBoardScreen: View {
                 previousColumnCount: columnLayout.columnCount
             )
             if resolved.columnCount != columnLayout.columnCount {
+                // Capture first because the composerKeys observer may clear focus for the new layout.
                 focusBeforeColumnChange = focus
             }
             if resolved != columnLayout { columnLayout = resolved }
@@ -277,7 +280,8 @@ struct PhoneBoardScreen: View {
     }
 
     /// Moves the cursor to the next live tile: scrolls it into view first, because a lazy stack
-    /// has not built a tile that is off screen, then focuses it once it exists.
+    /// has not built a tile that is off screen, then focuses it once it exists. A layout change
+    /// can cancel this pending target and reassert the prior focused card; focus is not lost.
     private func focusNext(after key: String, in liveOrder: [String], reader: ScrollViewProxy) {
         guard let next = RemiBoardOrder.next(after: key, in: liveOrder) else { return }
         reader.scrollTo(next, anchor: .center)
@@ -289,7 +293,7 @@ struct PhoneBoardScreen: View {
         }
     }
 
-    /// Clears resize previews and restores focus only when the new layout has the same working composer.
+    /// Clears resize previews, restores focus only when the new layout has that composer, and clears it otherwise.
     private func columnLayoutDidChange() {
         cardResizeDrags = [:]
         let key = RemiBoardTileStateRules.focusAfterLayoutChange(
@@ -391,13 +395,12 @@ struct PhoneBoardScreen: View {
         )
     }
 
-    /// Binds transient send feedback to its session key and drops stale asynchronous completions.
+    /// Binds transient send feedback by key and ignores late failure completions for pruned entries.
     private func sendStateBinding(for key: String) -> Binding<RemiBoardTileSendState> {
         Binding(
             get: { tileSendStates[key] ?? RemiBoardTileSendState() },
             set: { state in
-                guard sessions.contains(where: { RemiBoardOrder.key(for: $0) == key }) else { return }
-                tileSendStates[key] = state.isSending || state.sendFailed ? state : nil
+                tileSendStates = RemiBoardTileStateRules.storing(state, forKey: key, in: tileSendStates)
             }
         )
     }

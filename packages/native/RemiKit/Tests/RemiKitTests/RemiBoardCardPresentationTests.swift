@@ -67,6 +67,11 @@ import Testing
         #expect(screen.contains("if let focusedKey = focus, !keys.contains(focusedKey) { focus = nil }"))
         #expect(screen.contains(".onChange(of: columnLayout.columnCount) { _, _ in columnLayoutDidChange() }"))
         #expect(screen.contains("cardResizeDrags = cardResizeDrags.filter { live.contains($0.key) }"))
+        #expect(
+            screen.contains(
+                "tileSendStates = RemiBoardOrder.keeping(tileSendStates, live: live, settledMachines: settled)"
+            )
+        )
         #expect(screen.contains("var initialBoard: RemiBoardState? = nil"))
         #expect(
             screen.contains("board = storedBoard == RemiBoardState() ? (initialBoard ?? storedBoard) : storedBoard")
@@ -196,7 +201,11 @@ import Testing
         #expect(screen.contains("sendState: sendStateBinding(for: key)"))
 
         let prune = try sourceSlice(screen, from: "private func pruneBoard()", to: "// MARK: list")
-        #expect(prune.contains("tileSendStates = tileSendStates.filter { live.contains($0.key) }"))
+        #expect(
+            prune.contains(
+                "tileSendStates = RemiBoardOrder.keeping(tileSendStates, live: live, settledMachines: settled)"
+            )
+        )
 
         let binding = try sourceSlice(
             screen,
@@ -204,8 +213,8 @@ import Testing
             to: "private func cornerResize("
         )
         #expect(binding.contains("tileSendStates[key] ?? RemiBoardTileSendState()"))
-        #expect(binding.contains("RemiBoardOrder.key(for: $0) == key"))
-        #expect(binding.contains("tileSendStates[key] = state.isSending || state.sendFailed ? state : nil"))
+        #expect(binding.contains("RemiBoardTileStateRules.storing(state, forKey: key, in: tileSendStates)"))
+        #expect(!binding.contains("sessions.contains"))
 
         let countObserver = try sourceSlice(
             screen,
@@ -215,6 +224,12 @@ import Testing
         #expect(countObserver.contains("columnLayoutDidChange()"))
 
         let focusRestore = try sourceSlice(screen, from: "private func columnLayoutDidChange()", to: "private var filtered")
+        #expect(focusRestore.contains("cardResizeDrags = [:]"))
+        let focusRestoreRange = focusRestore.startIndex..<focusRestore.endIndex
+        let resizeClear = try #require(focusRestore.range(of: "cardResizeDrags = [:]", range: focusRestoreRange))
+        let focusRule = try #require(focusRestore.range(of: "focusAfterLayoutChange(", range: focusRestoreRange))
+        #expect(resizeClear.lowerBound < focusRule.lowerBound)
+        #expect(focusRestore.contains("focusBeforeColumnChange = nil"))
         #expect(focusRestore.contains("focusAfterLayoutChange("))
         #expect(focusRestore.contains("focusTask?.cancel()"))
         #expect(focusRestore.contains("Task.sleep(for: .milliseconds(60))"))
@@ -227,7 +242,9 @@ import Testing
             from: ".onGeometryChange(for: CGFloat.self) { proxy in",
             to: ".scrollDismissesKeyboard("
         )
+        #expect(geometry.contains("if resolved.columnCount != columnLayout.columnCount {"))
         #expect(geometry.contains("focusBeforeColumnChange = focus"))
+        #expect(geometry.contains("if resolved != columnLayout { columnLayout = resolved }"))
 
         let oneColumn = try sourceSlice(
             screen,
@@ -243,11 +260,49 @@ import Testing
         #expect(tile.contains("external: externalSendState?.wrappedValue"))
         #expect(tile.contains("fallback: internalSendState"))
 
+        let sendStateProperty = try sourceSlice(tile, from: "private var sendState:", to: "private var sendFailed:")
+        let externalSetter = try sourceSlice(sendStateProperty, from: "if let externalSendState {", to: "} else {")
+        let internalSetter = try sourceSlice(sendStateProperty, from: "} else {", to: "\n        }")
+        #expect(externalSetter.contains("externalSendState.wrappedValue = newValue"))
+        #expect(internalSetter.contains("internalSendState = newValue"))
+
         let sendTask = try sourceSlice(tile, from: "private func send() {", to: "/// The tile's long-press menu")
-        #expect(sendTask.contains("sendState = RemiBoardTileSendState(isSending: true)"))
+        #expect(
+            sendTask.contains(
+                "sendState = RemiBoardTileSendState(isSending: true, sendFailed: sendState.sendFailed)"
+            )
+        )
         #expect(
             sendTask.contains(
                 "sendState = sent ? RemiBoardTileSendState() : RemiBoardTileSendState(sendFailed: true)"
+            )
+        )
+    }
+
+    @Test func phoneBoardKeepsSendStateForUnsettledMachinesAndDropsSettledMissingKeys() throws {
+        let reconnectingKey = "reconnecting\u{1F}missing"
+        let settledKey = "settled\u{1F}missing"
+        let sending = RemiBoardTileSendState(isSending: true)
+        let states = [reconnectingKey: sending, settledKey: sending]
+
+        #expect(
+            RemiBoardOrder.keeping(states, live: [], settledMachines: ["settled"])
+                == ["reconnecting\u{1F}missing": RemiBoardTileSendState(isSending: true)]
+        )
+
+        let nativeRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let screen = try String(
+            contentsOf: nativeRoot.appendingPathComponent("iPhone/PhoneBoardScreen.swift"),
+            encoding: .utf8
+        )
+        let prune = try sourceSlice(screen, from: "private func pruneBoard()", to: "// MARK: list")
+        #expect(
+            prune.contains(
+                "tileSendStates = RemiBoardOrder.keeping(tileSendStates, live: live, settledMachines: settled)"
             )
         )
     }
