@@ -11,7 +11,7 @@ import { setupHookBridge } from '../../src/cli/session-phases/hook-bridge-setup.
 import type { AwakeConfig } from '../../src/config/config.ts';
 import { HookServer } from '../../src/hooks/hook-server.ts';
 import { AwakeHolder } from '../../src/power/awake-holder.ts';
-import type { AwakeHolderBoundary } from '../../src/power/awake-holder.ts';
+import type { AwakeHolderBoundary, AwakeHolderResult } from '../../src/power/awake-holder.ts';
 import { AwakeSession } from '../../src/power/awake-session.ts';
 import { PTYSession } from '../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../src/session/session-binding-store.ts';
@@ -34,16 +34,16 @@ class RecordingHolder implements AwakeHolderBoundary {
     return this.activePid;
   }
 
-  async start(): Promise<boolean> {
+  async start(): Promise<AwakeHolderResult> {
     this.starts += 1;
     this.activePid = 900_001;
-    return true;
+    return { ok: true };
   }
 
-  async renew(): Promise<boolean> {
+  async renew(): Promise<AwakeHolderResult> {
     this.renewals += 1;
     this.activePid = 900_001 + this.renewals;
-    return true;
+    return { ok: true };
   }
 
   release(): void {
@@ -99,7 +99,9 @@ test('real hook HTTP and session question changes drive the awake policy; Codex 
   );
   const workEvents: SessionWorkEvent[] = [];
   const unsubscribeWorkEvents = messageApi.subscribeWorkEvents((event) => workEvents.push(event));
-  awake = new AwakeSession(SESSION_ID, messageApi, awakeConfig, () => {}, holder);
+  awake = new AwakeSession(SESSION_ID, messageApi, awakeConfig, () => {}, {
+    createHolder: () => holder,
+  });
   const pty = new PTYSession({ cwd: directory });
   registry.registerSession(SESSION_ID, directory, pty, messageApi);
   const bridge = setupHookBridge(
@@ -262,12 +264,16 @@ test('missing caffeinate logs once and leaves the session running without a hold
       ttl_minutes: 1,
     },
     (message) => messages.push(message),
-    new AwakeHolder({
-      targetPid: process.pid,
-      ttlSeconds: 60,
-      executable: '/__remi_awake_missing__/caffeinate',
-      platform: 'darwin',
-    }),
+    {
+      createHolder: (onUnexpectedExit) =>
+        new AwakeHolder({
+          targetPid: process.pid,
+          ttlSeconds: 60,
+          executable: '/__remi_awake_missing__/caffeinate',
+          platform: 'darwin',
+          onUnexpectedExit,
+        }),
+    },
   );
   try {
     messageApi.handleStatusChange('executing');
