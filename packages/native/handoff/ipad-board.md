@@ -60,7 +60,7 @@ Owner requirement (2026-11-13): an iPad in portrait gets several columns too, no
 Two things stood in the way of that with the first draft of this rule: a 340 pt sidebar beside the Board took a third of a portrait iPad, and a 340 pt minimum card width asked too much of what was left.
 So the rule has two parts.
 
-1. **The sidebar sits beside the Board only when the window is at least 1000 pt wide**; below that it is an overlay the person brings in with the system toggle, so the Board keeps the whole width. A person's explicit choice (shown or hidden) wins over the default and is kept per window.
+1. **The shell uses a balanced split view at every width. Below 1000 pt the sidebar is hidden by default, and opening it narrows the Board.** A person's explicit choice (shown or hidden) wins over the default and is kept per window. A future design that keeps the Board full width while the sidebar is open needs a state-preserving structure that slice 4 may revisit.
 2. **The Board decides its column count from the width of its own pane**, measured where the Board is laid out (`onGeometryChange`), never from a device or the sidebar's assumed state:
 
 `available = pane - 2 x 16 pt margin`
@@ -70,27 +70,27 @@ The Mac keeps its 340 pt minimum for its freeform frames; the iPad and Duo Board
 
 | Window | Sidebar | Pane | Columns |
 |---|---|---|---|
-| iPhone, any | overlay | under 644 | 1 (unchanged) |
-| iPhone Duo outer display, portrait, 466 pt | overlay | 466 | 1 |
-| iPhone Duo inner display, portrait, 669 pt | overlay | 669 | 2 |
-| iPhone Duo inner display, landscape, 951 pt | overlay | 951 | 2 |
-| iPad mini, portrait, 744 pt | overlay | 744 | 2 |
+| iPhone, any | hidden | under 644 | 1 (unchanged) |
+| iPhone Duo outer display, portrait, 466 pt | hidden | 466 | 1 |
+| iPhone Duo inner display, portrait, 669 pt | hidden | 669 | 2 |
+| iPhone Duo inner display, landscape, 951 pt | hidden | 951 | 2 |
+| iPad mini, portrait, 744 pt | hidden | 744 | 2 |
 | iPad mini, landscape, 1133 pt | beside | 793 | 2 |
-| iPad mini, landscape, sidebar hidden | overlay | 1133 | 3 |
-| iPad Air or Pro 11-inch, portrait, 834 pt | overlay | 834 | 2 |
+| iPad mini, landscape, sidebar hidden | hidden | 1133 | 3 |
+| iPad Air or Pro 11-inch, portrait, 834 pt | hidden | 834 | 2 |
 | iPad Pro 13-inch, portrait, 1032 pt | beside | 692 | 2 |
-| iPad Pro 13-inch, portrait, sidebar hidden | overlay | 1032 | 3 |
+| iPad Pro 13-inch, portrait, sidebar hidden | hidden | 1032 | 3 |
 | iPad Pro 11-inch, landscape, 1194 pt | beside | 854 | 2 |
 | iPad Pro 13-inch, landscape, 1376 pt | beside | 1036 | 3 |
-| iPad Pro 13-inch, landscape, sidebar hidden | overlay | 1376 | 4 |
+| iPad Pro 13-inch, landscape, sidebar hidden | hidden | 1376 | 4 |
 | Two columns need | | 644 | pane 644 pt (window 984 pt with the sidebar beside) |
 | Three columns need | | 956 | pane 956 pt |
 | Four columns need | | 1268 | pane 1268 pt |
 
-Windows between 644 and 1000 pt wide are two columns without a sidebar beside them, and a window that a person drags down to almost phone width is one column with the overlay, exactly like the iPhone; from 1000 pt the sidebar sits beside the Board, and the iPad Pro 13-inch in portrait (1032 pt) is the narrowest such window, with two columns, or three if the person hides the sidebar.
+Windows between 644 and 1000 pt wide are two columns without a sidebar beside them, and a window that a person drags down to almost phone width is one column with the sidebar hidden, exactly like the iPhone; from 1000 pt the sidebar sits beside the Board, and the iPad Pro 13-inch in portrait (1032 pt) is the narrowest such window, with two columns, or three if the person hides the sidebar.
 At one column the screen is today's screen: same stack, same readable cap, same ordering, so no iPhone regression.
 At two or more the readable cap does not apply to the whole pane; each column's cards fill their column (`(available - 12 x (columns - 1)) / columns`, at least 300 pt, except up to 24 pt divided by the column count less while a column is held) and the columns are centered when the cap on six columns is reached.
-The iPhone Duo uses the same rule with the point widths from the simulator profile (466 pt outer, 669 by 951 pt inner): the unfolded display reports regular size classes, and below 1000 pt wide the sidebar is an overlay, so the inner display gets two columns in portrait and in landscape.
+The iPhone Duo uses the same rule with the point widths from the simulator profile (466 pt outer, 669 by 951 pt inner): the unfolded display reports regular size classes, and below 1000 pt wide the sidebar is hidden by default, so the inner display gets two columns in portrait and in landscape.
 
 ### Placement
 
@@ -143,6 +143,6 @@ Each is one pull request into `develop`, with the visual gate from `VISUAL-ACCEP
 2. **The card minimum and the sidebar threshold.** The owner requires multi-column in portrait, so the rule is a 300 pt minimum card and a sidebar that sits beside the Board only from 1000 pt windows. Recommended: exactly that. Alternative: a 320 pt minimum card (the iPad mini portrait still gets two columns, the Duo inner display in portrait gets one) or a 900 pt threshold.
 3. **Freeform resizing on iPad.** Recommended: no, density presets only in slices 1 to 5, and revisit slice 6 after the owner has used it with a pointer. Alternative: port the Mac frames now.
 4. **A selected session beside the Board.** Recommended: out of scope here; design it after slice 2 ships, because it changes navigation. Alternative: add it to this track.
-5. **Where the sidebar toggle lives when it is an overlay.** With the overlay below 1000 pt the system toggle in the navigation bar is the only way to the session list on a portrait iPad and on the Duo inner display. Recommended: keep the system toggle and also open the overlay on a left-edge swipe, as the phone drawer does. Alternative: add a persistent compact rail of machine and session icons beside the Board at 600 to 1000 pt.
+5. **Where the sidebar toggle lives below 1000 pt.** Below 1000 pt the sidebar is hidden by default, and the system toggle in the navigation bar is the way to it; opening it narrows the Board. A left-edge swipe, as the phone drawer does, and a persistent compact rail of machine and session icons beside the Board at 600 to 1000 pt remain alternatives to decide later. Recommended: keep the system toggle.
 6. **Duo poses through Device Hub.** The runtime is installed and the simulator device exists; the folded and unfolded poses can only be driven and captured in Device Hub, a visible GUI run. Recommended: the owner announces a session where this is done for slice 2 and the screenshots go into the receipt. Alternative: accept "not run" for the Duo until a real device is available.
 7. **External display.** What iPadOS 27.x does with an app on an external display is not in the Apple text read. Recommended: the owner connects an iPad to a display once the first slice is on TestFlight and reports whether the window is resizable and interactive; slice 5 follows that result.
