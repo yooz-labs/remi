@@ -79,6 +79,14 @@ export interface MessageAPIEvents {
   onStatusChange: (status: AgentStatus, context?: string) => void;
 }
 
+/** Session work signals shared by the Claude and Codex status funnels. */
+export type SessionWorkEvent =
+  | { readonly type: 'status'; readonly status: AgentStatus }
+  | { readonly type: 'activity' }
+  | { readonly type: 'turn-open' }
+  | { readonly type: 'turn-close' }
+  | { readonly type: 'session-end' };
+
 /** Configuration for MessageAPI */
 export interface MessageAPIConfig {
   /** Session ID */
@@ -105,6 +113,7 @@ export class MessageAPI {
   private readonly contentRegistry: BulletContentRegistry;
   private readonly events: Partial<MessageAPIEvents>;
   private readonly messages: Map<UUID, StructuredMessage> = new Map();
+  private readonly workListeners = new Set<(event: SessionWorkEvent) => void>();
   private readonly sessionId: UUID;
   private readonly questionDedup = new QuestionDedup();
 
@@ -129,6 +138,17 @@ export class MessageAPI {
   /** Get current bullet count */
   get bulletCount(): number {
     return this.bulletEngine.bulletCount;
+  }
+
+  /** Subscribe to local session-work signals without changing the message flow. */
+  subscribeWorkEvents(listener: (event: SessionWorkEvent) => void): () => void {
+    this.workListeners.add(listener);
+    return () => this.workListeners.delete(listener);
+  }
+
+  /** Report session activity observed outside the status funnel, such as PTY output or hooks. */
+  noteWorkEvent(event: Exclude<SessionWorkEvent, { readonly type: 'status' }>): void {
+    this.emitWorkEvent(event);
   }
 
   /** Get a message by ID */
@@ -288,6 +308,11 @@ export class MessageAPI {
     if (status !== 'waiting') {
       this.questionDedup.reset();
     }
+    this.emitWorkEvent({ type: 'status', status });
     this.events.onStatusChange?.(status, context);
+  }
+
+  private emitWorkEvent(event: SessionWorkEvent): void {
+    for (const listener of this.workListeners) listener(event);
   }
 }

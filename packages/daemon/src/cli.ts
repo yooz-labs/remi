@@ -287,6 +287,7 @@ import { SecurePushTransport } from './notifications/secure-push-transport.ts';
 import { createTurnEventSink } from './notifications/turn-events.ts';
 import { createTurnFailedRoutes } from './notifications/turn-failed.ts';
 import { TurnTimer } from './notifications/turn-timer.ts';
+import { AwakeSession } from './power/awake-session.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
 import { HubRelay } from './remote/hub-relay.ts';
 import { NativeAnswerLedger } from './remote/native-answer-ledger.ts';
@@ -1180,6 +1181,7 @@ const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new 
 // launch filled in separately; every session has an entry, a session with no
 // hook server just has nothing held.
 const harnessSessions: Map<UUID, HarnessSession> = new Map();
+const awakeSessions = new Map<UUID, AwakeSession>();
 // Created before the message API or harness can emit; retired before teardown, finished after the
 // disposal's dismissals are out (#1200).
 const securePushContexts = new SecurePushContexts({
@@ -1367,6 +1369,8 @@ const sessionRegistry = new SessionRegistry(
     },
     onSessionClosed: (sessionId, reason, pendingQuestionIds) => {
       retireSecurePushRuntime(sessionId);
+      awakeSessions.get(sessionId)?.dispose();
+      awakeSessions.delete(sessionId);
       browserSessionHost?.retireSession(sessionId, reason !== 'pty_exit');
       fileDownloadSessionHost?.retireSession(sessionId);
       terminalViewService.current?.forgetSession(sessionId);
@@ -1450,6 +1454,7 @@ const sessionRegistry = new SessionRegistry(
       void imageStagingService?.maintain();
     },
     onQuestionsChanged: (sessionId, questions) => {
+      awakeSessions.get(sessionId)?.questionsChanged(questions.length);
       // #1235: a card that is live again can be resolved again.
       questionResolver.noteLive(questions.map((q) => q.id));
       // Best-effort: a registry-file hiccup here must never take down the
@@ -1750,6 +1755,8 @@ let updateWatcher: import('./cli/update-watcher.ts').UpdateWatcher | null = null
 // (issue #203). SIGKILL still leaves entries by definition; the next
 // startup's purgeStaleHooks recovers from that.
 process.on('exit', () => {
+  for (const awake of awakeSessions.values()) awake.dispose();
+  awakeSessions.clear();
   if (hookConfigManager) {
     hookConfigManager.uninstallSync();
   }
@@ -1927,6 +1934,15 @@ async function createNewSession(
       },
       sessionId,
     );
+    // A hub is session-less: only a real session daemon or wrapper gets a
+    // process-bound assertion (#1773). Other platforms and level1=false are no-ops.
+    if (!serveMode && process.platform === 'darwin' && remiConfig.awake.level1) {
+      awakeSessions.get(sessionId)?.dispose();
+      awakeSessions.set(
+        sessionId,
+        new AwakeSession(sessionId, messageApi, remiConfig.awake, (message) => log(message)),
+      );
+    }
     // Register this session's APNS dispatcher before the harness builds
     // anything that can fire a decision: the question-resolved path and the
     // harness's terminal-notice closures read `sessionNotifiers.get(sid)` to
@@ -2035,6 +2051,8 @@ async function createNewSession(
       logError('Session failure bookkeeping unavailable');
     }
     retireSecurePushRuntime(sessionId);
+    awakeSessions.get(sessionId)?.dispose();
+    awakeSessions.delete(sessionId);
     try {
       harnessSessions.get(sessionId)?.dispose();
     } catch {
@@ -3269,6 +3287,8 @@ async function performCleanup(): Promise<void> {
   // disposes them again when the PTY exits, which dispose()'s guard makes a
   // no-op. Before, cleanup cleared binderClosers and left the gate, tracker
   // and turn-filter maps.
+  for (const awake of awakeSessions.values()) awake.dispose();
+  awakeSessions.clear();
   for (const session of harnessSessions.values()) {
     session.dispose();
   }

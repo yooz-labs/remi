@@ -245,6 +245,7 @@ Read before changing the area:
 
 - [docs/agent-reference/protocol-and-workspaces.md](docs/agent-reference/protocol-and-workspaces.md): version and capabilities, the decision object, workspaces.
 - [docs/agent-reference/harnesses-and-codex.md](docs/agent-reference/harnesses-and-codex.md): harness identity and `create_session_request`, Codex approvals, Codex turn events and chat, LV-1 to LV-5 evidence.
+- [docs/agent-reference/keep-awake.md](docs/agent-reference/keep-awake.md): the shipped macOS level-1 idle-sleep assertion and its limits.
 
 ## Core Principles
 

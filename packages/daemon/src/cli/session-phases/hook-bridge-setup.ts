@@ -824,6 +824,8 @@ export function setupHookBridge(
   hookServer.on('PreToolUse', (input) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
+    // #1773: admitted tool hooks are activity heartbeats, including subagents.
+    messageApi.noteWorkEvent?.({ type: 'activity' });
     if (isSubagentEvent(input)) {
       // #763: an agent-tagged PreToolUse means that agent's pending
       // permission resolved without a PTY render we could pair (the
@@ -894,6 +896,8 @@ export function setupHookBridge(
   hookServer.on('PostToolUse', (input) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
+    // #1773: a completed tool call refreshes the busy-state bound.
+    messageApi.noteWorkEvent?.({ type: 'activity' });
     // #891: PostToolUse now carries duration_ms. No dedicated tool-activity
     // tracker/UI exists to put it in yet (the epic notes a live view needs
     // Q6's bus) -- this only stops discarding the signal that is actually
@@ -1019,6 +1023,9 @@ export function setupHookBridge(
   hookServer.on('Stop', (input) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
+    if (!input.stop_hook_active && !isSubagentEvent(input)) {
+      messageApi.noteWorkEvent?.({ type: 'turn-close' });
+    }
     if (!input.stop_hook_active && !isSubagentEvent(input)) tracker.onAgentTurnEnded();
     // #711: mainOnly -- Stop fires whenever the LEAD agent idles, even while
     // teammates (subagent/agent_id-tagged permission escalations) are still
@@ -1045,6 +1052,7 @@ export function setupHookBridge(
     // sync here — the binder is the single source of truth.
     binder.onSessionEnd(input);
     if (!binder.admits(input)) return;
+    messageApi.noteWorkEvent?.({ type: 'session-end' });
     autoApproveGate.cancelStale('SessionEnd', { resolvedBy: 'harness' });
     handlers.onSessionEnd?.(input);
   });
@@ -1059,6 +1067,7 @@ export function setupHookBridge(
   hookServer.on('StopFailure', (input) => {
     binder.onHookEvent(input);
     if (!binder.admits(input)) return;
+    if (!isSubagentEvent(input)) messageApi.noteWorkEvent?.({ type: 'turn-close' });
     // A turn that ended on an API error (usage or rate limit, authentication,
     // and similar; #1153). Claude ignores the hook's answer, so this is NOT a
     // question: the bridge sets the status to idle (main agent only) and
@@ -1268,6 +1277,8 @@ export function setupHookBridge(
   hookServer.on('UserPromptSubmit', (input) => {
     binder.onHookEvent(input);
     if (!binder.admits(input) || isSubagentEvent(input)) return;
+    // #1773: Claude can reason without a tool event or a busy status change.
+    messageApi.noteWorkEvent?.({ type: 'turn-open' });
     // #1126: the user typed a new prompt, so the main agent is not waiting
     // on a permission dialog any more. Closes a main prompt that was
     // answered No in the terminal after its hold was released (that fires
