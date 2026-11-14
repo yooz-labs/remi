@@ -225,7 +225,7 @@ public enum RemiTileSize: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// What the person arranged on a board: legacy pinned slots and sizes, plus explicit Mac frames.
+/// What the person arranged on a board: legacy pins, phone sizes and spans, plus explicit Mac frames.
 /// Automatic positions are computed by ``RemiBoardOrder`` and are not written to storage.
 ///
 /// Mac stores a pin's slot in the full board order, even when a filter hides other tiles.
@@ -325,7 +325,7 @@ public struct RemiBoardState: Codable, Equatable, Sendable {
     public func span(for key: String) -> Int { max(1, spans[key] ?? 1) }
     /// The width explicitly chosen for this card, or nil when unset.
     public func explicitSpan(for key: String) -> Int? { spans[key] }
-    /// Stores the person's chosen width without clamping it to the current column count.
+    /// Stores the chosen width without clamping it to the current column count; values below 1 clear the choice.
     public mutating func setSpan(_ span: Int, for key: String) {
         guard span >= 1 else {
             spans[key] = nil
@@ -537,16 +537,22 @@ public enum RemiBoardOrder {
         Array(entries.suffix(size.feedEntries))
     }
 
-    /// Packs tiles into columns in reading order: each goes under the shortest column so far
-    /// (the left one on a tie), so tiles of different sizes leave no gaps. Returns the
-    /// indices of `heights` in each column.
-    public static func columns(heights: [CGFloat], count: Int, spacing: CGFloat = 12) -> [[Int]] {
+    /// Compatibility wrapper over ``RemiBoardColumns/placements(itemCount:columnCount:heights:spans:spacing:)``
+    /// for span-one items. The phone screen uses that placement engine directly; this method maps
+    /// its placements to per-column index lists for existing callers.
+    public static func columns(
+        heights: [CGFloat],
+        count: Int,
+        spacing: CGFloat = RemiBoardColumns.spacing
+    ) -> [[Int]] {
         var result = [[Int]](repeating: [], count: max(count, 1))
-        var filled = [CGFloat](repeating: 0, count: result.count)
-        for (index, height) in heights.enumerated() {
-            let column = filled.indices.min { (filled[$0], $0) < (filled[$1], $1) } ?? 0
-            result[column].append(index)
-            filled[column] += height + spacing
+        for placement in RemiBoardColumns.placements(
+            itemCount: heights.count,
+            columnCount: count,
+            heights: heights,
+            spacing: spacing
+        ) {
+            result[placement.firstColumn].append(placement.itemIndex)
         }
         return result
     }

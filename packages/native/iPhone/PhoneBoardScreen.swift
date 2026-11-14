@@ -50,7 +50,7 @@ struct PhoneBoardScreen: View {
     @AppStorage("remi.phone.board.density") private var densityStorage = RemiTileSize.regular.rawValue
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var board = RemiBoardState()
-    /// One entry per card being resized; removed when its drag ends or is invalidated.
+    /// One entry per claimed card resize drag; captured on its first callback and removed when it ends or is invalidated.
     @State private var cardResizeDrags: [String: CardResizeDrag] = [:]
     @State private var boardLoaded = false
     @State private var interactions: [String: Date] = [:]
@@ -369,7 +369,7 @@ struct PhoneBoardScreen: View {
     ) -> RemiBoardCornerResize? {
         guard presentation.isMultiColumn else { return nil }
         return RemiBoardCornerResize(
-            widthTitle: "\(displayedSpan(for: session)) columns wide",
+            widthTitle: RemiBoardCardResize.widthTitle(for: displayedSpan(for: session)),
             onDragChanged: { translation, topCorner in
                 updateCardResizePreview(
                     for: key,
@@ -426,7 +426,10 @@ struct PhoneBoardScreen: View {
             spacing: RemiBoardColumns.spacing,
             columnCount: drag.columnCount
         )
-        guard next.size != drag.previewSize || next.span != drag.previewSpan else { return true }
+        guard next.size != drag.previewSize || next.span != drag.previewSpan else {
+            if activeDrag == nil { cardResizeDrags[key] = drag }
+            return true
+        }
         drag.previewSize = next.size
         drag.previewSpan = next.span
         withAnimation(reduceMotion ? nil : RemiTheme.Motion.standard) {

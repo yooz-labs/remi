@@ -170,4 +170,63 @@ import Testing
         #expect(frames.map(\.width) == [100, 212, groupWidth])
         #expect(frames.allSatisfy { $0.width <= groupWidth })
     }
+
+    @Test func spanningPlacementTableStacksTheSpanAndFollowerAtLiteralHeights() {
+        let frames = RemiBoardColumnsLayout.frames(
+            placements: [
+                RemiBoardColumnPlacement(itemIndex: 0, firstColumn: 0, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 1, firstColumn: 1, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 2, firstColumn: 2, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 3, firstColumn: 0, span: 2),
+                RemiBoardColumnPlacement(itemIndex: 4, firstColumn: 0, span: 1),
+            ],
+            columnCount: 3,
+            heights: [40, 20, 72, 10, 10],
+            columnWidth: 100,
+            spacing: 12
+        )
+
+        #expect(frames == [
+            CGRect(x: 0, y: 0, width: 100, height: 40),
+            CGRect(x: 112, y: 0, width: 100, height: 20),
+            CGRect(x: 224, y: 0, width: 100, height: 72),
+            CGRect(x: 0, y: 52, width: 212, height: 10),
+            CGRect(x: 0, y: 74, width: 100, height: 10),
+        ])
+    }
+
+    @Test func middleWindowAndFullWidthSpansUseTheTallestCoveredColumn() {
+        let middleWindow = RemiBoardColumnsLayout.frames(
+            placements: [
+                RemiBoardColumnPlacement(itemIndex: 0, firstColumn: 0, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 1, firstColumn: 1, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 2, firstColumn: 2, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 3, firstColumn: 3, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 4, firstColumn: 1, span: 2),
+                RemiBoardColumnPlacement(itemIndex: 5, firstColumn: 1, span: 1),
+            ],
+            columnCount: 4,
+            heights: [100, 20, 60, 100, 10, 10],
+            columnWidth: 100,
+            spacing: 12
+        )
+        #expect(middleWindow[4] == CGRect(x: 112, y: 72, width: 212, height: 10))
+        #expect(middleWindow[5] == CGRect(x: 112, y: 94, width: 100, height: 10))
+
+        let fullWidth = RemiBoardColumnsLayout.frames(
+            placements: [
+                RemiBoardColumnPlacement(itemIndex: 0, firstColumn: 0, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 1, firstColumn: 1, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 2, firstColumn: 2, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 3, firstColumn: 0, span: 3),
+                RemiBoardColumnPlacement(itemIndex: 4, firstColumn: 0, span: 1),
+            ],
+            columnCount: 3,
+            heights: [40, 20, 72, 10, 10],
+            columnWidth: 100,
+            spacing: 12
+        )
+        #expect(fullWidth[3] == CGRect(x: 0, y: 84, width: 324, height: 10))
+        #expect(fullWidth[4] == CGRect(x: 0, y: 106, width: 100, height: 10))
+    }
 }

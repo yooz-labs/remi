@@ -28,6 +28,11 @@ import Testing
         #expect(RemiBoardCardResize.step(from: .compact, direction: 0) == .regular)
     }
 
+    @Test func widthTitleUsesSingularForOneColumnAndPluralForMultipleColumns() {
+        #expect(RemiBoardCardResize.widthTitle(for: 1) == "1 column wide")
+        #expect(RemiBoardCardResize.widthTitle(for: 2) == "2 columns wide")
+    }
+
     @Test func topCornerMirrorsTheBottomCorner() {
         #expect(RemiBoardCardResize.size(startingAt: .regular, verticalTranslation: -100, topCorner: true) == .large)
         #expect(RemiBoardCardResize.size(startingAt: .regular, verticalTranslation: 72, topCorner: true) == .row)
@@ -79,6 +84,33 @@ import Testing
             RemiBoardCardResize.trailingControlInset + RemiTheme.Spacing.s + RemiTheme.Spacing.xs
                 >= RemiTheme.Size.minimumTapTarget
         )
+    }
+
+    @Test func noOpFirstResizeCallbackClaimsTheCornerBeforeAConcurrentResize() throws {
+        let nativeRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let screen = try String(
+            contentsOf: nativeRoot.appendingPathComponent("iPhone/PhoneBoardScreen.swift"),
+            encoding: .utf8
+        )
+        let update = try sourceSlice(
+            screen,
+            from: "private func updateCardResizePreview(",
+            to: "private func finishCardResize("
+        )
+        let ownershipGuard = try sourceSlice(update, from: "let activeDrag = cardResizeDrags[key]", to: "var drag = activeDrag")
+        #expect(ownershipGuard.contains("if let activeDrag, activeDrag.topCorner != topCorner { return false }"))
+
+        let noOpBranch = try sourceSlice(
+            update,
+            from: "guard next.size != drag.previewSize || next.span != drag.previewSpan else {",
+            to: "drag.previewSize = next.size"
+        )
+        #expect(noOpBranch.contains("if activeDrag == nil { cardResizeDrags[key] = drag }"))
+        #expect(noOpBranch.contains("return true"))
     }
 
     @Test func sourceGuardsCoverResizeHandleWiring() throws {
@@ -170,9 +202,10 @@ import Testing
         #expect(update.contains("if let activeDrag, activeDrag.topCorner != topCorner { return false }"))
         #expect(update.contains("var drag = activeDrag ?? CardResizeDrag("))
         #expect(update.contains("guard drag.topCorner == topCorner else { return false }"))
-        #expect(update.contains("guard next.size != drag.previewSize || next.span != drag.previewSpan else { return true }"))
-        #expect(!update.contains("if activeDrag == nil { cardResizeDrags[key] = drag }"))
+        #expect(update.contains("guard next.size != drag.previewSize || next.span != drag.previewSpan else {"))
+        #expect(update.contains("if activeDrag == nil { cardResizeDrags[key] = drag }"))
         #expect(!update.contains("board.setSize"))
+        #expect(!update.contains("board.setSpan"))
         #expect(!update.contains("saveBoard()"))
         #expect(finish.contains("let sizeChanged = final.size != drag.startSize"))
         #expect(finish.contains("let spanChanged = final.span != drag.startSpan"))
@@ -184,6 +217,7 @@ import Testing
         #expect(cancel.contains("guard let drag = cardResizeDrags[key], drag.topCorner == topCorner else { return }"))
         #expect(cancel.contains("cardResizeDrags[key] = nil"))
         #expect(!cancel.contains("board.setSize"))
+        #expect(!cancel.contains("board.setSpan"))
         #expect(!cancel.contains("saveBoard()"))
     }
 

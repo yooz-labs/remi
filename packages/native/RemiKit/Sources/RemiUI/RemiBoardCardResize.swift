@@ -1,9 +1,12 @@
 import Foundation
 
-/// Maps a vertical drag on a phone Board card to its nearest phone density.
+/// Maps a phone Board card drag to its nearest density and adjacent-column span.
 public enum RemiBoardCardResize {
+    /// The density and column span selected from one drag whose translations are measured in points.
     public struct Adjustment: Equatable, Sendable {
+        /// The phone density selected by the vertical translation.
         public let size: RemiTileSize
+        /// The selected width, measured as a count of columns.
         public let span: Int
 
         public init(size: RemiTileSize, span: Int) {
@@ -56,8 +59,10 @@ public enum RemiBoardCardResize {
         return densities[nextIndex]
     }
 
-    /// Maps a horizontal drag to its nearest column span. Midpoint ties follow the drag
-    /// direction, and spans outside the current board are clamped without changing storage.
+    /// Maps a starting span in columns and a horizontal translation in points to the nearest span,
+    /// using a column width and spacing in points and a count of available columns. Midpoint ties
+    /// follow the drag direction. The result is clamped to 1...columnCount; the caller decides
+    /// whether and what to store.
     public static func span(
         startingAt startingSpan: Int,
         horizontalTranslation: CGFloat,
@@ -99,6 +104,12 @@ public enum RemiBoardCardResize {
         return min(max(current + step, 1), columns)
     }
 
+    /// The VoiceOver width value for a one-based span in columns.
+    public static func widthTitle(for span: Int) -> String {
+        let width = max(span, 1)
+        return width == 1 ? "1 column wide" : "\(width) columns wide"
+    }
+
     /// Maps both axes from one drag origin, so height and width can change together.
     public static func adjustment(
         startingAt startingSize: RemiTileSize,
@@ -126,6 +137,7 @@ public enum RemiBoardCardResize {
     }
 
     private static func cardWidth(for span: Int, columnWidth: CGFloat, spacing: CGFloat) -> CGFloat {
-        CGFloat(span) * columnWidth + CGFloat(span - 1) * spacing
+        RemiBoardColumnPlacement(itemIndex: 0, firstColumn: 0, span: span)
+            .width(columnWidth: columnWidth, spacing: spacing)
     }
 }

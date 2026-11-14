@@ -75,17 +75,14 @@ public struct RemiBoardColumnsLayout: Layout {
 
         for placement in placements where
             heights.indices.contains(placement.itemIndex)
-                && placement.firstColumn >= 0
-                && placement.span >= 1
-                && placement.firstColumn + placement.span <= count
+                && placement.isValid(columnCount: count)
         {
             let coveredColumns = placement.firstColumn..<(placement.firstColumn + placement.span)
             let y = coveredColumns.map { columnHeights[$0] }.max() ?? 0
-            let width = CGFloat(placement.span) * columnWidth + CGFloat(placement.span - 1) * spacing
             result[placement.itemIndex] = CGRect(
                 x: CGFloat(placement.firstColumn) * (columnWidth + spacing),
                 y: y,
-                width: width,
+                width: placement.width(columnWidth: columnWidth, spacing: spacing),
                 height: heights[placement.itemIndex]
             )
             let nextHeight = y + heights[placement.itemIndex] + spacing
@@ -101,12 +98,9 @@ public struct RemiBoardColumnsLayout: Layout {
         let count = max(columnCount, 1)
         for placement in placements where
             widths.indices.contains(placement.itemIndex)
-                && placement.firstColumn >= 0
-                && placement.span >= 1
-                && placement.firstColumn + placement.span <= count
+                && placement.isValid(columnCount: count)
         {
-            widths[placement.itemIndex] = CGFloat(placement.span) * columnWidth
-                + CGFloat(placement.span - 1) * spacing
+            widths[placement.itemIndex] = placement.width(columnWidth: columnWidth, spacing: spacing)
         }
         return subviews.enumerated().map { index, subview in
             subview.sizeThatFits(ProposedViewSize(width: widths[index], height: nil)).height

@@ -655,11 +655,14 @@ import Testing
 
         state.pin("manual", atSlot: 0)
         state.setSize(.large, for: "manual")
+        state.setSpan(2, for: "manual")
         let storedManualFrame = state.setFrame(RemiBoardFrame(x: 100, y: 100, width: 400, height: 400), for: "manual")
         #expect(storedManualFrame)
         state.resetLayout()
         #expect(state.pinnedKeys.isEmpty)
         #expect(state.size(for: "manual") == .regular)
+        #expect(state.explicitSpan(for: "manual") == nil)
+        #expect(!state.hasExplicitSpans)
         #expect(state.frame(for: "manual") == nil)
     }
 

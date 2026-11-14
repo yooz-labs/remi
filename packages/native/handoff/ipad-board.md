@@ -32,7 +32,7 @@ Verified in this repository on 2026-11-13:
 | #1629 said "device family stays iPhone (owner decision for iPad later)" and shipped the regular-width shell and the readable column; that sentence is stale. | issue #1629 against the project file |
 | The regular-width shell is a `NavigationSplitView` with a 340 pt sidebar (`RemiTheme.Size.sidebarWidth`) and the destination beside it; `RemiLayoutMode` resolves compact or regular from the horizontal size class, with a 700 pt fallback only when no size class is given. | `RemiLayoutMode.swift`, `PhoneLiveRootView.rootLayout` |
 | The iPhone and iPad Board is `PhoneBoardScreen`: one `LazyVStack` of cards inside `remiReadableScrollColumn()`, capped at 720 pt (`readableContentWidth`), in the density the person chose. | `PhoneBoardScreen.boardScroll` |
-| The shared engine already does multi-column placement from a width: `RemiBoardOrder.columnCount(width:minimumTile:spacing:)` (340 pt tiles, 12 pt spacing, at most 6 columns), `columns(heights:count:)` (each card goes under the shortest column), `layout` and `canvasSize` for the Mac's freeform frames. The Mac `MacCommandCenter` is the only caller of `layout` and `canvasSize`; `PhoneBoardScreen` uses neither. | `RemiBoard.swift`, `MacCommandCenter.swift` |
+| The shared engine resolves columns with `RemiBoardOrder.columnCount(width:minimumTile:spacing:)` (340 pt tiles, 12 pt spacing, at most 6 columns); `RemiBoardColumns.placements` places the phone cards by height and span. `RemiBoardOrder.columns` is a span-one compatibility wrapper. `layout` and `canvasSize` serve the Mac's freeform frames; `PhoneBoardScreen` uses neither. | `RemiBoard.swift`, `RemiBoardColumns.swift`, `MacCommandCenter.swift` |
 | Row, Small, Medium and Long are `RemiTileSize` densities with estimated heights 96, 260, 420 and 640 pt; the phone offers Compact (row), Medium and Long. | `RemiTileSize` |
 | Held state (the draft, the focused card, the shown order) lives in `@State` in the Board and above the compact and regular switch (#1629 fixed this for the draft). | `PhoneBoardScreen`, `PhoneLiveRootView` |
 
@@ -98,11 +98,11 @@ Placement packs by each card's phone card height (96, 240 or 440 pt). These are 
 That keeps the existing rules intact: the order is frozen while someone writes (`isWriting`, `held`), and a column assignment does not move under a focused composer.
 Reading order stays the order list; "send, then go to the next live card" (`RemiBoardOrder.next`) follows it, and a card in another column is scrolled to the same way (one vertical `ScrollView` holding the columns, `ScrollViewReader` unchanged).
 The Needs-you cards still sort first, so they land at the top of the leftmost columns.
-A card can span adjacent columns; placement chooses the window whose tallest occupied column is shortest, with ties going to the leftmost window.
+A card can span adjacent columns; `RemiBoardColumns.placements` chooses the window whose tallest occupied column is shortest, with ties going to the leftmost window.
 
 ### Resizing
 
-At two or more columns, the corner handle previews and stores each card's Compact, Medium or Long height and adjacent-column span, snapping width to the nearest span.
+The per-card size menu continues to set Compact, Medium or Long height; at two or more columns, the corner handle previews and stores height and adjacent-column span, snapping width to the nearest span.
 The Mac's freeform frames (`RemiBoardFrame`: drag, snap to edges and a 24 pt grid, a 340 by 260 pt minimum, `reflow`) are pointer-first and are not ported in the first slices; whether to port them for pointer and keyboard use on iPad is question 3.
 The window itself resizes continuously; the column count follows the pane width through `onGeometryChange`, with a small hysteresis (a column is added at its threshold and removed 24 pt below it) so a slow drag at a threshold does not flip layouts every frame.
 During `isInteractivelyResizing` nothing animates except the column count change.
@@ -116,9 +116,9 @@ A test pins the first of these: changing the width resolves a different column c
 
 ### What is shared with the Mac and what is not
 
-Shared in `RemiUI`: `RemiBoardOrder` (key, arrange, held order, visibility, feed, `columnCount`, `columns`), `RemiBoardState` (pins and sizes), `RemiTileSize` and the card views.
+Shared in `RemiUI`: `RemiBoardOrder` (key, arrange, held order, visibility, feed, `columnCount`), `RemiBoardColumns.placements` (phone card placement), `RemiBoardState` (pins, sizes and spans), `RemiTileSize` and the card views.
 Not shared: the Mac canvas (`layout`, `canvasSize`, frames, drag and snap) and `MacCommandCenter`'s window state, which stay Mac-only until question 3 says otherwise.
-The one new shared piece is a small pure resolver in `RemiUI` that turns a pane width and a sidebar state into a column count and a tile width, so the iPad and the Mac Board read the same rule and tests can pin it without a view.
+The shared pure resolver in `RemiUI` turns a pane width and sidebar state into a column count and tile width; the phone placement engine then maps its ordered cards into column spans without changing tile identity.
 
 ### Selecting a session
 

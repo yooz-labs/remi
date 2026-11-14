@@ -43,6 +43,44 @@ import Testing
         )
     }
 
+    @Test func placementTablesCoverSpansAfterCardsAndTheirFullCoveredHeight() {
+        #expect(
+            RemiBoardColumns.placements(
+                itemCount: 5,
+                columnCount: 3,
+                heights: [40, 20, 72, 10, 10],
+                spans: [1, 1, 1, 2, 1]
+            ) == [
+                placement(0, 0, 1), placement(1, 1, 1), placement(2, 2, 1),
+                placement(3, 0, 2), placement(4, 0, 1),
+            ]
+        )
+
+        #expect(
+            RemiBoardColumns.placements(
+                itemCount: 6,
+                columnCount: 4,
+                heights: [100, 20, 60, 100, 10, 10],
+                spans: [1, 1, 1, 1, 2, 1]
+            ) == [
+                placement(0, 0, 1), placement(1, 1, 1), placement(2, 2, 1),
+                placement(3, 3, 1), placement(4, 1, 2), placement(5, 1, 1),
+            ]
+        )
+
+        #expect(
+            RemiBoardColumns.placements(
+                itemCount: 5,
+                columnCount: 3,
+                heights: [40, 20, 72, 10, 10],
+                spans: [1, 1, 1, 3, 1]
+            ) == [
+                placement(0, 0, 1), placement(1, 1, 1), placement(2, 2, 1),
+                placement(3, 0, 3), placement(4, 0, 1),
+            ]
+        )
+    }
+
     @Test func unitSpansMatchTheOriginalUnequalHeightPlacementTables() {
         let twoColumns = RemiBoardColumns.placements(
             itemCount: 5,
@@ -128,7 +166,7 @@ import Testing
 
     @Test func horizontalDragUsesLiteralMidpointsForTwoThreeAndFourColumns() {
         let rows: [(columns: Int, start: Int, translation: CGFloat, expected: Int)] = [
-            (2, 1, 55, 1), (2, 1, 56, 2), (2, 1, 57, 2),
+            (2, 1, 55, 1), (2, 1, 55.5, 1), (2, 1, 56, 2), (2, 1, 57, 2),
             (2, 2, -57, 1), (2, 2, -56, 1), (2, 2, -55, 2),
             (3, 1, 55, 1), (3, 1, 56, 2), (3, 1, 57, 2),
             (3, 2, 55, 2), (3, 2, 56, 3), (3, 2, 57, 3),
@@ -195,6 +233,49 @@ import Testing
         #expect(RemiBoardCardResize.step(span: 1, direction: -1, columnCount: 4) == 1)
         #expect(RemiBoardCardResize.step(span: 2, direction: 1, columnCount: 4) == 3)
         #expect(RemiBoardCardResize.step(span: 4, direction: 1, columnCount: 4) == 4)
+
+        #expect(RemiBoardCardResize.span(
+            startingAt: 1,
+            horizontalTranslation: 168,
+            columnWidth: 100,
+            spacing: 12,
+            columnCount: 4
+        ) == 3)
+        #expect(RemiBoardCardResize.span(
+            startingAt: 2,
+            horizontalTranslation: .infinity,
+            columnWidth: 100,
+            spacing: 12,
+            columnCount: 4
+        ) == 2)
+        #expect(RemiBoardCardResize.span(
+            startingAt: 2,
+            horizontalTranslation: -CGFloat.infinity,
+            columnWidth: 100,
+            spacing: 12,
+            columnCount: 4
+        ) == 2)
+        #expect(RemiBoardCardResize.span(
+            startingAt: 6,
+            horizontalTranslation: 100,
+            columnWidth: 0,
+            spacing: 12,
+            columnCount: 4
+        ) == 4)
+        #expect(RemiBoardCardResize.span(
+            startingAt: 6,
+            horizontalTranslation: 100,
+            columnWidth: .nan,
+            spacing: 12,
+            columnCount: 4
+        ) == 4)
+        #expect(RemiBoardCardResize.span(
+            startingAt: 6,
+            horizontalTranslation: 100,
+            columnWidth: 100,
+            spacing: -1,
+            columnCount: 4
+        ) == 4)
     }
 
     private func placement(_ itemIndex: Int, _ firstColumn: Int, _ span: Int) -> RemiBoardColumnPlacement {

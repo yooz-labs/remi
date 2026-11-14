@@ -13,7 +13,9 @@ public struct RemiBoardCardPresentation: Equatable, Sendable {
     public var growsToContent: Bool { isMultiColumn }
 }
 
-/// The placement of one item in the flat Board tile tree.
+/// The placement of one input item in the flat Board tile tree.
+/// `itemIndex` is a zero-based index into the caller's input; `firstColumn` is a zero-based
+/// column index; `span` is a count of adjacent columns.
 public struct RemiBoardColumnPlacement: Equatable, Sendable {
     public let itemIndex: Int
     public let firstColumn: Int
@@ -23,6 +25,20 @@ public struct RemiBoardColumnPlacement: Equatable, Sendable {
         self.itemIndex = itemIndex
         self.firstColumn = firstColumn
         self.span = span
+    }
+
+    /// Whether this placement covers valid columns in a Board with the given count.
+    public func isValid(columnCount: Int) -> Bool {
+        let columns = max(columnCount, 1)
+        return firstColumn >= 0
+            && firstColumn <= columns
+            && span >= 1
+            && span <= columns - firstColumn
+    }
+
+    /// The card's width in points, including the gaps between its columns.
+    public func width(columnWidth: CGFloat, spacing: CGFloat) -> CGFloat {
+        CGFloat(span) * columnWidth + CGFloat(span - 1) * spacing
     }
 }
 
@@ -97,14 +113,17 @@ public struct RemiBoardColumns: Equatable, Sendable {
         return Self(columnCount: columnCount, cardWidth: cardWidth, groupWidth: groupWidth)
     }
 
-    /// Places items in reading order into the adjacent window whose tallest column is shortest.
-    /// Ties choose the leftmost window. Missing heights use the regular phone card height;
-    /// missing spans use one. Spans are clamped to the available columns and extra inputs ignored.
+    /// Screen-facing placement engine used by PhoneBoardScreen. It places items in reading order
+    /// into the adjacent window whose tallest column is shortest; ties choose the leftmost window.
+    /// `itemCount` and `columnCount` are counts; heights and spacing are points, and spans are
+    /// column counts. Missing heights use the regular phone card height, missing spans use one,
+    /// and spans clamp to the available columns. Extra heights and spans are ignored.
     public static func placements(
         itemCount: Int,
         columnCount: Int,
         heights: [CGFloat] = [],
-        spans: [Int] = []
+        spans: [Int] = [],
+        spacing: CGFloat = RemiBoardColumns.spacing
     ) -> [RemiBoardColumnPlacement] {
         let columns = max(columnCount, 1)
         let itemHeights = (0..<max(itemCount, 0)).map { index in
@@ -134,9 +153,8 @@ public struct RemiBoardColumns: Equatable, Sendable {
         return result
     }
 
-    /// Places items by their phone card heights, with a regular card height for any missing
-    /// entries. Extra heights are ignored. Counts below 1 are treated as 1. The result always
-    /// has that many columns, including empty columns, and preserves input order within each.
+    /// Compatibility wrapper for span-one items, mapped back into columns. The screen uses
+    /// ``placements(itemCount:columnCount:heights:spans:spacing:)`` to keep each tile in one flat layout.
     public static func place<Item>(
         _ items: [Item],
         columnCount: Int,

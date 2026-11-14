@@ -276,6 +276,39 @@ import Testing
         #expect(threeColumns.flatMap { $0 }.count == items.count)
     }
 
+    @Test func allSpanOnePlacementEntryPointsAgree() {
+        let tables: [(columnCount: Int, heights: [CGFloat])] = [
+            (2, [440, 96, 96, 96, 96]),
+            (3, [40, 20, 72, 10, 10]),
+            (4, [100, 20, 60, 100, 10, 10]),
+        ]
+
+        for table in tables {
+            let spans = Array(repeating: 1, count: table.heights.count)
+            let placements = RemiBoardColumns.placements(
+                itemCount: table.heights.count,
+                columnCount: table.columnCount,
+                heights: table.heights,
+                spans: spans
+            )
+            var groupedPlacements = Array(repeating: [Int](), count: table.columnCount)
+            for placement in placements {
+                groupedPlacements[placement.firstColumn].append(placement.itemIndex)
+            }
+
+            #expect(groupedPlacements == RemiBoardOrder.columns(
+                heights: table.heights,
+                count: table.columnCount,
+                spacing: RemiBoardColumns.spacing
+            ))
+            #expect(RemiBoardColumns.place(
+                Array(table.heights.indices),
+                columnCount: table.columnCount,
+                heights: table.heights
+            ) == groupedPlacements)
+        }
+    }
+
     private func startWidth(for columnCount: Int) -> CGFloat {
         2 * RemiBoardColumns.margin
             + CGFloat(columnCount) * RemiBoardColumns.minimumCardWidth

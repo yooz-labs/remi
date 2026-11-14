@@ -38,9 +38,9 @@ public struct RemiBoardCornerResize {
     public var onDragEnded: (_ translation: CGSize, _ topCorner: Bool) -> Void
     /// Called instead of onDragEnded on system cancellation; topCorner identifies the handle whose preview to discard.
     public var onDragCancelled: (_ topCorner: Bool) -> Void
-    /// The current displayed span, announced as "N columns wide".
+    /// The current displayed span, announced as "1 column wide" or "N columns wide".
     public var widthTitle: String
-    /// Each direction is -1, 0, or +1; span and size directions are mutually exclusive.
+    /// Callers pass 0 for the axis they do not change; other values use -1 or +1.
     public var onStep: (_ spanDirection: Int, _ sizeDirection: Int) -> Void
 
     public init(

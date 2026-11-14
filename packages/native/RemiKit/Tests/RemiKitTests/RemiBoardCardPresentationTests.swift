@@ -44,9 +44,16 @@ import Testing
         #expect(screen.contains("singleColumnStack(ordered: ordered, order: order, liveOrder: liveOrder, reader: reader)"))
         #expect(screen.contains("sizeChoices: presentation.sizeChoices"))
         #expect(screen.contains("growsToContent: presentation.growsToContent"))
+        #expect(screen.contains("columnCount: columnLayout.columnCount\n        )"))
+        #expect(screen.contains("let presentation = RemiBoardCardPresentation(columnCount: columnLayout.columnCount)"))
+        #expect(screen.contains("guard presentation.isMultiColumn,"))
+        #expect(screen.contains("let drag = cardResizeDrags[RemiBoardOrder.key(for: session)]"))
+        #expect(screen.contains("else { return effectiveSize(for: session) }"))
+        #expect(screen.contains("return drag.previewSize"))
         #expect(screen.contains("let placements = RemiBoardColumns.placements("))
         #expect(screen.contains("spans: ordered.map { displayedSpan(for: $0) }"))
         #expect(screen.contains("placements: placements,"))
+        #expect(screen.contains("widthTitle: RemiBoardCardResize.widthTitle(for: displayedSpan(for: session))"))
         #expect(screen.contains(".frame(width: columnLayout.groupWidth, alignment: .top)"))
         #expect(screen.contains(".frame(maxWidth: .infinity)"))
         #expect(screen.contains("guard RemiBoardCardPresentation(columnCount: count).isMultiColumn else { return 1 }"))
@@ -56,6 +63,8 @@ import Testing
         #expect(screen.contains("let heights = ordered.map { displayedSize(for: $0).phoneCardHeight }"))
         #expect(screen.contains("let size = displayedSize(for: session)"))
         #expect(!screen.contains("density.showsComposer"))
+        #expect(screen.contains(".onChange(of: composerKeys) { _, keys in"))
+        #expect(screen.contains("if let focusedKey = focus, !keys.contains(focusedKey) { focus = nil }"))
         #expect(screen.contains(".onChange(of: columnLayout.columnCount) { _, _ in cardResizeDrags = [:] }"))
         #expect(screen.contains("cardResizeDrags = cardResizeDrags.filter { live.contains($0.key) }"))
         #expect(screen.contains("var initialBoard: RemiBoardState? = nil"))
@@ -72,16 +81,23 @@ import Testing
         #expect(displayedSpan.contains("drag.previewSpan"))
         #expect(displayedSpan.contains("board.span(for:"))
 
-        let picker = try sourceSlice(
+        let pickerSetter = try sourceSlice(
             screen,
             from: "Picker(\"Card size\", selection: Binding(get: { density }, set: { size in",
-            to: "densityStorage = size.rawValue"
+            to: "\n            })) {"
         )
-        #expect(picker.contains("board.clearSizes()"))
-        #expect(picker.contains("saveBoard()"))
+        #expect(pickerSetter.contains("board.clearSizes()"))
+        #expect(pickerSetter.contains("saveBoard()"))
+        #expect(pickerSetter.contains("densityStorage = size.rawValue"))
 
-        let tileSetter = try sourceSlice(screen, from: "onSetSize: { selectedSize in", to: "onTogglePin: {")
-        #expect(tileSetter.contains("saveBoard()"))
+        let screenRange = screen.startIndex..<screen.endIndex
+        let tileSetterStart = try #require(
+            screen.range(of: "onSetSize: { selectedSize in", range: screenRange)?.lowerBound
+        )
+        let tileSetterEnd = try #require(
+            screen.range(of: "onTogglePin: {", range: tileSetterStart..<screen.endIndex)?.lowerBound
+        )
+        #expect(String(screen[tileSetterStart..<tileSetterEnd]).contains("saveBoard()"))
 
         let densityMenu = try sourceSlice(
             screen,
@@ -89,16 +105,17 @@ import Testing
             to: "private var overflowMenu: some View {"
         )
         #expect(densityMenu.contains("RemiBoardCardPresentation(columnCount: columnLayout.columnCount).isMultiColumn"))
+        #expect(densityMenu.contains("board.hasExplicitSizes"))
         #expect(densityMenu.contains("board.hasExplicitSizes || board.hasExplicitSpans"))
         #expect(densityMenu.contains("Button(\"Reset card sizes and widths\""))
-        let reset = try sourceSlice(
+        let resetAction = try sourceSlice(
             densityMenu,
             from: "Button(\"Reset card sizes and widths\", systemImage: \"arrow.counterclockwise\") {",
             to: ".help("
         )
-        #expect(reset.contains("board.clearSizes()"))
-        #expect(reset.contains("board.clearSpans()"))
-        #expect(reset.contains("saveBoard()"))
+        #expect(resetAction.contains("board.clearSizes()"))
+        #expect(resetAction.contains("board.clearSpans()"))
+        #expect(resetAction.contains("saveBoard()"))
 
         let spanStorage = try sourceSlice(board, from: "public func span(for key:", to: "public var savedFrames:")
         #expect(spanStorage.contains("max(1, spans[key] ?? 1)"))
@@ -129,6 +146,7 @@ import Testing
         #expect(phoneHandle.contains(".onKeyPress(.upArrow)"))
         #expect(phoneHandle.contains(".onKeyPress(.downArrow)"))
         #expect(phoneHandle.contains(".accessibilityValue(\"\\(sizeTitle), \\(widthTitle)\")"))
+        #expect(tile.contains("The current displayed span, announced as \"1 column wide\" or \"N columns wide\"."))
         #expect(phoneHandle.contains("DragGesture(minimumDistance: 1, coordinateSpace: .global)"))
 
         let dragUpdate = try sourceSlice(
@@ -139,8 +157,8 @@ import Testing
         #expect(dragUpdate.contains("if let activeDrag, activeDrag.topCorner != topCorner { return false }"))
         #expect(dragUpdate.contains("drag.startSpan"))
         #expect(dragUpdate.contains("drag.previewSpan"))
-        #expect(dragUpdate.contains("guard next.size != drag.previewSize || next.span != drag.previewSpan else { return true }"))
-        #expect(!dragUpdate.contains("if activeDrag == nil { cardResizeDrags[key]"))
+        #expect(dragUpdate.contains("guard next.size != drag.previewSize || next.span != drag.previewSpan else {"))
+        #expect(dragUpdate.contains("if activeDrag == nil { cardResizeDrags[key] = drag }"))
         #expect(dragUpdate.contains("cardResizeDrags[key] = drag"))
 
         let finish = try sourceSlice(screen, from: "private func finishCardResize(", to: "private func cancelCardResize(")
