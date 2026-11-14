@@ -148,7 +148,7 @@ struct PhoneBoardScreen: View {
         ordered: [RemiSessionSummary], order: [String], liveOrder: [String], reader: ScrollViewProxy
     ) -> some View {
         return ScrollView {
-            if columnLayout.columnCount == 1 {
+            if !RemiBoardCardPresentation(columnCount: columnLayout.columnCount).isMultiColumn {
                 singleColumnStack(ordered: ordered, order: order, liveOrder: liveOrder, reader: reader)
             } else {
                 multipleColumnStack(
@@ -285,6 +285,7 @@ struct PhoneBoardScreen: View {
             $0.machineID == session.machineID && $0.sessionID == session.id && $0.state == .pending
         }
         let entries = transcript(session)
+        let presentation = RemiBoardCardPresentation(columnCount: columnLayout.columnCount)
         return RemiBoardTile(
             session: session,
             tileKey: key,
@@ -325,10 +326,10 @@ struct PhoneBoardScreen: View {
                 )
             },
             extras: RemiBoardTileExtras(
-                sizeChoices: columnLayout.columnCount >= 2 ? RemiTileSize.phoneDensities : [],
+                sizeChoices: presentation.sizeChoices,
                 height: size.phoneCardHeight,
                 preview: { AnyView(RemiBoardPreview(session: session, entries: entries)) },
-                growsToContent: columnLayout.columnCount >= 2
+                growsToContent: presentation.growsToContent
             )
         )
     }

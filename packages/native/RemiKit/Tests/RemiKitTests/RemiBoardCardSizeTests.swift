@@ -49,13 +49,17 @@ import Testing
             columnCount: Int,
             toolbar: RemiTileSize,
             explicit: RemiTileSize?,
-            expected: RemiTileSize
+            expected: RemiTileSize,
+            expectedComposer: Bool
         )] = [
-            (1, .regular, .large, .regular),
-            (1, .row, .regular, .row),
-            (2, .regular, .large, .large),
-            (2, .large, .row, .row),
-            (3, .large, nil, .large),
+            (1, .regular, .large, .regular, true),
+            (1, .row, .regular, .row, false),
+            (0, .regular, .large, .regular, true),
+            (-1, .large, .row, .large, true),
+            (2, .regular, .large, .large, true),
+            (2, .large, .row, .row, false),
+            (2, .regular, .compact, .regular, true),
+            (3, .large, nil, .large, true),
         ]
 
         for row in rows {

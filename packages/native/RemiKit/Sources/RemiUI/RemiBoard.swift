@@ -192,8 +192,9 @@ public enum RemiTileSize: String, Codable, CaseIterable, Sendable {
         explicitSize: RemiTileSize?,
         columnCount: Int
     ) -> RemiTileSize {
-        guard columnCount >= 2 else { return toolbarDensity }
-        return explicitSize ?? toolbarDensity
+        let presentation = RemiBoardCardPresentation(columnCount: columnCount)
+        guard presentation.isMultiColumn, let explicitSize else { return toolbarDensity }
+        return phoneDensity(stored: explicitSize.rawValue)
     }
 
     /// Match the content density to a manually sized Mac Board card.

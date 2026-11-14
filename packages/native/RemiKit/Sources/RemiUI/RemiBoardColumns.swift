@@ -1,5 +1,18 @@
 import SwiftUI
 
+/// The phone card options that follow the Board's resolved column count.
+public struct RemiBoardCardPresentation: Equatable, Sendable {
+    public let columnCount: Int
+
+    public init(columnCount: Int) {
+        self.columnCount = columnCount
+    }
+
+    public var isMultiColumn: Bool { columnCount >= 2 }
+    public var sizeChoices: [RemiTileSize] { isMultiColumn ? RemiTileSize.phoneDensities : [] }
+    public var growsToContent: Bool { isMultiColumn }
+}
+
 /// Resolves a Board pane width into a responsive group of readable card columns.
 ///
 /// While a column is held during a one-column drop, `cardWidth` can be up to
