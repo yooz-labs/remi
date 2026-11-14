@@ -447,7 +447,7 @@ private struct GraceWindow: Hashable {
             canTerminate: template.canTerminate
         )
     }
-    PhoneBoardScreen(
+    return PhoneBoardScreen(
         sessions: sessions,
         machines: RemiPreviewData.machines,
         loadedMachines: [],
