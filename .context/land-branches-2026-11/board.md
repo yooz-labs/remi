@@ -48,7 +48,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 87 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Agents today | 30 | 88 | daily | every dispatch on every platform; the plan approval covers this limit |
 | Codex Luna today | 8 | 39 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 5 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
 | Claude Sonnet today | 16 | 12 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
