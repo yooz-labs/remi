@@ -5,7 +5,7 @@ import Testing
 
 /// A session's transcript is loaded once per connection and kept, and a load publishes once.
 extension SessionAddressingTests {
-    private func entry(sessionID: String, id: String, text: String) throws -> TranscriptContentMessage {
+    func entry(sessionID: String, id: String, text: String) throws -> TranscriptContentMessage {
         var payload = try #require(try JSONSerialization.jsonObject(
             with: FixtureConformanceTests.fixture("transcript_content")) as? [String: Any])
         payload["sessionId"] = sessionID

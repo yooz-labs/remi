@@ -2,60 +2,50 @@ import Foundation
 import Testing
 @testable import RemiKit
 
-@Suite(.serialized)
+@MainActor
 struct RemiOrderedTranscriptTests {
-    private func fixtureTemplate() throws -> [String: Any] {
-        try #require(try JSONSerialization.jsonObject(
-            with: FixtureConformanceTests.fixture("transcript_content")) as? [String: Any])
-    }
-
-    private func message(
-        template: [String: Any], id: String, content: String
-    ) throws -> TranscriptContentMessage {
-        var payload = template
-        payload["entryUuid"] = id
-        payload["content"] = content
-        return try JSONDecoder().decode(
-            TranscriptContentMessage.self,
-            from: JSONSerialization.data(withJSONObject: payload)
-        )
+    private func message(_ id: String, _ content: String) throws -> TranscriptContentMessage {
+        try SessionAddressingTests().entry(sessionID: "ordered-transcript-test", id: id, text: content)
     }
 
     @Test func emptyTranscriptHasNoEntries() {
-        #expect(RemiOrderedTranscript().entries.isEmpty)
+        let transcript = RemiOrderedTranscript()
+        #expect(transcript.entries.isEmpty)
+        #expect(transcript.count == 0)
+        #expect(transcript.suffix(0).isEmpty)
+        #expect(transcript.suffix(4).isEmpty)
     }
 
     @Test func newEntriesAppendInOrder() throws {
-        let template = try fixtureTemplate()
-        let first = try message(template: template, id: "a", content: "first")
-        let second = try message(template: template, id: "b", content: "second")
+        let first = try message("a", "first")
+        let second = try message("b", "second")
         let transcript = RemiOrderedTranscript()
 
         transcript.apply(first)
         transcript.apply(second)
 
+        #expect(transcript.count == 2)
         #expect(transcript.entries == [first, second])
     }
 
     @Test func duplicateReplacesAndMovesToTheEnd() throws {
-        let template = try fixtureTemplate()
-        let first = try message(template: template, id: "a", content: "first")
-        let second = try message(template: template, id: "b", content: "second")
-        let third = try message(template: template, id: "c", content: "third")
-        let replacement = try message(template: template, id: "a", content: "updated")
+        let first = try message("a", "first")
+        let second = try message("b", "second")
+        let third = try message("c", "third")
+        let replacement = try message("a", "updated")
         let transcript = RemiOrderedTranscript()
         for entry in [first, second, third, replacement] { transcript.apply(entry) }
 
+        #expect(transcript.count == 3)
         #expect(transcript.entries == [second, third, replacement])
     }
 
     @Test func interleavedDuplicatesKeepLastReplacementOrder() throws {
-        let template = try fixtureTemplate()
-        let firstA = try message(template: template, id: "a", content: "a1")
-        let firstB = try message(template: template, id: "b", content: "b1")
-        let firstC = try message(template: template, id: "c", content: "c1")
-        let secondB = try message(template: template, id: "b", content: "b2")
-        let secondA = try message(template: template, id: "a", content: "a2")
+        let firstA = try message("a", "a1")
+        let firstB = try message("b", "b1")
+        let firstC = try message("c", "c1")
+        let secondB = try message("b", "b2")
+        let secondA = try message("a", "a2")
         let transcript = RemiOrderedTranscript()
         for entry in [firstA, firstB, firstC, secondB, secondA] { transcript.apply(entry) }
 
@@ -63,9 +53,8 @@ struct RemiOrderedTranscriptTests {
     }
 
     @Test func compactionKeepsOrderAndSupportsUpdatesAndAppendsAfterward() throws {
-        let template = try fixtureTemplate()
         let initial = try (0..<64).map { index in
-            try message(template: template, id: "entry-\(index)", content: "initial-\(index)")
+            try message("entry-\(index)", "initial-\(index)")
         }
         let transcript = RemiOrderedTranscript()
         for entry in initial { transcript.apply(entry) }
@@ -77,29 +66,17 @@ struct RemiOrderedTranscriptTests {
             32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62,
         ]
         for index in replacementOrder {
-            transcript.apply(try message(
-                template: template,
-                id: "entry-\(index)",
-                content: "replacement-\(index)"
-            ))
+            transcript.apply(try message("entry-\(index)", "replacement-\(index)"))
         }
 
         #expect(transcript.count == 64)
         #expect(transcript.map(\.entryUuid) == replacementOrder.map { "entry-\($0)" })
 
         for index in [10, 20, 30, 40, 50, 60] {
-            transcript.apply(try message(
-                template: template,
-                id: "entry-\(index)",
-                content: "after-compaction-\(index)"
-            ))
+            transcript.apply(try message("entry-\(index)", "after-compaction-\(index)"))
         }
         for index in [64, 65] {
-            transcript.apply(try message(
-                template: template,
-                id: "entry-\(index)",
-                content: "new-\(index)"
-            ))
+            transcript.apply(try message("entry-\(index)", "new-\(index)"))
         }
 
         let expectedOrder = [
@@ -123,9 +100,8 @@ struct RemiOrderedTranscriptTests {
     }
 
     @Test func secondReplayRunsOverCompactedHistoryWithoutDuplicates() throws {
-        let template = try fixtureTemplate()
         let history = try (0..<200).map { index in
-            try message(template: template, id: "entry-\(index)", content: "message-\(index)")
+            try message("entry-\(index)", "message-\(index)")
         }
         let singlePass = RemiOrderedTranscript()
         let replayed = RemiOrderedTranscript()
@@ -140,9 +116,8 @@ struct RemiOrderedTranscriptTests {
     }
 
     @Test func replayingTheSameOrderedHistoryTwiceIsIdempotent() throws {
-        let template = try fixtureTemplate()
         let history = try (0..<4).map { index in
-            try message(template: template, id: "entry-\(index)", content: "message-\(index)")
+            try message("entry-\(index)", "message-\(index)")
         }
         let singlePass = RemiOrderedTranscript()
         let replayed = RemiOrderedTranscript()
@@ -154,30 +129,31 @@ struct RemiOrderedTranscriptTests {
     }
 
     @Test func suffixReturnsTheNewestEntriesInOrder() throws {
-        let template = try fixtureTemplate()
         let history = try (0..<4).map { index in
-            try message(template: template, id: "entry-\(index)", content: "message-\(index)")
+            try message("entry-\(index)", "message-\(index)")
         }
         let transcript = RemiOrderedTranscript()
         for entry in history { transcript.apply(entry) }
 
+        #expect(transcript.count == history.count)
+        #expect(transcript.suffix(0).isEmpty)
         #expect(transcript.suffix(2) == Array(history.suffix(2)))
+        #expect(transcript.suffix(history.count + 2) == history)
     }
 
     // The counter is self-reported, so the source guard also rejects common uncounted scans.
 #if DEBUG
     @Test(arguments: [1_000, 4_000])
     func replayedDuplicatesUseLinearElementWork(_ entryCount: Int) throws {
-        let template = try fixtureTemplate()
         let history = try (0..<entryCount).map { index in
-            try message(template: template, id: "entry-\(index)", content: "message-\(index)")
+            try message("entry-\(index)", "message-\(index)")
         }
         let transcript = RemiOrderedTranscript()
         for entry in history { transcript.apply(entry) }
         let visitsBeforeReplay = transcript.testingElementVisits
 
         for entry in history {
-            transcript.apply(try message(template: template, id: entry.entryUuid, content: "updated"))
+            transcript.apply(try message(entry.entryUuid, "updated"))
         }
 
         let replayVisits = transcript.testingElementVisits - visitsBeforeReplay
