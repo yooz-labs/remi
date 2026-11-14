@@ -120,6 +120,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | ID | Time | Proposal | Why | State |
 |---|---|---|---|---|
+| P1 | 2026-11-13T23:27-08:00 | P05 card: corner resize handles on iPad Board cards (height snap to sizes, column span) | owner asked 2026-11-13; depends on P03 merging; design questions listed in the issue | open |
 
 ## Agents
 
