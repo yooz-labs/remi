@@ -31,6 +31,10 @@ import Testing
             contentsOf: nativeRoot.appendingPathComponent("iPhone/PhoneBoardScreen.swift"),
             encoding: .utf8
         )
+        let tile = try String(
+            contentsOf: nativeRoot.appendingPathComponent("RemiKit/Sources/RemiUI/BoardTile.swift"),
+            encoding: .utf8
+        )
 
         #expect(screen.contains("if !RemiBoardCardPresentation(columnCount: columnLayout.columnCount).isMultiColumn {"))
         #expect(screen.contains("sizeChoices: presentation.sizeChoices"))
@@ -47,6 +51,9 @@ import Testing
             screen.contains("board = storedBoard == RemiBoardState() ? (initialBoard ?? storedBoard) : storedBoard")
         )
         #expect(screen.contains("initialBoard: mixedSizes ? previewBoard : nil"))
+        #expect(tile.contains("RemiBoardTileSizing.growsToContent("))
+        #expect(tile.contains("content.frame(minHeight: height)"))
+        #expect(tile.contains("content.frame(height: height)"))
 
         let pickerStart = try #require(
             screen.range(of: "Picker(\"Card size\", selection: Binding(get: { density }, set: { size in")?.lowerBound
