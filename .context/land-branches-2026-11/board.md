@@ -48,8 +48,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 36 | daily | every dispatch on every platform; the plan approval covers this limit |
-| Codex Luna today | 8 | 15 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
+| Agents today | 30 | 38 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Codex Luna today | 8 | 17 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 3 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
 | Claude Sonnet today | 16 | 12 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
 | Claude Opus today | 4 | 4 | daily | lead wakes, lead-tier steps, advisor consults |
@@ -87,7 +87,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | A03 | [Account switching checkpoint](cards/A03-account-switching-checkpoint.md) | - | lead | - | - | done | A02 | - | 2026-11-13T13:07-08:00 | 1d | Fable findings F1-F12 (all fix) sent to the A01 author a290e7ce to fold into ADR 0049/epic/competitive review; then CP4 owner questions (ADR Q1-Q14) |
 | CP1 | CP1 go or adjust for L07 and L08 | - | - | - | - | done | - | - | - | - | manager sets done when L01 to L06 are done or dropped and the lead's CP1 decision is recorded; now gates only L07's unpark |
 | L14 | [image-availability #1313](cards/L14-image-availability.md) | - | worker | xcode | - | done | L03 | 1737 | 2026-11-13T06:11-08:00 | 1d | delta clean; waiting hosted: native rerun after the #1739 flake, relay soak; then merge gate (Part of #1313, closing refs []) |
-| P02a | [Board column resolver, slice 1](cards/P02a-board-columns-resolver.md) |  | worker | xcode | codex-luna | active | P01 | 1755 | 2026-11-13T17:25-08:00 | 4h | Delta review running, CI rerun, then merge gate and DV |
+| P02a | [Board column resolver, slice 1](cards/P02a-board-columns-resolver.md) |  | worker | xcode | codex-luna | done | P01 | 1755 | 2026-11-13T17:25-08:00 | 4h | merged 3c8f8657 (bump 0ee33483); DV r11 running |
+| P02b | Board columns in PhoneBoardScreen (slice 2a, #1745) |  |  |  |  | active |  |  | 2026-11-13T21:32-08:00 |  | Luna P02b r1 running in board-columns-view; then review, merge gate, DV |
 
 ## Questions
 
