@@ -94,7 +94,7 @@ The iPhone Duo uses the same rule with the point widths from the simulator profi
 
 ### Placement
 
-With one density for every card, placement is reading-order round-robin; per-card heights would enter `RemiBoardOrder.columns` only when cards differ in height.
+Placement packs by each card's phone card height (96, 240 or 440 pt). These are minimums because cards grow to fit their content at two or more columns, so columns can be unbalanced by design.
 That keeps the existing rules intact: the order is frozen while someone writes (`isWriting`, `held`), and a column assignment does not move under a focused composer.
 Reading order stays the order list; "send, then go to the next live card" (`RemiBoardOrder.next`) follows it, and a card in another column is scrolled to the same way (one vertical `ScrollView` holding the columns, `ScrollViewReader` unchanged).
 The Needs-you cards still sort first, so they land at the top of the leftmost columns.
