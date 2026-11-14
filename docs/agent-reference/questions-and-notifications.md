@@ -372,10 +372,10 @@ of each subcommand, so a migrated deny is narrower and mid-command patterns
 (`push --force`) are not carried over. Everything not carried over is listed
 on stderr with its reason.
 
-**Notification channels: APNS push and iPhone local question notifications:**
+**Notification channels (APNS push, plus iPhone local question notifications):**
 
 - Daemon sends WebSocket `question` (in-app display) AND APNS push (lock screen), by one of two paths (#1200).
-- The iPhone app also posts a local question notification for a question first seen while its session is connected, after the initial question snapshot. Questions already pending in that snapshot are not posted again on reconnect or cold launch. The local notification id differs from the APNS card id, so the app does not coalesce a local notification with an APNS card for the same question.
+- The iPhone app also posts a local question notification for a question first seen after an attach-confirmed snapshot on that session connection. Questions already pending in that snapshot are not posted again on reconnect, including on hub child-session connections. A connection without attach state or without an attach-time snapshot fails closed: it posts no local question notification, and APNS delivery is unaffected. The local notification id differs from the APNS card id, so the app does not coalesce a local notification with an APNS card for the same question.
 - **Legacy plaintext push is ON by default.**
   `notifications.legacy_push_enabled` defaults to `true` until secure push ships end to end; the default flips at the R7 gate (owner decision).
   The daemon POSTs the text to the signaling Worker's `/push` with the push secret (`--push-secret` or `REMI_PUSH_SECRET`), and the Worker needs `PUSH_SECRET` (and `LEGACY_PUSH_ENABLED` not set to a false value) to forward it to APNS. A hub passes its push secret to spawned session daemons through their environment only while legacy eligibility remains open; after secure activation it strips that credential (#1679). Same-user process inspection remains possible (#1252).
