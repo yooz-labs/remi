@@ -81,11 +81,15 @@ import Testing
     }
 
     @Test func rawColumnCountDelegatesToBoardOrder() {
+        #expect(RemiBoardColumns.margin == 16)
+        #expect(RemiBoardColumns.minimumCardWidth == 300)
+        #expect(RemiBoardColumns.spacing == 12)
+
         for paneWidth in stride(from: 0, through: 2_400, by: 1) {
             let expected = RemiBoardOrder.columnCount(
-                width: CGFloat(paneWidth) - 2 * RemiBoardColumns.margin,
-                minimumTile: RemiBoardColumns.minimumCardWidth,
-                spacing: RemiBoardColumns.spacing
+                width: CGFloat(paneWidth) - 32,
+                minimumTile: 300,
+                spacing: 12
             )
             #expect(RemiBoardColumns.resolve(paneWidth: CGFloat(paneWidth)).columnCount == expected)
         }
