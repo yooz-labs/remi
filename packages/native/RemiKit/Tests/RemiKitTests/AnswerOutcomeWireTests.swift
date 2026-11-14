@@ -5,15 +5,32 @@ import Testing
 @testable import RemiKit
 
 #if os(macOS)
-enum PeerError: Error, Equatable {
-    case startupTimedOut, startupFailed, encodingFailed, unexpectedInput
+enum PeerError: Error, Equatable, CustomStringConvertible {
+    case startupTimedOut(component: String, waitedMilliseconds: Int)
+    case startupFailed(component: String, reason: String, waitedMilliseconds: Int)
+    case encodingFailed, unexpectedInput
+
+    var description: String {
+        switch self {
+        case let .startupTimedOut(component, waitedMilliseconds):
+            "\(component) was not ready after \(waitedMilliseconds) ms"
+        case let .startupFailed(component, reason, waitedMilliseconds):
+            "\(component) failed before becoming ready after \(waitedMilliseconds) ms: \(reason)"
+        case .encodingFailed:
+            "The peer could not encode its response"
+        case .unexpectedInput:
+            "The peer received unexpected input"
+        }
+    }
 }
 
 /// A single synthetic WebSocket peer, bound only to loopback. It exercises the
 /// real native client; it is neither a daemon substitute nor a device test.
 final class OwnedAnswerPeer: @unchecked Sendable {
+    private static let listenerReadiness = "NWListener bound and ready to accept loopback TCP connections"
     private let queue = DispatchQueue(label: "remi.test.answer-outcome-peer")
     private let lock = NSLock()
+    private let clock = ContinuousClock()
     private let listener: NWListener
     private let mode: String
     private let challenge: Data
@@ -23,6 +40,8 @@ final class OwnedAnswerPeer: @unchecked Sendable {
     private let helloData: Data
     private var port: UInt16?
     private var started = false
+    private var startRequestedAt: ContinuousClock.Instant?
+    private var listenerReadyAt: ContinuousClock.Instant?
     private var listenerEnded = false
     private var connectionEnded = true
     private var connectionReady = false
@@ -81,20 +100,51 @@ final class OwnedAnswerPeer: @unchecked Sendable {
     var pinnedPublicKey: String { publicKey.base64EncodedString() }
     func snapshot() -> (port: UInt16?, ended: Bool, failure: PeerError?, answers: Int, results: Int,
                         rejected: Bool, connectionReady: Bool, connectionEnded: Bool, images: Int, inputs: Int,
-                        terminals: Int) {
+                        terminals: Int, startRequestedAt: ContinuousClock.Instant?, listenerReadyAt: ContinuousClock.Instant?) {
         lock.lock(); defer { lock.unlock() }
         return (port, listenerEnded && connectionEnded, failure, answerCount, resultCount, inputRejected,
-                connectionReady, connectionEnded, imageCount, userInputCount, terminalCount)
+                connectionReady, connectionEnded, imageCount, userInputCount, terminalCount, startRequestedAt,
+                listenerReadyAt)
+    }
+
+    private static func elapsedMilliseconds(from start: ContinuousClock.Instant,
+                                            to end: ContinuousClock.Instant) -> Int {
+        let components = start.duration(to: end).components
+        let milliseconds = components.seconds * 1_000 + components.attoseconds / 1_000_000_000_000_000
+        return Int(max(0, milliseconds))
+    }
+
+    private func startupRequestedAtOrNow() -> ContinuousClock.Instant {
+        lock.lock(); defer { lock.unlock() }
+        return startRequestedAt ?? clock.now
     }
 
     func start() {
-        lock.lock(); started = true; lock.unlock()
+        lock.lock()
+        started = true
+        if startRequestedAt == nil { startRequestedAt = clock.now }
+        lock.unlock()
         listener.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             self.lock.lock(); defer { self.lock.unlock() }
             switch state {
-            case .ready: self.port = self.listener.port?.rawValue
-            case .failed: self.failure = .startupFailed; self.listenerEnded = true
+            case .ready:
+                guard let port = self.listener.port?.rawValue else {
+                    let start = self.startRequestedAt ?? self.clock.now
+                    self.failure = .startupFailed(component: Self.listenerReadiness,
+                        reason: "NWListener reached .ready without a bound port",
+                        waitedMilliseconds: Self.elapsedMilliseconds(from: start, to: self.clock.now))
+                    self.listenerEnded = true
+                    return
+                }
+                self.port = port
+                self.listenerReadyAt = self.clock.now
+            case .failed(let error):
+                let start = self.startRequestedAt ?? self.clock.now
+                self.failure = .startupFailed(component: Self.listenerReadiness,
+                    reason: error.localizedDescription,
+                    waitedMilliseconds: Self.elapsedMilliseconds(from: start, to: self.clock.now))
+                self.listenerEnded = true
             case .cancelled: self.listenerEnded = true
             default: break
             }
@@ -106,42 +156,59 @@ final class OwnedAnswerPeer: @unchecked Sendable {
         listener.start(queue: queue)
     }
 
-    func waitForPort(timeout: Duration = .seconds(5)) async throws -> UInt16 {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while ContinuousClock.now < deadline {
+    func waitForPort(timeout: Duration = .seconds(30)) async throws -> UInt16 {
+        let waitStartedAt = startupRequestedAtOrNow()
+        let deadline = waitStartedAt.advanced(by: timeout)
+        while true {
             let state = snapshot()
             if let failure = state.failure { throw failure }
-            if let port = state.port { return port }
-            try await Task.sleep(for: .milliseconds(10))
+            if let port = state.port, let ready = state.listenerReadyAt, ready <= deadline {
+                if ProcessInfo.processInfo.environment["REMI_TRACE_OWNED_ANSWER_PEER_STARTUP"] == "1",
+                   let start = state.startRequestedAt {
+                    let elapsed = Self.elapsedMilliseconds(from: start, to: ready)
+                    print("OwnedAnswerPeer listener bound and ready to accept loopback TCP connections after \(elapsed) ms")
+                }
+                return port
+            }
+            let remaining = clock.now.duration(to: deadline)
+            guard remaining > .zero else { break }
+            try await Task.sleep(for: min(.milliseconds(10), remaining))
         }
-        throw PeerError.startupTimedOut
+        throw PeerError.startupTimedOut(component: Self.listenerReadiness,
+            waitedMilliseconds: Self.elapsedMilliseconds(from: waitStartedAt, to: clock.now))
     }
 
     func waitForRejection(timeout: Duration = .seconds(3)) async throws {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while ContinuousClock.now < deadline {
+        let waitStartedAt = clock.now
+        let deadline = waitStartedAt.advanced(by: timeout)
+        while clock.now < deadline {
             if snapshot().rejected { return }
             try await Task.sleep(for: .milliseconds(10))
         }
-        throw PeerError.startupTimedOut
+        throw PeerError.startupTimedOut(component: "NWConnection to reject peer input",
+            waitedMilliseconds: Self.elapsedMilliseconds(from: waitStartedAt, to: clock.now))
     }
 
     func waitForConnectionReady(timeout: Duration = .seconds(3)) async throws {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while ContinuousClock.now < deadline {
+        let waitStartedAt = clock.now
+        let deadline = waitStartedAt.advanced(by: timeout)
+        while clock.now < deadline {
             if snapshot().connectionReady { return }
             try await Task.sleep(for: .milliseconds(10))
         }
-        throw PeerError.startupTimedOut
+        throw PeerError.startupTimedOut(component: "NWConnection readiness",
+            waitedMilliseconds: Self.elapsedMilliseconds(from: waitStartedAt, to: clock.now))
     }
 
     func waitForConnectionEnd(timeout: Duration = .seconds(3)) async throws {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while ContinuousClock.now < deadline {
+        let waitStartedAt = clock.now
+        let deadline = waitStartedAt.advanced(by: timeout)
+        while clock.now < deadline {
             if snapshot().connectionEnded { return }
             try await Task.sleep(for: .milliseconds(10))
         }
-        throw PeerError.startupTimedOut
+        throw PeerError.startupTimedOut(component: "NWConnection cancellation",
+            waitedMilliseconds: Self.elapsedMilliseconds(from: waitStartedAt, to: clock.now))
     }
 
     /// One bounded adversarial image-boundary frame on an already authenticated test peer.
@@ -304,7 +371,12 @@ struct AnswerOutcomeWireTests {
             _ = try await peer.waitForPort(timeout: .milliseconds(150))
             Issue.record("An unstarted listener cannot become ready")
         } catch let error as PeerError {
-            #expect(error == .startupTimedOut)
+            if case let .startupTimedOut(component, waitedMilliseconds) = error {
+                #expect(component == "NWListener bound and ready to accept loopback TCP connections")
+                #expect(waitedMilliseconds >= 150)
+            } else {
+                Issue.record("Expected a detailed listener readiness timeout, got \(error)")
+            }
         }
         #expect(await peer.stop())
     }
