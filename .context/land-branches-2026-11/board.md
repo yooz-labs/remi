@@ -93,6 +93,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | P03 | Per-card density and content-height cards at 2+ columns (slice 3, #1745, #1759) |  |  |  |  | done |  |  | 2026-11-13T22:59-08:00 |  | merged 8364bb35; DV r13 green |
 | P05a | Corner resize handles stepping card size on iPad (issue 1763, part 1) |  |  |  |  | active |  |  | 2026-11-14T00:46-08:00 |  | Luna P05a r1 running in board-handles (stacked on PR 1761 head 14df3331); then review panel, merge gate (after 1761 merges), DV |
 | F1634 | Harden ImageIngressSocketTests peer startup wait (#1634 part 1) |  |  |  |  | active |  |  | 2026-11-14T00:23-08:00 |  | fix round r3 running (Luna resumed); then ONE delta, merge gate, DV |
+| P05b | Card column span via the corner handle (issue 1763, part 2) |  |  |  |  | todo |  |  |  |  | after P05a merges: worktree board-span, dispatch Luna |
 
 ## Questions
 
