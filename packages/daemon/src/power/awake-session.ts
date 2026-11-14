@@ -64,6 +64,8 @@ export class AwakeSession {
   /** Failed spawns or unexpected exits since the last hold transition. */
   private failures = 0;
   private troubleLogged = false;
+  /** The final line for an exhausted retry budget was written; reset at each hold transition. */
+  private exhaustedLogged = false;
   private disposed = false;
   private pendingReason = 'turn open';
 
@@ -117,6 +119,7 @@ export class AwakeSession {
             this.pendingReason = effect.reason;
             this.failures = 0;
             this.troubleLogged = false;
+            this.exhaustedLogged = false;
             this.cancelRetry();
             void this.ensureHolder();
             break;
@@ -202,11 +205,20 @@ export class AwakeSession {
   private holderTrouble(detail: string): void {
     if (this.disposed || !this.state.held || this.retryTimer !== null) return;
     if (this.failures >= this.retryDelaysMs.length) {
-      if (this.holder.pid === null && this.holdLogged) {
-        this.holdLogged = false;
-        this.log(
-          `[Awake] Hold ended for ${this.sessionId} (caffeinate ${detail}; no retry until the next hold)`,
-        );
+      if (this.holder.pid === null) {
+        if (this.holdLogged) {
+          this.holdLogged = false;
+          this.log(
+            `[Awake] Hold ended for ${this.sessionId} (caffeinate ${detail}; no retry until the next hold)`,
+          );
+        } else if (!this.exhaustedLogged) {
+          // No "Hold started" was ever logged, so there is no hold to end; the
+          // earlier "restarting it" line would otherwise be the only trace.
+          this.log(
+            `[Awake] Hold could not be established for ${this.sessionId} (caffeinate ${detail}; no retry until the next hold)`,
+          );
+        }
+        this.exhaustedLogged = true;
       }
       return;
     }

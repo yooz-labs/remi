@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateId } from '@remi/shared';
@@ -524,6 +524,42 @@ if (process.platform !== 'darwin') {
       );
     } finally {
       awake.dispose();
+    }
+  });
+
+  test('a caffeinate that never starts logs one final line that the hold could not be established', async () => {
+    // A symlink loop makes the spawn fail with ELOOP: transient, so it is retried.
+    const directory = mkdtempSync(join(tmpdir(), 'remi-awake-eloop-'));
+    const executable = join(directory, 'caffeinate');
+    symlinkSync(executable, executable);
+    const messageApi = new MessageAPI({ sessionId: generateId() });
+    const sessionId = generateId();
+    const logs: string[] = [];
+    let holder: CountingHolder | undefined;
+    const awake = new AwakeSession(sessionId, messageApi, sessionConfig, (m) => logs.push(m), {
+      createHolder: (onUnexpectedExit) => {
+        holder = new CountingHolder({ ttlSeconds: 60, executable, onUnexpectedExit });
+        return holder;
+      },
+      retryDelaysMs: [10, 20, 40],
+    });
+    try {
+      messageApi.handleStatusChange('executing');
+      await waitUntil(() => holder?.starts === 4, 'four start attempts');
+      await waitUntil(
+        () => logs.some((m) => m.includes('could not be established')),
+        'the final line',
+      );
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(holder?.starts).toBe(4);
+      expect(awake.isHolding).toBe(false);
+      expect(logs).toEqual([
+        `[Awake] caffeinate failed to start (ELOOP) for ${sessionId}; restarting it up to 3 times`,
+        `[Awake] Hold could not be established for ${sessionId} (caffeinate failed to start (ELOOP); no retry until the next hold)`,
+      ]);
+    } finally {
+      awake.dispose();
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 
