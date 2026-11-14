@@ -46,7 +46,7 @@ Simulator evidence (`P01/` in the artifact folder; exact build of `b4a53f0d`, re
 
 ## Not run
 
-- The iPhone Duo simulator: the `iPhone Duo` device type is installed, but the iOS 27.1 runtime that Apple's guide requires is listed and not downloaded here, and the iOS 27.0 runtime cannot create the device (`simctl` code 401). Downloading the runtime is the owner's decision (question 6).
+- The iPhone Duo poses: on 2026-11-13 the owner installed the iOS 27.2 and watchOS 27.2 simulator runtimes, and `xcrun simctl create "Remi P01 Duo" ... iPhone-Duo ... iOS-27-2-iPhone19-4` works; the exact build installed and launched on it. No screenshot was captured: the Duo has several framebuffers, `simctl io screenshot` hangs on it, and the mobile tool's agent does not start on it. The unfolded and folded poses need Device Hub in Xcode (a visible GUI run, which needs the owner's announced go-ahead), so the Duo lines in every receipt stay "not run" until then (question 6).
 - An iPad on a real external display: no physical iPad and display were available. What iPadOS 27.x does there is not in the Apple text read (see "NOT FOUND" in PLATFORM-KNOWLEDGE), so this design treats the external display as a large window of the same scene and keeps a verification gate for it (slice 5).
 - A drag-resized iPad window: the resizable simulator in Device Hub was not driven; the narrowest window the design targets is computed below.
 
@@ -124,5 +124,5 @@ Each is one pull request into `develop`, with the visual gate from `VISUAL-ACCEP
 3. **Freeform resizing on iPad.** Recommended: no, density presets only in slices 1 to 5, and revisit slice 6 after the owner has used it with a pointer. Alternative: port the Mac frames now.
 4. **A selected session beside the Board.** Recommended: out of scope here; design it after slice 2 ships, because it changes navigation. Alternative: add it to this track.
 5. **Sidebar on the Duo inner display.** Recommended: decide after the first Duo simulator run, not now, because the inner display's width is not in Apple's text.
-6. **The iOS 27.1 simulator runtime.** The Duo cannot be run here without it. Recommended: download it from Xcode Settings (a few gigabytes), so the Duo poses are run for slice 2 onward. Alternative: accept a "not run" Duo line in every receipt and verify on a real Duo.
+6. **Duo poses through Device Hub.** The runtime is installed and the simulator device exists; the folded and unfolded poses can only be driven and captured in Device Hub, a visible GUI run. Recommended: the owner announces a session where this is done for slice 2 and the screenshots go into the receipt. Alternative: accept "not run" for the Duo until a real device is available.
 7. **External display.** What iPadOS 27.x does with an app on an external display is not in the Apple text read. Recommended: the owner connects an iPad to a display once the first slice is on TestFlight and reports whether the window is resizable and interactive; slice 5 follows that result.
