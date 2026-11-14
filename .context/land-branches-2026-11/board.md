@@ -189,4 +189,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | opus-A04-apps-design | implementer | claude-opus | opus xhigh | A04 | 2026-11-14T13:15 | running (issue 1784) |
 | sonnet-docs-remi | implementer | claude-sonnet | sonnet high | DOCS | 2026-11-14T13:15 | done |
 | rv-AW1-delta | reviewer | extra | sonnet xhigh | AW1 | 2026-11-14T13:25 | done |
-| sonnet-AW1-minors | implementer | claude-sonnet | sonnet high | AW1 | 2026-11-14T13:45 | running |
+| sonnet-AW1-minors | implementer | claude-sonnet | sonnet high | AW1 | 2026-11-14T13:45 | done |
