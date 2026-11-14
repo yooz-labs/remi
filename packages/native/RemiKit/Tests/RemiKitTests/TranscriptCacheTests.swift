@@ -74,6 +74,33 @@ extension SessionAddressingTests {
     }
 
 #if DEBUG
+    @Test func firstTranscriptLoadHandsOffTheStagedInstance() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        store.ownedTranscriptSend = { _ in }
+        let key = MachineSessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let route = fixture.routes[0]
+        let generation = try #require(store.connectionGenerations[route])
+        let messages = try (0..<3).map { index in
+            try entry(sessionID: sid, id: "first-load-\(index)", text: "message-\(index)")
+        }
+
+        store.loadTranscript(machineID: fixture.ids.a, sessionId: sid)
+        for message in messages {
+            store.receive(.transcript(message), from: route, generation: generation)
+        }
+        let stagedIdentity = try #require(store.ownedTranscriptStagingIdentity(for: key))
+        store.receive(.transcriptComplete(try complete(sessionID: sid)), from: route, generation: generation)
+
+        let published = try #require(store.transcriptsBySession[key])
+        #expect(ObjectIdentifier(published) == stagedIdentity)
+        #expect(published.map(\.entryUuid) == messages.map(\.entryUuid))
+        #expect(published.map(\.content) == messages.map(\.content))
+    }
+#endif
+
+#if DEBUG
     @Test func reconnectReplayKeepsHistoryOrderWithoutDuplicates() throws {
         let fixture = try twoMachines()
         defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }

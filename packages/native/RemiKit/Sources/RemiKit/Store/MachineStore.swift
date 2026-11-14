@@ -538,6 +538,9 @@ public final class MachineStore {
     #if DEBUG
     /// Replaces a route's connection generation, as a reconnect does.
     func ownedReplaceConnectionGeneration(_ route: MachineEndpoint) { connectionGenerations[route] = UUID() }
+    func ownedTranscriptStagingIdentity(for key: MachineSessionKey) -> ObjectIdentifier? {
+        transcriptStaging[key].map(ObjectIdentifier.init)
+    }
     /// Replaces the wire send of a transcript request, so a timer test does not depend on a live hub.
     @ObservationIgnored var ownedTranscriptSend: (@MainActor (TranscriptLoadRequestMessage) async throws -> Void)?
     @ObservationIgnored var ownedBeforeLocalAnswerSend: (@Sendable () async throws -> Void)?
@@ -1854,9 +1857,15 @@ public final class MachineStore {
         transcriptKeyByRequest = transcriptKeyByRequest.filter { $0.value != key }
         // What arrived is shown even when the load did not finish; only a complete one counts as cached.
         if let staged = transcriptStaging.removeValue(forKey: key) {
-            let transcript = transcriptsBySession[key] ?? RemiOrderedTranscript()
-            // Merge only after replay so the previously published transcript stays visible in flight.
-            for message in staged { transcript.apply(message) }
+            let transcript: RemiOrderedTranscript
+            if let published = transcriptsBySession[key] {
+                transcript = published
+                // Merge only after replay so the published transcript remains visible in flight.
+                for message in staged { transcript.apply(message) }
+            } else {
+                // A first load can transfer its staged instance without applying every entry again.
+                transcript = staged
+            }
             // Reassign the same reference so Observation publishes the transcript change.
             transcriptsBySession[key] = transcript
         }
