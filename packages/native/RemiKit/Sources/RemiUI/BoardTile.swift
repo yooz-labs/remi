@@ -30,17 +30,21 @@ public struct RemiBoardTilePlacement {
     }
 }
 
-/// Discrete resizing controls for a phone Board card in a multi-column layout.
+/// Resizing controls; the screen decides which cards show the corner handles.
 public struct RemiBoardCornerResize {
-    public var onDragChanged: (_ verticalTranslation: CGFloat, _ topCorner: Bool) -> Void
+    /// Receives cumulative vertical translation in points since gesture start (positive down) and topCorner; returns false for a concurrent drag.
+    public var onDragChanged: (_ verticalTranslation: CGFloat, _ topCorner: Bool) -> Bool
+    /// Receives final cumulative vertical translation in points since gesture start (positive downward) and whether the top corner fired.
     public var onDragEnded: (_ verticalTranslation: CGFloat, _ topCorner: Bool) -> Void
-    public var onDragCancelled: () -> Void
+    /// Called instead of onDragEnded on system cancellation; topCorner identifies the handle whose preview to discard.
+    public var onDragCancelled: (_ topCorner: Bool) -> Void
+    /// Direction is +1 for taller and -1 for shorter.
     public var onStep: (_ direction: Int) -> Void
 
     public init(
-        onDragChanged: @escaping (_ verticalTranslation: CGFloat, _ topCorner: Bool) -> Void,
+        onDragChanged: @escaping (_ verticalTranslation: CGFloat, _ topCorner: Bool) -> Bool,
         onDragEnded: @escaping (_ verticalTranslation: CGFloat, _ topCorner: Bool) -> Void,
-        onDragCancelled: @escaping () -> Void,
+        onDragCancelled: @escaping (_ topCorner: Bool) -> Void,
         onStep: @escaping (_ direction: Int) -> Void
     ) {
         self.onDragChanged = onDragChanged
@@ -170,6 +174,10 @@ public struct RemiBoardTile<Question: View>: View {
     }
 
     private var needsYou: Bool { session.status == .needsYou }
+    private var cornerResizeTrailingInset: CGFloat {
+        guard extras.cornerResize != nil, extras.placement == nil else { return 0 }
+        return RemiBoardCardResize.trailingControlInset
+    }
     private var canSend: Bool {
         session.isLive && !sending && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -261,6 +269,8 @@ public struct RemiBoardTile<Question: View>: View {
             }
             if extras.placement != nil { movementGrip }
         }
+        .padding(.trailing, cornerResizeTrailingInset == 0 ? 0 : RemiTheme.Spacing.xs)
+        .padding(.trailing, cornerResizeTrailingInset)
     }
 
     private var headerTitleContent: some View {
@@ -326,6 +336,8 @@ public struct RemiBoardTile<Question: View>: View {
     @ViewBuilder private var rowSummary: some View {
         if needsYou {
             waitingNotice
+                .padding(.trailing, cornerResizeTrailingInset == 0 ? 0 : RemiTheme.Spacing.xs)
+                .padding(.trailing, cornerResizeTrailingInset)
         } else {
             Button(action: onOpen) {
                 Text(latestLine)
@@ -337,6 +349,8 @@ public struct RemiBoardTile<Question: View>: View {
             }
             .buttonStyle(.plain)
             .accessibilityHint("Opens the whole conversation")
+            .padding(.trailing, cornerResizeTrailingInset == 0 ? 0 : RemiTheme.Spacing.xs)
+            .padding(.trailing, cornerResizeTrailingInset)
         }
     }
 
@@ -445,6 +459,7 @@ public struct RemiBoardTile<Question: View>: View {
         .padding(.horizontal, RemiTheme.Spacing.xs)
         .padding(.vertical, RemiTheme.Spacing.xs)
         .background(.background.opacity(0.7), in: .rect(cornerRadius: RemiTheme.Radius.compact))
+        .padding(.trailing, cornerResizeTrailingInset)
         .layoutPriority(extras.placement == nil ? 0 : 2)
     }
 
@@ -743,13 +758,14 @@ private struct RemiBoardResizeHandle: View {
     let top: Bool
     let needsYou: Bool
     let sizeTitle: String
-    let onDragChanged: (CGFloat, Bool) -> Void
+    let onDragChanged: (CGFloat, Bool) -> Bool
     let onDragEnded: (CGFloat, Bool) -> Void
-    let onDragCancelled: () -> Void
+    let onDragCancelled: (Bool) -> Void
     let onStep: (Int) -> Void
 
     @GestureState private var isDragging = false
     @State private var dragDidEnd = false
+    @State private var ignoresDrag = false
     @State private var isHovered = false
 
     var body: some View {
@@ -761,19 +777,22 @@ private struct RemiBoardResizeHandle: View {
             .accessibilityLabel("Resize card")
             .accessibilityValue(sizeTitle)
             .accessibilityAddTraits(.isButton)
-            .accessibilityHint("Drag up or down to change the card size")
-            .accessibilityAction(named: "Make larger") { onStep(1) }
-            .accessibilityAction(named: "Make smaller") { onStep(-1) }
-            .onKeyPress(.upArrow) { onStep(1); return .handled }
-            .onKeyPress(.downArrow) { onStep(-1); return .handled }
+            .accessibilityHint(top
+                ? "Drag up to make the card taller. Use the up and down arrow keys to change its size."
+                : "Drag down to make the card taller. Use the up and down arrow keys to change its size.")
+            .accessibilityAction(named: "Make taller") { onStep(1) }
+            .accessibilityAction(named: "Make shorter") { onStep(-1) }
+            .onKeyPress(.upArrow) { onStep(-1); return .handled }
+            .onKeyPress(.downArrow) { onStep(1); return .handled }
             .highPriorityGesture(dragGesture)
             .onChange(of: isDragging) { wasDragging, dragging in
                 guard wasDragging, !dragging else { return }
-                if !dragDidEnd { onDragCancelled() }
+                if !dragDidEnd && !ignoresDrag { onDragCancelled(top) }
                 dragDidEnd = false
+                ignoresDrag = false
             }
             .onDisappear {
-                if isDragging && !dragDidEnd { onDragCancelled() }
+                if isDragging && !dragDidEnd && !ignoresDrag { onDragCancelled(top) }
             }
     }
 
@@ -795,12 +814,17 @@ private struct RemiBoardResizeHandle: View {
     }
 
     private var dragGesture: some Gesture {
-        DragGesture(minimumDistance: 1)
+        // The handle moves as this drag changes the card's height.
+        DragGesture(minimumDistance: 1, coordinateSpace: .global)
             .updating($isDragging) { _, active, _ in active = true }
-            .onChanged { onDragChanged($0.translation.height, top) }
+            .onChanged {
+                guard !ignoresDrag else { return }
+                if !onDragChanged($0.translation.height, top) { ignoresDrag = true }
+            }
             .onEnded {
                 dragDidEnd = true
-                onDragEnded($0.translation.height, top)
+                if !ignoresDrag { onDragEnded($0.translation.height, top) }
+                ignoresDrag = false
             }
     }
 }

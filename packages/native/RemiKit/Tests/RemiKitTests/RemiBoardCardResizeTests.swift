@@ -19,6 +19,15 @@ import Testing
         #expect(RemiBoardCardResize.size(startingAt: .large, verticalTranslation: -101, topCorner: false) == .regular)
     }
 
+    @Test func stepMovesOnePhoneDensityAndStopsAtTheEnds() {
+        #expect(RemiBoardCardResize.step(from: .row, direction: -1) == .row)
+        #expect(RemiBoardCardResize.step(from: .row, direction: 1) == .regular)
+        #expect(RemiBoardCardResize.step(from: .regular, direction: 1) == .large)
+        #expect(RemiBoardCardResize.step(from: .large, direction: 1) == .large)
+        #expect(RemiBoardCardResize.step(from: .large, direction: -1) == .regular)
+        #expect(RemiBoardCardResize.step(from: .compact, direction: 0) == .regular)
+    }
+
     @Test func topCornerMirrorsTheBottomCorner() {
         #expect(RemiBoardCardResize.size(startingAt: .regular, verticalTranslation: -100, topCorner: true) == .large)
         #expect(RemiBoardCardResize.size(startingAt: .regular, verticalTranslation: 72, topCorner: true) == .row)
@@ -49,11 +58,30 @@ import Testing
         #expect(RemiBoardCardResize.size(startingAt: .compact, verticalTranslation: .nan, topCorner: false) == .regular)
     }
 
+    @Test func nonfiniteTranslationsKeepNonmediumStartsForBothCorners() {
+        #expect(RemiBoardCardResize.size(startingAt: .row, verticalTranslation: .nan, topCorner: false) == .row)
+        #expect(RemiBoardCardResize.size(startingAt: .row, verticalTranslation: .nan, topCorner: true) == .row)
+        #expect(RemiBoardCardResize.size(startingAt: .large, verticalTranslation: .nan, topCorner: false) == .large)
+        #expect(RemiBoardCardResize.size(startingAt: .large, verticalTranslation: .nan, topCorner: true) == .large)
+        #expect(RemiBoardCardResize.size(startingAt: .regular, verticalTranslation: .infinity, topCorner: false) == .regular)
+        #expect(RemiBoardCardResize.size(startingAt: .regular, verticalTranslation: .infinity, topCorner: true) == .regular)
+        #expect(RemiBoardCardResize.size(startingAt: .regular, verticalTranslation: -.infinity, topCorner: false) == .regular)
+        #expect(RemiBoardCardResize.size(startingAt: .regular, verticalTranslation: -.infinity, topCorner: true) == .regular)
+    }
+
     @Test func tileExtrasLeaveCornerResizeDisabledByDefault() {
         #expect(RemiBoardTileExtras().cornerResize == nil)
     }
 
-    @Test func handleWiringKeepsMacPathAndPersistsOnlyCompletedDrags() throws {
+    @Test func trailingInsetKeepsComposerAndRowControlsOutsideTheHandleSquare() {
+        #expect(RemiBoardCardResize.trailingControlInset == 24)
+        #expect(
+            RemiBoardCardResize.trailingControlInset + RemiTheme.Spacing.s + RemiTheme.Spacing.xs
+                >= RemiTheme.Size.minimumTapTarget
+        )
+    }
+
+    @Test func sourceGuardsCoverResizeHandleWiring() throws {
         let nativeRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -67,34 +95,94 @@ import Testing
             contentsOf: nativeRoot.appendingPathComponent("iPhone/PhoneBoardScreen.swift"),
             encoding: .utf8
         )
+        let resize = try String(
+            contentsOf: nativeRoot.appendingPathComponent("RemiKit/Sources/RemiUI/RemiBoardCardResize.swift"),
+            encoding: .utf8
+        )
 
         #expect(tile.contains(".overlay(alignment: .topTrailing) { resizeHandle(top: true) }"))
         #expect(tile.contains(".overlay(alignment: .bottomTrailing) { resizeHandle(top: false) }"))
         #expect(tile.contains("if extras.placement == nil, let cornerResize = extras.cornerResize"))
+        #expect(tile.contains("private var cornerResizeTrailingInset: CGFloat {"))
+        #expect(tile.contains("guard extras.cornerResize != nil, extras.placement == nil else { return 0 }"))
+        let header = try sourceSlice(tile, from: "private var header: some View {", to: "private var headerTitleContent")
+        let summary = try sourceSlice(tile, from: "private var rowSummary: some View {", to: "private var latestLine: String {")
+        let composer = try sourceSlice(tile, from: "private var quickComposer: some View {", to: "private var menu: some View {")
+        let contentGutter = ".padding(.trailing, cornerResizeTrailingInset == 0 ? 0 : RemiTheme.Spacing.xs)"
+        #expect(header.contains(".padding(.trailing, cornerResizeTrailingInset)"))
+        #expect(header.contains(contentGutter))
+        #expect(summary.components(separatedBy: ".padding(.trailing, cornerResizeTrailingInset)").count - 1 == 2)
+        #expect(summary.components(separatedBy: contentGutter).count - 1 == 2)
+        #expect(composer.contains(".padding(.trailing, cornerResizeTrailingInset)"))
+        #expect(resize.contains("static let trailingControlInset"))
+        #expect(resize.contains("RemiTheme.Size.minimumTapTarget - (RemiTheme.Spacing.s + RemiTheme.Spacing.xs)"))
         #expect(tile.contains(".highPriorityGesture(dragGesture)"))
+        #expect(tile.contains("DragGesture(minimumDistance: 1, coordinateSpace: .global)"))
+        #expect(tile.contains("if !onDragChanged($0.translation.height, top) { ignoresDrag = true }"))
+        #expect(tile.contains("if !ignoresDrag { onDragEnded($0.translation.height, top) }"))
+        #expect(tile.contains("if isDragging && !dragDidEnd && !ignoresDrag { onDragCancelled(top) }"))
         #expect(tile.contains("width: RemiTheme.Size.minimumTapTarget"))
         #expect(tile.contains("content.hoverEffect(.highlight)"))
+        #expect(tile.contains(".accessibilityLabel(\"Resize card\")"))
         #expect(tile.contains(".accessibilityValue(sizeTitle)"))
-        #expect(tile.contains(".accessibilityAction(named: \"Make larger\")"))
-        #expect(tile.contains(".accessibilityAction(named: \"Make smaller\")"))
+        #expect(tile.contains(".accessibilityAction(named: \"Make taller\") { onStep(1) }"))
+        #expect(tile.contains(".accessibilityAction(named: \"Make shorter\") { onStep(-1) }"))
+        #expect(tile.contains(".onKeyPress(.upArrow) { onStep(-1); return .handled }"))
+        #expect(tile.contains(".onKeyPress(.downArrow) { onStep(1); return .handled }"))
+        #expect(tile.contains("Drag up to make the card taller."))
+        #expect(tile.contains("Drag down to make the card taller."))
+        #expect(tile.contains("Use the up and down arrow keys to change its size."))
+        #expect(tile.contains("guard wasDragging, !dragging else { return }"))
+        #expect(tile.contains("if !dragDidEnd && !ignoresDrag { onDragCancelled(top) }"))
+        #expect(tile.contains("if !onDragChanged($0.translation.height, top) { ignoresDrag = true }"))
         #expect(screen.contains("guard presentation.isMultiColumn else { return nil }"))
+        #expect(screen.contains(".onChange(of: columnLayout.columnCount) { _, _ in cardResizeDrags = [:] }"))
+        #expect(screen.contains("cardResizeDrags = cardResizeDrags.filter { live.contains($0.key) }"))
+        #expect(screen.contains("guard presentation.isMultiColumn,"))
+        #expect(screen.contains("return drag.previewSize"))
+        #expect(screen.contains("else { return effectiveSize(for: session) }"))
         #expect(screen.contains("onDragEnded: { translation, topCorner in"))
-        #expect(screen.contains("onDragCancelled: { cancelCardResize(for: key) }"))
+        #expect(screen.contains("onDragCancelled: { topCorner in cancelCardResize(for: key, topCorner: topCorner) }"))
+        #expect(screen.contains("RemiBoardCardResize.step(from: currentSize, direction: direction)"))
 
-        let updateStart = try #require(screen.range(of: "private func updateCardResizePreview(")?.lowerBound)
-        let finishStart = try #require(screen.range(of: "private func finishCardResize(")?.lowerBound)
-        let cancelStart = try #require(screen.range(of: "private func cancelCardResize(")?.lowerBound)
-        let stepStart = try #require(screen.range(of: "private func stepCardResize(")?.lowerBound)
-        let update = String(screen[updateStart..<finishStart])
-        let finish = String(screen[finishStart..<cancelStart])
-        let cancel = String(screen[cancelStart..<stepStart])
+        let update = try sourceSlice(
+            screen,
+            from: "private func updateCardResizePreview(",
+            to: "private func finishCardResize("
+        )
+        let finish = try sourceSlice(
+            screen,
+            from: "private func finishCardResize(",
+            to: "private func cancelCardResize("
+        )
+        let cancel = try sourceSlice(
+            screen,
+            from: "private func cancelCardResize(",
+            to: "private func stepCardResize("
+        )
 
+        #expect(update.contains("let activeDrag = cardResizeDrags[key]"))
+        #expect(update.contains("if let activeDrag, activeDrag.topCorner != topCorner { return false }"))
+        #expect(update.contains("var drag = activeDrag ?? CardResizeDrag("))
+        #expect(update.contains("guard drag.topCorner == topCorner else { return false }"))
+        #expect(update.contains("if activeDrag == nil { cardResizeDrags[key] = drag }"))
         #expect(!update.contains("board.setSize"))
         #expect(!update.contains("saveBoard()"))
-        #expect(finish.contains("board.setSize(finalSize, for: key)"))
+        #expect(finish.contains("let changed = finalSize != drag.startSize"))
+        #expect(finish.contains("if changed { board.setSize(finalSize, for: key) }"))
+        #expect(finish.contains("cardResizeDrags[key] = nil"))
+        #expect(finish.contains("if changed { saveBoard() }"))
         #expect(finish.components(separatedBy: "saveBoard()").count - 1 == 1)
-        #expect(cancel.contains("resizingCardPreviewSizes[key] = nil"))
+        #expect(cancel.contains("guard let drag = cardResizeDrags[key], drag.topCorner == topCorner else { return }"))
+        #expect(cancel.contains("cardResizeDrags[key] = nil"))
         #expect(!cancel.contains("board.setSize"))
         #expect(!cancel.contains("saveBoard()"))
+    }
+
+    private func sourceSlice(_ source: String, from startMarker: String, to endMarker: String) throws -> String {
+        let fullRange = source.startIndex..<source.endIndex
+        let startRange = try #require(source.range(of: startMarker, range: fullRange))
+        let endRange = try #require(source.range(of: endMarker, range: startRange.upperBound..<source.endIndex))
+        return String(source[startRange.lowerBound..<endRange.lowerBound])
     }
 }
