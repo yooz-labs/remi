@@ -71,6 +71,22 @@ public struct RemiBoardColumns: Equatable, Sendable {
         return Self(columnCount: columnCount, cardWidth: cardWidth, groupWidth: groupWidth)
     }
 
+    /// Places the ordered items into columns using the estimated height for the current
+    /// card density. Each item's input height is identical because the phone Board has one
+    /// selected density for all of its cards.
+    public static func place<Item>(
+        _ items: [Item],
+        columnCount: Int,
+        cardHeight: CGFloat
+    ) -> [[Item]] {
+        RemiBoardOrder.columns(
+            heights: Array(repeating: cardHeight, count: items.count),
+            count: columnCount
+        ).map { indices in
+            indices.map { items[$0] }
+        }
+    }
+
     /// Applies design rule 1 from `packages/native/handoff/ipad-board.md`, "The rule".
     /// This shell-level rule stays beside the pane thresholds; slice 2 uses it from the shell.
     public static func sidebarBeside(windowWidth: CGFloat) -> Bool {

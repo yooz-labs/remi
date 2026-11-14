@@ -189,6 +189,54 @@ import Testing
         }
     }
 
+    @Test func placePreservesSingleColumnOrderAndPartitionsDeterministically() {
+        let items = ["a", "b", "c", "d", "e", "f", "g"]
+        let oneColumn = RemiBoardColumns.place(items, columnCount: 1, cardHeight: RemiTileSize.regular.estimatedHeight)
+        let twoColumns = RemiBoardColumns.place(items, columnCount: 2, cardHeight: RemiTileSize.regular.estimatedHeight)
+        let threeColumns = RemiBoardColumns.place(items, columnCount: 3, cardHeight: RemiTileSize.regular.estimatedHeight)
+
+        #expect(oneColumn == [items])
+        #expect(twoColumns == [["a", "c", "e", "g"], ["b", "d", "f"]])
+        #expect(threeColumns == [["a", "d", "g"], ["b", "e"], ["c", "f"]])
+        #expect(
+            RemiBoardColumns.place(items, columnCount: 2, cardHeight: RemiTileSize.regular.estimatedHeight)
+                == twoColumns
+        )
+
+        let originalPositions = Dictionary(uniqueKeysWithValues: items.enumerated().map { ($1, $0) })
+        for columns in [twoColumns, threeColumns] {
+            #expect(columns.flatMap { $0 }.sorted() == items.sorted())
+            for column in columns {
+                let positions = column.compactMap { originalPositions[$0] }
+                #expect(positions == positions.sorted())
+            }
+        }
+    }
+
+    @Test func placeSupportsEmptyAndMoreColumnsThanItems() {
+        #expect(RemiBoardColumns.place([String](), columnCount: 3, cardHeight: RemiTileSize.compact.estimatedHeight)
+            == [[], [], []])
+        #expect(RemiBoardColumns.place(["a", "b"], columnCount: 5, cardHeight: RemiTileSize.compact.estimatedHeight)
+            == [["a"], ["b"], [], [], []])
+    }
+
+    @Test func placeKeepsTheSameKeysAcrossColumnCountsAndUsesDensityEstimate() {
+        let items = ["a", "b", "c", "d", "e"]
+        let sizes: [RemiTileSize] = [.row, .compact, .regular, .large]
+
+        for size in sizes {
+            let heights = Array(repeating: size.estimatedHeight, count: items.count)
+            let expected = RemiBoardOrder.columns(heights: heights, count: 2).map { column in
+                column.map { items[$0] }
+            }
+            let twoColumns = RemiBoardColumns.place(items, columnCount: 2, cardHeight: size.estimatedHeight)
+            let threeColumns = RemiBoardColumns.place(items, columnCount: 3, cardHeight: size.estimatedHeight)
+
+            #expect(twoColumns == expected, "\(size) uses its estimated card height")
+            #expect(Set(twoColumns.flatMap { $0 }) == Set(threeColumns.flatMap { $0 }))
+        }
+    }
+
     private func startWidth(for columnCount: Int) -> CGFloat {
         2 * RemiBoardColumns.margin
             + CGFloat(columnCount) * RemiBoardColumns.minimumCardWidth
