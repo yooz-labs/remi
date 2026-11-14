@@ -34,6 +34,8 @@ struct QuestionNotificationSummarizerTests {
     }
 
     @Test func timeoutFallsBackWithoutWaitingForGeneration() async {
+        traceTimeoutTest("cooperative test started")
+        defer { traceTimeoutTest("cooperative test returning") }
         let timeout = ControlledSuspension()
         let starts = Counter()
         let cancellations = Counter()
@@ -41,11 +43,14 @@ struct QuestionNotificationSummarizerTests {
             deadline: .seconds(30),
             sleeper: { _ in await timeout.suspend() }
         ) { _ in
+            traceTimeoutTest("cooperative generation started")
+            defer { traceTimeoutTest("cooperative generation returning") }
             await starts.increment()
             return try await withTaskCancellationHandler {
                 try await Task.sleep(for: .seconds(30))
                 return "Too late"
             } onCancel: {
+                traceTimeoutTest("cooperative generation cancelled")
                 Task { await cancellations.increment() }
             }
         }
@@ -65,12 +70,16 @@ struct QuestionNotificationSummarizerTests {
     }
 
     @Test func timeoutDoesNotWaitForCancellationIgnoringGeneration() async {
+        traceTimeoutTest("ignoring test started")
+        defer { traceTimeoutTest("ignoring test returning") }
         let timeout = ControlledSuspension()
         let generation = ControlledSuspension()
         let summarizer = QuestionNotificationSummarizer(
             deadline: .seconds(30),
             sleeper: { _ in await timeout.suspend() }
         ) { _ in
+            traceTimeoutTest("ignoring generation started")
+            defer { traceTimeoutTest("ignoring generation returning") }
             await generation.suspend()
             return "Too late"
         }
@@ -86,6 +95,7 @@ struct QuestionNotificationSummarizerTests {
 
         #expect(summary == QuestionNotificationSummarizer.fallback(for: input))
         #expect(await generation.isSuspended)
+        traceTimeoutTest("ignoring generation released")
         await generation.resume()
     }
 
@@ -157,6 +167,13 @@ struct QuestionNotificationSummarizerTests {
     @Test func emptyQuestionStillProducesMeaningfulNotificationCopy() {
         #expect(QuestionNotificationSummarizer.fallback(for: " \n ") == "Agent needs your attention.")
     }
+}
+
+// Separate stderr records expose whether these tasks outlive the test body (#1634).
+private func traceTimeoutTest(_ event: String) {
+    let process = ProcessInfo.processInfo
+    let line = "summarizer-timeout pid=\(process.processIdentifier) uptime=\(process.systemUptime) \(event)\n"
+    FileHandle.standardError.write(Data(line.utf8))
 }
 
 private actor Counter {
