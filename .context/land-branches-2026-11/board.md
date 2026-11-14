@@ -184,7 +184,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | sonnet-F1772fix2 | implementer | claude-sonnet | sonnet high | F1772 | 2026-11-14T11:55 | done |
 | rv-AW1-panel | reviewer | extra | sonnet xhigh x3 | AW1 | 2026-11-14T11:55 | done |
 | codex-AW1 | implementer | codex-luna | gpt-6-luna max | AW1 | 2026-11-14T09:31 | done |
-| opus-AW1fix1 | implementer | claude-opus | opus xhigh | AW1 | 2026-11-14T12:05 | running (card AW1-fix-r1) |
+| opus-AW1fix1 | implementer | claude-opus | opus xhigh | AW1 | 2026-11-14T12:05 | done |
 | sonnet-DV-r20 | implementer | claude-sonnet | sonnet high | DV | 2026-11-14T12:33 | done |
 | opus-A04-apps-design | implementer | claude-opus | opus xhigh | A04 | 2026-11-14T13:15 | running (issue 1784) |
 | sonnet-docs-remi | implementer | claude-sonnet | sonnet high | DOCS | 2026-11-14T13:15 | running (yooz-docs) |
+| rv-AW1-delta | reviewer | extra | sonnet xhigh | AW1 | 2026-11-14T13:25 | running |
