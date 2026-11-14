@@ -18,6 +18,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { UUID } from '@remi/shared';
 import { generateId } from '@remi/shared';
+import type { SessionWorkEvent } from '../../src/api/message-api.ts';
 import { SubagentViewRegistry } from '../../src/api/subagent-view-registry.ts';
 import { SubagentAlerter } from '../../src/auto-approve/index.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
@@ -61,7 +62,8 @@ describe('the Claude launch feeds PTY output to its OutputProcessor (#1176)', ()
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  test('a tool-output error line printed by claude reaches the session message API', async () => {
+  /** A registered, unstarted Claude session running the fake `claude` above. */
+  async function buildSession() {
     const fakeBin = path.join(tmpDir, 'fake-bin');
     fs.mkdirSync(fakeBin);
     fs.writeFileSync(path.join(fakeBin, 'claude'), FAKE_CLAUDE);
@@ -130,6 +132,11 @@ describe('the Claude launch feeds PTY output to its OutputProcessor (#1176)', ()
       sendMessage: () => {},
     });
     sessionRegistry.registerSession(sessionId, tmpDir, session.pty, messageApi, false, false);
+    return { session, messageApi };
+  }
+
+  test('a tool-output error line printed by claude reaches the session message API', async () => {
+    const { session, messageApi } = await buildSession();
     try {
       await session.start();
       const deadline = Date.now() + 5000;
@@ -140,6 +147,27 @@ describe('the Claude launch feeds PTY output to its OutputProcessor (#1176)', ()
       }
       expect(seen()).toBe(true);
     } finally {
+      session.pty.signal('SIGKILL');
+      session.dispose();
+    }
+  });
+
+  test('claude PTY output reaches the message API as a keep-awake activity work event (#1773)', async () => {
+    const { session, messageApi } = await buildSession();
+    const events: SessionWorkEvent[] = [];
+    const unsubscribe = messageApi.subscribeWorkEvents((event) => events.push(event));
+    try {
+      await session.start();
+      const deadline = Date.now() + 5000;
+      const seen = () => events.some((event) => event.type === 'activity');
+      while (!seen() && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(seen()).toBe(true);
+      // No hook server here, so the only activity source is the PTY output wrapper.
+      expect(events.some((event) => event.type === 'turn-open')).toBe(false);
+    } finally {
+      unsubscribe();
       session.pty.signal('SIGKILL');
       session.dispose();
     }

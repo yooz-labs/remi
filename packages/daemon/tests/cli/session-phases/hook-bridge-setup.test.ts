@@ -154,6 +154,8 @@ function fakeMessageAPI(
     reset: () => {
       log.resetCalls.n += 1;
     },
+    // #1773: the bridge reports keep-awake work events with a plain call.
+    noteWorkEvent: () => {},
   } as unknown as MessageAPI;
 }
 

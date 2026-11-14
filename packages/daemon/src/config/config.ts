@@ -66,6 +66,20 @@ export interface DisplayConfig {
   readonly max_bullet_length: number;
 }
 
+/** Per-session macOS idle-sleep assertion settings (#1773, level 1). */
+export interface AwakeConfig {
+  readonly level1: boolean;
+  readonly question_hold_minutes: number;
+  readonly idle_grace_seconds: number;
+  readonly stuck_busy_minutes: number;
+  readonly ttl_minutes: number;
+}
+
+export const AWAKE_MAX_QUESTION_HOLD_MINUTES = 24 * 60;
+export const AWAKE_MAX_IDLE_GRACE_SECONDS = 60 * 60;
+export const AWAKE_MAX_STUCK_BUSY_MINUTES = 24 * 60;
+export const AWAKE_MAX_TTL_MINUTES = 120;
+
 /**
  * Turn-complete notification settings (#914). `Stop.last_assistant_message`
  * is present on the already-registered `Stop` hook (no new registration),
@@ -197,6 +211,7 @@ export interface HarnessConfig {
 export interface RemiConfig {
   readonly harness: HarnessConfig;
   readonly daemon: DaemonConfig;
+  readonly awake: AwakeConfig;
   readonly network: NetworkConfig;
   readonly auth: AuthConfig;
   readonly display: DisplayConfig;
@@ -210,6 +225,13 @@ export interface RemiConfig {
 /** Built-in defaults used when no config file or CLI flags are provided */
 export const DEFAULT_CONFIG: RemiConfig = {
   harness: { default: 'claude' },
+  awake: {
+    level1: true,
+    question_hold_minutes: 30,
+    idle_grace_seconds: 120,
+    stuck_busy_minutes: 15,
+    ttl_minutes: 20,
+  },
   daemon: {
     tls: null,
     base_port: DAEMON_BASE_PORT,
@@ -316,6 +338,7 @@ function deepMerge(base: RemiConfig, partial: Record<string, unknown>): RemiConf
   return {
     harness: mergeSection(base.harness, partial['harness'] as Record<string, unknown> | undefined),
     daemon: mergeSection(base.daemon, partial['daemon'] as Record<string, unknown> | undefined),
+    awake: mergeSection(base.awake, partial['awake'] as Record<string, unknown> | undefined),
     network: mergeSection(base.network, partial['network'] as Record<string, unknown> | undefined),
     auth: mergeSection(base.auth, partial['auth'] as Record<string, unknown> | undefined),
     display: mergeSection(base.display, partial['display'] as Record<string, unknown> | undefined),
@@ -394,6 +417,7 @@ export function loadConfigWithNotices(configPath: string = CONFIG_PATH): LoadedC
       throw new Error('TOML_PARSE_FAILED: unable to parse configuration');
     }
     validateHarnessTable(parsed['harness'], configPath);
+    validateAwakeTable(parsed['awake'], configPath);
     const daemon = parsed['daemon'];
     if (daemon !== undefined) {
       if (typeof daemon !== 'object' || daemon === null || Array.isArray(daemon)) {
@@ -410,6 +434,7 @@ export function loadConfigWithNotices(configPath: string = CONFIG_PATH): LoadedC
         }
       : merged;
     validateAuth(config.auth, configPath);
+    validateAwake(config.awake, configPath);
     validateTerminal(config.terminal, configPath);
     validateDaemon(config.daemon, configPath);
     validateNotifications(config.notifications, configPath);
@@ -427,6 +452,48 @@ export function loadConfigWithNotices(configPath: string = CONFIG_PATH): LoadedC
     throw new Error(
       `Invalid TOML in ${configPath}: ${errorToString(err)}. Fix the syntax or delete the file to use defaults.`,
     );
+  }
+}
+
+function validateAwakeTable(table: unknown, configPath: string): void {
+  if (table === undefined) return;
+  if (typeof table !== 'object' || table === null || Array.isArray(table)) {
+    throw new Error(`Invalid awake in ${configPath}: expected a table`);
+  }
+  const prototype = Object.getPrototypeOf(table);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error(`Invalid awake in ${configPath}: expected a table`);
+  }
+  const supported = new Set([
+    'level1',
+    'question_hold_minutes',
+    'idle_grace_seconds',
+    'stuck_busy_minutes',
+    'ttl_minutes',
+  ]);
+  const unknown = Object.keys(table).filter((key) => !supported.has(key));
+  if (unknown.length > 0) {
+    throw new Error(`Invalid awake in ${configPath}: unsupported key(s): ${unknown.join(', ')}`);
+  }
+}
+
+function validateAwake(cfg: AwakeConfig, configPath: string): void {
+  if (typeof cfg.level1 !== 'boolean') {
+    throw new Error(`Invalid awake.level1 in ${configPath}: must be a boolean (true/false).`);
+  }
+  const ranges: ReadonlyArray<readonly [keyof AwakeConfig, number, string]> = [
+    ['question_hold_minutes', AWAKE_MAX_QUESTION_HOLD_MINUTES, 'minutes'],
+    ['idle_grace_seconds', AWAKE_MAX_IDLE_GRACE_SECONDS, 'seconds'],
+    ['stuck_busy_minutes', AWAKE_MAX_STUCK_BUSY_MINUTES, 'minutes'],
+    ['ttl_minutes', AWAKE_MAX_TTL_MINUTES, 'minutes'],
+  ];
+  for (const [key, max, unit] of ranges) {
+    const value: unknown = cfg[key];
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > max) {
+      throw new Error(
+        `Invalid awake.${key} in ${configPath}: must be a positive integer from 1 to ${max} ${unit}.`,
+      );
+    }
   }
 }
 
@@ -644,6 +711,7 @@ export function assertDaemonTlsConfig(value: unknown): asserts value is DaemonTl
 export function applyEnvOverrides(config: RemiConfig): RemiConfig {
   assertDaemonTlsConfig(config.daemon.tls);
   validateAuth(config.auth, CONFIG_PATH);
+  validateAwake(config.awake, CONFIG_PATH);
   const env = process.env;
 
   const daemon = { ...config.daemon };
@@ -742,6 +810,23 @@ export function generateDefaultConfig(): string {
 [harness]
 # CLI session launches only; remi claude/remi codex and --harness override this.
 default = "${DEFAULT_CONFIG.harness.default}"
+
+[awake]
+# Hold only against idle system sleep while a session has real work; macOS only.
+# Session daemons and plain wrapper sessions hold; the hub (remi serve) does not.
+# Level 1 does not keep the display on or override lid-close or low-battery sleep.
+# No battery floor yet: level 1 holds at any charge. level1_battery_floor_percent
+# arrives with a later slice and is rejected as an unknown key until then.
+level1 = ${DEFAULT_CONFIG.awake.level1}
+# Maximum time a pending question holds the Mac awake, at most this cap even
+# while activity continues (1 to ${AWAKE_MAX_QUESTION_HOLD_MINUTES} minutes).
+question_hold_minutes = ${DEFAULT_CONFIG.awake.question_hold_minutes}
+# Delay before releasing after work becomes idle (1 to ${AWAKE_MAX_IDLE_GRACE_SECONDS} seconds).
+idle_grace_seconds = ${DEFAULT_CONFIG.awake.idle_grace_seconds}
+# Release stale busy or turn-open state after no activity (1 to ${AWAKE_MAX_STUCK_BUSY_MINUTES} minutes).
+stuck_busy_minutes = ${DEFAULT_CONFIG.awake.stuck_busy_minutes}
+# Maximum lifetime of each caffeinate holder before it is renewed (1 to ${AWAKE_MAX_TTL_MINUTES} minutes).
+ttl_minutes = ${DEFAULT_CONFIG.awake.ttl_minutes}
 
 [daemon]
 base_port = ${DEFAULT_CONFIG.daemon.base_port}
@@ -858,6 +943,13 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push('');
   lines.push('[harness]');
   lines.push(`  default = "${config.harness.default}"`);
+  lines.push('');
+  lines.push('[awake]');
+  lines.push(`  level1 = ${config.awake.level1}`);
+  lines.push(`  question_hold_minutes = ${config.awake.question_hold_minutes}`);
+  lines.push(`  idle_grace_seconds = ${config.awake.idle_grace_seconds}`);
+  lines.push(`  stuck_busy_minutes = ${config.awake.stuck_busy_minutes}`);
+  lines.push(`  ttl_minutes = ${config.awake.ttl_minutes}`);
   lines.push('');
   lines.push('[daemon]');
   lines.push(`  base_port = ${config.daemon.base_port}`);

@@ -359,6 +359,8 @@ export function createCodexSession(
   let spawnedAt: number | null = null;
   const startupSink: PtyOutputSink = {
     process: (text) => {
+      // #1773: PTY output is activity while the app-server binding is starting.
+      messageApi.noteWorkEvent({ type: 'activity' });
       if (!ctx.passThrough && !identified) startupOutput.push(text);
     },
     // Runs when the PTY exits. A stop remi asked for (the registry no longer holds the session) or a
@@ -471,6 +473,8 @@ export function createCodexSession(
         link.tracker?.handleDisconnected();
         armWatchdog();
       } else if (event.type === 'notification') {
+        // #1773: app-server notifications are Codex's session activity stream.
+        messageApi.noteWorkEvent({ type: 'activity' });
         link.tracker?.handleNotification(event.method, event.params);
         link.asyncQuestions?.handleNotification(event.method, event.params);
         turns?.handleNotification(event.method, event.params);

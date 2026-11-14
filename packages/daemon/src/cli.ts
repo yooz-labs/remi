@@ -287,6 +287,7 @@ import { SecurePushTransport } from './notifications/secure-push-transport.ts';
 import { createTurnEventSink } from './notifications/turn-events.ts';
 import { createTurnFailedRoutes } from './notifications/turn-failed.ts';
 import { TurnTimer } from './notifications/turn-timer.ts';
+import { AwakeWiring } from './power/awake-wiring.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
 import { HubRelay } from './remote/hub-relay.ts';
 import { NativeAnswerLedger } from './remote/native-answer-ledger.ts';
@@ -1180,6 +1181,13 @@ const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new 
 // launch filled in separately; every session has an entry, a session with no
 // hook server just has nothing held.
 const harnessSessions: Map<UUID, HarnessSession> = new Map();
+// Keep-awake (#1773): the glue, the creation condition and the registry hooks
+// live in power/awake-wiring.ts, which the wiring tests import.
+const awakeWiring = new AwakeWiring({
+  serveMode,
+  config: remiConfig.awake,
+  log: (message) => log(message),
+});
 // Created before the message API or harness can emit; retired before teardown, finished after the
 // disposal's dismissals are out (#1200).
 const securePushContexts = new SecurePushContexts({
@@ -1361,7 +1369,7 @@ const sessionRegistry = new SessionRegistry(
     redactQuestionLogs: true,
     workspaceOf: (directory) => workspaceCache.get(directory),
   },
-  {
+  awakeWiring.registryEvents({
     onSessionCreated: (sessionId) => {
       log(`Session created: ${sessionId}`);
     },
@@ -1493,7 +1501,7 @@ const sessionRegistry = new SessionRegistry(
         detail: { liveQuestionIds: questions.map((q) => q.id) },
       });
     },
-  },
+  }),
 );
 
 // Own pending startup before public listeners can accept a feature client.
@@ -1750,6 +1758,7 @@ let updateWatcher: import('./cli/update-watcher.ts').UpdateWatcher | null = null
 // (issue #203). SIGKILL still leaves entries by definition; the next
 // startup's purgeStaleHooks recovers from that.
 process.on('exit', () => {
+  awakeWiring.disposeAll();
   if (hookConfigManager) {
     hookConfigManager.uninstallSync();
   }
@@ -1927,6 +1936,8 @@ async function createNewSession(
       },
       sessionId,
     );
+    // A no-op in serve mode, off macOS and with level1=false (#1773).
+    awakeWiring.attach(sessionId, messageApi);
     // Register this session's APNS dispatcher before the harness builds
     // anything that can fire a decision: the question-resolved path and the
     // harness's terminal-notice closures read `sessionNotifiers.get(sid)` to
@@ -2035,6 +2046,7 @@ async function createNewSession(
       logError('Session failure bookkeeping unavailable');
     }
     retireSecurePushRuntime(sessionId);
+    awakeWiring.close(sessionId);
     try {
       harnessSessions.get(sessionId)?.dispose();
     } catch {
@@ -3269,6 +3281,7 @@ async function performCleanup(): Promise<void> {
   // disposes them again when the PTY exits, which dispose()'s guard makes a
   // no-op. Before, cleanup cleared binderClosers and left the gate, tracker
   // and turn-filter maps.
+  awakeWiring.disposeAll();
   for (const session of harnessSessions.values()) {
     session.dispose();
   }
