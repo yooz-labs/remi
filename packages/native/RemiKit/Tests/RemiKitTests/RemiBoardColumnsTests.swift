@@ -167,7 +167,7 @@ import Testing
         let capped = RemiBoardColumns.resolve(paneWidth: 5_000)
         #expect(capped.columnCount == 6, "pane 5000 pt")
         #expect(capped.cardWidth == 720, "pane 5000 pt")
-        #expect(capped.groupWidth == 6 * 720 + 5 * 12, "pane 5000 pt")
+        #expect(capped.groupWidth == CGFloat(6 * 720 + 5 * 12), "pane 5000 pt")
     }
 
     @Test func readableContentWidthIs720Points() {
