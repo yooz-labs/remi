@@ -16,9 +16,10 @@
 /// current live count. The Mac board uses `suffix(_:)` to visit only its newest
 /// entries.
 ///
-/// MachineStore writes a mutated transcript reference back into
-/// `transcriptsBySession` only to notify Observation. The write-back does not
-/// copy or replace the reference.
+/// MachineStore stores a transcript reference in `transcriptsBySession` so
+/// Observation publishes the change. After a mutation it stores the same
+/// reference again, which copies nothing; the first load of a session stores
+/// its staged instance as the first publication.
 public final class RemiOrderedTranscript: Sequence {
     public typealias Element = TranscriptContentMessage
 

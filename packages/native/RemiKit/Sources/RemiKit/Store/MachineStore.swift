@@ -1898,7 +1898,8 @@ public final class MachineStore {
                 // A first load can transfer its staged instance without applying every entry again.
                 transcript = staged
             }
-            // Reassign the same reference so Observation publishes the transcript change.
+            // Store the transcript so Observation publishes it: the staged instance on a first load,
+            // otherwise the already published reference again, which copies nothing.
             transcriptsBySession[key] = transcript
         }
         transcriptLoadStartedOn[key] = nil
@@ -3060,7 +3061,8 @@ public final class MachineStore {
             } else {
                 let transcript = transcriptsBySession[key] ?? RemiOrderedTranscript()
                 transcript.apply(message)
-                // Reassign the same reference so Observation publishes the transcript change.
+                // Store the transcript so Observation publishes the change: a new instance when none
+                // was published, otherwise the published reference again, which copies nothing.
                 transcriptsBySession[key] = transcript
             }
         case .sessionViews(let message):
