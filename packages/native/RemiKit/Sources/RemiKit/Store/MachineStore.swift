@@ -400,7 +400,7 @@ public final class MachineStore {
     var ownedApprovalPollCount: Int { approvalPollTasks.count }
     func ownedStartApprovalPolling(_ endpoint: MachineEndpoint) { startApprovalPolling(for: endpoint) }
     #endif
-    public private(set) var transcriptsBySession: [MachineSessionKey: [TranscriptContentMessage]] = [:]
+    public private(set) var transcriptsBySession: [MachineSessionKey: RemiOrderedTranscript] = [:]
     /// Retained storage is indexed by an immutable profile namespace, never host:port (#1710).
     private var outgoingByGroup: [OutgoingGroupID: OutgoingMessages] = [:]
     @ObservationIgnored private var outgoingLabels: [OutgoingGroupID: (key: MachineSessionKey, machine: String, session: String)] = [:]
@@ -547,7 +547,7 @@ public final class MachineStore {
     /// replaying a long conversation is one UI update and not one per message. This holds for a
     /// refresh of an already-shown transcript too: live entries wait for the load to end, and a
     /// lost completion ends at the load timeout.
-    @ObservationIgnored private var transcriptStaging: [MachineSessionKey: [TranscriptContentMessage]] = [:]
+    @ObservationIgnored private var transcriptStaging: [MachineSessionKey: RemiOrderedTranscript] = [:]
     /// The connection generation a live session's transcript was completely loaded on. Only a
     /// session of the machine's own daemon (listed with source "daemon") is recorded: the daemon
     /// sends that session's new entries to every connected client, so the kept text stays current
@@ -570,6 +570,9 @@ public final class MachineStore {
     #if DEBUG
     /// Replaces a route's connection generation, as a reconnect does.
     func ownedReplaceConnectionGeneration(_ route: MachineEndpoint) { connectionGenerations[route] = UUID() }
+    func ownedTranscriptStagingIdentity(for key: MachineSessionKey) -> ObjectIdentifier? {
+        transcriptStaging[key].map(ObjectIdentifier.init)
+    }
     /// Replaces the wire send of a transcript request, so a timer test does not depend on a live hub.
     @ObservationIgnored var ownedTranscriptSend: (@MainActor (TranscriptLoadRequestMessage) async throws -> Void)?
     @ObservationIgnored var ownedBeforeLocalAnswerSend: (@Sendable () async throws -> Void)?
@@ -1885,20 +1888,26 @@ public final class MachineStore {
         transcriptLoadTimers.removeValue(forKey: key)?.task.cancel()
         transcriptKeyByRequest = transcriptKeyByRequest.filter { $0.value != key }
         // What arrived is shown even when the load did not finish; only a complete one counts as cached.
-        if let staged = transcriptStaging.removeValue(forKey: key) { transcriptsBySession[key] = staged }
+        if let staged = transcriptStaging.removeValue(forKey: key) {
+            let transcript: RemiOrderedTranscript
+            if let published = transcriptsBySession[key] {
+                transcript = published
+                // Merge only after replay so the published transcript remains visible in flight.
+                for message in staged { transcript.apply(message) }
+            } else {
+                // A first load can transfer its staged instance without applying every entry again.
+                transcript = staged
+            }
+            // Store the transcript so Observation publishes it: the staged instance on a first load,
+            // otherwise the already published reference again, which copies nothing.
+            transcriptsBySession[key] = transcript
+        }
         transcriptLoadStartedOn[key] = nil
         if completed, let route = routeBySession[key], let generation = connectionGenerations[route],
            isLiveSession(key) {
             transcriptLoadedOn[key] = generation
         }
         transcriptsLoading.remove(key)
-    }
-
-    /// An entry replaces the one with its id (and moves to the end, where a streaming update belongs),
-    /// or is added.
-    private static func apply(_ message: TranscriptContentMessage, to transcript: inout [TranscriptContentMessage]) {
-        transcript.removeAll { $0.entryUuid == message.entryUuid }
-        transcript.append(message)
     }
 
     /// Whether the key is a session of its machine's own daemon (listed with source "daemon").
@@ -3046,12 +3055,14 @@ public final class MachineStore {
         case .transcript(let message):
             let key = MachineSessionKey(machineID: machines[index].id, sessionID: message.sessionId)
             if transcriptsLoading.contains(key) {
-                var staged = transcriptStaging[key] ?? transcriptsBySession[key] ?? []
-                Self.apply(message, to: &staged)
-                transcriptStaging[key] = staged
+                let transcript = transcriptStaging[key] ?? RemiOrderedTranscript()
+                transcript.apply(message)
+                transcriptStaging[key] = transcript
             } else {
-                var transcript = transcriptsBySession[key, default: []]
-                Self.apply(message, to: &transcript)
+                let transcript = transcriptsBySession[key] ?? RemiOrderedTranscript()
+                transcript.apply(message)
+                // Store the transcript so Observation publishes the change: a new instance when none
+                // was published, otherwise the published reference again, which copies nothing.
                 transcriptsBySession[key] = transcript
             }
         case .sessionViews(let message):

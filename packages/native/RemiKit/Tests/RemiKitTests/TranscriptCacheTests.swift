@@ -1,11 +1,12 @@
 import Darwin
 import Foundation
+import Observation
 import Testing
 @testable import RemiKit
 
 /// A session's transcript is loaded once per connection and kept, and a load publishes once.
 extension SessionAddressingTests {
-    private func entry(sessionID: String, id: String, text: String) throws -> TranscriptContentMessage {
+    func entry(sessionID: String, id: String, text: String) throws -> TranscriptContentMessage {
         var payload = try #require(try JSONSerialization.jsonObject(
             with: FixtureConformanceTests.fixture("transcript_content")) as? [String: Any])
         payload["sessionId"] = sessionID
@@ -73,6 +74,76 @@ extension SessionAddressingTests {
         #expect(!store.isLoadingTranscript(machineID: fixture.ids.a, sessionID: sid))
     }
 
+#if DEBUG
+    @Test func firstTranscriptLoadHandsOffTheStagedInstance() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        store.ownedTranscriptSend = { _ in }
+        let key = MachineSessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let route = fixture.routes[0]
+        let generation = try #require(store.connectionGenerations[route])
+        let messages = try (0..<3).map { index in
+            try entry(sessionID: sid, id: "first-load-\(index)", text: "message-\(index)")
+        }
+
+        store.loadTranscript(machineID: fixture.ids.a, sessionId: sid)
+        for message in messages {
+            store.receive(.transcript(message), from: route, generation: generation)
+        }
+        let stagedIdentity = try #require(store.ownedTranscriptStagingIdentity(for: key))
+        store.receive(.transcriptComplete(try complete(sessionID: sid)), from: route, generation: generation)
+
+        let published = try #require(store.transcriptsBySession[key])
+        #expect(ObjectIdentifier(published) == stagedIdentity)
+        #expect(published.map(\.entryUuid) == messages.map(\.entryUuid))
+        #expect(published.map(\.content) == messages.map(\.content))
+    }
+#endif
+
+#if DEBUG
+    @Test func reconnectReplayKeepsHistoryOrderWithoutDuplicates() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        store.ownedTranscriptSend = { _ in }
+        let key = MachineSessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let messages = try (0..<512).map { index in
+            try entry(sessionID: sid, id: "history-\(index)", text: "message-\(index)")
+        }
+        let expected = messages.map(\.entryUuid)
+        let route = fixture.routes[0]
+        let firstGeneration = try #require(store.connectionGenerations[route])
+
+        store.loadTranscript(machineID: fixture.ids.a, sessionId: sid)
+        for message in messages {
+            store.receive(.transcript(message), from: route, generation: firstGeneration)
+        }
+        store.receive(.transcriptComplete(try complete(sessionID: sid)), from: route, generation: firstGeneration)
+        #expect(store.transcriptsBySession[key]?.map(\.entryUuid) == expected)
+
+        store.ownedReplaceConnectionGeneration(route)
+        let secondGeneration = try #require(store.connectionGenerations[route])
+        store.loadTranscript(machineID: fixture.ids.a, sessionId: sid)
+        for message in messages {
+            store.receive(.transcript(message), from: route, generation: secondGeneration)
+        }
+        #expect(
+            store.transcriptsBySession[key]?.map(\.entryUuid) == expected,
+            "the prior transcript remains published until replay completes"
+        )
+        let visitsBeforeReplay = try #require(store.transcriptsBySession[key]).testingElementVisits
+        store.receive(.transcriptComplete(try complete(sessionID: sid)), from: route, generation: secondGeneration)
+
+        let replayed = try #require(store.transcriptsBySession[key])
+        // The merged instance visits about 3N nodes: N removals, N appends, and N compaction visits.
+        // The staging instance is not included here; the pure apply work-count test covers that path.
+        #expect(replayed.testingElementVisits - visitsBeforeReplay < messages.count * 5)
+        #expect(store.transcriptsBySession[key]?.map(\.entryUuid) == expected)
+        #expect(store.transcriptsBySession[key]?.map(\.content) == messages.map(\.content))
+    }
+#endif
+
     @Test func aLiveEntryAfterTheLoadIsPublishedAtOnce() throws {
         let fixture = try twoMachines()
         defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
@@ -86,6 +157,72 @@ extension SessionAddressingTests {
 
         store.receive(.transcript(try entry(sessionID: sid, id: "e1", text: "live")), from: fixture.routes[0], generation: generation)
         #expect(store.transcriptsBySession[key]?.map(\.content) == ["old", "live"])
+    }
+
+    /// Set from an Observation callback, which is not isolated to the main actor.
+    private final class ChangeFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        func set() { lock.lock(); value = true; lock.unlock() }
+        var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
+    /// The transcript is a reference type, so only storing it in `transcriptsBySession` tells Observation.
+    @Test func aLiveEntryOnAPublishedTranscriptNotifiesObservers() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        store.ownedTranscriptSend = { _ in }
+        let key = MachineSessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let route = fixture.routes[0]
+        let generation = try #require(store.connectionGenerations[route])
+        store.loadTranscript(machineID: fixture.ids.a, sessionId: sid)
+        store.receive(.transcript(try entry(sessionID: sid, id: "e0", text: "old")), from: route, generation: generation)
+        store.receive(.transcriptComplete(try complete(sessionID: sid)), from: route, generation: generation)
+        let published = try #require(store.transcriptsBySession[key])
+
+        let changed = ChangeFlag()
+        withObservationTracking {
+            _ = store.transcriptsBySession[key]
+        } onChange: {
+            changed.set()
+        }
+        store.receive(.transcript(try entry(sessionID: sid, id: "e1", text: "live")), from: route, generation: generation)
+
+        #expect(changed.isSet, "a live entry on a published transcript must notify observers")
+        #expect(store.transcriptsBySession[key].map { ObjectIdentifier($0) } == ObjectIdentifier(published))
+        #expect(published.map(\.content) == ["old", "live"])
+    }
+
+    @Test func aRefreshMergedIntoAPublishedTranscriptNotifiesObservers() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        store.ownedTranscriptSend = { _ in }
+        let key = MachineSessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let route = fixture.routes[0]
+        let generation = try #require(store.connectionGenerations[route])
+        store.loadTranscript(machineID: fixture.ids.a, sessionId: sid)
+        store.receive(.transcript(try entry(sessionID: sid, id: "e0", text: "old")), from: route, generation: generation)
+        store.receive(.transcriptComplete(try complete(sessionID: sid)), from: route, generation: generation)
+        let published = try #require(store.transcriptsBySession[key])
+
+        store.ownedReplaceConnectionGeneration(route)
+        let refreshGeneration = try #require(store.connectionGenerations[route])
+        store.loadTranscript(machineID: fixture.ids.a, sessionId: sid)
+        store.receive(.transcript(try entry(sessionID: sid, id: "e1", text: "added")), from: route, generation: refreshGeneration)
+        #expect(published.map(\.content) == ["old"], "the refresh is staged until the load completes")
+
+        let changed = ChangeFlag()
+        withObservationTracking {
+            _ = store.transcriptsBySession[key]
+        } onChange: {
+            changed.set()
+        }
+        store.receive(.transcriptComplete(try complete(sessionID: sid)), from: route, generation: refreshGeneration)
+
+        #expect(changed.isSet, "a merged refresh must notify observers")
+        #expect(published.map(\.content) == ["old", "added"])
     }
 
     @Test func aCachedTranscriptIsNotRequestedAgain() async throws {
