@@ -45,11 +45,8 @@ struct PhoneLiveRootView: View {
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @SceneStorage("remi.phone.sidebarChoice") private var sidebarChoiceStorage = ""
-    /// The shell root's width. Until its first geometry pass, use the narrow-window default so
-    /// an iPad never flashes a squeezed Board before the window is measured.
+    /// The shell root's width. Until its first geometry pass, an unchosen sidebar uses the narrow default.
     @State private var measuredWindowWidth: CGFloat?
-    /// Remembers the expanded split-view state used by the Mac navigation toggle helper.
-    @State private var columnLayout = RemiMacColumnLayout(visibility: .all, expandedVisibility: .all)
 
     private var layoutMode: RemiLayoutMode {
         RemiLayoutMode.resolve(horizontalSizeClass: horizontalSizeClass)
@@ -59,32 +56,15 @@ struct PhoneLiveRootView: View {
 
     private var sidebarPlacement: RemiSidebarPlacement {
         RemiSidebarPlacement(
-            windowWidth: measuredWindowWidth ?? .nan,
+            windowWidth: measuredWindowWidth,
             explicitChoice: RemiSidebarPlacement.ExplicitChoice(storageValue: sidebarChoiceStorage)
         )
     }
 
-    private var effectiveColumnLayout: RemiMacColumnLayout {
-        let visibility = sidebarPlacement.visibility
-        let expanded = visibility == .detailOnly ? columnLayout.expandedVisibility : visibility
-        return RemiMacColumnLayout(visibility: visibility, expandedVisibility: expanded)
-    }
-
     private var columnVisibility: Binding<NavigationSplitViewVisibility> {
         Binding(
-            get: { effectiveColumnLayout.visibility },
-            set: { visibility in
-                let isHidden = visibility == .detailOnly
-                let resolvedVisibility: NavigationSplitViewVisibility = isHidden ? .detailOnly : .all
-                let current = effectiveColumnLayout
-                let expanded = isHidden ? current.expandedVisibility : resolvedVisibility
-                columnLayout = RemiMacColumnLayout(
-                    visibility: resolvedVisibility,
-                    expandedVisibility: expanded
-                )
-                let choice: RemiSidebarPlacement.ExplicitChoice = isHidden ? .hidden : .shown
-                sidebarChoiceStorage = choice.storageValue
-            }
+            get: { sidebarPlacement.visibility },
+            set: { recordSidebarChoice(requestedVisibility: $0) }
         )
     }
 
@@ -252,7 +232,7 @@ struct PhoneLiveRootView: View {
                 // sidebar with no control on a device without a keyboard.
                 shellContent(sessions: sessions, machines: machines)
             }
-            .modifier(PhoneSidebarSplitStyle(usesProminentDetail: sidebarPlacement.usesProminentDetail))
+            .navigationSplitViewStyle(.balanced)
         } else {
             PhoneShell(state: $shell, chrome: chrome) {
                 shellContent(sessions: sessions, machines: machines)
@@ -316,13 +296,20 @@ struct PhoneLiveRootView: View {
 
     private func toggleSidebar() {
         if chrome.usesSidebar {
-            let updated = effectiveColumnLayout.togglingNavigation()
-            columnLayout = updated
-            let choice: RemiSidebarPlacement.ExplicitChoice = updated.visibility == .detailOnly ? .hidden : .shown
-            sidebarChoiceStorage = choice.storageValue
+            let currentVisibility = sidebarPlacement.visibility
+            let requestedVisibility: NavigationSplitViewVisibility = currentVisibility == .detailOnly ? .all : .detailOnly
+            recordSidebarChoice(requestedVisibility: requestedVisibility)
         } else {
             shell.toggleDrawer()
         }
+    }
+
+    private func recordSidebarChoice(requestedVisibility: NavigationSplitViewVisibility) {
+        guard let choice = RemiSidebarPlacement.choiceToRecord(
+            requestedVisibility: requestedVisibility,
+            currentVisibility: sidebarPlacement.visibility
+        ) else { return }
+        sidebarChoiceStorage = choice.storageValue
     }
 
     private func shellContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
@@ -335,7 +322,7 @@ struct PhoneLiveRootView: View {
                 .toolbar {
                     if chrome.showsMenuButton {
                         ToolbarItem(placement: .topBarLeading) { menuButton }
-                    } else if chrome.showsSidebarToggle(sidebarHidden: effectiveColumnLayout.visibility == .detailOnly) {
+                    } else if chrome.showsSidebarToggle(sidebarHidden: sidebarPlacement.visibility == .detailOnly) {
                         // Only while the sidebar shows. Once it is hidden the split view adds
                         // its own toggle to this bar, and drawing ours as well gave two
                         // sidebar icons side by side (iPad and iPhone Duo).
@@ -1036,21 +1023,6 @@ struct PhoneLiveRootView: View {
         case .connecting: .connecting
         case .waitingForApproval, .waitingForRelayConfirmation: .waitingForApproval
         case .disconnected, .unavailable: .unreachable
-        }
-    }
-}
-
-/// Applies the split-view style selected by the resolved window width. The two SwiftUI style
-/// values have different types, so select them in a view builder rather than a ternary.
-private struct PhoneSidebarSplitStyle: ViewModifier {
-    let usesProminentDetail: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if usesProminentDetail {
-            content.navigationSplitViewStyle(.prominentDetail)
-        } else {
-            content.navigationSplitViewStyle(.balanced)
         }
     }
 }

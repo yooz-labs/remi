@@ -415,10 +415,8 @@ private let inboxThreeProblemMachines = drawerMachines(
 
 // MARK: Wide, landscape and narrow canvases (#1629)
 
-/// The regular-width shell as `PhoneLiveRootView` builds it: the drawer content as a
-/// sidebar beside the session. A preview cannot change its window's real size class, so
-/// The fixed canvases force a regular horizontal size class so the same split-view shell can
-/// show the default sidebar placement at each iPad window width.
+/// These fixed canvases are window widths with a forced regular size class. Sidebar visibility
+/// comes from `RemiSidebarPlacement`, and the split style matches the shell's `.balanced` style.
 private struct RegularShellPreview: View {
     let windowWidth: CGFloat
     let windowHeight: CGFloat
@@ -434,9 +432,7 @@ private struct RegularShellPreview: View {
         _columnVisibility = State(initialValue: RemiSidebarPlacement(windowWidth: windowWidth).visibility)
     }
 
-    @ViewBuilder
     var body: some View {
-        let placement = RemiSidebarPlacement(windowWidth: windowWidth)
         let splitView = NavigationSplitView(columnVisibility: $columnVisibility) {
             PhoneDrawerView(
                 sessions: RemiPreviewData.sessions,
@@ -462,17 +458,10 @@ private struct RegularShellPreview: View {
             SessionPreview()
         }
 
-        if placement.usesProminentDetail {
-            splitView
-                .navigationSplitViewStyle(.prominentDetail)
-                .environment(\.horizontalSizeClass, .regular)
-                .frame(width: windowWidth, height: windowHeight)
-        } else {
-            splitView
-                .navigationSplitViewStyle(.balanced)
-                .environment(\.horizontalSizeClass, .regular)
-                .frame(width: windowWidth, height: windowHeight)
-        }
+        splitView
+            .navigationSplitViewStyle(.balanced)
+            .environment(\.horizontalSizeClass, .regular)
+            .frame(width: windowWidth, height: windowHeight)
     }
 }
 
@@ -501,10 +490,10 @@ private struct RegularShellPreview: View {
 #Preview("Shell, 744 pt") { RegularShellPreview(windowWidth: 744, windowHeight: 1_133) }
 #Preview("Shell, 1032 pt") { RegularShellPreview(windowWidth: 1_032, windowHeight: 1_376) }
 #Preview("Shell, 1376 pt") { RegularShellPreview(windowWidth: 1_376, windowHeight: 1_032) }
-#Preview("Shell · Regular sidebar", traits: .landscapeLeft) {
+#Preview("Shell, 1194 pt", traits: .landscapeLeft) {
     RegularShellPreview(windowWidth: 1_194, windowHeight: 834)
 }
-#Preview("Shell · Regular sidebar · Dark", traits: .landscapeLeft) {
+#Preview("Shell, 1194 pt, dark", traits: .landscapeLeft) {
     RegularShellPreview(windowWidth: 1_194, windowHeight: 834).preferredColorScheme(.dark)
 }
 #endif

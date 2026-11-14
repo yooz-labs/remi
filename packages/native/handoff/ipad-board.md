@@ -60,7 +60,7 @@ Owner requirement (2026-11-13): an iPad in portrait gets several columns too, no
 Two things stood in the way of that with the first draft of this rule: a 340 pt sidebar beside the Board took a third of a portrait iPad, and a 340 pt minimum card width asked too much of what was left.
 So the rule has two parts.
 
-1. **The sidebar sits beside the Board only when the window is at least 1000 pt wide**; below that it is an overlay the person brings in with the system toggle, so the Board keeps the whole width. A person's explicit choice (shown or hidden) wins over the default and is kept per window.
+1. **The shell uses a balanced split view at every width; below 1000 pt the sidebar is hidden by default and narrows the Board when the person opens it, while an overlay requires a state-preserving structure that slice 4 may revisit.** A person's explicit choice (shown or hidden) wins over the default and is kept per window.
 2. **The Board decides its column count from the width of its own pane**, measured where the Board is laid out (`onGeometryChange`), never from a device or the sidebar's assumed state:
 
 `available = pane - 2 x 16 pt margin`
