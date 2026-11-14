@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import LocalAuthentication
 import Security
@@ -9,54 +8,41 @@ import Testing
 /// #1768: every native Keychain read passes the one non-interactive context, so
 /// concurrent reads allocate no LocalAuthentication context per read; a read
 /// after that context is invalidated still returns its item; and the stores map
-/// read statuses as before. Reads go to the real Keychain; the operations seam
-/// only looks at each query on its way to SecItemCopyMatching.
+/// not-found and error statuses as before. Reads go to the real Keychain; the
+/// operations seam only looks at each query on its way to SecItemCopyMatching.
 struct NativeKeychainReadContextTests {
     /// The system can invalidate the one shared context (the daemon did so to
     /// per-read contexts under load, #1768). Remi reuses it rather than
     /// recreating it, so the next reads through both stores must still return
     /// their items. The context in each query is swapped for an invalidated one
     /// on its way to the real SecItemCopyMatching; the shared one stays valid.
+    /// The items are in the file Keychain of the unsigned test process, not the
+    /// data-protection Keychain that production reads use.
     @Test func readsThroughAnInvalidatedContextStillReturnTheirItems() throws {
         let invalidated = LAContext()
         invalidated.interactionNotAllowed = true
         invalidated.invalidate()
+        let records = try KeychainRecordFixtures()
         let service = "live.yooz.remi.tests.read-context.\(UUID().uuidString)"
         let pushAccount = UUID().uuidString, identityAccount = UUID().uuidString
-        struct PushRecord: Encodable { let version: Int; let privateDER: Data; let publicKey: Data; let keyVersion: Int }
-        struct IdentityRecord: Encodable {
-            let version: Int; let pkcs8: Data; let publicKey: Data; let revision: String; let requiresAppUnlock: Bool
+        defer {
+            for account in [pushAccount, identityAccount] { KeychainRecordFixtures.delete(service: service, account: account) }
         }
-        let key = P256.KeyAgreement.PrivateKey(), identity = ClientIdentity()
-        let records = [
-            (pushAccount, try JSONEncoder().encode(PushRecord(version: 1, privateDER: key.derRepresentation,
-                publicKey: key.publicKey.x963Representation, keyVersion: 3))),
-            (identityAccount, try JSONEncoder().encode(IdentityRecord(version: 2,
-                pkcs8: Ed25519PKCS8.encode(identity.privateKey), publicKey: identity.publicKeyRaw,
-                revision: UUID().uuidString, requiresAppUnlock: false))),
-        ]
-        func query(_ account: String) -> [String: Any] {
-            [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-             kSecAttrAccount as String: account]
-        }
-        defer { for (account, _) in records { SecItemDelete(query(account) as CFDictionary) } }
-        for (account, data) in records {
-            var item = query(account)
-            item[kSecValueData as String] = data
-            item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            try #require(SecItemAdd(item as CFDictionary, nil) == errSecSuccess)
-        }
+        try #require(KeychainRecordFixtures.add(records.pushRecord, service: service, account: pushAccount) == errSecSuccess)
+        try #require(KeychainRecordFixtures.add(records.identityRecord, service: service, account: identityAccount)
+            == errSecSuccess)
         let operations = NativeKeychainOperations(copyMatching: { query, output in
             let values = (query as NSDictionary).mutableCopy() as! NSMutableDictionary
-            #expect(values[kSecUseAuthenticationContext as String] as? LAContext === NativeKeychainReadContext.noninteractive)
+            #expect(values[kSecUseAuthenticationContext as String] as? LAContext
+                === NativeKeychainReadContext.sharedContextForTesting)
             values[kSecUseAuthenticationContext as String] = invalidated
             return SecItemCopyMatching(values as CFDictionary, output)
         }, add: { _, _ in errSecUnimplemented }, update: { _, _ in errSecUnimplemented })
         let push = NativePushKeyStore(service: service, account: pushAccount, accessGroup: nil, operations: operations)
         for _ in 0..<3 {
-            #expect(try push.load()?.publicKey == key.publicKey.x963Representation)
+            #expect(try push.load()?.publicKey == records.pushPublicKey)
             #expect(try NativeIdentityRecordStore.currentRecord(accessGroup: nil, service: service,
-                account: identityAccount, operations: operations)?.publicKeyRaw == identity.publicKeyRaw)
+                account: identityAccount, operations: operations)?.publicKeyRaw == records.identityPublicKey)
             #expect(try NativeIdentityRecordStore.currentRecord(accessGroup: nil, service: service,
                 account: UUID().uuidString, operations: operations) == nil)
         }
@@ -85,12 +71,13 @@ struct NativeKeychainReadContextTests {
     @Test func concurrentReadsOfBothStoresShareOneNoninteractiveContext() async {
         let recorder = Recorder()
         let service = "live.yooz.remi.tests.read-context.\(UUID().uuidString)"
+        let workers = 16, iterations = 4
         await withTaskGroup(of: Void.self) { group in
-            for worker in 0..<16 {
+            for worker in 0..<workers {
                 group.addTask {
                     let push = NativePushKeyStore(service: service, account: "push-\(worker)", accessGroup: nil,
                                                   operations: recorder.operations)
-                    for _ in 0..<4 {
+                    for _ in 0..<iterations {
                         do {
                             // Nothing is written under this service: both reads find nothing.
                             #expect(try push.load() == nil)
@@ -102,16 +89,19 @@ struct NativeKeychainReadContextTests {
             }
         }
         let observed = recorder.observed
-        #expect(observed.reads == 128)
+        // Two reads per iteration: with accessGroup nil, load() and currentRecord
+        // each make exactly one SecItemCopyMatching call (no legacy fallback read).
+        #expect(observed.reads == workers * iterations * 2)
         #expect(observed.withoutContext == 0)
         #expect(observed.contexts.count == 1)
-        #expect(observed.contexts.first === NativeKeychainReadContext.noninteractive)
+        #expect(observed.contexts.first === NativeKeychainReadContext.sharedContextForTesting)
         #expect(observed.contexts.first?.interactionNotAllowed == true)
     }
 
-    /// Not found is no item; every other status is an error carrying it.
+    /// Not found is no item; an error status is an error carrying it. (A
+    /// successful read that returns something other than Data is not covered here.)
     @Test(arguments: [errSecInteractionNotAllowed, errSecAuthFailed, errSecNotAvailable])
-    func readStatusesKeepTheirMapping(status: OSStatus) throws {
+    func notFoundAndErrorStatusesKeepTheirMapping(status: OSStatus) throws {
         func operations(_ result: OSStatus) -> NativeKeychainOperations {
             .init(copyMatching: { _, _ in result }, add: { _, _ in errSecUnimplemented },
                   update: { _, _ in errSecUnimplemented })

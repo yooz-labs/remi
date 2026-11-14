@@ -57,10 +57,7 @@ final class NativePushKeyStore {
         try read(query: query)
     }
     private func read(query: [String: Any]) throws -> Data? {
-        var request = query
-        request[kSecUseAuthenticationContext as String] = NativeKeychainReadContext.noninteractive
-        request[kSecReturnData as String] = true
-        request[kSecMatchLimit as String] = kSecMatchLimitOne
+        let request = NativeKeychainReadContext.readQuery(query)
         var result: CFTypeRef?
         let status = operations.copyMatching(request as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }

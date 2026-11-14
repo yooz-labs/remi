@@ -1,33 +1,60 @@
 import Foundation
 import LocalAuthentication
 
-/// The authentication context that every native Keychain read passes as
-/// `kSecUseAuthenticationContext` (#1768): one context for the process, created
-/// on first use with `interactionNotAllowed` set, never evaluated, never
-/// invalidated by Remi and never released.
+/// Builds the query of every native Keychain read (#1768): the caller's query
+/// plus one shared `LAContext` as `kSecUseAuthenticationContext`,
+/// `kSecReturnData` and `kSecMatchLimitOne`. `NativePushKeyStore` and
+/// `NativeIdentityRecordStore` read only through `readQuery(_:)`; never create
+/// an `LAContext` per read.
 ///
-/// A new `LAContext` per read made LocalAuthentication allocate, and later
-/// delete, a context in its daemon for every read. Under concurrent reads the
-/// process went past the daemon's limit on allocated contexts and the daemon
-/// invalidated contexts the process still held ("Invalidated due to exceeded
-/// number of allocated contexts"). In local runs that pattern came with reads
-/// that never returned from LocalAuthentication, and two `EXC_BAD_ACCESS`
-/// crashes in `-[LAClient _setPermanentError:]` came from processes that had
-/// such invalidations. One reused context allocates nothing per read. The
-/// counts are in the pull request for #1768.
+/// The context is created once per process with `interactionNotAllowed` set,
+/// and Remi never evaluates, invalidates or releases it. With a new context per
+/// read, concurrent reads went past the limit of `coreauthd` on allocated
+/// contexts: the daemon invalidated contexts the process still held, some runs
+/// did not return within 90 s, and two local `EXC_BAD_ACCESS` crashes in
+/// `-[LAClient _setPermanentError:]` came from processes with such
+/// invalidations. With this one context, no daemon invalidations were observed
+/// (see #1768).
 ///
-/// The context only marks a read as non-interactive. No policy is ever
-/// evaluated on it, so it never holds an authentication that a later read could
-/// reuse, and no item read through it carries access control (they are written
-/// with `kSecAttrAccessible` alone). If the system invalidates it, reads of
-/// those items still return their item or their status; the per-read contexts
-/// it replaces were invalidated the same way under concurrent reads.
+/// What the flag covers: `LAContext.h` gives it the effect of
+/// `kSecUseNoAuthenticationUI`, which `SecItem.h` limits on macOS to items in
+/// the data-protection Keychain. It therefore covers every read on iOS and, on
+/// macOS, the reads that set `kSecUseDataProtectionKeychain` to true (those with
+/// an access group). It does not cover macOS file-Keychain reads, such as the
+/// legacy migration reads that set `kSecUseDataProtectionKeychain` to false:
+/// `SecItem.h` says legacy keychain items still activate UI if needed. The macOS
+/// WebView copies under `packages/macos` pass no context at all.
 ///
-/// `nonisolated(unsafe)`: the context is created once (a lazy static) and is
-/// afterwards only handed to Security as a query value; LocalAuthentication
-/// runs each context's calls on that context's own serial queue.
+/// If the system invalidates this context, the flag stops applying for the rest
+/// of the process, not for a single read as with the per-read contexts before.
+/// The context must therefore never be relied on for an item with
+/// `kSecAttrAccessControl`. No such item exists today, and whoever adds one must
+/// revisit this helper first; `NativeKeychainReadGuardTests` fails until then.
+/// That reads still return their item after an invalidation was measured only in
+/// the unsigned package tests, where the item came from the file Keychain, and
+/// not on the production data-protection Keychain.
+///
+/// Apple does not document whether one `LAContext` may be shared across
+/// threads. Sharing it here rests on the experiment in #1768 (810 runs of
+/// concurrent reads, with no failed read, crash or hang) and on sampled stacks,
+/// in which LocalAuthentication runs each context's calls on that context's own
+/// serial queue.
 package enum NativeKeychainReadContext {
-    nonisolated(unsafe) package static let noninteractive: LAContext = {
+    /// `base` with the shared context, `kSecReturnData` and `kSecMatchLimitOne` added.
+    package static func readQuery(_ base: [String: Any]) -> [String: Any] {
+        var query = base
+        query[kSecUseAuthenticationContext as String] = context
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        return query
+    }
+
+    /// The shared context, for tests that check its identity (`@testable import RemiPush`).
+    static var sharedContextForTesting: LAContext { context }
+
+    /// The static is `nonisolated(unsafe)` because `LAContext` is not `Sendable`;
+    /// the lazy initializer writes it once, and it is only read afterwards.
+    nonisolated(unsafe) private static let context: LAContext = {
         let context = LAContext()
         context.interactionNotAllowed = true
         return context
