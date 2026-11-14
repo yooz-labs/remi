@@ -54,7 +54,7 @@ import Testing
 
     @Test func emptyColumnsKeepTheirHorizontalSlots() {
         let frames = RemiBoardColumnsLayout.frames(
-            columns: [[], [0], []],
+            columns: [[], [], [0]],
             heights: [20],
             columnWidth: 80,
             spacing: 12
