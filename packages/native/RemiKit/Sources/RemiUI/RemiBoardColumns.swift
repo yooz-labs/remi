@@ -1,5 +1,18 @@
 import SwiftUI
 
+/// The phone card options that follow the Board's resolved column count.
+public struct RemiBoardCardPresentation: Equatable, Sendable {
+    public let columnCount: Int
+
+    public init(columnCount: Int) {
+        self.columnCount = columnCount
+    }
+
+    public var isMultiColumn: Bool { columnCount >= 2 }
+    public var sizeChoices: [RemiTileSize] { isMultiColumn ? RemiTileSize.phoneDensities : [] }
+    public var growsToContent: Bool { isMultiColumn }
+}
+
 /// Resolves a Board pane width into a responsive group of readable card columns.
 ///
 /// While a column is held during a one-column drop, `cardWidth` can be up to
@@ -71,14 +84,19 @@ public struct RemiBoardColumns: Equatable, Sendable {
         return Self(columnCount: columnCount, cardWidth: cardWidth, groupWidth: groupWidth)
     }
 
-    /// Places items into columns in reading order. Since every Board card has the same selected
-    /// density, placement is round-robin and does not depend on card height. Per-card heights
-    /// belong in `RemiBoardOrder.columns` only when cards differ in height; its default gap is
-    /// 12 pt. Counts below 1 are treated as 1. The result always has that many columns, including
-    /// empty columns, and preserves the input order within each column.
-    public static func place<Item>(_ items: [Item], columnCount: Int) -> [[Item]] {
-        RemiBoardOrder.columns(
-            heights: Array(repeating: 0, count: items.count),
+    /// Places items by their phone card heights, with a regular card height for any missing
+    /// entries. Extra heights are ignored. Counts below 1 are treated as 1. The result always
+    /// has that many columns, including empty columns, and preserves input order within each.
+    public static func place<Item>(
+        _ items: [Item],
+        columnCount: Int,
+        heights: [CGFloat] = []
+    ) -> [[Item]] {
+        let itemHeights = items.indices.map { index in
+            heights.indices.contains(index) ? heights[index] : RemiTileSize.regular.phoneCardHeight
+        }
+        return RemiBoardOrder.columns(
+            heights: itemHeights,
             count: columnCount
         ).map { indices in
             indices.map { items[$0] }
