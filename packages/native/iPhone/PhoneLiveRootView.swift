@@ -25,10 +25,14 @@ enum PhoneShellSheet: Identifiable {
     }
 }
 
+private struct PhoneQuestionNotificationInput: Equatable {
+    let currentQuestionIDsBySession: [String: Set<String>]
+    let snapshotsBySession: [String: MachineQuestionConnectionSnapshot]
+}
+
 struct PhoneLiveRootView: View {
     let store: MachineStore
-    @State private var knownQuestionIDs: Set<String> = []
-    @State private var notificationBaselineEstablished = false
+    @State private var questionNotificationPolicyState = RemiQuestionNotificationPolicy.State()
     @State private var questionFeedbackTrigger = 0
     @State private var answerFeedbackTrigger = 0
     @State private var notificationRouter = PhoneNotificationRouter.shared
@@ -159,15 +163,14 @@ struct PhoneLiveRootView: View {
         .sensoryFeedback(.impact(weight: .medium), trigger: answerFeedbackTrigger) { _, _ in
             hapticsEnabled
         }
-        .onChange(of: activeQuestionIDs, initial: true) { oldValue, newValue in
-            guard notificationBaselineEstablished else {
-                knownQuestionIDs = newValue
-                notificationBaselineEstablished = true
-                return
-            }
-            let removed = knownQuestionIDs.subtracting(newValue)
-            PhoneNotificationCoordinator.remove(ids: Array(removed))
-            for id in newValue.subtracting(knownQuestionIDs) {
+        .onChange(of: questionNotificationInput, initial: true) { _, input in
+            let update = RemiQuestionNotificationPolicy.update(
+                state: questionNotificationPolicyState,
+                currentQuestionIDsBySession: input.currentQuestionIDsBySession,
+                snapshotsBySession: input.snapshotsBySession
+            )
+            PhoneNotificationCoordinator.remove(ids: Array(update.identitiesToRemove))
+            for id in update.identitiesToPost {
                 guard let question = allQuestions.first(where: { $0.id == id }),
                       let destination = destination(forQuestionIdentity: id)
                 else { continue }
@@ -182,10 +185,10 @@ struct PhoneLiveRootView: View {
                     )
                 }
             }
-            if !newValue.subtracting(knownQuestionIDs).isEmpty {
+            if !update.identitiesToPost.isEmpty {
                 questionFeedbackTrigger += 1
             }
-            knownQuestionIDs = newValue
+            questionNotificationPolicyState = update.state
         }
         .onChange(of: notificationRouter.destination) { _, destination in
             guard destination != nil else { return }
@@ -636,16 +639,35 @@ struct PhoneLiveRootView: View {
         return active + resolved
     }
 
-    private var activeQuestionIDs: Set<String> {
-        Set(store.machines.flatMap { machine in
-            machine.questions.map { message in
-                RemiQuestionCardModel.identity(
-                    machineID: machine.id,
-                    sessionID: message.sessionId,
-                    questionID: message.question.id
-                )
+    private var questionNotificationInput: PhoneQuestionNotificationInput {
+        var currentQuestionIDsBySession: [String: Set<String>] = [:]
+        var snapshotsBySession: [String: MachineQuestionConnectionSnapshot] = [:]
+
+        for machine in store.machines {
+            let sessionIDs = Set(machine.activeSessions.map(\.sessionId))
+                .union(machine.questions.map(\.sessionId))
+            for sessionID in sessionIDs {
+                let session = questionNotificationSession(machineID: machine.id, sessionID: sessionID)
+                currentQuestionIDsBySession[session] = []
+                if let snapshot = machine.currentQuestionSnapshot(for: sessionID) {
+                    snapshotsBySession[session] = snapshot
+                }
             }
-        })
+
+            for message in machine.questions {
+                let session = questionNotificationSession(machineID: machine.id, sessionID: message.sessionId)
+                currentQuestionIDsBySession[session, default: []].insert(message.question.id)
+            }
+        }
+
+        return PhoneQuestionNotificationInput(
+            currentQuestionIDsBySession: currentQuestionIDsBySession,
+            snapshotsBySession: snapshotsBySession
+        )
+    }
+
+    private func questionNotificationSession(machineID: String, sessionID: String) -> String {
+        "\(machineID)|\(sessionID)"
     }
 
     private func questions(machineID: String, sessionID sessionId: String) -> [RemiQuestionCardModel] {
