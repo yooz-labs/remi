@@ -2989,9 +2989,9 @@ public final class MachineStore {
         case .transcript(let message):
             let key = MachineSessionKey(machineID: machines[index].id, sessionID: message.sessionId)
             if transcriptsLoading.contains(key) {
-                let staged = transcriptStaging[key] ?? RemiOrderedTranscript()
-                staged.apply(message)
-                transcriptStaging[key] = staged
+                let transcript = transcriptStaging[key] ?? RemiOrderedTranscript()
+                transcript.apply(message)
+                transcriptStaging[key] = transcript
             } else {
                 let transcript = transcriptsBySession[key] ?? RemiOrderedTranscript()
                 transcript.apply(message)

@@ -164,6 +164,7 @@ struct RemiOrderedTranscriptTests {
         #expect(transcript.suffix(2) == Array(history.suffix(2)))
     }
 
+    // The counter is self-reported, so the source guard also rejects common uncounted scans.
     @Test(arguments: [1_000, 4_000])
     func replayedDuplicatesUseLinearElementWork(_ entryCount: Int) throws {
         let template = try fixtureTemplate()
@@ -189,24 +190,46 @@ struct RemiOrderedTranscriptTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let source = try String(
+        let machineStore = try String(
             contentsOf: packageRoot.appendingPathComponent("Sources/RemiKit/Store/MachineStore.swift"),
             encoding: .utf8
         )
-        let receiveStart = try #require(source.range(of: "case .transcript(let message):"))
-        let receiveSource = source[receiveStart.lowerBound...]
+        let orderedStore = try String(
+            contentsOf: packageRoot.appendingPathComponent("Sources/RemiKit/RemiOrderedTranscript.swift"),
+            encoding: .utf8
+        )
+        let receiveStart = try #require(machineStore.range(of: "case .transcript(let message):"))
+        let receiveSource = machineStore[receiveStart.lowerBound...]
         let receiveEnd = try #require(receiveSource.range(of: "\n        case .sessionViews"))
         let receiveBody = String(receiveSource[..<receiveEnd.lowerBound])
 
-        let finishStart = try #require(source.range(of: "private func finishTranscriptLoad("))
-        let finishSource = source[finishStart.lowerBound...]
+        let finishStart = try #require(machineStore.range(of: "private func finishTranscriptLoad("))
+        let finishSource = machineStore[finishStart.lowerBound...]
         let finishEnd = try #require(finishSource.range(of: "\n    /// Whether the key"))
         let finishBody = String(finishSource[..<finishEnd.lowerBound])
+        let transcriptCode = codeLines(orderedStore)
+        // Membership in the loading set is constant-time and is not a transcript scan.
+        let storeCode = codeLines(receiveBody + "\n" + finishBody)
+            .replacingOccurrences(of: "transcriptsLoading.contains(key)", with: "")
 
-        #expect(receiveBody.contains("staged.apply(message)"))
-        #expect(receiveBody.contains("transcript.apply(message)"))
+        for forbidden in ["removeAll", "firstIndex", ".contains(", "remove(at:"] {
+            #expect(!transcriptCode.contains(forbidden), "ordered transcript must not scan with \(forbidden)")
+            #expect(!storeCode.contains(forbidden), "MachineStore transcript paths must not scan with \(forbidden)")
+        }
+        let indexZeroInsert = try NSRegularExpression(pattern: #"\.insert\([^)]*\bat:\s*0\s*\)"#)
+        let fullStoreRange = NSRange(storeCode.startIndex..<storeCode.endIndex, in: storeCode)
+        #expect(indexZeroInsert.firstMatch(in: storeCode, range: fullStoreRange) == nil)
+        #expect(receiveBody.components(separatedBy: "transcript.apply(").count - 1 == 2)
         #expect(finishBody.contains("transcript.apply(message)"))
-        #expect(!receiveBody.contains("removeAll"))
-        #expect(!finishBody.contains("removeAll"))
+        #expect(!transcriptCode.isEmpty)
+    }
+
+    private func codeLines(_ source: String) -> String {
+        source.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { line in
+                let code = line.drop(while: { $0 == " " || $0 == "\t" })
+                return !code.hasPrefix("//")
+            }
+            .joined(separator: "\n")
     }
 }
