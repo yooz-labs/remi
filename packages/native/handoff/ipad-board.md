@@ -89,7 +89,7 @@ The Mac keeps its 340 pt minimum for its freeform frames; the iPad and Duo Board
 
 Windows between 644 and 1000 pt wide are two columns without a sidebar beside them, and a window that a person drags down to almost phone width is one column with the overlay, exactly like the iPhone; from 1000 pt the sidebar sits beside the Board, and the iPad Pro 13-inch in portrait (1032 pt) is the narrowest such window, with two columns, or three if the person hides the sidebar.
 At one column the screen is today's screen: same stack, same readable cap, same ordering, so no iPhone regression.
-At two or more the readable cap does not apply to the whole pane; each column's cards fill their column (`(available - 12 x (columns - 1)) / columns`, at least 300 pt) and the columns are centered when the cap on six columns is reached.
+At two or more the readable cap does not apply to the whole pane; each column's cards fill their column (`(available - 12 x (columns - 1)) / columns`, at least 300 pt, except up to 24 pt divided by the column count less while a column is held) and the columns are centered when the cap on six columns is reached.
 The iPhone Duo uses the same rule with the point widths from the simulator profile (466 pt outer, 669 by 951 pt inner): the unfolded display reports regular size classes, and below 1000 pt wide the sidebar is an overlay, so the inner display gets two columns in portrait and in landscape.
 
 ### Placement
