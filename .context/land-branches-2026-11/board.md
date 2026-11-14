@@ -19,8 +19,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Manager id | mba-claude-sonnet |
 | State | running |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | 2026-11-14T11:48-08:00 |
-| Next tick | 2026-11-14T12:18-08:00 |
+| Last tick | 2026-11-14T12:15-08:00 |
+| Next tick | 2026-11-14T12:45-08:00 |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-12T19:05-08:00 |
 
