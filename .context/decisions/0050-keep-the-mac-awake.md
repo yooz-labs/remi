@@ -1,6 +1,6 @@
 # ADR 0050: Keeping the Mac awake while remi has work
 
-**Status:** accepted as the direction (owner, 2026-11-14: the two levels, the design and the answers to the seven questions below are approved; no code exists yet; the hardware checks in the slices still need the owner's MacBook; the configuration key names are proposals to settle in the first implementation slice)
+**Status:** accepted as the direction (owner, 2026-11-14: the two levels, the design and the answers to the seven questions below are approved; every tunable is a configuration option; no code beyond slice 1 exists yet; the hardware checks in the slices still need the owner's MacBook; the key names are settled by the slice that ships each key)
 **Date:** 2026-11-14
 **Owner:** Yahya
 
@@ -123,7 +123,7 @@ Limits: names are self-chosen; a bare caffeinate's origin is opaque; audio playb
 
 ## Battery, thermal, duration and display inputs
 
-- **Battery:** `pmset -g batt` (VERIFIED on AC: `Now drawing from 'AC Power'` and no battery line; the laptop line `-InternalBattery-0 ... 62%; discharging; 1:40 remaining` is UNVERIFIED). Defaults, each a configuration option (owner decisions 3 and 4): level 1 releases its hold below 20 percent battery; level 2 refuses to start below 35 percent, reverts at 30 percent or under 20 min remaining; a laptop whose battery cannot be read refuses.
+- **Battery:** `pmset -g batt` (VERIFIED on AC: `Now drawing from 'AC Power'` and no battery line; the laptop line `-InternalBattery-0 ... 62%; discharging; 1:40 remaining` is UNVERIFIED). Defaults, each a configuration option (owner decisions 3, 4 and 8): level 1 releases its hold below 20 percent battery; level 2 refuses to start below 35 percent, reverts at 30 percent or under 20 min remaining; a laptop whose battery cannot be read refuses.
 - **Thermal:** notify(3) key `com.apple.system.thermalpressurelevel`, VERIFIED by a compiled read of `kOSThermalNotificationPressureLevelName` (state 0 here); levels nominal 0, moderate 1, heavy 2, trapping 3, sleeping 4 (`libkern/OSThermalNotification.h:47-52`); `notifyutil -g` reads it without root. Defaults: refuse to start at moderate; revert at heavy, or moderate held for 5 min. `pmset -g therm` is a second source (VERIFIED: "No thermal warning level has been recorded").
 - **Duration:** default 3 h, hard cap 12 h, extended only by an explicit action of the person; both are configuration options.
 - **Display:** on lid close (`AppleClamshellState` in ioreg; absent on the Mac mini, VERIFIED; UNVERIFIED on a laptop) run `pmset displaysleepnow` (UNVERIFIED that it needs no root).
@@ -152,12 +152,39 @@ The seven questions of the draft, with the owner's answers:
 1. Install the boot LaunchDaemon, accepting that it also clears a `SleepDisabled` set by hand: **yes**.
 2. Pending-question hold cap and level 2 idle revert: **30 minutes by default, and both are options in the configuration file**.
 3. Level 1 on battery: **on, with a 20 percent floor (changed from the proposed 30), an option in the configuration file**.
-4. Level 2 battery limits: the owner answered "30% and also an option". Recorded as: level 2 reverts at **30 percent** (changed from the proposed 25), is configurable, and starts only at 35 percent or more (unchanged, configurable); the 3 h default and 12 h cap stand and are options. The manager asked the owner to confirm this reading of "30%".
+4. Level 2 battery limit: **30 percent** (the owner's figure; level 1's floor is 20 percent, level 2's is 30 percent). The proposed start threshold of 35 percent, the 3 h default and the 12 h cap are kept as defaults, and like every other value they are options in the configuration file (decision 8).
 5. Foreign holders: **yes** as proposed (always refuse on display assertions; on system-sleep holders unless the person ignored that holder on the Mac; a holder that appears mid-session: notify, then revert after 2 minutes).
 6. A third exact sudoers rule for `/usr/bin/pmset sleepnow` if hardware test 3(b) shows the Mac stays awake after the revert with the lid closed: **yes, agreed**.
 7. Screen lock: **level 2 requires the password-on-wake setting to be on** ("require password immediately" after sleep or the screen saver). This is stricter than the draft, which asked only when the lid did not lock the screen: level 2 refuses to start unless the setting is on, whatever the lid does. How the setting is read (for example `sysadminctl -screenLock status`, or the screensaver preference) is UNVERIFIED and is settled in the guard-rails slice.
 
-Proposed configuration table (names to settle in the first implementation slice): an `[awake]` table with `question_hold_minutes`, `idle_revert_minutes`, `level1_battery_floor_percent`, `level2_start_battery_percent`, `level2_revert_battery_percent`, `level2_default_hours`, `level2_cap_hours`.
+8. **Every tunable is an option in the configuration file** (owner, 2026-11-14, restated after the first reading): no threshold, duration or interval named in this ADR is hard-coded; each is a key of an `[awake]` table with the default below. A key lands with the slice that uses it, so a key never exists without behavior (the repository rule: say what ships). The values are validated (types, ranges, and the relations that keep the guards coherent, for example a level 2 start threshold above its revert threshold).
+
+| Key | Default | Meaning | Slice |
+|---|---|---|---|
+| `level1` | `true` | hold the Mac awake while a session has real work; `false` turns level 1 off | 1 |
+| `question_hold_minutes` | `30` | longest a pending question keeps the hold | 1 |
+| `idle_grace_seconds` | `120` | delay before releasing after work stops | 1 |
+| `stuck_busy_minutes` | `15` | busy with no activity for this long releases the hold | 1 |
+| `ttl_minutes` | `20` | time to live of one `caffeinate` holder, renewed while busy | 1 |
+| `level1_battery_floor_percent` | `20` | level 1 releases its hold below this battery level | 2 |
+| `level2` | `false` | allow the lid-closed mode (opt-in; also needs the sudoers rule installed) | 3 |
+| `level2_start_battery_percent` | `35` | level 2 refuses to start below this | 3 |
+| `level2_revert_battery_percent` | `30` | level 2 reverts at or below this | 3 |
+| `level2_min_remaining_minutes` | `20` | level 2 reverts when the estimated time remaining is below this | 3 |
+| `level2_default_hours` | `3` | default duration of a level 2 session | 3 |
+| `level2_cap_hours` | `12` | hard cap, extended only by an explicit action | 3 |
+| `level2_idle_revert_minutes` | `30` | level 2 reverts after this long with no real work in any session | 3 |
+| `thermal_refuse_level` | `"moderate"` | level 2 refuses to start at or above this thermal level | 3 |
+| `thermal_revert_level` | `"heavy"` | level 2 reverts at or above this level | 3 |
+| `thermal_moderate_revert_minutes` | `5` | level 2 reverts when the moderate level is held this long | 3 |
+| `heartbeat_seconds` | `30` | how often the hub refreshes the lease and evaluates the guards | 3 |
+| `watchdog_interval_seconds` | `60` | how often the separate watchdog agent runs (applied when it is installed) | 3 |
+| `foreign_holder_revert_minutes` | `2` | a holder that appears mid-session: notify, then revert after this long | 3 |
+| `foreign_holder_ignore` | `[]` | process names whose system-sleep assertions are ignored (display holders always refuse) | 3 |
+| `require_password_on_wake` | `true` | level 2 refuses to start unless the password-on-wake setting is on; turning it off is allowed and logged loudly, because the Mac stays awake and unlocked in a bag | 3 |
+| `allow_phone` | `false` | a phone may start and stop level 2 once the owner has enabled it here | 4 |
+
+The percentages and durations the owner gave (20 percent for level 1, 30 percent for level 2, 30 minutes for the question hold and the idle revert) are the defaults, not constants.
 
 ## Receipts
 
