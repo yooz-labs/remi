@@ -44,9 +44,9 @@ struct PhoneLiveRootView: View {
     @State private var relayNotifications = NativeRelayNotifications.shared
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    /// The sidebar's visibility at regular width; the Mac column helpers remember the
-    /// visible layout while it is hidden.
-    @State private var columnLayout = RemiMacColumnLayout(visibility: .all, expandedVisibility: .all)
+    @SceneStorage("remi.phone.sidebarChoice") private var sidebarChoiceStorage = ""
+    /// The shell root's width. Until its first geometry pass, an unchosen sidebar uses the narrow default.
+    @State private var measuredWindowWidth: CGFloat?
 
     private var layoutMode: RemiLayoutMode {
         RemiLayoutMode.resolve(horizontalSizeClass: horizontalSizeClass)
@@ -54,13 +54,17 @@ struct PhoneLiveRootView: View {
 
     private var chrome: RemiShellChrome { RemiShellChrome.resolve(mode: layoutMode) }
 
+    private var sidebarPlacement: RemiSidebarPlacement {
+        RemiSidebarPlacement(
+            windowWidth: measuredWindowWidth,
+            explicitChoice: RemiSidebarPlacement.ExplicitChoice(storageValue: sidebarChoiceStorage)
+        )
+    }
+
     private var columnVisibility: Binding<NavigationSplitViewVisibility> {
         Binding(
-            get: { columnLayout.visibility },
-            set: { visibility in
-                let expanded = visibility == .detailOnly ? columnLayout.expandedVisibility : visibility
-                columnLayout = RemiMacColumnLayout(visibility: visibility, expandedVisibility: expanded)
-            }
+            get: { sidebarPlacement.visibility },
+            set: { recordSidebarChoice(requestedVisibility: $0) }
         )
     }
 
@@ -70,6 +74,11 @@ struct PhoneLiveRootView: View {
         let sessions = allSessions
         let machines = machineSummaries
         return rootLayout(sessions: sessions, machines: machines)
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            measuredWindowWidth = width
+        }
         // A row's long-press menu is drawn here, above the drawer and the detail pane, so it can
         // open beside its row whichever column the row is in.
         .environment(\.projectMenu, $projectMenu)
@@ -287,10 +296,20 @@ struct PhoneLiveRootView: View {
 
     private func toggleSidebar() {
         if chrome.usesSidebar {
-            columnLayout = columnLayout.togglingNavigation()
+            let currentVisibility = sidebarPlacement.visibility
+            let requestedVisibility: NavigationSplitViewVisibility = currentVisibility == .detailOnly ? .all : .detailOnly
+            recordSidebarChoice(requestedVisibility: requestedVisibility)
         } else {
             shell.toggleDrawer()
         }
+    }
+
+    private func recordSidebarChoice(requestedVisibility: NavigationSplitViewVisibility) {
+        guard let choice = RemiSidebarPlacement.choiceToRecord(
+            requestedVisibility: requestedVisibility,
+            currentVisibility: sidebarPlacement.visibility
+        ) else { return }
+        sidebarChoiceStorage = choice.storageValue
     }
 
     private func shellContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
@@ -303,7 +322,7 @@ struct PhoneLiveRootView: View {
                 .toolbar {
                     if chrome.showsMenuButton {
                         ToolbarItem(placement: .topBarLeading) { menuButton }
-                    } else if chrome.showsSidebarToggle(sidebarHidden: columnLayout.visibility == .detailOnly) {
+                    } else if chrome.showsSidebarToggle(sidebarHidden: sidebarPlacement.visibility == .detailOnly) {
                         // Only while the sidebar shows. Once it is hidden the split view adds
                         // its own toggle to this bar, and drawing ours as well gave two
                         // sidebar icons side by side (iPad and iPhone Duo).
@@ -314,9 +333,10 @@ struct PhoneLiveRootView: View {
     }
 
     /// The sidebar toggle for while the sidebar shows, drawn here because the sidebar's own bar
-    /// is hidden and the system adds no toggle then. It is driven by the same column layout the
-    /// keyboard shortcut uses. When the sidebar is hidden the system's toggle appears in this
-    /// bar by itself (checked on iPad and on iPhone Duo), so this one steps aside.
+    /// is hidden and the system adds no toggle then. It follows the same recorded sidebar choice
+    /// and visibility as the keyboard shortcut through `sidebarPlacement` and `recordSidebarChoice`.
+    /// When the sidebar is hidden the system's toggle appears in this bar by itself (checked on
+    /// iPad and on iPhone Duo), so this one steps aside.
     private var sidebarToggleButton: some View {
         Button {
             toggleSidebar()
