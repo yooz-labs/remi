@@ -19,8 +19,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Manager id | mba-claude-sonnet |
 | State | running |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | 2026-11-14T12:15-08:00 |
-| Next tick | 2026-11-14T12:45-08:00 |
+| Last tick | 2026-11-14T13:02-08:00 |
+| Next tick | 2026-11-14T13:32-08:00 |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-12T19:05-08:00 |
 
@@ -186,3 +186,5 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | codex-AW1 | implementer | codex-luna | gpt-6-luna max | AW1 | 2026-11-14T09:31 | done |
 | opus-AW1fix1 | implementer | claude-opus | opus xhigh | AW1 | 2026-11-14T12:05 | running (card AW1-fix-r1) |
 | sonnet-DV-r20 | implementer | claude-sonnet | sonnet high | DV | 2026-11-14T12:33 | done |
+| opus-A04-apps-design | implementer | claude-opus | opus xhigh | A04 | 2026-11-14T13:15 | running (issue 1784) |
+| sonnet-docs-remi | implementer | claude-sonnet | sonnet high | DOCS | 2026-11-14T13:15 | running (yooz-docs) |
