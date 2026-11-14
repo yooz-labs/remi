@@ -176,7 +176,11 @@ export function stepAwakePolicy(
   }
 
   const view = assess(config, next, now);
-  const stuckExpired = (view.statusBusy || view.turnBusy) && !view.fresh;
+  // While a question is pending and inside its cap, the question is the
+  // governing bound: a stale busy status neither warns nor is dropped, so an
+  // answer that arrives late (any questions event refreshes activity) resumes
+  // the work's own hold instead of falling to the idle grace (#1773).
+  const stuckExpired = !view.questionActive && (view.statusBusy || view.turnBusy) && !view.fresh;
   const statusActive = view.statusBusy && view.fresh;
   const turnActive = view.turnBusy && view.fresh;
   const activeReasons = view.questionActive || statusActive || turnActive;

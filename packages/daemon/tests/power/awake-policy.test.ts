@@ -255,6 +255,47 @@ describe('awake level-1 policy', () => {
     expect(result.effects).toEqual([{ type: 'release', reason: 'grace' }]);
   });
 
+  test("a stale busy status under a pending question is the question's to bound, so a late answer resumes the work hold", () => {
+    let result = step(initialAwakePolicyState(), { type: 'questions', count: 1 }, 0);
+    expect(result.effects).toEqual([{ type: 'hold', reason: 'question' }]);
+    result = step(result.state, { type: 'status', status: 'thinking' }, 10);
+    expect(result.effects).toEqual([]);
+
+    // 15 minutes without activity: the stuck bound does not fire or drop the status.
+    result = step(result.state, { type: 'tick' }, 900_010);
+    expect(result.state.held).toBe(true);
+    expect(result.state.status).toBe('thinking');
+    expect(result.effects).toEqual([]);
+
+    // The question is answered at 20 minutes: the thinking status holds on its own, with no grace.
+    result = step(result.state, { type: 'questions', count: 0 }, 1_200_000);
+    expect(result.state.held).toBe(true);
+    expect(result.state.status).toBe('thinking');
+    expect(result.state.idleSince).toBeNull();
+    expect(result.effects).toEqual([]);
+    expect(result.nextDeadline).toBe(2_100_000);
+
+    // The stuck bound still ends it 15 minutes after the answer.
+    result = step(result.state, { type: 'tick' }, 2_100_000);
+    expect(result.effects).toEqual([
+      { type: 'warning', reason: 'stuck bound' },
+      { type: 'release', reason: 'stuck bound' },
+    ]);
+  });
+
+  test('an unanswered question with a stale busy status ends at the cap with both warnings and no grace', () => {
+    let result = step(initialAwakePolicyState(), { type: 'questions', count: 1 }, 0);
+    result = step(result.state, { type: 'status', status: 'thinking' }, 10);
+    result = step(result.state, { type: 'tick' }, 1_800_000);
+    expect(result.state.held).toBe(false);
+    expect(result.state.status).toBe('idle');
+    expect(result.effects).toEqual([
+      { type: 'warning', reason: 'question cap' },
+      { type: 'warning', reason: 'stuck bound' },
+      { type: 'release', reason: 'question cap' },
+    ]);
+  });
+
   test('a question replaced at the same count keeps its cap clock; zero to nonzero restarts it', () => {
     let result = step(initialAwakePolicyState(), { type: 'questions', count: 1 }, 0);
     expect(result.nextDeadline).toBe(1_800_000);
