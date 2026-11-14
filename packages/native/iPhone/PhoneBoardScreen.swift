@@ -38,7 +38,12 @@ struct PhoneBoardScreen: View {
 
     @AppStorage("remi.phone.board") private var boardStorage = ""
     @AppStorage("remi.phone.board.density") private var densityStorage = RemiTileSize.regular.rawValue
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var board = RemiBoardState()
+    /// Captured only while a card handle drag is active; the persisted Board remains unchanged.
+    @State private var resizingCardStartSizes: [String: RemiTileSize] = [:]
+    /// The live card size preview, removed on either release or cancellation.
+    @State private var resizingCardPreviewSizes: [String: RemiTileSize] = [:]
     @State private var boardLoaded = false
     @State private var interactions: [String: Date] = [:]
     @State private var drafts: [String: String] = [:]
@@ -62,6 +67,10 @@ struct PhoneBoardScreen: View {
             explicitSize: board.explicitSize(for: RemiBoardOrder.key(for: session)),
             columnCount: columnLayout.columnCount
         )
+    }
+
+    private func displayedSize(for session: RemiSessionSummary) -> RemiTileSize {
+        resizingCardPreviewSizes[RemiBoardOrder.key(for: session)] ?? effectiveSize(for: session)
     }
 
     var body: some View {
@@ -129,7 +138,7 @@ struct PhoneBoardScreen: View {
         let order = ordered.map(RemiBoardOrder.key(for:))
         // The cursor goes only to live tiles whose effective size has a working composer.
         let liveOrder = ordered
-            .filter { $0.isLive && effectiveSize(for: $0).showsComposer }
+            .filter { $0.isLive && displayedSize(for: $0).showsComposer }
             .map(RemiBoardOrder.key(for:))
         return ScrollViewReader { reader in
             boardScroll(ordered: ordered, order: order, liveOrder: liveOrder, reader: reader)
@@ -207,7 +216,7 @@ struct PhoneBoardScreen: View {
         reader: ScrollViewProxy,
         columnLayout: RemiBoardColumns
     ) -> some View {
-        let heights = ordered.map { effectiveSize(for: $0).phoneCardHeight }
+        let heights = ordered.map { displayedSize(for: $0).phoneCardHeight }
         let columns = RemiBoardColumns.place(
             Array(ordered.indices),
             columnCount: columnLayout.columnCount,
@@ -257,7 +266,7 @@ struct PhoneBoardScreen: View {
     /// The tiles on screen that have a working composer. A draft in a compact row must not freeze
     /// the order, while a draft in any visible composer still does.
     private var composerKeys: Set<String> {
-        Set(filtered.filter { $0.isLive && effectiveSize(for: $0).showsComposer }.map(RemiBoardOrder.key(for:)))
+        Set(filtered.filter { $0.isLive && displayedSize(for: $0).showsComposer }.map(RemiBoardOrder.key(for:)))
     }
 
     private func arranged(now: Date) -> [RemiSessionSummary] {
@@ -273,7 +282,7 @@ struct PhoneBoardScreen: View {
         _ session: RemiSessionSummary, order: [String], liveOrder: [String], reader: ScrollViewProxy
     ) -> some View {
         let key = RemiBoardOrder.key(for: session)
-        let size = effectiveSize(for: session)
+        let size = displayedSize(for: session)
         let waiting = questions.first {
             $0.machineID == session.machineID && $0.sessionID == session.id && $0.state == .pending
         }
@@ -322,9 +331,103 @@ struct PhoneBoardScreen: View {
                 sizeChoices: presentation.sizeChoices,
                 height: size.phoneCardHeight,
                 preview: { AnyView(RemiBoardPreview(session: session, entries: entries)) },
-                growsToContent: presentation.growsToContent
+                growsToContent: presentation.growsToContent,
+                cornerResize: cornerResize(for: session, key: key, presentation: presentation)
             )
         )
+    }
+
+    private func cornerResize(
+        for session: RemiSessionSummary,
+        key: String,
+        presentation: RemiBoardCardPresentation
+    ) -> RemiBoardCornerResize? {
+        guard presentation.isMultiColumn else { return nil }
+        return RemiBoardCornerResize(
+            onDragChanged: { translation, topCorner in
+                updateCardResizePreview(
+                    for: key,
+                    startingAt: effectiveSize(for: session),
+                    verticalTranslation: translation,
+                    topCorner: topCorner
+                )
+            },
+            onDragEnded: { translation, topCorner in
+                finishCardResize(
+                    for: key,
+                    startingAt: effectiveSize(for: session),
+                    verticalTranslation: translation,
+                    topCorner: topCorner
+                )
+            },
+            onDragCancelled: { cancelCardResize(for: key) },
+            onStep: { direction in
+                stepCardResize(for: session, key: key, direction: direction)
+            }
+        )
+    }
+
+    private func updateCardResizePreview(
+        for key: String,
+        startingAt fallbackSize: RemiTileSize,
+        verticalTranslation: CGFloat,
+        topCorner: Bool
+    ) {
+        let startSize = resizingCardStartSizes[key] ?? fallbackSize
+        if resizingCardStartSizes[key] == nil { resizingCardStartSizes[key] = startSize }
+        let nextSize = RemiBoardCardResize.size(
+            startingAt: startSize,
+            verticalTranslation: verticalTranslation,
+            topCorner: topCorner
+        )
+        guard nextSize != (resizingCardPreviewSizes[key] ?? startSize) else { return }
+        withAnimation(reduceMotion ? nil : RemiTheme.Motion.standard) {
+            resizingCardPreviewSizes[key] = nextSize
+        }
+    }
+
+    private func finishCardResize(
+        for key: String,
+        startingAt fallbackSize: RemiTileSize,
+        verticalTranslation: CGFloat,
+        topCorner: Bool
+    ) {
+        let startSize = resizingCardStartSizes[key] ?? fallbackSize
+        let finalSize = RemiBoardCardResize.size(
+            startingAt: startSize,
+            verticalTranslation: verticalTranslation,
+            topCorner: topCorner
+        )
+        withAnimation(reduceMotion ? nil : RemiTheme.Motion.standard) {
+            board.setSize(finalSize, for: key)
+            resizingCardPreviewSizes[key] = nil
+            resizingCardStartSizes[key] = nil
+            if finalSize == .row && focus == key { focus = nil }
+        }
+        saveBoard()
+    }
+
+    private func cancelCardResize(for key: String) {
+        guard resizingCardStartSizes[key] != nil else { return }
+        withAnimation(reduceMotion ? nil : RemiTheme.Motion.standard) {
+            resizingCardPreviewSizes[key] = nil
+            resizingCardStartSizes[key] = nil
+        }
+    }
+
+    private func stepCardResize(for session: RemiSessionSummary, key: String, direction: Int) {
+        guard resizingCardStartSizes[key] == nil,
+              let currentIndex = RemiTileSize.phoneDensities.firstIndex(of: displayedSize(for: session))
+        else { return }
+        let sizes = RemiTileSize.phoneDensities
+        let nextIndex = min(max(currentIndex + direction, 0), sizes.count - 1)
+        let nextSize = sizes[nextIndex]
+        guard nextSize != sizes[currentIndex] else { return }
+        withAnimation(reduceMotion ? nil : RemiTheme.Motion.standard) {
+            board.setSize(nextSize, for: key)
+            if nextSize == .row && focus == key { focus = nil }
+        }
+        saveBoard()
     }
 
     // MARK: chrome
