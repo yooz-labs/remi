@@ -12,6 +12,10 @@ struct PhoneBoardScreen: View {
     private struct CardResizeDrag: Equatable {
         let startSize: RemiTileSize
         var previewSize: RemiTileSize
+        let startSpan: Int
+        var previewSpan: Int
+        let columnWidth: CGFloat
+        let columnCount: Int
         let topCorner: Bool
     }
 
@@ -81,6 +85,15 @@ struct PhoneBoardScreen: View {
         return drag.previewSize
     }
 
+    private func displayedSpan(for session: RemiSessionSummary) -> Int {
+        let count = columnLayout.columnCount
+        guard RemiBoardCardPresentation(columnCount: count).isMultiColumn else { return 1 }
+        if let drag = cardResizeDrags[RemiBoardOrder.key(for: session)] {
+            return min(max(drag.previewSpan, 1), count)
+        }
+        return min(max(board.span(for: RemiBoardOrder.key(for: session)), 1), count)
+    }
+
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { timeline in
             content(now: timeline.date)
@@ -126,7 +139,7 @@ struct PhoneBoardScreen: View {
         }
     }
 
-    /// Forgets pins and sizes of sessions a settled machine no longer lists, plus stale resize
+    /// Forgets pins, sizes and spans of sessions a settled machine no longer lists, plus stale resize
     /// drags, drafts, and interactions. Finished sessions still count as live so their pins remain.
     /// Saves only when persisted Board state was removed.
     private func pruneBoard() {
@@ -227,16 +240,18 @@ struct PhoneBoardScreen: View {
         columnLayout: RemiBoardColumns
     ) -> some View {
         let heights = ordered.map { displayedSize(for: $0).phoneCardHeight }
-        let columns = RemiBoardColumns.place(
-            Array(ordered.indices),
+        let placements = RemiBoardColumns.placements(
+            itemCount: ordered.count,
             columnCount: columnLayout.columnCount,
-            heights: heights
+            heights: heights,
+            spans: ordered.map { displayedSpan(for: $0) }
         )
         return LazyVStack(spacing: RemiTheme.Spacing.s) {
             boardHeader(isEmpty: ordered.isEmpty)
             if !ordered.isEmpty {
                 RemiBoardColumnsLayout(
-                    columns: columns,
+                    placements: placements,
+                    columnCount: columnLayout.columnCount,
                     columnWidth: columnLayout.cardWidth,
                     spacing: RemiBoardColumns.spacing
                 ) {
@@ -354,24 +369,31 @@ struct PhoneBoardScreen: View {
     ) -> RemiBoardCornerResize? {
         guard presentation.isMultiColumn else { return nil }
         return RemiBoardCornerResize(
+            widthTitle: "\(displayedSpan(for: session)) columns wide",
             onDragChanged: { translation, topCorner in
                 updateCardResizePreview(
                     for: key,
                     startingAt: effectiveSize(for: session),
-                    verticalTranslation: translation,
+                    startingSpan: displayedSpan(for: session),
+                    translation: translation,
                     topCorner: topCorner
                 )
             },
             onDragEnded: { translation, topCorner in
                 finishCardResize(
                     for: key,
-                    verticalTranslation: translation,
+                    translation: translation,
                     topCorner: topCorner
                 )
             },
             onDragCancelled: { topCorner in cancelCardResize(for: key, topCorner: topCorner) },
-            onStep: { direction in
-                stepCardResize(for: session, key: key, direction: direction)
+            onStep: { spanDirection, sizeDirection in
+                stepCardResize(
+                    for: session,
+                    key: key,
+                    spanDirection: spanDirection,
+                    sizeDirection: sizeDirection
+                )
             }
         )
     }
@@ -379,7 +401,8 @@ struct PhoneBoardScreen: View {
     private func updateCardResizePreview(
         for key: String,
         startingAt fallbackSize: RemiTileSize,
-        verticalTranslation: CGFloat,
+        startingSpan fallbackSpan: Int,
+        translation: CGSize,
         topCorner: Bool
     ) -> Bool {
         let activeDrag = cardResizeDrags[key]
@@ -387,19 +410,25 @@ struct PhoneBoardScreen: View {
         var drag = activeDrag ?? CardResizeDrag(
             startSize: fallbackSize,
             previewSize: fallbackSize,
+            startSpan: fallbackSpan,
+            previewSpan: fallbackSpan,
+            columnWidth: columnLayout.cardWidth,
+            columnCount: columnLayout.columnCount,
             topCorner: topCorner
         )
         guard drag.topCorner == topCorner else { return false }
-        let nextSize = RemiBoardCardResize.size(
+        let next = RemiBoardCardResize.adjustment(
             startingAt: drag.startSize,
-            verticalTranslation: verticalTranslation,
-            topCorner: topCorner
+            span: drag.startSpan,
+            translation: translation,
+            topCorner: topCorner,
+            columnWidth: drag.columnWidth,
+            spacing: RemiBoardColumns.spacing,
+            columnCount: drag.columnCount
         )
-        guard nextSize != drag.previewSize else {
-            if activeDrag == nil { cardResizeDrags[key] = drag }
-            return true
-        }
-        drag.previewSize = nextSize
+        guard next.size != drag.previewSize || next.span != drag.previewSpan else { return true }
+        drag.previewSize = next.size
+        drag.previewSpan = next.span
         withAnimation(reduceMotion ? nil : RemiTheme.Motion.standard) {
             cardResizeDrags[key] = drag
         }
@@ -408,22 +437,28 @@ struct PhoneBoardScreen: View {
 
     private func finishCardResize(
         for key: String,
-        verticalTranslation: CGFloat,
+        translation: CGSize,
         topCorner: Bool
     ) {
         guard let drag = cardResizeDrags[key], drag.topCorner == topCorner else { return }
-        let finalSize = RemiBoardCardResize.size(
+        let final = RemiBoardCardResize.adjustment(
             startingAt: drag.startSize,
-            verticalTranslation: verticalTranslation,
-            topCorner: topCorner
+            span: drag.startSpan,
+            translation: translation,
+            topCorner: topCorner,
+            columnWidth: drag.columnWidth,
+            spacing: RemiBoardColumns.spacing,
+            columnCount: drag.columnCount
         )
-        let changed = finalSize != drag.startSize
+        let sizeChanged = final.size != drag.startSize
+        let spanChanged = final.span != drag.startSpan
         withAnimation(reduceMotion ? nil : RemiTheme.Motion.standard) {
             cardResizeDrags[key] = nil
-            if changed { board.setSize(finalSize, for: key) }
-            if finalSize == .row && focus == key { focus = nil }
+            if sizeChanged { board.setSize(final.size, for: key) }
+            if spanChanged { board.setSpan(final.span, for: key) }
+            if final.size == .row && focus == key { focus = nil }
         }
-        if changed { saveBoard() }
+        if sizeChanged || spanChanged { saveBoard() }
     }
 
     private func cancelCardResize(for key: String, topCorner: Bool) {
@@ -433,13 +468,27 @@ struct PhoneBoardScreen: View {
         }
     }
 
-    private func stepCardResize(for session: RemiSessionSummary, key: String, direction: Int) {
+    private func stepCardResize(
+        for session: RemiSessionSummary,
+        key: String,
+        spanDirection: Int,
+        sizeDirection: Int
+    ) {
         guard cardResizeDrags[key] == nil else { return }
         let currentSize = displayedSize(for: session)
-        let nextSize = RemiBoardCardResize.step(from: currentSize, direction: direction)
-        guard nextSize != currentSize else { return }
+        let nextSize = RemiBoardCardResize.step(from: currentSize, direction: sizeDirection)
+        let currentSpan = displayedSpan(for: session)
+        let nextSpan = RemiBoardCardResize.step(
+            span: currentSpan,
+            direction: spanDirection,
+            columnCount: columnLayout.columnCount
+        )
+        let sizeChanged = nextSize != currentSize
+        let spanChanged = nextSpan != currentSpan
+        guard sizeChanged || spanChanged else { return }
         withAnimation(reduceMotion ? nil : RemiTheme.Motion.standard) {
-            board.setSize(nextSize, for: key)
+            if sizeChanged { board.setSize(nextSize, for: key) }
+            if spanChanged { board.setSpan(nextSpan, for: key) }
             if nextSize == .row && focus == key { focus = nil }
         }
         saveBoard()
@@ -459,14 +508,15 @@ struct PhoneBoardScreen: View {
                 }
             }
             if RemiBoardCardPresentation(columnCount: columnLayout.columnCount).isMultiColumn,
-               board.hasExplicitSizes
+               board.hasExplicitSizes || board.hasExplicitSpans
             {
-                Button("Reset card sizes", systemImage: "arrow.counterclockwise") {
+                Button("Reset card sizes and widths", systemImage: "arrow.counterclockwise") {
                     board.clearSizes()
+                    board.clearSpans()
                     saveBoard()
                 }
                 .help(
-                    "The toolbar size sets every card. Reset removes per-card choices and returns to the toolbar size."
+                    "The toolbar size sets every card. Reset removes per-card sizes and widths."
                 )
             }
         } label: {

@@ -98,10 +98,11 @@ Placement packs by each card's phone card height (96, 240 or 440 pt). These are 
 That keeps the existing rules intact: the order is frozen while someone writes (`isWriting`, `held`), and a column assignment does not move under a focused composer.
 Reading order stays the order list; "send, then go to the next live card" (`RemiBoardOrder.next`) follows it, and a card in another column is scrolled to the same way (one vertical `ScrollView` holding the columns, `ScrollViewReader` unchanged).
 The Needs-you cards still sort first, so they land at the top of the leftmost columns.
+A card can span adjacent columns; placement chooses the window whose tallest occupied column is shortest, with ties going to the leftmost window.
 
 ### Resizing
 
-On touch, a card's size is its density (Compact, Medium, Long) through the existing menu; this reuses `RemiBoardState.sizes` and needs no new storage.
+At two or more columns, the corner handle previews and stores each card's Compact, Medium or Long height and adjacent-column span, snapping width to the nearest span.
 The Mac's freeform frames (`RemiBoardFrame`: drag, snap to edges and a 24 pt grid, a 340 by 260 pt minimum, `reflow`) are pointer-first and are not ported in the first slices; whether to port them for pointer and keyboard use on iPad is question 3.
 The window itself resizes continuously; the column count follows the pane width through `onGeometryChange`, with a small hysteresis (a column is added at its threshold and removed 24 pt below it) so a slow drag at a threshold does not flip layouts every frame.
 During `isInteractivelyResizing` nothing animates except the column count change.

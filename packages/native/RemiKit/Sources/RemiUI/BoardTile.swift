@@ -32,21 +32,25 @@ public struct RemiBoardTilePlacement {
 
 /// Resizing controls; the screen decides which cards show the corner handles.
 public struct RemiBoardCornerResize {
-    /// Receives cumulative vertical translation in points since gesture start (positive down) and topCorner; returns false for a concurrent drag.
-    public var onDragChanged: (_ verticalTranslation: CGFloat, _ topCorner: Bool) -> Bool
-    /// Receives final cumulative vertical translation in points since gesture start (positive downward) and whether the top corner fired.
-    public var onDragEnded: (_ verticalTranslation: CGFloat, _ topCorner: Bool) -> Void
+    /// Receives cumulative translation in global points since gesture start and topCorner; returns false for a concurrent drag.
+    public var onDragChanged: (_ translation: CGSize, _ topCorner: Bool) -> Bool
+    /// Receives final cumulative translation in global points since gesture start and whether the top corner fired.
+    public var onDragEnded: (_ translation: CGSize, _ topCorner: Bool) -> Void
     /// Called instead of onDragEnded on system cancellation; topCorner identifies the handle whose preview to discard.
     public var onDragCancelled: (_ topCorner: Bool) -> Void
-    /// Direction is +1 for taller and -1 for shorter.
-    public var onStep: (_ direction: Int) -> Void
+    /// The current displayed span, announced as "N columns wide".
+    public var widthTitle: String
+    /// Each direction is -1, 0, or +1; span and size directions are mutually exclusive.
+    public var onStep: (_ spanDirection: Int, _ sizeDirection: Int) -> Void
 
     public init(
-        onDragChanged: @escaping (_ verticalTranslation: CGFloat, _ topCorner: Bool) -> Bool,
-        onDragEnded: @escaping (_ verticalTranslation: CGFloat, _ topCorner: Bool) -> Void,
+        widthTitle: String,
+        onDragChanged: @escaping (_ translation: CGSize, _ topCorner: Bool) -> Bool,
+        onDragEnded: @escaping (_ translation: CGSize, _ topCorner: Bool) -> Void,
         onDragCancelled: @escaping (_ topCorner: Bool) -> Void,
-        onStep: @escaping (_ direction: Int) -> Void
+        onStep: @escaping (_ spanDirection: Int, _ sizeDirection: Int) -> Void
     ) {
+        self.widthTitle = widthTitle
         self.onDragChanged = onDragChanged
         self.onDragEnded = onDragEnded
         self.onDragCancelled = onDragCancelled
@@ -571,6 +575,7 @@ public struct RemiBoardTile<Question: View>: View {
                 top: top,
                 needsYou: needsYou,
                 sizeTitle: size.densityTitle,
+                widthTitle: cornerResize.widthTitle,
                 onDragChanged: cornerResize.onDragChanged,
                 onDragEnded: cornerResize.onDragEnded,
                 onDragCancelled: cornerResize.onDragCancelled,
@@ -758,10 +763,11 @@ private struct RemiBoardResizeHandle: View {
     let top: Bool
     let needsYou: Bool
     let sizeTitle: String
-    let onDragChanged: (CGFloat, Bool) -> Bool
-    let onDragEnded: (CGFloat, Bool) -> Void
+    let widthTitle: String
+    let onDragChanged: (CGSize, Bool) -> Bool
+    let onDragEnded: (CGSize, Bool) -> Void
     let onDragCancelled: (Bool) -> Void
-    let onStep: (Int) -> Void
+    let onStep: (Int, Int) -> Void
 
     @GestureState private var isDragging = false
     @State private var dragDidEnd = false
@@ -775,15 +781,19 @@ private struct RemiBoardResizeHandle: View {
             .onHover { isHovered = $0 }
             .modifier(RemiBoardPointerHoverEffect())
             .accessibilityLabel("Resize card")
-            .accessibilityValue(sizeTitle)
+            .accessibilityValue("\(sizeTitle), \(widthTitle)")
             .accessibilityAddTraits(.isButton)
             .accessibilityHint(top
-                ? "Drag up to make the card taller. Use the up and down arrow keys to change its size."
-                : "Drag down to make the card taller. Use the up and down arrow keys to change its size.")
-            .accessibilityAction(named: "Make taller") { onStep(1) }
-            .accessibilityAction(named: "Make shorter") { onStep(-1) }
-            .onKeyPress(.upArrow) { onStep(-1); return .handled }
-            .onKeyPress(.downArrow) { onStep(1); return .handled }
+                ? "Drag up to make the card taller and right to widen. Use the left and right arrow keys to change width, and the up and down arrow keys to change height."
+                : "Drag down to make the card taller and right to widen. Use the left and right arrow keys to change width, and the up and down arrow keys to change height.")
+            .accessibilityAction(named: "Widen") { onStep(1, 0) }
+            .accessibilityAction(named: "Narrow") { onStep(-1, 0) }
+            .accessibilityAction(named: "Make taller") { onStep(0, 1) }
+            .accessibilityAction(named: "Make shorter") { onStep(0, -1) }
+            .onKeyPress(.leftArrow) { onStep(-1, 0); return .handled }
+            .onKeyPress(.rightArrow) { onStep(1, 0); return .handled }
+            .onKeyPress(.upArrow) { onStep(0, -1); return .handled }
+            .onKeyPress(.downArrow) { onStep(0, 1); return .handled }
             .highPriorityGesture(dragGesture)
             .onChange(of: isDragging) { wasDragging, dragging in
                 guard wasDragging, !dragging else { return }
@@ -819,11 +829,11 @@ private struct RemiBoardResizeHandle: View {
             .updating($isDragging) { _, active, _ in active = true }
             .onChanged {
                 guard !ignoresDrag else { return }
-                if !onDragChanged($0.translation.height, top) { ignoresDrag = true }
+                if !onDragChanged($0.translation, top) { ignoresDrag = true }
             }
             .onEnded {
                 dragDidEnd = true
-                if !ignoresDrag { onDragEnded($0.translation.height, top) }
+                if !ignoresDrag { onDragEnded($0.translation, top) }
                 ignoresDrag = false
             }
     }

@@ -5,7 +5,13 @@ import Testing
 @Suite struct RemiBoardColumnsLayoutTests {
     @Test func framesTwoColumnsWithUnequalHeightsAndTwelvePointGaps() {
         let frames = RemiBoardColumnsLayout.frames(
-            columns: [[0, 2], [1, 3]],
+            placements: [
+                RemiBoardColumnPlacement(itemIndex: 0, firstColumn: 0, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 1, firstColumn: 1, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 2, firstColumn: 0, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 3, firstColumn: 1, span: 1),
+            ],
+            columnCount: 2,
             heights: [40, 20, 30, 50],
             columnWidth: 100,
             spacing: 12
@@ -21,7 +27,15 @@ import Testing
 
     @Test func framesThreeColumnsWithUnequalHeightsAndTwelvePointGaps() {
         let frames = RemiBoardColumnsLayout.frames(
-            columns: [[0, 3], [1, 4], [2, 5]],
+            placements: [
+                RemiBoardColumnPlacement(itemIndex: 0, firstColumn: 0, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 1, firstColumn: 1, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 2, firstColumn: 2, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 3, firstColumn: 0, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 4, firstColumn: 1, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 5, firstColumn: 2, span: 1),
+            ],
+            columnCount: 3,
             heights: [40, 20, 30, 50, 60, 10],
             columnWidth: 100,
             spacing: 12
@@ -39,7 +53,12 @@ import Testing
 
     @Test func framesOneColumnTopToBottom() {
         let frames = RemiBoardColumnsLayout.frames(
-            columns: [[0, 1, 2]],
+            placements: [
+                RemiBoardColumnPlacement(itemIndex: 0, firstColumn: 0, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 1, firstColumn: 0, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 2, firstColumn: 0, span: 1),
+            ],
+            columnCount: 1,
             heights: [24, 36, 18],
             columnWidth: 80,
             spacing: 12
@@ -54,7 +73,8 @@ import Testing
 
     @Test func emptyColumnsKeepTheirHorizontalSlots() {
         let frames = RemiBoardColumnsLayout.frames(
-            columns: [[], [], [0]],
+            placements: [RemiBoardColumnPlacement(itemIndex: 0, firstColumn: 2, span: 1)],
+            columnCount: 3,
             heights: [20],
             columnWidth: 80,
             spacing: 12
@@ -62,13 +82,14 @@ import Testing
 
         #expect(frames == [CGRect(x: 184, y: 0, width: 80, height: 20)])
         #expect(RemiBoardColumnsLayout.frames(
-            columns: [[], []], heights: [], columnWidth: 80, spacing: 12
+            placements: [], columnCount: 2, heights: [], columnWidth: 80, spacing: 12
         ).isEmpty)
     }
 
     @Test func unassignedSubviewsGetZeroSizeFrames() {
         let frames = RemiBoardColumnsLayout.frames(
-            columns: [[1]],
+            placements: [RemiBoardColumnPlacement(itemIndex: 1, firstColumn: 0, span: 1)],
+            columnCount: 1,
             heights: [28, 40],
             columnWidth: 90,
             spacing: 12
@@ -82,7 +103,12 @@ import Testing
 
     @Test func outOfRangeSubviewIndicesAreIgnored() {
         let frames = RemiBoardColumnsLayout.frames(
-            columns: [[0, 3], [9]],
+            placements: [
+                RemiBoardColumnPlacement(itemIndex: 0, firstColumn: 0, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 3, firstColumn: 0, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 9, firstColumn: 1, span: 1),
+            ],
+            columnCount: 2,
             heights: [20],
             columnWidth: 90,
             spacing: 12
@@ -95,12 +121,53 @@ import Testing
         for paneWidth: CGFloat in [1_032, 1_376] {
             let resolved = RemiBoardColumns.resolve(paneWidth: paneWidth)
             let layout = RemiBoardColumnsLayout(
-                columns: Array(repeating: [], count: resolved.columnCount),
+                placements: [],
+                columnCount: resolved.columnCount,
                 columnWidth: resolved.cardWidth,
                 spacing: RemiBoardColumns.spacing
             )
 
             #expect(layout.groupWidth == resolved.groupWidth, "pane \(paneWidth) pt")
         }
+    }
+
+    @Test func spanningFramesUseTheCoveredHeightAndCombinedColumnWidth() {
+        let frames = RemiBoardColumnsLayout.frames(
+            placements: [
+                RemiBoardColumnPlacement(itemIndex: 0, firstColumn: 0, span: 2),
+                RemiBoardColumnPlacement(itemIndex: 1, firstColumn: 2, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 2, firstColumn: 1, span: 2),
+                RemiBoardColumnPlacement(itemIndex: 3, firstColumn: 0, span: 1),
+            ],
+            columnCount: 3,
+            heights: [40, 30, 20, 10],
+            columnWidth: 100,
+            spacing: 12
+        )
+
+        #expect(frames == [
+            CGRect(x: 0, y: 0, width: 212, height: 40),
+            CGRect(x: 224, y: 0, width: 100, height: 30),
+            CGRect(x: 112, y: 52, width: 212, height: 20),
+            CGRect(x: 0, y: 52, width: 100, height: 10),
+        ])
+    }
+
+    @Test func spansNeverExceedTheResolvedColumnGroupWidth() {
+        let groupWidth = CGFloat(3 * 100 + 2 * 12)
+        let frames = RemiBoardColumnsLayout.frames(
+            placements: [
+                RemiBoardColumnPlacement(itemIndex: 0, firstColumn: 0, span: 1),
+                RemiBoardColumnPlacement(itemIndex: 1, firstColumn: 0, span: 2),
+                RemiBoardColumnPlacement(itemIndex: 2, firstColumn: 0, span: 3),
+            ],
+            columnCount: 3,
+            heights: [20, 20, 20],
+            columnWidth: 100,
+            spacing: 12
+        )
+
+        #expect(frames.map(\.width) == [100, 212, groupWidth])
+        #expect(frames.allSatisfy { $0.width <= groupWidth })
     }
 }

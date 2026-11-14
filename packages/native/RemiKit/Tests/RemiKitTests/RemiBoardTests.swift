@@ -230,11 +230,13 @@ import Testing
         var state = RemiBoardState()
         state.pin(gone, atSlot: 0)
         state.setSize(.large, for: gone)
+        state.setSpan(2, for: gone)
         state.pin(kept, atSlot: 1)
         let changed = state.prune(live: [kept], connectedMachines: ["one"])
         #expect(changed)
         #expect(!state.isPinned(gone))
         #expect(state.size(for: gone) == .regular)
+        #expect(state.explicitSpan(for: gone) == nil)
         #expect(state.isPinned(kept))
     }
 
@@ -243,10 +245,12 @@ import Testing
         var state = RemiBoardState()
         state.pin(away, atSlot: 0)
         state.setSize(.large, for: away)
+        state.setSpan(3, for: away)
         let changed = state.prune(live: [], connectedMachines: ["one"])
         #expect(!changed)
         #expect(state.isPinned(away))
         #expect(state.size(for: away) == .large)
+        #expect(state.explicitSpan(for: away) == 3)
     }
 
     @Test func pruningNothingReportsNoChange() {
