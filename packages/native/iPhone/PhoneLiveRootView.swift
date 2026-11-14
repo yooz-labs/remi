@@ -765,7 +765,8 @@ struct PhoneLiveRootView: View {
     }
 
     private func confirmedTranscript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
-        (store.transcriptsBySession[store.sessionKey(machineID: machineID, sessionID: sessionID)] ?? []).compactMap { message in
+        let key = store.sessionKey(machineID: machineID, sessionID: sessionID)
+        return (store.transcriptsBySession[key]?.entries ?? []).compactMap { message in
             let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if !content.isEmpty {
                 return message.role == "user"

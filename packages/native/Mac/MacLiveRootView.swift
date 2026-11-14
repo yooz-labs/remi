@@ -1175,7 +1175,8 @@ struct MacLiveRootView: View {
     }
 
     private func confirmedTranscript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
-        (store.transcriptsBySession[store.sessionKey(machineID: machineID, sessionID: sessionID)] ?? [])
+        let key = store.sessionKey(machineID: machineID, sessionID: sessionID)
+        return (store.transcriptsBySession[key]?.entries ?? [])
             .compactMap(transcriptEntry)
     }
 
@@ -1193,8 +1194,8 @@ struct MacLiveRootView: View {
 
     /// The latest of a session's conversation, for its tile on the board.
     private func boardEntries(_ session: RemiSessionSummary) -> [RemiTranscriptEntry] {
-        let confirmed = (store.transcriptsBySession[store.sessionKey(machineID: session.machineID, sessionID: session.id)] ?? [])
-            .suffix(60)
+        let key = store.sessionKey(machineID: session.machineID, sessionID: session.id)
+        let confirmed = (store.transcriptsBySession[key]?.suffix(60) ?? [])
             .compactMap(transcriptEntry)
         return confirmed + pendingEntries(machineID: session.machineID, sessionID: session.id)
     }
