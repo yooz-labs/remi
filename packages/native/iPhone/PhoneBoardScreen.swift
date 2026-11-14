@@ -132,7 +132,7 @@ struct PhoneBoardScreen: View {
             paneWidth: boardPaneWidth,
             previousColumnCount: columnCount
         )
-        ScrollView {
+        return ScrollView {
             if columnCount == 1 {
                 singleColumnStack(ordered: ordered, order: order, liveOrder: liveOrder, reader: reader)
             } else {
@@ -156,22 +156,26 @@ struct PhoneBoardScreen: View {
         .scrollDismissesKeyboard(.interactively)
     }
 
+    @ViewBuilder
+    private func boardHeader(isEmpty: Bool) -> some View {
+        if let errorMessage {
+            RemiFeedbackBanner(message: errorMessage, tone: .error, onDismiss: onDismissError)
+        }
+        if let noticeMessage {
+            RemiFeedbackBanner(message: noticeMessage, tone: .information, onDismiss: onDismissNotice)
+        }
+        PhoneMachineProblemRows(machines: machines, onManage: onManageMachines)
+        // With no machine there is nothing to filter; the first screen is the way to add one.
+        if !machines.isEmpty { chips }
+        if isEmpty { emptyState }
+    }
+
     private func singleColumnStack(
         ordered: [RemiSessionSummary], order: [String], liveOrder: [String], reader: ScrollViewProxy
     ) -> some View {
         LazyVStack(spacing: RemiTheme.Spacing.s) {
-            if let errorMessage {
-                RemiFeedbackBanner(message: errorMessage, tone: .error, onDismiss: onDismissError)
-            }
-            if let noticeMessage {
-                RemiFeedbackBanner(message: noticeMessage, tone: .information, onDismiss: onDismissNotice)
-            }
-            PhoneMachineProblemRows(machines: machines, onManage: onManageMachines)
-            // With no machine there is nothing to filter; the first screen is the way to add one.
-            if !machines.isEmpty { chips }
-            if ordered.isEmpty {
-                emptyState
-            } else {
+            boardHeader(isEmpty: ordered.isEmpty)
+            if !ordered.isEmpty {
                 ForEach(ordered) { session in
                     tile(session, order: order, liveOrder: liveOrder, reader: reader)
                         .id(RemiBoardOrder.key(for: session))
@@ -196,18 +200,8 @@ struct PhoneBoardScreen: View {
             cardHeight: density.estimatedHeight
         )
         return LazyVStack(spacing: RemiTheme.Spacing.s) {
-            if let errorMessage {
-                RemiFeedbackBanner(message: errorMessage, tone: .error, onDismiss: onDismissError)
-            }
-            if let noticeMessage {
-                RemiFeedbackBanner(message: noticeMessage, tone: .information, onDismiss: onDismissNotice)
-            }
-            PhoneMachineProblemRows(machines: machines, onManage: onManageMachines)
-            // With no machine there is nothing to filter; the first screen is the way to add one.
-            if !machines.isEmpty { chips }
-            if ordered.isEmpty {
-                emptyState
-            } else {
+            boardHeader(isEmpty: ordered.isEmpty)
+            if !ordered.isEmpty {
                 HStack(alignment: .top, spacing: RemiBoardColumns.spacing) {
                     ForEach(columns.indices, id: \.self) { columnIndex in
                         LazyVStack(spacing: RemiTheme.Spacing.s) {
