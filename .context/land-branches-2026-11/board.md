@@ -19,8 +19,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Manager id | mba-claude-sonnet |
 | State | running |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | 2026-11-14T11:21-08:00 |
-| Next tick | 2026-11-14T11:51-08:00 |
+| Last tick | 2026-11-14T11:48-08:00 |
+| Next tick | 2026-11-14T12:18-08:00 |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-12T19:05-08:00 |
 
@@ -178,6 +178,9 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | opus-A01b | implementer | claude-opus | opus xhigh | A03 | 2026-11-13T13:30 | done |
 | opus-A03 | implementer | claude-opus | opus xhigh | A03 | 2026-11-13T14:10 | running a290e7ce (record CP4 answers, issue bodies) |
 | codex-DV9 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T14:05 | done |
-| DV-r19 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-14T11:21 | running |
+| DV-r19 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-14T11:21 | done |
 | rv-F1772-delta | reviewer | extra | sonnet xhigh | F1772 | 2026-11-14T11:21 | done |
-| codex-F1772fix2 | implementer | codex-terra | gpt-6.1-terra xhigh | F1772 | 2026-11-14T11:30 | running |
+| codex-F1772fix2 | implementer | codex-terra | gpt-6.1-terra xhigh | F1772 | 2026-11-14T11:30 | failed-quota |
+| sonnet-F1772fix2 | implementer | claude-sonnet | sonnet high | F1772 | 2026-11-14T11:55 | running |
+| rv-AW1-panel | reviewer | extra | sonnet xhigh x3 | AW1 | 2026-11-14T11:55 | running |
+| codex-AW1 | implementer | codex-luna | gpt-6-luna max | AW1 | 2026-11-14T09:31 | done |
