@@ -124,11 +124,11 @@ public struct RemiBoardTile<Question: View>: View {
     /// The session's waiting question, answered on the tile. Nil shows the plain notice.
     private let question: Question?
     private let extras: RemiBoardTileExtras
+    private let externalSendState: Binding<RemiBoardTileSendState>?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var sendFailed = false
-    /// A send is in flight: a second Return before it returns must not send the text again.
-    @State private var sending = false
+    /// Local fallback keeps Mac tiles and other callers independent of screen-owned state.
+    @State private var internalSendState = RemiBoardTileSendState()
     /// Grows the tile's fixed heights with the reader's text size, so large type is not clipped.
     @ScaledMetric(relativeTo: .body) private var heightScale: CGFloat = 1
     /// The question's natural height, so its area is as tall as it needs up to a cap.
@@ -143,6 +143,8 @@ public struct RemiBoardTile<Question: View>: View {
         case resizeTop, resizeBottom
     }
 
+    /// Creates a tile for one session.
+    /// - Parameter sendState: Optional screen-owned send feedback; nil keeps the tile's local state.
     public init(
         session: RemiSessionSummary,
         tileKey: String,
@@ -158,7 +160,8 @@ public struct RemiBoardTile<Question: View>: View {
         onTogglePin: @escaping () -> Void,
         dragPayload: String? = nil,
         question: Question? = nil,
-        extras: RemiBoardTileExtras = RemiBoardTileExtras()
+        extras: RemiBoardTileExtras = RemiBoardTileExtras(),
+        sendState: Binding<RemiBoardTileSendState>? = nil
     ) {
         self.session = session
         self.tileKey = tileKey
@@ -175,15 +178,32 @@ public struct RemiBoardTile<Question: View>: View {
         self.dragPayload = dragPayload
         self.question = question
         self.extras = extras
+        self.externalSendState = sendState
     }
 
     private var needsYou: Bool { session.status == .needsYou }
+    private var sendState: RemiBoardTileSendState {
+        get {
+            RemiBoardTileStateRules.selectedSendState(
+                external: externalSendState?.wrappedValue,
+                fallback: internalSendState
+            )
+        }
+        nonmutating set {
+            if let externalSendState {
+                externalSendState.wrappedValue = newValue
+            } else {
+                internalSendState = newValue
+            }
+        }
+    }
+    private var sendFailed: Bool { sendState.sendFailed }
     private var cornerResizeTrailingInset: CGFloat {
         guard extras.cornerResize != nil, extras.placement == nil else { return 0 }
         return RemiBoardCardResize.trailingControlInset
     }
     private var canSend: Bool {
-        session.isLive && !sending && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        RemiBoardTileStateRules.canSend(draft: draft, isLive: session.isLive, state: sendState)
     }
 
     /// Nil for a compact row, which is as tall as its line.
@@ -637,11 +657,10 @@ public struct RemiBoardTile<Question: View>: View {
     private func send() {
         guard canSend else { return }
         let text = draft
-        sending = true
+        sendState = RemiBoardTileSendState(isSending: true)
         Task {
             let sent = await onSend(text)
-            sending = false
-            sendFailed = !sent
+            sendState = sent ? RemiBoardTileSendState() : RemiBoardTileSendState(sendFailed: true)
             // Text typed while the send was in flight is not the sent text; keep it.
             if sent, draft == text { draft = "" }
         }

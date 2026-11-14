@@ -55,6 +55,8 @@ struct PhoneBoardScreen: View {
     @State private var boardLoaded = false
     @State private var interactions: [String: Date] = [:]
     @State private var drafts: [String: String] = [:]
+    /// Per-card send feedback, kept outside the replaceable one-column and multi-column tile trees.
+    @State private var tileSendStates: [String: RemiBoardTileSendState] = [:]
     @State private var shownOrder: [String] = []
     @State private var machineFilter: String?
     @State private var onlyNeedsYou = false
@@ -66,6 +68,7 @@ struct PhoneBoardScreen: View {
     @State private var graceTick = 0
     @FocusState private var focus: String?
     @State private var focusTask: Task<Void, Never>?
+    @State private var focusBeforeColumnChange: String?
 
     private var density: RemiTileSize { RemiTileSize.phoneDensity(stored: densityStorage) }
 
@@ -117,7 +120,7 @@ struct PhoneBoardScreen: View {
         .onChange(of: composerKeys) { _, keys in
             if let focusedKey = focus, !keys.contains(focusedKey) { focus = nil }
         }
-        .onChange(of: columnLayout.columnCount) { _, _ in cardResizeDrags = [:] }
+        .onChange(of: columnLayout.columnCount) { _, _ in columnLayoutDidChange() }
         .onAppear(perform: loadBoard)
         .onChange(of: sessions.map(RemiBoardOrder.key(for:))) { pruneBoard() }
         .onChange(of: loadedMachines, initial: true) { _, ids in
@@ -150,6 +153,7 @@ struct PhoneBoardScreen: View {
         })
         if board.prune(live: live, connectedMachines: settled) { saveBoard() }
         cardResizeDrags = cardResizeDrags.filter { live.contains($0.key) }
+        tileSendStates = tileSendStates.filter { live.contains($0.key) }
         drafts = RemiBoardOrder.keeping(drafts, live: live, settledMachines: settled)
         interactions = RemiBoardOrder.keeping(interactions, live: live, settledMachines: settled)
     }
@@ -192,6 +196,9 @@ struct PhoneBoardScreen: View {
                 paneWidth: width,
                 previousColumnCount: columnLayout.columnCount
             )
+            if resolved.columnCount != columnLayout.columnCount {
+                focusBeforeColumnChange = focus
+            }
             if resolved != columnLayout { columnLayout = resolved }
         }
         .scrollDismissesKeyboard(.interactively)
@@ -282,6 +289,27 @@ struct PhoneBoardScreen: View {
         }
     }
 
+    /// Clears resize previews and restores focus only when the new layout has the same working composer.
+    private func columnLayoutDidChange() {
+        cardResizeDrags = [:]
+        let key = RemiBoardTileStateRules.focusAfterLayoutChange(
+            focusedKey: focusBeforeColumnChange,
+            composerKeys: composerKeys
+        )
+        focusBeforeColumnChange = nil
+        focusTask?.cancel()
+        guard let key else {
+            focus = nil
+            return
+        }
+        focusTask = Task {
+            guard (try? await Task.sleep(for: .milliseconds(60))) != nil else { return }
+            guard composerKeys.contains(key) else { return }
+            guard focus == nil || focus == key else { return }
+            focus = key
+        }
+    }
+
     private var filtered: [RemiSessionSummary] {
         RemiBoardOrder.visible(
             sessions, machineID: machineFilter, onlyNeedsYou: onlyNeedsYou, showFinished: showFinished
@@ -358,7 +386,19 @@ struct PhoneBoardScreen: View {
                 preview: { AnyView(RemiBoardPreview(session: session, entries: entries)) },
                 growsToContent: presentation.growsToContent,
                 cornerResize: cornerResize(for: session, key: key, presentation: presentation)
-            )
+            ),
+            sendState: sendStateBinding(for: key)
+        )
+    }
+
+    /// Binds transient send feedback to its session key and drops stale asynchronous completions.
+    private func sendStateBinding(for key: String) -> Binding<RemiBoardTileSendState> {
+        Binding(
+            get: { tileSendStates[key] ?? RemiBoardTileSendState() },
+            set: { state in
+                guard sessions.contains(where: { RemiBoardOrder.key(for: $0) == key }) else { return }
+                tileSendStates[key] = state.isSending || state.sendFailed ? state : nil
+            }
         )
     }
 

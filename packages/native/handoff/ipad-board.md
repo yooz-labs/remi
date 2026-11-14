@@ -111,7 +111,7 @@ During `isInteractivelyResizing` nothing animates except the column count change
 
 All of these are the same event, a size change: the Board never reads orientation or the device, and a size change must not rebuild a focused composer.
 The Board keeps its `@State` above the column layout, cards keep stable ids across a column change, and a column change only moves cards.
-A change between one and two columns still rebuilds the tiles in this slice because the one-column stack is a different container; slice 4 closes this with its focus-retention test.
+A card's keyed in-flight or failed send state survives a one-to-two-column rebuild, and focus is restored after the new tile exists when that live card still has a composer; real focus and keyboard behavior across a fold, rotation, or window resize and duplicate-send prevention during a slow send remain unverified.
 A test pins the first of these: changing the width resolves a different column count for the same ordered list and the same keys.
 
 ### What is shared with the Mac and what is not
