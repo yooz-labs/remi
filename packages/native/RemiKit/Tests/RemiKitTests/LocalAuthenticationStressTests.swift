@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import LocalAuthentication
 import Security
@@ -7,29 +6,34 @@ import Testing
 @testable import RemiPush
 
 #if os(macOS)
-/// Opt-in diagnostic for #1768: many threads making non-interactive Keychain
-/// reads at once, the pattern found in two local LocalAuthentication crashes.
-/// It is excluded from the default run because a crash ends the whole test
-/// process: run it with REMI_LA_STRESS=1 and --filter LocalAuthenticationStressTests.
+/// Opt-in Keychain stress diagnostic for #1768: many concurrent non-interactive
+/// reads, the pattern of two local LocalAuthentication crashes. It is excluded
+/// from the default run because a crash or a hang ends the whole test process:
+/// `REMI_LA_STRESS=1 swift test --package-path packages/native/RemiKit --filter
+/// LocalAuthenticationStressTests`. Run one opt-in run at a time; a killed run
+/// leaves its two test-only items until the next run starts.
 ///
-/// REMI_LA_STRESS_MODE `stores` (the default) reads through NativePushKeyStore.load
-/// and NativeIdentityRecordStore.currentRecord. The other modes repeat the stores'
-/// query directly and differ only in the authentication context, for comparison:
-/// `fresh` (a new LAContext per read, the stores' pattern), `shared` (one
-/// long-lived LAContext), `invalidated` (that one context, invalidated before the
-/// first read: what a read sees if the system invalidates a long-lived context),
-/// `serial` (a new LAContext per read, created, used and released under one lock)
-/// and `none` (no LAContext: a control only, never a candidate, because the
-/// stores' reads must stay non-interactive).
+/// REMI_LA_STRESS_MODE selects what each read does:
+/// - Regression checks, expected to pass: `stores` (the default) reads through
+///   NativePushKeyStore.load and NativeIdentityRecordStore.currentRecord, that
+///   is, through NativeKeychainReadContext; `shared` sends the same query with one
+///   long-lived test-owned context; `invalidated` uses that context after
+///   invalidating it, as a read sees a long-lived context the system invalidated.
+/// - Historical comparison, kept only to reproduce #1768: `fresh` creates a new
+///   context per read, the stores' pattern before #1768, which made the daemon
+///   invalidate live contexts and can hang (the negative control).
+/// - Timing control: `none` passes no context. It is never a candidate, because
+///   the stores' reads must stay non-interactive.
+///
 /// REMI_LA_STRESS_WORKERS, REMI_LA_STRESS_ITERATIONS and REMI_LA_STRESS_TIMEOUT
 /// (seconds) size the run; REMI_LA_STRESS_ITEMS=absent reads names that do not
-/// exist instead of writing the two items; REMI_LA_STRESS_EXECUTOR=tasks runs
-/// the workers as detached tasks on the cooperative pool, where the package's
-/// own tests run, instead of on threads.
+/// exist instead of writing the two items; REMI_LA_STRESS_EXECUTOR=tasks runs the
+/// workers as detached tasks on the cooperative pool, where the package's own
+/// tests run, instead of on threads.
 ///
-/// The two items are test-only (one fixed service, emptied before and after each
-/// run) in the file Keychain the unsigned test binary reaches. Only counts and OSStatus codes
-/// are printed, never item contents.
+/// The two items are test-only, under one fixed service that each run empties
+/// before and after it, in the file Keychain the unsigned test process reaches.
+/// Only counts and OSStatus codes are printed, never item contents.
 struct LocalAuthenticationStressTests {
     private static let environment = ProcessInfo.processInfo.environment
 
@@ -40,13 +44,12 @@ struct LocalAuthenticationStressTests {
         let workers = Int(Self.environment["REMI_LA_STRESS_WORKERS"] ?? "") ?? 16
         let iterations = Int(Self.environment["REMI_LA_STRESS_ITERATIONS"] ?? "") ?? 100
         let timeout = Double(Self.environment["REMI_LA_STRESS_TIMEOUT"] ?? "") ?? 120
-        try #require(["stores", "fresh", "shared", "invalidated", "serial", "none"].contains(mode))
+        try #require(["stores", "fresh", "shared", "invalidated", "none"].contains(mode))
         let items = try StressItems(write: Self.environment["REMI_LA_STRESS_ITEMS"] != "absent")
         defer { items.cleanup() }
         let tally = Tally()
         let shared = SharedContext()
         if mode == "invalidated" { shared.context.invalidate() }
-        let serial = NSLock()
         let group = DispatchGroup()
         let started = Date()
         let onTasks = Self.environment["REMI_LA_STRESS_EXECUTOR"] == "tasks"
@@ -58,17 +61,17 @@ struct LocalAuthenticationStressTests {
                 for _ in 0..<iterations {
                     if mode == "stores" {
                         do {
-                            tally.record(try push.load()?.publicKey == items.pushPublicKey ? nil : "mismatch")
+                            tally.record(try push.load()?.publicKey == items.records?.pushPublicKey ? nil : "mismatch")
                         } catch { tally.record("\(error)") }
                         do {
                             let identity = try NativeIdentityRecordStore.currentRecord(accessGroup: nil,
                                 service: items.service, account: items.identityAccount)
-                            tally.record(identity?.publicKeyRaw == items.identityPublicKey ? nil : "mismatch")
+                            tally.record(identity?.publicKeyRaw == items.records?.identityPublicKey ? nil : "mismatch")
                         } catch { tally.record("\(error)") }
                         continue
                     }
-                    for (account, expected) in [(items.pushAccount, items.pushRecord),
-                                                (items.identityAccount, items.identityRecord)] {
+                    for (account, expected) in [(items.pushAccount, items.records?.pushRecord),
+                                                (items.identityAccount, items.records?.identityRecord)] {
                         let read = { (context: LAContext?) in
                             tally.record(Self.rawRead(service: items.service, account: account,
                                                       context: context, expected: expected))
@@ -76,12 +79,6 @@ struct LocalAuthenticationStressTests {
                         switch mode {
                         case "shared", "invalidated": read(shared.context)
                         case "none": read(nil)
-                        case "serial":
-                            serial.withLock {
-                                let context = LAContext()
-                                context.interactionNotAllowed = true
-                                read(context)
-                            }
                         default:
                             let context = LAContext()
                             context.interactionNotAllowed = true
@@ -95,7 +92,7 @@ struct LocalAuthenticationStressTests {
         let finished = group.wait(timeout: .now() + timeout) == .success
         let seconds = Date().timeIntervalSince(started)
         let summary = tally.summary
-        print("LA_STRESS pid=\(getpid()) mode=\(mode) items=\(items.written ? "present" : "absent") "
+        print("LA_STRESS pid=\(getpid()) mode=\(mode) items=\(items.records == nil ? "absent" : "present") "
             + "executor=\(onTasks ? "tasks" : "threads") "
             + "workers=\(workers) iterations=\(iterations) reads=\(summary.reads) failures=\(summary.failures) "
             + "finished=\(finished) seconds=\(String(format: "%.2f", seconds)) outcomes=\(summary.outcomes)")
@@ -103,12 +100,12 @@ struct LocalAuthenticationStressTests {
         #expect(summary.failures == 0)
     }
 
-    /// The stores' read query (as in NativePushKeyStore.read(query:)), with the
-    /// context handling chosen by the mode. `expected` nil means not found.
+    /// The stores' read query (the keys NativeKeychainReadContext.readQuery adds),
+    /// with the context chosen by the mode. `expected` nil means not found.
     private static func rawRead(service: String, account: String, context: LAContext?, expected: Data?) -> String? {
-        var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-            kSecAttrAccount as String: account, kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne]
+        var query = KeychainRecordFixtures.query(service: service, account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
         if let context { query[kSecUseAuthenticationContext as String] = context }
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
@@ -125,55 +122,27 @@ struct LocalAuthenticationStressTests {
         }
     }
 
-    /// One push key record and one identity record, written the way the
-    /// existing owned-context tests write theirs, or neither.
+    /// The two items of a run (KeychainRecordFixtures), or none.
     private struct StressItems: Sendable {
         /// One fixed test-only service, so a run that crashed or was killed
         /// leaves nothing behind once the next run starts.
         let service = "live.yooz.remi.tests.la-stress"
         let pushAccount = "push-\(UUID().uuidString)"
         let identityAccount = "identity-\(UUID().uuidString)"
-        let written: Bool
-        let pushRecord: Data?
-        let pushPublicKey: Data?
-        let identityRecord: Data?
-        let identityPublicKey: Data?
+        let records: KeychainRecordFixtures?
 
         init(write: Bool) throws {
-            written = write
+            records = try write ? KeychainRecordFixtures() : nil
             SecItemDelete([kSecClass as String: kSecClassGenericPassword,
                            kSecAttrService as String: service] as CFDictionary)
-            guard write else {
-                pushRecord = nil; pushPublicKey = nil; identityRecord = nil; identityPublicKey = nil
-                return
-            }
-            struct PushRecord: Encodable { let version: Int; let privateDER: Data; let publicKey: Data; let keyVersion: Int }
-            struct IdentityRecord: Encodable {
-                let version: Int; let pkcs8: Data; let publicKey: Data; let revision: String; let requiresAppUnlock: Bool
-            }
-            let key = P256.KeyAgreement.PrivateKey()
-            let pushPublicKey = key.publicKey.x963Representation
-            let pushRecord = try JSONEncoder().encode(PushRecord(version: 1, privateDER: key.derRepresentation,
-                publicKey: pushPublicKey, keyVersion: 3))
-            let identity = ClientIdentity()
-            let identityRecord = try JSONEncoder().encode(IdentityRecord(version: 2,
-                pkcs8: Ed25519PKCS8.encode(identity.privateKey), publicKey: identity.publicKeyRaw,
-                revision: UUID().uuidString, requiresAppUnlock: false))
-            self.pushRecord = pushRecord; self.pushPublicKey = pushPublicKey
-            self.identityRecord = identityRecord; identityPublicKey = identity.publicKeyRaw
-            for (account, data) in [(pushAccount, pushRecord), (identityAccount, identityRecord)] {
-                var item = query(account)
-                item[kSecValueData as String] = data
-                item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-                try #require(SecItemAdd(item as CFDictionary, nil) == errSecSuccess)
-            }
-        }
-        private func query(_ account: String) -> [String: Any] {
-            [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-             kSecAttrAccount as String: account]
+            guard let records else { return }
+            try #require(KeychainRecordFixtures.add(records.pushRecord, service: service, account: pushAccount)
+                == errSecSuccess)
+            try #require(KeychainRecordFixtures.add(records.identityRecord, service: service, account: identityAccount)
+                == errSecSuccess)
         }
         func cleanup() {
-            for account in [pushAccount, identityAccount] { SecItemDelete(query(account) as CFDictionary) }
+            for account in [pushAccount, identityAccount] { KeychainRecordFixtures.delete(service: service, account: account) }
         }
     }
 
