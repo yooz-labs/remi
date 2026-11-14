@@ -82,7 +82,8 @@ struct PhoneLiveRootView: View {
                     visibility: resolvedVisibility,
                     expandedVisibility: expanded
                 )
-                sidebarChoiceStorage = (isHidden ? RemiSidebarPlacement.ExplicitChoice.hidden : .shown).storageValue
+                let choice: RemiSidebarPlacement.ExplicitChoice = isHidden ? .hidden : .shown
+                sidebarChoiceStorage = choice.storageValue
             }
         )
     }
@@ -317,7 +318,8 @@ struct PhoneLiveRootView: View {
         if chrome.usesSidebar {
             let updated = effectiveColumnLayout.togglingNavigation()
             columnLayout = updated
-            sidebarChoiceStorage = (updated.visibility == .detailOnly ? .hidden : .shown).storageValue
+            let choice: RemiSidebarPlacement.ExplicitChoice = updated.visibility == .detailOnly ? .hidden : .shown
+            sidebarChoiceStorage = choice.storageValue
         } else {
             shell.toggleDrawer()
         }
