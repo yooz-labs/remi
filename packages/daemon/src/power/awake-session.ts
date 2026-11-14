@@ -172,6 +172,10 @@ export class AwakeSession {
       return;
     }
     if (result.ok) {
+      // A live holder now exists, so a retry scheduled by an earlier loss or
+      // failure (for example while this renewal was in flight) has nothing left
+      // to do; letting it fire would only renew the fresh holder once more.
+      this.cancelRetry();
       this.handle({ type: 'holder-started' });
       if (!this.holdLogged) {
         this.holdLogged = true;

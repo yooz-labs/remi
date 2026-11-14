@@ -23,7 +23,7 @@ import type { AwakeConfig } from '../../src/config/config.ts';
 import { HookServer } from '../../src/hooks/hook-server.ts';
 import { AwakeHolder } from '../../src/power/awake-holder.ts';
 import type { AwakeHolderBoundary, AwakeHolderResult } from '../../src/power/awake-holder.ts';
-import type { AwakeClock, AwakeSession } from '../../src/power/awake-session.ts';
+import { type AwakeClock, AwakeSession } from '../../src/power/awake-session.ts';
 import { AwakeWiring, awakeApplies } from '../../src/power/awake-wiring.ts';
 import { PTYSession } from '../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../src/session/session-binding-store.ts';
@@ -39,7 +39,7 @@ class RecordingHolder implements AwakeHolderBoundary {
   starts = 0;
   renewals = 0;
   stops = 0;
-  private activePid: number | null = null;
+  protected activePid: number | null = null;
 
   get pid(): number | null {
     return this.activePid;
@@ -602,6 +602,63 @@ test('the session timer renews the holder at 80 percent of the TTL while work co
     expect(f.holder.starts).toBe(1);
   } finally {
     await f.stop();
+  }
+});
+
+/** A holder whose renewal completes only when the test lets it. */
+class GatedRenewHolder extends RecordingHolder {
+  private release_: (() => void) | null = null;
+
+  override async renew(): Promise<AwakeHolderResult> {
+    this.renewals += 1;
+    await new Promise<void>((resolve) => {
+      this.release_ = resolve;
+    });
+    this.activePid = 900_001 + this.renewals;
+    return { ok: true };
+  }
+
+  finishRenew(): void {
+    this.release_?.();
+  }
+}
+
+test('a retry scheduled while a renewal is in flight is dropped once that renewal succeeds', async () => {
+  const clock = new ManualClock();
+  const messageApi = new MessageAPI({ sessionId: generateId() });
+  const logs: string[] = [];
+  const holder = new GatedRenewHolder();
+  let lost: ((detail: string) => void) | undefined;
+  const awake = new AwakeSession(generateId(), messageApi, DEFAULTS, (m) => logs.push(m), {
+    createHolder: (onUnexpectedExit) => {
+      lost = onUnexpectedExit;
+      return holder;
+    },
+    clock,
+  });
+  try {
+    messageApi.handleStatusChange('executing');
+    await waitUntil(() => awake.isHolding);
+    clock.advance(10 * 60_000);
+    messageApi.noteWorkEvent({ type: 'activity' });
+    clock.advance(6 * 60_000);
+    await waitUntil(() => holder.renewals === 1);
+
+    // The running caffeinate dies while the replacement is still starting: a retry is scheduled.
+    lost?.('exited with code 1');
+    expect(logs.some((m) => m.includes('restarting it up to 3 times'))).toBe(true);
+    holder.finishRenew();
+    await waitUntil(() => holder.pid !== null);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // The first retry delay is 500 ms: the replacement is live, so the timer does nothing.
+    clock.advance(500);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(holder.renewals).toBe(1);
+    expect(holder.starts).toBe(1);
+    expect(awake.isHolding).toBe(true);
+  } finally {
+    awake.dispose();
   }
 });
 
