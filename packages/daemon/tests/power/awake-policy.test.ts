@@ -232,6 +232,29 @@ describe('awake level-1 policy', () => {
     expect(result.effects).toEqual([{ type: 'warning', reason: 'question cap' }]);
   });
 
+  test('work that outlives the question cap and ends with the question still pending gets the normal idle grace', () => {
+    let result = step(initialAwakePolicyState(), { type: 'questions', count: 1 }, 0);
+    result = step(result.state, { type: 'status', status: 'executing' }, 10);
+    result = step(result.state, { type: 'activity' }, 1_500_000);
+    result = step(result.state, { type: 'tick' }, 1_800_000);
+    expect(result.state.held).toBe(true);
+    expect(result.effects).toEqual([{ type: 'warning', reason: 'question cap' }]);
+
+    // The work ends 50 seconds after the cap moment; the question still lingers.
+    result = step(result.state, { type: 'status', status: 'idle' }, 1_850_000);
+    expect(result.state.held).toBe(true);
+    expect(result.effects).toEqual([]);
+    expect(result.state.idleSince).toBe(1_850_000);
+    expect(result.nextDeadline).toBe(1_970_000);
+
+    result = step(result.state, { type: 'tick' }, 1_969_999);
+    expect(result.state.held).toBe(true);
+    expect(result.effects).toEqual([]);
+    result = step(result.state, { type: 'tick' }, 1_970_000);
+    expect(result.state.held).toBe(false);
+    expect(result.effects).toEqual([{ type: 'release', reason: 'grace' }]);
+  });
+
   test('a question replaced at the same count keeps its cap clock; zero to nonzero restarts it', () => {
     let result = step(initialAwakePolicyState(), { type: 'questions', count: 1 }, 0);
     expect(result.nextDeadline).toBe(1_800_000);

@@ -180,6 +180,7 @@ export function stepAwakePolicy(
   const statusActive = view.statusBusy && view.fresh;
   const turnActive = view.turnBusy && view.fresh;
   const activeReasons = view.questionActive || statusActive || turnActive;
+  const capReached = view.questionExpired && !current.questionCapLogged;
   const blocked = !config.level1 || next.ended || next.failed;
 
   if (view.questionExpired && !next.questionCapLogged) {
@@ -206,9 +207,11 @@ export function stepAwakePolicy(
     releaseReason = 'caffeinate unavailable';
   } else if (activeReasons) {
     held = true;
-  } else if (wasHeld && (view.questionExpired || stuckExpired)) {
-    // A cap or a stuck bound is the limit itself: no idle grace after it.
-    releaseReason = view.questionExpired ? 'question cap' : 'stuck bound';
+  } else if (wasHeld && (capReached || stuckExpired)) {
+    // A cap or a stuck bound is the limit itself: no idle grace after it. The
+    // cap is the limit only in the step where it expires; work that outlived it
+    // and ends later with the question still pending takes the normal grace.
+    releaseReason = capReached ? 'question cap' : 'stuck bound';
   } else if (wasHeld) {
     idleSince = current.idleSince ?? now;
     if (now < idleSince + config.idle_grace_seconds * 1_000) held = true;
