@@ -134,6 +134,119 @@ describe('awake level-1 policy', () => {
     expect(result.nextDeadline).toBeNull();
   });
 
+  test('a SessionEnd hook (turn close plus idle, as on /clear) releases after grace and the next turn holds again', () => {
+    let result = step(initialAwakePolicyState(), { type: 'turn-open' }, 0);
+    expect(result.effects).toEqual([{ type: 'hold', reason: 'turn open' }]);
+    // The hook bridge maps SessionEnd to turn-close and HookEventBridge sets idle.
+    result = step(result.state, { type: 'turn-close' }, 1_000);
+    result = step(result.state, { type: 'status', status: 'idle' }, 1_000);
+    expect(result.state.held).toBe(true);
+    expect(result.state.ended).toBe(false);
+    result = step(result.state, { type: 'tick' }, 121_000);
+    expect(result.effects).toEqual([{ type: 'release', reason: 'grace' }]);
+
+    result = step(result.state, { type: 'turn-open' }, 130_000);
+    expect(result.state.held).toBe(true);
+    expect(result.effects).toEqual([{ type: 'hold', reason: 'turn open' }]);
+    result = step(result.state, { type: 'status', status: 'executing' }, 131_000);
+    expect(result.state.held).toBe(true);
+  });
+
+  test('the terminal session-end (dispose only) never holds again', () => {
+    let result = step(initialAwakePolicyState(), { type: 'turn-open' }, 0);
+    result = step(result.state, { type: 'session-end' }, 10);
+    expect(result.effects).toEqual([{ type: 'release', reason: 'session end' }]);
+    result = step(result.state, { type: 'turn-open' }, 20);
+    expect(result.state.held).toBe(false);
+    expect(result.effects).toEqual([]);
+  });
+
+  test('the stuck bound drops the stale turn and status, so later activity does not re-arm the hold', () => {
+    let result = step(initialAwakePolicyState(), { type: 'turn-open' }, 0);
+    result = step(result.state, { type: 'status', status: 'executing' }, 0);
+    result = step(result.state, { type: 'tick' }, 900_000);
+    expect(result.effects).toEqual([
+      { type: 'warning', reason: 'stuck bound' },
+      { type: 'release', reason: 'stuck bound' },
+    ]);
+    expect(result.state.turnOpen).toBe(false);
+    expect(result.state.status).toBe('idle');
+
+    result = step(result.state, { type: 'activity' }, 901_000);
+    expect(result.state.held).toBe(false);
+    expect(result.effects).toEqual([]);
+    result = step(result.state, { type: 'activity' }, 2_000_000);
+    expect(result.state.held).toBe(false);
+    expect(result.effects).toEqual([]);
+
+    result = step(result.state, { type: 'status', status: 'thinking' }, 2_000_001);
+    expect(result.effects).toEqual([{ type: 'hold', reason: 'thinking' }]);
+    result = step(result.state, { type: 'tick' }, 2_900_001);
+    expect(result.effects).toEqual([
+      { type: 'warning', reason: 'stuck bound' },
+      { type: 'release', reason: 'stuck bound' },
+    ]);
+    result = step(result.state, { type: 'turn-open' }, 2_900_002);
+    expect(result.effects).toEqual([{ type: 'hold', reason: 'turn open' }]);
+  });
+
+  test('the question cap bounds a waiting status and an open turn under activity, with no grace after it', () => {
+    let result = step(initialAwakePolicyState(), { type: 'turn-open' }, 0);
+    result = step(result.state, { type: 'questions', count: 1 }, 10);
+    result = step(result.state, { type: 'status', status: 'waiting' }, 20);
+    expect(result.state.held).toBe(true);
+    expect(result.nextDeadline).toBe(1_800_010);
+    for (let at = 300_000; at <= 1_800_000; at += 300_000) {
+      result = step(result.state, { type: 'activity' }, at);
+      expect(result.state.held).toBe(true);
+      expect(result.effects).toEqual([]);
+    }
+
+    result = step(result.state, { type: 'tick' }, 1_800_010);
+    expect(result.state.held).toBe(false);
+    expect(result.state.idleSince).toBeNull();
+    expect(result.effects).toEqual([
+      { type: 'warning', reason: 'question cap' },
+      { type: 'release', reason: 'question cap' },
+    ]);
+
+    // The question lingers: more activity and a repeated waiting status do not hold again.
+    result = step(result.state, { type: 'activity' }, 1_900_000);
+    expect(result.effects).toEqual([]);
+    result = step(result.state, { type: 'status', status: 'waiting' }, 1_900_001);
+    expect(result.state.held).toBe(false);
+    expect(result.effects).toEqual([]);
+
+    // Answered later: the waiting status and the open turn are no longer covered and hold.
+    result = step(result.state, { type: 'questions', count: 0 }, 2_000_000);
+    expect(result.effects).toEqual([{ type: 'hold', reason: 'waiting' }]);
+    expect(result.state.turnOpen).toBe(true);
+  });
+
+  test('a working status still holds after the question cap, which only warns', () => {
+    let result = step(initialAwakePolicyState(), { type: 'questions', count: 1 }, 0);
+    result = step(result.state, { type: 'status', status: 'executing' }, 10);
+    result = step(result.state, { type: 'activity' }, 1_500_000);
+    result = step(result.state, { type: 'tick' }, 1_800_000);
+    expect(result.state.held).toBe(true);
+    expect(result.effects).toEqual([{ type: 'warning', reason: 'question cap' }]);
+  });
+
+  test('a question replaced at the same count keeps its cap clock; zero to nonzero restarts it', () => {
+    let result = step(initialAwakePolicyState(), { type: 'questions', count: 1 }, 0);
+    expect(result.nextDeadline).toBe(1_800_000);
+    result = step(result.state, { type: 'questions', count: 1 }, 600_000);
+    expect(result.state.questionStartedAt).toBe(0);
+    expect(result.nextDeadline).toBe(1_800_000);
+    result = step(result.state, { type: 'questions', count: 2 }, 700_000);
+    expect(result.state.questionStartedAt).toBe(0);
+
+    result = step(result.state, { type: 'questions', count: 0 }, 800_000);
+    result = step(result.state, { type: 'questions', count: 1 }, 800_000);
+    expect(result.state.questionStartedAt).toBe(800_000);
+    expect(result.nextDeadline).toBe(2_600_000);
+  });
+
   test('busy status changes label their reason and holder renewal is a policy deadline', () => {
     const thinking = step(initialAwakePolicyState(), { type: 'status', status: 'thinking' }, 0);
     expect(thinking.effects).toEqual([{ type: 'hold', reason: 'thinking' }]);
