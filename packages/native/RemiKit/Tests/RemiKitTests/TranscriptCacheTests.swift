@@ -80,7 +80,7 @@ extension SessionAddressingTests {
         let store = fixture.store, sid = fixture.sessionID
         store.ownedTranscriptSend = { _ in }
         let key = MachineSessionKey(machineID: fixture.ids.a, sessionID: sid)
-        let messages = try (0..<320).map { index in
+        let messages = try (0..<512).map { index in
             try entry(sessionID: sid, id: "history-\(index)", text: "message-\(index)")
         }
         let expected = messages.map(\.entryUuid)
@@ -108,6 +108,8 @@ extension SessionAddressingTests {
         store.receive(.transcriptComplete(try complete(sessionID: sid)), from: route, generation: secondGeneration)
 
         let replayed = try #require(store.transcriptsBySession[key])
+        // The merged instance visits about 3N nodes: N removals, N appends, and N compaction visits.
+        // The staging instance is not included here; the pure apply work-count test covers that path.
         #expect(replayed.testingElementVisits - visitsBeforeReplay < messages.count * 5)
         #expect(store.transcriptsBySession[key]?.map(\.entryUuid) == expected)
         #expect(store.transcriptsBySession[key]?.map(\.content) == messages.map(\.content))
