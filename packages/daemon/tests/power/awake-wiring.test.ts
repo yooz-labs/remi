@@ -214,10 +214,29 @@ test('real hook HTTP and session question changes drive the awake policy; Codex 
     ).toBe(true);
     await waitUntil(() => awake?.isHolding === true);
     expect(holder.starts).toBe(2);
-    expect((await post({ hook_event_name: 'SessionEnd', reason: 'exit' })).status).toBe(200);
-    expect(workEvents.some((event) => event.type === 'session-end')).toBe(true);
+    const turnClosesBeforeEnd = workEvents.filter((event) => event.type === 'turn-close').length;
+    expect((await post({ hook_event_name: 'SessionEnd', reason: 'clear' })).status).toBe(200);
+    expect(workEvents.filter((event) => event.type === 'turn-close').length).toBe(
+      turnClosesBeforeEnd + 1,
+    );
+    expect(workEvents.at(-1)).toEqual({ type: 'status', status: 'idle' });
     await waitUntil(() => awake?.isHolding === false);
     expect(holder.stops).toBe(2);
+
+    // After /clear, Claude continues in the same PTY under a new session id.
+    const clearedId = `${CLAUDE_SESSION_ID}-after-clear`;
+    expect(
+      (
+        await post({
+          hook_event_name: 'UserPromptSubmit',
+          prompt: 'next turn after clear',
+          session_id: clearedId,
+          transcript_path: join(directory, `${clearedId}.jsonl`),
+        })
+      ).status,
+    ).toBe(200);
+    await waitUntil(() => awake?.isHolding === true);
+    expect(holder.starts).toBe(3);
   } finally {
     awake.dispose();
     unsubscribeWorkEvents();

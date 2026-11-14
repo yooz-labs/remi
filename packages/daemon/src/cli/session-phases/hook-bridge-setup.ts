@@ -1052,7 +1052,10 @@ export function setupHookBridge(
     // sync here — the binder is the single source of truth.
     binder.onSessionEnd(input);
     if (!binder.admits(input)) return;
-    messageApi.noteWorkEvent?.({ type: 'session-end' });
+    // #1773: SessionEnd also fires on /clear and /resume with the PTY and the
+    // daemon alive, so it closes the turn (handleSessionEnd below sets idle)
+    // and a later turn can hold again. Only the session's dispose ends the hold for good.
+    messageApi.noteWorkEvent?.({ type: 'turn-close' });
     autoApproveGate.cancelStale('SessionEnd', { resolvedBy: 'harness' });
     handlers.onSessionEnd?.(input);
   });

@@ -84,8 +84,7 @@ export type SessionWorkEvent =
   | { readonly type: 'status'; readonly status: AgentStatus }
   | { readonly type: 'activity' }
   | { readonly type: 'turn-open' }
-  | { readonly type: 'turn-close' }
-  | { readonly type: 'session-end' };
+  | { readonly type: 'turn-close' };
 
 /** Configuration for MessageAPI */
 export interface MessageAPIConfig {
