@@ -182,5 +182,6 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | rv-F1772-delta | reviewer | extra | sonnet xhigh | F1772 | 2026-11-14T11:21 | done |
 | codex-F1772fix2 | implementer | codex-terra | gpt-6.1-terra xhigh | F1772 | 2026-11-14T11:30 | failed-quota |
 | sonnet-F1772fix2 | implementer | claude-sonnet | sonnet high | F1772 | 2026-11-14T11:55 | done |
-| rv-AW1-panel | reviewer | extra | sonnet xhigh x3 | AW1 | 2026-11-14T11:55 | running |
+| rv-AW1-panel | reviewer | extra | sonnet xhigh x3 | AW1 | 2026-11-14T11:55 | done |
 | codex-AW1 | implementer | codex-luna | gpt-6-luna max | AW1 | 2026-11-14T09:31 | done |
+| opus-AW1fix1 | implementer | claude-opus | opus xhigh | AW1 | 2026-11-14T12:05 | running |
