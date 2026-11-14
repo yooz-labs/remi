@@ -40,6 +40,8 @@ import Testing
         #expect(screen.contains("filtered.filter { $0.isLive && effectiveSize(for: $0).showsComposer }"))
         #expect(screen.contains("let heights = ordered.map { effectiveSize(for: $0).phoneCardHeight }"))
         #expect(!screen.contains("density.showsComposer"))
+        #expect(screen.contains(".onChange(of: composerKeys) { _, keys in"))
+        #expect(screen.contains("if let focusedKey = focus, !keys.contains(focusedKey) { focus = nil }"))
 
         let pickerStart = try #require(
             screen.range(of: "Picker(\"Card size\", selection: Binding(get: { density }, set: { size in")?.lowerBound
@@ -57,5 +59,22 @@ import Testing
             screen.range(of: "onTogglePin: {", range: tileSetterStart..<screen.endIndex)?.lowerBound
         )
         #expect(String(screen[tileSetterStart..<tileSetterEnd]).contains("saveBoard()"))
+
+        let menuStart = try #require(screen.range(of: "private var densityMenu: some View {")?.lowerBound)
+        let menuEnd = try #require(screen.range(of: "private var overflowMenu: some View {")?.lowerBound)
+        let densityMenu = String(screen[menuStart..<menuEnd])
+        #expect(densityMenu.contains("RemiBoardCardPresentation(columnCount: columnLayout.columnCount).isMultiColumn"))
+        #expect(densityMenu.contains("board.hasExplicitSizes"))
+        #expect(densityMenu.contains("Button(\"Reset card sizes\""))
+
+        let resetStart = try #require(
+            screen.range(of: "Button(\"Reset card sizes\", systemImage: \"arrow.counterclockwise\") {")?.lowerBound
+        )
+        let resetEnd = try #require(
+            screen.range(of: "\n                }", range: resetStart..<screen.endIndex)?.lowerBound
+        )
+        let resetAction = String(screen[resetStart..<resetEnd])
+        #expect(resetAction.contains("board.clearSizes()"))
+        #expect(resetAction.contains("saveBoard()"))
     }
 }

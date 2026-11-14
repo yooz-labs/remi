@@ -94,6 +94,9 @@ struct PhoneBoardScreen: View {
             // The composers are gone in Compact; do not leave the keyboard waiting for one.
             if !size.showsComposer { focus = nil }
         }
+        .onChange(of: composerKeys) { _, keys in
+            if let focusedKey = focus, !keys.contains(focusedKey) { focus = nil }
+        }
         .onAppear(perform: loadBoard)
         .onChange(of: sessions.map(RemiBoardOrder.key(for:))) { pruneBoard() }
         .onChange(of: loadedMachines, initial: true) { _, ids in
@@ -347,7 +350,17 @@ struct PhoneBoardScreen: View {
                     Text(size.densityTitle).tag(size)
                 }
             }
-            Text("Choosing a size here resets every card to that size.")
+            if RemiBoardCardPresentation(columnCount: columnLayout.columnCount).isMultiColumn,
+               board.hasExplicitSizes
+            {
+                Button("Reset card sizes", systemImage: "arrow.counterclockwise") {
+                    board.clearSizes()
+                    saveBoard()
+                }
+                .help(
+                    "The toolbar size sets every card. Reset removes per-card choices and returns to the toolbar size."
+                )
+            }
         } label: {
             Label("Card size", systemImage: "rectangle.grid.1x2")
         }

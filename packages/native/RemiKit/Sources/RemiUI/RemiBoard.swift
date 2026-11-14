@@ -308,9 +308,13 @@ public struct RemiBoardState: Codable, Equatable, Sendable {
     public mutating func unpin(_ key: String) { pinnedSlots[key] = nil }
 
     public func size(for key: String) -> RemiTileSize { sizes[key] ?? .regular }
+    /// The size explicitly chosen for this card, or nil when unset, unlike `size(for:)` which
+    /// falls back to Medium.
     public func explicitSize(for key: String) -> RemiTileSize? { sizes[key] }
     public mutating func setSize(_ size: RemiTileSize, for key: String) { sizes[key] = size }
-    public mutating func clearSize(for key: String) { sizes[key] = nil }
+    /// Whether at least one card has an explicit size choice.
+    public var hasExplicitSizes: Bool { !sizes.isEmpty }
+    /// Removes every explicit per-card size choice.
     public mutating func clearSizes() { sizes.removeAll() }
 
     public var savedFrames: [String: RemiBoardFrame] { frames }

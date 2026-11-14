@@ -3,21 +3,21 @@ import Testing
 @testable import RemiUI
 
 @Suite struct RemiBoardCardSizeTests {
-    @Test func explicitSizeIsOptionalAndCanBeCleared() {
+    @Test func explicitSizesAreOptionalAndCanBeCleared() {
         var state = RemiBoardState()
         #expect(state.explicitSize(for: "first") == nil)
         #expect(state.size(for: "first") == .regular)
+        #expect(!state.hasExplicitSizes)
 
         state.setSize(.large, for: "first")
         state.setSize(.row, for: "second")
         #expect(state.explicitSize(for: "first") == .large)
         #expect(state.explicitSize(for: "second") == .row)
-
-        state.clearSize(for: "first")
-        #expect(state.explicitSize(for: "first") == nil)
-        #expect(state.size(for: "first") == .regular)
+        #expect(state.hasExplicitSizes)
 
         state.clearSizes()
+        #expect(!state.hasExplicitSizes)
+        #expect(state.explicitSize(for: "first") == nil)
         #expect(state.explicitSize(for: "second") == nil)
     }
 
