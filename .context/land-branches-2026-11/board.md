@@ -178,3 +178,5 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | opus-A01b | implementer | claude-opus | opus xhigh | A03 | 2026-11-13T13:30 | done |
 | opus-A03 | implementer | claude-opus | opus xhigh | A03 | 2026-11-13T14:10 | running a290e7ce (record CP4 answers, issue bodies) |
 | codex-DV9 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-13T14:05 | done |
+| DV-r19 | implementer | codex-luna | gpt-6-luna max | DV | 2026-11-14T11:21 | running |
+| rv-F1772-delta | reviewer | extra | sonnet xhigh | F1772 | 2026-11-14T11:21 | running |
