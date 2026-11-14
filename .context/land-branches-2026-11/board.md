@@ -87,7 +87,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | A03 | [Account switching checkpoint](cards/A03-account-switching-checkpoint.md) | - | lead | - | - | done | A02 | - | 2026-11-13T13:07-08:00 | 1d | Fable findings F1-F12 (all fix) sent to the A01 author a290e7ce to fold into ADR 0049/epic/competitive review; then CP4 owner questions (ADR Q1-Q14) |
 | CP1 | CP1 go or adjust for L07 and L08 | - | - | - | - | done | - | - | - | - | manager sets done when L01 to L06 are done or dropped and the lead's CP1 decision is recorded; now gates only L07's unpark |
 | L14 | [image-availability #1313](cards/L14-image-availability.md) | - | worker | xcode | - | done | L03 | 1737 | 2026-11-13T06:11-08:00 | 1d | delta clean; waiting hosted: native rerun after the #1739 flake, relay soak; then merge gate (Part of #1313, closing refs []) |
-| P02a | [Board column resolver, slice 1](cards/P02a-board-columns-resolver.md) |  | worker | xcode | codex-luna | active | P01 | 1755 | 2026-11-13T17:25-08:00 | 4h | round-1 triaged (all accepted except public init; sidebar literals kept); Luna fix round dispatched (r2); then ONE delta review, then merge gate |
+| P02a | [Board column resolver, slice 1](cards/P02a-board-columns-resolver.md) |  | worker | xcode | codex-luna | active | P01 | 1755 | 2026-11-13T17:25-08:00 | 4h | Delta review running, CI rerun, then merge gate and DV |
 
 ## Questions
 
