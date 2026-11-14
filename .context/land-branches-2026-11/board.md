@@ -89,6 +89,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | L14 | [image-availability #1313](cards/L14-image-availability.md) | - | worker | xcode | - | done | L03 | 1737 | 2026-11-13T06:11-08:00 | 1d | delta clean; waiting hosted: native rerun after the #1739 flake, relay soak; then merge gate (Part of #1313, closing refs []) |
 | P02a | [Board column resolver, slice 1](cards/P02a-board-columns-resolver.md) |  | worker | xcode | codex-luna | done | P01 | 1755 | 2026-11-13T17:25-08:00 | 4h | merged 3c8f8657 (bump 0ee33483); DV r11 running |
 | P02b | Board columns in PhoneBoardScreen (slice 2a, #1745) |  |  |  |  | done |  |  | 2026-11-13T21:32-08:00 |  | merged 507cbd25; DV r12 running |
+| P02c | Sidebar beside Board only from 1000 pt windows (slice 2b, #1745) |  |  |  |  | todo |  |  |  |  | create worktree board-sidebar, dispatch Luna |
 
 ## Questions
 
