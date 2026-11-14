@@ -69,6 +69,42 @@ async function waitForPidToExit(pid: number): Promise<void> {
   throw new Error(`process ${pid} remained after its holder was released`);
 }
 
+/** The caffeinate pids whose assertion `pmset -g assertions` says was created for `target`. */
+function caffeinateHoldersFor(output: string, target: number): number[] {
+  const holders: number[] = [];
+  let caffeinatePid: number | null = null;
+  for (const line of output.split('\n')) {
+    const owner = /^\s*pid (\d+)\(([^)]*)\):/.exec(line);
+    if (owner) {
+      caffeinatePid = owner[2] === 'caffeinate' ? Number(owner[1]) : null;
+      continue;
+    }
+    const created = /Created for PID: (\d+)\b/.exec(line);
+    if (created && caffeinatePid !== null && Number(created[1]) === target) {
+      holders.push(caffeinatePid);
+    }
+  }
+  return holders.sort((a, b) => a - b);
+}
+
+/** `pmset -g assertions` without blocking the event loop, so a renewal can run meanwhile. */
+function assertionOutputAsync(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('/usr/bin/pmset', ['-g', 'assertions'], {
+      shell: false,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    let output = '';
+    child.stdout?.on('data', (chunk: Buffer) => {
+      output += chunk.toString('utf8');
+    });
+    child.once('error', reject);
+    child.once('close', (code) =>
+      code === 0 ? resolve(output) : reject(new Error(`pmset exited ${code}`)),
+    );
+  });
+}
+
 async function waitUntil(check: () => boolean, what: string, timeoutMs = 4_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!check()) {
@@ -522,6 +558,59 @@ if (process.platform !== 'darwin') {
     } finally {
       awake.dispose();
       rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('renew starts the new caffeinate before the old one stops: the target never lacks an assertion', async () => {
+    let target: ChildProcess | undefined;
+    let holder: AwakeHolder | undefined;
+    let oldPid: number | null = null;
+    let newPid: number | null = null;
+    try {
+      target = await startSleepProcess();
+      const targetPid = target.pid;
+      if (targetPid === undefined) throw new Error('sleep child has no pid');
+      holder = new AwakeHolder({ targetPid, ttlSeconds: 60 });
+      expect(await holder.start()).toEqual({ ok: true });
+      oldPid = holder.pid;
+      if (oldPid === null) throw new Error('caffeinate holder has no pid');
+      await waitForAssertion(targetPid, true);
+
+      const samples: number[][] = [];
+      let sampling = true;
+      const sampler = (async () => {
+        while (sampling)
+          samples.push(caffeinateHoldersFor(await assertionOutputAsync(), targetPid));
+      })();
+      await waitUntil(() => samples.length >= 2, 'baseline samples');
+      expect(await holder.renew()).toEqual({ ok: true });
+      newPid = holder.pid;
+      expect(newPid).not.toBeNull();
+      expect(newPid).not.toBe(oldPid);
+      await waitForPidToExit(oldPid);
+      await waitUntil(() => {
+        const last = samples.at(-1) ?? [];
+        return newPid !== null && last.includes(newPid) && !last.includes(oldPid as number);
+      }, 'a sample with only the new holder');
+      sampling = false;
+      await sampler;
+
+      console.info(
+        `[AWAKE PGM] renew target=${targetPid} old=${oldPid} new=${newPid} samples=${samples.length} overlap=${samples.filter((s) => s.includes(oldPid as number) && newPid !== null && s.includes(newPid)).length}`,
+      );
+      expect(samples.filter((sample) => sample.length === 0)).toEqual([]);
+      expect(
+        samples.some(
+          (sample) =>
+            sample.includes(oldPid as number) && newPid !== null && sample.includes(newPid),
+        ),
+      ).toBe(true);
+      expect(samples.at(-1)).toEqual([newPid as number]);
+    } finally {
+      holder?.dispose();
+      for (const pid of [oldPid, newPid]) if (pid !== null) await waitForPidToExit(pid);
+      if (target && target.exitCode === null && target.signalCode === null) target.kill('SIGKILL');
+      if (target) await waitForExit(target);
     }
   });
 }

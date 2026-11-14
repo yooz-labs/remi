@@ -45,6 +45,8 @@ export interface AwakeHolderOptions {
   readonly ttlSeconds: number;
   readonly executable?: string;
   readonly platform?: NodeJS.Platform;
+  /** How long a renewed-away holder keeps running beside its replacement. */
+  readonly renewOverlapMs?: number;
   /** The current holder exited or errored without remi asking it to (any code or signal). */
   readonly onUnexpectedExit?: (detail: string) => void;
 }
@@ -63,6 +65,13 @@ function errorCode(error: unknown): string {
   const code = (error as NodeJS.ErrnoException | null)?.code;
   return typeof code === 'string' ? code : 'unknown error';
 }
+
+/**
+ * The spawn event comes before caffeinate has created its assertion, so the
+ * previous holder is stopped only after this overlap; killing it at once could
+ * leave the target briefly without an assertion.
+ */
+export const RENEW_OVERLAP_MS = 1_000;
 
 function exitDetail(code: number | null, signal: NodeJS.Signals | null): string {
   return signal ? `killed by ${signal}` : `exited with code ${code}`;
@@ -84,6 +93,9 @@ export class AwakeHolder implements AwakeHolderBoundary {
   private readonly executable: string;
   private readonly platform: NodeJS.Platform;
   private readonly ttlSeconds: number;
+  private readonly renewOverlapMs: number;
+  /** Holders replaced by `renew`, kept for the overlap. */
+  private readonly retiring = new Set<ChildProcess>();
   private readonly onUnexpectedExit: ((detail: string) => void) | undefined;
   /** Children that exited before `start` or `renew` adopted them. */
   private readonly exitedEarly = new WeakMap<ChildProcess, string>();
@@ -94,6 +106,7 @@ export class AwakeHolder implements AwakeHolderBoundary {
     this.ttlSeconds = options.ttlSeconds;
     this.executable = options.executable ?? '/usr/bin/caffeinate';
     this.platform = options.platform ?? process.platform;
+    this.renewOverlapMs = options.renewOverlapMs ?? RENEW_OVERLAP_MS;
     this.onUnexpectedExit = options.onUnexpectedExit;
     process.on('exit', this.onProcessExit);
   }
@@ -122,7 +135,7 @@ export class AwakeHolder implements AwakeHolderBoundary {
     if (!adopted.ok) return adopted;
     const previous = this.current;
     this.current = adopted.child;
-    previous?.kill('SIGTERM');
+    if (previous) this.retire(previous);
     return { ok: true };
   }
 
@@ -130,6 +143,8 @@ export class AwakeHolder implements AwakeHolderBoundary {
     const current = this.current;
     this.current = null;
     current?.kill('SIGTERM');
+    for (const child of this.retiring) child.kill('SIGTERM');
+    this.retiring.clear();
   }
 
   dispose(): void {
@@ -137,6 +152,15 @@ export class AwakeHolder implements AwakeHolderBoundary {
     this.disposed = true;
     this.release();
     process.off('exit', this.onProcessExit);
+  }
+
+  private retire(child: ChildProcess): void {
+    this.retiring.add(child);
+    const timer = setTimeout(() => {
+      if (!this.retiring.delete(child)) return;
+      child.kill('SIGTERM');
+    }, this.renewOverlapMs);
+    timer.unref?.();
   }
 
   private refusal(): AwakeHolderResult | null {
