@@ -30,6 +30,30 @@ public struct RemiBoardTilePlacement {
     }
 }
 
+/// Resizing controls; the screen decides which cards show the corner handles.
+public struct RemiBoardCornerResize {
+    /// Receives cumulative vertical translation in points since gesture start (positive down) and topCorner; returns false for a concurrent drag.
+    public var onDragChanged: (_ verticalTranslation: CGFloat, _ topCorner: Bool) -> Bool
+    /// Receives final cumulative vertical translation in points since gesture start (positive downward) and whether the top corner fired.
+    public var onDragEnded: (_ verticalTranslation: CGFloat, _ topCorner: Bool) -> Void
+    /// Called instead of onDragEnded on system cancellation; topCorner identifies the handle whose preview to discard.
+    public var onDragCancelled: (_ topCorner: Bool) -> Void
+    /// Direction is +1 for taller and -1 for shorter.
+    public var onStep: (_ direction: Int) -> Void
+
+    public init(
+        onDragChanged: @escaping (_ verticalTranslation: CGFloat, _ topCorner: Bool) -> Bool,
+        onDragEnded: @escaping (_ verticalTranslation: CGFloat, _ topCorner: Bool) -> Void,
+        onDragCancelled: @escaping (_ topCorner: Bool) -> Void,
+        onStep: @escaping (_ direction: Int) -> Void
+    ) {
+        self.onDragChanged = onDragChanged
+        self.onDragEnded = onDragEnded
+        self.onDragCancelled = onDragCancelled
+        self.onStep = onStep
+    }
+}
+
 /// Options a screen can set on a tile without the tile knowing the screen.
 public struct RemiBoardTileExtras {
     /// The sizes the tile's menu offers; empty when the screen sets one density for every tile.
@@ -46,19 +70,23 @@ public struct RemiBoardTileExtras {
     public var placement: RemiBoardTilePlacement?
     /// Lets a screen use this height as a minimum so the tile can grow with its content.
     public var growsToContent: Bool
+    /// Optional corner handles for stepping a phone card's density; nil leaves other screens alone.
+    public var cornerResize: RemiBoardCornerResize?
 
     public init(
         sizeChoices: [RemiTileSize] = [.compact, .regular, .large],
         height: CGFloat? = nil,
         preview: (() -> AnyView)? = nil,
         placement: RemiBoardTilePlacement? = nil,
-        growsToContent: Bool = false
+        growsToContent: Bool = false,
+        cornerResize: RemiBoardCornerResize? = nil
     ) {
         self.sizeChoices = sizeChoices
         self.height = height
         self.preview = preview
         self.placement = placement
         self.growsToContent = growsToContent
+        self.cornerResize = cornerResize
     }
 }
 
@@ -146,6 +174,10 @@ public struct RemiBoardTile<Question: View>: View {
     }
 
     private var needsYou: Bool { session.status == .needsYou }
+    private var cornerResizeTrailingInset: CGFloat {
+        guard extras.cornerResize != nil, extras.placement == nil else { return 0 }
+        return RemiBoardCardResize.trailingControlInset
+    }
     private var canSend: Bool {
         session.isLive && !sending && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -194,6 +226,8 @@ public struct RemiBoardTile<Question: View>: View {
         .overlay { border }
         .overlay(alignment: .topTrailing) { resizeHandle(top: true) }
         .overlay(alignment: .bottomTrailing) { resizeHandle(top: false) }
+        .overlay(alignment: .topTrailing) { cornerResizeHandle(top: true) }
+        .overlay(alignment: .bottomTrailing) { cornerResizeHandle(top: false) }
         .modifier(TileMenu(menu: menu, preview: extras.preview))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityLabel)
@@ -235,6 +269,8 @@ public struct RemiBoardTile<Question: View>: View {
             }
             if extras.placement != nil { movementGrip }
         }
+        .padding(.trailing, cornerResizeTrailingInset == 0 ? 0 : RemiTheme.Spacing.xs)
+        .padding(.trailing, cornerResizeTrailingInset)
     }
 
     private var headerTitleContent: some View {
@@ -300,6 +336,8 @@ public struct RemiBoardTile<Question: View>: View {
     @ViewBuilder private var rowSummary: some View {
         if needsYou {
             waitingNotice
+                .padding(.trailing, cornerResizeTrailingInset == 0 ? 0 : RemiTheme.Spacing.xs)
+                .padding(.trailing, cornerResizeTrailingInset)
         } else {
             Button(action: onOpen) {
                 Text(latestLine)
@@ -311,6 +349,8 @@ public struct RemiBoardTile<Question: View>: View {
             }
             .buttonStyle(.plain)
             .accessibilityHint("Opens the whole conversation")
+            .padding(.trailing, cornerResizeTrailingInset == 0 ? 0 : RemiTheme.Spacing.xs)
+            .padding(.trailing, cornerResizeTrailingInset)
         }
     }
 
@@ -419,6 +459,7 @@ public struct RemiBoardTile<Question: View>: View {
         .padding(.horizontal, RemiTheme.Spacing.xs)
         .padding(.vertical, RemiTheme.Spacing.xs)
         .background(.background.opacity(0.7), in: .rect(cornerRadius: RemiTheme.Radius.compact))
+        .padding(.trailing, cornerResizeTrailingInset)
         .layoutPriority(extras.placement == nil ? 0 : 2)
     }
 
@@ -521,6 +562,20 @@ public struct RemiBoardTile<Question: View>: View {
                 if top { placement.onResizeTopRightDrag($0.translation, true) }
                 else { placement.onResizeDrag($0.translation, true) }
             })
+        }
+    }
+
+    @ViewBuilder private func cornerResizeHandle(top: Bool) -> some View {
+        if extras.placement == nil, let cornerResize = extras.cornerResize {
+            RemiBoardResizeHandle(
+                top: top,
+                needsYou: needsYou,
+                sizeTitle: size.densityTitle,
+                onDragChanged: cornerResize.onDragChanged,
+                onDragEnded: cornerResize.onDragEnded,
+                onDragCancelled: cornerResize.onDragCancelled,
+                onStep: cornerResize.onStep
+            )
         }
     }
 
@@ -696,6 +751,92 @@ private struct FeedLine: View {
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+private struct RemiBoardResizeHandle: View {
+    let top: Bool
+    let needsYou: Bool
+    let sizeTitle: String
+    let onDragChanged: (CGFloat, Bool) -> Bool
+    let onDragEnded: (CGFloat, Bool) -> Void
+    let onDragCancelled: (Bool) -> Void
+    let onStep: (Int) -> Void
+
+    @GestureState private var isDragging = false
+    @State private var dragDidEnd = false
+    @State private var ignoresDrag = false
+    @State private var isHovered = false
+
+    var body: some View {
+        handle
+            .contentShape(Rectangle())
+            .focusable()
+            .onHover { isHovered = $0 }
+            .modifier(RemiBoardPointerHoverEffect())
+            .accessibilityLabel("Resize card")
+            .accessibilityValue(sizeTitle)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint(top
+                ? "Drag up to make the card taller. Use the up and down arrow keys to change its size."
+                : "Drag down to make the card taller. Use the up and down arrow keys to change its size.")
+            .accessibilityAction(named: "Make taller") { onStep(1) }
+            .accessibilityAction(named: "Make shorter") { onStep(-1) }
+            .onKeyPress(.upArrow) { onStep(-1); return .handled }
+            .onKeyPress(.downArrow) { onStep(1); return .handled }
+            .highPriorityGesture(dragGesture)
+            .onChange(of: isDragging) { wasDragging, dragging in
+                guard wasDragging, !dragging else { return }
+                if !dragDidEnd && !ignoresDrag { onDragCancelled(top) }
+                dragDidEnd = false
+                ignoresDrag = false
+            }
+            .onDisappear {
+                if isDragging && !dragDidEnd && !ignoresDrag { onDragCancelled(top) }
+            }
+    }
+
+    private var handle: some View {
+        BoardResizeCorner(top: top)
+            .stroke(style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
+            .foregroundStyle(needsYou ? RemiTheme.Color.attention : RemiTheme.Color.hairline)
+            .frame(width: 15, height: 15)
+            .frame(width: 26, height: 26)
+            .background(
+                isHovered ? RemiTheme.Color.attention.opacity(0.18) : Color.clear,
+                in: Circle()
+            )
+            .frame(
+                width: RemiTheme.Size.minimumTapTarget,
+                height: RemiTheme.Size.minimumTapTarget,
+                alignment: top ? .topTrailing : .bottomTrailing
+            )
+    }
+
+    private var dragGesture: some Gesture {
+        // The handle moves as this drag changes the card's height.
+        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+            .updating($isDragging) { _, active, _ in active = true }
+            .onChanged {
+                guard !ignoresDrag else { return }
+                if !onDragChanged($0.translation.height, top) { ignoresDrag = true }
+            }
+            .onEnded {
+                dragDidEnd = true
+                if !ignoresDrag { onDragEnded($0.translation.height, top) }
+                ignoresDrag = false
+            }
+    }
+}
+
+private struct RemiBoardPointerHoverEffect: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        // SwiftUI marks frameResize unavailable on iOS, so hoverEffect supplies pointer feedback on iPad.
+        content.hoverEffect(.highlight)
+        #else
+        content
+        #endif
     }
 }
 
