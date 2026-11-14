@@ -84,6 +84,12 @@ test('awake rejects wrong types and out-of-range numeric values', () => {
   }
 });
 
+test('level1_battery_floor_percent (ADR 0050) is rejected until the guard-rails slice ships it', () => {
+  writeFileSync(configPath, '[awake]\nlevel1_battery_floor_percent = 20\n');
+  expect(() => loadConfig(configPath)).toThrow('unsupported key(s): level1_battery_floor_percent');
+  expect(generateDefaultConfig()).toContain('No battery floor yet');
+});
+
 test('awake rejects malformed tables and unknown options', () => {
   for (const text of ['awake = true', 'awake = []', '[awake]\nunknown = 1']) {
     writeFileSync(configPath, text);
