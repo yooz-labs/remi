@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Observation
 import Testing
 @testable import RemiKit
 
@@ -156,6 +157,72 @@ extension SessionAddressingTests {
 
         store.receive(.transcript(try entry(sessionID: sid, id: "e1", text: "live")), from: fixture.routes[0], generation: generation)
         #expect(store.transcriptsBySession[key]?.map(\.content) == ["old", "live"])
+    }
+
+    /// Set from an Observation callback, which is not isolated to the main actor.
+    private final class ChangeFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        func set() { lock.lock(); value = true; lock.unlock() }
+        var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
+    /// The transcript is a reference type, so only storing it in `transcriptsBySession` tells Observation.
+    @Test func aLiveEntryOnAPublishedTranscriptNotifiesObservers() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        store.ownedTranscriptSend = { _ in }
+        let key = MachineSessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let route = fixture.routes[0]
+        let generation = try #require(store.connectionGenerations[route])
+        store.loadTranscript(machineID: fixture.ids.a, sessionId: sid)
+        store.receive(.transcript(try entry(sessionID: sid, id: "e0", text: "old")), from: route, generation: generation)
+        store.receive(.transcriptComplete(try complete(sessionID: sid)), from: route, generation: generation)
+        let published = try #require(store.transcriptsBySession[key])
+
+        let changed = ChangeFlag()
+        withObservationTracking {
+            _ = store.transcriptsBySession[key]
+        } onChange: {
+            changed.set()
+        }
+        store.receive(.transcript(try entry(sessionID: sid, id: "e1", text: "live")), from: route, generation: generation)
+
+        #expect(changed.isSet, "a live entry on a published transcript must notify observers")
+        #expect(store.transcriptsBySession[key].map { ObjectIdentifier($0) } == ObjectIdentifier(published))
+        #expect(published.map(\.content) == ["old", "live"])
+    }
+
+    @Test func aRefreshMergedIntoAPublishedTranscriptNotifiesObservers() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        store.ownedTranscriptSend = { _ in }
+        let key = MachineSessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let route = fixture.routes[0]
+        let generation = try #require(store.connectionGenerations[route])
+        store.loadTranscript(machineID: fixture.ids.a, sessionId: sid)
+        store.receive(.transcript(try entry(sessionID: sid, id: "e0", text: "old")), from: route, generation: generation)
+        store.receive(.transcriptComplete(try complete(sessionID: sid)), from: route, generation: generation)
+        let published = try #require(store.transcriptsBySession[key])
+
+        store.ownedReplaceConnectionGeneration(route)
+        let refreshGeneration = try #require(store.connectionGenerations[route])
+        store.loadTranscript(machineID: fixture.ids.a, sessionId: sid)
+        store.receive(.transcript(try entry(sessionID: sid, id: "e1", text: "added")), from: route, generation: refreshGeneration)
+        #expect(published.map(\.content) == ["old"], "the refresh is staged until the load completes")
+
+        let changed = ChangeFlag()
+        withObservationTracking {
+            _ = store.transcriptsBySession[key]
+        } onChange: {
+            changed.set()
+        }
+        store.receive(.transcriptComplete(try complete(sessionID: sid)), from: route, generation: refreshGeneration)
+
+        #expect(changed.isSet, "a merged refresh must notify observers")
+        #expect(published.map(\.content) == ["old", "added"])
     }
 
     @Test func aCachedTranscriptIsNotRequestedAgain() async throws {
