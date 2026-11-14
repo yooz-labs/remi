@@ -1,6 +1,6 @@
 # Apple platform knowledge base
 
-Last verified: 2026-10-11 against the current Remi native callers, tests, and the physical acceptance recorded in #1242.
+Last verified: 2026-10-11 against the current Remi native callers, tests, and the physical acceptance recorded in #1242; the "Resizable windows, iPad external displays and iPhone Duo" section was verified on 2026-11-13.
 
 This is the adoption guide for Apple APIs that affect Remi's native apps. It records what the current apps actually do, separates the iOS/macOS 26 baseline from newer SDK work, and names the checks required before a platform feature is presented as shipped.
 
@@ -13,6 +13,7 @@ This is the adoption guide for Apple APIs that affect Remi's native apps. It rec
 | Liquid Glass | Native system navigation/materials, semantic question-card content surfaces, and coordinated custom glass groups for question actions, the composer, and conversation selection | A glass surface on every row or section | Let standard controls provide glass automatically; use custom effects sparingly and group adjacent effects |
 | Live Activities | Design research only | Widget extension, activity lifecycle, ActivityKit push tokens, and App Intent answers | Build only after secure remote delivery and the signed-answer path are specified and testable |
 | App Intents | Design research only | Siri/Shortcuts/App Intent actions in either app | Any answer intent must call the same authenticated answer operation as the app; it must not become a second trust path |
+| Resizable windows and iPhone Duo | A regular-width shell (sidebar plus content) chosen from the horizontal size class, with a readable column (#1629); the iPhone target is built for iPhone and iPad (`TARGETED_DEVICE_FAMILY = "1,2"`) | A multi-column Board for wide windows (#1745), a recorded run on an iPhone Duo pose, a physical iPad on an external display | Decide layout from size classes and available width only; see "Resizable windows, iPad external displays and iPhone Duo" |
 
 ## Foundation Models and Apple Intelligence
 
@@ -68,6 +69,44 @@ Machine onboarding uses the same observable draft on iPhone and Mac. It normaliz
 
 Neither app root currently caps Dynamic Type. Shipping screens use accessibility-size layouts where compact rows would otherwise truncate, and the preview catalog includes Accessibility 5 states for the primary iPhone and Mac flows. Those previews are design coverage, not physical-device acceptance through every system size; keep runtime acceptance claims separate.
 
+## Resizable windows, iPad external displays and iPhone Duo
+
+Read 2026-11-13 from Apple's own pages; the same text is the basis of the design in [handoff/ipad-board.md](handoff/ipad-board.md) (#1745).
+Apple's foldable is the iPhone Duo.
+Every fact below carries its source; anything marked NOT FOUND was looked for and is not in the text read, so it is an assumption until someone checks it on a device or in the release notes.
+
+### Verified in Apple's text
+
+| Fact | Source |
+|---|---|
+| Layout follows size classes and the space the scene has, never the device, the idiom or the orientation. An iPhone-only app on an iPad becomes fully resizable but keeps the phone idiom, so "regular width means iPad" is false and an iPhone app can have any size-class combination. | [Modernize your UIKit app (WWDC26 278)](https://developer.apple.com/videos/play/wwdc2026/278), [Prepare your app for iPhone Duo](https://developer.apple.com/iphone-duo/prepare/) |
+| Supported orientations are a preference that resizable environments ignore. Do not branch layout on orientation. | WWDC26 278, [TN3192](https://developer.apple.com/tutorials/data/documentation/technotes/tn3192-migrating-your-app-from-the-deprecated-uirequiresfullscreen-key.md) |
+| iPhone Duo, outer display: regular vertical and compact horizontal size class in portrait, compact in both in landscape, like other iPhones. Inner display: regular in both, and it does not honor supported orientations. | [Prepare your app for iPhone Duo (tech talk 111461)](https://developer.apple.com/videos/play/tech-talks/111461/) |
+| Folding and unfolding resize the app and arrive as a size and trait change; re-read the size when layout runs, not only at launch. Do not use `UIScreen.main.bounds`. | Prepare page, talk 111461 |
+| Apps built with an SDK before iOS 27 run centered on the inner display with empty space. The iOS 27 SDK fills most of it and avoids the status bar on the right edge. The iOS 27.1 SDK or later runs edge to edge, with toolbars and tab bars laid out vertically below the status bar. `ReservedRegion` (SwiftUI) and `UIViewReservedRegion` (UIKit) report system-reserved space from iOS 27.1. | Prepare page, talk 111461 |
+| Safe-area insets on the inner display are often asymmetric; read each side. Interactive content stays inside the safe area, background art may extend past it. | Talk 111461 |
+| Hinge state (closed, partially open, fully open, with an angle) is for interactions, not layout: `onHingeChange` in SwiftUI, `UIHingeInteraction` in UIKit. Layout uses the arrangement and region APIs from "Strike a pose with adaptive layouts on iPhone Duo". | [Leverage multiple displays and scenes on iPhone Duo (tech talk 111464)](https://developer.apple.com/videos/play/tech-talks/111464) |
+| The iPhone Duo supports two apps side by side and multiple instances of an app's UI; an app that supports multiple windows on iPad works there. New windows can be requested only for the inner display, not the outer one, and the request can fail, so hide the control when it is unavailable. | Talk 111464 |
+| Scene accessories show content on another display alongside the main UI, on iPhone and iPad; the system controls their availability. Apple's example is a non-interactive companion surface. | Talk 111464 |
+| On an iPad, moving an app to an external display changes its scene's screen, so never assume `UIScreen.main`. | WWDC26 278 |
+| `UIRequiresFullScreen`: from the iOS 27 SDK it no longer opts an app out of resizing; the app is resized in discrete steps. Apple says to remove the key and support all orientations. `UISceneSizeRestrictions` sets a preferred minimum scene size (Apple's example is 500 points wide) and never blocks rotation. `isInteractivelyResizing` reports a live drag. | TN3192 |
+| Testing: the iPhone Duo simulator in Device Hub (Xcode 27.1 and later) with open, close, rotate and fold controls; Split View by dragging from the home indicator; the resizable iOS simulator in Device Hub and Xcode Previews; iPhone Mirroring on macOS 27 at extreme sizes; real devices. | Prepare page, talk 111461, WWDC26 278 |
+
+### NOT FOUND in the text read (treat as unverified)
+
+- The point widths of the iPhone Duo inner display and of an iPad window in each size class.
+- Whether an iPad on an external display on iPadOS 27.x gives an app a free-form, resizable, interactive window, or mirrors, or shows only a scene accessory. A third-party summary of the UIKit changes names `UISceneAccessory.externalNonInteractive`; no Apple text read confirms it. Only a physical iPad on a display, or the iPadOS 27 release notes read in a browser, settles this.
+- A maximum scene size, and Stage Manager behavior.
+- The `developer.apple.com/documentation` pages for the release notes and the iPhone Duo technology overview render their text in the browser, so an automated fetch returns only a title; read them by hand. The `videos/play` pages return their transcripts.
+
+### What Remi does with it (rules)
+
+1. A layout decision reads the horizontal size class or the width the view was actually given (`RemiLayoutMode`, `onGeometryChange`), never `UIDevice`, `userInterfaceIdiom`, orientation, a device name or `UIScreen.main`.
+2. Folding, unfolding, Split View, a window drag and an external display are all the same event: the size changes while the app runs. State a person is holding (a draft, the focused tile, scroll position) lives above the layout switch so a size change does not rebuild it; #1629 already does this for the draft.
+3. The Board's column count comes from the width of the Board's own pane (the window minus the sidebar), through `RemiBoardOrder.columnCount`, so it is the same rule on an iPad, in a narrow iPad window, on the unfolded Duo and in the Mac window.
+4. Any change to the shell or the Board is accepted at the sizes in [VISUAL-ACCEPTANCE.md](VISUAL-ACCEPTANCE.md), including an iPad and an iPhone Duo pose; "checked on iPad and on iPhone Duo" without a receipt is not evidence.
+5. The iOS 27.1 SDK moves toolbars and tab bars on the Duo inner display. Re-check the shell when the toolchain moves, and record the Xcode build.
+
 ## iOS/macOS 27 watchlist
 
 These APIs are research targets, not permission to raise the deployment target:
@@ -103,3 +142,8 @@ Before declaring an Apple-platform capability complete:
 - [ActivityKit](https://developer.apple.com/documentation/activitykit)
 - [Displaying live data with Live Activities](https://developer.apple.com/documentation/activitykit/displaying-live-data-with-live-activities)
 - [App Intents](https://developer.apple.com/documentation/appintents)
+- [Prepare your app for iPhone Duo](https://developer.apple.com/iphone-duo/prepare/)
+- [Prepare your app for iPhone Duo (tech talk 111461)](https://developer.apple.com/videos/play/tech-talks/111461/)
+- [Leverage multiple displays and scenes on iPhone Duo (tech talk 111464)](https://developer.apple.com/videos/play/tech-talks/111464)
+- [Modernize your UIKit app (WWDC26 278)](https://developer.apple.com/videos/play/wwdc2026/278)
+- [TN3192: migrating from UIRequiresFullScreen](https://developer.apple.com/tutorials/data/documentation/technotes/tn3192-migrating-your-app-from-the-deprecated-uirequiresfullscreen-key.md)

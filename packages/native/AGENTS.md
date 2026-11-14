@@ -43,6 +43,7 @@ The items marked #1233 are the owner's decisions; the rest were set with the sca
 - **Not set yet, decided when first needed:**
   - App Transport Security for `ws://` connections. The WebView app sets `NSAllowsLocalNetworking` for `ws://127.0.0.1` (`packages/macos/Remi/Info.plist`); check what the native apps need on their first live connection (Mac M2).
   - Export compliance (`ITSAppUsesNonExemptEncryption`): the owner's answer, at the first TestFlight upload.
+- **Wide, resizable and foldable canvases (#1629, #1745).** An iPad window, an iPad on an external display and the unfolded iPhone Duo are all "the size changed while the app runs". Decide layout from the horizontal size class or the width a view was given (`RemiLayoutMode`, `onGeometryChange`), never from the idiom, the device name, the orientation or `UIScreen.main`; keep held state (drafts, focus, scroll) above the layout switch. The Apple facts, what is still unverified and the rules are in [PLATFORM-KNOWLEDGE.md](PLATFORM-KNOWLEDGE.md), "Resizable windows, iPad external displays and iPhone Duo"; the Board design is [handoff/ipad-board.md](handoff/ipad-board.md).
 - American English, no em dashes, no emojis, in code, comments, commits and docs.
 
 ## The protocol
