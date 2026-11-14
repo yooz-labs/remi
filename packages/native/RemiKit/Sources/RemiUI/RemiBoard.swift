@@ -179,8 +179,7 @@ public enum RemiTileSize: String, Codable, CaseIterable, Sendable {
     /// The phone Board's packing and minimum tile heights for each phone density.
     public var phoneCardHeight: CGFloat {
         switch self {
-        case .row: 96
-        case .compact: estimatedHeight
+        case .row, .compact: estimatedHeight
         case .regular: 240
         case .large: 440
         }

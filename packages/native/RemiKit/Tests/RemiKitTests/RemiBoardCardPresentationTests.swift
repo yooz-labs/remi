@@ -42,6 +42,11 @@ import Testing
         #expect(!screen.contains("density.showsComposer"))
         #expect(screen.contains(".onChange(of: composerKeys) { _, keys in"))
         #expect(screen.contains("if let focusedKey = focus, !keys.contains(focusedKey) { focus = nil }"))
+        #expect(screen.contains("var initialBoard: RemiBoardState? = nil"))
+        #expect(
+            screen.contains("board = storedBoard == RemiBoardState() ? (initialBoard ?? storedBoard) : storedBoard")
+        )
+        #expect(screen.contains("initialBoard: mixedSizes ? previewBoard : nil"))
 
         let pickerStart = try #require(
             screen.range(of: "Picker(\"Card size\", selection: Binding(get: { density }, set: { size in")?.lowerBound

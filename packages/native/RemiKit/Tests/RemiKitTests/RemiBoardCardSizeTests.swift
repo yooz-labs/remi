@@ -35,6 +35,7 @@ import Testing
     @Test func phoneCardHeightsArePinnedToTheirDesignValues() {
         let rows: [(size: RemiTileSize, height: CGFloat)] = [
             (.row, 96),
+            (.compact, 260),
             (.regular, 240),
             (.large, 440),
         ]

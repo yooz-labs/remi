@@ -2,20 +2,9 @@ import RemiKit
 import RemiUI
 import SwiftUI
 
-private struct PhoneBoardPreviewStateKey: EnvironmentKey {
-    static let defaultValue: RemiBoardState? = nil
-}
-
-private extension EnvironmentValues {
-    var phoneBoardPreviewState: RemiBoardState? {
-        get { self[PhoneBoardPreviewStateKey.self] }
-        set { self[PhoneBoardPreviewStateKey.self] = newValue }
-    }
-}
-
-/// The phone's landing view: every active session as a card, in the density the person chose
-/// (compact, medium or long, like a mail list). A card can be typed into in place, a long press
-/// previews the conversation, and the cards that need the person come first.
+/// The phone's landing view: every active session as a card. The toolbar sets one density for every
+/// card; from two columns, a card's own menu can override it until the toolbar or "Reset card sizes"
+/// is used. A long press previews the conversation, and the cards that need the person come first.
 ///
 /// The list never reorders while you are writing: with a field focused or a draft waiting,
 /// every card keeps its place, and the order refreshes when you stop.
@@ -44,8 +33,9 @@ struct PhoneBoardScreen: View {
     let onManageMachines: () -> Void
     let onDismissError: () -> Void
     let onDismissNotice: () -> Void
+    /// Preview and test seed used only when no board state has been stored.
+    var initialBoard: RemiBoardState? = nil
 
-    @Environment(\.phoneBoardPreviewState) private var phoneBoardPreviewState
     @AppStorage("remi.phone.board") private var boardStorage = ""
     @AppStorage("remi.phone.board.density") private var densityStorage = RemiTileSize.regular.rawValue
     @State private var board = RemiBoardState()
@@ -467,7 +457,8 @@ struct PhoneBoardScreen: View {
     private func loadBoard() {
         guard !boardLoaded else { return }
         boardLoaded = true
-        board = phoneBoardPreviewState ?? RemiBoardState(storage: boardStorage)
+        let storedBoard = RemiBoardState(storage: boardStorage)
+        board = storedBoard == RemiBoardState() ? (initialBoard ?? storedBoard) : storedBoard
     }
 
     private func saveBoard() { boardStorage = board.storageValue }
@@ -531,9 +522,9 @@ private struct GraceWindow: Hashable {
         onPresentPreferences: {},
         onManageMachines: {},
         onDismissError: {},
-        onDismissNotice: {}
+        onDismissNotice: {},
+        initialBoard: mixedSizes ? previewBoard : nil
     )
-    .environment(\.phoneBoardPreviewState, previewBoard)
 }
 
 #Preview("Board") {
