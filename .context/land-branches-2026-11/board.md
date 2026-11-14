@@ -19,8 +19,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Manager id | mba-claude-sonnet |
 | State | running |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | 2026-11-13T17:47-08:00 |
-| Next tick | 2026-11-13T18:02-08:00 |
+| Last tick | 2026-11-14T11:21-08:00 |
+| Next tick | 2026-11-14T11:51-08:00 |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-12T19:05-08:00 |
 
@@ -48,11 +48,11 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 92 | daily | every dispatch on every platform; the plan approval covers this limit |
-| Codex Luna today | 8 | 40 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
-| Codex Terra today | 4 | 5 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
-| Claude Sonnet today | 16 | 12 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
-| Claude Opus today | 4 | 4 | daily | lead wakes, lead-tier steps, advisor consults |
+| Agents today | 30 | 0 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Codex Luna today | 8 | 0 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
+| Codex Terra today | 4 | 0 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
+| Claude Sonnet today | 16 | 0 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
+| Claude Opus today | 4 | 0 | daily | lead wakes, lead-tier steps, advisor consults |
 | Advisor consults | 8 | 4 | never | lead tier (Opus), whole plan |
 | Fable consults | 1 | 1 | never | A02 only, owner-requested |
 | Agents this wave | 0 | 0 | wave | unused: this plan has no waves |
