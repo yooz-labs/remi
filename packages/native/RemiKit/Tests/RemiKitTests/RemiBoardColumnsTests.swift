@@ -222,6 +222,11 @@ import Testing
         #expect(RemiBoardColumns.place(["a"], columnCount: -1) == [["a"]])
         #expect(RemiBoardColumns.place([String](), columnCount: 0) == [[]])
         #expect(RemiBoardColumns.place([String](), columnCount: -1) == [[]])
+
+        let items = ["a", "b", "c", "d", "e"]
+        let heights: [CGFloat] = [440, 96, 96, 96, 96]
+        #expect(RemiBoardColumns.place(items, columnCount: 0, heights: heights) == [items])
+        #expect(RemiBoardColumns.place(items, columnCount: -1, heights: heights) == [items])
     }
 
     @Test func placeUsesLiteralRoundRobinTables() {
@@ -252,8 +257,9 @@ import Testing
     @Test func placeDefaultsMissingHeightsAndIgnoresExtraHeights() {
         let items = ["a", "b", "c", "d", "e"]
         let regularFallbackHeights: [CGFloat] = [440, 240, 240, 240, 240]
-        let expected = RemiBoardColumns.place(items, columnCount: 2, heights: regularFallbackHeights)
+        let expected = [["a", "d"], ["b", "c", "e"]]
 
+        #expect(RemiBoardColumns.place(items, columnCount: 2, heights: regularFallbackHeights) == expected)
         #expect(RemiBoardColumns.place(items, columnCount: 2, heights: [440]) == expected)
         #expect(RemiBoardColumns.place(items, columnCount: 2, heights: regularFallbackHeights + [1]) == expected)
         #expect(RemiBoardColumns.place([String](), columnCount: 3, heights: [440]) == [[], [], []])
