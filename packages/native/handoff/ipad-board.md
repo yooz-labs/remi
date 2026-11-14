@@ -36,19 +36,21 @@ Verified in this repository on 2026-11-13:
 | Row, Small, Medium and Long are `RemiTileSize` densities with estimated heights 96, 260, 420 and 640 pt; the phone offers Compact (row), Medium and Long. | `RemiTileSize` |
 | Held state (the draft, the focused card, the shown order) lives in `@State` in the Board and above the compact and regular switch (#1629 fixed this for the draft). | `PhoneBoardScreen`, `PhoneLiveRootView` |
 
-Simulator evidence (`P01/` in the artifact folder; exact build of `b4a53f0d`, receipt `P01/receipt/acceptance-receipt.txt`, Xcode 27.2, iOS 27.0 runtime):
+Evidence (`P01/` in the artifact folder; exact build of `b4a53f0d`, receipt `P01/receipt/acceptance-receipt.txt`, Xcode 27.2; the iOS 27.2 runtimes installed on 2026-11-13, `24B114` for iPad and iPhone and `24B91016s` for the iPhone Duo only):
 
-- `xcrun simctl list devices available | grep -i ipad` is saved as `simctl-devices.txt`: iPad Pro 11 and 13-inch (M4 and M5), iPad Air 11 and 13-inch (M3 and M4), iPad mini (A17 Pro) and iPad (A16).
-- `ipad-pro13-landscape-no-machine.png`: iPad Pro 13-inch (M5), full screen, landscape. The sidebar takes 340 pt and the Board pane the rest; one column is available because there is no machine.
-- `ipad-mini-portrait-no-machine.png`: iPad mini (A17 Pro), portrait, 744 pt wide. At this width the sidebar shows over the Board (the split view's overlay) instead of beside it.
-- Both captures are of the empty state, with no machine added. A populated Board needs a throwaway hub with live sessions and was not captured; the column behavior below comes from reading the code, not from a screenshot.
-- The first launch on the iPad Pro simulator connected to the owner's real hub, because that simulator still held a machine the owner had authorized earlier. It was terminated, the app uninstalled, the screenshot deleted and the app reinstalled with no machine. Any later run must start from an uninstalled app and must add only a throwaway hub on a port above 18790 (`AGENTS.md`, "The dev app must never talk to a real hub").
+- `simctl-devices.txt`: the iPad simulators listed on 2026-11-13 before the runtimes were replaced. The iPads now run on iOS 27.2 (`Remi P01 iPad Pro 13`, `Remi P01 iPad mini`), the Duo on `Remi P01 Duo`.
+- `ipad-pro13-landscape-no-machine.png` and `ipad-mini-portrait-no-machine.png`: the exact build on an iPad Pro 13-inch (M5) full screen in landscape and on an iPad mini (A17 Pro) in portrait, empty state. The sidebar takes 340 pt at the first and shows over the Board at the second.
+- `preview-board-*.png`: Xcode renders (`RenderPreview`, no hub, the existing "Board" preview with sample data) of today's Board: `ipad-pro13-landscape`, `ipad-pro13-portrait`, `ipad-mini-portrait`, `duo-inner` and `duo-outer`. At every width above 720 pt the Board is one 720 pt column with the rest of the screen empty; that is the problem this design solves. The preview shows the Board alone, not the split-view shell, so the sidebar is not in these images.
+- Display sizes from the simulator device profiles (`capabilities.plist`, Xcode 27.2; these are the simulator's definition, not an Apple statement about the real device): iPad Pro 13-inch (M5) 2064 by 2752 px at 2x, so 1032 by 1376 pt; iPad mini (A17 Pro) 1488 by 2266 px at 2x, 744 by 1133 pt; iPhone Duo outer display 1398 by 2034 px at 3x, 466 by 678 pt; iPhone Duo inner display 2007 by 2853 px at 3x, 669 by 951 pt; and a "Resizable" scene display of 7680 by 4320 px at 3x that the Device Hub uses for resizable windows.
+- One thing to check in the real app: in `preview-board-duo-outer.png` the camera cutout covers the toolbar's more button. A navigation toolbar normally avoids the cutout, so this may be an artifact of the preview, but it is recorded because the iOS 27.1 SDK changed how bars sit on the Duo.
+- The first launch of the app on an old iPad Pro simulator connected to the owner's real hub, because that simulator still held a machine the owner had authorized earlier. It was terminated, the app uninstalled, the screenshot deleted and the simulator later removed with its runtime. Any run on a simulator must start from an uninstalled app and may add only a throwaway hub on a port above 18790 (`AGENTS.md`, "The dev app must never talk to a real hub").
 
 ## Not run
 
-- The iPhone Duo poses: on 2026-11-13 the owner installed the iOS 27.2 and watchOS 27.2 simulator runtimes, and `xcrun simctl create "Remi P01 Duo" ... iPhone-Duo ... iOS-27-2-iPhone19-4` works; the exact build installed and launched on it. No screenshot was captured: the Duo has several framebuffers, `simctl io screenshot` hangs on it, and the mobile tool's agent does not start on it. The unfolded and folded poses need Device Hub in Xcode (a visible GUI run, which needs the owner's announced go-ahead), so the Duo lines in every receipt stay "not run" until then (question 6).
+- The Duo fold and unfold themselves: the previews render the inner and the outer display, but the hinge, the fold animation and a live window change were not driven. `simctl io screenshot` hangs on the Duo's several framebuffers and the mobile tool's agent does not start on it, so a live run needs Device Hub (a visible GUI run, question 6).
 - An iPad on a real external display: no physical iPad and display were available here. The owner reports (not Apple text, see PLATFORM-KNOWLEDGE) that on iPadOS 27.2 a window shrinks to almost phone width, grows to full screen and continues onto the external display as a larger window. The design therefore treats the external display as a large window of the same scene, so the Board must work at every width from phone-like to the external display's, and keeps a verification gate with Remi itself (slice 5).
 - A drag-resized iPad window: the resizable simulator in Device Hub was not driven; the narrowest window the design targets is computed below.
+- The app itself on the iPad with a populated Board: the previews stand in for it, because a populated app needs a throwaway hub with live sessions.
 
 ## Design
 
@@ -66,12 +68,16 @@ The Board decides its column count from the width of its own pane, which is the 
 | iPad mini portrait, 744 pt, sidebar shown | 404 | 1 |
 | iPad Pro 13-inch landscape, 1376 pt, sidebar shown | 1036 | 2 |
 | iPad Pro 13-inch landscape, sidebar hidden | 1376 | 3 |
+| iPhone Duo outer display, portrait, 466 pt | 466 | 1 |
+| iPhone Duo inner display, portrait, 669 pt, sidebar shown | 329 | 1 |
+| iPhone Duo inner display, landscape, 951 pt, sidebar hidden | 951 | 2 |
+| iPhone Duo inner display, landscape, 951 pt, sidebar shown | 611 | 1 |
 | Two columns need | 724 | window 1064 pt with the sidebar, 724 pt without |
 | Three columns need | 1076 | window 1416 pt with the sidebar, 1076 pt without |
 
 At one column the screen is today's screen: same stack, same readable cap, same ordering, so no iPhone regression.
 At two or more the readable cap does not apply to the whole pane; each column's cards fill their column (the width is `(available - 12 x (columns - 1)) / columns`, at least 340 pt) and the columns are centered if six columns are not reached.
-The iPhone Duo unfolded uses the same rule; its point width is not in Apple's text, so the table cannot name it and the first run on the Duo simulator decides whether the sidebar should start hidden there.
+The iPhone Duo uses the same rule, with the point widths from the simulator profile (466 pt outer, 669 by 951 pt inner): the unfolded display reports regular size classes, so the shell shows the sidebar, and with a 340 pt sidebar the pane is too narrow for two columns even in landscape; hiding the sidebar gives two columns in landscape (question 5).
 
 ### Placement
 
@@ -123,6 +129,6 @@ Each is one pull request into `develop`, with the visual gate from `VISUAL-ACCEP
 2. **Minimum window width for two columns.** Recommended: the rule above (a 724 pt pane, so 1064 pt with the sidebar shown). Alternative: a 300 pt minimum tile, which gives two columns on a 13-inch iPad in portrait with the sidebar shown, at the cost of narrower cards.
 3. **Freeform resizing on iPad.** Recommended: no, density presets only in slices 1 to 5, and revisit slice 6 after the owner has used it with a pointer. Alternative: port the Mac frames now.
 4. **A selected session beside the Board.** Recommended: out of scope here; design it after slice 2 ships, because it changes navigation. Alternative: add it to this track.
-5. **Sidebar on the Duo inner display.** Recommended: decide after the first Duo simulator run, not now, because the inner display's width is not in Apple's text.
+5. **Sidebar on the Duo inner display.** On the unfolded Duo the regular size class shows a 340 pt sidebar, which leaves 329 pt in portrait and 611 pt in landscape, one column either way. Recommended: start with the sidebar hidden on the inner display so landscape gets two columns, with the system toggle to bring it back. Alternative: keep it shown, as on the iPad, and accept one column on the Duo.
 6. **Duo poses through Device Hub.** The runtime is installed and the simulator device exists; the folded and unfolded poses can only be driven and captured in Device Hub, a visible GUI run. Recommended: the owner announces a session where this is done for slice 2 and the screenshots go into the receipt. Alternative: accept "not run" for the Duo until a real device is available.
 7. **External display.** What iPadOS 27.x does with an app on an external display is not in the Apple text read. Recommended: the owner connects an iPad to a display once the first slice is on TestFlight and reports whether the window is resizable and interactive; slice 5 follows that result.

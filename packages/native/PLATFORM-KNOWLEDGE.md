@@ -94,7 +94,7 @@ Every fact below carries its source; anything marked NOT FOUND was looked for an
 
 ### NOT FOUND in the text read (treat as unverified)
 
-- The point widths of the iPhone Duo inner display and of an iPad window in each size class.
+- The point widths of the iPhone Duo displays and of an iPad window in each size class, in any Apple text read. The simulator's own device profiles (Xcode 27.2, `capabilities.plist`) define the iPhone Duo outer display as 466 by 678 pt and the inner display as 669 by 951 pt (both at 3x), the iPad Pro 13-inch (M5) as 1032 by 1376 pt and the iPad mini (A17 Pro) as 744 by 1133 pt; treat them as the simulator's numbers, not as Apple's statement about the real devices.
 - Whether an iPad on an external display on iPadOS 27.x gives an app a free-form, resizable, interactive window, or mirrors, or shows only a scene accessory. A third-party summary of the UIKit changes names `UISceneAccessory.externalNonInteractive`; no Apple text read confirms it. Only a physical iPad on a display, or the iPadOS 27 release notes read in a browser, settles this.
 - Owner observation, not Apple text (2026-11-13, an iPad on iPadOS 27.2): an app window can be shrunk to almost phone width, grown to full screen, and moved beyond that onto an external display as a larger window. This is the behavior the Board is designed for; it has not been run with Remi on an external display, and the iPad's size class at the smallest window is not recorded.
 - A maximum scene size, and Stage Manager behavior.
