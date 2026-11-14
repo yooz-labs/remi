@@ -71,16 +71,14 @@ public struct RemiBoardColumns: Equatable, Sendable {
         return Self(columnCount: columnCount, cardWidth: cardWidth, groupWidth: groupWidth)
     }
 
-    /// Places the ordered items into columns using the estimated height for the current
-    /// card density. Each item's input height is identical because the phone Board has one
-    /// selected density for all of its cards.
-    public static func place<Item>(
-        _ items: [Item],
-        columnCount: Int,
-        cardHeight: CGFloat
-    ) -> [[Item]] {
+    /// Places items into columns in reading order. Since every Board card has the same selected
+    /// density, placement is round-robin and does not depend on card height. Per-card heights
+    /// belong in `RemiBoardOrder.columns` only when cards differ in height; its default gap is
+    /// 12 pt. Counts below 1 are treated as 1. The result always has that many columns, including
+    /// empty columns, and preserves the input order within each column.
+    public static func place<Item>(_ items: [Item], columnCount: Int) -> [[Item]] {
         RemiBoardOrder.columns(
-            heights: Array(repeating: cardHeight, count: items.count),
+            heights: Array(repeating: 0, count: items.count),
             count: columnCount
         ).map { indices in
             indices.map { items[$0] }
