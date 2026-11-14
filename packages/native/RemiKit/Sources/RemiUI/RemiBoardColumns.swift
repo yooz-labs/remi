@@ -71,6 +71,20 @@ public struct RemiBoardColumns: Equatable, Sendable {
         return Self(columnCount: columnCount, cardWidth: cardWidth, groupWidth: groupWidth)
     }
 
+    /// Places items into columns in reading order. Since every Board card has the same selected
+    /// density, placement is round-robin and does not depend on card height. Per-card heights
+    /// belong in `RemiBoardOrder.columns` only when cards differ in height; its default gap is
+    /// 12 pt. Counts below 1 are treated as 1. The result always has that many columns, including
+    /// empty columns, and preserves the input order within each column.
+    public static func place<Item>(_ items: [Item], columnCount: Int) -> [[Item]] {
+        RemiBoardOrder.columns(
+            heights: Array(repeating: 0, count: items.count),
+            count: columnCount
+        ).map { indices in
+            indices.map { items[$0] }
+        }
+    }
+
     /// Applies design rule 1 from `packages/native/handoff/ipad-board.md`, "The rule".
     /// This shell-level rule stays beside the pane thresholds; slice 2 uses it from the shell.
     public static func sidebarBeside(windowWidth: CGFloat) -> Bool {

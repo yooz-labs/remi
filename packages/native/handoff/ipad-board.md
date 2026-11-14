@@ -94,7 +94,7 @@ The iPhone Duo uses the same rule with the point widths from the simulator profi
 
 ### Placement
 
-Cards are placed by `RemiBoardOrder.columns(heights:count:)` with each card's `estimatedHeight` from its density, so a card goes under the shortest column and the assignment depends only on the order and the density, never on live content height.
+With one density for every card, placement is reading-order round-robin; per-card heights would enter `RemiBoardOrder.columns` only when cards differ in height.
 That keeps the existing rules intact: the order is frozen while someone writes (`isWriting`, `held`), and a column assignment does not move under a focused composer.
 Reading order stays the order list; "send, then go to the next live card" (`RemiBoardOrder.next`) follows it, and a card in another column is scrolled to the same way (one vertical `ScrollView` holding the columns, `ScrollViewReader` unchanged).
 The Needs-you cards still sort first, so they land at the top of the leftmost columns.
@@ -110,6 +110,7 @@ During `isInteractivelyResizing` nothing animates except the column count change
 
 All of these are the same event, a size change: the Board never reads orientation or the device, and a size change must not rebuild a focused composer.
 The Board keeps its `@State` above the column layout, cards keep stable ids across a column change, and a column change only moves cards.
+A change between one and two columns still rebuilds the tiles in this slice because the one-column stack is a different container; slice 4 closes this with its focus-retention test.
 A test pins the first of these: changing the width resolves a different column count for the same ordered list and the same keys.
 
 ### What is shared with the Mac and what is not

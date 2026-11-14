@@ -44,6 +44,8 @@ struct PhoneBoardScreen: View {
     @State private var machineFilter: String?
     @State private var onlyNeedsYou = false
     @State private var showFinished = false
+    /// The sole resolved column state; starts narrow so the first frame keeps the one-column stack.
+    @State private var columnLayout = RemiBoardColumns.resolve(paneWidth: 0)
     /// When each loaded machine entered `loadedMachines`, for the settling grace period.
     @State private var loadedAt: [String: Date] = [:]
     @State private var graceTick = 0
@@ -124,31 +126,94 @@ struct PhoneBoardScreen: View {
     private func boardScroll(
         ordered: [RemiSessionSummary], order: [String], liveOrder: [String], reader: ScrollViewProxy
     ) -> some View {
-        ScrollView {
-            LazyVStack(spacing: RemiTheme.Spacing.s) {
-                if let errorMessage {
-                    RemiFeedbackBanner(message: errorMessage, tone: .error, onDismiss: onDismissError)
+        return ScrollView {
+            if columnLayout.columnCount == 1 {
+                singleColumnStack(ordered: ordered, order: order, liveOrder: liveOrder, reader: reader)
+            } else {
+                multipleColumnStack(
+                    ordered: ordered,
+                    order: order,
+                    liveOrder: liveOrder,
+                    reader: reader,
+                    columnLayout: columnLayout
+                )
+            }
+        }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            let resolved = RemiBoardColumns.resolve(
+                paneWidth: width,
+                previousColumnCount: columnLayout.columnCount
+            )
+            if resolved != columnLayout { columnLayout = resolved }
+        }
+        .scrollDismissesKeyboard(.interactively)
+    }
+
+    /// Shared feedback, machine, filter and empty-state rows for both stack variants.
+    @ViewBuilder
+    private func boardHeader(isEmpty: Bool) -> some View {
+        if let errorMessage {
+            RemiFeedbackBanner(message: errorMessage, tone: .error, onDismiss: onDismissError)
+        }
+        if let noticeMessage {
+            RemiFeedbackBanner(message: noticeMessage, tone: .information, onDismiss: onDismissNotice)
+        }
+        PhoneMachineProblemRows(machines: machines, onManage: onManageMachines)
+        // With no machine there is nothing to filter; the first screen is the way to add one.
+        if !machines.isEmpty { chips }
+        if isEmpty { emptyState }
+    }
+
+    /// The pre-columns stack, kept unchanged for one column by `handoff/ipad-board.md`.
+    private func singleColumnStack(
+        ordered: [RemiSessionSummary], order: [String], liveOrder: [String], reader: ScrollViewProxy
+    ) -> some View {
+        LazyVStack(spacing: RemiTheme.Spacing.s) {
+            boardHeader(isEmpty: ordered.isEmpty)
+            if !ordered.isEmpty {
+                ForEach(ordered) { session in
+                    tile(session, order: order, liveOrder: liveOrder, reader: reader)
+                        .id(RemiBoardOrder.key(for: session))
                 }
-                if let noticeMessage {
-                    RemiFeedbackBanner(message: noticeMessage, tone: .information, onDismiss: onDismissNotice)
-                }
-                PhoneMachineProblemRows(machines: machines, onManage: onManageMachines)
-                // With no machine there is nothing to filter; the first screen is the way to add one.
-                if !machines.isEmpty { chips }
-                if ordered.isEmpty {
-                    emptyState
-                } else {
+            }
+        }
+        .padding(RemiTheme.Spacing.m)
+        .remiReadableScrollColumn()
+        .animation(RemiTheme.Motion.standard, value: order)
+    }
+
+    /// Uses a full-pane header and a centered card group without the readable-column cap. Its one
+    /// flat tile tree keeps a card's identity when placement moves it between columns.
+    private func multipleColumnStack(
+        ordered: [RemiSessionSummary],
+        order: [String],
+        liveOrder: [String],
+        reader: ScrollViewProxy,
+        columnLayout: RemiBoardColumns
+    ) -> some View {
+        let columns = RemiBoardColumns.place(Array(ordered.indices), columnCount: columnLayout.columnCount)
+        return LazyVStack(spacing: RemiTheme.Spacing.s) {
+            boardHeader(isEmpty: ordered.isEmpty)
+            if !ordered.isEmpty {
+                RemiBoardColumnsLayout(
+                    columns: columns,
+                    columnWidth: columnLayout.cardWidth,
+                    spacing: RemiBoardColumns.spacing
+                ) {
                     ForEach(ordered) { session in
                         tile(session, order: order, liveOrder: liveOrder, reader: reader)
                             .id(RemiBoardOrder.key(for: session))
                     }
                 }
+                .frame(width: columnLayout.groupWidth, alignment: .top)
+                .frame(maxWidth: .infinity)
             }
-            .padding(RemiTheme.Spacing.m)
-            .remiReadableScrollColumn()
-            .animation(RemiTheme.Motion.standard, value: order)
         }
-        .scrollDismissesKeyboard(.interactively)
+        .padding(.vertical, RemiTheme.Spacing.m)
+        .padding(.horizontal, RemiBoardColumns.margin)
+        .animation(RemiTheme.Motion.standard, value: order)
     }
 
     /// Moves the cursor to the next live tile: scrolls it into view first, because a lazy stack
@@ -361,33 +426,85 @@ private struct GraceWindow: Hashable {
     let tick: Int
 }
 
-#Preview("Board") {
-    NavigationStack {
-        PhoneBoardScreen(
-            sessions: RemiPreviewData.sessions,
-            machines: RemiPreviewData.machines,
-            loadedMachines: [],
-            questions: [],
-            errorMessage: nil,
-            noticeMessage: nil,
-            transcript: { _ in
-                [
-                    .user(id: "u", text: "Run the suite and fix whatever fails."),
-                    .agent(id: "a", text: "All tests pass. Opening the pull request next."),
-                ]
-            },
-            onAnswer: { _, _, _, _ in },
-            onSubmit: { _, _, _, _ in },
-            onCancel: { _, _, _ in },
-            onOpen: { _ in },
-            onSend: { _, _ in true },
-            canCreateSession: true,
-            onNewSession: {},
-            onPresentPairing: {},
-            onPresentPreferences: {},
-            onManageMachines: {},
-            onDismissError: {},
-            onDismissNotice: {}
+@MainActor private func boardPreviewScreen() -> PhoneBoardScreen {
+    let templates = RemiPreviewData.sessions.filter(\.isLive)
+    let sessions = (0..<8).map { index in
+        let template = templates[index % templates.count]
+        return RemiSessionSummary(
+            id: "board-preview-\(index + 1)",
+            machineID: template.machineID,
+            machineIdentityID: template.machineIdentityID,
+            machineName: template.machineName,
+            name: "\(template.name) \(index + 1)",
+            harness: template.harness,
+            project: template.project,
+            projectPath: template.projectPath,
+            lastActivity: template.lastActivity,
+            status: template.status,
+            lastMessage: template.lastMessage,
+            openQuestionCount: template.openQuestionCount,
+            isLive: true,
+            canTerminate: template.canTerminate
         )
     }
+    return PhoneBoardScreen(
+        sessions: sessions,
+        machines: RemiPreviewData.machines,
+        loadedMachines: [],
+        questions: [],
+        errorMessage: nil,
+        noticeMessage: nil,
+        transcript: { _ in
+            [
+                .user(id: "u", text: "Run the suite and fix whatever fails."),
+                .agent(id: "a", text: "All tests pass. Opening the pull request next."),
+            ]
+        },
+        onAnswer: { _, _, _, _ in },
+        onSubmit: { _, _, _, _ in },
+        onCancel: { _, _, _ in },
+        onOpen: { _ in },
+        onSend: { _, _ in true },
+        canCreateSession: true,
+        onNewSession: {},
+        onPresentPairing: {},
+        onPresentPreferences: {},
+        onManageMachines: {},
+        onDismissError: {},
+        onDismissNotice: {}
+    )
+}
+
+#Preview("Board") {
+    NavigationStack {
+        boardPreviewScreen()
+    }
+}
+
+#Preview("Board, 466 pt pane") {
+    NavigationStack {
+        boardPreviewScreen()
+    }
+    .frame(width: 466)
+}
+
+#Preview("Board, 744 pt pane") {
+    NavigationStack {
+        boardPreviewScreen()
+    }
+    .frame(width: 744)
+}
+
+#Preview("Board, 1032 pt pane") {
+    NavigationStack {
+        boardPreviewScreen()
+    }
+    .frame(width: 1_032)
+}
+
+#Preview("Board, 1376 pt pane") {
+    NavigationStack {
+        boardPreviewScreen()
+    }
+    .frame(width: 1_376)
 }
