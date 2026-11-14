@@ -27,7 +27,7 @@ enum PhoneShellSheet: Identifiable {
 
 private struct PhoneQuestionNotificationInput: Equatable {
     let currentQuestionIDsBySession: [String: Set<String>]
-    let snapshotsBySession: [String: RemiQuestionNotificationPolicy.ConnectionSnapshot]
+    let snapshotsBySession: [String: MachineQuestionConnectionSnapshot]
 }
 
 struct PhoneLiveRootView: View {
@@ -169,8 +169,8 @@ struct PhoneLiveRootView: View {
                 currentQuestionIDsBySession: input.currentQuestionIDsBySession,
                 snapshotsBySession: input.snapshotsBySession
             )
-            PhoneNotificationCoordinator.remove(ids: Array(update.questionIDsToRemove))
-            for id in update.questionIDsToPost {
+            PhoneNotificationCoordinator.remove(ids: Array(update.identitiesToRemove))
+            for id in update.identitiesToPost {
                 guard let question = allQuestions.first(where: { $0.id == id }),
                       let destination = destination(forQuestionIdentity: id)
                 else { continue }
@@ -185,7 +185,7 @@ struct PhoneLiveRootView: View {
                     )
                 }
             }
-            if !update.questionIDsToPost.isEmpty {
+            if !update.identitiesToPost.isEmpty {
                 questionFeedbackTrigger += 1
             }
             questionNotificationPolicyState = update.state
@@ -641,23 +641,17 @@ struct PhoneLiveRootView: View {
 
     private var questionNotificationInput: PhoneQuestionNotificationInput {
         var currentQuestionIDsBySession: [String: Set<String>] = [:]
-        var snapshotsBySession: [String: RemiQuestionNotificationPolicy.ConnectionSnapshot] = [:]
+        var snapshotsBySession: [String: MachineQuestionConnectionSnapshot] = [:]
 
         for machine in store.machines {
-            let sessionIDs = Set(machine.questions.map(\.sessionId))
-                .union(machine.questionConnectionGenerations.keys)
-                .union(machine.questionConnectionSnapshots.keys)
+            let sessionIDs = Set(machine.activeSessions.map(\.sessionId))
+                .union(machine.questions.map(\.sessionId))
             for sessionID in sessionIDs {
                 let session = questionNotificationSession(machineID: machine.id, sessionID: sessionID)
                 currentQuestionIDsBySession[session] = []
-                guard let connectionGeneration = machine.questionConnectionGenerations[sessionID],
-                      let snapshot = machine.questionConnectionSnapshots[sessionID],
-                      snapshot.generation == connectionGeneration
-                else { continue }
-                snapshotsBySession[session] = .init(
-                    generation: snapshot.generation,
-                    questionIDs: snapshot.questionIDs
-                )
+                if let snapshot = machine.currentQuestionSnapshot(for: sessionID) {
+                    snapshotsBySession[session] = snapshot
+                }
             }
 
             for message in machine.questions {

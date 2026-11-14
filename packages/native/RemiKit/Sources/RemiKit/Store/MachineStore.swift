@@ -139,17 +139,18 @@ public enum MachineConnectionStatus: Sendable, Equatable {
     case unavailable(reason: String?)
 }
 
-/// The first authoritative pending-question set received on one session connection.
-/// Later question snapshots in the same connection reflect live changes and must not
-/// move the local-notification baseline.
+/// The first authoritative pending-question set received on an attach-confirmed session connection.
+/// Later question snapshots in the same connection reflect live changes and do not move the baseline.
 public struct MachineQuestionConnectionSnapshot: Sendable, Equatable {
+    public let endpointID: String
     public let generation: UUID
     public let questionIDs: Set<String>
+}
 
-    public init(generation: UUID, questionIDs: Set<String>) {
-        self.generation = generation
-        self.questionIDs = questionIDs
-    }
+/// Connection endpoint state needed to reject snapshots from retired sockets.
+struct MachineQuestionConnectionGeneration: Sendable, Equatable {
+    let generation: UUID
+    let hasAttachState: Bool
 }
 
 public struct MachineState: Sendable, Equatable, Identifiable {
@@ -201,10 +202,10 @@ public struct MachineState: Sendable, Equatable, Identifiable {
     public var hasLoadedSessions: Bool
     /// Questions are unique by (`sessionId`, `question.id`); different sessions may reuse an id (#1732).
     public var questions: [QuestionMessage]
-    /// Active connection generation for each question-bearing session.
-    public var questionConnectionGenerations: [String: UUID]
-    /// First authoritative pending set for each session connection generation.
-    public var questionConnectionSnapshots: [String: MachineQuestionConnectionSnapshot]
+    /// Active generation for every socket endpoint, including endpoints with no questions yet.
+    var questionConnectionGenerations: [String: MachineQuestionConnectionGeneration]
+    /// First attach-confirmed pending set for each session connection generation.
+    var questionConnectionSnapshots: [String: MachineQuestionConnectionSnapshot]
     public var capabilities: [String]
     /// The protocol version and capabilities of the latest `hello_ack` from this machine's active
     /// route (#1639). Nil until one arrives; decide with `HubSupport.check`, never by daemon version.
@@ -215,6 +216,18 @@ public struct MachineState: Sendable, Equatable, Identifiable {
     /// Looks up by both session and question id because sessions may reuse an id (#1732).
     public func question(sessionID: String, questionID: String) -> QuestionMessage? {
         questionIndex(sessionID: sessionID, questionID: questionID).map { questions[$0] }
+    }
+
+    /// Returns an attach-time snapshot only while its originating socket generation is current
+    /// and that generation's hello_ack confirmed a real session attach. Query and legacy sessions
+    /// without attach state fail closed for local question notifications.
+    public func currentQuestionSnapshot(for sessionID: String) -> MachineQuestionConnectionSnapshot? {
+        guard let snapshot = questionConnectionSnapshots[sessionID],
+              let connection = questionConnectionGenerations[snapshot.endpointID],
+              connection.generation == snapshot.generation,
+              connection.hasAttachState
+        else { return nil }
+        return snapshot
     }
 
     func questionIndex(sessionID: String, questionID: String) -> Int? {
@@ -2756,6 +2769,13 @@ public final class MachineStore {
         guard connectionGenerations[endpoint] == generation, let parent = parentByConnection[endpoint],
               let index = machineIndex(containing: parent)
         else { return }
+        if case .connected = state {
+            // A new socket generation invalidates the previous attach snapshot before child-state handling can return.
+            machines[index].questionConnectionGenerations[endpoint.id] = .init(
+                generation: generation,
+                hasAttachState: false
+            )
+        }
         if case .connected = state {} else {
             panesConnectionLost(endpoint)
             for key in outgoingByGroup.keys {
@@ -2832,15 +2852,7 @@ public final class MachineStore {
                 recoveryRequestedLifetimes.insert(machines[index].pairingLifetime)
                 recovery().start(); recovery().trigger(newEpisode: false)
             }
-        case .connected(let sessionID):
-            var connectedSessionIDs = Set<String>()
-            if let sessionID { connectedSessionIDs.insert(sessionID) }
-            for (key, route) in routeBySession where route == endpoint {
-                connectedSessionIDs.insert(key.sessionID)
-            }
-            for sessionID in connectedSessionIDs {
-                machines[index].questionConnectionGenerations[sessionID] = generation
-            }
+        case .connected:
             routeDidConnect(endpoint, machineIndex: index)
             machines[index].status = .connected
             if !machines[index].needsRouteRecovery { machines[index].recoveryProgress = nil }
@@ -2894,6 +2906,14 @@ public final class MachineStore {
                   pending.sessionId == result.sessionId, pending.questionId == result.questionId else { return }
             finishAnswer(result.requestId, outcome: result.outcome)
         case .hello(let acknowledgment, let authority):
+            if let connection = machines[index].questionConnectionGenerations[endpoint.id],
+               connection.generation == generation {
+                // Query and legacy acks lack attachState, so a later live snapshot cannot seed a baseline.
+                machines[index].questionConnectionGenerations[endpoint.id] = .init(
+                    generation: generation,
+                    hasAttachState: acknowledgment.attachState == "attached" || acknowledgment.attachState == "queued"
+                )
+            }
             outgoingAuthenticatedAuthorities[machines[index].pairingLifetime] = authority
             _ = ensureOutgoingScope(for: machines[index])
             if endpoint == parent { connectedRoutes.insert(endpoint) }
@@ -3010,13 +3030,13 @@ public final class MachineStore {
             resolveQuestion(message, machineIndex: index, machineID: machines[index].id)
         case .questionSnapshot(let snapshot):
             let previousSnapshot = machines[index].questionConnectionSnapshots[snapshot.sessionId]
-            if previousSnapshot?.generation != generation {
+            if previousSnapshot?.generation != generation || previousSnapshot?.endpointID != endpoint.id {
                 machines[index].questionConnectionSnapshots[snapshot.sessionId] = MachineQuestionConnectionSnapshot(
+                    endpointID: endpoint.id,
                     generation: generation,
                     questionIDs: Set(snapshot.questionIds)
                 )
             }
-            machines[index].questionConnectionGenerations[snapshot.sessionId] = generation
             routeBySession[MachineSessionKey(machineID: machines[index].id, sessionID: snapshot.sessionId)] = endpoint
             machines[index] = Self.reconcilingQuestionSnapshot(
                 in: machines[index],
@@ -3086,13 +3106,21 @@ public final class MachineStore {
                     }
                 }
                 let sessionId = killedKey.sessionID
+                let questionEndpointID = machines[index].questionConnectionSnapshots[sessionId]?.endpointID
+                    ?? routeBySession[killedKey]?.id
                 machines[index].sessions.removeAll { $0.sessionId == sessionId }
                 machines[index].sessionActivity[sessionId] = nil
                 machines[index].questions.removeAll { $0.sessionId == sessionId }
+                machines[index].questionConnectionSnapshots.removeValue(forKey: sessionId)
                 transcriptsBySession[killedKey] = nil
                 transcriptRouteGenerations[killedKey] = nil
                 sessionViewsBySession[killedKey] = nil
                 routeBySession[killedKey] = nil
+                if let questionEndpointID,
+                   !machines[index].questionConnectionSnapshots.values.contains(where: { $0.endpointID == questionEndpointID }),
+                   !routeBySession.values.contains(where: { $0.id == questionEndpointID }) {
+                    machines[index].questionConnectionGenerations.removeValue(forKey: questionEndpointID)
+                }
                 terminalViews[killedKey] = nil
                 fileDownloads[killedKey] = nil
                 requestSessions(from: parent)

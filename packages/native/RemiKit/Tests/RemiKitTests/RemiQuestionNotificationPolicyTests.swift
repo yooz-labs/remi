@@ -1,12 +1,14 @@
 import Foundation
 import Testing
+@testable import RemiKit
 @testable import RemiUI
 
 @Suite struct RemiQuestionNotificationPolicyTests {
     private struct Case {
+        let name: String
         let state: RemiQuestionNotificationPolicy.State
         let current: [String: Set<String>]
-        let snapshots: [String: RemiQuestionNotificationPolicy.ConnectionSnapshot]
+        let snapshots: [String: MachineQuestionConnectionSnapshot]
         let expectedToPost: Set<String>
         let expectedToRemove: Set<String>
         let expectedState: RemiQuestionNotificationPolicy.State
@@ -14,9 +16,9 @@ import Testing
 
     @Test func literalTransitionTable() {
         let session = "machine|session"
+        let anotherMachineSession = "another-machine|session"
         let firstConnection = UUID(uuidString: "00000000-0000-4000-8000-000000000001")!
         let secondConnection = UUID(uuidString: "00000000-0000-4000-8000-000000000002")!
-        let thirdConnection = UUID(uuidString: "00000000-0000-4000-8000-000000000003")!
         let questions = Set(["q1", "q2", "q3"])
         let questionsAndNew = Set(["q1", "q2", "q3", "q4"])
         let knownQuestions = RemiQuestionNotificationPolicy.State(
@@ -27,14 +29,10 @@ import Testing
             knownQuestionIDsBySession: [session: questionsAndNew],
             connectionGenerationBySession: [session: firstConnection]
         )
-        let reconnectSnapshotState = RemiQuestionNotificationPolicy.State(
-            knownQuestionIDsBySession: [session: questionsAndNew],
-            connectionGenerationBySession: [session: thirdConnection]
-        )
 
         let table = [
-            // A cold launch's empty first view does not establish a question baseline.
             Case(
+                name: "empty first list does not establish a baseline",
                 state: .init(),
                 current: [session: []],
                 snapshots: [:],
@@ -42,93 +40,134 @@ import Testing
                 expectedToRemove: [],
                 expectedState: .init()
             ),
-            // The first attach snapshot classifies all three replayed IDs as already pending.
             Case(
+                name: "questions without an attach snapshot stay held and unknown",
                 state: .init(),
                 current: [session: questions],
-                snapshots: [session: .init(generation: firstConnection, questionIDs: questions)],
+                snapshots: [:],
+                expectedToPost: [],
+                expectedToRemove: [],
+                expectedState: .init()
+            ),
+            Case(
+                name: "attach snapshot suppresses the held pending batch",
+                state: .init(),
+                current: [session: questions],
+                snapshots: [session: snapshot(endpoint: "child", generation: firstConnection, questions: questions)],
                 expectedToPost: [],
                 expectedToRemove: [],
                 expectedState: knownQuestions
             ),
-            // An empty attach snapshot means all three subsequently loaded IDs are new.
             Case(
+                name: "empty attach snapshot allows all three later questions",
                 state: .init(),
                 current: [session: questions],
-                snapshots: [session: .init(generation: secondConnection, questionIDs: [])],
+                snapshots: [session: snapshot(endpoint: "child", generation: firstConnection, questions: [])],
                 expectedToPost: [
                     "machine|session|q1", "machine|session|q2", "machine|session|q3",
                 ],
                 expectedToRemove: [],
                 expectedState: RemiQuestionNotificationPolicy.State(
                     knownQuestionIDsBySession: [session: questions],
+                    connectionGenerationBySession: [session: firstConnection]
+                )
+            ),
+            Case(
+                name: "one question after the snapshot posts once",
+                state: RemiQuestionNotificationPolicy.State(
+                    knownQuestionIDsBySession: [session: ["q1", "q2"]],
+                    connectionGenerationBySession: [session: firstConnection]
+                ),
+                current: [session: ["q1", "q2", "q3"]],
+                snapshots: [session: snapshot(endpoint: "child", generation: firstConnection, questions: ["q1", "q2"])],
+                expectedToPost: ["machine|session|q3"],
+                expectedToRemove: [],
+                expectedState: RemiQuestionNotificationPolicy.State(
+                    knownQuestionIDsBySession: [session: ["q1", "q2", "q3"]],
+                    connectionGenerationBySession: [session: firstConnection]
+                )
+            ),
+            Case(
+                name: "a repeated question set does not post twice",
+                state: knownQuestionsAndNew,
+                current: [session: questionsAndNew],
+                snapshots: [session: snapshot(endpoint: "child", generation: firstConnection, questions: questions)],
+                expectedToPost: [],
+                expectedToRemove: [],
+                expectedState: knownQuestionsAndNew
+            ),
+            Case(
+                name: "reconnect snapshot suppresses an ID not known before reconnect",
+                state: RemiQuestionNotificationPolicy.State(
+                    knownQuestionIDsBySession: [session: ["q1"]],
+                    connectionGenerationBySession: [session: firstConnection]
+                ),
+                current: [session: ["q1", "q2"]],
+                snapshots: [session: snapshot(endpoint: "child", generation: secondConnection, questions: ["q1", "q2"])],
+                expectedToPost: [],
+                expectedToRemove: [],
+                expectedState: RemiQuestionNotificationPolicy.State(
+                    knownQuestionIDsBySession: [session: ["q1", "q2"]],
                     connectionGenerationBySession: [session: secondConnection]
                 )
             ),
-            // Seeing the same IDs a second time does not post them again.
             Case(
+                name: "reconnect removes missing IDs and posts an ID outside its snapshot",
+                state: RemiQuestionNotificationPolicy.State(
+                    knownQuestionIDsBySession: [session: ["q1", "q2"]],
+                    connectionGenerationBySession: [session: firstConnection]
+                ),
+                current: [session: ["q2", "q3"]],
+                snapshots: [session: snapshot(endpoint: "child", generation: secondConnection, questions: ["q2"])],
+                expectedToPost: ["machine|session|q3"],
+                expectedToRemove: ["machine|session|q1"],
+                expectedState: RemiQuestionNotificationPolicy.State(
+                    knownQuestionIDsBySession: [session: ["q2", "q3"]],
+                    connectionGenerationBySession: [session: secondConnection]
+                )
+            ),
+            Case(
+                name: "same session and question IDs stay separate by machine",
+                state: .init(),
+                current: [session: ["same"], anotherMachineSession: ["same"]],
+                snapshots: [
+                    session: snapshot(endpoint: "child-a", generation: firstConnection, questions: ["same"]),
+                    anotherMachineSession: snapshot(endpoint: "child-b", generation: secondConnection, questions: []),
+                ],
+                expectedToPost: ["another-machine|session|same"],
+                expectedToRemove: [],
+                expectedState: RemiQuestionNotificationPolicy.State(
+                    knownQuestionIDsBySession: [session: ["same"], anotherMachineSession: ["same"]],
+                    connectionGenerationBySession: [session: firstConnection, anotherMachineSession: secondConnection]
+                )
+            ),
+            Case(
+                name: "vanished session clears its known IDs and generation",
+                state: RemiQuestionNotificationPolicy.State(
+                    knownQuestionIDsBySession: [session: ["q1"], anotherMachineSession: ["q2"]],
+                    connectionGenerationBySession: [session: firstConnection, anotherMachineSession: secondConnection]
+                ),
+                current: [anotherMachineSession: ["q2"]],
+                snapshots: [anotherMachineSession: snapshot(endpoint: "child-b", generation: secondConnection, questions: ["q2"])],
+                expectedToPost: [],
+                expectedToRemove: ["machine|session|q1"],
+                expectedState: RemiQuestionNotificationPolicy.State(
+                    knownQuestionIDsBySession: [anotherMachineSession: ["q2"]],
+                    connectionGenerationBySession: [anotherMachineSession: secondConnection]
+                )
+            ),
+            Case(
+                name: "empty active session removes every notification",
                 state: knownQuestions,
-                current: [session: questions],
-                snapshots: [session: .init(generation: firstConnection, questionIDs: questions)],
-                expectedToPost: [],
-                expectedToRemove: [],
-                expectedState: knownQuestions
-            ),
-            // A single question first appearing while the connection is ready posts once.
-            Case(
-                state: knownQuestions,
-                current: [session: questionsAndNew],
-                snapshots: [session: .init(generation: firstConnection, questionIDs: questions)],
-                expectedToPost: ["machine|session|q4"],
-                expectedToRemove: [],
-                expectedState: knownQuestionsAndNew
-            ),
-            // Re-reading the same set is not a second arrival.
-            Case(
-                state: knownQuestionsAndNew,
-                current: [session: questionsAndNew],
-                snapshots: [session: .init(generation: firstConnection, questionIDs: questions)],
-                expectedToPost: [],
-                expectedToRemove: [],
-                expectedState: knownQuestionsAndNew
-            ),
-            // A removed question clears its delivered local notification.
-            Case(
-                state: knownQuestionsAndNew,
-                current: [session: questions],
-                snapshots: [session: .init(generation: firstConnection, questionIDs: questions)],
-                expectedToPost: [],
-                expectedToRemove: ["machine|session|q4"],
-                expectedState: knownQuestions
-            ),
-            // Re-adding a removed ID is a new arrival in the same connection.
-            Case(
-                state: knownQuestions,
-                current: [session: questionsAndNew],
-                snapshots: [session: .init(generation: firstConnection, questionIDs: questions)],
-                expectedToPost: ["machine|session|q4"],
-                expectedToRemove: [],
-                expectedState: knownQuestionsAndNew
-            ),
-            // A new connection snapshot containing the same IDs suppresses reconnect replay.
-            Case(
-                state: knownQuestionsAndNew,
-                current: [session: questionsAndNew],
-                snapshots: [session: .init(generation: thirdConnection, questionIDs: questionsAndNew)],
-                expectedToPost: [],
-                expectedToRemove: [],
-                expectedState: reconnectSnapshotState
-            ),
-            // An empty current set removes every notification and keeps the connection ready.
-            Case(
-                state: reconnectSnapshotState,
                 current: [session: []],
-                snapshots: [session: .init(generation: thirdConnection, questionIDs: questionsAndNew)],
+                snapshots: [session: snapshot(endpoint: "child", generation: firstConnection, questions: questions)],
                 expectedToPost: [],
                 expectedToRemove: [
-                    "machine|session|q1", "machine|session|q2", "machine|session|q3", "machine|session|q4",
+                    "machine|session|q1", "machine|session|q2", "machine|session|q3",
                 ],
-                expectedState: .init(connectionGenerationBySession: [session: thirdConnection])
+                expectedState: RemiQuestionNotificationPolicy.State(
+                    connectionGenerationBySession: [session: firstConnection]
+                )
             ),
         ]
 
@@ -138,34 +177,69 @@ import Testing
                 currentQuestionIDsBySession: row.current,
                 snapshotsBySession: row.snapshots
             )
-            #expect(update.questionIDsToPost == row.expectedToPost)
-            #expect(update.questionIDsToRemove == row.expectedToRemove)
-            #expect(update.state == row.expectedState)
+            #expect(update.identitiesToPost == row.expectedToPost, "\(row.name)")
+            #expect(update.identitiesToRemove == row.expectedToRemove, "\(row.name)")
+            #expect(update.state == row.expectedState, "\(row.name)")
         }
     }
 
-    @Test func coldLaunchDoesNotTurnAnEmptyFirstListIntoNotifications() {
+    @Test func removedQuestionCanBeReaddedUsingEachReturnedState() {
         let session = "machine|session"
-        let generation = UUID(uuidString: "00000000-0000-4000-8000-000000000004")!
-        let pending = Set(["q1", "q2", "q3"])
+        let generation = UUID(uuidString: "00000000-0000-4000-8000-000000000010")!
+        let snapshots = [session: snapshot(endpoint: "child", generation: generation, questions: [])]
 
-        let emptyFirstList = RemiQuestionNotificationPolicy.update(
+        let added = RemiQuestionNotificationPolicy.update(
             state: .init(),
-            currentQuestionIDsBySession: [session: []],
-            snapshotsBySession: [:]
+            currentQuestionIDsBySession: [session: ["reused"]],
+            snapshotsBySession: snapshots
         )
-        #expect(emptyFirstList.questionIDsToPost.isEmpty)
+        #expect(added.identitiesToPost == ["machine|session|reused"], "first arrival posts")
 
-        let pendingReplay = RemiQuestionNotificationPolicy.update(
-            state: emptyFirstList.state,
-            currentQuestionIDsBySession: [session: pending],
-            snapshotsBySession: [session: .init(generation: generation, questionIDs: pending)]
+        let removed = RemiQuestionNotificationPolicy.update(
+            state: added.state,
+            currentQuestionIDsBySession: [session: []],
+            snapshotsBySession: snapshots
         )
-        #expect(pendingReplay.questionIDsToPost.isEmpty)
-        #expect(pendingReplay.state.knownQuestionIDsBySession == [session: pending])
+        #expect(removed.identitiesToRemove == ["machine|session|reused"], "removal clears its notification")
+
+        let readded = RemiQuestionNotificationPolicy.update(
+            state: removed.state,
+            currentQuestionIDsBySession: [session: ["reused"]],
+            snapshotsBySession: snapshots
+        )
+        #expect(readded.identitiesToPost == ["machine|session|reused"], "re-add is a new arrival")
     }
 
-    @Test func phoneRootUsesThePolicyInsteadOfAnInlineBaseline() throws {
+    @Test func heldQuestionsRemainUnknownUntilAnAttachSnapshotArrives() {
+        let session = "machine|session"
+        let generation = UUID(uuidString: "00000000-0000-4000-8000-000000000011")!
+        let pending = Set(["q1", "q2", "q3"])
+        let questions = RemiQuestionNotificationPolicy.update(
+            state: .init(),
+            currentQuestionIDsBySession: [session: pending],
+            snapshotsBySession: [:]
+        )
+        #expect(questions.identitiesToPost.isEmpty, "questions without a snapshot stay held")
+        #expect(questions.state.knownQuestionIDsBySession.isEmpty, "held questions do not become known")
+
+        let snapshot = RemiQuestionNotificationPolicy.update(
+            state: questions.state,
+            currentQuestionIDsBySession: [session: pending],
+            snapshotsBySession: [session: snapshot(endpoint: "child", generation: generation, questions: pending)]
+        )
+        #expect(snapshot.identitiesToPost.isEmpty, "the attach snapshot suppresses the pending batch")
+        #expect(snapshot.state.knownQuestionIDsBySession == [session: pending], "the snapshot establishes known IDs")
+    }
+
+    @Test func compositeIdentityMatchesTheQuestionCardIdentity() {
+        #expect(
+            RemiQuestionCardModel.identity(machineID: "machine", sessionID: "session", questionID: "q1")
+                == "machine|session|q1",
+            "notification identities must keep the view's composite format"
+        )
+    }
+
+    @Test func phoneRootPassesOnlyCurrentStoreSnapshotsAndUsesPolicyIdentities() throws {
         let nativeRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -175,43 +249,31 @@ import Testing
             contentsOf: nativeRoot.appendingPathComponent("iPhone/PhoneLiveRootView.swift"),
             encoding: .utf8
         )
+        let input = try sourceSlice(
+            root,
+            from: "private var questionNotificationInput:",
+            to: "private func questionNotificationSession"
+        )
         let observer = try sourceSlice(
             root,
             from: ".onChange(of: questionNotificationInput",
             to: ".onChange(of: notificationRouter.destination"
         )
 
+        #expect(input.contains("machine.currentQuestionSnapshot(for: sessionID)"))
         #expect(observer.contains("RemiQuestionNotificationPolicy.update("))
-        #expect(!observer.contains("knownQuestionIDs = newValue"))
+        #expect(observer.contains("update.identitiesToPost"))
+        #expect(observer.contains("update.identitiesToRemove"))
+        #expect(observer.contains("questionNotificationPolicyState = update.state"))
         #expect(!observer.contains("notificationBaselineEstablished"))
     }
 
-    @Test func machineStoreKeepsTheFirstSnapshotForEachConnection() throws {
-        let nativeRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let store = try String(
-            contentsOf: nativeRoot.appendingPathComponent("RemiKit/Sources/RemiKit/Store/MachineStore.swift"),
-            encoding: .utf8
-        )
-        let snapshotHandler = try sourceSlice(
-            store,
-            from: "case .questionSnapshot(let snapshot):",
-            to: "case .transcript(let message):"
-        )
-
-        #expect(snapshotHandler.contains("questionConnectionSnapshots"))
-        #expect(snapshotHandler.contains("previousSnapshot?.generation != generation"))
-        #expect(snapshotHandler.contains("questionIDs: Set(snapshot.questionIds)"))
-
-        let connectionHandler = try sourceSlice(
-            store,
-            from: "case .connected(let sessionID):",
-            to: "case .awaitingLocalApproval(let fingerprint):"
-        )
-        #expect(connectionHandler.contains("questionConnectionGenerations[sessionID] = generation"))
+    private func snapshot(
+        endpoint: String,
+        generation: UUID,
+        questions: Set<String>
+    ) -> MachineQuestionConnectionSnapshot {
+        MachineQuestionConnectionSnapshot(endpointID: endpoint, generation: generation, questionIDs: questions)
     }
 
     private func sourceSlice(_ source: String, from startMarker: String, to endMarker: String) throws -> String {
