@@ -139,6 +139,19 @@ public enum MachineConnectionStatus: Sendable, Equatable {
     case unavailable(reason: String?)
 }
 
+/// The first authoritative pending-question set received on one session connection.
+/// Later question snapshots in the same connection reflect live changes and must not
+/// move the local-notification baseline.
+public struct MachineQuestionConnectionSnapshot: Sendable, Equatable {
+    public let generation: UUID
+    public let questionIDs: Set<String>
+
+    public init(generation: UUID, questionIDs: Set<String>) {
+        self.generation = generation
+        self.questionIDs = questionIDs
+    }
+}
+
 public struct MachineState: Sendable, Equatable, Identifiable {
     /// Stable local profile identity. Authenticated wire identity remains `machineID`,
     /// so navigation keys do not change when the active route or descriptor changes.
@@ -188,6 +201,10 @@ public struct MachineState: Sendable, Equatable, Identifiable {
     public var hasLoadedSessions: Bool
     /// Questions are unique by (`sessionId`, `question.id`); different sessions may reuse an id (#1732).
     public var questions: [QuestionMessage]
+    /// Active connection generation for each question-bearing session.
+    public var questionConnectionGenerations: [String: UUID]
+    /// First authoritative pending set for each session connection generation.
+    public var questionConnectionSnapshots: [String: MachineQuestionConnectionSnapshot]
     public var capabilities: [String]
     /// The protocol version and capabilities of the latest `hello_ack` from this machine's active
     /// route (#1639). Nil until one arrives; decide with `HubSupport.check`, never by daemon version.
@@ -215,6 +232,8 @@ public struct MachineState: Sendable, Equatable, Identifiable {
         sessions = []
         hasLoadedSessions = false
         questions = []
+        questionConnectionGenerations = [:]
+        questionConnectionSnapshots = [:]
         capabilities = []
         harnesses = ["claude"]
     }
@@ -2813,7 +2832,15 @@ public final class MachineStore {
                 recoveryRequestedLifetimes.insert(machines[index].pairingLifetime)
                 recovery().start(); recovery().trigger(newEpisode: false)
             }
-        case .connected:
+        case .connected(let sessionID):
+            var connectedSessionIDs = Set<String>()
+            if let sessionID { connectedSessionIDs.insert(sessionID) }
+            for (key, route) in routeBySession where route == endpoint {
+                connectedSessionIDs.insert(key.sessionID)
+            }
+            for sessionID in connectedSessionIDs {
+                machines[index].questionConnectionGenerations[sessionID] = generation
+            }
             routeDidConnect(endpoint, machineIndex: index)
             machines[index].status = .connected
             if !machines[index].needsRouteRecovery { machines[index].recoveryProgress = nil }
@@ -2982,6 +3009,15 @@ public final class MachineStore {
         case .questionResolved(let message):
             resolveQuestion(message, machineIndex: index, machineID: machines[index].id)
         case .questionSnapshot(let snapshot):
+            let previousSnapshot = machines[index].questionConnectionSnapshots[snapshot.sessionId]
+            if previousSnapshot?.generation != generation {
+                machines[index].questionConnectionSnapshots[snapshot.sessionId] = MachineQuestionConnectionSnapshot(
+                    generation: generation,
+                    questionIDs: Set(snapshot.questionIds)
+                )
+            }
+            machines[index].questionConnectionGenerations[snapshot.sessionId] = generation
+            routeBySession[MachineSessionKey(machineID: machines[index].id, sessionID: snapshot.sessionId)] = endpoint
             machines[index] = Self.reconcilingQuestionSnapshot(
                 in: machines[index],
                 sessionId: snapshot.sessionId,
