@@ -459,7 +459,7 @@ export async function createClaudeSession(
           process: (text) => {
             // #1773: real PTY output is an activity heartbeat even when the
             // parser has no status or question update to emit for this chunk.
-            messageApi.noteWorkEvent?.({ type: 'activity' });
+            messageApi.noteWorkEvent({ type: 'activity' });
             outputProcessor.process(text);
           },
           flush: () => outputProcessor.flush(),

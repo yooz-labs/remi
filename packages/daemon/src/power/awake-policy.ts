@@ -1,13 +1,9 @@
 import type { AgentStatus } from '@remi/shared';
 import type { SessionWorkEvent } from '../api/message-api.ts';
+import type { AwakeConfig } from '../config/config.ts';
 
-export interface AwakePolicyConfig {
-  readonly level1: boolean;
-  readonly question_hold_minutes: number;
-  readonly idle_grace_seconds: number;
-  readonly stuck_busy_minutes: number;
-  readonly ttl_minutes: number;
-}
+/** The policy reads the `[awake]` table as loaded; a type-only import keeps it pure. */
+export type AwakePolicyConfig = AwakeConfig;
 
 export type AwakePolicyEvent =
   | SessionWorkEvent

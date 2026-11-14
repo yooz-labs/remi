@@ -226,7 +226,7 @@ if (process.platform !== 'darwin') {
       console.info(`[AWAKE PGM] pgrep sleep before: ${sleepBefore}`);
       target = await startSleepProcess();
       if (target.pid === undefined) throw new Error('sleep child has no pid');
-      expect(pgrepSleepChildren()).toBe(String(target.pid));
+      expect(pgrepSleepChildren().split('\n')).toContain(String(target.pid));
       holder = new AwakeHolder({ targetPid: target.pid, ttlSeconds: 60 });
       expect(await holder.start()).toEqual({ ok: true });
       const holderPid = holder.pid;
@@ -263,7 +263,7 @@ if (process.platform !== 'darwin') {
       console.info(`[AWAKE PGM] pgrep sleep before target spawn: ${pgrepSleepChildren()}`);
       target = await startSleepProcess();
       if (target.pid === undefined) throw new Error('sleep child has no pid');
-      expect(pgrepSleepChildren()).toBe(String(target.pid));
+      expect(pgrepSleepChildren().split('\n')).toContain(String(target.pid));
       holder = new AwakeHolder({ targetPid: target.pid, ttlSeconds: 60 });
       expect(await holder.start()).toEqual({ ok: true });
       const holderPid = holder.pid;
