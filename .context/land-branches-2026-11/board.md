@@ -91,10 +91,11 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | P02b | Board columns in PhoneBoardScreen (slice 2a, #1745) |  |  |  |  | done |  |  | 2026-11-13T21:32-08:00 |  | merged 507cbd25; DV r12 green |
 | P02c | Sidebar beside Board only from 1000 pt windows (slice 2b, #1745) |  |  |  |  | done |  |  | 2026-11-13T22:47-08:00 |  | merged bd8d1964 |
 | P03 | Per-card density and content-height cards at 2+ columns (slice 3, #1745, #1759) |  |  |  |  | done |  |  | 2026-11-13T22:59-08:00 |  | merged 8364bb35; DV r13 green |
-| P05a | Corner resize handles stepping card size on iPad (issue 1763, part 1) |  |  |  |  | done |  |  | 2026-11-14T00:46-08:00 |  | merged 440bb48b (bump 9a9a0056); DV r14 running (covers 1764 and 1765) |
-| F1634 | Harden ImageIngressSocketTests peer startup wait (#1634 part 1) |  |  |  |  | done |  |  | 2026-11-14T00:23-08:00 |  | merged 611e3382 (bump 5bc3eef5); DV with the next merge |
+| P05a | Corner resize handles stepping card size on iPad (issue 1763, part 1) |  |  |  |  | done |  |  | 2026-11-14T00:46-08:00 |  | merged 440bb48b; DV r14 green |
+| F1634 | Harden ImageIngressSocketTests peer startup wait (#1634 part 1) |  |  |  |  | done |  |  | 2026-11-14T00:23-08:00 |  | merged 611e3382; DV r14 green |
 | P05b | Card column span via the corner handle (issue 1763, part 2) |  |  |  |  | active |  |  | 2026-11-14T02:32-08:00 |  | Luna P05b r1 running in board-span (stacked on PR 1765 head f8b61545); then review panel, merge after 1765 |
 | F1634b | Investigate the swiftpm-testing-helper signal 11 (#1634 part 2) |  |  |  |  | active |  |  | 2026-11-14T01:59-08:00 |  | Terra F1634b r1 running in flake-1634b (investigation, tests only) |
+| P06 | Card state survives layout changes (slice 4, #1757) |  |  |  |  | todo |  |  |  |  | after P05b merges: worktree board-state, dispatch Luna; owner-run GUI checks listed in the card |
 
 ## Questions
 
