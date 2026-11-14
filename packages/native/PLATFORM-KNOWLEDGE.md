@@ -96,6 +96,7 @@ Every fact below carries its source; anything marked NOT FOUND was looked for an
 
 - The point widths of the iPhone Duo inner display and of an iPad window in each size class.
 - Whether an iPad on an external display on iPadOS 27.x gives an app a free-form, resizable, interactive window, or mirrors, or shows only a scene accessory. A third-party summary of the UIKit changes names `UISceneAccessory.externalNonInteractive`; no Apple text read confirms it. Only a physical iPad on a display, or the iPadOS 27 release notes read in a browser, settles this.
+- Owner observation, not Apple text (2026-11-13, an iPad on iPadOS 27.2): an app window can be shrunk to almost phone width, grown to full screen, and moved beyond that onto an external display as a larger window. This is the behavior the Board is designed for; it has not been run with Remi on an external display, and the iPad's size class at the smallest window is not recorded.
 - A maximum scene size, and Stage Manager behavior.
 - The `developer.apple.com/documentation` pages for the release notes and the iPhone Duo technology overview render their text in the browser, so an automated fetch returns only a title; read them by hand. The `videos/play` pages return their transcripts.
 

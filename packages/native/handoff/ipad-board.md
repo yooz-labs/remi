@@ -47,7 +47,7 @@ Simulator evidence (`P01/` in the artifact folder; exact build of `b4a53f0d`, re
 ## Not run
 
 - The iPhone Duo poses: on 2026-11-13 the owner installed the iOS 27.2 and watchOS 27.2 simulator runtimes, and `xcrun simctl create "Remi P01 Duo" ... iPhone-Duo ... iOS-27-2-iPhone19-4` works; the exact build installed and launched on it. No screenshot was captured: the Duo has several framebuffers, `simctl io screenshot` hangs on it, and the mobile tool's agent does not start on it. The unfolded and folded poses need Device Hub in Xcode (a visible GUI run, which needs the owner's announced go-ahead), so the Duo lines in every receipt stay "not run" until then (question 6).
-- An iPad on a real external display: no physical iPad and display were available. What iPadOS 27.x does there is not in the Apple text read (see "NOT FOUND" in PLATFORM-KNOWLEDGE), so this design treats the external display as a large window of the same scene and keeps a verification gate for it (slice 5).
+- An iPad on a real external display: no physical iPad and display were available here. The owner reports (not Apple text, see PLATFORM-KNOWLEDGE) that on iPadOS 27.2 a window shrinks to almost phone width, grows to full screen and continues onto the external display as a larger window. The design therefore treats the external display as a large window of the same scene, so the Board must work at every width from phone-like to the external display's, and keeps a verification gate with Remi itself (slice 5).
 - A drag-resized iPad window: the resizable simulator in Device Hub was not driven; the narrowest window the design targets is computed below.
 
 ## Design
