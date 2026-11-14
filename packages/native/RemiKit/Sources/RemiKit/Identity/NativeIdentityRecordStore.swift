@@ -3,7 +3,6 @@
 import CryptoKit
 import Foundation
 import Security
-import LocalAuthentication
 import RemiPush
 
 protocol NativeIdentityAuthorityBarrier {
@@ -219,12 +218,7 @@ enum NativeIdentityRecordStore {
         try read(query: query(accessGroup: accessGroup, service: service, account: account), operations: operations)
     }
     private static func read(query: [String: Any], operations: NativeKeychainOperations) throws -> Data? {
-        var q = query
-        let context = LAContext()
-        context.interactionNotAllowed = true
-        q[kSecUseAuthenticationContext as String] = context
-        q[kSecReturnData as String] = true
-        q[kSecMatchLimit as String] = kSecMatchLimitOne
+        let q = NativeKeychainReadContext.readQuery(query)
         var result: AnyObject?
         let status = operations.copyMatching(q as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }

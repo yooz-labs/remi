@@ -1,7 +1,6 @@
 import CryptoKit
 import Foundation
 import Security
-import LocalAuthentication
 
 enum NativePushKeyError: Error { case keychain(OSStatus) }
 
@@ -58,12 +57,7 @@ final class NativePushKeyStore {
         try read(query: query)
     }
     private func read(query: [String: Any]) throws -> Data? {
-        var request = query
-        let context = LAContext()
-        context.interactionNotAllowed = true
-        request[kSecUseAuthenticationContext as String] = context
-        request[kSecReturnData as String] = true
-        request[kSecMatchLimit as String] = kSecMatchLimitOne
+        let request = NativeKeychainReadContext.readQuery(query)
         var result: CFTypeRef?
         let status = operations.copyMatching(request as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
