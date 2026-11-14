@@ -48,8 +48,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 60 | daily | every dispatch on every platform; the plan approval covers this limit |
-| Codex Luna today | 8 | 27 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
+| Agents today | 30 | 61 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Codex Luna today | 8 | 28 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 3 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
 | Claude Sonnet today | 16 | 12 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
 | Claude Opus today | 4 | 4 | daily | lead wakes, lead-tier steps, advisor consults |
@@ -91,7 +91,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | P02b | Board columns in PhoneBoardScreen (slice 2a, #1745) |  |  |  |  | done |  |  | 2026-11-13T21:32-08:00 |  | merged 507cbd25; DV r12 running |
 | P02c | Sidebar beside Board only from 1000 pt windows (slice 2b, #1745) |  |  |  |  | active |  |  | 2026-11-13T22:47-08:00 |  | Luna fix round r3 running; then ONE delta review, merge gate, DV |
 | P03 | Per-card density and content-height cards at 2+ columns (slice 3, #1745, #1759) |  |  |  |  | active |  |  | 2026-11-13T22:59-08:00 |  | Luna fix round r3 running; then ONE delta review, merge gate, DV |
-| P05a | Corner resize handles stepping card size on iPad (issue 1763, part 1) |  |  |  |  | todo |  |  |  |  | after P03 and P02c merge: create worktree board-handles, dispatch Luna; P05b (column span) after |
+| P05a | Corner resize handles stepping card size on iPad (issue 1763, part 1) |  |  |  |  | active |  |  | 2026-11-14T00:46-08:00 |  | Luna P05a r1 running in board-handles (stacked on PR 1761 head 14df3331); then review panel, merge gate (after 1761 merges), DV |
 | F1634 | Harden ImageIngressSocketTests peer startup wait (#1634 part 1) |  |  |  |  | active |  |  | 2026-11-14T00:23-08:00 |  | Luna F1634 r1 running in flake-1634; then review panel (verification, maintainability), merge gate, DV |
 
 ## Questions
