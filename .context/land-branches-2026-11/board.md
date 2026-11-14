@@ -93,7 +93,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | P03 | Per-card density and content-height cards at 2+ columns (slice 3, #1745, #1759) |  |  |  |  | done |  |  | 2026-11-13T22:59-08:00 |  | merged 8364bb35; DV r13 green |
 | P05a | Corner resize handles stepping card size on iPad (issue 1763, part 1) |  |  |  |  | done |  |  | 2026-11-14T00:46-08:00 |  | merged 440bb48b; DV r14 green |
 | F1634 | Harden ImageIngressSocketTests peer startup wait (#1634 part 1) |  |  |  |  | done |  |  | 2026-11-14T00:23-08:00 |  | merged 611e3382; DV r14 green |
-| P05b | Card column span via the corner handle (issue 1763, part 2) |  |  |  |  | active |  |  | 2026-11-14T02:32-08:00 |  | Luna P05b r1 running in board-span (stacked on PR 1765 head f8b61545); then review panel, merge after 1765 |
+| P05b | Card column span via the corner handle (issue 1763, part 2) |  |  |  |  | active |  |  | 2026-11-14T02:32-08:00 |  | delta clean; waiting native CI on 1b9213b2; then merge gate, merge, DV r15, P06 merges develop |
 | F1634b | Investigate the swiftpm-testing-helper signal 11 (#1634 part 2) |  |  |  |  | active |  |  | 2026-11-14T01:59-08:00 |  | Terra F1634b r1 running in flake-1634b (investigation, tests only) |
 | P06 | Card state survives layout changes (slice 4, #1757) |  |  |  |  | active |  |  | 2026-11-14T04:07-08:00 |  | Luna P06 r1 running in board-state (stacked on PR 1767 head 1b9213b2); then review panel, merge after 1767 |
 
