@@ -48,8 +48,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 83 | daily | every dispatch on every platform; the plan approval covers this limit |
-| Codex Luna today | 8 | 38 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
+| Agents today | 30 | 84 | daily | every dispatch on every platform; the plan approval covers this limit |
+| Codex Luna today | 8 | 39 | daily | worker dispatches (gpt-6-luna); at the limit stop and ask, never fall back to Claude |
 | Codex Terra today | 4 | 4 | daily | worker-hard dispatches (gpt-6.1-terra); at the limit stop and ask |
 | Claude Sonnet today | 16 | 12 | daily | reviewers and synthesis (and a Luna second reviewer counts as Codex Luna) |
 | Claude Opus today | 4 | 4 | daily | lead wakes, lead-tier steps, advisor consults |
@@ -93,7 +93,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | P03 | Per-card density and content-height cards at 2+ columns (slice 3, #1745, #1759) |  |  |  |  | done |  |  | 2026-11-13T22:59-08:00 |  | merged 8364bb35; DV r13 green |
 | P05a | Corner resize handles stepping card size on iPad (issue 1763, part 1) |  |  |  |  | done |  |  | 2026-11-14T00:46-08:00 |  | merged 440bb48b; DV r14 green |
 | F1634 | Harden ImageIngressSocketTests peer startup wait (#1634 part 1) |  |  |  |  | done |  |  | 2026-11-14T00:23-08:00 |  | merged 611e3382; DV r14 green |
-| P05b | Card column span via the corner handle (issue 1763, part 2) |  |  |  |  | active |  |  | 2026-11-14T02:32-08:00 |  | delta clean; waiting native CI on 1b9213b2; then merge gate, merge, DV r15, P06 merges develop |
+| P05b | Card column span via the corner handle (issue 1763, part 2) |  |  |  |  | done |  |  | 2026-11-14T02:32-08:00 |  | merged 015b1e71 (bump eb5973da); DV r15 running |
 | F1634b | Investigate the swiftpm-testing-helper signal 11 (#1634 part 2) |  |  |  |  | active |  |  | 2026-11-14T01:59-08:00 |  | Terra F1634b r1 running in flake-1634b (investigation, tests only) |
 | P06 | Card state survives layout changes (slice 4, #1757) |  |  |  |  | active |  |  | 2026-11-14T04:07-08:00 |  | Luna P06 r1 running in board-state (stacked on PR 1767 head 1b9213b2); then review panel, merge after 1767 |
 
