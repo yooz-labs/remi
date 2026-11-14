@@ -586,6 +586,25 @@ test('a registry close disposes the session hold, and later work holds nothing',
   }
 });
 
+test('the session timer renews the holder at 80 percent of the TTL while work continues', async () => {
+  const clock = new ManualClock();
+  const f = await buildFixture({ clock });
+  try {
+    f.messageApi.handleStatusChange('executing');
+    await waitUntil(() => f.awake.isHolding);
+    clock.advance(10 * 60_000);
+    f.messageApi.noteWorkEvent({ type: 'activity' });
+    clock.advance(6 * 60_000 - 1);
+    expect(f.holder.renewals).toBe(0);
+    clock.advance(1);
+    await waitUntil(() => f.holder.renewals === 1);
+    expect(f.awake.isHolding).toBe(true);
+    expect(f.holder.starts).toBe(1);
+  } finally {
+    await f.stop();
+  }
+});
+
 test('disposeAll (daemon cleanup and exit) releases every attached session', async () => {
   const holders: RecordingHolder[] = [];
   const wiring = new AwakeWiring({
