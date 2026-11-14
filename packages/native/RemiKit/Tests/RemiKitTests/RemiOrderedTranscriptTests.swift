@@ -62,6 +62,83 @@ struct RemiOrderedTranscriptTests {
         #expect(transcript.entries == [firstC, secondB, secondA])
     }
 
+    @Test func compactionKeepsOrderAndSupportsUpdatesAndAppendsAfterward() throws {
+        let template = try fixtureTemplate()
+        let initial = try (0..<64).map { index in
+            try message(template: template, id: "entry-\(index)", content: "initial-\(index)")
+        }
+        let transcript = RemiOrderedTranscript()
+        for entry in initial { transcript.apply(entry) }
+
+        let replacementOrder = [
+            1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31,
+            33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63,
+            0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30,
+            32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62,
+        ]
+        for index in replacementOrder {
+            transcript.apply(try message(
+                template: template,
+                id: "entry-\(index)",
+                content: "replacement-\(index)"
+            ))
+        }
+
+        #expect(transcript.count == 64)
+        #expect(transcript.map(\.entryUuid) == replacementOrder.map { "entry-\($0)" })
+
+        for index in [10, 20, 30, 40, 50, 60] {
+            transcript.apply(try message(
+                template: template,
+                id: "entry-\(index)",
+                content: "after-compaction-\(index)"
+            ))
+        }
+        for index in [64, 65] {
+            transcript.apply(try message(
+                template: template,
+                id: "entry-\(index)",
+                content: "new-\(index)"
+            ))
+        }
+
+        let expectedOrder = [
+            "entry-1", "entry-3", "entry-5", "entry-7", "entry-9", "entry-11", "entry-13", "entry-15",
+            "entry-17", "entry-19", "entry-21", "entry-23", "entry-25", "entry-27", "entry-29", "entry-31",
+            "entry-33", "entry-35", "entry-37", "entry-39", "entry-41", "entry-43", "entry-45", "entry-47",
+            "entry-49", "entry-51", "entry-53", "entry-55", "entry-57", "entry-59", "entry-61", "entry-63",
+            "entry-0", "entry-2", "entry-4", "entry-6", "entry-8", "entry-12", "entry-14", "entry-16",
+            "entry-18", "entry-22", "entry-24", "entry-26", "entry-28", "entry-32", "entry-34", "entry-36",
+            "entry-38", "entry-42", "entry-44", "entry-46", "entry-48", "entry-52", "entry-54", "entry-56",
+            "entry-58", "entry-62", "entry-10", "entry-20", "entry-30", "entry-40", "entry-50", "entry-60",
+            "entry-64", "entry-65",
+        ]
+        let actualOrder = transcript.map(\.entryUuid)
+        #expect(transcript.count == 66)
+        #expect(actualOrder == expectedOrder)
+        #expect(Set(actualOrder).count == actualOrder.count)
+        #expect(transcript.suffix(5).map(\.entryUuid) == [
+            "entry-40", "entry-50", "entry-60", "entry-64", "entry-65",
+        ])
+    }
+
+    @Test func secondReplayRunsOverCompactedHistoryWithoutDuplicates() throws {
+        let template = try fixtureTemplate()
+        let history = try (0..<200).map { index in
+            try message(template: template, id: "entry-\(index)", content: "message-\(index)")
+        }
+        let singlePass = RemiOrderedTranscript()
+        let replayed = RemiOrderedTranscript()
+        for entry in history { singlePass.apply(entry) }
+        for entry in history { replayed.apply(entry) }
+        for entry in history { replayed.apply(entry) }
+        for entry in history { replayed.apply(entry) }
+
+        #expect(replayed.count == history.count)
+        #expect(replayed.entries == singlePass.entries)
+        #expect(replayed.suffix(5) == Array(history.suffix(5)))
+    }
+
     @Test func replayingTheSameOrderedHistoryTwiceIsIdempotent() throws {
         let template = try fixtureTemplate()
         let history = try (0..<4).map { index in
