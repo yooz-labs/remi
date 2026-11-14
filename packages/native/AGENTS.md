@@ -75,7 +75,7 @@ The items marked #1233 are the owner's decisions; the rest were set with the sca
 - **Keychain reads** go through `NativeKeychainReadContext` (#1768); never create an `LAContext` per read.
 - **No secrets anywhere visible:** no credentials, tokens or keys in code, logs, previews, fixtures or commits.
 - **Escape text another party chose:** text from a machine (a command, a path, an agent's message) can hold control or bidirectional characters. Show it escaped where it could mislead (see `escapeUnsafeText` in `packages/shared/src/display-text.ts`).
-- **Cards follow the daemon's rules** ([Question Detection and Notifications](../../docs/agent-reference/questions-and-notifications.md), including the "Notification channel — APNS push only" section):
+- **Cards follow the daemon's rules** ([Question Detection and Notifications](../../docs/agent-reference/questions-and-notifications.md), including the "Notification channels (APNS push, plus iPhone local question notifications)" section):
   - an option is answered by its meaning;
   - a `terminalOnly` card has no answer controls;
   - a standing grant says it lasts "for this session";
