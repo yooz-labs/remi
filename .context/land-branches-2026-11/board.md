@@ -191,5 +191,5 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | rv-AW1-delta | reviewer | extra | sonnet xhigh | AW1 | 2026-11-14T13:25 | done |
 | sonnet-AW1-minors | implementer | claude-sonnet | sonnet high | AW1 | 2026-11-14T13:45 | done |
 | sonnet-DV-r21 | implementer | claude-sonnet | sonnet high | DV | 2026-11-14T14:35 | done |
-| sonnet-changelog | implementer | claude-sonnet | sonnet high | REL | 2026-11-14T14:50 | done |
-| rv-changelog | reviewer | extra | sonnet xhigh | REL | 2026-11-14T15:00 | running |
+| sonnet-changelog | implementer | claude-sonnet | sonnet high | REL | 2026-11-14T14:50 | running (review fixes) |
+| rv-changelog | reviewer | extra | sonnet xhigh | REL | 2026-11-14T15:00 | done |
