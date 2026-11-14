@@ -17,10 +17,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Repo | yooz-labs/remi |
 | Integration branch | develop |
 | Manager id | mba-claude-sonnet |
-| State | running |
+| State | paused |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | 2026-11-14T14:32-08:00 |
-| Next tick | 2026-11-14T15:02-08:00 |
+| Last tick | 2026-11-14T14:54-08:00 |
+| Next tick | - |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-12T19:05-08:00 |
 
