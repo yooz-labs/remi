@@ -72,6 +72,7 @@ The items marked #1233 are the owner's decisions; the rest were set with the sca
 ## Security
 
 - **Keys:** device keys live in the Keychain, never in files or `UserDefaults`.
+- **Keychain reads** go through `NativeKeychainReadContext` (#1768); never create an `LAContext` per read.
 - **No secrets anywhere visible:** no credentials, tokens or keys in code, logs, previews, fixtures or commits.
 - **Escape text another party chose:** text from a machine (a command, a path, an agent's message) can hold control or bidirectional characters. Show it escaped where it could mislead (see `escapeUnsafeText` in `packages/shared/src/display-text.ts`).
 - **Cards follow the daemon's rules** ([Question Detection and Notifications](../../docs/agent-reference/questions-and-notifications.md), including the "Notification channels (APNS push, plus iPhone local question notifications)" section):
@@ -92,6 +93,7 @@ The items marked #1233 are the owner's decisions; the rest were set with the sca
   - `xcodebuild -project packages/native/Remi.xcodeproj -scheme RemiPhone -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build`
 - **The gates build unsigned** (`CODE_SIGNING_ALLOWED=NO`), so they do not exercise the entitlements. To run the Mac app, or check its sandbox, without the team's certificate, sign it ad hoc: add `CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=` to the `xcodebuild` command. The Mac app it builds is sandboxed with `network.client` (`codesign -d --entitlements - <app>` shows it).
 - **Previews must render.** They are the design review surface.
+- **Opt-in Keychain stress diagnostic:** `REMI_LA_STRESS=1 swift test --package-path packages/native/RemiKit --filter LocalAuthenticationStressTests` (#1768).
 - **Known baseline failures** (check before blaming your change; remove an entry when it is fixed):
   - `PairingAttemptTests` (about 30 issues in `swift test --package-path packages/native/RemiKit`) fail locally on a clean `origin/develop` with `owned empty launch directory required` from `RemiKit/Tests/Integration/pairing-source-fixture.ts`: the fixture wants its launch directory empty. Reproduced 2026-10-21 on Xcode 27.1 with `bun install` done; cause not yet found. Run the rest with `--skip PairingAttemptTests` and say so in the PR.
 - **Xcode 27.1 compiler traps** seen in this tree (fix by splitting, not by suppressing):
