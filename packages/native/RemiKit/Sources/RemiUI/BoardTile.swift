@@ -62,6 +62,13 @@ public struct RemiBoardTileExtras {
     }
 }
 
+/// The conditions under which a tile may grow beyond its nominal height.
+public enum RemiBoardTileSizing {
+    public static func growsToContent(optedIn: Bool, needsYou: Bool, hasQuestion: Bool) -> Bool {
+        optedIn || (needsYou && hasQuestion)
+    }
+}
+
 /// One session on the command center board: what it is, what it last said, whether it needs
 /// the person, and a line to answer it from in place.
 public struct RemiBoardTile<Question: View>: View {
@@ -149,7 +156,13 @@ public struct RemiBoardTile<Question: View>: View {
         return size.showsFeed ? (extras.height ?? size.estimatedHeight) * heightScale : nil
     }
     /// Waiting questions and screens that opt in grow to their content instead of clipping it.
-    private var growsToContent: Bool { extras.growsToContent || (needsYou && question != nil) }
+    private var growsToContent: Bool {
+        RemiBoardTileSizing.growsToContent(
+            optedIn: extras.growsToContent,
+            needsYou: needsYou,
+            hasQuestion: question != nil
+        )
+    }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: RemiTheme.Spacing.xs) {

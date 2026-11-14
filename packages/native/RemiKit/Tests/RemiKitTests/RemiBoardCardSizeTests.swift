@@ -69,11 +69,34 @@ import Testing
                 columnCount: row.columnCount
             )
             #expect(size == row.expected)
-            #expect(size.showsComposer == (size != .row))
+            #expect(size.showsComposer == row.expectedComposer)
         }
     }
 
     @Test func tileExtrasDoNotGrowToContentByDefault() {
         #expect(RemiBoardTileExtras().growsToContent == false)
+    }
+
+    @Test func tileContentGrowthRuleCoversEveryInputCombination() {
+        let rows: [(optedIn: Bool, needsYou: Bool, hasQuestion: Bool, expected: Bool)] = [
+            (false, false, false, false),
+            (false, false, true, false),
+            (false, true, false, false),
+            (false, true, true, true),
+            (true, false, false, true),
+            (true, false, true, true),
+            (true, true, false, true),
+            (true, true, true, true),
+        ]
+
+        for row in rows {
+            #expect(
+                RemiBoardTileSizing.growsToContent(
+                    optedIn: row.optedIn,
+                    needsYou: row.needsYou,
+                    hasQuestion: row.hasQuestion
+                ) == row.expected
+            )
+        }
     }
 }
