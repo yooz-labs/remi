@@ -43,6 +43,11 @@ private struct GenericImageFrame: Encodable, Sendable {
 /// Runs the actual native receive path against an authenticated-key-pinned, loopback-only
 /// controlled peer. The peer is synthetic, not a daemon or a secure-route qualification.
 @Suite(.serialized) struct ImageIngressSocketTests {
+    private let clock = ContinuousClock()
+    // These post-start observations share the generous 30-second bound so a loaded
+    // runner's scheduling delay cannot turn this into a later short-timeout failure (#1634).
+    private let eventWaitTimeout = Duration.seconds(30)
+
     @Test func largeTranscriptStillPassesTheRealConnection() async throws {
         var transcript = try #require(JSONSerialization.jsonObject(with: FixtureConformanceTests.fixture("transcript_content")) as? [String: Any])
         transcript["content"] = String(repeating: "x", count: WireJSON.maxFrameBytes + 2_048)
@@ -74,8 +79,8 @@ private struct GenericImageFrame: Encodable, Sendable {
                 eventHandler: { event in Task { await observations.event(event) } })
             connection = client
             await client.start()
-            let helloDeadline = ContinuousClock.now.advanced(by: .seconds(5))
-            while ContinuousClock.now < helloDeadline {
+            let helloDeadline = clock.now.advanced(by: eventWaitTimeout)
+            while clock.now < helloDeadline {
                 if await observations.snapshot().admitted { break }
                 try await Task.sleep(for: .milliseconds(10))
             }
@@ -85,8 +90,8 @@ private struct GenericImageFrame: Encodable, Sendable {
             #expect(payload.count < WireJSON.maxFrameBytes)
             try #require(peer.sendImageIngressProbe(payload))
 
-            let unsupportedDeadline = ContinuousClock.now.advanced(by: .seconds(5))
-            while ContinuousClock.now < unsupportedDeadline {
+            let unsupportedDeadline = clock.now.advanced(by: eventWaitTimeout)
+            while clock.now < unsupportedDeadline {
                 let observed = await observations.snapshot()
                 if observed.unsupported || observed.rejected { break }
                 try await Task.sleep(for: .milliseconds(10))
@@ -96,8 +101,8 @@ private struct GenericImageFrame: Encodable, Sendable {
 
             try await client.send(SessionListRequestMessage(id: UUID().uuidString.lowercased(),
                 timestamp: Date().ISO8601Format()))
-            let sessionsDeadline = ContinuousClock.now.advanced(by: .seconds(5))
-            while ContinuousClock.now < sessionsDeadline {
+            let sessionsDeadline = clock.now.advanced(by: eventWaitTimeout)
+            while clock.now < sessionsDeadline {
                 if await observations.snapshot().sessions { break }
                 try await Task.sleep(for: .milliseconds(10))
             }
@@ -123,8 +128,8 @@ private struct GenericImageFrame: Encodable, Sendable {
                 eventHandler: { event in Task { await observations.event(event) } })
             connection = client
             await client.start()
-            let helloDeadline = ContinuousClock.now.advanced(by: .seconds(5))
-            while ContinuousClock.now < helloDeadline {
+            let helloDeadline = clock.now.advanced(by: eventWaitTimeout)
+            while clock.now < helloDeadline {
                 if await observations.snapshot().admitted { break }
                 try await Task.sleep(for: .milliseconds(10))
             }
@@ -172,8 +177,8 @@ private struct GenericImageFrame: Encodable, Sendable {
             let terminal = try TerminalViewMessage.open(SessionTerminalOpen(header: header, binding: binding)).encodedFrame()
             try await client.sendEncodedFrame(terminal, policy: PaneTransportPolicy(directSecureTransport: true, relaySemanticChild: false))
             try await client.send(SessionListRequestMessage(id: UUID().uuidString.lowercased(), timestamp: Date().ISO8601Format()))
-            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-            while ContinuousClock.now < deadline {
+            let deadline = clock.now.advanced(by: eventWaitTimeout)
+            while clock.now < deadline {
                 if await observations.snapshot().sessions { break }
                 try await Task.sleep(for: .milliseconds(10))
             }
@@ -202,15 +207,15 @@ private struct GenericImageFrame: Encodable, Sendable {
                 eventHandler: { event in Task { await observations.event(event) } })
             connection = client
             await client.start()
-            let helloDeadline = ContinuousClock.now.advanced(by: .seconds(5))
-            while ContinuousClock.now < helloDeadline {
+            let helloDeadline = clock.now.advanced(by: eventWaitTimeout)
+            while clock.now < helloDeadline {
                 if await observations.snapshot().admitted { break }
                 try await Task.sleep(for: .milliseconds(10))
             }
             #expect(await observations.snapshot().admitted)
             try #require(peer.sendImageIngressProbe(payload))
-            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-            while ContinuousClock.now < deadline {
+            let deadline = clock.now.advanced(by: eventWaitTimeout)
+            while clock.now < deadline {
                 let observed = await observations.snapshot()
                 if observed.transcript || observed.rejected || observed.unsupported { break }
                 try await Task.sleep(for: .milliseconds(10))
