@@ -66,7 +66,7 @@ Proposed for this plan, within that authority:
 - The manager merges a step PR into `develop` with `gh pr merge N --merge --match-head-commit SHA` (a merge commit; never `--squash`, never `--delete-branch`), only when the merge gate (runbook section 10) passes.
 - The manager merges a large review-fix PR into its step PR's head branch only, after the same gate (land-branches Q15, carried over).
 - The manager merges PR #1785 (ADR 0051, docs only) only after the owner approves it (step D51; J5).
-- The manager merges a profiles docs PR in `yooz-docs` only after the owner says the remi release that ships its feature is published and the REL-DOCS recheck passes (J2).
+- A DOCS step is done when merge gate items 1, 2 and 4 hold for its draft docs PR and its docs review is resolved; the PR stays a draft (runbook section 8, "Docs lane"), so no checkpoint waits on a release. The docs PR merges only in runbook section 10, "Release docs", after the owner says the remi release that ships its feature is published and the REL-DOCS recheck passes (who merges it is J2).
 - Never merged by the manager: anything into `main`; a PR that relaxes a gate's assertion (to the lead); a step whose owner gate is open (P4A until the latency measurement, J7).
 - Not used by this plan: direct pushes to `develop`; TestFlight uploads unless an owner checkpoint asks for one (CPA steps), with the owner's go and a build number above the real current one.
 
@@ -120,11 +120,11 @@ Needs tokens: `xcode` (native gates under the Xcode lock), `simulator` (the one 
 
 | ID | Card | Goal | Tier | Depends | Timebox | Acceptance gate (literal) |
 | --- | --- | --- | --- | --- | --- | --- |
-| CP0 | rule | the owner approves this plan, its defaults and merge authority, and answers J1 to J12 | owner | - | - | a `decide` line starting `CP0:` by the owner |
+| CP0 | rule | the owner approves this plan, its defaults and merge authority, and answers J1a to J18 | owner | - | - | one `decide` line per answer and `CP0: plan approved ...`, recorded by the lead or owner before the first tick (runbook section 2) |
 | P1A | [P1A](cards/P1A-profile-model-and-commands.md) | profile config, resolver, effective-login check, warnings and `remi profile ls\|add\|show\|login`; launches unchanged | worker-hard | CP0 | 1.5d | `bun test packages/daemon/tests/profiles` passes; card Acceptance items 1 to 9 |
 | P1C | [P1C](cards/P1C-codex-credential-characterization.md) | Codex credential variables, default store and keyring separation, from source and placeholder-only runs | worker | CP0 | 4h | the note exists with a source line per answer; `typos` clean |
 | P1B | [P1B](cards/P1B-launches-follow-profile.md) | every launch path runs under the resolved profile, with the scrub, the pre-launch check, the record, the sidecar and resume | worker-hard | P1A, P1C | 2d | `bun test packages/daemon/tests/profiles packages/daemon/tests/integration/profile-launch.test.ts` passes; card Acceptance items 1 to 12 |
-| DOCS-P1 | [DOCS-P1](cards/DOCS-P1-profile-guide.md) | `guides/profiles.md` and `commands/profile.md` from the built `develop` tip, in a draft docs PR | worker | P1B | 6h | `bun run build` in the docs worktree passes; every command block has its recorded run |
+| DOCS-P1 | [DOCS-P1](cards/DOCS-P1-profile-guide.md) | `guides/profiles.md` and `commands/profile.md` from the built `develop` tip, in a draft docs PR | worker | P1B | 6h | `bun run build` in the docs worktree passes; every command block has its recorded run; done = verified and reviewed draft PR, not merged (runbook section 8) |
 | OG-P1 | rule | owner: two profiles, two accounts, 24 hours, `default` unchanged | owner | P1B | - | [owner-gates.md](owner-gates.md) OG-P1 recorded by the owner |
 | CP1 | rule | owner checkpoint after phase 1; lead completes the phase 2 cards | lead | P1B, DOCS-P1 | - | a `decide` line starting `CP1:` and the owner's go |
 | D51 | rule | PR #1785 (ADR 0051) merged into `develop` after the owner approves | - | - | - | the owner's approval recorded; merge gate (docs PR) |

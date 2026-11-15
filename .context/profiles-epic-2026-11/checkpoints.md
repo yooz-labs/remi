@@ -6,7 +6,7 @@ No step after a checkpoint is dispatched before the owner's go is recorded (`dec
 
 | ID | Trigger | Lead reads | Lead produces | Owner |
 | --- | --- | --- | --- | --- |
-| CP0 | before the first tick | the whole pack, the two pack reviews | dispositions in plan Appendix A | approves the plan and its defaults; answers J1 to J12; the manager records `CP0:` |
+| CP0 | before the first tick | the whole pack, the two pack reviews | dispositions in plan Appendix A | approves the plan and its defaults; answers J1a to J18; the lead or the owner records one `CP0:` line per answer and `CP0: plan approved ...`, then sets CP0 `done` (runbook section 2) |
 | CP1 | P1B and DOCS-P1 `done` | `status`, the P1A, P1C and P1B PRs and reports, OG-P1 status, `risks.md` R1 to R5, the ADR 0051 PR #1785 | the completed cards P2A, P2B, P2C, P2D, DOCS-P2 and P5A-PREP; an ADR 0049 amendment commit if J12 was yes; `CP1:` | reviews phase 1; approves #1785 (D51); go for phase 2 |
 | CP2 | P2D and DOCS-P2 `done` | `status`, the phase 2 PRs, OG-P2 status, the fixtures added | the completed cards P3A, P3B, P3C, DOCS-P3; `CP2:` | go for phase 3 |
 | CPA1 | CP2 `done` | the #1788 body, phase 2's fixtures, `packages/native/AGENTS.md`, `VISUAL-ACCEPTANCE.md` | the completed card A1, including the visual capture plan (J10) and the docs URL base; `CPA1:` | go for Apps 1 |

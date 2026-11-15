@@ -22,6 +22,14 @@ cd /Volumes/S1/worktrees/remi/profiles-develop-verify && bun install --frozen-lo
 
 Owner-run, optional (as land-branches Q14): `cp /Volumes/S1/worktrees/remi/profiles-epic-plan/.context/profiles-epic-2026-11/codex-profiles.rules ~/.codex/rules/profiles-epic-2026-11.rules`; when the loop ends, `rm ~/.codex/rules/profiles-epic-2026-11.rules`.
 Whether `codex exec` loads that file, and applies it under `-s danger-full-access`, is unverified; the manager's checks after every run (section 5) stay in force either way.
+**CP0 recording (before the first tick).** After the owner approves the plan and answers J1a to J18 (plan section 7), the lead or the owner records one line per answer and the approval, then closes CP0:
+
+```bash
+MB decide BOARD "CP0: J1a answered: ANSWER" --by owner      # one line per judgment call, J1a to J18
+MB decide BOARD "CP0: plan approved with the answers above" --by owner
+MB set BOARD Steps CP0 State=done
+```
+
 Then the `/loop` start prompt (plan 0.1).
 Optional live view (port 8765 belongs to the remi daemon; use 8799): `nohup python3 /Users/yahya/.claude/plugins/cache/research-skills/project/0.12.0/skills/manager-loop/scripts/manager_board.py serve /Volumes/S1/worktrees/remi/profiles-epic-plan/.context/profiles-epic-2026-11/board.md --port 8799 > /tmp/profiles-board-serve.log 2>&1 & disown`.
 
@@ -117,7 +125,7 @@ Copied from the board and from `git`/`gh` at dispatch time, never from an earlie
 The skill's tick, with these project rules:
 
 - **Order:** owner answers (section 11), worker reports, reviews, failing checks, conflicts, timeboxes, dates, checkpoints and owner gates, then fill free slots.
-- **Not before approval:** until the board's log holds the owner's approval of the plan (`decide` line starting `CP0:`), dispatch nothing.
+- **Not before approval:** a manager that finds CP0 in state `owner`, or no line starting `CP0: plan approved` in `board-log.md`'s Decisions, dispatches nothing, asks the owner for approval of the plan (one question, `MB ask BOARD Q-CP0 --question "Approve the profiles epic plan and answer J1a to J18?" --options "Approve with answers / Hold" --default none`), and stops that tick after writing the board.
 - **Rule steps** (CP*, CPA*, OG-*, D51, REL-DOCS) are never dispatched by `status`; they start `blocked` with their trigger in Next:
   - a checkpoint whose Depends are all `done`: wake the lead (section 9) with the checkpoint's row in `PACK/checkpoints.md`; when `board-log.md` holds the lead's decision line for that checkpoint (for example `CP1:`) and the owner's go (recorded `--by owner`), set it `done`; the lead's completed cards turn their steps from `outline` to `todo` (the lead sets them with `MB set`).
   - an owner gate whose Depends are `done`: set it `owner`, notify the owner once with its section of `PACK/owner-gates.md`, and record the owner's result with `decide ... --by owner`; then `done` (passed) or ask the lead for a fix card (failed).
@@ -127,6 +135,7 @@ The skill's tick, with these project rules:
 - **Outline steps** are never dispatched; `MB card` refuses them.
 - **Native lane:** at most one step with Needs `xcode` is `active` at a time, besides DV; a visible simulator run needs the owner's announced consent each time (plan J10) and a stop file (`/Volumes/S1/yooz/remi/gui-fixture/STOP` halts it).
 - **Docs lane:** one docs step at a time; the profiles docs PR stays a draft until REL-DOCS.
+  A DOCS-Pn step is `done` when merge gate items 1, 2 and 4 hold for its **draft** docs PR and its `docs` review is resolved; the PR stays a draft and is not merged; log `DOCS-Pn verified, PR N draft, merges at REL-DOCS`. The merge happens only in section 10, "Release docs". This is what CP1 to CP4 wait for, so no checkpoint waits on a release.
 - **Phase completion:** when every step of a phase is `done` and its owner gate passed, hand the owner the close command for that phase's issue (or close it under the owner's authority of 2026-11-13 after the owner says so): `gh issue close N --repo yooz-labs/remi --comment "Done: PRs #A, #B; owner gate passed DATE."`; app issues likewise after their slice merges and any owner gate passed.
 - **Steps waiting on a question** stay `owner` until the answer.
 
@@ -202,7 +211,7 @@ Apply section 11, `MB decide BOARD "ANSWER" --by owner`, set the question `close
 3. Fresh base: `git -C MAIN fetch origin && git -C MAIN log --format=%s HEAD_SHA..origin/develop` lists only `chore: bump version to ...` subjects; otherwise the worker merges `origin/develop` into the branch and the checks run again.
 4. Checks on the final head: `gh pr checks N --repo yooz-labs/remi` lists `CI Scope`, `Lint`, `Type Check`, `Test`, `Spelling`, `Relay Scope` and `local-relay`, each passing or skipping, none pending or failing; a PR touching `packages/native/` also has `Build and Test (Native)` passing (not skipping); a PR touching `packages/daemon/`, `packages/shared/`, `packages/signaling/`, `tests/integration/` or `.github/` has `local-relay` passing after more than 55 minutes (the real soak). A yooz-docs PR: every check `gh pr checks N --repo yooz-labs/yooz-docs` lists passes.
 5. Closing references: `git -C MAIN log --format=%B origin/develop..HEAD_SHA | bun -e 'import { extractClosingReferences } from "/Users/yahya/Documents/git/yooz/remi/packages/shared/src/issue-closing.ts"; console.log(JSON.stringify(extractClosingReferences(await Bun.stdin.text())))'` prints `[]`, and the PR title and body through the same command print `[]`; anything else goes to the owner before the merge (the card forbids closing words, so a hit is also a send-back finding).
-6. Step extras: P4A needs the owner's latency measurement recorded in its PR (J7); D51 needs the owner's approval; a yooz-docs PR merges only at REL-DOCS.
+6. Step extras: P4A needs the owner's latency measurement recorded in its PR (J7); D51 needs the owner's approval; a yooz-docs profiles PR is never merged by this gate: for a DOCS step, items 1, 2 and 4 on the draft PR make the step `done` (section 8, "Docs lane"); the merge is section 10, "Release docs".
 
 Then: `gh pr ready N --repo REPO` if still draft, `gh pr merge N --repo REPO --merge --match-head-commit HEAD_SHA`, `MB set BOARD Steps ID State=done`, close the step's agents, `MB log`.
 A merge the host refuses: never retry or work around it; set the step `owner` and ask.
