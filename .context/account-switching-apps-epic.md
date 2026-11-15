@@ -3,7 +3,7 @@
 Design: [ADR 0051](decisions/0051-account-profiles-in-the-apps.md), proposed on 2026-11-14 for #1784; the owner answered its questions Q1 to Q11 the same day.
 The daemon side is [ADR 0049](decisions/0049-account-switching.md) and its drafts in [account-switching-epic.md](account-switching-epic.md).
 
-Status: nothing here is filed or applied.
+Status: on 2026-11-14 the manager applied the amended #1749 and the additions to #1748, #1750 and #1751 (the old bodies are backed up in the manager's scratchpad). The #1752 addition is not adopted (Q11), the phase 5 draft is applied when that issue is filed, and the five app issues are not filed.
 This file holds three kinds of text, each for the manager to apply with `gh`; workers never edit issues:
 
 1. the proposed amended title and body of the filed #1749 (owner answer Q2), to apply with `gh issue edit 1749 --title "<title>" --body-file <body>`;
