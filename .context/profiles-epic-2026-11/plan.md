@@ -9,7 +9,7 @@ Pack: `.context/profiles-epic-2026-11/` on branch `chore/profiles-epic-plan` (wo
 **Decided.**
 The approved part of epic #1157 runs as one serial daemon lane (#1748, #1749, #1750, #1751, in that order) and one serial native lane (#1788 to #1791), plus a docs lane in `yooz-docs`.
 Each daemon phase is split into pull requests (PRs) a single worker can finish and a four-lens panel can review: phase 1 is three steps (P1C Codex characterization, P1A profile model and commands, P1B launches follow the profile); phases 2 to 4 are outlined as nine more implementation steps and three docs steps.
-Only phase 1's cards are complete; every later card is an outline the lead completes at the checkpoint before it, because each phase's file layout depends on how the one before it lands.
+The complete cards are P1A, P1C, P1B, DOCS-P1, P5A-PREP and REL-DOCS, plus the shared DV, RV-panel, RV-delta and RB cards; every other card is an outline the lead completes at the checkpoint before it, because each phase's file layout depends on how the one before it lands.
 An owner checkpoint closes every daemon phase (CP1 to CP4), opens every app slice (CPA1 to CPA4), and one more (CP5) stands before phase 5.
 Phase 5, 5B, 6 and Apps 5 are parked board rows that nothing can dispatch (ADR 0049 D9; phase 5 only after #1752 passes and the owner says go).
 Phase 5A (#1752) is owner-run; agents only prepare the capture (P5A-PREP).
@@ -120,7 +120,7 @@ Needs tokens: `xcode` (native gates under the Xcode lock), `simulator` (the one 
 
 | ID | Card | Goal | Tier | Depends | Timebox | Acceptance gate (literal) |
 | --- | --- | --- | --- | --- | --- | --- |
-| CP0 | rule | the owner approves this plan, its defaults and merge authority, and answers J1a to J18 | owner | - | - | one `decide` line per answer and `CP0: plan approved ...`, recorded by the lead or owner before the first tick (runbook section 2) |
+| CP0 | rule | the owner approves this plan, its defaults and merge authority, and answers J1a to J15 and J18 (J16 deferred to CP2, J17 to CP1) | owner | - | - | one `decide` line per answer, the two deferral lines and `CP0: plan approved ...`, recorded by the lead or owner before the first tick (runbook section 2) |
 | P1A | [P1A](cards/P1A-profile-model-and-commands.md) | profile config, resolver, effective-login check, warnings and `remi profile ls\|add\|show\|login`; launches unchanged | worker-hard | CP0 | 1.5d | `bun test packages/daemon/tests/profiles` passes; every item of the card's Acceptance |
 | P1C | [P1C](cards/P1C-codex-credential-characterization.md) | Codex credential variables, default store and keyring separation, from source and placeholder-only runs | worker | CP0 | 4h | the note exists with a source line per answer; `typos` clean |
 | P1B | [P1B](cards/P1B-launches-follow-profile.md) | every launch path runs under the resolved profile, with the scrub, the pre-launch check, the record, the sidecar and resume | worker-hard | P1A, P1C | 2d | `bun test packages/daemon/tests/profiles packages/daemon/tests/integration/profile-launch.test.ts` passes; every item of the card's Acceptance |
@@ -348,7 +348,7 @@ Round 1 (2026-11-14), on branch head `8bc96158`, each reviewer a fresh agent; th
 
 ## Appendix B: facts the lead could not verify
 
-- The `authMethod`, `subscriptionType` and email fields of a real claude.ai `claude auth status --json`: read from the code embedded in `/Users/yahya/.local/share/claude/versions/2.1.325` (the object built with `authMethod:I` and, when `I==="claude.ai"`, `email`, `orgId`, `orgName`, `subscriptionType`, `storedClaudeAiLogin`, `planTier`), not observed.
+- The `authMethod`, `subscriptionType` and email fields of a real claude.ai `claude auth status --json`: read from the code embedded in `$HOME/.local/share/claude/versions/2.1.325` (the object built with `authMethod:I` and, when `I==="claude.ai"`, `email`, `orgId`, `orgName`, `subscriptionType`, `storedClaudeAiLogin`, `planTier`), not observed.
 - Codex's default `cli_auth_credentials_store`, keyring separation per `CODEX_HOME`, the credential variables Codex reads, and what `codex login status` prints with a login (P1C).
 - Claude Code's managed-settings path on macOS (P1A verifies it from the settings documentation).
 - Whether a Claude session started with a fresh `CLAUDE_CONFIG_DIR` under a remi hub child keeps the PTY behaviors remi relies on (trust prompt, hooks in the project's `.claude/settings.local.json`); P1B's integration test uses a fake `claude`, so OG-P1 is the first real check.

@@ -18,8 +18,8 @@
 2026-11-14: R4 Codex keyring separation unknown until P1C.
 
 ## Next intentions
-2026-11-14: CP0: owner answers J1a to J18 (J16 by CP2, J17 by CP1); record per runbook 2.
+2026-11-14: CP0: owner answers J1a to J15, J18; J16, J17 deferred (CP2, CP1); runbook 2.
 2026-11-14: CP1: complete P2A to P2D, DOCS-P2; re-verify paths after phase 1.
 
 ## Pending owner questions
-2026-11-14: J1a to J18 (plan section 7); J2 now recommends no; J13 to J15 shape P1A.
+2026-11-14: J1a to J15, J18 at CP0; J17 at CP1; J16 at CP2; J2 now recommends no.

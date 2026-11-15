@@ -54,7 +54,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Codex Terra today | 4 | 0 | daily | copied; Terra implementers and fix rounds; J1b option 1 suggests 8 |
 | Claude Sonnet today | 16 | 0 | daily | copied; Claude Sonnet implementers and every reviewer; J1b option 1 suggests 24 |
 | Claude Opus today | 4 | 0 | daily | copied; Opus implementers, lead wakes, advisor consults; J1b option 1 suggests 8 |
-| Advisor consults | 8 | 0 | never | copied; lead wakes and advisor consults, whole plan; never --over; J1b suggests 20 |
+| Advisor consults | 8 | 0 | never | copied; lead wakes and advisor consults, whole plan; never --over; the owner sets 20 under either J1b answer |
 | Fable consults | 1 | 0 | never | copied; only if the owner asks; never --over |
 | Agents this wave | 0 | 0 | wave | unused: this plan has no waves |
 
@@ -67,13 +67,13 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | ID | Title | Wave | Tier | Needs | Slot | State | Depends | PR | Started | Timebox | Next |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| CP0 | [Plan approval: defaults, merge authority, J1a to J18](plan.md) | - | - | - | - | owner | - | - | - | - | rule: owner approves the plan and answers J1a-J18; lead or owner records CP0: lines and sets done (runbook 2); no dispatch before |
+| CP0 | [Plan approval: defaults, merge authority, J1a to J15 and J18](plan.md) | - | - | - | - | owner | - | - | - | - | rule: owner approves; J1a-J15, J18 answered, J16/J17 recorded deferred; CP0: lines recorded, then done (runbook 2); no dispatch before |
 | P1A | [Profile model and commands #1748](cards/P1A-profile-model-and-commands.md) | - | worker-hard | - | - | todo | CP0 | - | - | 1.5d | dispatch after CP0 (owner approves the plan); Codex Terra |
 | P1C | [Codex credential characterization #1748](cards/P1C-codex-credential-characterization.md) | - | worker | - | - | todo | CP0 | - | - | 4h | dispatch after CP0; beside P1A; docs lens review |
 | P1B | [Launches follow the profile #1748](cards/P1B-launches-follow-profile.md) | - | worker-hard | - | - | todo | P1A, P1C | - | - | 2d | after P1A and P1C merge; card follows J9 and J11 answers |
 | DOCS-P1 | [Profile guide, phase 1 (yooz-docs)](cards/DOCS-P1-profile-guide.md) | - | worker | docs | - | todo | P1B | - | - | 6h | after P1B's bump and green DV; done = draft docs PR verified and reviewed, not merged; merges only at REL-DOCS |
 | OG-P1 | [Owner gate: two profiles, 24 h](owner-gates.md) | - | - | - | - | blocked | P1B | - | - | - | rule: set owner when P1B is done; notify owner-gates.md OG-P1 |
-| CP1 | [Checkpoint after phase 1](checkpoints.md) | - | - | - | - | blocked | P1B, DOCS-P1 | - | - | - | rule: wake lead (complete P2A-P2D, DOCS-P2, P5A-PREP); owner go |
+| CP1 | [Checkpoint after phase 1](checkpoints.md) | - | - | - | - | blocked | P1B, DOCS-P1 | - | - | - | rule: wake lead (complete P2A-P2D, DOCS-P2); ask go and J17 in one batch; owner go |
 | D51 | Merge PR 1785 (ADR 0051) after owner approval | - | - | - | - | owner | - | - | - | - | rule: owner approves PR 1785 (J5); then docs merge gate and merge |
 | P5A-PREP | [Capture prep for #1752](cards/P5A-PREP-capture-config.md) | - | worker | - | - | todo | CP0 | - | - | 4h | complete card; dispatch after CP0 beside P1A and P1C; docs lens review |
 | P2A | [Profile paths #1749 (outline)](cards/P2A-profile-paths.md) | - | worker-hard | - | - | outline | CP1 | - | - | 1.5d | lead completes at CP1 |
@@ -82,7 +82,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | P2D | [Web profiles #1749 (outline)](cards/P2D-web-profiles.md) | - | worker | - | - | outline | P2C | - | - | 1.5d | lead completes at CP1 |
 | DOCS-P2 | [Profile guide, phase 2 (outline)](cards/DOCS-P2-P4-profile-guide-updates.md) | - | worker | docs | - | outline | P2D | - | - | 6h | lead completes at CP1 |
 | OG-P2 | [Owner gate: phone-started session](owner-gates.md) | - | - | - | - | blocked | P2D | - | - | - | rule: set owner when P2D is done; notify OG-P2 |
-| CP2 | [Checkpoint after phase 2](checkpoints.md) | - | - | - | - | blocked | P2D, DOCS-P2 | - | - | - | rule: wake lead (complete P3A-P3C, DOCS-P3); owner go |
+| CP2 | [Checkpoint after phase 2](checkpoints.md) | - | - | - | - | blocked | P2D, DOCS-P2 | - | - | - | rule: wake lead (complete P3A-P3C, DOCS-P3); ask go and J16 in one batch; owner go |
 | CPA1 | [Owner go for Apps 1](checkpoints.md) | - | - | - | - | blocked | CP2 | - | - | - | rule: wake lead (complete A1, visual plan J10); owner go |
 | A1 | [Apps 1 #1788 (outline)](cards/A1-apps-badge-picker-filter.md) | - | worker-hard | xcode | - | outline | CPA1 | - | - | 2d | lead completes at CPA1 |
 | P3A | [Usage observations #1750 (outline)](cards/P3A-usage-observations.md) | - | worker-hard | - | - | outline | CP2 | - | - | 2d | lead completes at CP2 |

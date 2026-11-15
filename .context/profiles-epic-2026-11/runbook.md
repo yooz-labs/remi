@@ -1,9 +1,9 @@
 # Runbook: profiles-epic-2026-11
 
 The manager follows this file literally, one tick at a time, with the `project:manager-loop` skill.
-Paths below are absolute; `PACK` means `/Volumes/S1/worktrees/remi/profiles-epic-plan/.context/profiles-epic-2026-11`, `BOARD` means `PACK/board.md`, `MAIN` means `/Users/yahya/Documents/git/yooz/remi` (the main checkout, always on `develop`), `DOCSMAIN` means `/Users/yahya/Documents/git/yooz/yooz-docs` (the yooz-docs main checkout, on `main`), `EVID` means `/Volumes/S1/yooz/remi/artifacts/profiles-epic-2026-11/<step>/r<round>/`, and `MB` means `python3 /Users/yahya/.claude/plugins/cache/research-skills/project/0.12.0/skills/manager-loop/scripts/manager_board.py`.
+Paths below are absolute; `$HOME` is the home directory of the user running the loop (a shell expands it; expand it once with `echo "$HOME"` before giving a path to a tool that does not); `PACK` means `/Volumes/S1/worktrees/remi/profiles-epic-plan/.context/profiles-epic-2026-11`, `BOARD` means `PACK/board.md`, `MAIN` means `$HOME/Documents/git/yooz/remi` (the main checkout, always on `develop`), `DOCSMAIN` means `$HOME/Documents/git/yooz/yooz-docs` (the yooz-docs main checkout, on `main`), `EVID` means `/Volumes/S1/yooz/remi/artifacts/profiles-epic-2026-11/<step>/r<round>/`, and `MB` means `python3 $HOME/.claude/plugins/cache/research-skills/project/0.12.0/skills/manager-loop/scripts/manager_board.py`.
 These are names in this text, not shell variables: write the absolute path in every command, or start each shell command with
-`PACK=/Volumes/S1/worktrees/remi/profiles-epic-plan/.context/profiles-epic-2026-11; BOARD=$PACK/board.md; MAIN=/Users/yahya/Documents/git/yooz/remi; DOCSMAIN=/Users/yahya/Documents/git/yooz/yooz-docs; MB="python3 /Users/yahya/.claude/plugins/cache/research-skills/project/0.12.0/skills/manager-loop/scripts/manager_board.py"`
+`PACK=/Volumes/S1/worktrees/remi/profiles-epic-plan/.context/profiles-epic-2026-11; BOARD=$PACK/board.md; MAIN=$HOME/Documents/git/yooz/remi; DOCSMAIN=$HOME/Documents/git/yooz/yooz-docs; MB="python3 $HOME/.claude/plugins/cache/research-skills/project/0.12.0/skills/manager-loop/scripts/manager_board.py"`
 and call the helper as `$MB` only in a shell that splits words (bash; in zsh use `${=MB}`).
 
 ## 1. Where the pack lives
@@ -13,28 +13,33 @@ and call the helper as `$MB` only in a shell that splits words (bash; in zsh use
 - Board commits go to `chore/profiles-epic-plan` only (`docs: board, <what changed>`), locally every tick; push that branch only at checkpoints (`git -C /Volumes/S1/worktrees/remi/profiles-epic-plan push origin chore/profiles-epic-plan`); no CI job runs on a push of that branch.
 - Evidence: `EVID` (one folder per dispatch); never in a repository.
 
-## 2. Setup (once, after the owner approves the plan)
+## 2. Setup (the manager runs this block once, on its first tick after CP0 is `done`)
 
 ```bash
 mkdir -p /Volumes/S1/yooz/remi/locks /Volumes/S1/yooz/remi/artifacts/profiles-epic-2026-11
 cd /Volumes/S1/worktrees/remi/profiles-epic-plan && bun install
-git -C /Users/yahya/Documents/git/yooz/remi fetch origin
-git -C /Users/yahya/Documents/git/yooz/remi worktree add --detach /Volumes/S1/worktrees/remi/profiles-develop-verify origin/develop
+git -C $HOME/Documents/git/yooz/remi fetch origin
+git -C $HOME/Documents/git/yooz/remi worktree add --detach /Volumes/S1/worktrees/remi/profiles-develop-verify origin/develop
 cd /Volumes/S1/worktrees/remi/profiles-develop-verify && bun install --frozen-lockfile
 ```
 
+In the same tick, after the block: dispatch [DV](cards/DV-develop-verify.md) on the current `origin/develop` tip with `previous baseline: none`, and dispatch no implementation card before that DV reports green; its `daemon-failures.txt` is the first `baseline failing tests` list (section 6).
+
 Owner-run, optional (as land-branches Q14): `cp /Volumes/S1/worktrees/remi/profiles-epic-plan/.context/profiles-epic-2026-11/codex-profiles.rules ~/.codex/rules/profiles-epic-2026-11.rules`; when the loop ends, `rm ~/.codex/rules/profiles-epic-2026-11.rules`.
 Whether `codex exec` loads that file, and applies it under `-s danger-full-access`, is unverified; the manager's checks after every run (section 5) stay in force either way.
-**CP0 recording (before the first tick).** After the owner approves the plan and answers J1a to J18 (plan section 7), the lead or the owner records one line per answer and the approval, then closes CP0:
+**CP0 recording (before the first tick).** After the owner approves the plan and answers J1a to J15 and J18 (plan section 7; J16 is due by CP2 and J17 by CP1), the lead or the owner records one line per answer, the two deferrals and the approval, then closes CP0:
 
 ```bash
-MB decide BOARD "CP0: J1a answered: ANSWER" --by owner      # one line per judgment call, J1a to J18
+MB decide BOARD "CP0: J1a answered: ANSWER" --by owner      # one line per call: J1a, J1b, J2 to J15, J18
+MB decide BOARD "CP0: J1b answered: option 1" --by owner    # literally "option 1" or "option 2" (section 5 matches this string)
+MB decide BOARD "CP0: J16 deferred to CP2" --by owner
+MB decide BOARD "CP0: J17 deferred to CP1" --by owner
 MB decide BOARD "CP0: plan approved with the answers above" --by owner
 MB set BOARD Steps CP0 State=done
 ```
 
 Then the `/loop` start prompt (plan 0.1).
-Optional live view (port 8765 belongs to the remi daemon; use 8799): `nohup python3 /Users/yahya/.claude/plugins/cache/research-skills/project/0.12.0/skills/manager-loop/scripts/manager_board.py serve /Volumes/S1/worktrees/remi/profiles-epic-plan/.context/profiles-epic-2026-11/board.md --port 8799 > /tmp/profiles-board-serve.log 2>&1 & disown`.
+Optional live view (port 8765 belongs to the remi daemon; use 8799): `nohup python3 $HOME/.claude/plugins/cache/research-skills/project/0.12.0/skills/manager-loop/scripts/manager_board.py serve /Volumes/S1/worktrees/remi/profiles-epic-plan/.context/profiles-epic-2026-11/board.md --port 8799 > /tmp/profiles-board-serve.log 2>&1 & disown`.
 
 ## 3. What to read
 
@@ -85,7 +90,7 @@ codex exec -m gpt-6-luna -c model_reasoning_effort=max \
   -c 'sandbox_workspace_write.writable_roots=["GITDIR","/Volumes/S1/derived","/Volumes/S1/yooz/remi/locks","/Volumes/S1/yooz/remi/artifacts/profiles-epic-2026-11"]' \
   -c sandbox_workspace_write.network_access=true \
   -C WT --json -o EVID/codex-last-message.md \
-  --output-schema /Users/yahya/.claude/plugins/cache/research-skills/project/0.12.0/skills/manager-loop/assets/report.schema.json \
+  --output-schema $HOME/.claude/plugins/cache/research-skills/project/0.12.0/skills/manager-loop/assets/report.schema.json \
   "PROMPT" > EVID/codex-events.jsonl 2> EVID/codex-stderr.log
 ```
 
@@ -96,7 +101,7 @@ codex exec -m gpt-6-luna -c model_reasoning_effort=max \
 - Write the thread id, the process id of the background `codex exec` (`$!` or the background task's pid), the model and the effort on the Agents row (`MB set BOARD Agents AGENT --new ...`).
 - Before each dispatch: `MB card PACK/cards/CARD.md` (must print "ready to dispatch"; reviewer and DV cards included).
 - **Spend (every agent dispatch):** implementers, fix rounds, DV, reviewers, delta reviewers, lead wakes and advisor consults each run `MB spend BOARD "Agents today"` and their platform row (`"Codex Luna today"`, `"Codex Terra today"`, `"Claude Sonnet today"` or `"Claude Opus today"`); lead wakes and advisor consults also run `MB spend BOARD "Advisor consults"`.
-  A refused `spend`: stop dispatching on that row and ask the owner (the skill's rule), unless `board-log.md` holds the owner's `decide` line recording J1b option 2; then repeat it with `--over` and `MB log BOARD "over: ITEM n/limit"`, until the ceiling (a row's Used reaches twice its Limit, or the third consecutive day with any row over), where the manager stops dispatching and asks. `Advisor consults` and `Fable consults` never take `--over`.
+  A refused `spend`: stop dispatching on that row and ask the owner (the skill's rule), unless `board-log.md`'s Decisions contain the exact text `CP0: J1b answered: option 2`; then repeat it with `--over` and `MB log BOARD "over: ITEM n/limit"`, until the ceiling (a row's Used reaches twice its Limit, or the third consecutive day with any row over), where the manager stops dispatching and asks. `Advisor consults` and `Fable consults` never take `--over`.
   A Codex usage limit: write the board and ask the parity question (section 12); never move a card to Claude on your own, unless the owner's standing rule of 2026-11-13 (both platforms' slots are used) already allows that card's tier on a free Claude slot, which `MB status` shows.
 
 ### After every worker run (Codex or Claude)
@@ -115,7 +120,8 @@ Copied from the board and from `git`/`gh` at dispatch time, never from an earlie
 - for a fix round: the round number, the decided findings with their outcomes, and the line "This card was started earlier. Continue from the worktree: run `git status` and `git log --oneline -10` first.";
 - for a reviewer: repository, `Lens group`, `Base` (merge-base), `Head` (the reviewer reads those commits, never a moving worktree), and for delta reviews `Round1Head`;
 - the owner answers the card names (J9 for P1B, J11 for P1A and P1B, J13 to J15 for P1A and P1B, J4 for docs cards);
-- for every TypeScript implementation card: `baseline failing tests:` followed by the list of `bun test packages/daemon` failures from the latest green DV report (the DV card records it), which is the baseline the card's "fails only in tests that also fail on `origin/develop`" refers to.
+- for every TypeScript implementation card: `baseline failing tests:` followed by the list of `bun test packages/daemon` failures from the latest green DV report (its `daemon-failures.txt`); if no DV has run yet, the baseline is empty and the card's `bun test packages/daemon` must pass (section 2 makes the first DV run before any implementation card);
+- for a DV dispatch: `DEV_SHA`, the merged PR's number, and `previous baseline` (the path of the previous green DV's `daemon-failures.txt`, or `none`).
 
 ## 7. First tick of a session
 
@@ -133,10 +139,10 @@ Copied from the board and from `git`/`gh` at dispatch time, never from an earlie
 The skill's tick, with these project rules:
 
 - **Order:** owner answers (section 11), worker reports, reviews, failing checks, conflicts, timeboxes, dates, checkpoints and owner gates, then fill free slots.
-- **Not before approval:** a manager that finds CP0 in state `owner`, or no line starting `CP0: plan approved` in `board-log.md`'s Decisions, dispatches nothing, asks the owner for approval of the plan (one question, `MB ask BOARD Q-CP0 --question "Approve the profiles epic plan and answer J1a to J18?" --options "Approve with answers / Hold" --default none`), and stops that tick after writing the board.
+- **Not before approval:** a manager that finds CP0 in state `owner`, or no line starting `CP0: plan approved` in `board-log.md`'s Decisions, dispatches nothing, asks the owner for approval of the plan (one question, `MB ask BOARD Q-CP0 --question "Approve the profiles epic plan and answer J1a to J15 and J18 (J16 by CP2, J17 by CP1)?" --options "Approve with answers / Hold" --default none`), and stops that tick after writing the board.
 - **Rule steps** (CP*, CPA*, OG-*, D51, REL-DOCS) are never dispatched by `status`; they start `blocked` with their trigger in Next:
   - a checkpoint whose Depends are all `done`: wake the lead (section 9) with the checkpoint's row in `PACK/checkpoints.md`.
-    When `board-log.md` holds the lead's decision line for that checkpoint (for example `CP1:`): run the anticipation pass (one advisor consult, brief per the skill's `references/escalation.md` with the question "how will the owner, reviewers and users react to the current state, and what will they ask next?"; its result goes to `MB log`), then ask the go: `MB ask BOARD QCP1 --question "CP1: go for phase 2?" --options "Go (Recommended) / Hold" --default none --step CP1` (the id and wording follow the checkpoint), set the checkpoint `owner`, send the five-line digest, and ask with AskUserQuestion when the owner is in the session.
+    When `board-log.md` holds the lead's decision line for that checkpoint (for example `CP1:`): run the anticipation pass (one advisor consult, brief per the skill's `references/escalation.md` with the question "how will the owner, reviewers and users react to the current state, and what will they ask next?"; its result goes to `MB log`), then ask the go: `MB ask BOARD QCP1 --question "CP1: go for phase 2?" --options "Go (Recommended) / Hold" --default none --step CP1` (the id and wording follow the checkpoint); at CP1 also ask J17 in the same batch (`MB ask BOARD QJ17 --question "J17: rule-text paths in profile settings (plan section 7)?" --options "(a) replace paths (Recommended) / (b) verbatim" --default none --step CP1`), and at CP2 ask J16 the same way (`QJ16`, "(a) keyed hash (Recommended) / (b) keep the id and state the exposure"); record each answer as `CP1: J17 answered: ...` or `CP2: J16 answered: ...` with `--by owner`; set the checkpoint `owner`, send the five-line digest, and ask with AskUserQuestion when the owner is in the session.
     On the answer: `MB decide BOARD "CP1: owner go" --by owner`, close the question, set the checkpoint `done`; the lead's completed cards turn their steps from `outline` to `todo` (the lead sets them with `MB set`). A "Hold" leaves the checkpoint `owner` and is logged.
   - an owner gate whose Depends are `done`: set it `owner`, notify the owner once with its section of `PACK/owner-gates.md`, and record the owner's result with `decide ... --by owner`; then `done` (passed) or ask the lead for a fix card (failed).
   - D51: stays `owner` until the owner approves PR #1785; then dispatch one `docs` reviewer ([RV-panel](cards/RV-panel.md), lens `docs`) on #1785, run the merge gate (section 10; it is a `develop` merge, under the manager's authority) and merge it; `done`.
@@ -182,7 +188,7 @@ Verify by observation, stop at the first failure (skill, "Verify by observation"
 5. Deviations are listed and triaged (accept, send back, or ask the lead).
 6. The checks of section 5, "After every worker run".
 Then set the step `review` and dispatch its round-1 panel (plan section 3) while CI runs, spending each reviewer (section 5, "Spend").
-P1C only: read the "Consequences for P1B" section of `.context/profiles-codex-credentials.md` at the PR head (`git -C MAIN show HEAD_SHA:.context/profiles-codex-credentials.md`); if it says "not separated" or "not settled", set P1B `owner`, wake the lead (section 9, reason "P1C keyring result") with the result and the owner's J11 answer, and dispatch P1B only after the lead has updated P1B's card or Depends and logged it.
+P1C only: read the "Consequences for P1B" section of `.context/profiles-codex-credentials.md` at the PR head (`git -C MAIN show HEAD_SHA:.context/profiles-codex-credentials.md`); if it says "not separated" or "not settled", set P1B `owner`, wake the lead (section 9, reason "P1C keyring result") with the result and the owner's J11 answer, and dispatch P1B only after the lead has updated P1B's card or Depends, or logged that no change is needed (J11 answered no), and logged it.
 
 ### A review returns
 
@@ -221,11 +227,12 @@ Apply section 11, `MB decide BOARD "ANSWER" --by owner`, set the question `close
 1. Every review report dispatched for the step is in, every finding has an outcome, and every `fix` finding is verified on the final head by its named test or repro; the delta review (if one ran) is clean or its findings are resolved the same way.
 2. No accepted Critical is open.
 3. Fresh base: `git -C MAIN fetch origin && git -C MAIN log --format=%s HEAD_SHA..origin/develop` lists only `chore: bump version to ...` subjects; otherwise the worker merges `origin/develop` into the branch and the checks run again.
-4. Checks on the final head: every line of `gh pr checks N --repo yooz-labs/remi` is `pass` or `skipping` (it also prints `Test worker 0` to `2`, `E2E Tests`, `Release Guard`, `Auto Release` and `Sync Develop After Release`), none pending or failing, and these lines are present: `CI Scope`, `Lint`, `Type Check`, `Test`, `Spelling`, `Relay Scope`, `local-relay`; a PR touching `packages/native/` also has `Build and Test (Native)` passing (not skipping); a PR touching `packages/daemon/`, `packages/shared/`, `packages/signaling/`, `tests/integration/` or `.github/` has `local-relay` passing as the real soak: `gh pr checks N --repo yooz-labs/remi --json name,state,startedAt,completedAt --jq '.[] | select(.name=="local-relay")'` shows `completedAt` minus `startedAt` over 55 minutes. A yooz-docs PR: every line of `gh pr checks N --repo yooz-labs/yooz-docs` passes.
-5. Closing references: `git -C MAIN log --format=%B origin/develop..HEAD_SHA | bun -e 'import { extractClosingReferences } from "/Users/yahya/Documents/git/yooz/remi/packages/shared/src/issue-closing.ts"; console.log(JSON.stringify(extractClosingReferences(await Bun.stdin.text())))'` prints `[]`, and the PR title and body through the same command print `[]`; anything else goes to the owner before the merge (the card forbids closing words, so a hit is also a send-back finding).
+4. Checks on the final head: every line of `gh pr checks N --repo yooz-labs/remi` is `pass` or `skipping` (it also prints `Test worker 0` to `2`, `E2E Tests`, `Release Guard`, `Auto Release` and `Sync Develop After Release`), none pending or failing, and these lines are present: `CI Scope`, `Lint`, `Type Check`, `Test`, `Spelling`, `Relay Scope`, `local-relay`; a PR touching `packages/native/` also has `Build and Test (Native)` passing (not skipping); a PR touching `packages/daemon/`, `packages/shared/`, `packages/signaling/`, `tests/integration/` or `.github/` has `local-relay` passing as the real soak: `gh pr checks N --repo yooz-labs/remi --json name,state,startedAt,completedAt --jq '.[] | select(.name=="local-relay") | ((.completedAt | fromdateiso8601) - (.startedAt | fromdateiso8601))'` prints a number of seconds greater than 3300 (checked on PR #1782: 3863). A yooz-docs PR: every line of `gh pr checks N --repo yooz-labs/yooz-docs` passes.
+5. Closing references: `cd "$HOME/Documents/git/yooz/remi" && git log --format=%B origin/develop..HEAD_SHA | bun -e 'import { extractClosingReferences } from "./packages/shared/src/issue-closing.ts"; console.log(JSON.stringify(extractClosingReferences(await Bun.stdin.text())))'` (run from the main checkout, so the relative import resolves; it only reads) prints `[]`, and the PR title and body through the same command print `[]`; anything else goes to the owner before the merge (the card forbids closing words, so a hit is also a send-back finding).
 6. Step extras: P4A needs the owner's latency measurement recorded in its PR (J7); D51 needs the owner's approval; a yooz-docs profiles PR is never merged by this gate: for a DOCS step, items 1, 2 and 4 on the draft PR make the step `done` (section 8, "Docs lane"); the merge is section 10, "Release docs".
 
-Then: `gh pr ready N --repo REPO` if still draft, `gh pr merge N --repo REPO --merge --match-head-commit HEAD_SHA`, `MB set BOARD Steps ID State=done`, close the step's agents, `MB log`.
+For a step PR in yooz-labs/remi: `gh pr ready N --repo REPO` if still draft, `gh pr merge N --repo REPO --merge --match-head-commit HEAD_SHA`, `MB set BOARD Steps ID State=done`, close the step's agents, `MB log`.
+A DOCS step skips this paragraph entirely: no `gh pr ready`, no `gh pr merge`; it only gets `MB set BOARD Steps ID State=done` and the `verified, PR N draft` log line (section 8, "Docs lane").
 A merge the host refuses: never retry or work around it; set the step `owner` and ask.
 
 ### After a merge
@@ -242,13 +249,13 @@ yooz-docs deploys to a public site on merge, so by default the manager does not 
 
 ## 11. Owner questions and what each answer does
 
-At CP0 the owner answers J1a to J18 (plan section 7); the lead or the owner records each with `decide ... --by owner` before the first tick (section 2). Every card follows the lead's recommendation; an answer that differs wakes the lead to correct the card before it is dispatched.
+At CP0 the owner answers J1a to J15 and J18 (plan section 7); the lead or the owner records each with `decide ... --by owner` before the first tick (section 2), with J16 and J17 recorded as deferred to CP2 and CP1, where the manager asks them (section 8). Every card follows the lead's recommendation; an answer that differs wakes the lead to correct the card before it is dispatched.
 
 | J | Answer | Board or card change |
 | --- | --- | --- |
 | J1a defaults | yes | none; the sandbox rule of section 5 applies |
-| J1b budgets | option 1 | the owner edits the Budget limits; a refused `spend` stops that row and asks |
-| | option 2 | the `decide` line enables `--over` within the ceiling (section 5, "Spend") |
+| J1b budgets | option 1 (recorded `CP0: J1b answered: option 1`) | the owner edits the Budget limits, and the owner sets `Advisor consults` to 20; a refused `spend` stops that row and asks |
+| | option 2 (recorded `CP0: J1b answered: option 2`) | that exact line enables `--over` within the ceiling (section 5, "Spend"), and the owner sets `Advisor consults` to 20 |
 | | changed | the owner edits Parity, Slots or Budget; the manager runs `MB check` and logs it |
 | J2 yooz-docs merge | no (recommended) | REL-DOCS ends with the merge command handed to the owner (section 10, "Release docs") |
 | | yes | the manager merges the docs PR after the REL-DOCS recheck and the yooz-docs merge gate |
@@ -270,11 +277,11 @@ At CP0 the owner answers J1a to J18 (plan section 7); the lead or the owner reco
 | | no | none |
 | J12 ADR note | yes | the CP1 lead records in the ADR 0049 amendment only that the fields exist (from the binary's code), never the owner's values |
 | J13 Claude argument and sign-in guards | yes (recommended) | none: P1A refuses `--settings`, `--managed-settings` and `--setting-sources` in a Claude profile's `args` and passes `--claudeai` for subscription sign-in |
-| | no | lead wake: P1A design items 1 and 6 change before P1A is dispatched |
+| | no | lead wake before P1A is dispatched: P1A design items 1 (the `args` refusal) and 6 (`--claudeai`, `--console`, the warning line) and Acceptance 1 and 8 change |
 | J14 configuration errors | (c) recommended | none: P1A disables profiles on a `[profiles]` error and accepts the reserved later key names |
-| | (a) or (b) | lead wake: P1A design item 1 changes before P1A is dispatched |
+| | (a) or (b) | lead wake before P1A is dispatched: P1A design item 1 (errors, reserved names) and Acceptance 1 change, and P1B design item 3, step 0, and Acceptance 5b change |
 | J15 unknown `expects` | (a) recommended | none: P1A's loader accepts a safe-token `expects`; the check returns unknown; launches refuse it |
-| | (b) | lead wake: P1A design item 1 changes, and P2C's card gains the loader change at CP1 |
+| | (b) | lead wake before P1A is dispatched: P1A design items 1 (`expects` values, the profile `env` refusal) and 4 (the check's `not_checked` case) and Acceptance 1 and 3 change, P1B design item 3, step 0, and Acceptance 5b change, and P2C's card gains the loader change at CP1 |
 | J16 collapse key | answered by CP2 | the CP2 lead completes P3B and A3 with the answer |
 | J17 rule-text paths | answered by CP1 | the CP1 lead completes P2C with the answer |
 | J18 loops | one loop at a time (recommended) | the land-branches board stays `paused` while this loop runs |
