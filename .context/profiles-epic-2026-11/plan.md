@@ -274,13 +274,77 @@ Phase 5B and Apps 5 follow it; phase 6 may not start (ADR 0049 D9).
 
 ## Appendix A: pack review
 
-Required before the first tick: an executability reviewer (worker tier) and a design reviewer (lead tier), each a fresh agent, every finding with a disposition here.
-Status: not run yet; this pack was written by the lead alone on 2026-11-14.
-`manager_board.py card` passes on every complete card (P1A, P1C, P1B, DOCS-P1, REL-DOCS, DV, RV-panel, RV-delta, RB) and refuses every outline card, and `manager_board.py check` passes on the board.
+Round 1 (2026-11-14), on branch head `8bc96158`, each reviewer a fresh agent; the coordinator triaged every finding as fix or owner call.
+
+- **Executability (Claude Sonnet):** ready after fixes. Thirty-one findings: two Critical (E1, the docs-step deadlock; E2, nobody records CP0), seven Important (E3 to E9), twenty without a severity label (E10 to E29) and two notes (E30, E31). Its theme: places where a literal manager would stall or have to judge (merge and done rules, checkpoint go, spend, review "substantial", missing commands and paths).
+- **Design and privacy (Claude Opus):** ready after fixes. Thirty findings: five Important (D1 to D5: the `--over` rule, the manager merging a deploying repository, Codex keychain exposure in P1A and P1C, and an email overclaim), fifteen Moderate (D6 to D20) and ten Minor (D21 to D30). Its theme: privacy boundaries (identity fields beyond claude.ai, raw CLI output in public CI logs, bypasses of the effective-login check) and decisions that belong to the owner.
+- Both reviewers confirmed every code claim they checked (23 and 19), with no wrong claim found.
+- This was the single fix round; the manager reviews only the fix commits (`86376b65` to `7ad08c63`). Every finding is fixed or turned into an owner call; none was skipped.
+- After the round: `manager_board.py card` passes on every complete card (P1A, P1C, P1B, DOCS-P1, P5A-PREP, REL-DOCS, DV, RV-panel, RV-delta, RB) and refuses every outline card; `manager_board.py check` passes; `typos` is clean on the pack; no em dashes; no closing keywords in the commits.
 
 | ID | Finding (short) | Disposition |
 | --- | --- | --- |
-| - | (pending the two reviews) | - |
+| E1 | Critical: CP1 waits for DOCS-P1, which could merge only at a release, which J3 ties to P2A, which waits for CP1 (deadlock) | fixed in `86376b65`: a DOCS step is done on a verified, reviewed draft PR; the merge is only in "Release docs" |
+| E2 | Critical: nobody records CP0 and the J answers | fixed in `86376b65`: one `CP0:` decide line per answer before the first tick; a manager that finds CP0 open dispatches nothing and asks |
+| E3 | `--over` makes the budget decorative (also D1, section C) | fixed in `d563cdf8`: spend stops and asks; `--over` only under J1b option 2 with a ceiling; owner call J1b |
+| E4 | a background Claude worker's shell starts in the main checkout | fixed in `74244c17` (runbook prompt line) and `72ffb0f9` (preamble) |
+| E5 | P1A says `gh issue view` but the preamble and rules forbid all `gh issue` | fixed in `72ffb0f9` (write verbs forbidden one by one; checked with `codex execpolicy check`) and `7ad08c63` (command named in P1B and DOCS-P1) |
+| E6 | J11 has no trigger after P1C reports | fixed in `74244c17`: P1C's report is read for the keyring result; P1B goes `owner` and the lead is woken |
+| E7 | DOCS-P1 dispatchable before the bump and DV | fixed in `74244c17` |
+| E8 | merge gate item 4 ignores the other check lines; no soak timing command | fixed in `74244c17` |
+| E9 | owner go at a checkpoint and the anticipation pass not specified | fixed in `74244c17` and `e9fca899` |
+| E10 | plan gates say items 1-9 and 1-12 | fixed in `bb7b7af9`: every item |
+| E11 | "fails only in tests that also fail on develop" has no baseline | fixed in `72ffb0f9` (DV records `daemon-failures.txt`; cards use the live fact) and `74244c17` (live fact) |
+| E12 | nothing tells the worker to open the PR | fixed in `72ffb0f9` |
+| E13 | 25-line cap versus one line per acceptance item | fixed in `72ffb0f9`: details go to `report-details.md` |
+| E14 | `mkdir -p EVID` missing | fixed in `74244c17` |
+| E15 | outputs verbatim yet paths rewritten | fixed in `72ffb0f9`: one normalization (`/tmp/remi-docs`) on both sides |
+| E16 | email scan covers pages only; the PR body is public | fixed in `72ffb0f9`: scan of `runs.txt`, the PR body file and `placeholder-runs.txt`, with stop conditions |
+| E17 | `codex login status` exits 1 for a missing `CODEX_HOME` | fixed in `72ffb0f9`: a missing directory is `signed_out`, checked before spawning, said so in `ls` |
+| E18 | reviewers, lead and advisor never spend; `Advisor consults` never named | fixed in `d563cdf8` |
+| E19 | "substantial" needs judgment | fixed in `74244c17`: rules 1 to 4 applied by number, rule 5 only when a finding names it |
+| E20 | D51 docs review missing from the runbook | fixed in `74244c17` |
+| E21 | REL-DOCS comparison script not named | fixed in `72ffb0f9` |
+| E22 | no next action when no checks start | fixed in `74244c17` |
+| E23 | `--no-track` missing on `git worktree add` | fixed in `74244c17` |
+| E24 | managed-settings path left to the worker | fixed in `72ffb0f9`: the lead verified the macOS and Linux paths and the `managed-settings.d/` drop-in at code.claude.com/docs/en/managed-settings on 2026-11-14 |
+| E25 | the hub cannot see exit code 78 through `kill(pid, 0)` | fixed in `72ffb0f9`: `exit` listener before `child.unref()` |
+| E26 | "check the Codex process" has no command | fixed in `74244c17`: pid on the Agents row, `ps -p PID -o stat=` |
+| E27 | REL-DOCS and an active DOCS step share one branch | fixed in `74244c17` |
+| E28 | `PACK/lead.md` is not a shell path | fixed in `74244c17` |
+| E29 | loose tag grep | fixed in `72ffb0f9` |
+| E30 | same manager id as the land-branches board | owner call J18 (`bb7b7af9`) |
+| E31 | the real-state check will false-positive | fixed in `74244c17` |
+| D1 | `--over` contradicts the skill and section 0.5 (section C) | fixed in `d563cdf8`; owner call J1b |
+| D2 | the manager would merge a deploying repository (yooz-docs) | fixed in `d807e8ad`: J2 now recommends no; REL-DOCS hands the owner the exact merge command; D51 stays a manager merge |
+| D3 | P1A's Codex login could overwrite a shared keychain entry before P1C answers | fixed in `1c8be0c4`: Codex login and status need an explicit `file` store; P1B relaxes it only if P1C says separated |
+| D4 | P1C's default-store placeholder run could read the owner's keychain | fixed in `1c8be0c4`: source first; never `keyring` or `auto`; the replaced #1748 item explained |
+| D5 | "remi never shows an email" overclaims (terminal view relays what the harness prints) | fixed in `1c8be0c4` (DOCS-P1, docs lens) and `56c51cb4` (A2 copy) |
+| D6 | identity fields are not limited to claude.ai | fixed in `72ffb0f9` (P1A facts and marker tests, invalid JSON case), `e9fca899` (R2) and `7ad08c63` (plan summary) |
+| D7 | the real-claude characterization prints raw output and sends telemetry | fixed in `72ffb0f9`: scratch `HOME`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, closed-set assertions only, no raw output in tests or the PR |
+| D8 | the effective-login check can be bypassed by Claude `args` and settings `env` | fixed in `72ffb0f9` (warned names, `configDirectory` comparison) with the flag refusal as owner call J13 (P1A follows the recommendation) |
+| D9 | a `[profiles]` error stops every remi process; later keys break earlier binaries | owner call J14 (P1A follows recommended option (c)) |
+| D10 | the loader cannot build an unknown-`expects` profile for P2C's A8 test; Bedrock env always refused | owner call J15 (P1A follows recommended option (a), including the `PROFILE_CREDENTIAL_ENV` refusal in profile `env`) |
+| D11 | re-adding a removed id reuses its old login; J11's write could overwrite a file | fixed in `72ffb0f9` (`add` refuses a non-empty default directory) and `bb7b7af9` (J11 conditions, `O_EXCL`) |
+| D12 | the sidecar lacks the store's lock and temp pattern and one refusal case | fixed in `72ffb0f9` |
+| D13 | `claude auth login` default can change; a keyless Console sign-in signs out claude.ai logins | folded into owner call J13; P1A follows the recommendation (`--claudeai`, the warning line) |
+| D14 | OG-P1 omits the default-login check and records `subscriptionType` on a public board | fixed in `e9fca899` and `bb7b7af9` (J12) |
+| D15 | no status line under the gates' scratch remi home, so OG-P3 cannot pass | fixed in `56c51cb4` (P2A) and `e9fca899` (OG-P3) |
+| D16 | the collapse key exposes the profile id to the Worker and Apple | owner call J16 (by CP2) |
+| D17 | settings rule texts can contain local paths | owner call J17 (by CP1) |
+| D18 | P5A-PREP waits for CP1 although a limit can come first | fixed in `56c51cb4` (card completed, Depends CP0), `e9fca899` and `bb7b7af9` |
+| D19 | J3 is not wired to REL-DOCS | fixed in `74244c17` and `bb7b7af9` |
+| D20 | the real-state check is too narrow | fixed in `74244c17` |
+| D21 | rules lack `claude setup-token`, `security`, `remi profile login` | fixed in `72ffb0f9` (checked with `codex execpolicy check`) |
+| D22 | docs runs link the real `codex`; `REMI_PROFILE` missing from the environment reference | fixed in `72ffb0f9` |
+| D23 | D51 gates P2A, which does not use ADR 0051 | fixed in `56c51cb4`, `e9fca899` and `bb7b7af9`: moved to P2B |
+| D24 | Q3 and Q4 missing from app and web acceptance | fixed in `56c51cb4` |
+| D25 | exit 78 mechanism (with E25) | fixed in `72ffb0f9` |
+| D26 | P3B: older apps and threshold defaults not pinned | fixed in `56c51cb4` |
+| D27 | CP5 should read ADR 0051 A11 | fixed in `e9fca899` |
+| D28 | "download protection of inactive profiles" overstated | fixed in `e9fca899` and `bb7b7af9` |
+| D29 | helper paths lack `packages/daemon/`; port wording wrong | fixed in `72ffb0f9` and `bb7b7af9` |
+| D30 | the profile's own `apiKeyHelper` warned for `api_key` profiles | fixed in `72ffb0f9` |
 
 ## Appendix B: facts the lead could not verify
 
