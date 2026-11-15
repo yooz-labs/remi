@@ -32,7 +32,7 @@ The worker may choose: nothing.
 ## Acceptance
 
 All of these, run in the worktree at `DEV_SHA`, each with its last line quoted: `bunx biome check .`, `bun run typecheck`, `bun run typecheck:web`, `bun run typecheck:web-tests`, `bun run typecheck:signaling`, `node_modules/.bin/tsc -p tests/integration/tsconfig.relay-r3.json`, `bun scripts/third-party-notices.ts --check`, `bun test packages/daemon/tests/profiles` (once that folder exists on `develop`; otherwise say so), and `lockf -k -t 7200 /Volumes/S1/yooz/remi/locks/xcode.lock swift test --package-path packages/native/RemiKit --skip PairingAttemptTests --skip PairingSourceTests`.
-Also run `bun test packages/daemon` and write the names of its failing tests, one per line, to `daemon-failures.txt` in the evidence folder; this gate is red only when a test fails that is not on the live facts' `previous baseline` list (the previous green DV's `daemon-failures.txt`; on the first DV of the plan there is no list, and the file becomes the baseline). The manager passes the latest green DV's list to implementation cards as `baseline failing tests`.
+Also run `bun test packages/daemon` and write the names of its failing tests, one per line, to `daemon-failures.txt` in the evidence folder; this gate is red only when a test fails that is not on the live facts' `previous baseline` list (the previous green DV's `daemon-failures.txt`; on the first DV of the plan there is no list, and the file becomes the baseline only if the lead confirms its failures are environmental and the owner's J19 answer keeps this gate; DV-1's file from `095ef7cc` is not a baseline, plan Appendix C). The manager passes the latest green DV's list to implementation cards as `baseline failing tests`.
 
 ## Gates
 

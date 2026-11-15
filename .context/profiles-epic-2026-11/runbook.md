@@ -24,6 +24,7 @@ cd /Volumes/S1/worktrees/remi/profiles-develop-verify && bun install --frozen-lo
 ```
 
 In the same tick, after the block: dispatch [DV](cards/DV-develop-verify.md) on the current `origin/develop` tip with `previous baseline: none`, and dispatch no implementation card before that DV reports green; its `daemon-failures.txt` is the first `baseline failing tests` list (section 6).
+**DV-1 (2026-11-14, `095ef7cc`) was red only on the local full daemon suite, for environmental reasons (plan Appendix C).** Its `daemon-failures.txt` is not a baseline. Dispatch no implementation card until the owner answers J19 and the lead applies the answer (section 11).
 
 Owner-run, optional (as land-branches Q14): `cp /Volumes/S1/worktrees/remi/profiles-epic-plan/.context/profiles-epic-2026-11/codex-profiles.rules ~/.codex/rules/profiles-epic-2026-11.rules`; when the loop ends, `rm ~/.codex/rules/profiles-epic-2026-11.rules`.
 Whether `codex exec` loads that file, and applies it under `-s danger-full-access`, is unverified; the manager's checks after every run (section 5) stay in force either way.
@@ -287,6 +288,9 @@ At CP0 the owner answers J1a to J15 and J18 (plan section 7); the lead or the ow
 | J17 rule-text paths | answered by CP1 | the CP1 lead completes P2C with the answer |
 | J18 loops | one loop at a time (recommended) | the land-branches board stays `paused` while this loop runs |
 | | distinct id | the owner sets the id and halves Slots Max on both boards; the start prompt changes |
+| J19 daemon-suite gate | (a) recommended | lead commit before any dispatch: DV acceptance replaces the full `bun test packages/daemon` with `bun test packages/daemon/tests/profiles` plus the test folders of the merged PR's changed paths, all under the canonical environment of plan Appendix C, and drops `daemon-failures.txt`; the preamble item 7 and the Gates of P1A and P1B replace "a final `bun test packages/daemon` ..." with "hosted CI's `Test worker 0` to `2` and `Test` pass on the PR's final head (merge gate item 4); locally, the card's named tests under the canonical environment"; section 2 drops "no implementation card before that DV reports green" for the daemon suite and section 6 drops `baseline failing tests` |
+| | (b) | lead writes a diagnosis card (one worker, the canonical environment, Node 24 if the owner installs it); until it shows the local full suite green or explains each failure, (a) applies |
+| | (c) | DV-1's `daemon-failures.txt` becomes the baseline as the DV card and section 6 say; the lead records that the baseline covers file-download protection and image staging tests |
 
 ## 12. The parity question
 
