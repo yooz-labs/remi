@@ -1,0 +1,21 @@
+# Risks (pre-registered)
+
+| ID | Risk | Observation | Read by | If it reads bad | Decides |
+| --- | --- | --- | --- | --- | --- |
+| R1 | The `authMethod` of a real claude.ai login is not `"claude.ai"` on the owner's installed version (the value was read from the 2.1.325 binary's code, never observed) | OG-P1's recorded `authMethod` | OG-P1 | P1A's mapping refuses every subscription profile; the lead writes a fix card ahead of the next daemon step | lead |
+| R2 | A claude.ai status prints `email`, `orgId`, `orgName`; a log line, error message or file keeps part of it | P1A's planted-marker tests; the `privacy` review lens | P1A, P1B, P2C reviews | Critical finding: fixed before merge, never deferred | advisor |
+| R3 | Phase 1 is released without P2A, leaving the status line in profile sessions, the hub's multi-profile transcript discovery (a client's chat view of a profile session it did not start) and download protection of inactive profiles behind | the release contents when the owner prepares a release | each release after P1B | tell the owner which phases are complete; recommend holding (J3) | owner |
+| R4 | Codex keeps keyring logins in one entry for all `CODEX_HOME`s, and keyring or `auto` is the default on macOS | P1C's answers to questions 2 and 3 | P1C | P1B refuses keyring profiles; J11 decides whether `add` writes the file store into remi-created homes | owner |
+| R5 | A CLI updates itself between a card and its gate (ADR 0049 G18) and a fact changes | `claude --version` and `codex --version` recorded in each owner gate and each characterization | every owner gate | the lead rechecks the affected card | lead |
+| R6 | Protocol steps collide (shared fixtures and capability lists) | merge conflicts in `protocol.ts` or `builders.ts` | P2B to P4B | serial by Depends; regenerate fixtures after each merge | manager |
+| R7 | Hosted native job flakes (#1634) | a `Build and Test (Native)` failure that passes on rerun | every native PR | one rerun; second flake in seven days: lead diagnosis card | manager, then lead |
+| R8 | A merge turns `develop` red unseen (no CI on `develop` pushes) | DV after each merge | every merge | stop merging; advisor; owner chooses fix forward or revert (RB) | owner |
+| R9 | A worker writes the owner's real state (`~/.remi/config.toml` through `remi profile add` without `REMI_HOME`, `~/.claude/settings.json` through the status-line installer in P2A) | runbook section 5's metadata check after every run | every daemon step, especially P1A and P2A | stop profile dispatching; owner | owner |
+| R10 | A full-access worker merges, closes, posts or pushes outside its branch | the `develop`, merged-PR and closed-issue checks after each run | every run | stop all dispatching; owner | owner |
+| R11 | A commit message closes an issue on merge (`close-on-develop.yml`) | merge gate item 5 | every merge | send back inside the round; the owner is told before a merge with a hit, and gets the reopen command after | owner |
+| R12 | Docs drift: a `develop` build's output differs from the release build | REL-DOCS comparison | each release | REL-DOCS corrects the pages before the docs PR merges | manager |
+| R13 | P4A waits on the owner's latency measurement and stalls phase 4 | P4A in `review` with all checks green and no measurement | P4A | ask the owner with the exact procedure; P4B may proceed on P4A's branch only after the lead says so | owner |
+| R14 | The 61-minute `local-relay` soak on every daemon PR, plus review rounds, makes the daemon lane slow | median time from report to merge | CP1, CP2 | report it in the digest; never skip the soak | owner |
+| R15 | The child-environment guard test trips on the new credential names (`TOKEN` in `ANTHROPIC_AUTH_TOKEN` and others) | P1A's gates | P1A | the card's exemption design; a PR that loosens the guard instead goes to the lead | lead |
+| R16 | Visual capture of an app slice touches a real hub or shows real session names | the first screenshot of each run | A1 to A4 | stop the run, delete the screenshot, uninstall the app from the simulator, tell the owner | owner |
+| R17 | Disk on `/Volumes/S1` fills with DerivedData and worktrees | `df -h /Volumes/S1` under 100 GB | each checkpoint | remove this plan's merged worktrees and their DerivedData (runbook section 5); ask before anything else | owner |
