@@ -6,7 +6,7 @@ Timebox: L, 2 days; escalate at 4 days or two failed approaches
 Needs: none (no Xcode, no simulator); macOS host
 Depends: P1A merged into `develop`; P1C merged into `develop` (its note `.context/profiles-codex-credentials.md` is an input)
 Branch: `feature/issue-1748-profile-launch` off `origin/develop` (after P1A and P1C merged)
-Worktree: `/Volumes/S1/worktrees/remi/profiles-p1b` (the manager creates it with `git worktree add -b` and runs `bun install`)
+Worktree: `/Volumes/S1/worktrees/remi/profiles-p1b` (the manager creates it with `git worktree add --no-track -b` and runs `bun install`)
 Plan: plan.md section 2 (P1B); issue #1748 Scope and Acceptance criteria; ADR 0049 D1, D10; backend plan "Profile contract and wrapper settings (#1157)"
 
 ## Goal

@@ -6,7 +6,7 @@ Timebox: S, 45 minutes
 Needs: none
 Depends: round 1 was substantial (`review-convergence.md`) and the fix round is pushed
 Branch: none (read-only)
-Worktree: none; commits are read by hash from `/Users/yahya/Documents/git/yooz/remi` (or the yooz-docs main checkout for a docs PR)
+Worktree: none; commits are read by hash from `$HOME/Documents/git/yooz/remi` (or the yooz-docs main checkout for a docs PR)
 Plan: plan.md section 3
 
 ## Goal

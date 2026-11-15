@@ -6,7 +6,7 @@ Timebox: S, 1 hour; a reviewer silent for 20 minutes is dispatched again once, t
 Needs: none
 Depends: the step's implementer reported and the manager verified the report
 Branch: none (read-only)
-Worktree: none; commits are read by hash from `/Users/yahya/Documents/git/yooz/remi` (or `/Users/yahya/Documents/git/yooz/yooz-docs` for a docs PR)
+Worktree: none; commits are read by hash from `$HOME/Documents/git/yooz/remi` (or `$HOME/Documents/git/yooz/yooz-docs` for a docs PR)
 Plan: plan.md section 3 (which lens groups each PR gets)
 
 ## Goal
