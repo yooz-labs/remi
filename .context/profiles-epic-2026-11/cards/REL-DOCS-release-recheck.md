@@ -26,12 +26,12 @@ Evidence: `/Volumes/S1/yooz/remi/artifacts/profiles-epic-2026-11/REL-DOCS/vX.Y.Z
 
 ## Decided design
 
-Settled: rerun every recorded command exactly as DOCS-P1's card prescribes (same `env -i` form, same fake or real harness choice per command) with the release build; compare each output block with the new run; a difference that is only the version string or a timestamp is updated in place; a difference in behavior, or a page section describing a phase the release does not ship, is removed or corrected to the release's behavior and listed in the report.
+Settled: copy `check-output-blocks.ts` from the latest DOCS step's evidence folder (`/Volumes/S1/yooz/remi/artifacts/profiles-epic-2026-11/DOCS-P<n>/r<round>/`, the newest one) into this card's evidence folder; rerun every command listed in the docs PR body's recorded-commands section, exactly as DOCS-P1's card prescribes (same `env -i` form, same fake or real harness choice per command) with the release build; compare each output block with the new run; a difference that is only the version string or a timestamp is updated in place; a difference in behavior, or a page section describing a phase the release does not ship, is removed or corrected to the release's behavior and listed in the report.
 The worker may choose: nothing else.
 
 ## Acceptance
 
-`runs-release.txt` in the evidence folder holds every command, exit code and output; the evidence folder's comparison script prints "all output blocks found" against `runs-release.txt`; `bun run build` in the docs worktree passes; the PR body gains a "Rechecked against vX.Y.Z" section listing what changed.
+`runs-release.txt` in the evidence folder holds every command, exit code and output; the copied `check-output-blocks.ts` prints "all output blocks found" against `runs-release.txt`; the email regex of DOCS-P1's acceptance item 5 finds nothing in `runs-release.txt` or the extended PR body; `bun run build` in the docs worktree passes; the PR body gains a "Rechecked against vX.Y.Z" section listing what changed.
 
 ## Gates
 

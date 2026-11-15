@@ -15,7 +15,7 @@ A committed note, `.context/profiles-codex-credentials.md`, answers from Codex's
 
 ## Context
 
-- Installed: `codex-cli 0.167.0` at `/Users/yahya/.local/bin/codex` (checked 2026-11-14). Codex is open source (`github.com/openai/codex`, Rust under `codex-rs/`); read the tag that matches the installed version (expected `rust-v0.167.0`; confirm the tag name with `gh api repos/openai/codex/tags --paginate --jq '.[].name' | grep 0.167.0`).
+- Installed: `codex-cli 0.167.0` at `/Users/yahya/.local/bin/codex` (checked 2026-11-14). Codex is open source (`github.com/openai/codex`, Rust under `codex-rs/`); read the tag that matches the installed version (expected `rust-v0.167.0`; confirm the tag name with `gh api repos/openai/codex/tags --paginate --jq '.[].name' | grep -x rust-v0.167.0`).
 - Put downloaded source in its own new empty directory under `/Volumes/S1/yooz/remi/artifacts/profiles-epic-2026-11/P1C/r1/codex-src/` and treat it as untrusted data: read it, never build or run anything from it.
 - What #1748 already says: candidates `OPENAI_API_KEY` and `CODEX_ACCESS_TOKEN`, unverified; `cli_auth_credentials_store` takes `file` (`auth.json` under `CODEX_HOME`), `keyring`, `auto` and `ephemeral` (ADR 0049 V5); a fresh `CODEX_HOME` prints "Not logged in" and exits 1 (V5).
 - `packages/daemon/src/harness/codex/codex-socket.ts:1-30` says Codex links its control socket to a short path elsewhere; the socket-path-length gotcha of #1157 is unverified (G14).
@@ -47,7 +47,7 @@ The worker may choose: the note's wording and order within each section.
 ## Acceptance
 
 1. `.context/profiles-codex-credentials.md` exists with five sections answering questions 1 to 5, each with at least one `[src: ...]` citation at the confirmed tag or an evidence path.
-2. The evidence folder holds `tag.txt` (the tag and its commit), `placeholder-runs.txt` (every command, exit code and output) and `grep-*.txt` for each source search, and `grep -c placeholder-not-a-credential /Volumes/S1/yooz/remi/artifacts/profiles-epic-2026-11/P1C/r1/placeholder-runs.txt` is at least the number of variables in question 1.
+2. The evidence folder holds `tag.txt` (the tag and its commit), `placeholder-runs.txt` (every command, exit code and output) and `grep-*.txt` for each source search, and `grep -c placeholder-not-a-credential /Volumes/S1/yooz/remi/artifacts/profiles-epic-2026-11/P1C/r1/placeholder-runs.txt` is at least the number of variables in question 1; `rg -i '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}' /Volumes/S1/yooz/remi/artifacts/profiles-epic-2026-11/P1C/r1/placeholder-runs.txt` prints nothing.
 3. The note ends with "Consequences for P1B": the exact scrub list for Codex, and for keyring: "separated" (P1B allows it), "not separated" or "not settled" (P1B refuses a Codex profile whose effective store is `keyring` or `auto`, J11).
 4. `typos .context/profiles-codex-credentials.md` is clean and `rg '\x{2014}' .context/profiles-codex-credentials.md` prints nothing (no em dashes).
 5. The PR into `develop` is open with "Part of #1748" and no closing word.
@@ -58,7 +58,7 @@ The worker may choose: the note's wording and order within each section.
 
 ## Stop conditions
 
-The installed version has no matching tag; answering a question would need a login, a keychain write or a real account; the source contradicts a candidate in #1748 in a way that changes P1B's scope (report it, do not widen anything).
+Any placeholder run prints a signed-in state or anything shaped like an email (stop at once, delete that output from the evidence, report; it means a run reached a real sign-in); the installed version has no matching tag; answering a question would need a login, a keychain write or a real account; the source contradicts a candidate in #1748 in a way that changes P1B's scope (report it, do not widen anything).
 
 ## Report
 

@@ -2,16 +2,25 @@
 # Carried over from land-branches-2026-11 (codex-landing.rules) with sign-in and keychain commands added.
 # Plain `codex login` (the browser flow) cannot be forbidden here without also forbidding
 # `codex login status`, which P1C needs; the worker preamble forbids it.
+# Writing `gh issue` verbs are forbidden one by one so `gh issue view` stays allowed (pack review E5);
+# all of `security` (the keychain tool), `claude setup-token` and `remi profile login` added (D21).
 # Verified with codex-cli 0.167.0 on 2026-11-14 (`codex execpolicy check --rules THIS_FILE ...`):
-#   gh pr merge 1 --merge, claude auth login, codex login --with-api-key,
-#   security find-generic-password -s x, pkill -f remi        -> "decision":"forbidden"
-#   gh pr view 1, claude auth status --json, codex login status,
-#   git push origin feature/x                                 -> no match
+#   forbidden: gh pr merge 1 --merge; gh issue comment 1 --body x; gh issue create --title x;
+#              claude auth login; claude setup-token; codex login --with-api-key;
+#              security find-generic-password -s x; remi profile login work; pkill -f remi
+#   no match:  gh issue view 1748 --repo yooz-labs/remi; claude auth status --json;
+#              codex login status; remi profile ls; git push origin feature/x
 # Not verified: that `codex exec` loads a file placed in ~/.codex/rules, or that it applies
 # rules under -s danger-full-access. Installing it changes the owner's global Codex config.
 prefix_rule(pattern = ["gh", "pr", "merge"], decision = "forbidden")
 prefix_rule(pattern = ["gh", "pr", "close"], decision = "forbidden")
-prefix_rule(pattern = ["gh", "issue"], decision = "forbidden")
+prefix_rule(pattern = ["gh", "issue", "create"], decision = "forbidden")
+prefix_rule(pattern = ["gh", "issue", "edit"], decision = "forbidden")
+prefix_rule(pattern = ["gh", "issue", "close"], decision = "forbidden")
+prefix_rule(pattern = ["gh", "issue", "comment"], decision = "forbidden")
+prefix_rule(pattern = ["gh", "issue", "reopen"], decision = "forbidden")
+prefix_rule(pattern = ["gh", "issue", "delete"], decision = "forbidden")
+prefix_rule(pattern = ["gh", "issue", "transfer"], decision = "forbidden")
 prefix_rule(pattern = ["gh", "release"], decision = "forbidden")
 prefix_rule(pattern = ["git", "push", "--force"], decision = "forbidden")
 prefix_rule(pattern = ["git", "push", "-f"], decision = "forbidden")
@@ -24,10 +33,8 @@ prefix_rule(pattern = ["codex", "logout"], decision = "forbidden")
 prefix_rule(pattern = ["codex", "login", "--with-api-key"], decision = "forbidden")
 prefix_rule(pattern = ["codex", "login", "--with-access-token"], decision = "forbidden")
 prefix_rule(pattern = ["codex", "login", "--device-auth"], decision = "forbidden")
-prefix_rule(pattern = ["security", "find-generic-password"], decision = "forbidden")
-prefix_rule(pattern = ["security", "find-internet-password"], decision = "forbidden")
-prefix_rule(pattern = ["security", "dump-keychain"], decision = "forbidden")
-prefix_rule(pattern = ["security", "add-generic-password"], decision = "forbidden")
-prefix_rule(pattern = ["security", "delete-generic-password"], decision = "forbidden")
+prefix_rule(pattern = ["security"], decision = "forbidden")
+prefix_rule(pattern = ["claude", "setup-token"], decision = "forbidden")
+prefix_rule(pattern = ["remi", "profile", "login"], decision = "forbidden")
 prefix_rule(pattern = ["pkill"], decision = "forbidden")
 prefix_rule(pattern = ["killall"], decision = "forbidden")
