@@ -455,7 +455,15 @@ export async function createClaudeSession(
         sessionRegistry,
         sessionStore,
         liveSessionsRegistry,
-        outputSink: outputProcessor,
+        outputSink: {
+          process: (text) => {
+            // #1773: real PTY output is an activity heartbeat even when the
+            // parser has no status or question update to emit for this chunk.
+            messageApi.noteWorkEvent({ type: 'activity' });
+            outputProcessor.process(text);
+          },
+          flush: () => outputProcessor.flush(),
+        },
         ...(browserLaunch && { onConsumerEnded: browserLaunch.consumerEnded }),
         wsPort: deps.wsPort(),
         sendMessage,
