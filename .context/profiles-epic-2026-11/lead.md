@@ -22,4 +22,4 @@
 2026-11-14: CP1: complete P2A to P2D, DOCS-P2; re-verify paths after phase 1.
 
 ## Pending owner questions
-2026-11-14: J1a to J15, J18 at CP0; J17 at CP1; J16 at CP2; J2 now recommends no.
+2026-11-14: Owner approved; J1b option 1 (owner limits), J2 (b), J7 manager may measure.

@@ -11,7 +11,7 @@ Plan: plan.md section 0.4 (yooz-docs merges) and runbook section 10, "Release do
 
 ## Goal
 
-Every command and output on the profiles docs pages is shown to match the release build exactly, or the pages are corrected in one commit to match it, so the docs PR can be marked ready and merged by the owner for that release (plan J2).
+Every command and output on the profiles docs pages is shown to match the release build exactly, or the pages are corrected in one commit to match it, so the manager can mark the docs PR ready and merge it for that release under plan J2's three conditions (recheck passed, the owner's release go on the board, the release published).
 
 ## Context
 

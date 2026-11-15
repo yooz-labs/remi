@@ -20,7 +20,7 @@ A draft pull request in `yooz-labs/yooz-docs` adds `docs/tools/remi/guides/profi
 - What phase 1 ships: read `docs/agent-reference/profiles.md` and `packages/daemon/src/profiles/` at `DEV_SHA` in the remi build worktree; the refusal texts and command lines on the pages are copied from that source and from the runs, never paraphrased into something the build does not print.
 - The page paths are the ones the issues name; the owner has not confirmed them (plan J4). If the owner's answer differs, the lead changes this card before dispatch.
 - Section headings below are fixed because the apps will link to their anchors (A1, A2).
-- The docs PR merges for the remi release that ships phase 1 and not before; it is marked ready only at REL-DOCS, and the owner merges it (plan J2). Keep it a draft.
+- The docs PR merges for the remi release that ships phase 1 and not before; it is marked ready only at REL-DOCS, where the manager merges it under plan J2's three conditions. Keep it a draft.
 
 ## Scope
 

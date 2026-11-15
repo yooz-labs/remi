@@ -100,6 +100,7 @@ codex exec -m gpt-6-luna -c model_reasoning_effort=max \
 - Right after start: read the `thread.started` id from `EVID/codex-events.jsonl`; its rollout under `~/.codex/sessions/2026/MM/DD/rollout-*-THREAD.jsonl` must show `cwd` = WT and the expected model and effort; otherwise stop it and dispatch again.
 - Write the thread id, the process id of the background `codex exec` (`$!` or the background task's pid), the model and the effort on the Agents row (`MB set BOARD Agents AGENT --new ...`).
 - Before each dispatch: `MB card PACK/cards/CARD.md` (must print "ready to dispatch"; reviewer and DV cards included).
+- **Limits:** the owner's CP0 values (J1b answered option 1, 2026-11-14): Agents today 100, Codex Luna today 24, Codex Terra today 16, Claude Sonnet today 44, Claude Opus today 16, Advisor consults 20; the board's Budget table, set by the owner, is the authority.
 - **Spend (every agent dispatch):** implementers, fix rounds, DV, reviewers, delta reviewers, lead wakes and advisor consults each run `MB spend BOARD "Agents today"` and their platform row (`"Codex Luna today"`, `"Codex Terra today"`, `"Claude Sonnet today"` or `"Claude Opus today"`); lead wakes and advisor consults also run `MB spend BOARD "Advisor consults"`.
   A refused `spend`: stop dispatching on that row and ask the owner (the skill's rule), unless `board-log.md`'s Decisions contain the exact text `CP0: J1b answered: option 2`; then repeat it with `--over` and `MB log BOARD "over: ITEM n/limit"`, until the ceiling (a row's Used reaches twice its Limit, or the third consecutive day with any row over), where the manager stops dispatching and asks. `Advisor consults` and `Fable consults` never take `--over`.
   A Codex usage limit: write the board and ask the parity question (section 12); never move a card to Claude on your own, unless the owner's standing rule of 2026-11-13 (both platforms' slots are used) already allows that card's tier on a free Claude slot, which `MB status` shows.
@@ -229,7 +230,7 @@ Apply section 11, `MB decide BOARD "ANSWER" --by owner`, set the question `close
 3. Fresh base: `git -C MAIN fetch origin && git -C MAIN log --format=%s HEAD_SHA..origin/develop` lists only `chore: bump version to ...` subjects; otherwise the worker merges `origin/develop` into the branch and the checks run again.
 4. Checks on the final head: every line of `gh pr checks N --repo yooz-labs/remi` is `pass` or `skipping` (it also prints `Test worker 0` to `2`, `E2E Tests`, `Release Guard`, `Auto Release` and `Sync Develop After Release`), none pending or failing, and these lines are present: `CI Scope`, `Lint`, `Type Check`, `Test`, `Spelling`, `Relay Scope`, `local-relay`; a PR touching `packages/native/` also has `Build and Test (Native)` passing (not skipping); a PR touching `packages/daemon/`, `packages/shared/`, `packages/signaling/`, `tests/integration/` or `.github/` has `local-relay` passing as the real soak: `gh pr checks N --repo yooz-labs/remi --json name,state,startedAt,completedAt --jq '.[] | select(.name=="local-relay") | ((.completedAt | fromdateiso8601) - (.startedAt | fromdateiso8601))'` prints a number of seconds greater than 3300 (checked on PR #1782: 3863). A yooz-docs PR: every line of `gh pr checks N --repo yooz-labs/yooz-docs` passes.
 5. Closing references: `cd "$HOME/Documents/git/yooz/remi" && git log --format=%B origin/develop..HEAD_SHA | bun -e 'import { extractClosingReferences } from "./packages/shared/src/issue-closing.ts"; console.log(JSON.stringify(extractClosingReferences(await Bun.stdin.text())))'` (run from the main checkout, so the relative import resolves; it only reads) prints `[]`, and the PR title and body through the same command print `[]`; anything else goes to the owner before the merge (the card forbids closing words, so a hit is also a send-back finding).
-6. Step extras: P4A needs the owner's latency measurement recorded in its PR (J7); D51 needs the owner's approval; a yooz-docs profiles PR is never merged by this gate: for a DOCS step, items 1, 2 and 4 on the draft PR make the step `done` (section 8, "Docs lane"); the merge is section 10, "Release docs".
+6. Step extras: P4A needs the stopped-remi latency measurement recorded in its PR (J7: made by the manager or a worker on a test hub under a temporary `REMI_HOME`, never the real hub or live sessions; any part that needs a real account is the owner's OG-P4); D51 needs the owner's approval; a yooz-docs profiles PR is never merged by this gate: for a DOCS step, items 1, 2 and 4 on the draft PR make the step `done` (section 8, "Docs lane"); the merge is section 10, "Release docs".
 
 For a step PR in yooz-labs/remi: `gh pr ready N --repo REPO` if still draft, `gh pr merge N --repo REPO --merge --match-head-commit HEAD_SHA`, `MB set BOARD Steps ID State=done`, close the step's agents, `MB log`.
 A DOCS step skips this paragraph entirely: no `gh pr ready`, no `gh pr merge`; it only gets `MB set BOARD Steps ID State=done` and the `verified, PR N draft` log line (section 8, "Docs lane").
@@ -245,7 +246,7 @@ A merge the host refuses: never retry or work around it; set the step `owner` an
 ### Release docs
 
 When the owner says a remi release that ships one or more profile phases is published (the tag exists on `origin`): dispatch REL-DOCS; on its verified report, one `docs` reviewer on the recheck commit if it changed the pages; then the yooz-docs merge gate (items 1, 2 and 4 above, with `--repo yooz-labs/yooz-docs`) and `gh pr ready N --repo yooz-labs/yooz-docs`.
-yooz-docs deploys to a public site on merge, so by default the manager does not merge it: notify the owner with the exact command `gh pr merge N --repo yooz-labs/yooz-docs --merge --match-head-commit HEAD_SHA`, set REL-DOCS `owner`, and set it `done` when `gh pr view N --repo yooz-labs/yooz-docs --json state` shows `MERGED` (plan J2, recommended no). Only if the owner answered J2 yes does the manager run that command itself.
+yooz-docs deploys a public site (Cloudflare Pages) on merge; the owner answered J2 (b) as an informed choice, so the manager merges the profiles docs PR itself, with `gh pr merge N --repo yooz-labs/yooz-docs --merge --match-head-commit HEAD_SHA`, only when all three hold: (1) the REL-DOCS recheck passed against the release build; (2) the owner's explicit release go for that release is in `board-log.md` as a `decide ... --by owner` line; (3) the release is published (its tag exists on `origin` and the owner said it is out), so the pages describe a shipped build. If any is missing, set REL-DOCS `owner` and ask. Never merge any other yooz-docs PR, and never a DOCS step's draft before REL-DOCS. Then set REL-DOCS `done` when `gh pr view N --repo yooz-labs/yooz-docs --json state` shows `MERGED`.
 
 ## 11. Owner questions and what each answer does
 
@@ -257,8 +258,8 @@ At CP0 the owner answers J1a to J15 and J18 (plan section 7); the lead or the ow
 | J1b budgets | option 1 (recorded `CP0: J1b answered: option 1`) | the owner edits the Budget limits, and the owner sets `Advisor consults` to 20; a refused `spend` stops that row and asks |
 | | option 2 (recorded `CP0: J1b answered: option 2`) | that exact line enables `--over` within the ceiling (section 5, "Spend"), and the owner sets `Advisor consults` to 20 |
 | | changed | the owner edits Parity, Slots or Budget; the manager runs `MB check` and logs it |
-| J2 yooz-docs merge | no (recommended) | REL-DOCS ends with the merge command handed to the owner (section 10, "Release docs") |
-| | yes | the manager merges the docs PR after the REL-DOCS recheck and the yooz-docs merge gate |
+| J2 yooz-docs merge | no (lead's recommendation) | REL-DOCS ends with the merge command handed to the owner |
+| | yes (owner's answer, 2026-11-14) | the manager merges the profiles docs PR under the three conditions of section 10, "Release docs"; no other yooz-docs PR |
 | J3 release grouping | as recommended | the lead writes the grouping into `lead.md`; the manager tells the owner at each release which phases are complete |
 | J4 docs paths | keep | none |
 | | other paths | lead wake: change DOCS cards and the app slices' link targets before DOCS-P1 is dispatched |
@@ -266,7 +267,7 @@ At CP0 the owner answers J1a to J15 and J18 (plan section 7); the lead or the ow
 | | no | lead wake at CP1: phase 2 cards cite ADR 0051 on its branch |
 | J6 phase 2 during OG-P1 | yes | CP1 does not wait for OG-P1 |
 | | no | CP1 Depends gains OG-P1 (the lead sets it) |
-| J7 P4A merge | wait | merge gate item 6 |
+| J7 P4A merge | wait (owner: the manager may measure on a test hub) | merge gate item 6; the CP3 lead writes the measurement into P4A's card |
 | | ship unregistered | lead wake at CP3: P4A's card changes |
 | J8 phases 3 and 4 | serial | none |
 | | parallel | lead wake at CP2: P4A's Depends becomes CP2 and the collision rule of queue.md applies |
@@ -299,7 +300,7 @@ Form: "Update the parity to ... (Recommended) / Move this card to Claude for tod
 - Dispatch before CP0, an outline step, a parked step, or a rule step.
 - Touch the owner's real hub (ports 18765 to 18769), its session daemons, `/private/tmp/claude-501`, `~/.appstoreconnect`, or signal a process the manager did not start.
 - Run a login, read a credential, or start a visible GUI run without the owner's announced consent.
-- Merge into `main`; merge a yooz-docs PR (it publishes a public site; the owner merges, unless the owner answered J2 yes, and never before REL-DOCS); merge P4A before the owner's latency measurement; merge a fix PR anywhere but its step PR's head branch.
+- Merge into `main`; merge a yooz-docs PR other than the profiles docs PR at REL-DOCS under section 10's three conditions (it publishes a public site; J2), or a DOCS step's draft before REL-DOCS; merge P4A before the latency measurement is recorded; merge a fix PR anywhere but its step PR's head branch.
 - Upload to TestFlight without the owner's go and a build number above the real current one (the owner gives the number).
 - Deploy anything under `packages/signaling/` (the owner redeploys).
 - Use the frontier tier unless the owner asks.

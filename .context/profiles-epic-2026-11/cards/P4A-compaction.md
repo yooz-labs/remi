@@ -18,7 +18,7 @@ From the terminal or a client of a daemon that lists `session_compaction`, a per
 Verified on `develop` `c9e13967`; re-verify at CP3.
 - `PostCompact` and `PreCompact` are typed (`packages/daemon/src/hooks/hook-types.ts:378-398`) and neither is registered (`REMI_REGISTERED_HOOK_EVENTS`, lines 724-739), so a slow or dead remi never gates compaction (#203, `hooks/hook-config-manager.ts:140-146, 293`).
 - The guarded write path and the one `promptUp` signal chat and Stop read: `docs/agent-reference/questions-and-notifications.md` ("Chat text and Stop's `/exit` are refused while a prompt is up").
-- The owner gate: a stopped remi must not delay compaction with `PostCompact` registered; measured by the owner (OG-P4) before the merge (plan J7).
+- The latency gate: a stopped remi must not delay compaction with `PostCompact` registered, measured before the merge (plan J7). Owner, 2026-11-14: the manager or a worker may make the measurement on a test hub under a temporary `REMI_HOME`, never the real hub on 18765 or live sessions; a part that needs a real Claude or Codex account stays the owner's OG-P4. The CP3 lead writes into this card what can be measured without an account and how.
 
 ## Scope
 

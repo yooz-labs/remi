@@ -33,6 +33,7 @@ Record: pass or fail per harness, and the plan type shown for Codex.
 
 ## OG-P4: one real compaction per harness, and the stopped-remi latency (issue #1751)
 
+Owner, 2026-11-14 (J7): the manager, or a worker it dispatches, may make the latency measurement itself, on a test hub under a temporary `REMI_HOME`, never against the real hub on 18765 or the owner's live sessions; only a part that needs a real Claude or Codex account (a real `/compact` is a model request) stays with the owner, as below.
 Before P4A merges (plan J7): with `PostCompact` registered by P4A's branch build, stop remi (`kill` the session daemon you started for this check, nothing else), run `/compact` in the still-open Claude session, and measure how long compaction takes compared with the same `/compact` without the hook (the exact procedure is in P4A's PR body).
 After P4A merged: one real compaction through remi per harness (Claude and Codex) completes and reports.
 Record: the two durations, pass or fail per harness.
