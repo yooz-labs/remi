@@ -30,7 +30,7 @@ Draft for the CP1 lead: component placement following ADR 0051 A5 and A6 for the
 
 ## Acceptance
 
-From #1749, to be made literal at CP1: against a daemon without the capability the picker is hidden; the picker offers only selectable profiles and preselects the hub's default with its reason; the filter chip narrows only the session list; no badge on cards while only the default is shared; the web renders an unknown expectation as unknown, never signed in; two-sided conformance with the real daemon handler.
+From #1749, to be made literal at CP1: against a daemon without the capability the picker is hidden; the picker offers only selectable profiles and preselects the hub's default with its reason; the filter chip narrows only the session list; no badge on cards while only the default is shared; the web renders an unknown expectation as unknown, never signed in; the session detail says "Default sign-in" while only the default is shared (ADR 0051 Q3); every interface text says "profile", never "account" except for the provider's account itself (ADR 0051 Q4; a source scan of the new strings); two-sided conformance with the real daemon handler.
 
 ## Gates
 

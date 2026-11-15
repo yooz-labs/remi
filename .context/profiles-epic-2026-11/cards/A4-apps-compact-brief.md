@@ -27,7 +27,7 @@ Draft for the CPA4 lead: the in-flight guard; the container listing in the integ
 
 ## Acceptance
 
-From #1791, to be made literal at CPA4 (each checkbox a named test or command), including native gates under the Xcode lock and `bunx biome check .`, all four type checks and `bun test` for the web part.
+From #1791, to be made literal at CPA4 (each checkbox a named test or command), including native gates under the Xcode lock and `bunx biome check .`, all four type checks and `bun test` for the web part. Also, from ADR 0051 (pack review D24): the session detail says "Default sign-in" while only the default is shared (Q3), and every interface text says "profile", never "account" except for the provider's account itself (Q4), checked by a source scan of the new strings.
 
 ## Gates
 

@@ -27,11 +27,11 @@ Draft: shared protocol types and fixtures (`profile_usage_request|response`, `pr
 
 ## Decided design
 
-Draft for the CP2 lead: threshold evaluation at turn ends against the largest window; where the refresh outcome is kept for `too_soon`; the update cadence of `profile_usage_update`.
+Draft for the CP2 lead: owner call J16 (answered by CP2): the collapse key `usage-warning-<profile id>-<window id>` is delivery metadata the Worker and Apple see even on the sealed path; either a keyed hash of the profile id made on the machine (recommended) or the id kept and the exposure stated in DOCS-P3 and A3's footnote; threshold evaluation at turn ends against the largest window; where the refresh outcome is kept for `too_soon`; the update cadence of `profile_usage_update`.
 
 ## Acceptance
 
-From #1750, to be made literal at CP2: each allowed Codex refresh sends exactly one `account/rateLimits/read` and two inside 30 seconds send one; no running Codex session answers `no_live_session` with no session or app-server started; a Claude Code refresh leaves the fake `claude`'s input log empty and answers `reread`; API key answers `not_applicable`; a read past 10 seconds answers `timeout` and keeps the numbers; the legacy body and the secure sender's input carry identical text and a source guard finds no other construction; planted markers in machine, session, directory and account identifiers appear in no warning; `usage_warning` once per profile, window and reset period at `warn_percent`, never for an unknown value, respecting the device preference; a Claude Code profile with no reported windows returns none and its refresh is `not_applicable`.
+From #1750, to be made literal at CP2: each allowed Codex refresh sends exactly one `account/rateLimits/read` and two inside 30 seconds send one; no running Codex session answers `no_live_session` with no session or app-server started; a Claude Code refresh leaves the fake `claude`'s input log empty and answers `reread`; API key answers `not_applicable`; a read past 10 seconds answers `timeout` and keeps the numbers; the legacy body and the secure sender's input carry identical text and a source guard finds no other construction; planted markers in machine, session, directory and account identifiers appear in no warning; `usage_warning` once per profile, window and reset period at `warn_percent`, never for an unknown value, respecting the device preference; a Claude Code profile with no reported windows returns none and its refresh is `not_applicable`; a device that never registered `pushPrefs.usageWarning` (an older app) gets no `usage_warning` push; `warn_percent` defaults to 90 and `offer_percent` to 95, each accepted only from 50 to 99 (ADR 0049 Q3), pinned by literal tests.
 
 ## Gates
 

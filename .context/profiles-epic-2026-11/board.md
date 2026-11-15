@@ -75,9 +75,9 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | OG-P1 | [Owner gate: two profiles, 24 h](owner-gates.md) | - | - | - | - | blocked | P1B | - | - | - | rule: set owner when P1B is done; notify owner-gates.md OG-P1 |
 | CP1 | [Checkpoint after phase 1](checkpoints.md) | - | - | - | - | blocked | P1B, DOCS-P1 | - | - | - | rule: wake lead (complete P2A-P2D, DOCS-P2, P5A-PREP); owner go |
 | D51 | Merge PR 1785 (ADR 0051) after owner approval | - | - | - | - | owner | - | - | - | - | rule: owner approves PR 1785 (J5); then docs merge gate and merge |
-| P5A-PREP | [Capture prep for #1752 (outline)](cards/P5A-PREP-capture-config.md) | - | worker | - | - | outline | CP1 | - | - | 4h | lead completes at CP1 |
-| P2A | [Profile paths #1749 (outline)](cards/P2A-profile-paths.md) | - | worker-hard | - | - | outline | CP1, D51 | - | - | 1.5d | lead completes at CP1 |
-| P2B | [session_profiles #1749 (outline)](cards/P2B-session-profiles-protocol.md) | - | worker-hard | - | - | outline | P2A | - | - | 2d | lead completes at CP1 |
+| P5A-PREP | [Capture prep for #1752](cards/P5A-PREP-capture-config.md) | - | worker | - | - | todo | CP0 | - | - | 4h | complete card; dispatch after CP0 beside P1A and P1C; docs lens review |
+| P2A | [Profile paths #1749 (outline)](cards/P2A-profile-paths.md) | - | worker-hard | - | - | outline | CP1 | - | - | 1.5d | lead completes at CP1 |
+| P2B | [session_profiles #1749 (outline)](cards/P2B-session-profiles-protocol.md) | - | worker-hard | - | - | outline | P2A, D51 | - | - | 2d | lead completes at CP1 |
 | P2C | [profile_status #1749 (outline)](cards/P2C-profile-status-protocol.md) | - | worker-hard | - | - | outline | P2B | - | - | 2d | lead completes at CP1 |
 | P2D | [Web profiles #1749 (outline)](cards/P2D-web-profiles.md) | - | worker | - | - | outline | P2C | - | - | 1.5d | lead completes at CP1 |
 | DOCS-P2 | [Profile guide, phase 2 (outline)](cards/DOCS-P2-P4-profile-guide-updates.md) | - | worker | docs | - | outline | P2D | - | - | 6h | lead completes at CP1 |

@@ -4,7 +4,7 @@ Status: outline
 Tier: worker-hard
 Timebox: L, 1.5 days; escalate at 3 days or two failed approaches
 Needs: none
-Depends: CP1 (the lead completes this card there), D51 (ADR 0051 on `develop`)
+Depends: CP1 (the lead completes this card there); not on D51 (profile paths do not use ADR 0051; pack review D23)
 Branch: `feature/issue-1749-profile-paths` off `origin/develop`
 Worktree: `/Volumes/S1/worktrees/remi/profiles-p2a`
 Plan: plan.md section 2 (P2A); issue #1749 Scope paragraphs 1 to 3 and acceptance items 1, 2 and 7
@@ -23,7 +23,7 @@ Verified on `develop` `c9e13967`; the CP1 lead re-verifies every line after phas
 
 ## Scope
 
-Draft, completed at CP1: `transcript/` (a discovery that scans the built-in and every configured profile's `projects/`, each transcript tagged with its profile id), `cli/statusline-installer.ts` and its two call sites (install into each configured Claude profile's `settings.json` under the same "only when no `statusLine`" rule and the same `REMI_HOME` override rule), the download-roots call site (every configured profile's directories, adopted and inactive ones included, as required roots), tests, `docs/agent-reference/profiles.md`, the PR body.
+Draft, completed at CP1: `transcript/` (a discovery that scans the built-in and every configured profile's `projects/`, each transcript tagged with its profile id), `cli/statusline-installer.ts` and its two call sites (install into each configured Claude profile's `settings.json` under the same "only when no `statusLine`" rule; under a `REMI_HOME` override, register only into profile directories inside that remi home, never into adopted directories or the default `~/.claude`, so the owner gates that run with a scratch remi home still get a status line; pack review D15), the download-roots call site (every configured profile's directories, adopted and inactive ones included, as required roots), tests, `docs/agent-reference/profiles.md`, the PR body.
 
 ## Decided design
 

@@ -4,7 +4,7 @@ Status: outline
 Tier: worker-hard
 Timebox: L, 2 days; escalate at 4 days or two failed approaches
 Needs: none
-Depends: P2A
+Depends: P2A, D51 (ADR 0051 on `develop`; moved here from P2A, pack review D23)
 Branch: `feature/issue-1749-session-profiles` off `origin/develop`
 Worktree: `/Volumes/S1/worktrees/remi/profiles-p2b`
 Plan: plan.md section 2 (P2B); issue #1749 "Remote visibility", "Protocol, part 1", the limits, the ADR 0049 amendment; ADR 0051 A5, A15 (first row of phase 2), Q3, Q6

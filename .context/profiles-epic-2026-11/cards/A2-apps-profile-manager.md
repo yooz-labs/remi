@@ -23,11 +23,11 @@ Draft: RemiKit decoders for `profile_status_response`, `profile_settings_respons
 
 ## Decided design
 
-Draft for the CPA2 lead: the source guard that no new file executes a command; the persisted last-known list's shape (no path, email or environment value can be in it, since none is on the wire).
+Draft for the CPA2 lead: copy that does not overclaim (ADR 0011, pack review D5): "Signed in" means the harness reports a stored sign-in, and the app never shows the email while the terminal view shows whatever the harness prints; the source guard that no new file executes a command; the persisted last-known list's shape (no path, email or environment value can be in it, since none is on the wire).
 
 ## Acceptance
 
-From #1789, to be made literal at CPA2 (each checkbox a named test or command), including the unknown-value item (no "Expects a subscription" claim for an unknown `expects`), the planted-marker scan over received frames and the persisted store, and the native gates and visual receipt as in A1.
+From #1789, to be made literal at CPA2 (each checkbox a named test or command), including the unknown-value item (no "Expects a subscription" claim for an unknown `expects`), the planted-marker scan over received frames and the persisted store, and the native gates and visual receipt as in A1. Also, from ADR 0051 (pack review D24): the session detail says "Default sign-in" while only the default is shared (Q3), and every interface text says "profile", never "account" except for the provider's account itself (Q4), checked by a source scan of the new strings.
 
 ## Gates
 

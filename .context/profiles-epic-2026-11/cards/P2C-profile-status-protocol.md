@@ -26,7 +26,7 @@ Draft: shared protocol types and fixtures for `profile_status_request|response`,
 
 ## Decided design
 
-Draft for the CP1 lead: the in-place edit method for `rename` and `remove` in `config.toml` (P1A only appends); the exact guide steps per action; whether `remi profile add` gains flags for visibility and selectability or a separate command does it.
+Draft for the CP1 lead: owner call J17 (answered by CP1): whether the permission rule texts in `profile_settings_response` get the same path replacement as `args` (a token starting with `/` or `~` replaced by the marker) and a planted rule-text path in the marker scan (recommended), or stay verbatim as #1749 words them; the in-place edit method for `rename` and `remove` in `config.toml` (P1A only appends); the exact guide steps per action; whether `remi profile add` gains flags for visibility and selectability or a separate command does it.
 
 ## Acceptance
 
