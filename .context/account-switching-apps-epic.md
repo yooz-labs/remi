@@ -3,12 +3,15 @@
 Design: [ADR 0051](decisions/0051-account-profiles-in-the-apps.md), proposed on 2026-11-14 for #1784; the owner answered its questions Q1 to Q11 the same day.
 The daemon side is [ADR 0049](decisions/0049-account-switching.md) and its drafts in [account-switching-epic.md](account-switching-epic.md).
 
-Status: on 2026-11-14 the manager applied the amended #1749 and the additions to #1748, #1750 and #1751 (the old bodies are backed up in the manager's scratchpad). The #1752 addition is not adopted (Q11), the phase 5 draft is applied when that issue is filed, and Apps 1 to 4 were filed as #1788, #1789, #1790 and #1791 (each with the unknown-value acceptance item for profiles that run the Claude Code harness without Claude credentials); Apps 5 is not filed. The same item was added to #1749 and #1750.
-This file holds three kinds of text, each for the manager to apply with `gh`; workers never edit issues:
+Status: this file is the record of the text applied to GitHub on 2026-11-14, plus the two drafts not yet applied.
+Applied: the amended #1749, and the additions to #1748, #1750 and #1751; Apps 1 to 4 were filed as #1788, #1789, #1790 and #1791, each with the unknown-value acceptance item for profiles that run the Claude Code harness without Claude credentials, and the same item was added to #1749 and #1750.
+Not applied: the #1752 addition is not adopted (Q11), the phase 5 draft is added when that issue is filed, and Apps 5 is not filed.
+Workers never edit issues; the text below is kept so that the issues' wording and the design stay traceable to each other.
+This file holds three kinds of text:
 
-1. the proposed amended title and body of the filed #1749 (owner answer Q2), to apply with `gh issue edit 1749 --title "<title>" --body-file <body>`;
-2. proposed additions to the filed #1748, #1750 and #1751 and to the unfiled phase 5 draft, each to be merged into that issue's body;
-3. five app issues, each a title and a body for `gh issue create --title "<title>" --body-file <body>`.
+1. the amended title and body of #1749 (owner answer Q2), as applied;
+2. the additions to #1748, #1750 and #1751 as applied, and the addition to the unfiled phase 5 draft, still to apply;
+3. the app issues: Apps 1 to 4 as filed (#1788 to #1791) and the unfiled Apps 5.
 
 Each body or addition sits between `~~~markdown` fences, with one paragraph or list item per line, as GitHub renders it.
 Bodies name the daemon phases by their filed numbers (#1748 to #1752); the unfiled phase 5 keeps the placeholder `PHASE-5`.
@@ -49,7 +52,7 @@ The app documentation gate, as a checkbox for each app slice:
 - [ ] Documentation: every command the slice shows comes from the hub's answer and has a Copy action; the screen links to the docs page for this feature, which is published for the release that ships it (no link to a page that does not exist); that page describes the screens this slice ships and nothing unbuilt.
 ~~~
 
-## #1749 as amended (owner answer Q2; to apply with `gh issue edit`)
+## #1749 as amended (owner answer Q2; applied on 2026-11-14)
 
 Title: `Profiles phase 2: profile paths, remote choice, the session badge and the profile manager contract`
 
@@ -113,6 +116,12 @@ Web client: a profile badge on the session card and chat header, with none on th
 
 Temporary profile directories holding synthetic transcripts read by the real discovery code; the real installer against temporary settings files; fake `claude` and `codex` executables on `PATH` that record their argv and the names (not values) of credential variables and print the documented shapes; two-sided conformance tests that construct the real daemon handler and the real web decoder (ADR 0014); hub integration with fake `claude` recording its environment; web component tests for the badge, picker, filter chip and Profiles section. Owner-run gate: a session started from the phone in a mapped folder lands in the right profile. No real account is needed for anything else.
 
+## Addition (ADR 0051 A8, owner requirement with Q11)
+
+Later, profiles will run models through the Claude Code harness without Claude credentials, the way models can run through Codex as the harness, and this phase must not block them: nothing in the profile contract, the `profile_status` and `profile_settings` responses, the picker or the web client may assume that a Claude Code profile is an Anthropic subscription or API key account. What a profile expects comes from its own configuration per harness, never from the harness name, and a value a client does not know is decoded as unknown, never as signed in.
+
+- [ ] A test with a Claude Code profile whose expectation is not a subscription or an API key (a value the clients do not know) shows that `profile_status` returns it without deriving a subscription or key from the harness name, and that the web client renders it as unknown and not as signed in or as the best case.
+
 Part of #1157
 ~~~
 
@@ -148,6 +157,12 @@ Web client: the usage panel gains Refresh, showing each outcome in words, and ev
 - [ ] For one warning, the legacy `/push` body (captured by a local HTTP sink) and the secure sender's input carry identical titles and bodies; a source guard test finds no other construction of `usage_warning` text.
 - [ ] The text holds the label, harness, window, percentage and reset time and nothing else: a scan with planted markers in the machine name, session name, profile directory and account identifiers finds none of them.
 - [ ] Documentation: the usage section of the profile setup guide in `yooz-docs` explains what each number is, its source, age and reset time, what Refresh does for each harness, the `usage_warning` text, and that until the legacy push is retired that text is visible to the Worker and Apple in plaintext; it merges for the release that ships the feature and not before, and describes nothing that is not built.
+
+## Addition (ADR 0051 A8, owner requirement with Q11)
+
+Usage is keyed by what the profile's harness reports, never by the harness name: a profile that runs the Claude Code harness without Claude credentials, which is coming, has no Claude usage window, shows "Usage is not reported for this profile" (not "Usage unknown", which promises an update), and offers no Refresh.
+
+- [ ] A Claude Code profile with no reported usage windows returns no windows, a refresh on it answers `not_applicable` and leaves the fake `claude`'s input log empty, and no code path maps the harness name `claude` to Anthropic usage windows.
 ~~~
 
 ### #1751 (Profiles phase 4)
