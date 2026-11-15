@@ -2,7 +2,7 @@
 
 All notable changes to Remi are documented here.
 
-## [Unreleased]
+## [0.9.0] - 2026-11-14
 
 - On macOS, a session daemon or plain `remi` wrapper session now holds a no-privilege `caffeinate -i` idle-sleep assertion while its session has real work (an open turn, a busy status or a pending question), so the Mac does not idle-sleep under a running agent. The display can still sleep, the hub never holds, and other platforms do nothing. The `[awake]` keys `level1`, `question_hold_minutes`, `idle_grace_seconds`, `stuck_busy_minutes` and `ttl_minutes` default to on, 30, 120, 15 and 20, and `level1 = false` turns it off. There is no lid-closed mode and no battery floor yet, and `level1_battery_floor_percent` is rejected by config validation. Not verified on battery, with the lid closed or across a real system sleep (issue #1773, #1782, ADR 0050; see `docs/agent-reference/keep-awake.md`).
 - The daemon composes a signed direct terminal view service for the strict `session_terminal_*` frames, with bounded capture ownership and a 4 MiB per-stack budget. The per-home cap on captured terminal models falls from 32 to 8, and the ledger moves to version 2, which an older reader rejects. It does not advertise a `terminal_view` capability, has no relay path and has no shipping caller, so no released client can use it; terminal input, resize and account operations are not part of it (issue #1643, #1655, ADR 0047, ADR 0048). Terminal ownership over the encrypted relay prefix has qualification tests only (#1657).
