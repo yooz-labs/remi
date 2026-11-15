@@ -49,13 +49,13 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 30 | 0 | daily | copied; every dispatch on every platform; owner 2026-11-13: slots limit work, a refused spend is repeated with --over and logged (J1) |
-| Codex Luna today | 8 | 0 | daily | copied; worker dispatches on gpt-6-luna; --over per J1 |
-| Codex Terra today | 4 | 0 | daily | copied; worker-hard dispatches on gpt-6.1-terra; --over per J1 |
-| Claude Sonnet today | 16 | 0 | daily | copied; Claude workers and reviewers; --over per J1 |
-| Claude Opus today | 4 | 0 | daily | copied; Opus workers, lead wakes, advisor consults; --over per J1 |
-| Advisor consults | 8 | 0 | never | copied; lead tier (Opus), whole plan |
-| Fable consults | 1 | 0 | never | copied; only if the owner asks |
+| Agents today | 30 | 0 | daily | copied; every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask, or --over within the ceiling only if J1b option 2 is recorded |
+| Codex Luna today | 8 | 0 | daily | copied; Luna implementers, fix rounds, DV; J1b option 1 suggests 12 |
+| Codex Terra today | 4 | 0 | daily | copied; Terra implementers and fix rounds; J1b option 1 suggests 8 |
+| Claude Sonnet today | 16 | 0 | daily | copied; Claude Sonnet implementers and every reviewer; J1b option 1 suggests 24 |
+| Claude Opus today | 4 | 0 | daily | copied; Opus implementers, lead wakes, advisor consults; J1b option 1 suggests 8 |
+| Advisor consults | 8 | 0 | never | copied; lead wakes and advisor consults, whole plan; never --over; J1b suggests 20 |
+| Fable consults | 1 | 0 | never | copied; only if the owner asks; never --over |
 | Agents this wave | 0 | 0 | wave | unused: this plan has no waves |
 
 ## Waves

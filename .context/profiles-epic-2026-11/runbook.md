@@ -90,7 +90,9 @@ codex exec -m gpt-6-luna -c model_reasoning_effort=max \
 - Full access (owner answers Q10 and Q18 of land-branches-2026-11, carried over by plan J1): replace the `-s workspace-write` line and the two `sandbox_workspace_write` lines with `-s danger-full-access` for native cards (Needs `xcode`) and for any card whose previous run was blocked by a sandbox denial (an `EPERM` or "Operation not permitted" in its log), only when `git -C WT status --porcelain --untracked-files=no` prints nothing; otherwise do not dispatch, log it and ask the owner.
 - Right after start: read the `thread.started` id from `EVID/codex-events.jsonl`; its rollout under `~/.codex/sessions/2026/MM/DD/rollout-*-THREAD.jsonl` must show `cwd` = WT and the expected model and effort; otherwise stop it and dispatch again.
 - Write the thread id, model and effort on the Agents row (`MB set BOARD Agents AGENT --new ...`).
-- Before each dispatch: `MB card PACK/cards/CARD.md` (must print "ready to dispatch"), `MB spend BOARD "Agents today"` and the platform row (`"Codex Luna today"`, `"Codex Terra today"`, `"Claude Sonnet today"` or `"Claude Opus today"`); a refused `spend` is repeated with `--over` and logged (owner, 2026-11-13; plan J1).
+- Before each dispatch: `MB card PACK/cards/CARD.md` (must print "ready to dispatch"; reviewer and DV cards included).
+- **Spend (every agent dispatch):** implementers, fix rounds, DV, reviewers, delta reviewers, lead wakes and advisor consults each run `MB spend BOARD "Agents today"` and their platform row (`"Codex Luna today"`, `"Codex Terra today"`, `"Claude Sonnet today"` or `"Claude Opus today"`); lead wakes and advisor consults also run `MB spend BOARD "Advisor consults"`.
+  A refused `spend`: stop dispatching on that row and ask the owner (the skill's rule), unless `board-log.md` holds the owner's `decide` line recording J1b option 2; then repeat it with `--over` and `MB log BOARD "over: ITEM n/limit"`, until the ceiling (a row's Used reaches twice its Limit, or the third consecutive day with any row over), where the manager stops dispatching and asks. `Advisor consults` and `Fable consults` never take `--over`.
   A Codex usage limit: write the board and ask the parity question (section 12); never move a card to Claude on your own, unless the owner's standing rule of 2026-11-13 (both platforms' slots are used) already allows that card's tier on a free Claude slot, which `MB status` shows.
 
 ### After every worker run (Codex or Claude)
@@ -142,7 +144,7 @@ The skill's tick, with these project rules:
 ## 9. The intermittent lead and lead.md
 
 The lead is Claude Opus, woken only for: a checkpoint (`PACK/checkpoints.md`), an advisor ruling that changes a card, two failed approaches on a step, a red `develop`, a dropped dependency, an owner answer that contradicts a card, or a failed owner gate.
-It is not a standing slot (owner, 2026-11-13: lead and advisor are extra to the worker slots); it spends `"Agents today"` and `"Claude Opus today"` (with `--over`).
+It is not a standing slot (owner, 2026-11-13: lead and advisor are extra to the worker slots); it spends `"Agents today"`, `"Claude Opus today"` and `"Advisor consults"` (section 5, "Spend"; `Advisor consults` never takes `--over`).
 
 Lead brief (one message):
 
@@ -234,7 +236,9 @@ At CP0 the owner answers J1 to J12 (plan section 7); the manager records each wi
 
 | J | Answer | Board or card change |
 | --- | --- | --- |
-| J1 defaults | yes | none; `spend --over` and the sandbox rule of section 5 apply |
+| J1a defaults | yes | none; the sandbox rule of section 5 applies |
+| J1b budgets | option 1 | the owner edits the Budget limits; a refused `spend` stops that row and asks |
+| | option 2 | the `decide` line enables `--over` within the ceiling (section 5, "Spend") |
 | | changed | the owner edits Parity, Slots or Budget; the manager runs `MB check` and logs it |
 | J2 yooz-docs merge | no (recommended) | REL-DOCS ends with the merge command handed to the owner (section 10, "Release docs") |
 | | yes | the manager merges the docs PR after the REL-DOCS recheck and the yooz-docs merge gate |

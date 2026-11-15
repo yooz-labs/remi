@@ -75,8 +75,8 @@ Never hand-edit versions; never add `[skip ci]` to a PR head.
 
 ### 0.5 Question classes that may take a default
 
-None.
-Every owner question waits for an answer; silence is never an answer.
+None, with one possible exception decided by the owner at CP0: if the owner answers J1b with option 2, a refused `spend` within the ceiling (twice a row's limit, at most two consecutive days over) is pre-authorized to proceed with `--over`, logged each time (runbook section 5); `Advisor consults` and `Fable consults` are never in that class.
+Every other owner question waits for an answer; silence is never an answer.
 
 ### 0.6 Routing
 
@@ -228,7 +228,13 @@ Copied from the land-branches-2026-11 board (`/Volumes/S1/worktrees/remi/land-br
   Codex is first in Slots order, so `status` places a step on Codex before Claude.
   The owner reset the Codex quota on 2026-11-14; both platforms are available.
 - Codex sandbox: `workspace-write` with the plan's writable roots, and `danger-full-access` in a clean worktree for native cards and for any card a sandbox denial blocked (land-branches Q10 and Q18, carried over; runbook section 5).
-- Budget: the land-branches rows and limits (Agents today 30, Codex Luna today 8, Codex Terra today 4, Claude Sonnet today 16, Claude Opus today 4, Advisor consults 8, Fable consults 1, Agents this wave unused), with the owner's 2026-11-13 rule that slots, not daily budgets, limit work: a refused `spend` is repeated with `--over` and logged, never a reason to stop (J1).
+- Budget: the board carries the land-branches rows and limits (Agents today 30, Codex Luna today 8, Codex Terra today 4, Claude Sonnet today 16, Claude Opus today 4, Advisor consults 8, Fable consults 1, Agents this wave unused).
+  Every agent dispatch spends `Agents today` and its platform row: implementers, fix rounds, DV, reviewers, delta reviewers, lead wakes and advisor consults; lead wakes and advisor consults also spend `Advisor consults` (runbook section 5).
+  What happens at a limit is J1b, the owner's call (both reviewers found that the first draft's "a refused `spend` is repeated with `--over`, never a reason to stop" contradicted the skill and section 0.5, and left the budget decorative):
+  - option 1 (recommended): the owner sets the limits from the projection below (about 12 implementer and fix dispatches a day plus their reviewers; for example Agents today 40, Codex Luna today 12, Codex Terra today 8, Claude Sonnet today 24, Claude Opus today 8) and the skill's rule holds: at a limit the manager stops dispatching on that row and asks;
+  - option 2: section 0.5 lists "budget overrun within the ceiling" as a pre-authorized class, valid only after a `decide ... --by owner` line recording J1b option 2; each use is `MB spend ... --over` plus `MB log BOARD "over: ITEM n/limit"`; the ceiling is twice a row's limit or the third consecutive day with any row over, where the manager stops and asks; `Advisor consults` and `Fable consults` never take `--over`.
+  Either way, `Advisor consults` (8 for the whole plan, copied) is too small now that lead wakes spend it: nine checkpoint wakes (CP1 to CP5, CPA1 to CPA4) plus escalations; the lead recommends 20.
+  This matches the owner's 2026-11-13 practice in land-branches ("no daily budgets; slots limit work") only under option 2, and even then with a ceiling.
 
 Projection: about 30 dispatchable steps; at about one implementer, four reviewers, one delta reviewer, one fix round and one DV per step, about 240 agent dispatches over the plan.
 The pace is bounded by the 61-minute `local-relay` soak on every daemon PR, the owner checkpoints, and the native lane's serialized Xcode and simulator use; estimate three to four weeks to CP4 if the owner answers each checkpoint within a day.
@@ -239,7 +245,8 @@ Each has the lead's recommendation; the cards follow the recommendation, and a d
 
 | ID | Question | Recommendation |
 | --- | --- | --- |
-| J1 | Accept the Parity, Slots, Budget and Codex sandbox defaults of section 6, including "a refused `spend` is repeated with `--over`"? | Yes |
+| J1a | Accept the Parity, Slots and Codex sandbox defaults of section 6 (copies of the land-branches values as amended on 2026-11-13)? | Yes |
+| J1b | Budgets at a limit: (1) you set limits from the projection (for example Agents today 40, Codex Luna 12, Codex Terra 8, Claude Sonnet 24, Claude Opus 8) and "stop and ask" holds; (2) `--over` is a pre-authorized class within a ceiling of twice a limit or two consecutive days over, logged each time, never for `Advisor consults` or `Fable consults` | (1): the budget then means something, and the slots already bound concurrency; choose (2) if you want land-branches' "slots only" practice, with a ceiling. In both, raise `Advisor consults` from 8 to 20 (lead wakes now spend it) |
 | J2 | Accept the merge authority of section 0.4; and may the manager also merge the `yooz-docs` profiles PR after your release go? (a) No: REL-DOCS ends with the exact `gh pr merge N --repo yooz-labs/yooz-docs --merge --match-head-commit SHA` handed to you; (b) yes, the manager merges after the REL-DOCS recheck | (a) No: a yooz-docs merge publishes the public site (Cloudflare Pages), and the skill keeps deploying repositories with the owner; D51 (a `develop` merge) stays with the manager |
 | J3 | Release grouping: may a release ship phase 1 (P1A, P1B) without P2A? | No: ship phase 1 only together with P2A (the status line in profile sessions, the hub's multi-profile transcript discovery and download protection of inactive profiles), preferably with all of phase 2 |
 | J4 | Docs paths: `docs/tools/remi/guides/profiles.md` and `docs/tools/remi/commands/profile.md` (the issues' paths), or under the newer `setup/` folder of yooz-docs PR #25? | Keep the issues' paths, so no issue body changes |
