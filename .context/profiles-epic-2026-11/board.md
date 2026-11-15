@@ -17,10 +17,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Repo | yooz-labs/remi |
 | Integration branch | develop |
 | Manager id | mba-claude-sonnet |
-| State | paused |
+| State | running |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | - |
-| Next tick | - |
+| Last tick | 2026-11-14T18:24-08:00 |
+| Next tick | 2026-11-14T18:54-08:00 |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-14T17:30-08:00 |
 | Pack branch | chore/profiles-epic-plan |
@@ -49,10 +49,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 100 | 0 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Agents today | 100 | 2 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
 | Codex Luna today | 24 | 0 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
 | Codex Terra today | 16 | 0 | daily | owner CP0 value; Terra implementers and fix rounds |
-| Claude Sonnet today | 44 | 0 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
+| Claude Sonnet today | 44 | 2 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
 | Claude Opus today | 16 | 0 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
 | Advisor consults | 20 | 0 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
 | Fable consults | 1 | 0 | never | copied; only if the owner asks; never --over |
@@ -74,7 +74,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | DOCS-P1 | [Profile guide, phase 1 (yooz-docs)](cards/DOCS-P1-profile-guide.md) | - | worker | docs | - | todo | P1B | - | - | 6h | after P1B's bump and green DV; done = draft docs PR verified and reviewed, not merged; merges only at REL-DOCS |
 | OG-P1 | [Owner gate: two profiles, 24 h](owner-gates.md) | - | - | - | - | blocked | P1B | - | - | - | rule: set owner when P1B is done; notify owner-gates.md OG-P1 |
 | CP1 | [Checkpoint after phase 1](checkpoints.md) | - | - | - | - | blocked | P1B, DOCS-P1 | - | - | - | rule: wake lead (complete P2A-P2D, DOCS-P2); ask go and J17 in one batch; owner go |
-| D51 | Merge PR 1785 (ADR 0051) after owner approval | - | - | - | - | owner | - | - | - | - | rule: owner approves PR 1785 (J5); then docs merge gate and merge |
+| D51 | Merge PR 1785 (ADR 0051) after owner approval | - | - | - | - | review | - | - | - | - | rule: owner approves PR 1785 (J5); then docs merge gate and merge |
 | P5A-PREP | [Capture prep for #1752](cards/P5A-PREP-capture-config.md) | - | worker | - | - | todo | CP0 | - | - | 4h | complete card; dispatch after CP0 beside P1A and P1C; docs lens review |
 | P2A | [Profile paths #1749 (outline)](cards/P2A-profile-paths.md) | - | worker-hard | - | - | outline | CP1 | - | - | 1.5d | lead completes at CP1 |
 | P2B | [session_profiles #1749 (outline)](cards/P2B-session-profiles-protocol.md) | - | worker-hard | - | - | outline | P2A, D51 | - | - | 2d | lead completes at CP1 |
@@ -124,3 +124,5 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Agent | Role | Slot | Model | Step | Started | State |
 |---|---|---|---|---|---|---|
+| DV-1 | DV | claude-sonnet | sonnet high | DV@095ef7cc | 2026-11-14T18:31 | running |
+| RV-D51 | reviewer docs | claude-sonnet | sonnet xhigh | D51 PR1785 abd584fe | 2026-11-14T18:35 | running |

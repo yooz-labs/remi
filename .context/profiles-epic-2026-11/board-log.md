@@ -36,3 +36,5 @@ The manager reads the newest rows through `status`, never the whole file.
 
 | Time | Event |
 |---|---|
+| 2026-11-14T18:24-08:00 | First tick: setup done (verify worktree profiles-develop-verify at 095ef7cc), DV-1 dispatched (agent a713ea0097c9bc9a8, Sonnet); no implementation card before DV green; stat metadata saved |
+| 2026-11-14T18:24-08:00 | D51: owner approved the ADR (2026-11-14, J5 yes); docs reviewer RV-D51 dispatched on PR 1785 head abd584fe; merge gate after its report |
