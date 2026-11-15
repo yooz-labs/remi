@@ -38,3 +38,5 @@ The manager reads the newest rows through `status`, never the whole file.
 |---|---|
 | 2026-11-14T18:24-08:00 | First tick: setup done (verify worktree profiles-develop-verify at 095ef7cc), DV-1 dispatched (agent a713ea0097c9bc9a8, Sonnet); no implementation card before DV green; stat metadata saved |
 | 2026-11-14T18:24-08:00 | D51: owner approved the ADR (2026-11-14, J5 yes); docs reviewer RV-D51 dispatched on PR 1785 head abd584fe; merge gate after its report |
+| 2026-11-14T18:29-08:00 | D51 docs review (RV-D51) reported 0 Critical, 0 Important, 2 Moderate, 2 Minor on PR 1785 abd584fe; all four accepted; fix worker FX-D51 dispatched; PR body 'Q11 open' fixed by manager |
+| 2026-11-14T18:31-08:00 | D51 fix round 1 verified (commits 2a5faeee, c66e77ae: all 4 findings fixed, scope 3 docs files); develop merged into branch (9cf3669c) to satisfy ancestry; waiting for hosted checks on the new head, then merge gate and gh pr ready + merge |

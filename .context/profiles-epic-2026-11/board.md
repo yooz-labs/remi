@@ -49,10 +49,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 100 | 2 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Agents today | 100 | 3 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
 | Codex Luna today | 24 | 0 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
 | Codex Terra today | 16 | 0 | daily | owner CP0 value; Terra implementers and fix rounds |
-| Claude Sonnet today | 44 | 2 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
+| Claude Sonnet today | 44 | 3 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
 | Claude Opus today | 16 | 0 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
 | Advisor consults | 20 | 0 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
 | Fable consults | 1 | 0 | never | copied; only if the owner asks; never --over |
@@ -125,4 +125,5 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Agent | Role | Slot | Model | Step | Started | State |
 |---|---|---|---|---|---|---|
 | DV-1 | DV | claude-sonnet | sonnet high | DV@095ef7cc | 2026-11-14T18:31 | running |
-| RV-D51 | reviewer docs | claude-sonnet | sonnet xhigh | D51 PR1785 abd584fe | 2026-11-14T18:35 | running |
+| RV-D51 | reviewer docs | claude-sonnet | sonnet xhigh | D51 PR1785 abd584fe | 2026-11-14T18:35 | done |
+| FX-D51 | fix round 1 | claude-sonnet | sonnet high | D51 PR1785 | 2026-11-14T18:42 | done |
