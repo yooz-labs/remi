@@ -1,6 +1,6 @@
 # ADR 0051: Profiles in the apps: profile manager, session profile, usage and confirmed continuation
 
-**Status:** Proposed (design for #1784; no implementation). The owner answered Q1 to Q10 on 2026-11-14 ("Owner decisions"); one question added by those answers, Q11 (a credential-free on-demand usage source for Claude Code), is open.
+**Status:** Proposed (design for #1784; no implementation). The owner answered Q1 to Q11 on 2026-11-14 and approved the two proposals marked proposed in A9 and A11 ("Owner decisions"); none is open.
 **Date:** 2026-11-14
 **Owner:** Yahya
 **Builds on:** ADR 0049 (the daemon side, accepted as the direction), ADR 0035, ADR 0036, ADR 0038, ADR 0039, ADR 0019, #1157, #1748 to #1752
@@ -302,8 +302,9 @@ What Refresh does, per harness:
   `/usage` is interactive and not machine-readable [0049 V11, G3].
   So Refresh on a Claude Code profile re-reads the latest status-line reading of every running session on that profile and keeps the newest per window, which may be the same reading; it types nothing into a session and runs no command.
   The section says so under the button: "Claude Code reports usage only when a session on this profile runs; this shows its latest report".
-  Whether a credential-free on-demand source exists for Claude Code is the open question Q11.
+  The owner answered Q11 with no: there is no credential-free on-demand source for Claude Code now, and none is characterized ("Owner decisions").
 - **API key.** Refresh is not offered: "Billed per request; there is nothing to refresh".
+- **Claude Code harness without a Claude credential (owner requirement, Q11).** Later, profiles will run models through the Claude Code harness without Claude credentials, the way models can run through Codex as the harness. This is a requirement on today's design, not a shipped behavior, and its own phase amends this ADR. Until then, no screen, enum or wire name in these phases may assume that a Claude Code profile is an Anthropic subscription or API key account, or that it has a usage window: the profile's own expectation (`expects`) and what its harness reports decide, as they already do for Codex, whose `model_provider` is part of the read-only settings (A3). Such a profile shows "Usage is not reported for this profile" (not "Usage unknown", which promises an update) and offers no Refresh, as for an API key. An unknown `expects`, `login` or usage source is decoded as unknown, never as the best case (A15). Its sign-in guides come from the same hub-written, copy-only commands (A1, A4), and no credential is read, copied or relayed (ADR 0049 D10).
 
 Rate limit: per profile, at most one refresh in flight and at most one hub read every 30 seconds for all devices together; a request inside the interval returns the current snapshot with when it was last refreshed.
 A Codex read has a 10-second deadline.
@@ -334,7 +335,7 @@ T3 Code checks automatically whenever its view opens (T6); remi refreshes only w
   The reference says no signed build has been verified for the web client's secure subscription; `packages/native/PARITY.md` records physical-device evidence for the native iPhone's signed push path (#1242).
   **The owner's informed decision (Q7):** until the legacy path is retired, the `usage_warning` text above (the profile label, the harness, the window, the percentage and the reset time) is visible in plaintext to the signaling Worker and to Apple's push service.
   This is the same exposure as `turn_failed` and `turn_complete`, which already carry excerpts of the agent's messages on the legacy path.
-- The per-device switch for `usage_warning` lives in iPhone Preferences and Mac Settings, next to the existing notification switches, rides up on `register_device_token` [0049 Q8], and is on by default like `turn_failed` (proposed).
+- The per-device switch for `usage_warning` lives in iPhone Preferences and Mac Settings, next to the existing notification switches, rides up on `register_device_token` [0049 Q8], and is on by default like `turn_failed` (owner approved, 2026-11-14).
   A device registers it only when its app can show it, because an older native app drops an unknown sealed kind (F7).
   The switch's footnote says in plain words that, until the machine stops using the legacy push path, the warning's text passes through remi's push relay and Apple without end-to-end encryption.
 - In the app, an active warning is a one-line notice row in the Inbox, styled like a machine problem line and in the neutral tone: "Work on Studio: weekly window 91% used".
@@ -368,7 +369,7 @@ A Claude Code compaction summary reaches only the requesting device and is shown
   and the sessions already on the target.
   When the target allows more than the source, when its usage is unknown, or when "same account" is unknown, each needs its own acknowledgment, a labeled switch that is off by default.
   The confirm button ("Continue on Personal") is never the default button, is disabled until the preview has loaded and every required acknowledgment is on, and sends `continue_session_request` with the preview's id.
-  The hub refuses a request whose preview has expired (two minutes is proposed), was issued to another connection,
+  The hub refuses a request whose preview has expired (two minutes, owner approved on 2026-11-14), was issued to another connection,
   or no longer matches the two profiles' revisions ("These profiles changed since you reviewed them"), and the sheet reloads the preview.
 - **Never from the lock screen** [0049 Q9]: no notification category carries a continuation action;
   the notification response handlers have no path that sends `continue_session_request`;
@@ -611,7 +612,7 @@ and status checks that never set anything up (T9).
 - Every phase that ships a command or a default also ships its page on the docs site, in the same release and never before (A4); the apps link to it.
 - #1750 grows by on-demand refresh (A8) and by one shared builder for the `usage_warning` text (A9); its amendment records the added read cadence.
 - Until the legacy push path is retired, a `usage_warning` exposes the profile label, harness, window, percentage and reset time to the signaling Worker and Apple in plaintext (A9, the owner's decision on Q7).
-- For Claude Code, Refresh can only re-read the latest report until Q11 is answered; the screen says so.
+- For Claude Code, Refresh only re-reads the latest report (Q11: no credential-free on-demand source); the screen says so.
 - Several capabilities are added over phases 2 to 5, each with fixtures and its phase's ADR amendment; RemiKit's `HubCapability` and the web registry grow with them.
 - RemiKit needs a type name that is not "profile" alone (F9); `AccountProfile` is proposed for the code, while every screen says "profile".
 - The same account on two machines shows twice; the screen says so.
@@ -619,7 +620,7 @@ and status checks that never set anything up (T9).
 
 ## Owner decisions (2026-11-14)
 
-The owner answered Q1 to Q10 on 2026-11-14, relayed by the coordinator of the plan this design belongs to.
+The owner answered Q1 to Q11 on 2026-11-14, relayed by the coordinator of the plan this design belongs to.
 Each answer, and what it changed in this ADR:
 
 - **Q1. App writes to profile configuration.** (a), as recommended: no app writes profile configuration; guided commands only (A1, A4).
@@ -633,14 +634,8 @@ Each answer, and what it changed in this ADR:
 - **Q8. Refreshing usage on request.** (b), not the recommendation: usage must be refreshable, because windows reset and numbers go stale (A8); Codex through a running session's app-server; Claude Code has no verified credential-free source, which is Q11.
 - **Q9. The offer in the Inbox.** (a), as recommended: an Inbox row and session banners, with the accent only while a session is stopped at the limit (A11).
 - **Q10. A profile filter in session lists.** (b), not the recommendation: a profile filter chip, for people working across many projects with many profiles, beside search on labels (A6).
-
-## Open question for the owner
-
-- **Q11. A credential-free on-demand usage source for Claude Code.** (a) none for now: Refresh on a Claude Code profile re-reads the latest status-line report and says so (A8);
-  (b) add to the owner-run characterization of #1752, opportunistically and with the same redaction, whether Claude Code's documented status-line run "when a window reaches its reset time" [0049 V8] records a new reading in an idle session, so that a reset is reflected without remi doing anything;
-  (c) characterize typing `/usage` into an idle session through the guarded write path and reading its screen [0049 V11] (remi would type into the person's session for a number, and the screen is not machine-readable);
-  (d) characterize the Claude Agent SDK's usage request seen in T3 Code's source (T6), which would start a Claude Code process under the profile that reads its own credential (setup as a side effect, T9; whether it makes a model request is unknown).
-  **Recommended: (a) now, with (b); not (c) or (d).**
+- **Q11. A credential-free on-demand usage source for Claude Code.** No: none now, so Refresh on a Claude Code profile re-reads the latest status-line report and says so (A8); the optional #1752 observation (b), and typing `/usage` (c) or the Agent SDK request (d), are not adopted. The owner added a requirement: later, models will use the Claude Code harness without Claude credentials, and the design must anticipate and support them like models that use Codex as the harness (A8, last bullet).
+- **The two proposals.** Yes to both: the `usage_warning` switch is on by default (A9), and a continuation preview expires after two minutes (A11).
 
 ## Appendix: sources read
 

@@ -1,6 +1,6 @@
 # Profiles in the apps: issue drafts
 
-Design: [ADR 0051](decisions/0051-account-profiles-in-the-apps.md), proposed on 2026-11-14 for #1784; the owner answered its questions Q1 to Q10 the same day, and Q11 is open.
+Design: [ADR 0051](decisions/0051-account-profiles-in-the-apps.md), proposed on 2026-11-14 for #1784; the owner answered its questions Q1 to Q11 the same day.
 The daemon side is [ADR 0049](decisions/0049-account-switching.md) and its drafts in [account-switching-epic.md](account-switching-epic.md).
 
 Status: nothing here is filed or applied.
@@ -158,7 +158,7 @@ Web client: the usage panel gains Refresh, showing each outcome in words, and ev
 - [ ] Documentation: the profile setup guide in `yooz-docs` gains a section on compacting a session and reading its handoff brief, with the refusals and what each means; it merges for the release that ships the feature and not before, and describes nothing that is not built.
 ~~~
 
-### #1752 (Profiles phase 5A), only if the owner answers ADR 0051 Q11 with (b)
+### #1752 (Profiles phase 5A), not applied: the owner answered ADR 0051 Q11 with no, so (b) is not adopted
 
 ~~~markdown
 ## Addition (ADR 0051 Q11 (b))
@@ -295,7 +295,7 @@ A person sees, for each profile on each machine, how much of each usage window i
 
 ## Owner decisions this slice follows (ADR 0051)
 
-Q7 (the owner's informed decision against the recommendation): the `usage_warning` text on the legacy plaintext push is the same as on the sealed path, the profile label, harness, window, percentage and reset time; until the R7 gate retires the legacy push (or the machine's activation latch retires it earlier), that text is visible in plaintext to the signaling Worker and to Apple's push service. Q8: usage is refreshable on request. Q11 is open: until it is answered, Refresh on a Claude Code profile only re-reads the latest report.
+Q7 (the owner's informed decision against the recommendation): the `usage_warning` text on the legacy plaintext push is the same as on the sealed path, the profile label, harness, window, percentage and reset time; until the R7 gate retires the legacy push (or the machine's activation latch retires it earlier), that text is visible in plaintext to the signaling Worker and to Apple's push service. Q8: usage is refreshable on request. Q11 was answered no: Refresh on a Claude Code profile only re-reads the latest report. The owner's added requirement: profiles that run the Claude Code harness without Claude credentials are anticipated; no phase hard-codes Claude Code as an Anthropic account.
 
 ## Scope
 
