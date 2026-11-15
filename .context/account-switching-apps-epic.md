@@ -3,7 +3,7 @@
 Design: [ADR 0051](decisions/0051-account-profiles-in-the-apps.md), proposed on 2026-11-14 for #1784; the owner answered its questions Q1 to Q11 the same day.
 The daemon side is [ADR 0049](decisions/0049-account-switching.md) and its drafts in [account-switching-epic.md](account-switching-epic.md).
 
-Status: on 2026-11-14 the manager applied the amended #1749 and the additions to #1748, #1750 and #1751 (the old bodies are backed up in the manager's scratchpad). The #1752 addition is not adopted (Q11), the phase 5 draft is applied when that issue is filed, and the five app issues are not filed.
+Status: on 2026-11-14 the manager applied the amended #1749 and the additions to #1748, #1750 and #1751 (the old bodies are backed up in the manager's scratchpad). The #1752 addition is not adopted (Q11), the phase 5 draft is applied when that issue is filed, and Apps 1 to 4 were filed as #1788, #1789, #1790 and #1791 (each with the unknown-value acceptance item for profiles that run the Claude Code harness without Claude credentials); Apps 5 is not filed. The same item was added to #1749 and #1750.
 This file holds three kinds of text, each for the manager to apply with `gh`; workers never edit issues:
 
 1. the proposed amended title and body of the filed #1749 (owner answer Q2), to apply with `gh issue edit 1749 --title "<title>" --body-file <body>`;
@@ -218,6 +218,7 @@ Sign-in status, Check, settings and the setup guides (Apps 2); usage (Apps 3); t
 - [ ] App documentation gate: the picker's reason line and the Profiles list link to the docs guide's section on how a new session picks a profile, published for the release that ships this slice.
 - [ ] The visual gate passes with a receipt; PARITY.md gains "Session profile badge", "Profile picker", "Profile filter" and "Profile list (read only)" rows saying what ships.
 - [ ] `swift test --package-path packages/native/RemiKit`, the Mac `xcodebuild ... build test` and the iPhone `xcodebuild ... build` pass, and `typos` is clean.
+- [ ] No text, icon or logic assumes that a Claude Code profile is an Anthropic account: a profile whose expectation or sign-in state the app does not know (the daemon will later report profiles that run the Claude Code harness without Claude credentials, ADR 0051 A8) shows the profile label and no sign-in claim, and is not drawn as signed in (presentation test with an unknown-value fixture).
 
 ## Test approach
 
@@ -274,6 +275,7 @@ Configuration writes from any client (Q1). Usage (Apps 3). The web client (#1749
 - [ ] VoiceOver reads each harness row as one element with its state and age; at Accessibility 5 commands and rule texts wrap or scroll sideways without truncation (previews in the visual gate).
 - [ ] App documentation gate: every command shown comes from the hub's answer and has Copy; each guide links to the docs guide page, published for the release that ships this slice; the page describes these screens and nothing unbuilt.
 - [ ] The visual gate passes with a receipt, PARITY.md gains a "Profile manager" row, the native gates pass, and `typos` is clean.
+- [ ] A profile whose `expects`, `login` or source the app does not know renders as unknown, with no "Expects a subscription" or "Expects an API key" claim and no sign-in prompt, and its guide still shows the hub's copyable commands (presentation test with an unknown-value fixture; ADR 0051 A8, profiles that run the Claude Code harness without Claude credentials are coming).
 
 ## Test approach
 
@@ -329,6 +331,7 @@ Any automatic usage check (refresh happens only when a person asks). The continu
 - [ ] The Inbox notice row uses the neutral tone, never the attention accent (presentation test), and dismissing it on one device leaves it on another (two-store test).
 - [ ] App documentation gate: the usage view links to the docs guide's usage section (what each number is, Refresh per harness, the warning's text and its plaintext exposure), published for the release that ships this slice.
 - [ ] The visual gate passes with a receipt; PARITY.md gains "Usage per profile", "Usage refresh" and "Usage warning" rows; the native gates pass and `typos` is clean.
+- [ ] A Claude Code profile with no reported usage windows shows "Usage is not reported for this profile" and no Refresh action, and no code path maps the harness name to Anthropic windows (presentation test; ADR 0051 A8).
 
 ## Test approach
 
