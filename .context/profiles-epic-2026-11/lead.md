@@ -5,7 +5,8 @@
 2026-11-14: Phase 1 = P1A (model, commands), P1C (Codex characterization), P1B (launches).
 2026-11-14: P1A accepts subscription only for authMethod claude.ai with no apiKeySource (fail closed).
 2026-11-14: Profile config: expects required per harness; credential-named env keys refused.
-2026-11-14: Resume protection: sidecar session-profiles.json (pending owner J9).
+2026-11-14: Resume protection: sidecar session-profiles.json, locked like session-store (J9).
+2026-11-14: Pack review round 1 applied (Appendix A); P5A-PREP completed at CP0.
 2026-11-14: P1B points the session daemon's own transcript discovery at the profile.
 2026-11-14: Docs PR stays draft until REL-DOCS; headings fixed for app links.
 2026-11-14: P5, P5B, P6, Apps 5 parked; phase 6 may not start (ADR 0049 D9).
@@ -17,8 +18,8 @@
 2026-11-14: R4 Codex keyring separation unknown until P1C.
 
 ## Next intentions
-2026-11-14: CP0: two pack reviews, dispositions in plan Appendix A, owner answers J1 to J12.
-2026-11-14: CP1: complete P2A to P2D, DOCS-P2, P5A-PREP; re-verify paths after phase 1.
+2026-11-14: CP0: owner answers J1a to J18 (J16 by CP2, J17 by CP1); record per runbook 2.
+2026-11-14: CP1: complete P2A to P2D, DOCS-P2; re-verify paths after phase 1.
 
 ## Pending owner questions
-2026-11-14: J1 to J12 (plan section 7), all at CP0.
+2026-11-14: J1a to J18 (plan section 7); J2 now recommends no; J13 to J15 shape P1A.

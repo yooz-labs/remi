@@ -20,7 +20,7 @@ Defaults for Parity, Slots and Budget are copied from the land-branches-2026-11 
 
 1. The `authMethod` value of a real claude.ai login. The lead read it as `"claude.ai"` from the code embedded in the installed Claude Code 2.1.325 binary, not from a run with a login (nobody runs one; ADR 0049 G12). The same code shows that a claude.ai status also prints `email`, `orgId`, `orgName`, `subscriptionType` and `planTier`, so the status parser is a privacy boundary, not a convenience. The owner gate OG-P1 confirms the value; a mismatch is a fix card.
 2. Whether Codex keeps keyring logins apart per `CODEX_HOME`, and Codex's default credential store on macOS. P1C answers this from Codex's source at the installed version's tag; if the default store is the keyring and entries are not separated, Codex profiles need the owner's call J11.
-3. That phase 1 alone is safe to release. P1B points a profile session daemon's own transcript discovery and download protection at its profile, but the status line in profile sessions, the hub's multi-profile transcript discovery (what a client's chat view reads) and download protection of inactive profiles arrive in phase 2 (P2A). The lead recommends no release that has phase 1 without P2A (J3).
+3. That phase 1 alone is safe to release. P1B points a profile session daemon's own transcript discovery and download protection at its profile, but the status line in profile sessions, the hub's multi-profile transcript discovery (what a client's chat view reads) and download protection of inactive adopted directories inside a project (downloads are project-relative, ADR 0045; default profile directories sit under the protected remi home) arrive in phase 2 (P2A). The lead recommends no release that has phase 1 without P2A (J3).
 4. The outline cards. They name files and gates verified on `develop` `c9e13967`, but phases 1 and 2 will move code under them; the checkpoint lead must re-verify every path before completing a card.
 
 ## 0. How the manager uses this plan
@@ -108,7 +108,7 @@ Nothing in this plan depends on the version.
   - the child-environment guard test fails on any secret-named literal (`SECRET|TOKEN|PASSPHRASE|PASSWORD|PRIVATE_KEY`) not in `REMI_SECRET_ENV` or its exemption list (`packages/daemon/tests/pty-child-env-secrets.test.ts:108-138`);
   - the base capability list is `['workspaces']` (`cli/capabilities.ts:18`), documented in `PROTOCOL_CAPABILITIES` (`packages/shared/src/protocol-version.ts:41-56`); golden fixtures are generated (`packages/shared/tests/fixtures/protocol/generate.ts`);
   - the Worker's legacy `/push` does not validate `kind` (`packages/signaling/src/index.ts:85-98`) and the sealed kind is inside the seal (`packages/shared/src/relay/push.ts:38-55`), so a new push kind needs no Worker change;
-  - test helpers exist for black-box launches: `packages/daemon/tests/helpers/fake-agent-clis.ts`, `tests/helpers/fake-app-server.ts`, `tests/integration/hub-test-utils.ts` (ports 45000 to 50000), `tests/integration/launch-characterization.test.ts`.
+  - test helpers exist for black-box launches: `packages/daemon/tests/helpers/fake-agent-clis.ts`, `packages/daemon/tests/helpers/fake-app-server.ts`, `packages/daemon/tests/integration/hub-test-utils.ts` (its session-daemon helper `spawnDaemon` reserves a random port from 45000 to 49999; `findTestPort` hands out the lowest free port from 19200), `packages/daemon/tests/integration/launch-characterization.test.ts`.
 - Installed CLIs on 2026-11-14: Claude Code 2.1.325, codex-cli 0.167.0.
 
 ## 2. Steps
@@ -121,16 +121,16 @@ Needs tokens: `xcode` (native gates under the Xcode lock), `simulator` (the one 
 | ID | Card | Goal | Tier | Depends | Timebox | Acceptance gate (literal) |
 | --- | --- | --- | --- | --- | --- | --- |
 | CP0 | rule | the owner approves this plan, its defaults and merge authority, and answers J1a to J18 | owner | - | - | one `decide` line per answer and `CP0: plan approved ...`, recorded by the lead or owner before the first tick (runbook section 2) |
-| P1A | [P1A](cards/P1A-profile-model-and-commands.md) | profile config, resolver, effective-login check, warnings and `remi profile ls\|add\|show\|login`; launches unchanged | worker-hard | CP0 | 1.5d | `bun test packages/daemon/tests/profiles` passes; card Acceptance items 1 to 9 |
+| P1A | [P1A](cards/P1A-profile-model-and-commands.md) | profile config, resolver, effective-login check, warnings and `remi profile ls\|add\|show\|login`; launches unchanged | worker-hard | CP0 | 1.5d | `bun test packages/daemon/tests/profiles` passes; every item of the card's Acceptance |
 | P1C | [P1C](cards/P1C-codex-credential-characterization.md) | Codex credential variables, default store and keyring separation, from source and placeholder-only runs | worker | CP0 | 4h | the note exists with a source line per answer; `typos` clean |
-| P1B | [P1B](cards/P1B-launches-follow-profile.md) | every launch path runs under the resolved profile, with the scrub, the pre-launch check, the record, the sidecar and resume | worker-hard | P1A, P1C | 2d | `bun test packages/daemon/tests/profiles packages/daemon/tests/integration/profile-launch.test.ts` passes; card Acceptance items 1 to 12 |
+| P1B | [P1B](cards/P1B-launches-follow-profile.md) | every launch path runs under the resolved profile, with the scrub, the pre-launch check, the record, the sidecar and resume | worker-hard | P1A, P1C | 2d | `bun test packages/daemon/tests/profiles packages/daemon/tests/integration/profile-launch.test.ts` passes; every item of the card's Acceptance |
 | DOCS-P1 | [DOCS-P1](cards/DOCS-P1-profile-guide.md) | `guides/profiles.md` and `commands/profile.md` from the built `develop` tip, in a draft docs PR | worker | P1B | 6h | `bun run build` in the docs worktree passes; every command block has its recorded run; done = verified and reviewed draft PR, not merged (runbook section 8) |
 | OG-P1 | rule | owner: two profiles, two accounts, 24 hours, `default` unchanged | owner | P1B | - | [owner-gates.md](owner-gates.md) OG-P1 recorded by the owner |
 | CP1 | rule | owner checkpoint after phase 1; lead completes the phase 2 cards | lead | P1B, DOCS-P1 | - | a `decide` line starting `CP1:` and the owner's go |
 | D51 | rule | PR #1785 (ADR 0051) merged into `develop` after the owner approves | - | - | - | the owner's approval recorded; merge gate (docs PR) |
-| P5A-PREP | outline | the opt-in capture configuration and redaction steps for #1752, so the owner can capture when a limit is hit | worker | CP1 | 4h | completed at CP1 |
-| P2A | outline | profile paths: multi-profile transcript discovery, status line per profile, download protection of every profile directory | worker-hard | CP1, D51 | 1.5d | completed at CP1 |
-| P2B | outline | `session_profiles`: remote visibility and selectability, the picker request, `create_session_request.profile`, `profile` on entries | worker-hard | P2A | 2d | completed at CP1 |
+| P5A-PREP | [P5A-PREP](cards/P5A-PREP-capture-config.md) | the opt-in capture procedure and redaction steps for #1752, so the owner can capture when a limit is hit (completed at CP0: a limit can come before CP1) | worker | CP0 | 4h | the procedure has a row per #1752 question; every command found in the build's help; `typos` clean |
+| P2A | outline | profile paths: multi-profile transcript discovery, status line per profile, download protection of every profile directory | worker-hard | CP1 | 1.5d | completed at CP1 |
+| P2B | outline | `session_profiles`: remote visibility and selectability, the picker request, `create_session_request.profile`, `profile` on entries | worker-hard | P2A, D51 | 2d | completed at CP1 |
 | P2C | outline | `profile_status`: status, Check, settings, guides; `remi profile rename\|remove` | worker-hard | P2B | 2d | completed at CP1 |
 | P2D | outline | web client: badge, picker, filter chip, Profiles section; Telegram label | worker | P2C | 1.5d | completed at CP1 |
 | DOCS-P2 | outline | the guide and command reference updated for phase 2 | worker | P2D | 6h | completed at CP1 |
@@ -163,7 +163,7 @@ Needs tokens: `xcode` (native gates under the Xcode lock), `simulator` (the one 
 | A5 | parked | Apps 5: confirmed continuation (not filed) | - | P5 | - | not dispatchable |
 | REL-DOCS | rule | at each release that ships a phase: recheck the docs against the release build, then merge the docs PR | worker | - | 2h | runbook section 10, "Release docs" |
 
-Board states at start: CP0 and D51 `owner`; P1A and P1C `todo` behind CP0 (checked: once CP0 is `done`, `status` places P1A on `codex-terra` as `gpt-6.1-terra` xhigh and P1C on `codex-luna` as `gpt-6-luna` max); P1B and DOCS-P1 `todo` behind their dependencies; every outline `outline`; every rule step `blocked` with its trigger in Next; P5, P5B, P6 and A5 `blocked` with Next starting "parked".
+Board states at start: CP0 and D51 `owner`; P1A, P1C and P5A-PREP `todo` behind CP0 (checked on a scratch copy after the fix round: once CP0 is `done`, `status` places P1A on `codex-terra` as `gpt-6.1-terra` xhigh, and P1C and P5A-PREP on `codex-luna` as `gpt-6-luna` max); P1B and DOCS-P1 `todo` behind their dependencies; every outline `outline`; every rule step `blocked` with its trigger in Next; P5, P5B, P6 and A5 `blocked` with Next starting "parked".
 
 ### Dependency and lane graph
 
@@ -173,11 +173,11 @@ daemon lane (codex-terra)   P1A ─┐
 docs lane (luna, docs)                 └ DOCS-P1        (D51 before P2A)        └ DOCS-P2          └ DOCS-P3          └ DOCS-P4
 owner gates                            └ OG-P1                                 └ OG-P2            └ OG-P3            └ OG-P4
 native lane (xcode, simulator)                                      CP2 ── CPA1 ── A1 ── CPA2 ── A2 ── CPA3(+CP3) ── A3 ── CPA4(+CP4) ── A4
-5A                                     CP1 ── P5A-PREP ── OG-5A (owner, whenever a limit is hit) ── CP5 ── parked: P5, P5B, P6, A5
+5A                                     CP0 ── P5A-PREP ── OG-5A (owner, whenever a limit is hit) ── CP5 ── parked: P5, P5B, P6, A5
 ```
 
 The native lane runs beside the daemon lane from CP2 on: A1 beside P3A, A2 beside P3B or P4A.
-That is the only intended parallelism besides P1A with P1C and the docs lane.
+That is the only intended parallelism besides P1A, P1C and P5A-PREP at the start and the docs lane.
 
 ### Slot and collision rules
 
@@ -242,13 +242,14 @@ The pace is bounded by the 61-minute `local-relay` soak on every daemon PR, the 
 ## 7. Open judgment calls for the owner
 
 Each has the lead's recommendation; the cards follow the recommendation, and a different answer makes the lead correct the card before dispatch (runbook section 11).
+J1 is split into J1a and J1b, J2's recommendation is now "no", and J13 to J18 were added after the pack review (Appendix A); all are answered at CP0 and recorded as runbook section 2 says, except J16 (by CP2) and J17 (by CP1).
 
 | ID | Question | Recommendation |
 | --- | --- | --- |
 | J1a | Accept the Parity, Slots and Codex sandbox defaults of section 6 (copies of the land-branches values as amended on 2026-11-13)? | Yes |
 | J1b | Budgets at a limit: (1) you set limits from the projection (for example Agents today 40, Codex Luna 12, Codex Terra 8, Claude Sonnet 24, Claude Opus 8) and "stop and ask" holds; (2) `--over` is a pre-authorized class within a ceiling of twice a limit or two consecutive days over, logged each time, never for `Advisor consults` or `Fable consults` | (1): the budget then means something, and the slots already bound concurrency; choose (2) if you want land-branches' "slots only" practice, with a ceiling. In both, raise `Advisor consults` from 8 to 20 (lead wakes now spend it) |
 | J2 | Accept the merge authority of section 0.4; and may the manager also merge the `yooz-docs` profiles PR after your release go? (a) No: REL-DOCS ends with the exact `gh pr merge N --repo yooz-labs/yooz-docs --merge --match-head-commit SHA` handed to you; (b) yes, the manager merges after the REL-DOCS recheck | (a) No: a yooz-docs merge publishes the public site (Cloudflare Pages), and the skill keeps deploying repositories with the owner; D51 (a `develop` merge) stays with the manager |
-| J3 | Release grouping: may a release ship phase 1 (P1A, P1B) without P2A? | No: ship phase 1 only together with P2A (the status line in profile sessions, the hub's multi-profile transcript discovery and download protection of inactive profiles), preferably with all of phase 2 |
+| J3 | Release grouping: may a release ship phase 1 (P1A, P1B) without P2A? | No: ship phase 1 only together with P2A (the status line in profile sessions, the hub's multi-profile transcript discovery and download protection of inactive adopted directories inside a project), preferably with all of phase 2; and no release containing phase 1 before OG-P1 passed (risk R1). REL-DOCS runs only for a release that matches this answer (runbook section 8) |
 | J4 | Docs paths: `docs/tools/remi/guides/profiles.md` and `docs/tools/remi/commands/profile.md` (the issues' paths), or under the newer `setup/` folder of yooz-docs PR #25? | Keep the issues' paths, so no issue body changes |
 | J5 | Merge PR #1785 (ADR 0051) into `develop` and set its status to Accepted before the phase 2 cards are completed? | Yes, at or before CP1 |
 | J6 | May phase 2 start after CP1 while OG-P1's 24-hour check is still running? | Yes; a failed OG-P1 becomes a fix card ahead of the next daemon step |
@@ -256,8 +257,14 @@ Each has the lead's recommendation; the cards follow the recommendation, and a d
 | J8 | Run phase 4 beside phase 3 after CP2? | No: serial (shared protocol files and review load) |
 | J9 | Resume protection against an older remi that rewrites `sessions.json` and drops the profile: a sidecar `session-profiles.json` read at resume (fail closed), or the Codex-style older-writer gate only? | The sidecar (P1B settles it this way) |
 | J10 | Visual gate of each app slice: a manager-run simulator session on this Mac with your announced consent per slice (proven method, fixture hub above 18790), or another method? | Manager-run, with your consent per slice |
-| J11 | If P1C finds that Codex's default store on macOS is the keyring and keyring entries are not separated per `CODEX_HOME`: may `remi profile add` write `cli_auth_credentials_store = "file"` into the new profile's own (remi-created) Codex `config.toml`? | Yes, only into a directory remi created for that profile, never an adopted one; otherwise refuse Codex profiles with the copyable setting |
-| J12 | The claude.ai status prints `subscriptionType` and `planTier` (read from the 2.1.325 binary, not run): record this in an ADR 0049 amendment at CP1 as a possible later replacement for the self-declared "individual subscription" (Q6)? | Yes, record only; phase 1 parses neither field |
+| J11 | If P1C finds that Codex's default store on macOS is the keyring and keyring entries are not separated per `CODEX_HOME`: may `remi profile add` write `cli_auth_credentials_store = "file"` into the new profile's own Codex `config.toml`? | Yes, only under all four conditions: (1) only into a new, empty directory remi created for that profile, never an adopted one; (2) the file is created exclusively (`O_EXCL`), never over an existing file; (3) P1A's gate on Codex sign-in stays until the line is present; (4) the guide says that `file` keeps a plaintext `auth.json` (mode 0600) under the remi home and that `remi profile remove` leaves it behind. Otherwise Codex profiles are refused with the copyable setting |
+| J12 | The claude.ai status prints `subscriptionType` and `planTier` (read from the 2.1.325 binary, not run): record in an ADR 0049 amendment at CP1 that these fields exist, as a possible later replacement for the self-declared "individual subscription" (Q6)? | Yes, record only that the fields exist; phase 1 parses neither field, and OG-P1 does not record the owner's value, because the board and log are pushed to a public repository |
+| J13 | Claude argument and sign-in guards (pack review D8, D13): (a) P1A refuses `--settings`, `--managed-settings` and `--setting-sources` in a Claude profile's `args` (they can inject an `apiKeyHelper` or `env` and bypass the effective-login check) and `remi profile login` passes `--claudeai` explicitly for a subscription profile (and prints one warning line before a Console sign-in for an `api_key` profile); (b) allow those flags and rely on the check | (a): fail closed, like the Codex `-p` and `-c` refusals; P1A follows (a) |
+| J14 | A `[profiles]` error (pack review D9): (a) fail closed for the whole configuration, which stops every remi process including a LaunchAgent hub, and document it; (b) reserve the later phases' key names now and keep (a) otherwise; (c) a `[profiles]` error disables profiles only (configured-profile launches refused with the error, `remi profile` prints it, the built-in default and every other table keep working), plus (b)'s reserved names accepted and ignored with a notice | (c): profiles fail closed without taking the hub down, and a configuration written for a later phase does not break an earlier binary; P1A follows (c) |
+| J15 | An `expects` other than `subscription` or `api_key` (pack review D10; ADR 0051 A8 needs one for P2C's test): (a) P1A's loader accepts any safe token now, the check returns `unknown (not_checked)` and launches refuse it with "not supported in this build", and profile `env` refuses every `PROFILE_CREDENTIAL_ENV` name (provider selectors included) until A8's phase; (b) P1A refuses unknown values and P2C's scope gains the loader change | (a), decided before P1A starts; P1A follows (a) |
+| J16 | The `usage_warning` collapse key `usage-warning-<profile id>-<window id>` (pack review D16) is delivery metadata the Worker and Apple see even on the sealed path: (a) use a keyed hash of the profile id made on the machine; (b) keep the id and state the exposure in DOCS-P3 and A3's footnote | (a); answer by CP2 (P3B and A3 are completed there) |
+| J17 | Permission rule texts in `profile_settings_response` (pack review D17) often contain local paths: (a) apply the `args` path replacement to rule texts and add a planted rule-text path to the marker scan; (b) keep them verbatim as #1749 words them | (a); answer by CP1 (P2C is completed there); if you see (a) as changing your approved shape, say so |
+| J18 | One manager id on two boards (pack review E30): the land-branches board also uses `mba-claude-sonnet`, and budgets and slots are per board, so two loops at once would double Codex concurrency: (a) run one loop at a time (the land-branches board stays `paused`, as it is now); (b) give this board a distinct id and halve the Slots Max on both boards | (a) |
 
 ## 8. Later work, not in this plan
 

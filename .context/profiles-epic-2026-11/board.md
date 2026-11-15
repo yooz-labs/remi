@@ -67,7 +67,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | ID | Title | Wave | Tier | Needs | Slot | State | Depends | PR | Started | Timebox | Next |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| CP0 | [Plan approval: defaults, merge authority, J1 to J12](plan.md) | - | - | - | - | owner | - | - | - | - | rule: owner approves the plan and answers J1a-J18; lead or owner records CP0: lines and sets done (runbook 2); no dispatch before |
+| CP0 | [Plan approval: defaults, merge authority, J1a to J18](plan.md) | - | - | - | - | owner | - | - | - | - | rule: owner approves the plan and answers J1a-J18; lead or owner records CP0: lines and sets done (runbook 2); no dispatch before |
 | P1A | [Profile model and commands #1748](cards/P1A-profile-model-and-commands.md) | - | worker-hard | - | - | todo | CP0 | - | - | 1.5d | dispatch after CP0 (owner approves the plan); Codex Terra |
 | P1C | [Codex credential characterization #1748](cards/P1C-codex-credential-characterization.md) | - | worker | - | - | todo | CP0 | - | - | 4h | dispatch after CP0; beside P1A; docs lens review |
 | P1B | [Launches follow the profile #1748](cards/P1B-launches-follow-profile.md) | - | worker-hard | - | - | todo | P1A, P1C | - | - | 2d | after P1A and P1C merge; card follows J9 and J11 answers |
