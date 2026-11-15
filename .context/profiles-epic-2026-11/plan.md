@@ -66,8 +66,8 @@ Proposed for this plan, within that authority:
 - The manager merges a step PR into `develop` with `gh pr merge N --merge --match-head-commit SHA` (a merge commit; never `--squash`, never `--delete-branch`), only when the merge gate (runbook section 10) passes.
 - The manager merges a large review-fix PR into its step PR's head branch only, after the same gate (land-branches Q15, carried over).
 - The manager merges PR #1785 (ADR 0051, docs only) only after the owner approves it (step D51; J5).
-- A DOCS step is done when merge gate items 1, 2 and 4 hold for its draft docs PR and its docs review is resolved; the PR stays a draft (runbook section 8, "Docs lane"), so no checkpoint waits on a release. The docs PR merges only in runbook section 10, "Release docs", after the owner says the remi release that ships its feature is published and the REL-DOCS recheck passes (who merges it is J2).
-- Never merged by the manager: anything into `main`; a PR that relaxes a gate's assertion (to the lead); a step whose owner gate is open (P4A until the latency measurement, J7).
+- A DOCS step is done when merge gate items 1, 2 and 4 hold for its draft docs PR and its docs review is resolved; the PR stays a draft (runbook section 8, "Docs lane"), so no checkpoint waits on a release. The docs PR merges only in runbook section 10, "Release docs", after the owner says the remi release that ships its feature is published and the REL-DOCS recheck passes (the owner merges it by default, because a yooz-docs merge publishes the public site; J2).
+- Never merged by the manager: anything into `main`; a `yooz-docs` PR, which deploys a public site on merge (the manager hands the owner the exact merge command; J2); a PR that relaxes a gate's assertion (to the lead); a step whose owner gate is open (P4A until the latency measurement, J7).
 - Not used by this plan: direct pushes to `develop`; TestFlight uploads unless an owner checkpoint asks for one (CPA steps), with the owner's go and a build number above the real current one.
 
 `develop` pushes trigger `auto-bump-dev.yml` (a version bump commit) and `close-on-develop.yml` (closes issues named by a closing word in any pushed commit).
@@ -240,7 +240,7 @@ Each has the lead's recommendation; the cards follow the recommendation, and a d
 | ID | Question | Recommendation |
 | --- | --- | --- |
 | J1 | Accept the Parity, Slots, Budget and Codex sandbox defaults of section 6, including "a refused `spend` is repeated with `--over`"? | Yes |
-| J2 | Accept the merge authority of section 0.4, including the manager merging the `yooz-docs` profiles PR after your release go? | Yes |
+| J2 | Accept the merge authority of section 0.4; and may the manager also merge the `yooz-docs` profiles PR after your release go? (a) No: REL-DOCS ends with the exact `gh pr merge N --repo yooz-labs/yooz-docs --merge --match-head-commit SHA` handed to you; (b) yes, the manager merges after the REL-DOCS recheck | (a) No: a yooz-docs merge publishes the public site (Cloudflare Pages), and the skill keeps deploying repositories with the owner; D51 (a `develop` merge) stays with the manager |
 | J3 | Release grouping: may a release ship phase 1 (P1A, P1B) without P2A? | No: ship phase 1 only together with P2A (the status line in profile sessions, the hub's multi-profile transcript discovery and download protection of inactive profiles), preferably with all of phase 2 |
 | J4 | Docs paths: `docs/tools/remi/guides/profiles.md` and `docs/tools/remi/commands/profile.md` (the issues' paths), or under the newer `setup/` folder of yooz-docs PR #25? | Keep the issues' paths, so no issue body changes |
 | J5 | Merge PR #1785 (ADR 0051) into `develop` and set its status to Accepted before the phase 2 cards are completed? | Yes, at or before CP1 |

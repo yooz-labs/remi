@@ -225,7 +225,8 @@ A merge the host refuses: never retry or work around it; set the step `owner` an
 
 ### Release docs
 
-When the owner says a remi release that ships one or more profile phases is published (the tag exists on `origin`): dispatch REL-DOCS; on its verified report, one `docs` reviewer on the recheck commit if it changed the pages; then the yooz-docs merge gate (items 1, 2 and 4 above, with `--repo yooz-labs/yooz-docs`), `gh pr ready N --repo yooz-labs/yooz-docs`, and `gh pr merge N --repo yooz-labs/yooz-docs --merge --match-head-commit HEAD_SHA` (plan J2; if the owner answered J2 otherwise, hand the owner the merge command instead).
+When the owner says a remi release that ships one or more profile phases is published (the tag exists on `origin`): dispatch REL-DOCS; on its verified report, one `docs` reviewer on the recheck commit if it changed the pages; then the yooz-docs merge gate (items 1, 2 and 4 above, with `--repo yooz-labs/yooz-docs`) and `gh pr ready N --repo yooz-labs/yooz-docs`.
+yooz-docs deploys to a public site on merge, so by default the manager does not merge it: notify the owner with the exact command `gh pr merge N --repo yooz-labs/yooz-docs --merge --match-head-commit HEAD_SHA`, set REL-DOCS `owner`, and set it `done` when `gh pr view N --repo yooz-labs/yooz-docs --json state` shows `MERGED` (plan J2, recommended no). Only if the owner answered J2 yes does the manager run that command itself.
 
 ## 11. Owner questions and what each answer does
 
@@ -235,8 +236,8 @@ At CP0 the owner answers J1 to J12 (plan section 7); the manager records each wi
 | --- | --- | --- |
 | J1 defaults | yes | none; `spend --over` and the sandbox rule of section 5 apply |
 | | changed | the owner edits Parity, Slots or Budget; the manager runs `MB check` and logs it |
-| J2 merge authority | yes | as plan 0.4 |
-| | no for yooz-docs | REL-DOCS ends with the merge command handed to the owner |
+| J2 yooz-docs merge | no (recommended) | REL-DOCS ends with the merge command handed to the owner (section 10, "Release docs") |
+| | yes | the manager merges the docs PR after the REL-DOCS recheck and the yooz-docs merge gate |
 | J3 release grouping | as recommended | the lead writes the grouping into `lead.md`; the manager tells the owner at each release which phases are complete |
 | J4 docs paths | keep | none |
 | | other paths | lead wake: change DOCS cards and the app slices' link targets before DOCS-P1 is dispatched |
@@ -267,7 +268,7 @@ Form: "Update the parity to ... (Recommended) / Move this card to Claude for tod
 - Dispatch before CP0, an outline step, a parked step, or a rule step.
 - Touch the owner's real hub (ports 18765 to 18769), its session daemons, `/private/tmp/claude-501`, `~/.appstoreconnect`, or signal a process the manager did not start.
 - Run a login, read a credential, or start a visible GUI run without the owner's announced consent.
-- Merge into `main`; merge a yooz-docs profiles PR before REL-DOCS; merge P4A before the owner's latency measurement; merge a fix PR anywhere but its step PR's head branch.
+- Merge into `main`; merge a yooz-docs PR (it publishes a public site; the owner merges, unless the owner answered J2 yes, and never before REL-DOCS); merge P4A before the owner's latency measurement; merge a fix PR anywhere but its step PR's head branch.
 - Upload to TestFlight without the owner's go and a build number above the real current one (the owner gives the number).
 - Deploy anything under `packages/signaling/` (the owner redeploys).
 - Use the frontier tier unless the owner asks.
