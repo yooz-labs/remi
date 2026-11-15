@@ -4,7 +4,7 @@
 **Date:** 2026-11-14
 **Owner:** Yahya
 **Builds on:** ADR 0049 (the daemon side, accepted as the direction), ADR 0035, ADR 0036, ADR 0038, ADR 0039, ADR 0019, #1157, #1748 to #1752
-**Epic text:** `.context/account-switching-apps-epic.md` (titles and bodies, not filed)
+**Epic text:** `.context/account-switching-apps-epic.md` (the record of the issue text applied on 2026-11-14: #1749 amended, #1748, #1750 and #1751 edited, Apps 1 to 4 filed as #1788 to #1791; only the phase 5 addition and Apps 5 are not applied)
 
 ## Context
 
@@ -28,8 +28,8 @@ Citations:
 `[t3doc: path]` and `[t3src: path:lines]` are T3 Code documentation and source at commit `b60abf32e0b8247b2a425f8065be77352a3b86e4` of `pingdotgg/t3code` (`main`, committed 2026-11-14 21:11 UTC), read with `gh api` and `raw.githubusercontent.com`;
 `[src: path:line]` is remi at `origin/develop` `ab811011` (0.8.3-dev.41);
 `[0049 Dn]`, `[0049 Vn]` and `[0049 Gn]` are ADR 0049's decisions, verified facts and gaps.
-No T3 Code source or documentation text is copied here or proposed for reuse.
-A few user-interface strings are quoted as short phrases where the wording itself is the finding; any reuse of T3 Code's code would carry its MIT notice, and none is proposed.
+T3 Code is MIT licensed and is inspiration only: no T3 Code code or documentation text is copied here or proposed for reuse, and what it does is described in this ADR's own words.
+The only quotations are a few user-interface labels and terms of fewer than 15 words, named as T3 Code's where the wording itself is the finding (for example "Add Claude account", "Connect with ChatGPT", "Use reset", "shadow home"); any reuse of T3 Code's code would carry its MIT notice, and none is proposed.
 
 ## What the apps are today (verified at `ab811011`)
 
@@ -86,19 +86,19 @@ Each finding below says what was read in documentation, what was read in source,
   remi runs the interactive CLI in a pseudo-terminal (PTY) and has no such channel.
   That the SDK's initialization carries a subscription type is a lead for ADR 0049 G12 (a Claude plan field), not a fact remi has verified.
 - **T2. Adding, naming and removing.**
-  Documentation: a second Claude account is a second configuration directory, signed in at the environment's machine with `CLAUDE_CONFIG_DIR=<dir> claude auth login` and added as another Claude instance;
-  on mobile, "Add Claude account" takes a name and the folder, and the login "still happens on the environment's machine" `[t3doc: docs/user/providers-claude.md, "Separate accounts or configurations"]`.
-  A second Codex account is either a managed in-app "Connect with ChatGPT" sign-in, or `CODEX_HOME=<dir> codex login` on the machine plus a manually configured instance `[t3doc: docs/user/providers-codex.md:5-34, 64-101]`.
+  Documentation: a second Claude account is a second configuration directory, signed in on the machine that hosts the environment with `CLAUDE_CONFIG_DIR=<dir> claude auth login` and added as another Claude instance;
+  on mobile, T3 Code's "Add Claude account" form takes a name and the folder, and the sign-in itself is still done on the machine that hosts the environment `[t3doc: docs/user/providers-claude.md, "Separate accounts or configurations"]`.
+  A second Codex account is either a managed in-app sign-in (T3 Code's "Connect with ChatGPT" action), or `CODEX_HOME=<dir> codex login` on the machine plus a manually configured instance `[t3doc: docs/user/providers-codex.md:5-34, 64-101]`.
   Source: the web add flow is a wizard of Provider, Identity and Config steps `[t3src: apps/web/src/components/settings/AddProviderInstanceDialog.logic.ts:8-10]`;
   Identity asks for a Label, an Instance ID (letters, digits, `-` or `_`, suggested from the label) and an optional accent color `[t3src: apps/web/src/components/settings/AddProviderInstanceDialog.tsx:625-690]`.
   The mobile form takes a name and a config folder and describes the folder as one already signed in on that server `[t3src: apps/mobile/src/features/settings/ClaudeAccounts.tsx:177-178, 234-235]`, saved as a create or upsert `[t3src: apps/mobile/src/features/settings/claude-accounts.ts:35-73]`;
   rows say signed in, not signed in, not installed or turned off, next to the folder path `[t3src: apps/mobile/src/features/settings/ClaudeAccounts.tsx:70-78, 123]`.
   Removal asks for confirmation and says the instance's saved settings will be removed `[t3src: apps/web/src/components/settings/ProviderSettingsPanel.tsx:141-149, 838-857]`; mobile has a Remove alert `[t3src: apps/mobile/src/features/settings/ClaudeAccounts.tsx:92-106]`.
   Source: settings can show a provider sign-in in an embedded terminal that relays the process's output and the person's keystrokes `[t3src: apps/web/src/components/settings/ProviderAuthTerminal.tsx]`.
-  Documentation: a managed ChatGPT sign-in for a remote environment can finish on a local machine that then transfers "the issued client registration and tokens" to the destination `[t3doc: docs/internals/providers.md:65-69]`.
+  Documentation: a managed ChatGPT sign-in for a remote environment can finish on a local machine that then hands the registration and tokens it was issued over to the destination `[t3doc: docs/internals/providers.md:65-69]`.
   Not verified: whether the server's remove handler deletes any directory (only the client call was read), and the server side of the embedded sign-in.
 - **T3. One session list across accounts.**
-  Source: every thread names its instance (the runtime's, else the model selection's), resolved per environment because default ids "name different accounts on different servers" `[t3src: apps/mobile/src/features/threads/thread-provider-instance.ts:19-40]`;
+  Source: every thread names its instance (the runtime's, else the model selection's), resolved per environment because the same default id can stand for different accounts on different servers `[t3src: apps/mobile/src/features/threads/thread-provider-instance.ts:19-40]`;
   the row shows the instance badge only when it has an accent color or when more than one instance of the same driver exists `[t3src: packages/client-runtime/src/state/providerInstanceDisplay.ts:64-82]`.
 - **T4. Which accounts can continue a thread: the same state directory.**
   Documentation: Codex instances that share the thread's `CODEX_HOME` path can continue it;
@@ -136,11 +136,11 @@ Each finding below says what was read in documentation, what was read in source,
   A search of the twelve documentation pages read for rotation and failover terms found nothing about accounts.
   Not verified across the whole repository (8,180 files outside its vendored `.repos/`).
 - **T9. A principle worth keeping.**
-  Documentation: "Setup must not happen as a health-check side effect": a status probe must not start a session, run hooks or open a login `[t3doc: docs/internals/providers.md:52-57]`.
+  Documentation states the principle that checking a provider's health must not set anything up: a status probe must not start a session, run hooks or open a login `[t3doc: docs/internals/providers.md:52-57]`.
 
 ## Decisions
 
-Each decision names the owner's answer it follows (Q1 to Q10, answered on 2026-11-14; see "Owner decisions").
+Each decision names the owner's answer it follows (Q1 to Q11, answered on 2026-11-14; see "Owner decisions").
 The interface calls the thing a person manages a **profile**, everywhere (Q4): a profile is the product concept, a sign-in plus the rules and options that go with it (#1157's settings bundle), not only an account to switch.
 The word "account" appears only where a text means the provider's account itself: the same-account relation, the account under a profile changing, a provider plan.
 
@@ -625,7 +625,7 @@ Each answer, and what it changed in this ADR:
 
 - **Q1. App writes to profile configuration.** (a), as recommended: no app writes profile configuration; guided commands only (A1, A4).
   New requirement with it: the defaults and the guided commands are documented on the docs site (`yooz-docs`, Docusaurus, with a copy button on every code block) and shown in the app with a Copy action; a copyable, verified profile setup guide ships with each feature and never before it exists, as an acceptance gate on the app slices and the daemon phases (A4).
-- **Q2. Where sign-in status, Check and the guides live on the daemon.** (b), not the recommendation: amend #1749 before it starts instead of a separate phase 2b issue (A15); the proposed amended title and body are in `.context/account-switching-apps-epic.md`, for the manager to apply.
+- **Q2. Where sign-in status, Check and the guides live on the daemon.** (b), not the recommendation: amend #1749 before it starts instead of a separate phase 2b issue (A15); the amended title and body, applied to #1749 on 2026-11-14, are recorded in `.context/account-switching-apps-epic.md`.
 - **Q3. The badge when only the default is shared.** (a), as recommended: hidden on rows and tiles, "Default sign-in" in the detail (A5).
 - **Q4. The noun in the interface.** (b), not the recommendation: "Profiles" everywhere, because a profile is the product concept and carries rules and options as well as a sign-in (#1157's settings bundle). Consequence: the profile detail shows each profile's settings read only (A3).
 - **Q5. Showing the signed-in email.** (a), as recommended: never (A13).
