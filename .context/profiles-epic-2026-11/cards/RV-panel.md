@@ -21,7 +21,7 @@ One lens group's round-1 findings (at most 5) on a whole step PR, in the shape t
   - `verification`: tests that can fail, negative paths, revert checks that really fail, silent failures and fallbacks, no mock that replaces business logic (owner's rule);
   - `maintainability`: comments, docs and PR text that claim more than the code does ("Verify before you describe", `AGENTS.md`), needless complexity that can cause defects;
   - `privacy`: every path by which a credential, a token, an email, an account id, a workspace name, a local path or an environment value could reach a log line, a file, a wire frame, a push or a client; status-command output kept unread beyond the allowed fields; nothing derived from the harness name that ADR 0051 A8 forbids (ADR 0049 D10, ADR 0051 A13);
-  - `docs` (docs-only PRs): accuracy against the code or the recorded runs, every command block backed by a recorded run, broken links, lost or contradicted text, nothing unbuilt described.
+  - `docs` (docs-only PRs): accuracy against the code or the recorded runs, every command block backed by a recorded run, broken links, lost or contradicted text, nothing unbuilt described; no overclaim (ADR 0011): remi never shows the email in its own interface, but the terminal view shows what the harness prints, which can include it, and "signed in" means the harness reports a stored sign-in.
 - Procedure: `project:pr-review-toolkit` (`review-procedure.md`, `review-rubrics.md`); repository rules in `AGENTS.md` at `Head`.
 - Name any finding that touches authentication, authorization, credentials or key handling as such; the manager sends contested ones to the advisor.
 

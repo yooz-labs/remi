@@ -35,7 +35,13 @@ Questions:
 3. For `keyring` and `auto`: the keyring service and account names Codex uses, and whether they include `CODEX_HOME` (or a value derived from it), so that two `CODEX_HOME` directories cannot read each other's login. Answer "separated", "not separated" or "not settled", with the source lines.
 4. What `codex login status` prints and its exit code for: not logged in, logged in with ChatGPT, logged in with an API key; whether any output can contain an email, account id or workspace name (from the source's format strings).
 5. Where the app-server control socket lives relative to `CODEX_HOME`, and whether a long `CODEX_HOME` breaks it (any path-length limit or the short-link mechanism).
-Placeholder runs (safe, no account): for each, `env -i HOME=$T PATH=/usr/bin:/bin:/Users/yahya/.local/bin CODEX_HOME=$T/codex-home` with `$T` a new empty temporary directory and `$T/codex-home` created empty, run `codex login status` with no extra variable, then with each variable from question 1 set to the literal string `placeholder-not-a-credential`, recording exit code and output; repeat once with `$T/codex-home/config.toml` containing only `cli_auth_credentials_store = "file"`. Never set a real value; never run any other `codex` subcommand.
+Order: answer questions 2 and 3 from the source first, before any run.
+Placeholder runs (safe, no account), each with `env -i HOME=$T PATH=/usr/bin:/bin:/Users/yahya/.local/bin CODEX_HOME=$T/codex-home`, `$T` a new empty temporary directory and `$T/codex-home` created empty: run `codex login status` with no extra variable, then with each variable from question 1 set to the literal string `placeholder-not-a-credential`, recording exit code and output, under these stores only:
+- always with `$T/codex-home/config.toml` containing only `cli_auth_credentials_store = "file"`, and again with only `cli_auth_credentials_store = "ephemeral"`;
+- with no `config.toml` (the default store) only if question 2 says the default is `file`, or question 3 says "separated";
+- never with `keyring` or `auto`, and never with the default store when the default may be the keychain: a status read there could consult the owner's real keychain entry (a keychain prompt, and possibly identifying text in the evidence and the transcript).
+This replaces #1748's literal item (two empty `CODEX_HOME` directories with `cli_auth_credentials_store = "keyring"`, compared by `codex login status`): that experiment either shows nothing (no entry to find) or reads the owner's real keychain entry; the source answers question 3 without touching it, and the note says so.
+Never set a real value; never run any other `codex` subcommand.
 The worker may choose: the note's wording and order within each section.
 
 ## Acceptance
