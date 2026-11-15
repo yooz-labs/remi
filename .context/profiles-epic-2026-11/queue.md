@@ -9,7 +9,7 @@ This file lists, per slot, the cards in priority order with their entry conditio
 | Slot | Cards in order | Entry condition |
 | --- | --- | --- |
 | codex-terra (1, worker-hard) | P1A, P1B, P2A, P2B, P2C, P3A, P3B, P4A, P4B; A1, A2, A3 when free | P1A after CP0; each later daemon step after the one before it (Depends); app slices after their CPA checkpoint |
-| codex-luna (2, worker) | P1C, DOCS-P1, P5A-PREP, P2D, DOCS-P2, P3C, DOCS-P3, DOCS-P4, A4, REL-DOCS, DV | P1C after CP0; docs steps after their phase's last step; DV after every merge |
+| codex-luna (2, worker) | P1C, P5A-PREP, DOCS-P1, P2D, DOCS-P2, P3C, DOCS-P3, DOCS-P4, A4, REL-DOCS, DV | P1C and P5A-PREP after CP0; docs steps after their phase's last merge, its bump and a green DV; DV after every merge |
 | claude-sonnet (2, worker) | the same worker cards when both Luna slots are busy | owner, 2026-11-13: both platforms' worker slots are used |
 | claude-opus (1, lead and worker-hard) | worker-hard cards when Terra is busy (in practice the native lane: A1, A2, A3 beside a daemon step) | lead wakes and advisor consults are extra to this slot |
 | claude-fable (1, frontier) | none | only if the owner asks |
@@ -37,4 +37,4 @@ Observed on `develop` `c9e13967`; the checkpoint lead re-reads them when complet
 | any daemon step, `docs/agent-reference/profiles.md` | that file | serial by Depends already |
 | DOCS-P1 to DOCS-P4, REL-DOCS | the yooz-docs branch `docs/remi-profiles` and its two pages | one docs step at a time |
 | DOCS-P1, yooz-docs PR #25 | `sidebars.ts`, `docs/tools/remi/` | the docs worker merges `origin/main` into the docs branch after #25 merges and reruns `bun run build` |
-| D51, P2A | ADR 0051 on `develop` | P2A after D51 (Depends) |
+| D51, P2B | ADR 0051 on `develop` | P2B after D51 (Depends); P2A does not wait for it (pack review D23) |
