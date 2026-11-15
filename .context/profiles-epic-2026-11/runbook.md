@@ -2,6 +2,9 @@
 
 The manager follows this file literally, one tick at a time, with the `project:manager-loop` skill.
 Paths below are absolute; `PACK` means `/Volumes/S1/worktrees/remi/profiles-epic-plan/.context/profiles-epic-2026-11`, `BOARD` means `PACK/board.md`, `MAIN` means `/Users/yahya/Documents/git/yooz/remi` (the main checkout, always on `develop`), `DOCSMAIN` means `/Users/yahya/Documents/git/yooz/yooz-docs` (the yooz-docs main checkout, on `main`), `EVID` means `/Volumes/S1/yooz/remi/artifacts/profiles-epic-2026-11/<step>/r<round>/`, and `MB` means `python3 /Users/yahya/.claude/plugins/cache/research-skills/project/0.12.0/skills/manager-loop/scripts/manager_board.py`.
+These are names in this text, not shell variables: write the absolute path in every command, or start each shell command with
+`PACK=/Volumes/S1/worktrees/remi/profiles-epic-plan/.context/profiles-epic-2026-11; BOARD=$PACK/board.md; MAIN=/Users/yahya/Documents/git/yooz/remi; DOCSMAIN=/Users/yahya/Documents/git/yooz/yooz-docs; MB="python3 /Users/yahya/.claude/plugins/cache/research-skills/project/0.12.0/skills/manager-loop/scripts/manager_board.py"`
+and call the helper as `$MB` only in a shell that splits words (bash; in zsh use `${=MB}`).
 
 ## 1. Where the pack lives
 
@@ -44,7 +47,7 @@ Optional live view (port 8765 belongs to the remi daemon; use 8799): `nohup pyth
 | Need | How |
 | --- | --- |
 | Codex worker | section 5, run in the background (`run_in_background: true`) |
-| Claude worker (on `claude-sonnet` or `claude-opus`) | Agent tool: `model: sonnet` (effort high) or `model: opus` (effort xhigh), `run_in_background: true`, `description: "impl P1A"`; prompt = preamble + card + live facts; the manager creates the worktree first; no `isolation` parameter |
+| Claude worker (on `claude-sonnet` or `claude-opus`) | Agent tool: `model: sonnet` (effort high) or `model: opus` (effort xhigh), `run_in_background: true`, `description: "impl P1A"`; prompt = preamble + card + live facts, and its first line is `Your worktree is WT. Begin every shell command with cd WT && or use git -C WT. Never run a command with the main checkout as the working directory.` (a background agent's shell starts in the main checkout); the manager creates the worktree first; no `isolation` parameter |
 | Reviewer, delta reviewer | Agent tool: `subagent_type: project:pr-review-toolkit`, `model: sonnet`, `effort: xhigh`, `run_in_background: true`, `description: "rv P1A privacy"` (step and lens) |
 | Lead wake, advisor | Agent tool: `model: opus`, `effort: xhigh`, `run_in_background: true`, `description` naming the wake; brief per section 9 or `references/escalation.md` |
 | Message a live Claude agent | SendMessage |
@@ -62,8 +65,8 @@ Reviewers, the advisor and lead wakes are extra to the worker slots (owner, 2026
 
 | Case | Command | Steps |
 | --- | --- | --- |
-| New branch in remi | `git -C MAIN fetch origin && git -C MAIN worktree add -b BRANCH WT origin/develop`, then `cd WT && bun install` | every implementation step: branch and worktree are on its card (P1A `feature/issue-1748-profile-model` in `/Volumes/S1/worktrees/remi/profiles-p1a`, P1C `docs/issue-1748-codex-credentials` in `.../profiles-p1c`, P1B `feature/issue-1748-profile-launch` in `.../profiles-p1b`, and so on) |
-| Docs branch in yooz-docs | no open profiles docs PR: `git -C DOCSMAIN fetch origin && git -C DOCSMAIN worktree add -b docs/remi-profiles /Volumes/S1/worktrees/yooz-docs-profiles origin/main`; an open one: reuse its worktree (check `git -C DOCSMAIN worktree list`); then `cd /Volumes/S1/worktrees/yooz-docs-profiles && bun install` | DOCS-P1 to DOCS-P4, REL-DOCS |
+| New branch in remi | `git -C MAIN fetch origin && git -C MAIN worktree add --no-track -b BRANCH WT origin/develop`, then `cd WT && bun install` | every implementation step: branch and worktree are on its card (P1A `feature/issue-1748-profile-model` in `/Volumes/S1/worktrees/remi/profiles-p1a`, P1C `docs/issue-1748-codex-credentials` in `.../profiles-p1c`, P1B `feature/issue-1748-profile-launch` in `.../profiles-p1b`, and so on) |
+| Docs branch in yooz-docs | no open profiles docs PR: `git -C DOCSMAIN fetch origin && git -C DOCSMAIN worktree add --no-track -b docs/remi-profiles /Volumes/S1/worktrees/yooz-docs-profiles origin/main`; an open one: reuse its worktree (check `git -C DOCSMAIN worktree list`); then `cd /Volumes/S1/worktrees/yooz-docs-profiles && bun install` | DOCS-P1 to DOCS-P4, REL-DOCS |
 | Docs build of remi (detached) | first time `git -C MAIN worktree add --detach /Volumes/S1/worktrees/remi/profiles-docs-build DEV_SHA`; later `git -C /Volumes/S1/worktrees/remi/profiles-docs-build fetch origin && git -C /Volumes/S1/worktrees/remi/profiles-docs-build checkout --detach DEV_SHA` (or the release tag for REL-DOCS) | DOCS steps, REL-DOCS |
 | Detached verify | created in setup; the DV card updates it | DV |
 | Read-only | no worktree; reviewers read by hash with `git -C MAIN` (or `git -C DOCSMAIN`) | every reviewer |
@@ -76,6 +79,7 @@ Model by tier: worker `gpt-6-luna` with `model_reasoning_effort=max`; worker-har
 `WT` is the card's worktree, `GITDIR` is `git -C WT rev-parse --git-dir`.
 
 ```bash
+mkdir -p EVID
 codex exec -m gpt-6-luna -c model_reasoning_effort=max \
   -s workspace-write \
   -c 'sandbox_workspace_write.writable_roots=["GITDIR","/Volumes/S1/derived","/Volumes/S1/yooz/remi/locks","/Volumes/S1/yooz/remi/artifacts/profiles-epic-2026-11"]' \
@@ -89,7 +93,7 @@ codex exec -m gpt-6-luna -c model_reasoning_effort=max \
 - A docs step adds `/Volumes/S1/worktrees/remi/profiles-docs-build` and the yooz-docs worktree's git directory to `writable_roots` and runs with `-C /Volumes/S1/worktrees/yooz-docs-profiles`.
 - Full access (owner answers Q10 and Q18 of land-branches-2026-11, carried over by plan J1): replace the `-s workspace-write` line and the two `sandbox_workspace_write` lines with `-s danger-full-access` for native cards (Needs `xcode`) and for any card whose previous run was blocked by a sandbox denial (an `EPERM` or "Operation not permitted" in its log), only when `git -C WT status --porcelain --untracked-files=no` prints nothing; otherwise do not dispatch, log it and ask the owner.
 - Right after start: read the `thread.started` id from `EVID/codex-events.jsonl`; its rollout under `~/.codex/sessions/2026/MM/DD/rollout-*-THREAD.jsonl` must show `cwd` = WT and the expected model and effort; otherwise stop it and dispatch again.
-- Write the thread id, model and effort on the Agents row (`MB set BOARD Agents AGENT --new ...`).
+- Write the thread id, the process id of the background `codex exec` (`$!` or the background task's pid), the model and the effort on the Agents row (`MB set BOARD Agents AGENT --new ...`).
 - Before each dispatch: `MB card PACK/cards/CARD.md` (must print "ready to dispatch"; reviewer and DV cards included).
 - **Spend (every agent dispatch):** implementers, fix rounds, DV, reviewers, delta reviewers, lead wakes and advisor consults each run `MB spend BOARD "Agents today"` and their platform row (`"Codex Luna today"`, `"Codex Terra today"`, `"Claude Sonnet today"` or `"Claude Opus today"`); lead wakes and advisor consults also run `MB spend BOARD "Advisor consults"`.
   A refused `spend`: stop dispatching on that row and ask the owner (the skill's rule), unless `board-log.md` holds the owner's `decide` line recording J1b option 2; then repeat it with `--over` and `MB log BOARD "over: ITEM n/limit"`, until the ceiling (a row's Used reaches twice its Limit, or the third consecutive day with any row over), where the manager stops dispatching and asks. `Advisor consults` and `Fable consults` never take `--over`.
@@ -98,7 +102,8 @@ codex exec -m gpt-6-luna -c model_reasoning_effort=max \
 ### After every worker run (Codex or Claude)
 
 1. `develop` check: record `git ls-remote origin refs/heads/develop` at dispatch; after the run, every new commit on `develop` must be a merge the manager made or a version bump (`chore: bump version to`); `gh pr list --repo yooz-labs/remi --state merged --search "merged:>=DISPATCH_TIME"` lists only merges the manager made. Anything else stops all dispatching and goes to the owner at once.
-2. Real-state check: record `stat -f '%N %m %z' ~/.remi/config.toml ~/.claude/settings.json ~/.codex/config.toml 2>&1` at dispatch (metadata only, never the contents) and compare after the run; a change goes to the owner as a question (the owner's own work may have caused it), and dispatching of profile steps pauses until the answer.
+2. Real-state check: record `stat -f '%N %m %z' ~/.remi/config.toml ~/.remi/sessions.json ~/.remi/session-profiles.json ~/.remi/p ~/.claude/settings.json ~/.claude.json ~/.codex/config.toml ~/.codex/auth.json 2>&1` at dispatch (metadata only, never the contents) and compare after the run.
+   `~/.remi/sessions.json` and `~/.claude.json` change with the owner's own sessions, so a change there alone is logged and not acted on; a change in any other listed path, or a new `~/.remi/session-profiles.json` or `~/.remi/p`, goes to the owner as a question (the owner's own work may have caused it; the first such report is expected to be a false positive), and dispatching of profile steps pauses until the answer while other work continues.
 3. Issues: `gh issue list --repo yooz-labs/remi --state closed --search "closed:>=DISPATCH_TIME"` lists no issue this plan did not close on purpose.
 
 ## 6. Live facts added at dispatch
@@ -109,7 +114,8 @@ Copied from the board and from `git`/`gh` at dispatch time, never from an earlie
 - the PR number and head commit, when the step has a PR; the open profiles docs PR and its branch, for docs steps;
 - for a fix round: the round number, the decided findings with their outcomes, and the line "This card was started earlier. Continue from the worktree: run `git status` and `git log --oneline -10` first.";
 - for a reviewer: repository, `Lens group`, `Base` (merge-base), `Head` (the reviewer reads those commits, never a moving worktree), and for delta reviews `Round1Head`;
-- the owner answers the card names (J9 for P1B, J11 for P1A and P1B, J4 for docs cards).
+- the owner answers the card names (J9 for P1B, J11 for P1A and P1B, J13 to J15 for P1A and P1B, J4 for docs cards);
+- for every TypeScript implementation card: `baseline failing tests:` followed by the list of `bun test packages/daemon` failures from the latest green DV report (the DV card records it), which is the baseline the card's "fails only in tests that also fail on `origin/develop`" refers to.
 
 ## 7. First tick of a session
 
@@ -129,21 +135,24 @@ The skill's tick, with these project rules:
 - **Order:** owner answers (section 11), worker reports, reviews, failing checks, conflicts, timeboxes, dates, checkpoints and owner gates, then fill free slots.
 - **Not before approval:** a manager that finds CP0 in state `owner`, or no line starting `CP0: plan approved` in `board-log.md`'s Decisions, dispatches nothing, asks the owner for approval of the plan (one question, `MB ask BOARD Q-CP0 --question "Approve the profiles epic plan and answer J1a to J18?" --options "Approve with answers / Hold" --default none`), and stops that tick after writing the board.
 - **Rule steps** (CP*, CPA*, OG-*, D51, REL-DOCS) are never dispatched by `status`; they start `blocked` with their trigger in Next:
-  - a checkpoint whose Depends are all `done`: wake the lead (section 9) with the checkpoint's row in `PACK/checkpoints.md`; when `board-log.md` holds the lead's decision line for that checkpoint (for example `CP1:`) and the owner's go (recorded `--by owner`), set it `done`; the lead's completed cards turn their steps from `outline` to `todo` (the lead sets them with `MB set`).
+  - a checkpoint whose Depends are all `done`: wake the lead (section 9) with the checkpoint's row in `PACK/checkpoints.md`.
+    When `board-log.md` holds the lead's decision line for that checkpoint (for example `CP1:`): run the anticipation pass (one advisor consult, brief per the skill's `references/escalation.md` with the question "how will the owner, reviewers and users react to the current state, and what will they ask next?"; its result goes to `MB log`), then ask the go: `MB ask BOARD QCP1 --question "CP1: go for phase 2?" --options "Go (Recommended) / Hold" --default none --step CP1` (the id and wording follow the checkpoint), set the checkpoint `owner`, send the five-line digest, and ask with AskUserQuestion when the owner is in the session.
+    On the answer: `MB decide BOARD "CP1: owner go" --by owner`, close the question, set the checkpoint `done`; the lead's completed cards turn their steps from `outline` to `todo` (the lead sets them with `MB set`). A "Hold" leaves the checkpoint `owner` and is logged.
   - an owner gate whose Depends are `done`: set it `owner`, notify the owner once with its section of `PACK/owner-gates.md`, and record the owner's result with `decide ... --by owner`; then `done` (passed) or ask the lead for a fix card (failed).
-  - D51: stays `owner` until the owner approves PR #1785; then run the merge gate for a docs PR (section 10) and merge it; `done`.
-  - REL-DOCS: when the owner says a release that ships a profile phase is published, dispatch [REL-DOCS](cards/REL-DOCS-release-recheck.md), then merge the docs PR (section 10, "Release docs").
+  - D51: stays `owner` until the owner approves PR #1785; then dispatch one `docs` reviewer ([RV-panel](cards/RV-panel.md), lens `docs`) on #1785, run the merge gate (section 10; it is a `develop` merge, under the manager's authority) and merge it; `done`.
+  - REL-DOCS: when the owner says a release that ships a profile phase is published, and that release matches the owner's J3 answer (with the recommended answer: phase 1 only together with P2A), dispatch [REL-DOCS](cards/REL-DOCS-release-recheck.md), then section 10, "Release docs". A release that does not match J3 gets no REL-DOCS; tell the owner which phases it holds.
+  - Before any release the owner prepares, the manager's digest says which profile phases are complete and that no release should contain phase 1 before OG-P1 passed (risk R1).
 - **Parked steps:** P5, P5B, P6 and A5 are `blocked` with Next starting "parked"; never dispatch them, and never write cards for them; CP5 decides whether a new plan starts.
 - **Outline steps** are never dispatched; `MB card` refuses them.
 - **Native lane:** at most one step with Needs `xcode` is `active` at a time, besides DV; a visible simulator run needs the owner's announced consent each time (plan J10) and a stop file (`/Volumes/S1/yooz/remi/gui-fixture/STOP` halts it).
-- **Docs lane:** one docs step at a time; the profiles docs PR stays a draft until REL-DOCS.
-  A DOCS-Pn step is `done` when merge gate items 1, 2 and 4 hold for its **draft** docs PR and its `docs` review is resolved; the PR stays a draft and is not merged; log `DOCS-Pn verified, PR N draft, merges at REL-DOCS`. The merge happens only in section 10, "Release docs". This is what CP1 to CP4 wait for, so no checkpoint waits on a release.
+- **Docs lane:** one docs step at a time; the profiles docs PR stays a draft until REL-DOCS. Do not dispatch a DOCS step until its phase's last merge has its version-bump commit on `origin/develop` and DV for that tip is green; `DEV_SHA` is that bump commit. REL-DOCS waits while a DOCS step is `active` or `review`, and a DOCS step waits while REL-DOCS is active (one docs branch).
+  A docs step (DOCS-P1 to DOCS-P4) is `done` when merge gate items 1, 2 and 4 hold for its **draft** docs PR and its `docs` review is resolved; the PR stays a draft and is not merged; log `DOCS-P1 verified, PR N draft, merges at REL-DOCS` (with that step's id). The merge happens only in section 10, "Release docs". This is what CP1 to CP4 wait for, so no checkpoint waits on a release.
 - **Phase completion:** when every step of a phase is `done` and its owner gate passed, hand the owner the close command for that phase's issue (or close it under the owner's authority of 2026-11-13 after the owner says so): `gh issue close N --repo yooz-labs/remi --comment "Done: PRs #A, #B; owner gate passed DATE."`; app issues likewise after their slice merges and any owner gate passed.
 - **Steps waiting on a question** stay `owner` until the answer.
 
 ## 9. The intermittent lead and lead.md
 
-The lead is Claude Opus, woken only for: a checkpoint (`PACK/checkpoints.md`), an advisor ruling that changes a card, two failed approaches on a step, a red `develop`, a dropped dependency, an owner answer that contradicts a card, or a failed owner gate.
+The lead is Claude Opus, woken only for: a checkpoint (`PACK/checkpoints.md`), an advisor ruling that changes a card, two failed approaches on a step, a red `develop`, a dropped dependency, an owner answer that contradicts a card, a failed owner gate, or P1C's keyring result being "not separated" or "not settled" (section 10, "A worker report arrives").
 It is not a standing slot (owner, 2026-11-13: lead and advisor are extra to the worker slots); it spends `"Agents today"`, `"Claude Opus today"` and `"Advisor consults"` (section 5, "Spend"; `Advisor consults` never takes `--over`).
 
 Lead brief (one message):
@@ -172,7 +181,8 @@ Verify by observation, stop at the first failure (skill, "Verify by observation"
 4. Every fix has a revert check or a test that fails without it (the cards name the revert checks).
 5. Deviations are listed and triaged (accept, send back, or ask the lead).
 6. The checks of section 5, "After every worker run".
-Then set the step `review` and dispatch its round-1 panel (plan section 3) while CI runs.
+Then set the step `review` and dispatch its round-1 panel (plan section 3) while CI runs, spending each reviewer (section 5, "Spend").
+P1C only: read the "Consequences for P1B" section of `.context/profiles-codex-credentials.md` at the PR head (`git -C MAIN show HEAD_SHA:.context/profiles-codex-credentials.md`); if it says "not separated" or "not settled", set P1B `owner`, wake the lead (section 9, reason "P1C keyring result") with the result and the owner's J11 answer, and dispatch P1B only after the lead has updated P1B's card or Depends and logged it.
 
 ### A review returns
 
@@ -181,7 +191,7 @@ Then set the step `review` and dispatch its round-1 panel (plan section 3) while
 - Fix-round tier: worker-hard when any accepted finding is Critical or touches credentials, privacy, authorization or data integrity; otherwise the step's own tier. A step keeps its platform for fixes unless the skill's handover conditions hold (`references/platforms.md`).
 - Proposed rejects of a round: one advisor consult covering all of them; record the ruling with `MB decide` and a PR comment.
 - A contested finding on a credential, privacy, authorization or data-integrity path: advisor before any fix.
-- Round 1 substantial (`review-convergence.md` rules 1 to 5): one [RV-delta](cards/RV-delta.md) round; large fixes may go into a fix PR whose base is the step PR's head branch, merged there only, after the same gate; never a third round.
+- Round 1 substantial: apply `review-convergence.md`'s rules by number, mechanically: rule 1 (an accepted Critical), rule 2 (`git -C MAIN diff --stat ROUND1_HEAD..HEAD -- . ':!*test*' ':!*.md'` shows more than 150 changed lines), rule 3 (a changed CLI flag, config key, wire shape or file format in the fix diff), rule 4 (the fix diff touches authorization, encryption, data integrity or concurrency code); rule 5 (the approach was replaced) and the credential or privacy tier apply only when a reviewer's finding names them; anything else unclear goes to the advisor. Substantial: one [RV-delta](cards/RV-delta.md) round; large fixes (rules 2, 3, 5) may go into a fix PR whose base is the step PR's head branch, merged there only, after the same gate; never a third round.
 
 ### Checks
 
@@ -189,7 +199,7 @@ Then set the step `review` and dispatch its round-1 panel (plan section 3) while
   Check at 30 minutes; the relay gate at 75 minutes; a job past twice its usual time is hung: cancel, rerun once, and hand the owner an issue command if `timeout-minutes` is missing.
 - Failing because of the diff: two fix attempts, then the advisor with the failing log.
 - Failing without the diff (fails on `develop` too, infrastructure, or a known #1634 flake): one `gh run rerun RUN_ID --failed`; then write the excerpt to `EVID/flake.md` and file it (`gh issue comment 1634 --repo yooz-labs/remi --body-file EVID/flake.md` for a #1634 match, else `gh issue create --repo yooz-labs/remi --title TITLE --body-file EVID/flake.md`); continue other steps. The same gate step flaky twice in seven days goes to the lead (diagnosis card).
-- No checks on a head: the next push starts them; if none start in 5 minutes, check `gh pr view N --json mergeable` and the path filters; "no checks reported" never counts as passing.
+- No checks on a head: the next push starts them; if none start in 5 minutes, check `gh pr view N --json mergeable` and the path filters; if still none, ask the lead for an instruction (for example an empty commit by the worker) or set the step `owner` and ask; "no checks reported" never counts as passing.
 
 ### A merge conflict
 
@@ -198,7 +208,7 @@ A manual resolution after round 2 already ran: one advisor consult reads `git sh
 
 ### Timebox, silence, usage limit
 
-- Implementer silent 45 minutes (no commit, no event lines): nudge once (Claude) or check the Codex process; then redispatch with an inventory of its files and commits.
+- Implementer silent 45 minutes (no commit, no event lines): nudge once (Claude), or check the Codex process with `ps -p PID -o stat=` (the pid on its Agents row; no output means it ended); then redispatch with an inventory of its files and commits.
 - Past twice the timebox: advisor.
 - A Codex usage limit: write the board and ask the parity question.
 
@@ -211,7 +221,7 @@ Apply section 11, `MB decide BOARD "ANSWER" --by owner`, set the question `close
 1. Every review report dispatched for the step is in, every finding has an outcome, and every `fix` finding is verified on the final head by its named test or repro; the delta review (if one ran) is clean or its findings are resolved the same way.
 2. No accepted Critical is open.
 3. Fresh base: `git -C MAIN fetch origin && git -C MAIN log --format=%s HEAD_SHA..origin/develop` lists only `chore: bump version to ...` subjects; otherwise the worker merges `origin/develop` into the branch and the checks run again.
-4. Checks on the final head: `gh pr checks N --repo yooz-labs/remi` lists `CI Scope`, `Lint`, `Type Check`, `Test`, `Spelling`, `Relay Scope` and `local-relay`, each passing or skipping, none pending or failing; a PR touching `packages/native/` also has `Build and Test (Native)` passing (not skipping); a PR touching `packages/daemon/`, `packages/shared/`, `packages/signaling/`, `tests/integration/` or `.github/` has `local-relay` passing after more than 55 minutes (the real soak). A yooz-docs PR: every check `gh pr checks N --repo yooz-labs/yooz-docs` lists passes.
+4. Checks on the final head: every line of `gh pr checks N --repo yooz-labs/remi` is `pass` or `skipping` (it also prints `Test worker 0` to `2`, `E2E Tests`, `Release Guard`, `Auto Release` and `Sync Develop After Release`), none pending or failing, and these lines are present: `CI Scope`, `Lint`, `Type Check`, `Test`, `Spelling`, `Relay Scope`, `local-relay`; a PR touching `packages/native/` also has `Build and Test (Native)` passing (not skipping); a PR touching `packages/daemon/`, `packages/shared/`, `packages/signaling/`, `tests/integration/` or `.github/` has `local-relay` passing as the real soak: `gh pr checks N --repo yooz-labs/remi --json name,state,startedAt,completedAt --jq '.[] | select(.name=="local-relay")'` shows `completedAt` minus `startedAt` over 55 minutes. A yooz-docs PR: every line of `gh pr checks N --repo yooz-labs/yooz-docs` passes.
 5. Closing references: `git -C MAIN log --format=%B origin/develop..HEAD_SHA | bun -e 'import { extractClosingReferences } from "/Users/yahya/Documents/git/yooz/remi/packages/shared/src/issue-closing.ts"; console.log(JSON.stringify(extractClosingReferences(await Bun.stdin.text())))'` prints `[]`, and the PR title and body through the same command print `[]`; anything else goes to the owner before the merge (the card forbids closing words, so a hit is also a send-back finding).
 6. Step extras: P4A needs the owner's latency measurement recorded in its PR (J7); D51 needs the owner's approval; a yooz-docs profiles PR is never merged by this gate: for a DOCS step, items 1, 2 and 4 on the draft PR make the step `done` (section 8, "Docs lane"); the merge is section 10, "Release docs".
 
@@ -232,7 +242,7 @@ yooz-docs deploys to a public site on merge, so by default the manager does not 
 
 ## 11. Owner questions and what each answer does
 
-At CP0 the owner answers J1 to J12 (plan section 7); the manager records each with `decide ... --by owner`.
+At CP0 the owner answers J1a to J18 (plan section 7); the lead or the owner records each with `decide ... --by owner` before the first tick (section 2). Every card follows the lead's recommendation; an answer that differs wakes the lead to correct the card before it is dispatched.
 
 | J | Answer | Board or card change |
 | --- | --- | --- |
@@ -258,7 +268,17 @@ At CP0 the owner answers J1 to J12 (plan section 7); the manager records each wi
 | J10 visual gate | as recommended | each app slice's visual capture is announced to the owner before it starts |
 | J11 Codex store write | yes | lead wake after P1C reports "not separated": a small card for `remi profile add` |
 | | no | none |
-| J12 ADR note | yes | the CP1 lead adds it to the ADR 0049 amendment commit |
+| J12 ADR note | yes | the CP1 lead records in the ADR 0049 amendment only that the fields exist (from the binary's code), never the owner's values |
+| J13 Claude argument and sign-in guards | yes (recommended) | none: P1A refuses `--settings`, `--managed-settings` and `--setting-sources` in a Claude profile's `args` and passes `--claudeai` for subscription sign-in |
+| | no | lead wake: P1A design items 1 and 6 change before P1A is dispatched |
+| J14 configuration errors | (c) recommended | none: P1A disables profiles on a `[profiles]` error and accepts the reserved later key names |
+| | (a) or (b) | lead wake: P1A design item 1 changes before P1A is dispatched |
+| J15 unknown `expects` | (a) recommended | none: P1A's loader accepts a safe-token `expects`; the check returns unknown; launches refuse it |
+| | (b) | lead wake: P1A design item 1 changes, and P2C's card gains the loader change at CP1 |
+| J16 collapse key | answered by CP2 | the CP2 lead completes P3B and A3 with the answer |
+| J17 rule-text paths | answered by CP1 | the CP1 lead completes P2C with the answer |
+| J18 loops | one loop at a time (recommended) | the land-branches board stays `paused` while this loop runs |
+| | distinct id | the owner sets the id and halves Slots Max on both boards; the start prompt changes |
 
 ## 12. The parity question
 
