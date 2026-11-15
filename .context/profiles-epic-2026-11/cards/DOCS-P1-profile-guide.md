@@ -16,6 +16,7 @@ A draft pull request in `yooz-labs/yooz-docs` adds `docs/tools/remi/guides/profi
 ## Context
 
 - The docs site is Docusaurus 3.9 (`yooz-docs`, default branch `main`, Bun); remi's pages live under `docs/tools/remi/` (`commands/`, `guides/`, `reference/`; open PR #25 adds `setup/`). Read `AGENTS.md` and two existing pages (`docs/tools/remi/commands/sessions.md`, `docs/tools/remi/guides/hub-mode.md`) for front matter and tone, and `sidebars.ts` for how pages are listed (it lists remi pages explicitly on PR #25's branch; follow what the base branch does).
+- The issue's documentation checkbox: `gh issue view 1748 --repo yooz-labs/remi` (section "Additions").
 - What phase 1 ships: read `docs/agent-reference/profiles.md` and `packages/daemon/src/profiles/` at `DEV_SHA` in the remi build worktree; the refusal texts and command lines on the pages are copied from that source and from the runs, never paraphrased into something the build does not print.
 - The page paths are the ones the issues name; the owner has not confirmed them (plan J4). If the owner's answer differs, the lead changes this card before dispatch.
 - Section headings below are fixed because the apps will link to their anchors (A1, A2).

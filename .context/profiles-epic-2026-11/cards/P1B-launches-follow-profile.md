@@ -15,7 +15,7 @@ A wrapper session (`remi`, `remi codex`), a hub child (`remi --daemon`) and a re
 
 ## Context
 
-Read first: issue #1748, `docs/agent-reference/profiles.md` and the `packages/daemon/src/profiles/` module from P1A (the resolver, `profile-env.ts`, `login-check.ts`, `config-warnings.ts`, the revision), P1C's `.context/profiles-codex-credentials.md` ("Consequences for P1B"), and the backend plan section "Profile contract and wrapper settings (#1157)" (lines 168-215).
+Read first: issue #1748 (`gh issue view 1748 --repo yooz-labs/remi`), `docs/agent-reference/profiles.md` and the `packages/daemon/src/profiles/` module from P1A (the resolver, `profile-env.ts`, `login-check.ts`, `config-warnings.ts`, the revision), P1C's `.context/profiles-codex-credentials.md` ("Consequences for P1B"), and the backend plan section "Profile contract and wrapper settings (#1157)" (lines 168-215).
 
 What the code does today (`develop` `c9e13967`; re-check the lines after P1A merged):
 - `PTYSession.start()` spawns with `withoutRemiSecrets({...process.env, ...this.config.env, FORCE_COLOR, TERM})` (`packages/daemon/src/pty/pty-session.ts:211-218`), so deleting a variable from `config.env` cannot remove it: the backend plan's "use a complete child environment".
