@@ -54,6 +54,7 @@ import {
   DEFAULT_WATCHDOG_KILL_GRACE_SECONDS,
   DEFAULT_WATCHDOG_POLL_INTERVAL_MS,
   DEFAULT_WATCHDOG_RUN_LIMIT_SECONDS,
+  WATCHDOG_MAX_COMMANDS_PER_RUN,
   type WatchdogScriptOptions,
   buildWatchdogScript,
   revertFailedMarkerPath,
@@ -63,10 +64,30 @@ import {
 const FIXTURES = join(import.meta.dir, 'fixtures', 'watchdog');
 const LEASE_MODULE = join(import.meta.dir, '..', '..', 'src', 'power', 'level2-lease.ts');
 const EXPECTED_REVERT_ARGS = sudoArgv(DISABLESLEEP_OFF);
-const SCRIPT_TIMEOUT_MS = 30_000;
+/** How long one run may take before `spawnSync` kills it: above every bound below. */
+const SCRIPT_TIMEOUT_MS = 45_000;
+/** A test runs the script up to six times. */
+const TEST_TIMEOUT_MS = 120_000;
 const FAILED_NOOP = 'revert failed expired (exit 0, flag Yes)';
 
-type FlagState = 'Yes' | 'No' | 'removed' | 'twice' | 'hang' | 'sleep3' | 'stopparent';
+/**
+ * The upper bound of a run whose one hanging command has `deadlineSeconds`,
+ * derived from the constants (see `WATCHDOG_MAX_COMMANDS_PER_RUN`): the
+ * deadline and the grace, which are sleeping timers and so wall-clock time,
+ * plus every other command of the run at one poll interval each, plus a
+ * 10 s margin for starting those commands on a loaded machine (each took
+ * about 35 ms at a load average of 13 to 15 on the owner's Mac mini, about
+ * 1.1 s for all of them, so the margin is about nine times that).
+ */
+function runBoundMs(deadlineSeconds: number): number {
+  return (
+    (deadlineSeconds + DEFAULT_WATCHDOG_KILL_GRACE_SECONDS) * 1000 +
+    WATCHDOG_MAX_COMMANDS_PER_RUN * DEFAULT_WATCHDOG_POLL_INTERVAL_MS +
+    10_000
+  );
+}
+
+type FlagState = 'Yes' | 'No' | 'removed' | 'twice' | 'hang' | 'stopparent';
 type RevertMode = 'ok' | 'fail' | 'noop' | 'replace';
 type LnMode = 'real' | 'kill-main' | 'fail';
 
@@ -181,7 +202,6 @@ state=$(/bin/cat ${at('state')})
 case $state in
 ${ioregCases}
   hang) printf '%s\\n' "$$" >> ${at('pids')}; exec /bin/sleep 30 ;;
-  sleep3) exec /bin/sleep 3 ;;
   stopparent)
     printf '%s\\n%s\\n' "$$" "$PPID" >> ${at('pids')}
     kill -STOP "$PPID"
@@ -441,6 +461,7 @@ describe('the generated script takes every number as an option', () => {
     const defaults = buildWatchdogScript({ remiHome: '/private/tmp/h' });
     for (const line of [
       `DEADLINE=${DEFAULT_WATCHDOG_COMMAND_DEADLINE_SECONDS}`,
+      `GRACE=${DEFAULT_WATCHDOG_KILL_GRACE_SECONDS}`,
       `POLL=${DEFAULT_WATCHDOG_POLL_INTERVAL_MS / 1000}`,
       `DEADLINE_TICKS=${(DEFAULT_WATCHDOG_COMMAND_DEADLINE_SECONDS * 1000) / DEFAULT_WATCHDOG_POLL_INTERVAL_MS}`,
       `GRACE_TICKS=${(DEFAULT_WATCHDOG_KILL_GRACE_SECONDS * 1000) / DEFAULT_WATCHDOG_POLL_INTERVAL_MS}`,
@@ -466,11 +487,11 @@ describe('the generated script takes every number as an option', () => {
     }).split('\n');
     for (const line of [
       'DEADLINE=7',
+      'GRACE=2',
       'POLL=0.1',
       'DEADLINE_TICKS=70',
       'GRACE_TICKS=20',
       'RUN_LIMIT=33',
-      'RUN_TICKS_LIMIT=330',
       "ORPHAN_AGE='+42s'",
       "INVALID_AGE='+180s'",
     ]) {
@@ -493,7 +514,7 @@ if (process.platform !== 'darwin') {
         expectNothing(h, runScript(h));
         expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease });
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
 
     test(
@@ -512,7 +533,7 @@ if (process.platform !== 'darwin') {
         expectNothing(gone, runScript(gone));
         expect(readLease(gone.remiHome)).toEqual({ kind: 'none' });
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
 
     test(
@@ -542,7 +563,7 @@ if (process.platform !== 'darwin') {
         expectNothing(longer, runScript(longer));
         expect(existsSync(leasePath(longer.remiHome))).toBe(true);
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
 
     test(
@@ -554,7 +575,7 @@ if (process.platform !== 'darwin') {
         expectNothing(h, runScript(h));
         expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease });
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
   });
 
@@ -566,7 +587,7 @@ if (process.platform !== 'darwin') {
         h.setFlag('Yes');
         expectNothing(h, runScript(h));
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
 
     test(
@@ -580,7 +601,7 @@ if (process.platform !== 'darwin') {
         expectNothing(h, runScript(h));
         expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease });
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
 
     const leaseCases: Array<[string, string, (h: Harness) => void | Promise<void>]> = [
@@ -673,7 +694,7 @@ if (process.platform !== 'darwin') {
           await make(h);
           expectOneRevert(h, runScript(h), reason);
         },
-        SCRIPT_TIMEOUT_MS,
+        TEST_TIMEOUT_MS,
       );
     }
 
@@ -689,7 +710,7 @@ if (process.platform !== 'darwin') {
         expectOneRevert(h, runScript(h), 'lease invalid');
         expect(existsSync(target)).toBe(true);
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
 
     const batteryCases: Array<[string, string, number, string | null]> = [
@@ -722,7 +743,7 @@ if (process.platform !== 'darwin') {
             expectOneRevert(h, run, reason);
           }
         },
-        SCRIPT_TIMEOUT_MS,
+        TEST_TIMEOUT_MS,
       );
     }
 
@@ -775,7 +796,7 @@ if (process.platform !== 'darwin') {
         expectNothing(h, run);
         expect(readLease(h.remiHome)).toEqual(read);
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
 
     test(
@@ -791,7 +812,7 @@ if (process.platform !== 'darwin') {
         expectLog(run, ['revert expired']);
         expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease: newer });
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
 
     test(
@@ -802,7 +823,7 @@ if (process.platform !== 'darwin') {
         writeLease(h.remiHome, freshLease({ expiresAt: nowSeconds() - 2 }));
         expectOneRevert(h, runScript(h), 'expired');
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
   });
 
@@ -834,7 +855,7 @@ if (process.platform !== 'darwin') {
             expectOneRevert(h, run, reason);
           }
         },
-        SCRIPT_TIMEOUT_MS,
+        TEST_TIMEOUT_MS,
       );
     }
 
@@ -866,7 +887,7 @@ if (process.platform !== 'darwin') {
         writeLease(fourDigits.remiHome, lease);
         expectOneRevert(fourDigits, runScript(fourDigits), 'lease invalid');
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
   });
 
@@ -880,65 +901,70 @@ if (process.platform !== 'darwin') {
           writeLease(h.remiHome, freshLease());
           expectOneRevert(h, runScript(h), 'flag unreadable');
         },
-        SCRIPT_TIMEOUT_MS,
+        TEST_TIMEOUT_MS,
       );
     }
 
     test(
-      'a hung ioreg is killed at the deadline and the run ends within 15 s',
+      'at the default deadline, a hung ioreg is killed and the run ends within its derived bound',
       () => {
         const h = makeHarness();
         h.setFlag('hang');
         writeLease(h.remiHome, freshLease());
         const run = runScript(h);
-        expect(run.elapsedMs).toBeLessThan(15_000);
+        // The deadline is a sleeping timer, so the run cannot end before it.
         expect(run.elapsedMs).toBeGreaterThanOrEqual(9_000);
+        expect(run.elapsedMs).toBeLessThan(runBoundMs(DEFAULT_WATCHDOG_COMMAND_DEADLINE_SECONDS));
         expectOneRevert(h, run, 'flag unreadable');
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
 
     test(
-      'commandDeadlineSeconds: 1 with an ioreg that sleeps 3 s ends the run in under 3 s',
+      'commandDeadlineSeconds: 1 kills an ioreg that would sleep 30 s, well before its sleep ends',
       () => {
         const h = makeHarness({ script: { commandDeadlineSeconds: 1 } });
-        h.setFlag('sleep3');
+        h.setFlag('hang');
         writeLease(h.remiHome, freshLease());
         const run = runScript(h);
-        expect(run.elapsedMs).toBeLessThan(3_000);
+        expect(run.elapsedMs).toBeLessThan(runBoundMs(1));
         expectOneRevert(h, run, 'flag unreadable');
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
 
     test(
       'a child that cannot be collected is abandoned at the deadline and the run ends',
       () => {
         // The fake stops its own parent, the wrapper that would report its
-        // exit, so no status ever arrives; a blocking wait would hang here.
+        // exit, so no status ever arrives; a blocking wait would hang here
+        // until the run's own timeout.
         const h = makeHarness({ script: { commandDeadlineSeconds: 1 } });
         h.setFlag('stopparent');
         writeLease(h.remiHome, freshLease());
         const run = runScript(h);
-        expect(run.elapsedMs).toBeLessThan(6_000);
+        expect(run.elapsedMs).toBeLessThan(runBoundMs(1));
         expectOneRevert(h, run, 'flag unreadable');
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
 
     test(
       'runLimitSeconds: a run past its limit stops and counts as a failure',
       () => {
-        const h = makeHarness({ script: { runLimitSeconds: 2 } });
+        // A 20 s deadline, so a run limit that did not work would show in the
+        // time as well as in the log.
+        const h = makeHarness({ script: { runLimitSeconds: 2, commandDeadlineSeconds: 20 } });
         h.setFlag('hang');
         writeLease(h.remiHome, freshLease());
         const run = runScript(h);
-        expect(run.elapsedMs).toBeLessThan(6_000);
+        expect(run.elapsedMs).toBeLessThan(runBoundMs(2));
+        expect(runBoundMs(2)).toBeLessThan(20_000);
         expect(h.revertCalls()).toEqual([]);
         expectLog(run, ['run exceeded 2 s']);
         expect(readState(h)).toContain('failures=1\n');
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
   });
 
@@ -992,7 +1018,7 @@ if (process.platform !== 'darwin') {
         expect(readState(h)).toContain('failures=0\n');
         expect(readLease(h.remiHome)).toEqual({ kind: 'none' });
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
 
     test(
@@ -1017,7 +1043,7 @@ if (process.platform !== 'darwin') {
         h.setNow(T + 31);
         expectLog(runScript(h), ['revert expired', failed]);
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
   });
 
@@ -1033,7 +1059,7 @@ if (process.platform !== 'darwin') {
         expectNothing(h, runScript(h));
         expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease });
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
 
     test(
@@ -1058,7 +1084,7 @@ if (process.platform !== 'darwin') {
         expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease: newer });
         expect(leftovers(h).filter((name) => name.includes('.watchdog-'))).toEqual([]);
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
 
     test(
@@ -1080,7 +1106,7 @@ if (process.platform !== 'darwin') {
         expect(second.stdout).toBe('');
         expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease: newer });
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
 
     test(
@@ -1104,7 +1130,7 @@ if (process.platform !== 'darwin') {
         expect(leftovers(h).sort()).toEqual(['lease.json.watchdog-222', 'watchdog-run.newone']);
         expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease });
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
   });
 
@@ -1127,7 +1153,7 @@ if (process.platform !== 'darwin') {
         }
         expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease });
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
 
     test(
@@ -1159,7 +1185,7 @@ if (process.platform !== 'darwin') {
         }
         expect(readLease(nowhere.remiHome)).toEqual({ kind: 'valid', lease });
       },
-      SCRIPT_TIMEOUT_MS,
+      TEST_TIMEOUT_MS,
     );
   });
 }
