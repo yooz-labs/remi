@@ -92,6 +92,9 @@ while [ ! -e "$FAKE_OUTPUT/release" ] && [ "$i" -lt 600 ]; do sleep 0.1; i=$((i 
     PATH: `${bin}:/usr/bin:/bin`,
     SHELL: path.join(bin, 'sh-path'),
     FAKE_OUTPUT: output,
+    // The Anthropic named-profile directory follows XDG_CONFIG_HOME before HOME, so an ambient
+    // value (a CI runner sets one) would hide the files the tests plant under the sandbox HOME.
+    XDG_CONFIG_HOME: path.join(dirs.home, '.config'),
     CLAUDE_CONFIG_DIR: path.join(dirs.home, 'inherited-claude'),
     CODEX_HOME: path.join(dirs.home, 'inherited-codex'),
   };
