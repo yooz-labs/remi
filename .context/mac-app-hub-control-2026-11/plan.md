@@ -5,6 +5,8 @@ Inputs: [research-a-feasibility.md](research-a-feasibility.md), [research-b-stat
 Base: `origin/develop` at `52ee818e` (0.9.1-dev.5); the keep-awake level 2 plan at `865457b2` (branch `docs/issue-1773-awake-level2-plan`, read only).
 Status: proposed. Nothing is built before the owner approves (#1805, "Process"); the questions are in section 7.
 Evidence marks: CHECKED, read by the lead at `52ee818e` (or the commit named); RESEARCH, taken from a research report, not re-read; UNVERIFIED, checked nowhere.
+Amended the same day after the owner's note that the settings UI follows the VS Code model with `config.toml` as the file: D4 is rebuilt around a settings registry (D4.1, D4.2, D4.10 to D4.12), MH6 is split into MH6a to MH6c, and Q10 and Q11 are new.
+Section numbers: "D4.n" is a part of decision D4; a bare "4.n" is a part of section 4 (the icon).
 
 ## 1. Goals, non-goals and the principle
 
@@ -17,7 +19,7 @@ Loopback is not identity (#873): the hub cannot tell this Mac's app from a phone
 |---|---|---|
 | G1 | 1, monitor | The app shows, without a terminal, whether a hub runs on this Mac, its version, whether it is set to start at login, whether this app is approved, and the next step in words, for a hub started by anything (terminal, LaunchAgent, another app). |
 | G2 | 1, start | Starting a hub costs one copy and paste now (D1 (a)); one click later only if the owner picks D1 (b). |
-| G3 | 2, settings | Keep-awake and display settings are read and changed in the Settings window, validated by the hub, with "applies to new sessions" or "applies after a hub restart" per key, and a config file is created when none exists. |
+| G3 | 2, settings | A VS Code-style settings page, rendered from the hub's settings registry, reads and changes keep-awake and display settings, validated by the hub, with "applies to new sessions" or "applies after a hub restart" per key; a config file is created when none exists; a new key needs no app change. |
 | G4 | 3, icon | The menu bar icon shows needs-you plus this Mac's keep-awake state (level 1 holding; level 2 armed, active, paused (waiting), disarmed), legible at 18 pt in light and dark, by shape and words, never color alone, with VoiceOver sentences. |
 | G5 | 3, safety | Level 2 being active never depends on the menu bar alone: a notification, the Dock menu and the main window say it too. |
 
@@ -27,6 +29,7 @@ Non-goals:
 - No app write of `[profiles.*]`, `auth`, `daemon`, `network`, `telegram`, `harness`, `notifications`, `prompts`, `features`, `terminal`, nor of `awake.level2`, `allow_phone`, `require_password_on_wake`, `foreign_holder_ignore`, `watchdog_interval_seconds`.
 - No `sudo`, sudoers or LaunchDaemon step from the app (ADR 0050); no approval or policy keys (ADR 0030); keep-awake is not a `question` (ADR 0038).
 - No self-approval of the app's key.
+- No repository (workspace) scope of settings: a repository is untrusted content, and a cloned repository must not change keep-awake (a prompt-injection path); it would need its own ADR.
 - Developer ID distribution (D1 (c)) is not planned here; if the owner picks it, it gets its own plan.
 - Other machines' keep-awake in the icon (the menu lists them later).
 
@@ -43,9 +46,10 @@ New facts the research did not have (all CHECKED at `52ee818e` unless marked):
 | N5 | Config is loaded once per process at start (exit 1 on error); session daemons are separate detached processes with their own load, so `[awake]` level 1 (through `AwakeWiring`) and `display.max_bullet_length` apply to sessions started after a change, hub-owned keys after a hub restart. `remi reload` only validates. | `cli.ts:395-402, 1129, 1186-1188, 3704-3714`; `cli/daemon-manager.ts:598-645` | D4.6 |
 | N6 | The awake plan's Mac-side control is `POST /local-keep-awake`, gated by the local capability token over loopback, the gate of `/local-secure-push`. The token lives in the remi home, so the sandboxed app cannot use it; its level 2 actions can only be L2-APP's wire messages. | awake `cards/L2-HUB-config-and-hub.md:23, 54` (`865457b2`); `websocket-server.ts:343-354`; `server/peer-helpers.ts:42-53` | 4.4, MH8 |
 | N7 | The level 2 states changed today: `disabled, disarmed, armed, paused, starting, on, reverting`; `c7ab6f51` had no `paused` (a refusal was `armed` plus `lastRefusal`). Owner questions Q12 to Q14 there are open. | awake `cards/L2-POL-level2-policy.md:75`, `plan.md:13, 267-299` (`865457b2`) | 4.3 |
-| N8 | The hub lists only `workspaces` today; the registry holds seven names. | `packages/daemon/src/cli/capabilities.ts:18`; `packages/shared/src/protocol-version.ts:35-48` | MH4, MH6 |
+| N8 | The hub lists only `workspaces` today; the capability registry holds seven names. | `packages/daemon/src/cli/capabilities.ts:18`; `packages/shared/src/protocol-version.ts:35-48` | MH4, MH6b |
 | N9 | The next free ADR number is 0052 (none from 0052 up on any remote branch). | `git ls-tree` of every remote branch | MH3 |
-| N10 | `remi stop` without `--all` stops the hub only (inferred from the `--all` flag; not run). | `cli.ts:486`; `daemon-manager.ts:368-420` | D4.7 (MH6 verifies) |
+| N10 | `remi stop` without `--all` stops the hub only (inferred from the `--all` flag; not run). | `cli.ts:486`; `daemon-manager.ts:368-420` | D4.7 (MH6b verifies) |
+| N11 | `parseConfigText` already validates text through the file-load path and hides a TOML syntax error's text; `remi config show` masks `bot_token`; only `[harness]` and `[awake]` refuse unknown keys (`[display]` merges and ignores them). | `config.ts:420-438, 1005` | D4.5, D4.10 |
 
 Research claims re-checked (CHECKED): entitlements `Mac/Remi.entitlements:5-21` (sandbox, `network.client`, app group, keychain groups, push); `MenuBarExtra` `.window` and the `Settings` scene `Mac/RemiMacApp.swift:33-53`; `RemiMenuBarStatus` `RemiUI/MenuBarStatus.swift:7-29`; template icon `RemiUI/MenuBarIcon.swift:16-44`; label sets only `.accessibilityLabel` `Mac/MacNotificationCoordinator.swift:300`; `Mac/MacFirstRunView.swift:11-20`; `MachineConnectionStatus` `RemiKit/Store/MachineStore.swift:133-139`; Bonjour re-finds saved machines only `Discovery/LocalMachineDiscovery.swift:98-113`; default bind `config/config.ts:240`; an unknown `[awake]` key throws `config.ts:458-478`; ranges `:480-498`; `telegram.bot_token` `:183-188`; parse only with `smol-toml` `:11`; `initConfigFile` `wx`, 0600 `:918-933`; template `:805-829`; `REMI_MAX_BULLET_LENGTH` override `:731-737`; no `config_*`, `keep_awake` or `awake` string in `packages/shared/src` and none of the first two in `packages/daemon/src` (`git grep`, zero hits); `packages/native/AGENTS.md:39, 64, 66, 94, 104, 114`; ADR 0051 F8 `:62-64`, A1 `:147-155`, Q1 `:626-627`; ADR 0050 hub owns level 2 `:92`, item 5 `:98`, slice 4 `:146`, keys `:160-185`; ADR 0049 D10 `:354`; ADR 0035 items 2 to 5 `:26-45`.
 Apple platform facts (sandbox, `NSUserUnixTask`, `SMAppService`, App Review 2.4.5, HIG menu bar, template images): RESEARCH (A section 4, B section 3), not re-read.
@@ -104,80 +108,127 @@ A hub with authentication off is shown with "This hub does not check devices" in
 
 ### D4. The Settings design
 
-**4.1 Where.** The Settings scene (`RemiMacApp.swift:44-53`) gains a "This Mac" tab: the hub facts of D2, then "Keep awake" and "Display" groups, shown when this Mac's hub is saved and connected.
-The wire allows any machine; the tab serves This Mac first, other machines later.
+**D4.1 The model: VS Code's settings editor, with `config.toml` as the file (owner, 2026-11-17).**
+A settings registry in the daemon is the single source of truth for every setting a device may see; the hub serves it, with each setting's current and default value, through the `config` capability; the app renders the page from it, so a new key needs a registry entry and no app change.
+The raw file stays the person's (D4.10).
+Place: the Settings scene (`RemiMacApp.swift:44-53`) gains a "This Mac" tab: the hub facts of D2, then the registry's groups; the wire allows any machine, and the tab serves This Mac first.
 
-**4.2 Fields and key classes.** W: app-writable; W2: writable only if Q4 says so; T: terminal only, shown read only with the command; never: not on the wire.
+**D4.2 The settings registry** (`packages/daemon/src/config/settings-registry.ts`, MH6a). One entry per key:
 
-| Key | Control | Class | Applies | Phase |
-|---|---|---|---|---|
-| `awake.level1` | toggle "Keep this Mac awake while agents work" | W | new sessions | MH7 |
-| `awake.question_hold_minutes` | stepper, range from the hub | W | new sessions | MH7 |
-| `awake.idle_grace_seconds`, `stuck_busy_minutes`, `ttl_minutes` | steppers under Advanced | W | new sessions | MH7 |
-| `awake.level1_battery_floor_percent` | stepper, 0 turns the floor off | W, once the hub lists it (#1773 G2) | new sessions | MH7 or later |
-| `display.max_bullet_length` | stepper, 0 is off | W | new sessions | MH7 |
-| level 2 tunables: battery start and revert, minimum remaining, default and cap hours, idle revert, thermal keys, resume bounds | steppers and pickers under "Lid-closed mode" | W2 | hub restart | MH7b |
-| `awake.level2`, `allow_phone`, `require_password_on_wake`, `foreign_holder_ignore`, `watchdog_interval_seconds` | read only, with the terminal step | T | - | MH7 |
-| every other table | not shown | never | - | - |
+| Field | Meaning |
+|---|---|
+| `key`, `table` | TOML path (`awake.question_hold_minutes`); `table` is its first segment |
+| `title`, `description` | a short title and one or two plain sentences, English (today's template comments, `config.ts:814-829`, are the first source) |
+| `group`, `order` | the page section ("Keep awake", "Lid-closed mode", "Display") and the position in it |
+| `type` | `boolean`, `integer`, `number`, `enum`, `string`, `stringList` |
+| `default` | read from `DEFAULT_CONFIG`, never a second literal |
+| `min`, `max`, `unit` | sanity bounds only (the validator's own constants, `AWAKE_MAX_*`, `config.ts:78-81`); units seconds, minutes, hours, percent, characters |
+| `options` | for `enum`: each value and its label |
+| `appliesAt` | `new-session`, `hub-restart` or `install` |
+| `access` | required, no default: `app` (a granted device may write), `app-after-gate` (shown read only until Q4 and OG-L2 flip it to `app`), `terminal` (shown read only, with the step), `hidden` (never sent) |
+| `platform` | `macos` or all |
 
-Class rules:
-- The whitelist is a list of exact key names in one daemon module, deny by default (the #1063 lesson: fail closed rather than a denylist).
-- A test fails when any key of the `[awake]` or `[display]` supported sets is in no class, so a key added by a later slice cannot become writable by omission.
-- T keys are terminal only because each widens what devices may do (`allow_phone`), arms the privileged behavior `allow_phone` exists to gate (`level2`), lowers a rail the owner required (`require_password_on_wake`), names processes the phone must not edit (`foreign_holder_ignore`, ADR 0050 `:121`), or applies only at install (`watchdog_interval_seconds`).
-- The app shows only keys the hub lists, so a key never appears before its slice ships (ADR 0050 decision 8).
+Registry rules:
+- The loader's supported-key set and range checks for `[awake]` and `[display]` come from the registry (one code path), and the generated template's two tables are written from it (titles and descriptions as comments), so loader, template, page and docs cannot disagree.
+- Every numeric limit of the keep-awake plan is a setting with a default (the owner's rule of 2026-11-17, the 3 h run limit included; the awake lead is auditing the cards), so each lands as a registry entry with its slice: G2 and L2-HUB add entries, not validator code (CO-1 item 7).
+- Drift test (MH6a), against the real loader through `parseConfigText` (`config.ts:420`): every default equals `DEFAULT_CONFIG`; the generated template loads to exactly `DEFAULT_CONFIG`; each numeric key loads at `min` and `max` and is refused at `min - 1` and `max + 1`; each enum option loads and a non-option is refused; a wrong type is refused; the served set is every entry whose `access` is not `hidden`.
+- Only registry tables are served; `telegram`, `auth`, `daemon`, `network`, `harness`, `[profiles.*]` and every other table have no entry and never leave the machine.
+- `terminal` for `awake.level2`, `allow_phone`, `require_password_on_wake`, `foreign_holder_ignore`, `watchdog_interval_seconds`, because each widens what devices may do (`allow_phone`), arms the behavior `allow_phone` exists to gate (`level2`), lowers a rail the owner required (`require_password_on_wake`), names processes the phone must not edit (`foreign_holder_ignore`, ADR 0050 `:121`) or applies only at install; deny by default (the #1063 lesson: fail closed rather than a denylist).
 
-**4.3 Wire (ADR 0035).** Capability `config`, registry text "change keep-awake and display settings on this machine"; the hub lists it, session daemons do not and answer `UNSUPPORTED`.
+| Entries now (more arrive with their slices) | Group | Access | Applies |
+|---|---|---|---|
+| `awake.level1`, `question_hold_minutes`, `idle_grace_seconds`, `stuck_busy_minutes`, `ttl_minutes`; then `level1_battery_floor_percent` (#1773 G2) | Keep awake | app | new session |
+| `display.max_bullet_length` | Display | app | new session |
+| level 2 tunables (battery start and revert, minimum remaining, run limit and daily cap, idle revert, thermal, resume bounds) | Lid-closed mode | app-after-gate (Q4) | hub restart |
+| the five `terminal` keys above | Lid-closed mode | terminal | hub restart, install |
+
+**D4.3 Wire (ADR 0035).** Capability `config`, registry text "change keep-awake and display settings on this machine"; the hub lists it, session daemons do not and answer `UNSUPPORTED`.
 
 | Message | Dir | Fields |
 |---|---|---|
 | `config_read_request` | c2d | `id` |
-| `config_read_response` | d2c | `requestId`; `file: {exists, valid, error?}` (escaped, cut to 200 code points, the path shown as `config.toml`); `revision` (opaque hash of the file bytes); `keys[]: {key, type: boolean or integer or enum, value, default, min?, max?, unit?, options?, writable, appliesAt: new-session or hub-restart, overriddenBy?: environment or flag, running?}`; `pendingRestart`; `restartCommand`; `canWrite` |
-| `config_write_request` | c2d | `id`, `revision`, `changes[]: {key, value}` (1 to 16) |
-| `config_write_response` | d2c | `requestId`, `ok`; success: `changes[]` with `appliesAt`, new `revision`; failure: `error: {code, message}`, code one of `CONFIG_NOT_PERMITTED`, `CONFIG_KEY_NOT_WRITABLE`, `CONFIG_VALUE_INVALID`, `CONFIG_CONFLICT`, `CONFIG_FILE_INVALID`, `CONFIG_UNSUPPORTED_FORM`, `CONFIG_WRITE_FAILED` |
+| `config_read_response` | d2c | `requestId`; `file: {exists, valid, error?}` (escaped, cut to 200 code points, the path shown as `config.toml`); `displayPath` (home-relative, `~/.remi/config.toml`, never a user name); `revision` (opaque hash of the bytes); `settings[]`: the D4.2 fields plus `value`, `setInFile`, `modified` (value differs from default), `writable` (access and this connection's grant), `overriddenBy?` (environment or flag), `running?` (the hub's loaded value); `unknownKeys[]` (names only); `pendingRestart`; `restartCommand`; `canWrite` |
+| `config_write_request` | c2d | `id`, `revision`, `dryRun?`, `changes[]: {key, value}` or `{key, reset: true}` (1 to 16) |
+| `config_write_response` | d2c | `requestId`, `ok`; success: `changes[]` with `appliesAt`, new `revision` (unchanged for `dryRun`); failure: `errors[]: {key?, code, message}`, code one of `CONFIG_NOT_PERMITTED`, `CONFIG_KEY_NOT_WRITABLE`, `CONFIG_VALUE_INVALID`, `CONFIG_CONFLICT`, `CONFIG_FILE_INVALID`, `CONFIG_UNSUPPORTED_FORM`, `CONFIG_WRITE_FAILED` |
 
-Never on the wire: the file's bytes, a key outside the whitelist, the name of any other table (so the presence of a Telegram token is not disclosed), a local path.
-Golden fixtures in `packages/shared/tests/fixtures/protocol/`: `config_read_request`, `config_read_response`, `config_read_response_invalid_file`, `config_write_request`, `config_write_response`, `config_write_response_error`, and `hello_ack` listing `config`.
-RemiKit decodes each (`FixtureConformanceTests`); a conformance test constructs both endpoints (ADR 0014); the registry has its documentation test (ADR 0035 item 4).
+A `type` or `access` value the app does not know draws that row read only ("update this app to change it").
+Never on the wire: the file's bytes, a setting outside the registry or with `hidden` access, an unknown key's value, the name of any other table (so the presence of a Telegram token is not disclosed), an absolute path.
+Golden fixtures in `packages/shared/tests/fixtures/protocol/`: `config_read_request`, `config_read_response` (one setting of each type, an unknown key), `config_read_response_invalid_file`, `config_write_request`, `config_write_request_reset`, `config_write_response`, `config_write_response_error`, and `hello_ack` listing `config`.
+RemiKit decodes each (`FixtureConformanceTests`); a conformance test constructs both endpoints (ADR 0014); the capability has its documentation test (ADR 0035 item 4).
 
-**4.4 Who may write (Q3, recommended (b)).** A write needs an authenticated device key the person granted the `settings` scope at the terminal (proposed `remi keys grant <fingerprint> settings`, `remi keys revoke <fingerprint> settings`, shown by `remi keys`); a read needs any authorized device.
+**D4.4 Who may write (Q3, recommended (b)).** A write needs an authenticated device key the person granted the `settings` scope at the terminal (proposed `remi keys grant <fingerprint> settings`, `remi keys revoke <fingerprint> settings`, shown by `remi keys`); a read needs any authorized device.
 A hub with authentication off refuses every write (no key can hold a grant).
 A capability-token holder (a local CLI) may write, since it can edit the file anyway.
 The grant lives beside the key's label in the authorized-keys store (ADR 0037) and gets a security review.
 
-**4.5 Validation and the writer (MH6).**
+**D4.5 Validation and the writer (MH6b).**
 1. Re-read the file; a revision different from the request's is `CONFIG_CONFLICT` (a hand edit since the read wins; the app re-reads and shows it).
 2. A current file that does not load with the hub's own loader is `CONFIG_FILE_INVALID`; the app never offers to overwrite it.
-3. Build candidate bytes with a table-scoped line editor: replace the `key = value` line inside a plain `[awake]` or `[display]` header, append it at that table's end, or append the table at the file's end. Refuse `CONFIG_UNSUPPORTED_FORM` for top-level dotted keys, inline tables, a repeated key, a multi-line value, or a file that is a symlink, not regular, or not owned by the user.
-4. Load the candidate with the loader every remi command uses (the pure parse #1798 P1A splits out of `loadConfigWithNotices`), relation checks included; any error is `CONFIG_VALUE_INVALID` with the loader's message.
+3. Build candidate bytes with a table-scoped line editor: replace the `key = value` line inside a plain `[awake]` or `[display]` header, append it at that table's end, or append the table at the file's end; a reset removes the key's line (Q10 (b)) and keeps the comment lines above it. Refuse `CONFIG_UNSUPPORTED_FORM` for top-level dotted keys, inline tables, a repeated key, a multi-line value, or a file that is a symlink, not regular, or not owned by the user.
+4. Load the candidate with `parseConfigText` (`config.ts:420`), the path every remi command's load takes, relation checks included (a syntax error's text is already withheld, `:426-427`); any error is `CONFIG_VALUE_INVALID` with the loader's message, attached to its key. A `dryRun` stops here and writes nothing: that is the page's inline validation.
 5. Every byte outside the edited lines stays identical (a property test over real configs: comments, `[profiles.*]`, a Telegram line, CRLF, no final newline).
 6. Write atomically: a temporary file in the same directory, mode 0600, fsync, rename. Never a backup copy: a copy of the file copies the token (D10).
 7. No file: create it as `remi config init` does (`generateDefaultConfig`, `wx`, 0600; `config.ts:918-933`), then apply the change.
-8. Audit: one hub log line per write (`[Config] <label> <fingerprint prefix> set awake.question_hold_minutes 30 -> 45`) and the same as a JSON line in `REMIHOME/config-changes.log` (0600, rotated at 1 MB); whitelisted values only, none secret.
+8. Audit: one hub log line per write (`[Config] <label> <fingerprint prefix> set awake.question_hold_minutes 30 -> 45`, or `reset`) and the same as a JSON line in `REMIHOME/config-changes.log` (0600, rotated at 1 MB); registry values only, none secret.
 
-**4.6 When a change applies.** Each key carries `appliesAt` (N5): session-held keys (`[awake]` level 1, `display`) apply to sessions started after the change, running sessions keep theirs; hub-owned keys (level 2) apply after a hub restart.
+**D4.6 When a change applies.** Each key carries `appliesAt` (N5): session-held keys (`[awake]` level 1, `display`) apply to sessions started after the change, running sessions keep theirs; hub-owned keys (level 2) apply after a hub restart.
 `pendingRestart` is true while a hub-owned key in the file differs from what the running hub loaded; the This Mac card then says "Restart the hub to apply".
 A key overridden by environment or flag (`REMI_MAX_BULLET_LENGTH`) says "set by the environment on this Mac; the file value applies only without it".
 
-**4.7 Restart.** The app never restarts the hub by itself, and no wire message restarts it: a remote-triggered restart is a new surface, and level 2's restart rule (awake Q12) makes a restart consequential.
+**D4.7 Restart.** The app never restarts the hub by itself, and no wire message restarts it: a remote-triggered restart is a new surface, and level 2's restart rule (awake Q12) makes a restart consequential.
 The hub writes `restartCommand`: `launchctl kickstart -k gui/<uid>/com.yooz.remi` when it runs under its LaunchAgent, otherwise `remi stop && remi start`; the app shows it with Copy, and with MH9 the `restart` verb runs it.
-The copy says what a restart does: sessions keep running (N10, verified by MH6 with a real child), devices reconnect, and lid-closed mode follows the keep-awake restart rule.
+The copy says what a restart does: sessions keep running (N10, verified by MH6b with a real child), devices reconnect, and lid-closed mode follows the keep-awake restart rule.
 
-**4.8 Version skew.**
-- App older than hub: keys the app does not know are listed read only (name and value, "change at the terminal"); unknown fields, codes and enum values decode as unknown.
-- Hub older than app: the app draws only keys the hub lists; without `config` the tab shows `hubSupport`'s message (update remi on this Mac and restart it).
+**D4.8 Version skew.**
+- App older than hub: the page renders every served setting from the schema, new keys included; a `type` or `access` it does not know is read only; unknown fields, codes and enum values decode as unknown.
+- Hub older than app: the page shows only what the hub serves; without `config` the tab shows `hubSupport`'s message (update remi on this Mac and restart it).
 - Hub process older than the installed binary (#539): the running hub validates; keys are only ever added, so a newer binary loads them. A downgrade below a written key stops every remi command at load (`config.ts:458-478`); the recovery path covers it and the docs warn. Lead decision: no tolerant loader mode; the owner may revisit.
 
-**4.9 Recovery when the config is unreadable or has an unknown key.**
+**D4.9 Recovery when the config is unreadable or has an unknown key.**
 - File broken while the hub runs: reads return `file.valid = false` with the loader's message; the tab disables every control and says "The hub keeps running with the settings it started with, but it will not start again until the file is fixed. In Terminal: `remi config show`", with the docs link.
 - Hub no longer starts (after a restart or a downgrade): the This Mac card shows "Remi isn't running on this Mac" with the commands, plus "If `remi start` reports a settings error, it names the file and the key: fix or delete that line, then start again"; `config-changes.log` shows what the app changed last.
 - A failed write cannot leave a broken file: the candidate loads before the atomic rename.
+
+**D4.10 The raw TOML file beside the page.**
+- The file stays the person's: they edit it in any editor, and the hub reads it at start and at every `config_read_request`, so a hand edit shows on the next read, with "applies after a hub restart" where `running` differs from the file.
+- The app re-reads when the Settings window becomes key and after every write; a hub-pushed change notice is not needed now.
+- Comments, order and formatting survive app writes: one line of one table changes (D4.5 items 3 and 5).
+- Keys the registry does not know: in a strict table (`[awake]`) the file does not load, and D4.9 shows the loader's message naming the key; in a tolerant table (`[display]`, N11) they are listed as "Unknown key, ignored by this remi" by name only, never their value, and the editor never deletes them.
+- "Open config.toml" (VS Code's "Open Settings (JSON)") in a sandbox that cannot read `~/.remi`: the app shows `displayPath` with Copy, and the commands `open -t ~/.remi/config.toml` (the default text editor) and `remi config show` (effective values, token masked, N11) with Copy. "Open in editor" and "Show in Finder" hand the path to another app through `NSWorkspace` only if an MH7 spike shows the sandbox allows it without giving the app access (UNVERIFIED); never through an open panel or a security-scoped bookmark, which would make the app a reader. For a remote machine, Copy only.
+
+**D4.11 What to take from VS Code, and what not.**
+
+| VS Code behavior | Here |
+|---|---|
+| Settings editor rendered from contributed schemas | adopt: the registry (D4.2) |
+| Search box and `@modified` filter | adopt: matches key, title and description; `@modified` and `@restart` filters |
+| Grouped sections with a table of contents | adopt: the registry's `group`, a section list beside the page once there are more than five groups |
+| Modified indicator | adopt: a bar beside a setting whose value differs from its default; "set in config.toml" in the detail when the line exists |
+| Per-setting menu: reset, copy setting ID, copy as JSON | adopt: Reset to default, Copy key, Copy as TOML (`[awake]` plus the line) |
+| Default value | adopt, always shown beside the current value ("Default: 30 minutes") |
+| Description under each setting | adopt as plain text, escaped (the machine wrote it), with the key name in monospace |
+| Inline validation | adopt: a `dryRun` write runs the hub's own validator and its message shows under the setting; the app checks only type and the sanity bounds before sending |
+| Saves on change | adopt: a toggle saves at once, a number when editing ends |
+| Restart-required hint | adopt: badge "Applies after a hub restart"; note "Applies to new sessions" |
+| Open the JSON file | the sandbox-aware form of D4.10 |
+| Scopes (user, workspace, folder, remote) | one scope, the machine (each machine has its own page); a profile's options stay read only (ADR 0051 Q1, A3); no repository scope (section 1) |
+| Policy-managed settings | maps to environment and flag overrides, shown as "set by the environment on this Mac" |
+| Settings Sync | skip: settings belong to their machine |
+| Language overrides, extension settings | skip |
+| "Edit in settings.json" for complex values | `string` and `stringList` settings are `terminal` access for now |
+
+**D4.12 Surfaces and parity.**
+- Native first: MH7 on the Mac. The registry, the wire and the pure presentation (`RemiSettingsPresentation` in RemiUI) are client-neutral, so iPhone and iPad can show the same page for any machine later, in a step of their own; a phone writes only with a grant (Q3).
+- Terminal: `remi config list` (each setting with value, default, modified mark, access and "applies"), `remi config set <key> <value>` and `remi config reset <key>`, through the same registry, editor and validator (MH6c, Q11). Terminal-access keys are settable there: the terminal is the machine.
+- Web: the browser client can render the same schema as a settings page in `packages/web` (MHW, Q11), after MH7, as another device that needs the same grant; the WebView Mac app and the retiring Capacitor app are not changed (`packages/native/AGENTS.md:42`).
+- Docs: one yooz-docs page lists every setting, generated from the registry (MH6a).
 
 ### 3.5 Rule amendments (text proposed; MH3 applies it after Q2, Q3, Q5, and Q1 for the script)
 
 | Rule | Today | Amended to |
 |---|---|---|
 | `packages/native/AGENTS.md:39` | "... It is a client of hubs, local and remote, and never spawns agents, never reads `~/.remi`, never signals a process. Anything that needs the machine ... is a request to the hub." | "... It is a client of hubs, local and remote. It finds this Mac's hub only through `GET /auth-info` on 127.0.0.1, which registers no key, and the hub's own messages. It never spawns agents, never reads or writes `~/.remi`, never signals a process and never approves its own key. Settings change only through the hub's `config` capability (ADR 0052), which writes the keys the hub lists as writable, for a device the person granted at the terminal. Anything else that needs the machine is a request to the hub." With Q1 (b), add: "The one program it runs is the script the person saved in its Application Scripts folder, by the verbs `start` and `restart`, only while the script's bytes match the text the app offered." |
-| ADR 0051 F8 (`:62-64`) | "The native apps never touch the machine. ... never read `~/.remi`, never spawn a process ..." | append: "ADR 0052 is the only configuration write a device can request: whitelisted `[awake]` and `[display]` keys, written by the hub for a granted device; `[profiles.*]` is never on it. The Mac app's optional start script (ADR 0052) is the only process it starts." |
+| ADR 0051 F8 (`:62-64`) | "The native apps never touch the machine. ... never read `~/.remi`, never spawn a process ..." | append: "ADR 0052 is the only configuration write a device can request: settings of `[awake]` and `[display]` whose registry access is `app`, written by the hub for a granted device; `[profiles.*]` is never on it. The Mac app's optional start script (ADR 0052) is the only process it starts." |
 | ADR 0051 A1 and Q1 (`:147-155, :626`) | "No app writes profile configuration ... The Mac app is no exception" | a scope note the owner approves (Q2): "Q1 covers profile configuration and everything a profile carries. Device-requested changes to other configuration follow ADR 0052, whose whitelist never includes `[profiles.*]`, `auth`, `daemon`, `network`, `telegram`, `harness`, or a key that widens what devices may see or do." |
 | ADR 0050 slice 4 (`:146`) | "`keep_awake_status` and start and stop messages ..." | the awake lead records where the status rides (4.4; CO-1) |
 | `packages/native/DESIGN.md:30` | one-color icon, outline versus fill | extended per phase (MH2 dashed, MH5 dot, MH8 sign), each in a commit of its own |
@@ -284,7 +335,7 @@ With notifications denied, the main window shows a banner for the same transitio
 
 ## 5. Phases
 
-Smallest useful slice first: MH1 and MH2 need no owner decision, no daemon change and no new entitlement.
+Smallest useful slice first: MH1 and MH2 need no owner decision, no daemon change and no new entitlement; MH6a (the registry, no wire) needs only Q10, for its template part, and can land early so the keep-awake slices add registry entries.
 Branches `feature/issue-1805-<short>` off a fresh `origin/develop`, worktrees under `/Volumes/S1/worktrees/remi/`, DerivedData under `/Volumes/S1/derived/remi-<worktree>`, test hubs on 18790 and up with a temporary `REMI_HOME`, never the owner's hub. The manager files one sub-issue of #1805 per step.
 
 | Step | Goal | Tier | Needs | Depends | Timebox |
@@ -292,15 +343,18 @@ Branches `feature/issue-1805-<short>` off a fresh `origin/develop`, worktrees un
 | MH1 | This Mac card and first-run commands card | worker-hard | xcode | - | 2.5d |
 | MH2 | Icon step 1, VoiceOver sentences, Dock line, show-in-bar toggle | worker-hard | xcode | MH1 | 1.5d |
 | OG-MH2 | real-bar evidence, TestFlight build | owner | Mac | MH2 | 30m |
-| OQ-1 | owner batch 1: Q2, Q3, Q5, Q9 | owner | - | none; ask at once | - |
+| OQ-1 | owner batch 1: Q2, Q3, Q5, Q9, Q10, Q11 | owner | - | none; ask at once | - |
 | MH3 | ADR 0052 and the 3.5 amendments | lead | - | OQ-1 | 0.5d |
 | CO-1 | agreement with the awake lead (below) | lead | - | none | 30m |
 | MH4 | `keep_awake_status`, level 1, on `hub_status` | worker-hard | - | CO-1; `awakeHold` published | 1.5d |
 | MH5 | Icon step 2a: the level 1 dot and the This Mac keep-awake row | worker-hard | xcode | MH2, MH4 | 1d |
-| MH6 | `config` capability in the hub | worker-hard | - | MH3; #1798 merged | 3d |
-| MH7 | Settings This Mac tab: keep-awake and display | worker-hard | xcode | MH1, MH6 | 2d |
+| MH6a | settings registry, drift test, generated template and reference | worker-hard | - | CO-1; #1798 merged | 1.5d |
+| MH6b | `config` capability: schema, values, writes | worker-hard | - | MH3, MH6a | 3d |
+| MH6c | `remi config list`, `set`, `reset` (only if Q11 says so) | worker | - | MH6b | 1d |
+| MH7 | Settings This Mac tab, rendered from the schema | worker-hard | xcode | MH1, MH6b | 2.5d |
 | OG-MH7 | owner check on his Mac, TestFlight build | owner | Mac | MH7 | 30m |
-| MH7b | level 2 tunables in Settings (only if Q4 (b)) | worker | xcode | MH7, L2-HUB, OG-L2 | 0.5d |
+| MH7b | level 2 tunables writable: `access` to `app` in the registry (only if Q4 (b)) | worker | - | MH6b, L2-HUB, OG-L2 | 0.5d |
+| MHW | web settings page from the same schema (only if Q11 says so) | worker | - | MH6b, MH7 | 1.5d |
 | MH8 | Icon step 2b: level 2 sign, menu row, notifications, Dock, actions | worker-hard | xcode | MH5; L2-APP merged; Q6, Q7, Q8 | 2d |
 | OG-MH8 | MacBook check of the level 2 states | owner | MacBook | MH8; OG-L2 | 1h |
 | MH9 | optional one-click start script (only if Q1 (b)) | worker-hard | xcode | MH1, MH3 | 2d |
@@ -332,7 +386,7 @@ Lenses: design and accessibility; native code.
 **MH3. ADR 0052 (lead).** "Mac app hub control: monitoring, settings through the hub, the start path": D1 to D4, 4.4, section 6; the 3.5 amendments applied in the same PR; the decisions README index; status Proposed until the owner approves in the PR.
 Acceptance: `typos`; a fresh reviewer (strongest model, security and privilege lens) reads it before the owner; the owner's approval is recorded in the PR.
 
-**CO-1. With the awake lead (before MH4).** Record in both boards: (1) who publishes `awakeHold` (recommended: MH4 takes L2-HUB item 7 forward as its own small PR and L2-HUB reads it); (2) status rides on `hub_status.keepAwake` under `keep_awake_status`, control stays L2-APP's `keep_awake`; (3) the wire carries the user-facing states of 4.3 and L2-APP translates; (4) codes, never process names; (5) the Mac app counts as a device under `allow_phone`; (6) the push transitions settled at CP-HW also drive the Mac notifications; (7) every `[awake]` key G2 and L2-HUB add lands in a 4.2 class in its own PR once MH6 merged (one line in those cards' scope).
+**CO-1. With the awake lead (before MH4).** Record in both boards: (1) who publishes `awakeHold` (recommended: MH4 takes L2-HUB item 7 forward as its own small PR and L2-HUB reads it); (2) status rides on `hub_status.keepAwake` under `keep_awake_status`, control stays L2-APP's `keep_awake`; (3) the wire carries the user-facing states of 4.3 and L2-APP translates; (4) codes, never process names; (5) the Mac app counts as a device under `allow_phone`; (6) the push transitions settled at CP-HW also drive the Mac notifications; (7) every `[awake]` key G2 and L2-HUB add is a registry entry (default, sanity bounds, title, description, `appliesAt`, `access`) in its own PR once MH6a merged, and MH6a migrates any that merged before it (one line in those cards' scope).
 
 **MH4. `keep_awake_status`, level 1.**
 Scope: shared `protocol.ts` (`HubStatusMessage.keepAwake?`), `protocol-version.ts` (`keep_awake_status`), `cli/capabilities.ts`; daemon `hub-client-tracker.ts` (census and change key), the census reader of `status-<PORT>.json`, `awakeHold` publication if CO-1 assigns it; fixture builders (`hub_status`, `hello_ack`); optional `role` on `/auth-info`.
@@ -347,25 +401,38 @@ Lenses: protocol (ADR 0035 additive, ADR 0014 both endpoints); privacy; daemon c
 Acceptance: N-GATE; bitmap tests of B3 plus K1 and B4 plus K1 at 1x and 2x; presentation tests for `off`, `idle`, `holding`, `unsupported`, absent with and without the capability (4.5); 4.8 evidence for the two new states.
 Lenses: design and accessibility; native code.
 
-**MH6. The `config` capability.**
-Scope: shared messages, registry `config`, fixtures (4.3); daemon `config/config-whitelist.ts` (4.2 classes), `config/config-writer.ts` (pure editor and candidate check, 4.5), a hub-only handler (`cli/handlers/config-events.ts`), the `settings` grant and `remi keys grant|revoke` (if Q3 (b)), the audit log, `restartCommand`; `docs/agent-reference/` config section; root AGENTS.md one line.
+**MH6a. The settings registry (no wire).**
+Scope: daemon `config/settings-registry.ts` (D4.2); `validateAwakeTable` and `validateAwake` (`config.ts:458-498`) and a `[display]` range check read the registry; `generateDefaultConfig` writes `[awake]` and `[display]` from it (keys commented out with their defaults if Q10 (b)); a generator script (proposed `packages/daemon/scripts/settings-reference.ts`) printing the Markdown settings reference; `docs/agent-reference/keep-awake.md` points to it.
+Acceptance:
+1. T-GATE.
+2. `settings-registry-drift.test.ts`, the D4.2 drift test, against `parseConfigText` and `DEFAULT_CONFIG`, with no stand-in for the loader.
+3. A snapshot test of the generator's output; the generated template loads to exactly `DEFAULT_CONFIG`.
+4. Revert checks, each with its failing test: change a default in `DEFAULT_CONFIG` only; widen a bound in the registry only; drop an entry's `access`.
+Lenses: daemon code; docs ("say what ships": every description matches its key's behavior).
+
+**MH6b. The `config` capability.**
+Scope: shared messages, capability `config`, fixtures (D4.3); daemon `config/config-writer.ts` (pure editor, reset and candidate check, D4.5), a hub-only handler (`cli/handlers/config-events.ts`) serving the registry with values, the `settings` grant and `remi keys grant|revoke` (if Q3 (b)), the audit log, `restartCommand`; `docs/agent-reference/` config section; root AGENTS.md one line.
 Acceptance:
 1. T-GATE and F-GATE.
-2. Writer property test (4.5 item 5) over a corpus: the default template, a hand-edited file with comments, `[profiles.*]` from #1798's fixtures, a `[telegram]` line holding the placeholder `sentinel-not-a-token`, CRLF, no final newline.
-3. One refusal test per code of 4.3, including a T-class key, a top-level dotted key, an inline table, a symlinked file, a stale revision and an out-of-range value.
-4. Handler tests on a real hub from source (temporary `REMI_HOME`, reserved port, `env -i`): an authorized key without the grant reads, and its write is `CONFIG_NOT_PERMITTED`; after the grant it writes; the mode stays 0600; the hub log and `config-changes.log` gain one line each; no frame contains `sentinel-not-a-token` or the word `telegram`.
+2. Writer property test (D4.5 item 5) over a corpus: the default template, a hand-edited file with comments, `[profiles.*]` from #1798's fixtures, a `[telegram]` line holding the placeholder `sentinel-not-a-token`, CRLF, no final newline; a reset removes exactly one line.
+3. One refusal test per code of D4.3, including a `terminal` key, a top-level dotted key, an inline table, a symlinked file, a stale revision and an out-of-range value; a `dryRun` returns the loader's message on its key and leaves the file's bytes and mtime unchanged.
+4. Handler tests on a real hub from source (temporary `REMI_HOME`, reserved port, `env -i`): the read serves exactly the registry's non-hidden entries with values, defaults and `modified`; an unknown `[display]` key whose value is `sentinel-not-a-token` appears by name only; an authorized key without the grant reads, and its write is `CONFIG_NOT_PERMITTED`; after the grant it writes; the mode stays 0600; the hub log and `config-changes.log` gain one line each; no frame contains `sentinel-not-a-token` or the word `telegram`.
 5. A session daemon answers `UNSUPPORTED`; with authentication off every write is refused.
 6. A real child session daemon survives `remi stop` without `--all` and is listed by the restarted hub (N10), or the D4.7 copy is changed to what the test shows.
-7. Revert checks, each with its failing test: drop the grant check; put `awake.level2` in W; skip the candidate load.
+7. Revert checks, each with its failing test: drop the grant check; give `awake.level2` `app` access; skip the candidate load.
 Lenses: security and privilege (mandatory: it writes configuration and adds an auth scope), silent failure, protocol, daemon code.
-Docs: yooz-docs `docs/tools/remi/commands/keys.md` (the grant) and `docs/tools/remi/commands/config.md` (the audit log, recovery).
+Docs: yooz-docs `commands/keys.md` (the grant) and `commands/config.md` (the audit log, recovery).
 
-**MH7. Settings This Mac tab.**
-Scope: RemiKit models of the four messages (fixtures), `MachineStore` request plumbing; RemiUI `RemiSettingsPresentation` (pure: keys to groups, controls, copy, `appliesAt` notes, read-only rows, every error code); Mac `MacPreferencesView` tab; the D4 conflict, invalid-file, no-grant ("This app can read settings but not change them; at this Mac run `remi keys grant <fp> settings`") and restart states.
-Acceptance: N-GATE; the six fixtures decode; `RemiSettingsPresentationTests` cover every class and code; an integration test on a real hub from source reads, writes `awake.question_hold_minutes`, re-reads it, and gets `CONFIG_CONFLICT` after the test edits the temporary file between read and write; previews for normal, read only, invalid file and hub too old; 4.8-style screenshots of the tab, light, dark, Increase Contrast.
-Lenses: native code; security (no file access, no secret in previews or logs); honesty.
-Docs: yooz-docs `docs/tools/remi/guides/keep-awake-settings.md`.
+**MH6c. Terminal parity (Q11).** `remi config list`, `set <key> <value>`, `reset <key>` on the registry, the writer and the validator; the person's own terminal needs no grant. Acceptance: T-GATE; the real CLI entry against a temporary `REMI_HOME` (`env -i`) lists every entry, sets and resets one, refuses an unknown key and an out-of-range value with the loader's message, and leaves every other byte of the file unchanged. Lenses: daemon code, docs.
+
+**MH7. Settings This Mac tab, rendered from the schema.**
+Scope: RemiKit models of the four messages (fixtures), `MachineStore` request plumbing; RemiUI `RemiSettingsPresentation` (pure: schema and values to groups, controls by `type`, search and `@modified`, modified bars, defaults, badges, read-only rows, unknown keys, every error code); Mac `MacPreferencesView` tab with the D4.11 behaviors, the per-setting menu (Reset to default, Copy key, Copy as TOML) and D4.10's path and commands; the conflict, invalid-file, no-grant ("This app can read settings but not change them; at this Mac run `remi keys grant <fp> settings`") and restart states; a spike recording whether `NSWorkspace` can open or reveal an unreadable path from the sandbox.
+Acceptance: N-GATE; the fixtures decode; `RemiSettingsPresentationTests` render a fixture `config_read_response` holding one setting of each type and a key no app code names, with no app change; tests for search, `@modified`, reset, Copy as TOML, each badge, an inline `dryRun` error and an unknown `type` drawn read only; `git grep -n "question_hold_minutes" packages/native/Mac packages/native/RemiKit/Sources` finds no key name in app code; an integration test on a real hub from source reads, writes `awake.question_hold_minutes`, re-reads it, and gets `CONFIG_CONFLICT` after the test edits the temporary file between read and write; previews for normal, read only, invalid file and hub too old; screenshots of the tab in light, dark and Increase Contrast with a receipt.
+Lenses: native code; security (no file access, no secret in previews or logs, machine text escaped); honesty.
+Docs: yooz-docs `guides/keep-awake-settings.md`, linking the generated reference.
 OG-MH7: on his own Mac and hub, the owner grants the app, changes one key, sees "applies to new sessions", runs `remi config show` to see it, and compares a copy of `config.toml` from before and after (only the edited line differs).
+
+**MHW. Web settings page (Q11).** `packages/web` renders the same schema through the same capability, the same rules as D4.11 (no file affordance beyond Copy); after MH7, so the presentation rules are settled once. Acceptance: the web gates (`typecheck:web`, `typecheck:web-tests`, `bun test` of its files) and a Playwright run against a hub from source on a 1879x port. Lenses: web code, security (no secret in the page or the browser's storage).
 
 **MH8. Icon step 2b.**
 Scope: RemiKit `keepAwake.level2` and L2-APP's action messages; RemiUI signs drawn into the template image (no text layout), K2 to K5 sentences; the menu row per research B section 7 in the 4.3 vocabulary; notifications, Dock line and announcement of 4.7; DESIGN.md sign in its own commit.
@@ -382,27 +449,30 @@ OG-MH9: the owner saves the script, clicks Start with no hub running, sees the h
 
 | Step | Other work | Shared files | Rule |
 |---|---|---|---|
-| MH4, MH6 | profiles P2B, P2C, P3B, P4A, P4B; awake L2-APP | `packages/shared/src/protocol.ts`, `protocol-version.ts`, `packages/daemon/src/cli/capabilities.ts`, fixture builders | never two active; the second to merge regenerates fixtures |
-| MH6 | profiles P1A (#1798), P1B; awake G2, L2-HUB | `packages/daemon/src/config/config.ts` | MH6 starts after #1798 merges; each new `[awake]` key lands in a 4.2 class in its own PR (the class test makes it mechanical) |
+| MH4, MH6b | profiles P2B, P2C, P3B, P4A, P4B; awake L2-APP | `packages/shared/src/protocol.ts`, `protocol-version.ts`, `packages/daemon/src/cli/capabilities.ts`, fixture builders | never two active; the second to merge regenerates fixtures |
+| MH6a, MH6c | profiles P1A (#1798), P1B; awake G2, L2-POL, L2-HUB | `packages/daemon/src/config/config.ts` (validator, template), `cli/cmd-config.ts` | MH6a starts after #1798 merges and never while G2 or L2-HUB is active; after MH6a each new `[awake]` key is a registry entry (CO-1 item 7) |
 | MH4 | awake L2-HUB item 7 | `power/awake-*`, the status writer | CO-1 names the owner of `awakeHold` |
 | MH1, MH2, MH5, MH7, MH8 | profiles A1 to A4 (#1788 to #1791) | `MachineStore.swift`, `MacPreferencesView.swift`, `MacLiveRootView.swift`, RemiKit protocol models | one Mac-track card active per file; small PRs; the second rebases |
 | MH8, MH7b | awake L2-APP, L2-HUB, OG-L2 | the level 2 wire, keys and states | start only after they merge; update 4.3 if Q12 to Q14 change the machine |
+| MHW | the web client's settings and status surfaces (awake L2-APP is web first) | `packages/web/src` settings components | one active at a time |
 | MH3 | ADR 0050, ADR 0051 | the ADR texts | MH3 edits only the 3.5 notes; the ADR 0050 note is the awake lead's |
 
-**Docs (yooz-docs).** Each page ships in the release of its feature, never before; every command and output comes from the shipped build against a temporary `REMI_HOME`, recorded in the docs PR (ADR 0051 A4 rule). Pages: `guides/mac-app.md` (MH1; the icon legend grows with MH2, MH5, MH8; one-click start with MH9), `guides/keep-awake-settings.md` (MH7), `commands/keys.md` and `commands/config.md` (MH6), all under `docs/tools/remi/` (proposed paths; the directories exist at `yooz-docs` `c85eb08`, ADR 0051).
+**Docs (yooz-docs).** Each page ships in the release of its feature, never before; every command and output comes from the shipped build against a temporary `REMI_HOME`, recorded in the docs PR (ADR 0051 A4 rule). Pages: `guides/mac-app.md` (MH1; the icon legend grows with MH2, MH5, MH8; one-click start with MH9), `guides/keep-awake-settings.md` (MH7), `commands/keys.md` and `commands/config.md` (MH6b, MH6c), all under `docs/tools/remi/` (proposed paths; the directories exist at `yooz-docs` `c85eb08`, ADR 0051).
+The settings reference, every setting with its key, title, description, type, default, bounds, unit, "applies" and who may change it, is generated from the registry by MH6a's script from the shipped build each release (proposed `reference/settings.md`, or `commands/config.md` if the site has no reference section), never edited by hand; the keep-awake slices' new keys reach it with no docs work beyond the registry entry.
 
 ## 6. Threat model
 
 | Actor | Can already | With the `config` capability | With the start script |
 |---|---|---|---|
 | A1 prompt-injected agent on this Mac, as the user | type into its own session; edit `~/.remi/config.toml`; run any `remi` command, `remi authorize` of its own key included; read the capability token; `remi keep-awake start` (ADR 0050's same-user model) | nothing new: it writes the file directly | nothing new: it runs `remi start` |
-| A2 a remote authorized device (lost phone, relay-attached, compromised client) | answer cards, chat, start and kill sessions | with a grant only: whitelisted keys within the hub's ranges (turn level 1 off so the Mac sleeps mid-work; raise holds to their caps; bullet length); each change logged with its label | none: the script runs only on a click in this Mac's app |
+| A2 a remote authorized device (lost phone, relay-attached, compromised client) | answer cards, chat, start and kill sessions | with a grant only: `app`-access settings within the registry's bounds (turn level 1 off so the Mac sleeps mid-work; raise holds to their caps; bullet length); each change logged with its label | none: the script runs only on a click in this Mac's app |
 | A3 an unauthenticated network or browser peer | read `/auth-info` (fingerprint, `authRequired`) | nothing: authenticated messages only; with authentication off, writes are refused | nothing |
 | A4 a compromised Mac app (sandboxed) | what A2 can, as an authorized device | as A2 if granted; no file, no token | start or restart the hub, which A1 can already do |
 | A5 a same-user process that rewrites the saved script | run code as the user already | - | the app refuses a script whose bytes changed |
 
-Why a whitelist: every key that later lands in `config.toml` is unwritable until a change classifies it, and the class test fails on an unclassified key; a denylist would make each new key writable by default, which is how a device could one day write `allow_phone` or `bind`.
-Why no secret keys: a read that carried `telegram.bot_token` would relay a credential to every device (D10); the read lists whitelisted keys only, so not even the token's existence leaves the machine; the writer keeps no backup copy.
+Why a registry with a required `access` (a whitelist): a key outside the registry's tables is never served or written, and a key inside them cannot compile without an access value; a denylist would make each new key writable by default, which is how a device could one day write `allow_phone` or `bind`.
+Why no secret keys: a read that carried `telegram.bot_token` would relay a credential to every device (D10); only registry tables are served and an unknown key goes by name only, so not even the token's existence leaves the machine; the writer keeps no backup copy.
+Schema-driven rendering shows text the machine wrote (titles, descriptions, units): the app escapes it (`packages/native/AGENTS.md`, "Escape text another party chose"), renders only its closed set of control types, and the machine is one the person approved.
 Why a grant: loopback is not identity, so "the Mac app" cannot be recognized by address; the terminal decides which key may change settings, and a device cannot grant itself, as ADR 0051 A1 requires ("a device must not be able to widen what devices can see").
 Audit: the hub log line and `config-changes.log` name the device label, the key and both values; a person sees what changed and undoes it in the app or the file.
 Not protected: anything against A1 (same user: it can edit the file and the audit log); availability against a granted A2 (it can make the Mac sleep or stay awake longer, within the ranges); the script folder, which any same-user process can write (the hash check only stops the app from running a changed script).
@@ -413,14 +483,16 @@ The start path adds no privilege: a fixed `remi` path, two verbs, no argument or
 | Q | Question and options | Recommendation | Blocks | Ask |
 |---|---|---|---|---|
 | Q1 | Start path: (a) commands card only; (b) also a fixed-verb script through `NSUserUnixTask`; (c) Developer ID build | (a) now; decide (b) after a week of MH1 in daily use | MH9 | after OG-MH2 |
-| Q2 | ADR 0051 Q1 scope: (a) profile-only, with ADR 0052's whitelisted `[awake]` and `[display]` write through the hub; (b) no app writes any configuration (the tab is read only with commands) | (a) | MH3, MH6, MH7 | now (OQ-1) |
-| Q3 | Who may write settings: (a) any authorized device; (b) only device keys granted `settings` at the terminal; (c) nobody | (b) | MH6 | now (OQ-1) |
-| Q4 | Level 2 tunables from the app: (a) terminal only; (b) a granted device, within the hub's ranges, after OG-L2. The switches of 4.2 class T stay terminal only either way | (b) | MH7b | at the awake plan's CP-HW |
+| Q2 | ADR 0051 Q1 scope: (a) profile-only, with ADR 0052's registry-limited `[awake]` and `[display]` write through the hub; (b) no app writes any configuration (the page is read only with commands) | (a) | MH3, MH6b, MH7 | now (OQ-1) |
+| Q3 | Who may write settings: (a) any authorized device; (b) only device keys granted `settings` at the terminal; (c) nobody | (b) | MH6b | now (OQ-1) |
+| Q4 | Level 2 tunables from the app: (a) terminal only; (b) a granted device, within the registry's bounds, after OG-L2. The five `terminal` keys of D4.2 stay terminal only either way | (b) | MH7b | at the awake plan's CP-HW |
 | Q5 | Approve the amended texts of 3.5 (native AGENTS.md:39, ADR 0051 F8 and the A1 note) | approve | MH3 merge | now (OQ-1) |
 | Q6 | Sign words: WAKE over ARM, WAIT, ON, OFF; or research B's LID and FAIL; or a closed-lid symbol; English only | WAKE over ARM, WAIT, ON, OFF; English | MH8 | with OG-MH2 screenshots |
 | Q7 | After a disarm the person did not make: (a) WAKE / OFF until the menu is opened; (b) a notification only | (a) plus the notification | MH8 | with Q6 |
 | Q8 | The Mac app's level 2 actions: (a) need `allow_phone = true` like any device; (b) a separate Mac-only flag | (a): loopback is not identity, and a Mac-only flag could not tell the app from a phone; a narrower grant is a key scope like Q3's | MH8, L2-APP | at the awake plan's CP-HW |
 | Q9 | "Show Remi in the menu bar" toggle, default on, and a Dock menu | yes | MH2 | now (OQ-1) |
+| Q10 | Reset to default: (a) write the default value into the key's line; (b) remove the line, as VS Code removes an entry, so a later release's default applies; and with (b), generate the template with every key commented out at its default | (b) both: an explicit line pins today's value forever, and today's template (`config.ts:814-829`) pins every `[awake]` key; existing files are unchanged, and the page shows "default" honestly | MH6a template, MH6b reset | now (OQ-1) |
+| Q11 | Which surfaces get the settings page: (a) the Mac only; (b) also the terminal (`remi config list`, `set`, `reset`, MH6c); (c) also the web client (MHW); (d) also iPhone and iPad | (b) now; (c) after MH7, only if the owner still uses the browser client; (d) later, in its own step | MH6c, MHW | now (OQ-1) |
 
 ## 8. Risks and what I am least sure about
 
@@ -431,17 +503,20 @@ The start path adds no privilege: a fixed `remi` path, two verbs, no argument or
 | R3 | The system hides the wide sign | medium | 4.7 paths, unconditional |
 | R4 | The level 2 machine changes again (Q12 to Q14) | high | user-facing states on the wire; MH8 after L2-APP |
 | R5 | The line editor damages a hand-edited file | low | byte-identity property test; refuse odd forms; atomic rename |
-| R6 | A downgrade after an app-written key stops every remi command | low | 4.9 recovery; docs warning |
+| R6 | A downgrade after an app-written key stops every remi command | low | D4.9 recovery; docs warning |
 | R7 | The `settings` grant changes the authorized-keys store (ADR 0037) | medium | security review; Q3 (a) is the smaller fallback |
 | R8 | A false "not running": LAN-only bind, TLS-only hub | low | stated limits; add by address |
 | R9 | Protocol-file collisions with profiles and awake | certain | the collision rules; fixture regeneration |
 | R10 | A stale "active" after a hub crash | low | dropped when not connected; `reverting` counts as active |
 | R11 | A TestFlight build's sandbox differs from the ad hoc build | medium | OG-MH2 and OG-MH7 on TestFlight builds |
 | R12 | The app's hard-coded first-run commands drift from the CLI | low | stable commands; the restart command comes from the hub |
+| R13 | Registry, loader, template and docs drift apart | low once MH6a lands | the loader reads the registry; the drift test; the generated reference |
+| R14 | Moving the `[awake]` validator onto the registry collides with G2 and L2-HUB, which edit it | high | MH6a never active with them; CO-1 item 7; MH6a migrates keys that merged first |
+| R15 | Generic rendering is worse than hand-made copy for a risky setting | medium | titles and descriptions are reviewed in the registry PR like UI copy; `terminal` access for anything that needs more than a control |
 
 Least sure, in order:
 1. Whether the per-key `settings` grant (Q3 (b)) is worth an auth-store change and one more terminal step, against (a)'s simplicity.
-2. Whether the awake lead puts the status on `hub_status` (CO-1); the icon contract does not depend on it, MH4's scope does.
-3. Apple behavior: saving into Application Scripts through `NSSavePanel` plus `NSUserUnixTask` passing review; `MenuBarExtra` and VoiceOver values; how the system hides a wide item.
-4. That session-held keys apply to new sessions only (N5): inferred from the per-process load; MH6 and OG-MH7 confirm it.
+2. Whether the awake lead puts the status on `hub_status` (CO-1) and accepts the registry as where every keep-awake limit lands (CO-1 item 7); the icon contract does not depend on the first, MH4's scope does, and MH6a's order depends on the second.
+3. Apple behavior: saving into Application Scripts through `NSSavePanel` plus `NSUserUnixTask` passing review; `MenuBarExtra` and VoiceOver values; how the system hides a wide item; whether `NSWorkspace` can open or reveal an unreadable path from the sandbox.
+4. That session-held keys apply to new sessions only (N5): inferred from the per-process load; MH6b and OG-MH7 confirm it.
 5. The level 2 vocabulary: it moved today and may move again; 4.3 is provisional by design.
