@@ -48,7 +48,7 @@ Not in scope: `config/config.ts` (L2-HUB adds the keys), readers, the switch, th
 Settled:
 
 1. **Settings** (`level2-settings.ts`): `Level2Settings` uses the configuration key names, so L2-HUB can pass the `[awake]` table's values unchanged.
-   The owner's rule of 2026-11-17 applies: every limit is a key, the plan only sets defaults, and validation is sanity only (preamble item 9: type, positive or 0 where 0 turns a rule off, percent from 0 to 100, durations within the timer limit, and the two order relations below); no key has a maximum.
+   The owner's rule of 2026-11-17 applies: every limit is a key, the plan only sets defaults, and validation is sanity only (preamble item 9: type, positive or 0 where 0 turns a rule off, percent from 0 to 100, durations whose milliseconds are safe integers, with no timer ceiling (the code that arms a timer chains long delays, preamble item 9), and the two order relations below); no key has a maximum.
    Each key, with its default (the docs and the generated config say `default X; set KEY = Y to change`):
    - `level2`: boolean, default false (true allows and arms level 2, Q1 (b));
    - `level2_start_battery_percent`: percent, default 35 (no turning on, and no resuming, below it on battery power);
@@ -97,7 +97,7 @@ Settled:
    - `disarmed` with reason `restart` when the persisted state says disarmed, the previous hub did not record a clean exit, `startup.leaseFound`, or `startup.flag` is not `no`;
    - else `armed`, also on the very first run, with no persisted state.
    `persisted` is `{ armed, disarmReason, cleanExit, resumes, failures, runs }`: wall-clock epoch seconds of the resumes and failures, and the `[start, end]` on-time runs, of the last `level2_window_hours`.
-   Every transition emits `persist` with the new value, so a restart cannot reset a counter.
+   Every transition emits `persist` with the new value, and so does every `beat` while `starting`, `on` or `reverting` (the run in progress moves its end to that beat), so a restart cannot reset a counter and a crash loses at most one heartbeat of on-time.
 4. **Inputs** on each `beat`, beside the monotonic `now`:
    - `battery`: `{ kind: 'none' }`, `{ kind: 'battery', source: 'ac' | 'battery', percent, remainingMinutes: number | null }` or `{ kind: 'unknown' }`;
    - `thermal`: `nominal`, `moderate`, `heavy`, `trapping`, `sleeping` or `unknown`;
@@ -175,7 +175,7 @@ The implementer may choose: internal field names, the effect and event type spel
 Evidence folder: `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/L2-POL/r1/`.
 1. Settings tests:
    - `LEVEL2_DEFAULTS` validates with no warning;
-   - each key refuses a wrong type, and each numeric key refuses a value below its floor (negative, or 0 where 0 is not allowed) and a duration beyond the timer limit, with an error naming the key;
+   - each key refuses a wrong type, and each numeric key refuses a value below its floor (negative, or 0 where 0 is not allowed) and a duration whose milliseconds exceed `Number.MAX_SAFE_INTEGER`, with an error naming the key;
    - no key has a maximum: `level2_default_hours = 100`, `level2_cap_hours = 100`, `level2_window_hours = 1000`, `level2_idle_revert_minutes = 100000`, `heartbeat_seconds = 3600`, `level2_max_resumes_per_day = 1000`, `level2_breaker_failures = 1000`, `level2_min_remaining_minutes = 100000` and a 1000-entry `foreign_holder_ignore` all validate;
    - each of the two required relations refuses alone (revert percent at or above start percent; thermal revert level below the refuse level);
    - each warning of item 1 appears for its trigger and not otherwise, and the settings still validate;

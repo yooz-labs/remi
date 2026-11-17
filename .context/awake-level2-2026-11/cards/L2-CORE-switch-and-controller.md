@@ -74,6 +74,8 @@ Settled:
 6. **Fixtures**: redacted OG-CAP captures for the Safari-video and call states feed the classifier through G1's real parser; the laptop `pmset -g batt` captures replace W1's assumed laptop line in `watchdog-script.test.ts`.
 7. **No hard-coded number** (the owner's rule and Q16 (b), preamble item 9): every period, threshold, window, count, deadline and size cap comes from the settings L2-POL defines; the code keeps only `DEFAULT_*` constants for them.
    The controller passes the reading keys (`reading_deadline_ms`, `reading_stdout_max_bytes`, `reading_stderr_max_bytes`, `reading_kill_grace_ms`, from G2) to every reader, `process_start_time_deadline_ms` to `processStartTime`, `lease_max_bytes` and `lease_start_time_max_length` to `readLease` and `validateLease` (W1's options after its fix round), and its own `switch_deadline_ms`, `switch_sync_deadline_ms`, `shutdown_budget_ms` and `status_file_max_bytes` to the switch, shutdown and census.
+   Every timer it arms from a setting (the heartbeat, the switch deadline, the shutdown budget) goes through G2's `power/long-timeout.ts`, never a raw `setTimeout`; the synchronous `disableSync` passes a `switch_sync_deadline_ms` above 2147483647 ms as no timeout (preamble item 9).
+   The state file is written on every `persist`, which L2-POL emits at every transition and at every beat while `starting`, `on` or `reverting`: one small atomic write per heartbeat, beside the lease's own rewrite.
 The implementer may choose: internal structure of the controller, timer handling details within the clock interface, test names, scenario helper names.
 
 ## Acceptance
