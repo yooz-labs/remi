@@ -67,7 +67,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | ID | Title | Wave | Tier | Needs | Slot | State | Depends | PR | Started | Timebox | Next |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | G0 | [G0 password-on-wake](cards/G0-password-on-wake.md) | - | worker | - | codex-luna | done | - | 1804 | 2026-11-17T06:56 | 3h | dispatch now; note only |
-| G1 | [G1 power readings](cards/G1-power-readings.md) | - | worker | - | claude-sonnet | review | - | 1806 | 2026-11-17T06:56 | 1d | PR 1806 head 491ec135: wait CI incl. soak, then gate item 7 (done by me: 54 pass 0 fail) and merge; killGraceMs test cannot fail when the option is ignored (documented limit, accepted) |
+| G1 | [G1 power readings](cards/G1-power-readings.md) | - | worker | - | claude-sonnet | done | - | 1806 | 2026-11-17T06:56 | 1d | merged 2026-11-17 10:22 (PR 1806, merge 236d2991, bump 0.9.1-dev.7); DV-AWAKE waits to batch with W1 |
 | W1 | [W1 lease and watchdog](cards/W1-lease-and-watchdog.md) | - | worker-hard | - | claude-opus | review | - | 1807 | 2026-11-17T06:56 | 1d | dispatch now; reviews add privilege and failsafe lenses |
 | L2-POL | [L2-POL level 2 policy](cards/L2-POL-level2-policy.md) | - | worker-hard | - | claude-opus | review | - | - | 2026-11-17T09:10 | 1d | Fix round after the 3 reviews (lead ea2c770e: no timer limit on any key, safe-integer check, persist every beat), then delta review, gate item 8, merge |
 | OG-CAP | [Owner gate: MacBook captures](owner-gates.md) | - | - | - | - | owner | - | - | - | 30m | rule: owner runs OG-CAP section of owner-gates.md; seven folders under artifacts/awake-level2-2026-11/captures/OG-CAP |
@@ -120,7 +120,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | RV-G1-contract | reviewer contract | claude-sonnet | sonnet xhigh | G1 PR1806 | 2026-11-17T07:20 | done |
 | RV-G1-verification | reviewer verification | claude-sonnet | sonnet xhigh | G1 PR1806 | 2026-11-17T07:20 | done |
 | FX-G0 | fix round 1 (PR1804) | claude-sonnet | sonnet high (ad42c5d0050dee321) | G0 PR1804 | 2026-11-17T07:25 | done |
-| FX-G1 | fix round 1 (PR1806) | claude-sonnet | sonnet high (a85bfd9e9ecd1e4d6, resumed) | G1 PR1806 | 2026-11-17T07:35 | running |
+| FX-G1 | fix round 1 (PR1806) | claude-sonnet | sonnet high (a85bfd9e9ecd1e4d6, resumed) | G1 PR1806 | 2026-11-17T07:35 | done |
 | RV-W1-contract | reviewer contract | claude-sonnet | sonnet xhigh | W1 PR1807 | 2026-11-17T08:58 | done |
 | RV-W1-verification | reviewer verification | claude-sonnet | sonnet xhigh | W1 PR1807 | 2026-11-17T08:58 | done |
 | RV-W1-privilege | reviewer privilege | claude-sonnet | sonnet xhigh | W1 PR1807 | 2026-11-17T08:58 | done |
