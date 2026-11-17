@@ -116,11 +116,12 @@ The boot LaunchDaemon, `/Library/LaunchDaemons/com.yooz.remi.keep-awake-boot.pli
 The setup text (`setupText`) stages both files only in a directory that root creates with `sudo mktemp -d /private/tmp/remi-keep-awake.XXXXXX` (mode 0700 inside the sticky `/private/tmp`), and writes them there with `sudo tee` from quoted here-documents.
 Every staged path is written `"${D:?}/NAME"`, so a failed `mktemp` line (an empty `D`) stops the command instead of naming a file in `/`.
 The boot daemon comes first, because the rule is what makes level 2 possible: an unload of an older copy (on a first install it reports that the service is not loaded, which is expected), then one chained command `plutil -lint ... && install ... && launchctl bootstrap system ...` (loading runs it once and only clears the flag).
-The rule follows as `visudo -cf ... && install ...`; the text tells the person to stop and run the removal steps if `visudo` prints anything but "parsed OK", or if any step fails.
+The rule follows as `launchctl print system/com.yooz.remi.keep-awake-boot >/dev/null && visudo -cf ... && install ...`, so it goes in only while the boot daemon is loaded, even when the whole text is pasted after a failed step 2; the text tells the person to stop and run the removal steps if `visudo` prints anything but "parsed OK", or if any step fails.
 Then it removes the staging directory and checks the rule: `sudo -k` (so no cached password helps), plain `sudo -n -l`, which must list `(root) NOPASSWD: /usr/bin/pmset -a disablesleep 1, /usr/bin/pmset -a disablesleep 0`, `sudo -n -l` for each command, `sudo -k` again and `sudo -n /usr/bin/pmset -a disablesleep 0`, which must finish without a password prompt.
 What these checks show: the rule is installed, sudo reads it, and the revert runs as root with no password.
 What they do not show: that the enable runs without a password (running it would set the flag), anything about the lid or the battery, or what other rules on the Mac allow (the listing shows them; the person reads it).
 Last, it prints the installed files and `sudo launchctl print system/com.yooz.remi.keep-awake-boot` for the person to compare with this page.
+The setup text ends with the removal text under "If any step failed, run these removal steps:".
 The removal text (`removalText`) starts with `remi keep-awake stop` and a check that `ioreg` reads `"SleepDisabled" = No`, removes the sudoers file, the boot daemon, the watchdog agent and its script, and ends with the owner's own `sudo /usr/bin/pmset -a disablesleep 0`.
 
 ### The lease
@@ -146,7 +147,7 @@ It decides:
 
 - **No lease file and no lease renamed aside:** exit, whatever the flag reads (the flag is not remi's then); this is checked with shell builtins first, so nothing else runs while level 2 is off.
 - **A lease left renamed aside** (`lease.json.watchdog-PID`, from a run killed while deleting): with no lease in place, the newest is linked back as the lease, and the claim is removed once a lease is in place.
-  Work directories and claims older than `orphanMaxAgeSeconds` are removed.
+  Work directories older than `orphanMaxAgeSeconds` are removed, and so are older claims, but only while a lease is in place: a claim keeps the modification time of the lease it was, so the claim of an expired lease looks old at once, and with no lease in place it may be the only copy.
 - **`SleepDisabled` unreadable** (not exactly one `"SleepDisabled" = Yes` or `No` line in `ioreg -r -c IOPMrootDomain -d 1`): revert, reason `flag unreadable`.
 - **`SleepDisabled` No:** revert nothing; delete a valid lease that is expired, stale or whose hub is gone, so a lease left by a crash before the enable, a failed enable or a reboot can never later revert a flag remi did not set.
   An invalid lease is kept for `invalidLeaseMaxAgeMinutes` (a hub may be replacing it) and then deleted with one log line, for the same reason.
