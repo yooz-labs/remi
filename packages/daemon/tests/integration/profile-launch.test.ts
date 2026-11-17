@@ -8,6 +8,7 @@ import {
   createTranscriptLoadRequest,
   serialize,
 } from '@remi/shared/protocol.ts';
+import type { SessionListResponseMessage } from '@remi/shared/protocol.ts';
 import { DEFAULT_CONFIG } from '../../src/config/config.ts';
 import {
   PROFILE_CREDENTIAL_ENV,
@@ -1082,6 +1083,129 @@ for (const configured of [true, false]) {
       fs.writeFileSync(path.join(f.output, 'release'), '');
     }
   }, 30000);
+}
+
+/** A profile daemon whose work directory is a git repository, with one external transcript on disk. */
+async function startFrameDaemon(configured: boolean) {
+  const f = fixture();
+  const directory = configured ? f.profile : path.join(f.home, '.claude');
+  if (!configured) fs.writeFileSync(path.join(f.remi, 'config.toml'), '');
+  const other = path.join(f.home, 'external-work');
+  const projectDir = path.join(directory, 'projects', other.replace(/\//g, '-'));
+  fs.mkdirSync(projectDir, { recursive: true });
+  const externalId = '88888888-8888-4888-8888-888888888888';
+  fs.writeFileSync(
+    path.join(projectDir, `${externalId}.jsonl`),
+    `${JSON.stringify({ type: 'user', uuid: crypto.randomUUID(), sessionId: externalId, cwd: other, timestamp: new Date().toISOString(), message: { role: 'user', content: 'external' } })}\n`,
+  );
+  // A repository makes the first workspace read change the cached answer, which is what
+  // makes the daemon push an unsolicited session list (WorkspaceCache.onChange).
+  const init = Bun.spawnSync(['git', 'init', '--quiet', f.work], {
+    env: { PATH: '/usr/bin:/bin:/opt/homebrew/bin', HOME: f.home },
+  });
+  expect(init.exitCode).toBe(0);
+  const started = await spawnDaemon(
+    f.home,
+    f.work,
+    f.env,
+    configured ? ['--remi-profile', 'work'] : [],
+  );
+  running.push({ ...started, home: f.home, work: f.work });
+  await pollUntil(() => fs.existsSync(path.join(f.output, 'argv')), 15000, 'agent started');
+  const client = await connectAndHelloRaw(started.port);
+  return { f, directory, externalId, started, ...client };
+}
+
+for (const configured of [true, false]) {
+  test(`unsolicited session lists ${configured ? 'withhold profile paths' : 'retain default paths'}`, async () => {
+    const { f, directory, externalId, started, ws, received, raw } =
+      await startFrameDaemon(configured);
+    try {
+      const requested = new Set<string>();
+      const ask = () => {
+        const request = createSessionListRequest(true);
+        requested.add(request.id);
+        ws.send(serialize(request));
+        return request;
+      };
+      const first = ask();
+      await pollUntil(
+        () => received.some((m) => m.type === 'session_list_response' && m.requestId === first.id),
+        10000,
+        'the first session list',
+      );
+      // A changed workspace read is what pushes an unsolicited list (WorkspaceCache.onChange).
+      // The read at session start may finish before this client connects, so change the branch and
+      // ask again until the cache's 10 s lifetime lapses and the next read sees the change.
+      const flip = Bun.spawnSync(
+        ['git', '-C', f.work, 'symbolic-ref', 'HEAD', 'refs/heads/flipped'],
+        {
+          env: { PATH: '/usr/bin:/bin:/opt/homebrew/bin', HOME: f.home },
+        },
+      );
+      expect(flip.exitCode).toBe(0);
+      const unsolicited = () =>
+        received.filter(
+          (m): m is SessionListResponseMessage =>
+            m.type === 'session_list_response' && !requested.has(m.requestId),
+        );
+      const deadline = Date.now() + 25000;
+      while (unsolicited().length === 0 && Date.now() < deadline) {
+        ask();
+        await Bun.sleep(1000);
+      }
+      const workspaceList = unsolicited()[0] as SessionListResponseMessage;
+      expect(
+        workspaceList.sessions.some(
+          (s) => s.sessionId === externalId || s.claudeSessionId === externalId,
+        ),
+      ).toBe(true);
+      // A sibling daemon registering is what the live-sessions census pushes a list for.
+      const siblingPort = 49321;
+      fs.writeFileSync(
+        path.join(f.home, '.remi', 'live-sessions', 'sibling.json'),
+        JSON.stringify({
+          sessionId: crypto.randomUUID(),
+          pid: process.pid,
+          wsPort: siblingPort,
+          hookPort: siblingPort + 1,
+          projectPath: f.work,
+          name: 'sibling',
+          startedAt: new Date().toISOString(),
+        }),
+      );
+      await pollUntil(
+        () => unsolicited().some((m) => m.daemonPorts?.includes(siblingPort)),
+        15000,
+        'the live-sessions census session list',
+      );
+      const censusList = unsolicited().find((m) =>
+        m.daemonPorts?.includes(siblingPort),
+      ) as SessionListResponseMessage;
+      for (const list of [workspaceList, censusList]) {
+        const own = list.sessions.find(
+          (s) =>
+            s.sessionId !== externalId && s.claudeSessionId !== externalId && s.name !== 'sibling',
+        );
+        const external = list.sessions.find(
+          (s) => s.sessionId === externalId || s.claudeSessionId === externalId,
+        );
+        expect(external).toBeDefined();
+        if (configured) {
+          for (const session of list.sessions)
+            expect(Object.hasOwn(session, 'transcriptPath')).toBe(false);
+        } else {
+          expect(external?.transcriptPath).toContain(directory);
+          expect(own?.transcriptPath).toContain(directory);
+        }
+      }
+      if (configured) expect(raw.join('\n')).not.toContain(f.profile);
+    } finally {
+      ws.close();
+      fs.writeFileSync(path.join(f.output, 'release'), '');
+      await started.proc.exited;
+    }
+  }, 60000);
 }
 
 test('a damaged sidecar refuses a configured launch before probing', async () => {
