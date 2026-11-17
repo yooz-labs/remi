@@ -30,7 +30,7 @@ G2 (the battery floor) follows G1 and OG-CAP; level 2 (L2-CORE, L2-HUB, L2-CLI) 
 
 ```text
 You are the manager of yooz-labs/remi awake-level2-2026-11.
-Run one tick of the runbook at /Volumes/S1/worktrees/remi/profiles-epic-plan/.context/profiles-epic-2026-11/runbook.md, exactly as written, with the deltas in section 0.2 of /Volumes/S1/worktrees/remi/awake-l2-plan/.context/awake-level2-2026-11/plan.md, using the project:manager-loop skill.
+Run one tick of the profiles runbook pinned at commit e18eac02 (read it with `git -C /Volumes/S1/worktrees/remi/profiles-epic-plan show e18eac02:.context/profiles-epic-2026-11/runbook.md`), exactly as written, with the deltas in section 0.2 of /Volumes/S1/worktrees/remi/awake-l2-plan/.context/awake-level2-2026-11/plan.md, using the project:manager-loop skill.
 The state is the board at /Volumes/S1/worktrees/remi/awake-l2-plan/.context/awake-level2-2026-11/board.md.
 Your manager id is mba-claude-sonnet, the same on every tick.
 Do not write product code.
@@ -42,22 +42,30 @@ The profiles manager may instead run this pack from its own loop; the deltas are
 
 ### 0.2 Deltas from the profiles runbook
 
-Apply the profiles runbook's sections 4, 5, 6, 10, 12 and 13; from section 7, items 1, 3, 4 and 5; from section 8, the Order rule, the Rule steps paragraph (as item 8 below says) and the Outline steps rule.
-Do not apply: sections 1 to 3 and 11 (profiles-only), section 7 item 2 (this pack has no `lead.md`; the lead records its decisions with `decide --by lead`), section 8's "Not before approval" (this plan has no CP0: the owner's instruction of 2026-11-17 is the approval to dispatch the ready cards), its parked, native lane, docs lane and phase-completion rules, section 9's `lead.md` format, and merge gate item 6 (profiles step extras; items 7 and 8 below replace it).
+Apply the pinned profiles runbook's sections 4, 5, 6, 10, 12 and 13; from section 7, items 1, 3, 4 and 5; from section 8, the Order rule, the checkpoint paragraph of "Rule steps" (as item 8 below says) and the Outline steps rule.
+Do not apply: sections 1 to 3 and 11 (profiles-only), section 7 item 2 (this pack has no `lead.md`; the lead records its decisions with `decide --by lead`), section 8's "Not before approval" (this plan has no CP0: the owner's instruction of 2026-11-17 is the approval to dispatch the ready cards), its J-questions, parked steps, native lane, docs lane and phase-completion rules, section 9's `lead.md` format (the lead brief is in section 4 below), and merge gate item 6 (profiles step extras; items 7 and 8 below replace it).
 These changes apply:
-1. **Board.** On the first tick, create `board.md` beside this plan with `manager_board.py init`, the steps of section 2 in that order with their tiers, Depends and timeboxes, the Parity, Slots and Budget rows copied from the profiles board, and the questions Q1 to Q7 of section 6 as `open`; commit it on this pack's branch only.
-   Rule steps start `blocked` with their trigger in Next.
+1. **Board, first tick.** Before section 7 item 1's `MB tick`, run `MB init BOARD --title "Keep-awake level 2 (awake-level2-2026-11)" --plan PACK/plan.md --repo yooz-labs/remi --branch develop`, then add the steps of section 2 in that order with their tiers, Depends and timeboxes (`MB set BOARD Steps ID ... --new`), and commit `board.md` and `board-log.md` on this pack's branch only (never on `develop`).
+   Copy the Parity rows from the profiles board; copy its Slots rows with `codex-terra` at Max 0 (Q6: `codex-terra` stays with the profiles daemon lane); copy its Budget rows with Used 0.
+   States at start: G0, G1, W1 and L2-POL `todo`; OG-CAP `owner` (send the owner the OG-CAP section of [owner-gates.md](owner-gates.md) on this first tick); G2, L2-CORE, L2-HUB and L2-CLI `todo` behind their Depends; CP-L2, OG-G2, OG-L2 and CP-HW `blocked` with their trigger in Next; L2-SLEEPNOW and L2-APP `outline`.
+   Record Q1 to Q7 with `MB ask BOARD QN --question TEXT --options OPTIONS --default none`, using the short "Ask text" and "Options" of section 6, and ask Q1 to Q4 in the first batch (they gate the earliest merges), then Q5 to Q7.
 2. **Paths.** Wherever the profiles runbook says `PACK`, `BOARD` or `EVID`, read `PACK` as `/Volumes/S1/worktrees/remi/awake-l2-plan/.context/awake-level2-2026-11`, `BOARD` as `PACK/board.md` and `EVID` as `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/STEP/rROUND/`; `MAIN` and `MB` keep their meaning.
    Cards and preamble: this pack's `cards/`; evidence root `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/` (replace the profiles artifacts root in the Codex `writable_roots`); worktrees and branches as each card names them, created with `git -C "$HOME/Documents/git/yooz/remi" fetch origin && git -C "$HOME/Documents/git/yooz/remi" worktree add --no-track -b BRANCH WT origin/develop`, then `cd WT && bun install`.
 3. **Platform.** G1, G2, L2-CORE, L2-HUB and L2-CLI run real `pmset -g`, `ioreg`, `notifyutil`, `launchctl print` and `caffeinate` in tests: dispatch them on Claude slots when one is free; on Codex, a sandbox denial in the log is handled by the profiles runbook's full-access rule.
-4. **After every worker run**, besides the profiles checks 1 to 3 (where check 2 pauses this plan's dispatching instead of profile steps): record at dispatch and compare after the run (a) `ioreg -r -c IOPMrootDomain -d 1 | grep '"SleepDisabled"'`, which must print `"SleepDisabled" = No`, (b) `ls -l /etc/sudoers.d/remi-keep-awake /Library/LaunchDaemons/com.yooz.remi.keep-awake-boot.plist "$HOME/Library/LaunchAgents/com.yooz.remi.keep-awake-watchdog.plist" 2>&1`, and (c) `launchctl print "gui/$(id -u)/com.yooz.remi.keep-awake-watchdog" >/dev/null 2>&1; echo $?`.
-   Any change stops all dispatching of this plan and goes to the owner at once.
+4. **After every worker run**: the profiles checks 1 to 3, where a merge into `develop` or an issue closing done by the profiles manager (a PR or issue named on `/Volumes/S1/worktrees/remi/profiles-epic-plan/.context/profiles-epic-2026-11/board.md` or its `board-log.md`) counts as a merge or closing the manager made, and check 2 pauses this plan's dispatching instead of profile steps.
+   Also record at dispatch and compare after the run: (a) `ioreg -r -c IOPMrootDomain -d 1 | grep '"SleepDisabled"'`, which must print `"SleepDisabled" = No`; (b) `ls -l /etc/sudoers.d/remi-keep-awake /Library/LaunchDaemons/com.yooz.remi.keep-awake-boot.plist "$HOME/Library/LaunchAgents/com.yooz.remi.keep-awake-watchdog.plist" 2>&1`; (c) `launchctl print "gui/$(id -u)/com.yooz.remi.keep-awake-watchdog" >/dev/null 2>&1; echo $?`.
+   Any change in (a) to (c) stops all dispatching of this plan and goes to the owner at once.
 5. **Live facts** (profiles runbook section 6) add, for L2-CORE, L2-HUB and L2-CLI, the `CP-L2:` decision lines and the owner's answers to Q1 to Q3; for L2-CLI, the state of PR #1798.
-6. **Merge gate** (profiles runbook section 10, with the owner's relaxed item 3 of 2026-11-17) adds: item 7, the manager reruns the card's canonical-environment `bun test` command from its Acceptance in the step's worktree at the final head, and it ends with `0 fail` and no skipped test under `packages/daemon/tests/power/` or in a `keep-awake-*` test; item 8, the owner answers named in the card's Depends line for the merge are recorded (L2-POL: Q2 and Q3; G2: Q2 and Q4).
+6. **Merge gate** (profiles runbook section 10). Item 3, fresh base, as the owner relaxed it on 2026-11-17 (profiles `board-log.md`, Decisions): commits that `develop` gained since a PR's checks ran count as a fresh base when they are docs-only files or version bumps (merge commits of docs-only PRs included) or `config/app-release.json`; any code, config, workflow or test change on `develop` still makes the worker merge `origin/develop` and the checks rerun.
+   Item 6 is replaced by item 7: the manager reruns the card's canonical-environment `bun test` command from its Acceptance in the step's worktree at the final head, and it ends with `0 fail` and no skipped test under `packages/daemon/tests/power/` or in a `keep-awake-*` test.
+   Item 8: the owner answers a card names for its merge are recorded (L2-POL: Q2 and Q3; G2: Q2 and Q4).
 7. **After a merge**: DV-AWAKE (`cards/DV-awake-develop-verify.md`) replaces DV for every merge of a PR that changes `packages/`; G0 (a `.context` note only) needs none.
-8. **Rule steps**: OG-CAP, OG-G2 and OG-L2 are set `owner` when their Depends are done and the owner gets that section of [owner-gates.md](owner-gates.md); CP-L2 and CP-HW wake the lead (profiles runbook section 9, with this pack's paths and section 4 below).
-9. **Conditions outside the board's Depends**, written in each step's Next: CP-L2 wakes the lead only when Q1 to Q3 are `closed`; L2-CLI is dispatched only when `gh pr view 1798 --repo yooz-labs/remi --json state --jq .state` prints `MERGED`; L2-POL and G2 merge only under item 6's gate item 8.
-   On the first tick, ask Q1 to Q4 in one batch (they gate the earliest merges), then Q5 to Q7.
+   Before the first DV-AWAKE, create its worktree once: `git -C "$HOME/Documents/git/yooz/remi" fetch origin && git -C "$HOME/Documents/git/yooz/remi" worktree add --detach /Volumes/S1/worktrees/remi/awake-develop-verify DEV_SHA && cd /Volumes/S1/worktrees/remi/awake-develop-verify && bun install --frozen-lockfile`.
+   DV-AWAKE is an agent row (`DV-AWAKE-PR`), not a Steps row, as the profiles board runs DV.
+8. **Rule steps.** OG-G2 and OG-L2 are set `owner` when their Depends are done, and the owner gets that section of [owner-gates.md](owner-gates.md); the owner's result is recorded with `decide ... --by owner`, then the gate is `done` (passed) or the lead is woken (failed).
+   CP-L2 and CP-HW follow the runbook section 8 checkpoint paragraph without J-questions: wake the lead with the brief of section 4; when `board-log.md` holds the lead's `CP-L2:` (or `CP-HW:`) line, run the anticipation pass, then `MB ask BOARD QCP-L2 --question "CP-L2: go for level 2 (L2-CORE, L2-HUB, L2-CLI)?" --options "Go (Recommended) / Hold" --default none --step CP-L2` (for CP-HW: `QCP-HW`, "CP-HW: go for the cards the lead completed?"); on "Go", `MB decide BOARD "CP-L2: owner go" --by owner` and set the checkpoint `done`. The lead sets the cards it completed from `outline` to `todo` with `MB set`.
+9. **Owner answers** (replacing section 11): `MB decide BOARD "QN answered: ANSWER" --by owner` and set the question `closed`; when the answer differs from the section 6 recommendation, wake the lead before dispatching or merging anything that question blocks.
+10. **Conditions outside the board's Depends**, written in each step's Next: CP-L2 wakes the lead only when Q1 to Q3 are `closed`; L2-CLI is dispatched only when `gh pr view 1798 --repo yooz-labs/remi --json state --jq .state` prints `MERGED`; L2-POL and G2 merge only under item 6's gate item 8.
 
 ### 0.3 Precedence
 
@@ -78,7 +86,9 @@ Silence is never an answer.
 ### 0.6 Routing and capacity
 
 Roles and models as in the profiles plan section 0.6.
-These steps share the owner's slots with the profiles plan: across both boards, never more implementers than the Slots table allows; worker-hard steps of this plan go to `claude-opus` (leaving `codex-terra` to the profiles daemon lane), worker steps to `codex-luna` or `claude-sonnet` (Q6).
+These steps share the owner's slots and budget with the profiles plan (Q6).
+Slots: before each implementer dispatch, run `MB status` on both boards and dispatch only when the slot's active implementers on both boards together are below its Max on the profiles board; worker-hard steps of this plan go to `claude-opus` (this board's `codex-terra` is Max 0), worker steps to `codex-luna` or `claude-sonnet`.
+Budget: every dispatch spends on both boards (`MB spend` on this board's row and on the same row of the profiles board); a refusal on either board stops dispatching on that row and asks the owner.
 Reviewers and DV are extra to the slots, as in the profiles plan.
 
 ## 1. Inputs, verified on `develop` `bbcec7d6` (0.9.1-dev.4, 2026-11-17)
@@ -101,9 +111,9 @@ Board order is dispatch priority.
 | G1 | [G1](cards/G1-power-readings.md) | parsers and bounded readers for assertions, thermal pressure and the root domain | worker | - | 1d | `env -i ... bun test packages/daemon/tests/power/readings` (canonical) ends `0 fail`, no skip on this Mac; every item of the card |
 | W1 | [W1](cards/W1-lease-and-watchdog.md) | root-boundary constants, the lease, the watchdog script and property lists, tested without privileges | worker-hard | - | 1d | `env -i ... bun test` of the three W1 test files (canonical) ends `0 fail`, no skip; every item of the card |
 | L2-POL | [L2-POL](cards/L2-POL-level2-policy.md) | the pure level 2 reducer, settings validator and foreign-holder classifier; merges only after Q2 and Q3 are answered | worker-hard | - | 1d | `env -i ... bun test` of the three L2-POL test files (canonical) ends `0 fail`; every item of the card |
-| OG-CAP | rule | the owner's MacBook captures in seven states | owner | - | 30 min | [owner-gates.md](owner-gates.md) OG-CAP recorded; the seven folders exist under `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/captures/OG-CAP/` |
+| OG-CAP | rule | the owner's MacBook captures in seven states | owner | - | 30m | [owner-gates.md](owner-gates.md) OG-CAP recorded; the seven folders exist under `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/captures/OG-CAP/` |
 | G2 | [G2](cards/G2-level1-battery-floor.md) | the level 1 battery floor; `level1_battery_floor_percent` and `battery_check_seconds` supported; merges only after Q2 and Q4 are answered | worker-hard | G1, OG-CAP | 1d | `env -i ... bun test packages/daemon/tests/power packages/daemon/tests/integration/keep-awake-daemon-smoke.test.ts` (canonical) ends `0 fail`, no skip; every item of the card |
-| OG-G2 | rule | the owner checks the floor on the MacBook | owner | G2 | 30 min | owner-gates.md OG-G2 recorded |
+| OG-G2 | rule | the owner checks the floor on the MacBook | owner | G2 | 30m | owner-gates.md OG-G2 recorded |
 | CP-L2 | rule | lead checkpoint before level 2; starts only when Q1 to Q3 are also answered | lead | G0, G1, W1, L2-POL, G2, OG-CAP | - | a `decide` line starting `CP-L2:` (section 4) |
 | L2-CORE | [L2-CORE](cards/L2-CORE-switch-and-controller.md) | the switch and the hub's controller, not wired | worker-hard | CP-L2 | 1.5d | `env -i ... bun test packages/daemon/tests/power` (canonical) ends `0 fail`, no skip; every item of the card |
 | L2-HUB | [L2-HUB](cards/L2-HUB-config-and-hub.md) | level 2 keys, hub ownership, exit reverts, the local endpoint | worker-hard | L2-CORE | 1.5d | the card's Acceptance 6 command ends `0 fail`, no skip; every item of the card |
@@ -112,9 +122,9 @@ Board order is dispatch priority.
 | CP-HW | rule | lead checkpoint after the hardware tests | lead | OG-L2 | - | a `decide` line starting `CP-HW:` |
 | L2-SLEEPNOW | outline | the third exact rule, only if OG-L2 (b) failed | worker-hard | CP-HW | 6h | completed at CP-HW |
 | L2-APP | outline | the phone surface: status, `allow_phone`, start and stop (web first) | worker-hard | CP-HW | 2d | completed at CP-HW |
-| DV-AWAKE | [DV-AWAKE](cards/DV-awake-develop-verify.md) | the develop tip after each code merge | worker | each code merge | 1h | the card's Acceptance on `DEV_SHA` |
 
 Reviewer cards: [RV-panel](cards/RV-panel.md) and [RV-delta](cards/RV-delta.md).
+After each code merge the manager dispatches [DV-AWAKE](cards/DV-awake-develop-verify.md) (worker, 1 hour) as an agent, not as a board step, the way the profiles board runs DV.
 Board states at start: G0, G1, W1, L2-POL `todo`; OG-CAP `owner`; G2 `todo` behind G1 and OG-CAP; CP-L2, OG-G2, OG-L2 and CP-HW `blocked`; L2-CORE, L2-HUB, L2-CLI `todo` behind their Depends; L2-SLEEPNOW and L2-APP `outline`.
 
 ```text
@@ -216,6 +226,18 @@ Each has the lead's recommendation; the cards follow it, and a different answer 
 | Q5 | ADR 0050 gives level 1 no total time limit (only the question cap and the stuck bound); add one? | none (CP-L2) | No: an agent with real work should keep its Mac awake; the lid, the battery floor and the stuck bound bound it |
 | Q6 | Capacity: run this plan beside the profiles plan on the same slots, worker-hard steps on `claude-opus` and worker steps on `codex-luna` or `claude-sonnet`, with this board's budget rows copied from the profiles board? | none (applied as recommended until answered) | Yes |
 | Q7 | Release: no release that contains L2-HUB before OG-L2 (b) passed? | none (before a release) | Yes: `level2` is off by default, but the crash-safety story is unverified until then |
+
+Short texts for `MB ask` (each under 200 characters):
+
+| ID | Ask text | Options |
+| --- | --- | --- |
+| Q1 | Q1: How does a level 2 period start? (a) only by an explicit start (remi keep-awake start now, the phone later); (b) armed by level2 = true at the first real work | (a) explicit start (Recommended) / (b) armed |
+| Q2 | Q2: Do the battery limits (level 1 floor; level 2 start, revert and time limits) apply only on battery power, with AC power exempt? | Yes (Recommended) / No, also on AC |
+| Q3 | Q3: Level 2 on a Mac with no battery (a desktop): refuse it or allow it? | Refuse (Recommended) / Allow |
+| Q4 | Q4: An unknown [awake] key: keep stopping every remi command at config load, or warn and ignore ADR 0050 keys this build lacks? | Keep stopping (Recommended) / Warn and ignore |
+| Q5 | Q5: Add a total time limit to level 1? ADR 0050 gives it only the question cap and the stuck bound. | No (Recommended) / Yes |
+| Q6 | Q6: Run this plan beside the profiles plan on shared slots and budget, worker-hard steps on claude-opus, codex-terra left to the profiles lane? | Yes (Recommended) / Other |
+| Q7 | Q7: Hold every release that contains L2-HUB until OG-L2 step (b) has passed? | Yes (Recommended) / No |
 
 Lead decisions under ADR 0050 decision 8 (every tunable is a key), which the owner may override: two keys the ADR's table lacks, `battery_check_seconds` (default 60, G2) and `lease_stale_seconds` (default 120, the ADR's "heartbeat older than 120 s", L2-POL and L2-HUB); `level1_battery_floor_percent = 0` turns the floor off; the level 2 battery revert rule needs a time estimate only when one is shown; level 2 refuses to start without the watchdog loaded; the password setting and the watchdog are checked at start and extend only; the Mac-side controls use a local-only HTTP endpoint on the hub (the `/local-secure-push` gate), not new protocol messages, so no protocol change happens before L2-APP.
 
