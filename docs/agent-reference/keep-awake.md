@@ -80,7 +80,7 @@ ADR 0050's level 2 (lid-closed mode, option A) has three modules under `packages
 Later slices wire them (the hub's controller, then the `remi keep-awake` command, which does not exist yet).
 
 - `level2-commands.ts`, the root boundary: the absolute paths (`/usr/bin/sudo`, `/usr/bin/pmset`, `/usr/sbin/ioreg`, `/usr/bin/plutil`, `/bin/ps`, `/bin/date`, `/bin/launchctl`), the `pmset` arguments that set and clear the flag, the `sudo -n` and `sudo -n -l` argument builders, the sudoers line, the boot LaunchDaemon and watchdog LaunchAgent property lists, and the owner's setup and removal texts.
-  It is the only file under `packages/daemon/src` that names `/usr/bin/sudo` or the `pmset` keyword for the flag (a source-scan test), and the printed texts are built from the same constants as the commands remi will run.
+  It is the only file under `packages/daemon/src` with a string literal that names `/usr/bin/sudo` or the `pmset` keyword for the flag (a test that reads the literals with the TypeScript compiler; comments do not count, and `readings/root-domain.ts` mentions the keyword in one), and the printed texts are built from the same constants as the commands remi will run.
 - `level2-lease.ts`, the lease at `REMIHOME/keep-awake/lease.json`.
 - `watchdog-script.ts`, the generated POSIX `sh` watchdog.
 

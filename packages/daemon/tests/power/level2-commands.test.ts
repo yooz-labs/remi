@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
+import ts from 'typescript';
 import {
   BOOT_DAEMON_LABEL,
   BOOT_DAEMON_PLIST,
@@ -43,6 +44,35 @@ function sourceFiles(dir: string): string[] {
     if (entry.isDirectory()) return sourceFiles(full);
     return entry.name.endsWith('.ts') ? [full] : [];
   });
+}
+
+/**
+ * The text of every string and template literal in a TypeScript source, read
+ * from real syntax with the TypeScript compiler, so a comment never counts.
+ */
+function stringLiterals(fileName: string, source: string): string[] {
+  const file = ts.createSourceFile(
+    fileName,
+    source,
+    ts.ScriptTarget.Latest,
+    false,
+    ts.ScriptKind.TS,
+  );
+  const found: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isStringLiteral(node) ||
+      ts.isNoSubstitutionTemplateLiteral(node) ||
+      ts.isTemplateHead(node) ||
+      ts.isTemplateMiddle(node) ||
+      ts.isTemplateTail(node)
+    ) {
+      found.push(node.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return found;
 }
 
 /** The single-quoted words of one generated `sh` line. */
@@ -123,13 +153,17 @@ describe('one constant for each root-boundary command', () => {
     ]);
   });
 
-  test('only level2-commands.ts names sudo or the disablesleep keyword in the daemon source', () => {
+  test('only level2-commands.ts has a string literal naming sudo or the disablesleep keyword', () => {
     const files = sourceFiles(SRC);
     expect(files.length).toBeGreaterThan(100);
+    const literalsByFile = files.map((file) => ({
+      file: relative(SRC, file),
+      literals: stringLiterals(file, readFileSync(file, 'utf8')),
+    }));
     for (const literal of ['/usr/bin/sudo', 'disablesleep']) {
-      const holders = files
-        .filter((file) => readFileSync(file, 'utf8').includes(literal))
-        .map((file) => relative(SRC, file));
+      const holders = literalsByFile
+        .filter(({ literals }) => literals.some((text) => text.includes(literal)))
+        .map(({ file }) => file);
       expect({ literal, holders }).toEqual({ literal, holders: ['power/level2-commands.ts'] });
     }
   });
