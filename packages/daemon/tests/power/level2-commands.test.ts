@@ -6,12 +6,14 @@ import { join, relative } from 'node:path';
 import {
   BOOT_DAEMON_LABEL,
   BOOT_DAEMON_PLIST,
+  DEFAULT_SUDOERS_USER_MAX_LENGTH,
   DISABLESLEEP_OFF,
   DISABLESLEEP_ON,
   IOREG_PATH,
   LAUNCHCTL_PATH,
   PLUTIL_PATH,
   PMSET_PATH,
+  SETUP_EXPOSURE_TEXT,
   SETUP_STAGING_TEMPLATE,
   SH_PATH,
   SUDOERS_FILE,
@@ -101,7 +103,8 @@ describe('one constant for each root-boundary command', () => {
     const withSudo = lines.filter((line) => line.includes(SUDO_PATH));
     expect(withSudo).toHaveLength(1);
     const revertLine = withSudo[0] ?? '';
-    expect(revertLine.trim().startsWith('run_bounded /dev/null ')).toBe(true);
+    // `"$1"` is the runner (run_bounded, or run_without_work when no work directory exists).
+    expect(revertLine.trim().startsWith('"$1" ')).toBe(true);
     expect(lines[lines.indexOf(revertLine) - 1]).toBe('revert_action() {');
     expect(quotedWords(revertLine)).toEqual([
       SUDO_PATH,
@@ -155,6 +158,34 @@ describe('the sudoers user name', () => {
       expect(isSafeShortName(user)).toBe(true);
       expect(sudoersLine(user).startsWith(`${user} ALL=(root) NOPASSWD: `)).toBe(true);
     }
+  });
+
+  test('maxLength: 40 accepts a 35-character safe name the default refuses', () => {
+    const user = `a${'b'.repeat(34)}`;
+    expect(user).toHaveLength(35);
+    expect(DEFAULT_SUDOERS_USER_MAX_LENGTH).toBe(32);
+    expect(isSafeShortName(user)).toBe(false);
+    expect(() => sudoersLine(user)).toThrow();
+    expect(isSafeShortName(user, { maxLength: 40 })).toBe(true);
+    expect(sudoersLine(user, { maxLength: 40 }).startsWith(`${user} ALL=(root)`)).toBe(true);
+    expect(() => setupText({ user, remiHome: '/Users/x/.remi' })).toThrow();
+    expect(setupText({ user, remiHome: '/Users/x/.remi', userMaxLength: 40 })).toContain(
+      sudoersLine(user, { maxLength: 40 }),
+    );
+  });
+
+  test('the character class refuses sudoers syntax at every length', () => {
+    for (const maxLength of [1, 8, 32, 40, 1000]) {
+      for (const user of ['a b', 'a,b', 'root ALL', 'ALL', '', 'a\nb', '1a']) {
+        expect({ user, maxLength, safe: isSafeShortName(user, { maxLength }) }).toEqual({
+          user,
+          maxLength,
+          safe: false,
+        });
+      }
+    }
+    for (const maxLength of [0, -1, 1.5])
+      expect(() => isSafeShortName('a', { maxLength })).toThrow();
   });
 });
 
@@ -253,52 +284,95 @@ describe('the printed setup', () => {
     ).toBeDefined();
   });
 
-  test('stages every root file inside the root-made directory and installs only from there', () => {
+  test('stages every root file in the root-made directory and chains each install to its check', () => {
     expect(commands[0]?.line).toBe(`D="$(sudo mktemp -d ${SETUP_STAGING_TEMPLATE})"`);
+    const teePattern = /^sudo tee "\$\{D:\?\}\/([^"/]+)" >\/dev\/null <<'[A-Z_]+'$/;
+    const checkPattern = /^sudo (?:visudo -cf|\/usr\/bin\/plutil -lint) "\$\{D:\?\}\/([^"/]+)"$/;
+    const installPattern =
+      /^sudo install -m (?:0440|0644) -o root -g wheel "\$\{D:\?\}\/([^"/]+)" (\S+)$/;
+    const bootstrap = `sudo ${LAUNCHCTL_PATH} bootstrap system ${BOOT_DAEMON_PLIST}`;
     const written = new Set<string>();
-    const checked = new Set<string>();
     const installed: string[] = [];
     for (const { line } of commands.slice(1)) {
-      const tee = /^sudo tee "\$\{D:\?\}\/([^"/]+)" >\/dev\/null <<'[A-Z_]+'$/.exec(line);
-      const check = /^sudo (?:visudo -cf|\/usr\/bin\/plutil -lint) "\$\{D:\?\}\/([^"/]+)"$/.exec(
-        line,
-      );
-      const install =
-        /^sudo install -m (?:0440|0644) -o root -g wheel "\$\{D:\?\}\/([^"/]+)" (\S+)$/.exec(line);
+      const segments = line.split(' && ');
+      const tee = teePattern.exec(line);
       if (tee) {
         written.add(tee[1] ?? '');
-      } else if (check) {
-        expect(written.has(check[1] ?? '')).toBe(true);
-        checked.add(check[1] ?? '');
-      } else if (install) {
-        // Installed only after it was written there and checked there.
-        expect(checked.has(install[1] ?? '')).toBe(true);
-        installed.push(install[2] ?? '');
-      } else {
-        // Every other command writes no root content: it loads, removes the
-        // staging directory, lists the rule, or prints an installed file.
-        expect([
-          `sudo ${LAUNCHCTL_PATH} bootstrap system ${BOOT_DAEMON_PLIST}`,
-          'sudo rm -rf "${D:?}"',
-          `sudo ${sudoListArgv(DISABLESLEEP_ON).join(' ')}`,
-          `sudo ${sudoListArgv(DISABLESLEEP_OFF).join(' ')}`,
-          `sudo cat ${SUDOERS_FILE}`,
-          `sudo ${PLUTIL_PATH} -p ${BOOT_DAEMON_PLIST}`,
-        ]).toContain(line);
+        continue;
       }
+      if (segments.some((segment) => installPattern.test(segment) || segment === bootstrap)) {
+        // An install runs only when the check of the same staged file in
+        // front of it succeeded, and the load only after the install.
+        const check = checkPattern.exec(segments[0] ?? '');
+        const install = installPattern.exec(segments[1] ?? '');
+        expect({ line, chained: check !== null && install !== null }).toEqual({
+          line,
+          chained: true,
+        });
+        expect(install?.[1]).toBe(check?.[1]);
+        expect(written.has(check?.[1] ?? '')).toBe(true);
+        installed.push(install?.[2] ?? '');
+        const rest = segments.slice(2);
+        expect(rest).toEqual(install?.[2] === BOOT_DAEMON_PLIST ? [bootstrap] : []);
+        continue;
+      }
+      // Every other command writes no root content: it unloads the old boot
+      // daemon, removes the staging directory, checks the rule, runs the
+      // revert, or prints what is installed and loaded.
+      expect([
+        `sudo ${LAUNCHCTL_PATH} bootout system/${BOOT_DAEMON_LABEL}`,
+        'sudo rm -rf "${D:?}"',
+        'sudo -k',
+        'sudo -n -l',
+        `sudo ${sudoListArgv(DISABLESLEEP_ON).join(' ')}`,
+        `sudo ${sudoListArgv(DISABLESLEEP_OFF).join(' ')}`,
+        `sudo ${sudoArgv(DISABLESLEEP_OFF).join(' ')}`,
+        `sudo cat ${SUDOERS_FILE}`,
+        `sudo ${PLUTIL_PATH} -p ${BOOT_DAEMON_PLIST}`,
+        `sudo ${LAUNCHCTL_PATH} print system/${BOOT_DAEMON_LABEL}`,
+      ]).toContain(line);
     }
-    expect(installed.sort()).toEqual([BOOT_DAEMON_PLIST, SUDOERS_FILE].sort());
+    // The boot daemon is installed before the rule that makes level 2 possible.
+    expect(installed).toEqual([BOOT_DAEMON_PLIST, SUDOERS_FILE]);
     for (const { line } of commands) {
       // No redirection writes anywhere but /dev/null.
       expect(line.replaceAll('>/dev/null', '')).not.toContain('>');
     }
   });
 
+  test('unloads an old boot daemon before loading, and says a first install reports it missing', () => {
+    const lines = commands.map((command) => command.line);
+    const bootout = lines.indexOf(`sudo ${LAUNCHCTL_PATH} bootout system/${BOOT_DAEMON_LABEL}`);
+    const load = lines.findIndex((line) => line.endsWith(`bootstrap system ${BOOT_DAEMON_PLIST}`));
+    expect(bootout).toBeGreaterThan(0);
+    expect(load).toBeGreaterThan(bootout);
+    expect(text).toContain('reports that the service is not loaded, which is expected');
+    expect(text).toContain('If any step fails');
+    expect(text).toContain('run the removal steps');
+    expect(text).toContain('visudo must print "parsed OK"; if it prints anything else, stop');
+    expect(lines).toContain(`sudo ${LAUNCHCTL_PATH} print system/${BOOT_DAEMON_LABEL}`);
+    expect(text.split('\n')[0]).toBe(
+      'Keep-awake level 2 setup for the user "owner" (remi home "/Users/owner/.remi").',
+    );
+  });
+
+  test('says plainly what the installed rule exposes', () => {
+    expect(text).toContain(SETUP_EXPOSURE_TEXT);
+    for (const phrase of [
+      'any process running as you, including coding agents started by remi, can keep this Mac awake with the lid closed, without a lease or a battery limit',
+      'crash safety, not a barrier',
+      'no root access beyond these two pmset commands',
+    ]) {
+      expect(text).toContain(phrase);
+    }
+  });
+
   test('a staged path refuses to expand when the staging directory is empty', () => {
     // A failed mktemp line leaves D empty; the printed path must stop the
     // command instead of naming a file in the root directory. Only printf runs.
-    const staged = /"\$\{D:\?\}\/[^"/]+"/.exec(commands[1]?.line ?? '')?.[0];
-    expect(staged).toBe('"${D:?}/remi-keep-awake"');
+    const firstTee = commands.find((command) => command.line.startsWith('sudo tee '));
+    const staged = /"\$\{D:\?\}\/[^"/]+"/.exec(firstTee?.line ?? '')?.[0];
+    expect(staged).toBe('"${D:?}/boot.plist"');
     const empty = spawnSync('/bin/sh', ['-c', `D=; printf '%s' ${staged}`], {
       encoding: 'utf8',
       env: {},
@@ -311,14 +385,27 @@ describe('the printed setup', () => {
     });
     expect({ status: set.status, stdout: set.stdout }).toEqual({
       status: 0,
-      stdout: '/private/tmp/stage/remi-keep-awake',
+      stdout: '/private/tmp/stage/boot.plist',
     });
   });
 
-  test('checks both the enable and the revert with sudo -n -l', () => {
+  test('checks the rule after sudo -k: the listing, both commands, and the revert with no password', () => {
     const lines = commands.map((command) => command.line);
-    expect(lines).toContain('sudo -n -l /usr/bin/pmset -a disablesleep 1');
-    expect(lines).toContain('sudo -n -l /usr/bin/pmset -a disablesleep 0');
+    const start = lines.indexOf('sudo -k');
+    expect(start).toBeGreaterThan(0);
+    expect(lines.slice(start, start + 6)).toEqual([
+      'sudo -k',
+      'sudo -n -l',
+      'sudo -n -l /usr/bin/pmset -a disablesleep 1',
+      'sudo -n -l /usr/bin/pmset -a disablesleep 0',
+      'sudo -k',
+      'sudo -n /usr/bin/pmset -a disablesleep 0',
+    ]);
+    expect(text).toContain(
+      'sudo -n -l must list "(root) NOPASSWD: /usr/bin/pmset -a disablesleep 1, /usr/bin/pmset -a disablesleep 0"',
+    );
+    expect(text).toContain('must finish without asking for a password');
+    expect(text).toContain('These checks do not run the enable');
   });
 
   test('explains why the rule must not be widened', () => {

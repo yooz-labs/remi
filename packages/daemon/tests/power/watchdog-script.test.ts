@@ -1,12 +1,13 @@
 /**
  * Runs the generated watchdog script for real (issue #1773, ADR 0050 slice 3):
  * `/bin/sh` with an empty environment, a temporary remi home, the real
- * `plutil`, `ps` and `date`, fake `ioreg` and `pmset` executables that print
- * captured output from `fixtures/watchdog/` (one test uses the real `ioreg`),
- * and, in place of `sudo`, a stand-in that records its arguments and writes
- * the new flag into the state file the fake `ioreg` reads. That stand-in sits
- * exactly at the root boundary: the decision logic under test is the
- * production script text, generated with the test's tool paths.
+ * `plutil` and `ps`, the real `date` unless a test needs a fixed clock, fake
+ * `ioreg` and `pmset` executables that print captured output from
+ * `fixtures/watchdog/` (one test uses the real `ioreg`), and, in place of
+ * `sudo`, a stand-in that records its arguments and writes the new flag into
+ * the state file the fake `ioreg` reads. That stand-in sits exactly at the
+ * root boundary: the decision logic under test is the production script text,
+ * generated with the test's tool paths and options.
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
@@ -18,8 +19,10 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -39,28 +42,61 @@ import {
   readLease,
   writeLease,
 } from '../../src/power/level2-lease.ts';
-import { buildWatchdogScript } from '../../src/power/watchdog-script.ts';
+import {
+  DEFAULT_FAILURE_LOG_INTERVAL_SECONDS,
+  DEFAULT_FALLBACK_WORK_PARENT,
+  DEFAULT_INVALID_LEASE_MAX_AGE_MINUTES,
+  DEFAULT_LEASE_INTEGER_MAX_DIGITS,
+  DEFAULT_ORPHAN_MAX_AGE_SECONDS,
+  DEFAULT_REVERT_ERROR_MAX_CHARS,
+  DEFAULT_REVERT_FAILURE_MARKER_THRESHOLD,
+  DEFAULT_WATCHDOG_COMMAND_DEADLINE_SECONDS,
+  DEFAULT_WATCHDOG_KILL_GRACE_SECONDS,
+  DEFAULT_WATCHDOG_POLL_INTERVAL_MS,
+  DEFAULT_WATCHDOG_RUN_LIMIT_SECONDS,
+  type WatchdogScriptOptions,
+  buildWatchdogScript,
+  revertFailedMarkerPath,
+  watchdogStatePath,
+} from '../../src/power/watchdog-script.ts';
 
 const FIXTURES = join(import.meta.dir, 'fixtures', 'watchdog');
 const LEASE_MODULE = join(import.meta.dir, '..', '..', 'src', 'power', 'level2-lease.ts');
 const EXPECTED_REVERT_ARGS = sudoArgv(DISABLESLEEP_OFF);
-const SCRIPT_TIMEOUT_MS = 20_000;
+const SCRIPT_TIMEOUT_MS = 30_000;
+const FAILED_NOOP = 'revert failed expired (exit 0, flag Yes)';
 
-type FlagState = 'Yes' | 'No' | 'removed' | 'twice' | 'hang';
-type RevertKind = 'ok' | 'fail' | 'replace';
+type FlagState = 'Yes' | 'No' | 'removed' | 'twice' | 'hang' | 'sleep3' | 'stopparent';
+type RevertMode = 'ok' | 'fail' | 'noop' | 'replace';
+type LnMode = 'real' | 'kill-main' | 'fail';
 
-const IOREG_FIXTURES: Record<Exclude<FlagState, 'hang'>, string> = {
+const IOREG_FIXTURES: Record<'Yes' | 'No' | 'removed' | 'twice', string> = {
   Yes: 'ioreg-root-domain-mac-mini.sleep-disabled-yes.txt',
   No: 'ioreg-root-domain-mac-mini.txt',
   removed: 'ioreg-root-domain-mac-mini.sleep-disabled-removed.txt',
   twice: 'ioreg-root-domain-mac-mini.sleep-disabled-yes-twice.txt',
 };
 
+interface HarnessOptions {
+  batt?: string;
+  revert?: RevertMode;
+  realIoreg?: boolean;
+  remiHome?: string;
+  /** A `date` stand-in that prints the epoch in `ROOT/now` (`setNow`) while that file exists. */
+  fakeClock?: boolean;
+  /** An `ln` stand-in whose behavior `setLn` switches. */
+  lnStandIn?: boolean;
+  script?: Omit<WatchdogScriptOptions, 'remiHome' | 'tools' | 'revertArgv'>;
+}
+
 interface Harness {
   root: string;
   remiHome: string;
   scriptPath: string;
   setFlag(state: FlagState): void;
+  setRevert(mode: RevertMode): void;
+  setNow(epoch: number): void;
+  setLn(mode: LnMode): void;
   /** Each revert stand-in call, as its argument list. */
   revertCalls(): string[][];
   /** Calls the fake tools refused (anything other than the one read each allows). */
@@ -69,6 +105,7 @@ interface Harness {
 
 interface Run {
   status: number | null;
+  signal: NodeJS.Signals | null;
   stdout: string;
   stderr: string;
   elapsedMs: number;
@@ -77,11 +114,34 @@ interface Run {
 const roots: string[] = [];
 const children: ChildProcess[] = [];
 
+/** Kills a process a fake recorded, only when it is still the process the fake was. */
+function killRecorded(pidFile: string, scriptPath: string): void {
+  if (!existsSync(pidFile)) return;
+  for (const text of readFileSync(pidFile, 'utf8').split('\n')) {
+    const pid = Number(text);
+    if (!Number.isSafeInteger(pid) || pid <= 1) continue;
+    const command = spawnSync(PS_PATH, ['-o', 'command=', '-p', String(pid)], {
+      encoding: 'utf8',
+    }).stdout.trim();
+    if (command === '/bin/sleep 30' || command === `/bin/sh ${scriptPath}`) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // Gone already.
+      }
+    }
+  }
+}
+
 afterEach(() => {
   for (const child of children.splice(0)) {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   }
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) {
+    killRecorded(join(root, 'pids'), join(root, 'watchdog.sh'));
+    spawnSync('/bin/chmod', ['-R', 'u+rwx', root]);
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 function quote(text: string): string {
@@ -94,19 +154,18 @@ function writeExecutable(file: string, text: string): void {
   chmodSync(file, 0o755);
 }
 
-function makeHarness(
-  options: { batt?: string; revert?: RevertKind; realIoreg?: boolean; remiHome?: string } = {},
-): Harness {
+function makeHarness(options: HarnessOptions = {}): Harness {
   const root = mkdtempSync(join(tmpdir(), 'remi-watchdog-'));
   roots.push(root);
   const bin = join(root, 'bin');
   mkdirSync(bin);
   const remiHome = options.remiHome ? join(root, options.remiHome) : join(root, 'remi-home');
   mkdirSync(remiHome, { recursive: true });
-  const state = join(root, 'state');
-  const calls = join(root, 'revert-calls');
-  const unexpected = join(root, 'unexpected');
-  writeFileSync(state, 'No\n');
+  const at = (name: string) => quote(join(root, name));
+  writeFileSync(join(root, 'state'), 'No\n');
+  writeFileSync(join(root, 'revert-mode'), `${options.revert ?? 'ok'}\n`);
+  writeFileSync(join(root, 'ln-mode'), 'real\n');
+  const lease = leasePath(remiHome);
 
   const ioregCases = Object.entries(IOREG_FIXTURES)
     .map(([name, file]) => `  ${name}) exec /bin/cat ${quote(join(FIXTURES, file))} ;;`)
@@ -115,13 +174,18 @@ function makeHarness(
     join(bin, 'ioreg'),
     `#!/bin/sh
 if [ "$*" != '-r -c IOPMrootDomain -d 1' ]; then
-  printf 'ioreg %s\\n' "$*" >> ${quote(unexpected)}
+  printf 'ioreg %s\\n' "$*" >> ${at('unexpected')}
   exit 64
 fi
-state=$(/bin/cat ${quote(state)})
+state=$(/bin/cat ${at('state')})
 case $state in
 ${ioregCases}
-  hang) exec /bin/sleep 30 ;;
+  hang) printf '%s\\n' "$$" >> ${at('pids')}; exec /bin/sleep 30 ;;
+  sleep3) exec /bin/sleep 3 ;;
+  stopparent)
+    printf '%s\\n%s\\n' "$$" "$PPID" >> ${at('pids')}
+    kill -STOP "$PPID"
+    exec /bin/sleep 30 ;;
 esac
 exit 1
 `,
@@ -130,43 +194,89 @@ exit 1
     join(bin, 'pmset'),
     `#!/bin/sh
 if [ "$*" != '-g batt' ]; then
-  printf 'pmset %s\\n' "$*" >> ${quote(unexpected)}
+  printf 'pmset %s\\n' "$*" >> ${at('unexpected')}
   exit 64
 fi
 exec /bin/cat ${quote(join(FIXTURES, options.batt ?? 'pmset-batt-mac-mini-ac.txt'))}
 `,
   );
-  const record = `{ printf 'call\\n'; for arg in "$@"; do printf '%s\\n' "$arg"; done; } >> ${quote(calls)}`;
-  const lease = leasePath(remiHome);
-  const revertBody = {
-    ok: `${record}\nprintf 'No\\n' > ${quote(state)}\nexit 0`,
-    fail: `${record}\nexit 1`,
-    replace: `${record}\n/bin/cp ${quote(join(root, 'newer-lease.json'))} ${quote(`${lease}.newer`)}\n/bin/mv ${quote(`${lease}.newer`)} ${quote(lease)}\nprintf 'No\\n' > ${quote(state)}\nexit 0`,
-  }[options.revert ?? 'ok'];
-  const revert = join(bin, 'revert-stand-in');
-  writeExecutable(revert, `#!/bin/sh\n${revertBody}\n`);
+  writeExecutable(
+    join(bin, 'date'),
+    `#!/bin/sh
+if [ -f ${at('now')} ]; then
+  now=$(/bin/cat ${at('now')})
+  case "$1" in
+    +%s) printf '%s\\n' "$now"; exit 0 ;;
+    -u) exec /bin/date -u -r "$now" "$2" ;;
+  esac
+fi
+exec /bin/date "$@"
+`,
+  );
+  writeExecutable(
+    join(bin, 'ln'),
+    `#!/bin/sh
+mode=$(/bin/cat ${at('ln-mode')})
+case $mode in
+  kill-main)
+    printf 'real\\n' > ${at('ln-mode')}
+    main=$(/bin/ps -o ppid= -p "$PPID")
+    kill -9 $main
+    exit 1 ;;
+  fail)
+    printf 'real\\n' > ${at('ln-mode')}
+    exit 1 ;;
+esac
+exec /bin/ln "$@"
+`,
+  );
+  writeExecutable(
+    join(bin, 'revert-stand-in'),
+    `#!/bin/sh
+{ printf 'call\\n'; for arg in "$@"; do printf '%s\\n' "$arg"; done; } >> ${at('revert-calls')}
+mode=$(/bin/cat ${at('revert-mode')})
+case $mode in
+  ok) printf 'No\\n' > ${at('state')}; exit 0 ;;
+  noop) exit 0 ;;
+  fail) printf 'sudo: a password is required\\n' >&2; exit 1 ;;
+  replace)
+    /bin/cp ${at('newer-lease.json')} ${quote(`${lease}.newer`)}
+    /bin/mv ${quote(`${lease}.newer`)} ${quote(lease)}
+    printf 'No\\n' > ${at('state')}
+    exit 0 ;;
+esac
+exit 2
+`,
+  );
 
   const scriptPath = join(root, 'watchdog.sh');
   writeFileSync(
     scriptPath,
     buildWatchdogScript({
+      ...options.script,
       remiHome,
       tools: {
         ioreg: options.realIoreg ? IOREG_PATH : join(bin, 'ioreg'),
         pmset: join(bin, 'pmset'),
         plutil: PLUTIL_PATH,
         ps: PS_PATH,
-        date: DATE_PATH,
+        date: options.fakeClock ? join(bin, 'date') : DATE_PATH,
+        ln: options.lnStandIn ? join(bin, 'ln') : '/bin/ln',
       },
-      revertArgv: [revert, ...EXPECTED_REVERT_ARGS],
+      revertArgv: [join(bin, 'revert-stand-in'), ...EXPECTED_REVERT_ARGS],
     }),
   );
 
+  const calls = join(root, 'revert-calls');
+  const unexpected = join(root, 'unexpected');
   return {
     root,
     remiHome,
     scriptPath,
-    setFlag: (flag) => writeFileSync(state, `${flag}\n`),
+    setFlag: (flag) => writeFileSync(join(root, 'state'), `${flag}\n`),
+    setRevert: (mode) => writeFileSync(join(root, 'revert-mode'), `${mode}\n`),
+    setNow: (epoch) => writeFileSync(join(root, 'now'), `${epoch}\n`),
+    setLn: (mode) => writeFileSync(join(root, 'ln-mode'), `${mode}\n`),
     revertCalls: () => {
       if (!existsSync(calls)) return [];
       return readFileSync(calls, 'utf8')
@@ -179,7 +289,7 @@ exec /bin/cat ${quote(join(FIXTURES, options.batt ?? 'pmset-batt-mac-mini-ac.txt
 }
 
 /** Runs the script as launchd would: `/bin/sh SCRIPT` with no inherited environment. */
-function runScript(h: Harness, env: Record<string, string> = {}): Run {
+function runRaw(h: Harness, env: Record<string, string> = {}): Run {
   const started = Date.now();
   const result = spawnSync('/bin/sh', [h.scriptPath], {
     cwd: h.root,
@@ -187,24 +297,38 @@ function runScript(h: Harness, env: Record<string, string> = {}): Run {
     encoding: 'utf8',
     timeout: SCRIPT_TIMEOUT_MS,
   });
-  const run = {
+  return {
     status: result.status,
+    signal: result.signal,
     stdout: result.stdout,
     stderr: result.stderr,
     elapsedMs: Date.now() - started,
   };
-  // Every run exits 0, prints nothing on stderr, asks the fakes for nothing
-  // but their one read, and leaves no work directory or claimed lease behind.
+}
+
+/** Leftovers of a run next to the lease: work directories and claimed leases. */
+function leftovers(h: Harness): string[] {
+  const dir = dirname(leasePath(h.remiHome));
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter(
+    (name) => name.startsWith('watchdog-run.') || name.includes('.watchdog-'),
+  );
+}
+
+/**
+ * Runs the script and checks what every run must do: exit 0, print nothing on
+ * stderr, ask the fakes for nothing but their one read, and (unless the test
+ * expects some) leave no work directory or claimed lease behind.
+ */
+function runScript(
+  h: Harness,
+  options: { env?: Record<string, string>; allowLeftovers?: boolean } = {},
+): Run {
+  const run = runRaw(h, options.env);
   expect(run.status).toBe(0);
   expect(run.stderr).toBe('');
   expect(h.unexpectedCalls()).toBe('');
-  const dir = dirname(leasePath(h.remiHome));
-  const leftovers = existsSync(dir)
-    ? readdirSync(dir).filter(
-        (name) => name.startsWith('watchdog-run.') || name.includes('.watchdog-'),
-      )
-    : [];
-  expect(leftovers).toEqual([]);
+  if (!options.allowLeftovers) expect(leftovers(h)).toEqual([]);
   return run;
 }
 
@@ -212,29 +336,29 @@ function logLines(run: Run): string[] {
   return run.stdout.split('\n').filter((line) => line !== '');
 }
 
-/** The log reads exactly one revert line per reason, each with a UTC timestamp. */
-function expectLog(run: Run, entries: string[]): void {
+/** The log reads exactly these lines, each after a UTC timestamp (or `unknown-time`). */
+function expectLog(run: Run, entries: string[], stamp = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ /): void {
   const lines = logLines(run);
-  expect(lines).toHaveLength(entries.length);
-  lines.forEach((line, index) => {
-    expect(line).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ /);
-    expect(line.slice(line.indexOf(' ') + 1)).toBe(entries[index] ?? '');
-  });
+  expect(lines.map((line) => line.slice(line.indexOf(' ') + 1))).toEqual(entries);
+  for (const line of lines) expect(line).toMatch(stamp);
 }
 
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-/** A lease that holds: written for the test process, with a fresh heartbeat. */
-function freshLease(overrides: Partial<Level2Lease> = {}): Level2Lease {
+function ownStartTime(): string {
   const start = processStartTime(process.pid);
   if (start === null) throw new Error('no start time for the test process');
-  const now = nowSeconds();
+  return start;
+}
+
+/** A lease that holds at `now`: written for the test process, with a fresh heartbeat. */
+function freshLease(overrides: Partial<Level2Lease> = {}, now = nowSeconds()): Level2Lease {
   return {
     version: 1,
     hubPid: process.pid,
-    hubStartTime: start,
+    hubStartTime: ownStartTime(),
     startedAt: now - 60,
     expiresAt: now + 3600,
     heartbeatAt: now - 5,
@@ -278,6 +402,83 @@ function expectNothing(h: Harness, run: Run): void {
   expect(run.stdout).toBe('');
 }
 
+function readState(h: Harness): string {
+  const file = watchdogStatePath(h.remiHome);
+  return existsSync(file) ? readFileSync(file, 'utf8') : '';
+}
+
+describe('the generated script takes every number as an option', () => {
+  const numeric = [
+    'commandDeadlineSeconds',
+    'killGraceSeconds',
+    'pollIntervalMs',
+    'runLimitSeconds',
+    'integerMaxDigits',
+    'revertFailureMarkerThreshold',
+    'failureLogIntervalSeconds',
+    'revertErrorMaxChars',
+    'orphanMaxAgeSeconds',
+    'invalidLeaseMaxAgeMinutes',
+  ] as const;
+
+  test('a non-positive or fractional value is refused, with no maximum', () => {
+    for (const name of numeric) {
+      for (const value of [0, -1, 1.5]) {
+        expect(() => buildWatchdogScript({ remiHome: '/private/tmp/h', [name]: value })).toThrow(
+          name,
+        );
+      }
+      expect(() =>
+        buildWatchdogScript({ remiHome: '/private/tmp/h', [name]: 1_000_000 }),
+      ).not.toThrow();
+    }
+    expect(() =>
+      buildWatchdogScript({ remiHome: '/private/tmp/h', fallbackWorkParent: 'tmp' }),
+    ).toThrow();
+  });
+
+  test('the defaults and given values are what the script carries', () => {
+    const defaults = buildWatchdogScript({ remiHome: '/private/tmp/h' });
+    for (const line of [
+      `DEADLINE=${DEFAULT_WATCHDOG_COMMAND_DEADLINE_SECONDS}`,
+      `POLL=${DEFAULT_WATCHDOG_POLL_INTERVAL_MS / 1000}`,
+      `DEADLINE_TICKS=${(DEFAULT_WATCHDOG_COMMAND_DEADLINE_SECONDS * 1000) / DEFAULT_WATCHDOG_POLL_INTERVAL_MS}`,
+      `GRACE_TICKS=${(DEFAULT_WATCHDOG_KILL_GRACE_SECONDS * 1000) / DEFAULT_WATCHDOG_POLL_INTERVAL_MS}`,
+      `RUN_LIMIT=${DEFAULT_WATCHDOG_RUN_LIMIT_SECONDS}`,
+      `DIGITS=${DEFAULT_LEASE_INTEGER_MAX_DIGITS}`,
+      `MARKER_THRESHOLD=${DEFAULT_REVERT_FAILURE_MARKER_THRESHOLD}`,
+      `LOG_INTERVAL=${DEFAULT_FAILURE_LOG_INTERVAL_SECONDS}`,
+      `ERROR_CHARS=${DEFAULT_REVERT_ERROR_MAX_CHARS}`,
+      `ORPHAN_AGE='+${DEFAULT_ORPHAN_MAX_AGE_SECONDS}s'`,
+      `INVALID_AGE='+${DEFAULT_INVALID_LEASE_MAX_AGE_MINUTES * 60}s'`,
+      `FALLBACK_PARENT='${DEFAULT_FALLBACK_WORK_PARENT}'`,
+    ]) {
+      expect(defaults.split('\n')).toContain(line);
+    }
+    const given = buildWatchdogScript({
+      remiHome: '/private/tmp/h',
+      commandDeadlineSeconds: 7,
+      killGraceSeconds: 2,
+      pollIntervalMs: 100,
+      runLimitSeconds: 33,
+      orphanMaxAgeSeconds: 42,
+      invalidLeaseMaxAgeMinutes: 3,
+    }).split('\n');
+    for (const line of [
+      'DEADLINE=7',
+      'POLL=0.1',
+      'DEADLINE_TICKS=70',
+      'GRACE_TICKS=20',
+      'RUN_LIMIT=33',
+      'RUN_TICKS_LIMIT=330',
+      "ORPHAN_AGE='+42s'",
+      "INVALID_AGE='+180s'",
+    ]) {
+      expect(given).toContain(line);
+    }
+  });
+});
+
 if (process.platform !== 'darwin') {
   test.skip('macOS-only: the watchdog script runs against plutil, ps and ioreg', () => {});
 } else {
@@ -289,8 +490,7 @@ if (process.platform !== 'darwin') {
         h.setFlag('No');
         const lease = freshLease();
         writeLease(h.remiHome, lease);
-        const run = runScript(h);
-        expectNothing(h, run);
+        expectNothing(h, runScript(h));
         expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease });
       },
       SCRIPT_TIMEOUT_MS,
@@ -301,7 +501,7 @@ if (process.platform !== 'darwin') {
       async () => {
         const expired = makeHarness();
         expired.setFlag('No');
-        writeLease(expired.remiHome, freshLease({ expiresAt: nowSeconds() - 1 }));
+        writeLease(expired.remiHome, freshLease({ expiresAt: nowSeconds() - 2 }));
         expectNothing(expired, runScript(expired));
         expect(readLease(expired.remiHome)).toEqual({ kind: 'none' });
 
@@ -316,13 +516,31 @@ if (process.platform !== 'darwin') {
     );
 
     test(
-      'leaves an invalid lease in place and records nothing',
+      'keeps an invalid lease younger than invalidLeaseMaxAgeMinutes and deletes an older one',
       () => {
-        const h = makeHarness();
-        h.setFlag('No');
-        writeRawLease(h.remiHome, '{"version": 2}');
-        expectNothing(h, runScript(h));
-        expect(existsSync(leasePath(h.remiHome))).toBe(true);
+        const young = makeHarness();
+        young.setFlag('No');
+        writeRawLease(young.remiHome, '{"version": 2}');
+        expectNothing(young, runScript(young));
+        expect(existsSync(leasePath(young.remiHome))).toBe(true);
+
+        const old = makeHarness();
+        old.setFlag('No');
+        writeRawLease(old.remiHome, '{"version": 2}');
+        const sixMinutesAgo = new Date(Date.now() - 6 * 60_000);
+        utimesSync(leasePath(old.remiHome), sixMinutesAgo, sixMinutesAgo);
+        const run = runScript(old);
+        expect(old.revertCalls()).toEqual([]);
+        expectLog(run, ['deleted an invalid lease older than 5 min']);
+        expect(existsSync(leasePath(old.remiHome))).toBe(false);
+
+        // The option moves the gate: ten minutes keeps the six-minute-old lease.
+        const longer = makeHarness({ script: { invalidLeaseMaxAgeMinutes: 10 } });
+        longer.setFlag('No');
+        writeRawLease(longer.remiHome, '{"version": 2}');
+        utimesSync(leasePath(longer.remiHome), sixMinutesAgo, sixMinutesAgo);
+        expectNothing(longer, runScript(longer));
+        expect(existsSync(leasePath(longer.remiHome))).toBe(true);
       },
       SCRIPT_TIMEOUT_MS,
     );
@@ -333,8 +551,7 @@ if (process.platform !== 'darwin') {
         const h = makeHarness({ realIoreg: true });
         const lease = freshLease();
         writeLease(h.remiHome, lease);
-        const run = runScript(h);
-        expectNothing(h, run);
+        expectNothing(h, runScript(h));
         expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease });
       },
       SCRIPT_TIMEOUT_MS,
@@ -357,7 +574,8 @@ if (process.platform !== 'darwin') {
       () => {
         const h = makeHarness();
         h.setFlag('Yes');
-        const lease = freshLease();
+        // expiresAt 5 s ahead: still fresh at whichever second the script reads.
+        const lease = freshLease({ expiresAt: nowSeconds() + 5 });
         writeLease(h.remiHome, lease);
         expectNothing(h, runScript(h));
         expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease });
@@ -367,9 +585,11 @@ if (process.platform !== 'darwin') {
 
     const leaseCases: Array<[string, string, (h: Harness) => void | Promise<void>]> = [
       [
+        // now - 2, not now: the result must not depend on which second the
+        // script reads; exact equality is pinned below with a fixed clock.
         'an expired lease',
         'expired',
-        (h) => writeLease(h.remiHome, freshLease({ expiresAt: nowSeconds() })),
+        (h) => writeLease(h.remiHome, freshLease({ expiresAt: nowSeconds() - 2 })),
       ],
       [
         'a stale heartbeat',
@@ -399,6 +619,25 @@ if (process.platform !== 'darwin') {
         'a lease whose integer field is a float',
         'lease invalid',
         (h) => writeRawLease(h.remiHome, JSON.stringify({ ...freshLease(), staleSeconds: 1.5 })),
+      ],
+      [
+        'a lease whose expiresAt is a string of digits',
+        'lease invalid',
+        (h) =>
+          writeRawLease(
+            h.remiHome,
+            JSON.stringify({ ...freshLease(), expiresAt: String(nowSeconds() + 3600) }),
+          ),
+      ],
+      [
+        'a lease whose version is an array',
+        'lease invalid',
+        (h) => writeRawLease(h.remiHome, JSON.stringify({ ...freshLease(), version: [1] })),
+      ],
+      [
+        'a lease with an extra key',
+        'lease invalid',
+        (h) => writeRawLease(h.remiHome, JSON.stringify({ ...freshLease(), extra: 1 })),
       ],
       [
         'a symlinked lease',
@@ -532,7 +771,7 @@ if (process.platform !== 'darwin') {
         });
         expect(local.stdout.trim()).not.toBe(read.lease.hubStartTime);
 
-        const run = runScript(h, { TZ: 'America/Los_Angeles' });
+        const run = runScript(h, { env: { TZ: 'America/Los_Angeles' } });
         expectNothing(h, run);
         expect(readLease(h.remiHome)).toEqual(read);
       },
@@ -544,7 +783,7 @@ if (process.platform !== 'darwin') {
       () => {
         const h = makeHarness({ revert: 'replace' });
         h.setFlag('Yes');
-        writeLease(h.remiHome, freshLease({ expiresAt: nowSeconds() - 1 }));
+        writeLease(h.remiHome, freshLease({ expiresAt: nowSeconds() - 2 }));
         const newer = freshLease({ startedAt: nowSeconds() + 1 });
         writeFileSync(join(h.root, 'newer-lease.json'), JSON.stringify(newer), { mode: 0o600 });
         const run = runScript(h);
@@ -560,8 +799,72 @@ if (process.platform !== 'darwin') {
       () => {
         const h = makeHarness({ remiHome: 'a&b<c"d $x `y` e' });
         h.setFlag('Yes');
-        writeLease(h.remiHome, freshLease({ expiresAt: nowSeconds() - 1 }));
+        writeLease(h.remiHome, freshLease({ expiresAt: nowSeconds() - 2 }));
         expectOneRevert(h, runScript(h), 'expired');
+      },
+      SCRIPT_TIMEOUT_MS,
+    );
+  });
+
+  describe('the boundaries, pinned with a fixed clock', () => {
+    const NOW = 2_000_000;
+    const cases: Array<[string, Partial<Level2Lease>, string | null]> = [
+      ['a heartbeat exactly staleSeconds old', { heartbeatAt: NOW - 120 }, null],
+      ['a heartbeat staleSeconds + 1 old', { heartbeatAt: NOW - 121 }, 'heartbeat stale'],
+      ['a heartbeat exactly staleSeconds ahead', { heartbeatAt: NOW + 120 }, null],
+      ['a heartbeat staleSeconds + 1 ahead', { heartbeatAt: NOW + 121 }, 'heartbeat stale'],
+      ['expiresAt equal to now', { expiresAt: NOW }, 'expired'],
+      ['expiresAt one second ahead', { expiresAt: NOW + 1 }, null],
+    ];
+
+    for (const [name, override, reason] of cases) {
+      test(
+        `${name}: ${reason ?? 'nothing recorded'}`,
+        () => {
+          const h = makeHarness({ fakeClock: true });
+          h.setFlag('Yes');
+          h.setNow(NOW);
+          const lease = freshLease({ staleSeconds: 120, ...override }, NOW);
+          writeLease(h.remiHome, lease);
+          const run = runScript(h);
+          if (reason === null) {
+            expectNothing(h, run);
+            expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease });
+          } else {
+            expectOneRevert(h, run, reason);
+          }
+        },
+        SCRIPT_TIMEOUT_MS,
+      );
+    }
+
+    test(
+      'integerMaxDigits: 4 turns a 5-digit heartbeatAt into lease invalid',
+      () => {
+        // pid 1 (launchd) is a one-digit live hub, so only heartbeatAt has 5 digits.
+        const launchdStart = processStartTime(1);
+        if (launchdStart === null) throw new Error('no start time for pid 1');
+        const lease: Level2Lease = {
+          version: 1,
+          hubPid: 1,
+          hubStartTime: launchdStart,
+          startedAt: 900,
+          expiresAt: 9999,
+          heartbeatAt: 12_345,
+          staleSeconds: 120,
+          revertBatteryPercent: 30,
+        };
+        const byDefault = makeHarness({ fakeClock: true });
+        byDefault.setFlag('Yes');
+        byDefault.setNow(1000);
+        writeLease(byDefault.remiHome, lease);
+        expectOneRevert(byDefault, runScript(byDefault), 'heartbeat stale');
+
+        const fourDigits = makeHarness({ fakeClock: true, script: { integerMaxDigits: 4 } });
+        fourDigits.setFlag('Yes');
+        fourDigits.setNow(1000);
+        writeLease(fourDigits.remiHome, lease);
+        expectOneRevert(fourDigits, runScript(fourDigits), 'lease invalid');
       },
       SCRIPT_TIMEOUT_MS,
     );
@@ -594,20 +897,267 @@ if (process.platform !== 'darwin') {
       },
       SCRIPT_TIMEOUT_MS,
     );
+
+    test(
+      'commandDeadlineSeconds: 1 with an ioreg that sleeps 3 s ends the run in under 3 s',
+      () => {
+        const h = makeHarness({ script: { commandDeadlineSeconds: 1 } });
+        h.setFlag('sleep3');
+        writeLease(h.remiHome, freshLease());
+        const run = runScript(h);
+        expect(run.elapsedMs).toBeLessThan(3_000);
+        expectOneRevert(h, run, 'flag unreadable');
+      },
+      SCRIPT_TIMEOUT_MS,
+    );
+
+    test(
+      'a child that cannot be collected is abandoned at the deadline and the run ends',
+      () => {
+        // The fake stops its own parent, the wrapper that would report its
+        // exit, so no status ever arrives; a blocking wait would hang here.
+        const h = makeHarness({ script: { commandDeadlineSeconds: 1 } });
+        h.setFlag('stopparent');
+        writeLease(h.remiHome, freshLease());
+        const run = runScript(h);
+        expect(run.elapsedMs).toBeLessThan(6_000);
+        expectOneRevert(h, run, 'flag unreadable');
+      },
+      SCRIPT_TIMEOUT_MS,
+    );
+
+    test(
+      'runLimitSeconds: a run past its limit stops and counts as a failure',
+      () => {
+        const h = makeHarness({ script: { runLimitSeconds: 2 } });
+        h.setFlag('hang');
+        writeLease(h.remiHome, freshLease());
+        const run = runScript(h);
+        expect(run.elapsedMs).toBeLessThan(6_000);
+        expect(h.revertCalls()).toEqual([]);
+        expectLog(run, ['run exceeded 2 s']);
+        expect(readState(h)).toContain('failures=1\n');
+      },
+      SCRIPT_TIMEOUT_MS,
+    );
   });
 
-  describe('a revert that fails', () => {
+  describe('a revert that does not clear the flag', () => {
     test(
-      'keeps the lease and logs revert failed',
+      'keeps the lease, logs the status and stderr, throttles repeats, marks repeated failures and clears on success',
       () => {
-        const h = makeHarness({ revert: 'fail' });
+        const T = 3_000_000;
+        const h = makeHarness({ fakeClock: true, revert: 'noop' });
         h.setFlag('Yes');
-        const lease = freshLease({ expiresAt: nowSeconds() - 1 });
+        h.setNow(T);
+        const lease = freshLease({ expiresAt: T - 10 }, T);
         writeLease(h.remiHome, lease);
-        const run = runScript(h);
-        expect(h.revertCalls()).toEqual([EXPECTED_REVERT_ARGS]);
-        expectLog(run, ['revert expired', 'revert failed expired']);
+        const marker = revertFailedMarkerPath(h.remiHome);
+
+        // 1: exit 0 but the flag still reads Yes: logged, lease kept.
+        expectLog(runScript(h), ['revert expired', FAILED_NOOP]);
+        expect(h.revertCalls()).toHaveLength(1);
         expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease });
+        expect(readState(h)).toContain('failures=1\n');
+        expect(existsSync(marker)).toBe(false);
+
+        // 2 and 3: the next runs retry; the identical line is not repeated.
+        h.setNow(T + 60);
+        expectLog(runScript(h), []);
+        h.setNow(T + 120);
+        expectLog(runScript(h), []);
+        expect(h.revertCalls()).toHaveLength(3);
+        expect(readState(h)).toContain('failures=3\n');
+        expect(readFileSync(marker, 'utf8')).toBe(`${FAILED_NOOP}\n`);
+
+        // 4: an hour after it was logged, the same line is logged again.
+        h.setNow(T + 3601);
+        expectLog(runScript(h), ['revert expired', FAILED_NOOP]);
+
+        // 5: a different failure is logged at once, with its status and stderr.
+        h.setRevert('fail');
+        h.setNow(T + 3660);
+        expectLog(runScript(h), [
+          'revert expired',
+          'revert failed expired (exit 1, flag Yes, stderr: sudo: a password is required)',
+        ]);
+        expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease });
+
+        // 6: a revert that works clears the count and the marker and deletes the lease.
+        h.setRevert('ok');
+        h.setNow(T + 3720);
+        expectLog(runScript(h), ['revert expired']);
+        expect(h.revertCalls()).toHaveLength(6);
+        expect(existsSync(marker)).toBe(false);
+        expect(readState(h)).toContain('failures=0\n');
+        expect(readLease(h.remiHome)).toEqual({ kind: 'none' });
+      },
+      SCRIPT_TIMEOUT_MS,
+    );
+
+    test(
+      'revertFailureMarkerThreshold, failureLogIntervalSeconds and revertErrorMaxChars are honored',
+      () => {
+        const T = 3_000_000;
+        const h = makeHarness({
+          fakeClock: true,
+          revert: 'fail',
+          script: {
+            revertFailureMarkerThreshold: 1,
+            failureLogIntervalSeconds: 30,
+            revertErrorMaxChars: 10,
+          },
+        });
+        h.setFlag('Yes');
+        h.setNow(T);
+        writeLease(h.remiHome, freshLease({ expiresAt: T - 10 }, T));
+        const failed = 'revert failed expired (exit 1, flag Yes, stderr: sudo: a pa)';
+        expectLog(runScript(h), ['revert expired', failed]);
+        expect(readFileSync(revertFailedMarkerPath(h.remiHome), 'utf8')).toBe(`${failed}\n`);
+        h.setNow(T + 31);
+        expectLog(runScript(h), ['revert expired', failed]);
+      },
+      SCRIPT_TIMEOUT_MS,
+    );
+  });
+
+  describe('a lease left renamed aside', () => {
+    test(
+      'is restored when it is the only copy, and its claim is removed',
+      () => {
+        const h = makeHarness();
+        h.setFlag('Yes');
+        const lease = freshLease();
+        writeLease(h.remiHome, lease);
+        renameSync(leasePath(h.remiHome), `${leasePath(h.remiHome)}.watchdog-999`);
+        expectNothing(h, runScript(h));
+        expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease });
+      },
+      SCRIPT_TIMEOUT_MS,
+    );
+
+    test(
+      'a run killed at the relink leaves a claim that the next run restores',
+      () => {
+        const h = makeHarness({ revert: 'replace', lnStandIn: true });
+        h.setFlag('Yes');
+        writeLease(h.remiHome, freshLease({ expiresAt: nowSeconds() - 2 }));
+        const newer = freshLease({ startedAt: nowSeconds() + 1 });
+        writeFileSync(join(h.root, 'newer-lease.json'), JSON.stringify(newer), { mode: 0o600 });
+        h.setLn('kill-main');
+        const killed = runRaw(h);
+        expect(killed.signal).toBe('SIGKILL');
+        expect(existsSync(leasePath(h.remiHome))).toBe(false);
+        expect(leftovers(h).filter((name) => name.includes('.watchdog-'))).toHaveLength(1);
+
+        h.setFlag('Yes');
+        const run = runScript(h, { allowLeftovers: true });
+        // No new revert: the restored lease is fresh.
+        expect(h.revertCalls()).toHaveLength(1);
+        expect(run.stdout).toBe('');
+        expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease: newer });
+        expect(leftovers(h).filter((name) => name.includes('.watchdog-'))).toEqual([]);
+      },
+      SCRIPT_TIMEOUT_MS,
+    );
+
+    test(
+      'a failed relink keeps the claim, and the next run restores it',
+      () => {
+        const h = makeHarness({ revert: 'replace', lnStandIn: true });
+        h.setFlag('Yes');
+        writeLease(h.remiHome, freshLease({ expiresAt: nowSeconds() - 2 }));
+        const newer = freshLease({ startedAt: nowSeconds() + 1 });
+        writeFileSync(join(h.root, 'newer-lease.json'), JSON.stringify(newer), { mode: 0o600 });
+        h.setLn('fail');
+        const first = runScript(h, { allowLeftovers: true });
+        expectLog(first, ['revert expired']);
+        expect(existsSync(leasePath(h.remiHome))).toBe(false);
+        expect(leftovers(h).filter((name) => name.includes('.watchdog-'))).toHaveLength(1);
+
+        const second = runScript(h);
+        expect(h.revertCalls()).toHaveLength(1);
+        expect(second.stdout).toBe('');
+        expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease: newer });
+      },
+      SCRIPT_TIMEOUT_MS,
+    );
+
+    test(
+      'work directories and claims older than orphanMaxAgeSeconds are removed, younger ones kept',
+      () => {
+        const h = makeHarness({ script: { orphanMaxAgeSeconds: 60 } });
+        h.setFlag('No');
+        const lease = freshLease();
+        writeLease(h.remiHome, lease);
+        const dir = dirname(leasePath(h.remiHome));
+        const old = new Date(Date.now() - 120_000);
+        for (const name of ['watchdog-run.oldone', 'watchdog-run.newone']) {
+          mkdirSync(join(dir, name));
+          writeFileSync(join(dir, name, 'out.1'), 'x');
+        }
+        writeFileSync(join(dir, 'lease.json.watchdog-111'), '{}');
+        writeFileSync(join(dir, 'lease.json.watchdog-222'), '{}');
+        utimesSync(join(dir, 'watchdog-run.oldone'), old, old);
+        utimesSync(join(dir, 'lease.json.watchdog-111'), old, old);
+        expectNothing(h, runScript(h, { allowLeftovers: true }));
+        expect(leftovers(h).sort()).toEqual(['lease.json.watchdog-222', 'watchdog-run.newone']);
+        expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease });
+      },
+      SCRIPT_TIMEOUT_MS,
+    );
+  });
+
+  describe('when the keep-awake directory cannot hold a work directory', () => {
+    test(
+      'the fallback directory is used, a healthy lease is left alone, and the fallback is emptied',
+      () => {
+        const fallback = mkdtempSync(join(tmpdir(), 'remi-watchdog-fallback-'));
+        roots.push(fallback);
+        const h = makeHarness({ script: { fallbackWorkParent: fallback } });
+        h.setFlag('Yes');
+        const lease = freshLease();
+        writeLease(h.remiHome, lease);
+        chmodSync(dirname(leasePath(h.remiHome)), 0o500);
+        try {
+          expectNothing(h, runScript(h));
+          expect(readdirSync(fallback)).toEqual([]);
+        } finally {
+          chmodSync(dirname(leasePath(h.remiHome)), 0o700);
+        }
+        expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease });
+      },
+      SCRIPT_TIMEOUT_MS,
+    );
+
+    test(
+      'with no work directory anywhere, it says so once, still reverts, and keeps the lease',
+      () => {
+        const blockedRoot = mkdtempSync(join(tmpdir(), 'remi-watchdog-blocked-'));
+        roots.push(blockedRoot);
+        const blocked = join(blockedRoot, 'blocked');
+        mkdirSync(blocked, { mode: 0o500 });
+        const nowhere = makeHarness({ script: { fallbackWorkParent: blocked } });
+        nowhere.setFlag('Yes');
+        const lease = freshLease();
+        writeLease(nowhere.remiHome, lease);
+        chmodSync(dirname(leasePath(nowhere.remiHome)), 0o500);
+        try {
+          const run = runScript(nowhere);
+          expect(nowhere.revertCalls()).toEqual([EXPECTED_REVERT_ARGS]);
+          expectLog(
+            run,
+            [
+              'work directory unavailable',
+              'revert flag unreadable (no work directory)',
+              'revert failed flag unreadable (no work directory) (exit 0, flag unreadable)',
+            ],
+            /^unknown-time /,
+          );
+        } finally {
+          chmodSync(dirname(leasePath(nowhere.remiHome)), 0o700);
+        }
+        expect(readLease(nowhere.remiHome)).toEqual({ kind: 'valid', lease });
       },
       SCRIPT_TIMEOUT_MS,
     );
