@@ -1,0 +1,106 @@
+# Keep-awake level 2 (awake-level2-2026-11)
+
+<!--
+manager-loop board: state only, history goes to the -log file beside it, specs to the plan and cards.
+Write through the helper (manager_board.py set, tick, ask, propose, spend) and run `check` after any hand edit.
+The owner owns Parity, Slots, and Budget limits: the manager proposes changes there, never makes them.
+These are the defaults; the owner's approval of the plan accepts them.
+Step states: outline (not dispatchable), todo, active, review, blocked, owner (waits on the owner), done, dropped.
+In Steps and Questions, the first column holds each row's identifier (ID); in Steps, PR holds the pull request (PR) number.
+-->
+
+## Now
+
+| Key | Value |
+|---|---|
+| Plan | .context/awake-level2-2026-11/plan.md |
+| Repo | yooz-labs/remi |
+| Integration branch | develop |
+| Manager id | - |
+| State | paused |
+| Cadence | 30m with workers running, 60m waiting on people |
+| Last tick | - |
+| Next tick | - |
+| Stop when | every step done, or all remaining work waits on the owner |
+| Created | 2026-11-17T06:54-08:00 |
+
+## Parity
+
+| Tier | Claude | Codex | Notes |
+|---|---|---|---|
+| worker | Sonnet (sonnet) high | gpt-6-luna max | copied from land-branches-2026-11; docs, web, P1C, A4, DV; Codex by default |
+| worker-hard | Opus (opus) xhigh | gpt-6.1-terra xhigh | copied; daemon steps and native A1 to A3; Codex by default |
+| lead | Opus (opus) xhigh | gpt-6.1-sol xhigh | copied; lead wakes, checkpoints, advisor; Sol only if a card says so (none does) |
+| frontier | Fable (claude-fable-5-2) | gpt-6-astra xhigh | copied; only if the owner asks; this plan names no frontier use |
+| reviewer | Sonnet (sonnet) xhigh | gpt-6-luna max | copied; Sonnet only (owner rule); reviewers are extra to the worker slots |
+
+## Slots
+
+| Slot | Platform | Tiers | Max | Can | Notes |
+|---|---|---|---|---|---|
+| codex-terra | Codex | worker-hard | 0 | macos, xcode, docs | implementers; sandbox per runbook 5 (full access for native cards and after a sandbox denial) |
+| codex-luna | Codex | worker | 2 | macos, xcode, docs | implementers, DV; sandbox per runbook 5 |
+| claude-sonnet | Claude | worker | 2 | macos, xcode, docs, simulator | implementers (owner 2026-11-13); reviewers run extra to this slot |
+| claude-opus | Claude | lead, worker-hard | 1 | macos, xcode, docs, simulator | worker-hard implementer (owner 2026-11-13: 1 Opus worker); lead wakes and advisor run extra |
+| claude-fable | Claude | frontier | 1 | | unused unless the owner asks |
+
+## Budget
+
+| Item | Limit | Used | Resets | Notes |
+|---|---|---|---|---|
+| Agents today | 100 | 0 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Codex Luna today | 24 | 0 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
+| Codex Terra today | 16 | 0 | daily | owner CP0 value; Terra implementers and fix rounds |
+| Claude Sonnet today | 44 | 0 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
+| Claude Opus today | 16 | 0 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
+| Advisor consults | 20 | 0 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
+| Fable consults | 1 | 0 | never | copied; only if the owner asks; never --over |
+| Agents this wave | 0 | 0 | wave | unused: this plan has no waves |
+
+## Waves
+
+| Wave | Goal | Agents | State | Exit gate |
+|---|---|---|---|---|
+
+## Steps
+
+| ID | Title | Wave | Tier | Needs | Slot | State | Depends | PR | Started | Timebox | Next |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| G0 | [G0 password-on-wake](cards/G0-password-on-wake.md) | - | worker | - | - | todo | - | - | - | 3h | dispatch now; note only |
+| G1 | [G1 power readings](cards/G1-power-readings.md) | - | worker | - | - | todo | - | - | - | 1d | dispatch now; macOS host |
+| W1 | [W1 lease and watchdog](cards/W1-lease-and-watchdog.md) | - | worker-hard | - | - | todo | - | - | - | 1d | dispatch now; reviews add privilege and failsafe lenses |
+| L2-POL | [L2-POL level 2 policy](cards/L2-POL-level2-policy.md) | - | worker-hard | - | - | todo | - | - | - | 1d | dispatch when a slot is free; merge only after Q1-Q3 answered (gate item 8) |
+| OG-CAP | [Owner gate: MacBook captures](owner-gates.md) | - | - | - | - | owner | - | - | - | 30m | rule: owner runs OG-CAP section of owner-gates.md; seven folders under artifacts/awake-level2-2026-11/captures/OG-CAP |
+| G2 | [G2 level 1 battery floor](cards/G2-level1-battery-floor.md) | - | worker-hard | - | - | todo | G1,OG-CAP | - | - | 1d | after G1 merged and OG-CAP; merge only after Q2 and Q4 |
+| OG-G2 | [Owner gate: battery floor on the MacBook](owner-gates.md) | - | - | - | - | blocked | G2 | - | - | 30m | rule: set owner when G2 is done; owner-gates.md OG-G2 |
+| CP-L2 | [Checkpoint before level 2](plan.md) | - | - | - | - | blocked | G0,G1,W1,L2-POL,G2,OG-CAP | - | - | - | rule: wake the lead only when Q1-Q3 are closed (plan 0.2 item 10); CP-L2: decide line, anticipation pass, ask go |
+| L2-CORE | [L2-CORE switch and controller](cards/L2-CORE-switch-and-controller.md) | - | worker-hard | - | - | todo | CP-L2 | - | - | 1.5d | after CP-L2 go |
+| L2-HUB | [L2-HUB config and hub](cards/L2-HUB-config-and-hub.md) | - | worker-hard | - | - | todo | L2-CORE | - | - | 1.5d | after L2-CORE |
+| L2-CLI | [L2-CLI keep-awake command](cards/L2-CLI-keep-awake-command.md) | - | worker-hard | - | - | todo | L2-HUB | - | - | 1d | after L2-HUB and only when gh pr view 1798 prints MERGED |
+| OG-L2 | [Owner gate: setup and hardware tests (a)-(h)](owner-gates.md) | - | - | - | - | blocked | L2-CLI | - | - | 2h | rule: set owner when L2-CLI is done; owner-gates.md OG-L2 |
+| CP-HW | [Checkpoint after hardware tests](plan.md) | - | - | - | - | blocked | OG-L2 | - | - | - | rule: wake the lead with the brief of plan section 4 |
+| L2-SLEEPNOW | [L2-SLEEPNOW third rule](cards/L2-SLEEPNOW-third-rule.md) | - | worker-hard | - | - | outline | CP-HW | - | - | 6h | outline: completed at CP-HW, only if OG-L2 (b) failed |
+| L2-APP | [L2-APP phone surface](cards/L2-APP-phone-surface.md) | - | worker-hard | - | - | outline | CP-HW | - | - | 2d | outline: completed at CP-HW |
+
+## Questions
+
+| ID | Step | Question | Options | Default | Needed by | State | Answer |
+|---|---|---|---|---|---|---|---|
+| Q1 | - | Q1: How does a level 2 period start? (a) only by an explicit start (remi keep-awake start now, the phone later); (b) armed by level2 = true at the first real work | (a) explicit start (Recommended) / (b) armed | none | 2026-11-18T12:00 | answered | (b) armed by config (owner, 2026-11-17T06:56-08:00) |
+| Q2 | - | Q2: Do the battery limits (level 1 floor; level 2 start, revert and time limits) apply only on battery power, with AC power exempt? | Yes (Recommended) / No, also on AC | none | 2026-11-18T12:00 | answered | Yes (owner, 2026-11-17T06:56-08:00) |
+| Q3 | - | Q3: Level 2 on a Mac with no battery (a desktop): refuse it or allow it? | Refuse (Recommended) / Allow | none | 2026-11-18T12:00 | answered | Refuse (owner, 2026-11-17T06:56-08:00) |
+| Q4 | - | Q4: An unknown [awake] key: keep stopping every remi command at config load, or warn and ignore ADR 0050 keys this build lacks? | Keep stopping (Recommended) / Warn and ignore | none | 2026-11-18T12:00 | answered | Keep stopping (owner, 2026-11-17T06:56-08:00) |
+| Q5 | - | Q5: Add a total time limit to level 1? ADR 0050 gives it only the question cap and the stuck bound. | No (Recommended) / Yes | none | 2026-11-18T12:00 | open |  |
+| Q6 | - | Q6: Run this plan beside the profiles plan on shared slots and budget, worker-hard steps on claude-opus, codex-terra left to the profiles lane? | Yes (Recommended) / Other | none | 2026-11-18T12:00 | open |  |
+| Q7 | - | Q7: May a release contain level 2 (off by default, marked experimental) before the MacBook gate OG-L2 passes, or hold such releases? | (a) ship marked experimental (Recommended) / (b) hold releases / (c) gate an unmerged branch | none | 2026-11-18T12:00 | open |  |
+| Q8 | - | Q8: Confirm ADR 0050's level 2 battery defaults: refuse to start below 35 percent, revert at 30 percent (both configurable)? | Yes (Recommended) / Other values | none | 2026-11-18T12:00 | open |  |
+
+## Proposals
+
+| ID | Time | Proposal | Why | State |
+|---|---|---|---|---|
+
+## Agents
+
+| Agent | Role | Slot | Model | Step | Started | State |
+|---|---|---|---|---|---|---|
