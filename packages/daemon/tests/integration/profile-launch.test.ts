@@ -25,6 +25,7 @@ import {
   spawnDaemon,
   spawnHub,
 } from './hub-test-utils.ts';
+import { connectAndHelloRaw } from './profile-frame-helpers.ts';
 
 const running: Array<{
   proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>;
@@ -1037,7 +1038,7 @@ for (const configured of [true, false]) {
     );
     running.push({ ...started, home: f.home, work: f.work });
     await pollUntil(() => fs.existsSync(path.join(f.output, 'argv')), 15000, 'agent started');
-    const { ws, received, raw } = await connectAndHello(started.port);
+    const { ws, received, raw } = await connectAndHelloRaw(started.port);
     try {
       const request = createSessionListRequest(true);
       ws.send(serialize(request));
