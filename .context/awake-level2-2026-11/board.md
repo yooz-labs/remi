@@ -48,10 +48,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 100 | 26 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Agents today | 100 | 27 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
 | Codex Luna today | 24 | 2 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
 | Codex Terra today | 16 | 0 | daily | owner CP0 value; Terra implementers and fix rounds |
-| Claude Sonnet today | 44 | 18 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
+| Claude Sonnet today | 44 | 19 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
 | Claude Opus today | 16 | 6 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
 | Advisor consults | 20 | 0 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
 | Fable consults | 1 | 0 | never | copied; only if the owner asks; never --over |
@@ -137,4 +137,5 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | RV-POLD-src ae2e344c9b59cc94f | delta reviewer (src ae2e344c9b59cc94f) | claude-sonnet | sonnet () | L2-POL PR1809 | 2026-11-17T10:42 | done |
 | RV-POLD-tests a5e4b472f18643c1e | delta reviewer (tests a5e4b472f18643c1e) | claude-sonnet | sonnet () | L2-POL PR1809 | 2026-11-17T10:42 | done |
 | FX-POLB | final fix (PR1809 delta) | claude-opus | opus (a37ea6ad9be74c593, resumed) | L2-POL PR1809 | 2026-11-17T11:05 | done |
-| DIAG-1812 | CI flake diagnosis (read-only) | claude-sonnet | sonnet (a8a84e22244f75833) | issue 1812 | 2026-11-17T12:35 | running |
+| DIAG-1812 | CI flake diagnosis (read-only) | claude-sonnet | sonnet (a8a84e22244f75833) | issue 1812 | 2026-11-17T12:35 | done |
+| IMPL-1812 | implementer (CI diagnostics PR, issue 1812) | claude-sonnet | sonnet (acb55c602f2dc18dc) | issue 1812 | 2026-11-17T12:55 | running |
