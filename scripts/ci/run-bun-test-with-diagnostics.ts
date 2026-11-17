@@ -709,6 +709,146 @@ function groupAlive(pid: number): boolean {
   }
 }
 
+export type OwnedGroupMember = {
+  pid: number;
+  ppid: number;
+  state: string;
+  elapsedSeconds: number | null;
+  args: string;
+};
+export type OwnedGroupSnapshot = {
+  pgid: number;
+  members: OwnedGroupMember[];
+  /** Members beyond the cap that are not listed. */
+  omitted: number;
+  /** Why no listing exists (ps missing, failing or timing out); null when ps answered. */
+  unavailable: string | null;
+};
+
+const SNAPSHOT_MAX_MEMBERS = 20;
+const SNAPSHOT_MAX_ARGS_CHARS = 200;
+const SNAPSHOT_MAX_FAILURE_CHARS = 200;
+const SNAPSHOT_TIMEOUT_MS = 2_000;
+// procps (Linux) has `etimes` (seconds); BSD ps (macOS) has only `etime`
+// ([[dd-]hh:]mm:ss), so a failing first form falls through to the second.
+const SNAPSHOT_PS_COMMANDS: string[][] = [
+  ['ps', '-eo', 'pid=,ppid=,pgid=,stat=,etimes=,args='],
+  ['ps', '-eo', 'pid=,ppid=,pgid=,stat=,etime=,args='],
+];
+
+function parseElapsedSeconds(token: string): number | null {
+  if (/^\d+$/.test(token)) return Number(token);
+  const match = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(token);
+  if (!match) return null;
+  const [, days, hours, minutes, seconds] = match;
+  return (
+    Number(days ?? 0) * 86_400 + Number(hours ?? 0) * 3_600 + Number(minutes) * 60 + Number(seconds)
+  );
+}
+
+function sanitizeArgs(args: string): string {
+  // `ps -o args` prints the command line, never the environment, but a command
+  // line can still carry NAME=value pairs (tokens, passphrases): drop the values.
+  const clean = args
+    .replace(/\b([A-Za-z_][A-Za-z0-9_]*)=\S+/g, '$1=<redacted>')
+    .replace(/[\u0000-\u001f\u007f]/g, '?');
+  return clean.length > SNAPSHOT_MAX_ARGS_CHARS
+    ? `${clean.slice(0, SNAPSHOT_MAX_ARGS_CHARS)}...`
+    : clean;
+}
+
+/** Pure parser for `ps -eo pid=,ppid=,pgid=,stat=,etime[s]=,args=` output, keeping one group. */
+export function parseGroupMembers(output: string, pgid: number): OwnedGroupMember[] {
+  const members: OwnedGroupMember[] = [];
+  for (const line of output.split('\n')) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s*(.*)$/.exec(line);
+    if (!match || Number(match[3]) !== pgid) continue;
+    members.push({
+      pid: Number(match[1]),
+      ppid: Number(match[2]),
+      state: match[4] ?? '',
+      elapsedSeconds: parseElapsedSeconds(match[5] ?? ''),
+      args: sanitizeArgs(match[6] ?? ''),
+    });
+  }
+  return members;
+}
+
+function describeFailure(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > SNAPSHOT_MAX_FAILURE_CHARS
+    ? `${flat.slice(0, SNAPSHOT_MAX_FAILURE_CHARS)}...`
+    : flat;
+}
+
+/**
+ * Read-only, bounded and never throwing: lists what is still in the process
+ * group the wrapper owns, so a "left an owned descendant" failure names the
+ * survivor. `psCommands` exists so a test can exercise the failure paths.
+ */
+export function snapshotOwnedGroup(
+  pgid: number,
+  psCommands: string[][] = SNAPSHOT_PS_COMMANDS,
+): OwnedGroupSnapshot {
+  const failures: string[] = [];
+  for (const command of psCommands) {
+    try {
+      const result = Bun.spawnSync(command, {
+        stdout: 'pipe',
+        stderr: 'pipe',
+        stdin: 'ignore',
+        timeout: SNAPSHOT_TIMEOUT_MS,
+      });
+      if (result.exitCode !== 0) {
+        const detail = describeFailure(result.stderr.toString('utf8'));
+        failures.push(
+          `${command.join(' ')} exited ${result.exitCode ?? 'by signal'}${detail ? `: ${detail}` : ''}`,
+        );
+        continue;
+      }
+      const members = parseGroupMembers(result.stdout.toString('utf8'), pgid);
+      return {
+        pgid,
+        members: members.slice(0, SNAPSHOT_MAX_MEMBERS),
+        omitted: Math.max(0, members.length - SNAPSHOT_MAX_MEMBERS),
+        unavailable: null,
+      };
+    } catch (error) {
+      failures.push(
+        `${command.join(' ')} failed: ${describeFailure(error instanceof Error ? error.message : String(error))}`,
+      );
+    }
+  }
+  return { pgid, members: [], omitted: 0, unavailable: failures.join('; ') || 'no ps command' };
+}
+
+export function formatGroupSnapshot(snapshot: OwnedGroupSnapshot): string {
+  if (snapshot.unavailable !== null)
+    return `Owned process group ${snapshot.pgid} snapshot unavailable: ${snapshot.unavailable}`;
+  const lines = [
+    `Owned process group ${snapshot.pgid} at failure time: ${snapshot.members.length + snapshot.omitted} process(es)`,
+  ];
+  if (snapshot.members.length === 0) lines.push('  (none listed; the group ended after the check)');
+  for (const member of snapshot.members)
+    lines.push(
+      `  pid=${member.pid} ppid=${member.ppid} state=${member.state} elapsed=${member.elapsedSeconds ?? '?'}s cmd=${member.args}`,
+    );
+  if (snapshot.omitted > 0) lines.push(`  ... ${snapshot.omitted} more not listed`);
+  return lines.join('\n');
+}
+
+/** The first message line stays the stable text a matcher can rely on. */
+export const OWNED_DESCENDANT_MESSAGE = 'Child left an owned descendant after exit';
+
+export class OwnedDescendantError extends Error {
+  readonly snapshot: OwnedGroupSnapshot;
+  constructor(snapshot: OwnedGroupSnapshot) {
+    super(`${OWNED_DESCENDANT_MESSAGE}\n${formatGroupSnapshot(snapshot)}`);
+    this.name = 'OwnedDescendantError';
+    this.snapshot = snapshot;
+  }
+}
+
 function diagnosticLine(
   pid: number,
   elapsedMs: number,
@@ -1043,8 +1183,11 @@ export async function runChild(command: string[], options: RunOptions = {}): Pro
     await finishLoggingStageChannel();
     if (diagnosticWriteError) throw diagnosticWriteError;
     if (options.timeoutMs !== undefined && groupAlive(child.pid)) {
+      // Diagnostics only: look before cleanup kills the survivors; the check,
+      // the throw and the timing are unchanged.
+      const snapshot = snapshotOwnedGroup(child.pid);
       await startCleanup('SIGTERM');
-      throw new Error('Child left an owned descendant after exit');
+      throw new OwnedDescendantError(snapshot);
     }
     return {
       pid: child.pid,

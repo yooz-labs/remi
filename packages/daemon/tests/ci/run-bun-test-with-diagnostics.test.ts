@@ -4,7 +4,13 @@ import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
-import { runChild, sampleProc } from '../../../../scripts/ci/run-bun-test-with-diagnostics';
+import {
+  OwnedDescendantError,
+  parseGroupMembers,
+  runChild,
+  sampleProc,
+  snapshotOwnedGroup,
+} from '../../../../scripts/ci/run-bun-test-with-diagnostics';
 
 function sink(observe?: (chunk: Buffer) => void) {
   const stream = new PassThrough();
@@ -860,3 +866,115 @@ test('a dead leader with a pipe-holding descendant is not a completed batch', as
   expect(performance.now() - start).toBeLessThan(6_000);
   if (match?.[1]) expect(() => process.kill(Number(match[1]), 0)).toThrow();
 }, 10_000);
+
+/**
+ * Unchanged gate behavior, not under test here: on macOS, `kill(-pgid, 0)` can fail with EPERM
+ * while the SIGTERMed survivor is still dying, which surfaces before the descendant error. The
+ * hosted Linux job covers the full message; this returns early only for that exact code.
+ */
+function isMacOsGroupProbeRace(failure: unknown): boolean {
+  return (
+    process.platform === 'darwin' && (failure as NodeJS.ErrnoException | null)?.code === 'EPERM'
+  );
+}
+
+function killIfAlive(pid: number): void {
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    // Already gone.
+  }
+}
+
+test('an owned descendant that outlives the child is named in the error and its snapshot', async () => {
+  const out = sink();
+  const err = sink();
+  // sleep keeps no pipe open, so the child's streams close and only the group check can see it.
+  const script = 'sleep 31337 >/dev/null 2>&1 </dev/null & echo sleep-pid=$!';
+  let sleepPid: number | null = null;
+  try {
+    const failure = await runChild(['sh', '-c', script], {
+      stdout: out.stream,
+      stderr: err.stream,
+      timeoutMs: 5_000,
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    const match = /sleep-pid=(\d+)/.exec(out.text());
+    expect(match).not.toBeNull();
+    sleepPid = Number(match?.[1]);
+    if (isMacOsGroupProbeRace(failure)) return;
+    expect(failure).toBeInstanceOf(OwnedDescendantError);
+    const error = failure as OwnedDescendantError;
+    expect(error.message.split('\n')[0]).toBe('Child left an owned descendant after exit');
+    expect(error.message).toContain(`pid=${sleepPid} `);
+    expect(error.message).toContain('sleep 31337');
+    expect(error.snapshot.unavailable).toBeNull();
+    const entry = error.snapshot.members.find((member) => member.pid === sleepPid);
+    expect(entry?.args).toContain('sleep 31337');
+    expect(entry?.elapsedSeconds).not.toBeNull();
+    // Cleanup behavior is unchanged: the survivor is gone once the error is thrown.
+    expect(() => process.kill(sleepPid as number, 0)).toThrow();
+  } finally {
+    if (sleepPid !== null) killIfAlive(sleepPid);
+  }
+}, 15_000);
+
+test('the group snapshot lists only the requested group and redacts NAME=value pairs', () => {
+  const output = [
+    '  101     1   500 S        12 sleep 5',
+    '  102   101   500 Z         0 [sleep] <defunct>',
+    '  103     1   999 S         7 other-group',
+    '  104   101   500 S     1:02 node run TOKEN=hunter2 --flag',
+    'garbage line',
+  ].join('\n');
+  const members = parseGroupMembers(output, 500);
+  expect(members.map((member) => member.pid)).toEqual([101, 102, 104]);
+  expect(members[1]?.state).toBe('Z');
+  expect(members[2]?.elapsedSeconds).toBe(62);
+  expect(members[2]?.args).toBe('node run TOKEN=<redacted> --flag');
+  expect(parseGroupMembers('  1 0 9 S 1-02:03:04 x', 9)[0]?.elapsedSeconds).toBe(93_784);
+});
+
+test('a missing, failing or garbled ps still yields a usable snapshot', () => {
+  const missing = snapshotOwnedGroup(4242, [['remi-no-such-ps-binary']]);
+  expect(missing.unavailable).toContain('remi-no-such-ps-binary');
+  expect(missing.members).toEqual([]);
+  const failing = snapshotOwnedGroup(4242, [
+    ['sh', '-c', 'echo etimes: keyword not found >&2; exit 1'],
+  ]);
+  expect(failing.unavailable).toContain('exited 1');
+  expect(failing.unavailable).toContain('keyword not found');
+  // The first form failing (as BSD ps does for etimes) falls through to the second.
+  const fallback = snapshotOwnedGroup(4242, [
+    ['sh', '-c', 'exit 1'],
+    ['sh', '-c', 'echo "77 1 4242 S 01:05 sleep 9"'],
+  ]);
+  expect(fallback.unavailable).toBeNull();
+  expect(fallback.members).toEqual([
+    { pid: 77, ppid: 1, state: 'S', elapsedSeconds: 65, args: 'sleep 9' },
+  ]);
+  const garbled = snapshotOwnedGroup(4242, [['sh', '-c', 'echo not ps output']]);
+  expect(garbled.unavailable).toBeNull();
+  expect(garbled.members).toEqual([]);
+  expect(new OwnedDescendantError(missing).message).toBe(
+    `Child left an owned descendant after exit\nOwned process group 4242 snapshot unavailable: ${missing.unavailable}`,
+  );
+});
+
+test('the real ps snapshot of a live group works on this platform', async () => {
+  const child = Bun.spawn(['sleep', '31338'], {
+    detached: true,
+    stdout: 'ignore',
+    stderr: 'ignore',
+  });
+  try {
+    const snapshot = snapshotOwnedGroup(child.pid);
+    expect(snapshot.unavailable).toBeNull();
+    expect(snapshot.members.map((member) => member.pid)).toContain(child.pid);
+  } finally {
+    child.kill('SIGKILL');
+    await child.exited;
+  }
+});
