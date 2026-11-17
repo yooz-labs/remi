@@ -19,3 +19,4 @@ The manager reads the newest rows through `status`, never the whole file.
 
 | Time | Event |
 |---|---|
+| 2026-11-17T06:57-08:00 | Dispatched G0 (Luna, bme6yrpaj), G1 (Luna, bnrnfrmj9), W1 (Opus agent ad62c17fc6af47519) on develop bbcec7d6; pre-dispatch power state: SleepDisabled No, no sudoers/launchd files, watchdog launchctl exit 113; L2-POL waits for the lead to correct cards for Q1 (b) |

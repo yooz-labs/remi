@@ -16,11 +16,11 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Plan | .context/awake-level2-2026-11/plan.md |
 | Repo | yooz-labs/remi |
 | Integration branch | develop |
-| Manager id | - |
-| State | paused |
+| Manager id | mba-claude-sonnet |
+| State | running |
 | Cadence | 30m with workers running, 60m waiting on people |
-| Last tick | - |
-| Next tick | - |
+| Last tick | 2026-11-17T06:57-08:00 |
+| Next tick | 2026-11-17T07:27-08:00 |
 | Stop when | every step done, or all remaining work waits on the owner |
 | Created | 2026-11-17T06:54-08:00 |
 
@@ -48,11 +48,11 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 100 | 0 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
-| Codex Luna today | 24 | 0 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
+| Agents today | 100 | 3 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Codex Luna today | 24 | 2 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
 | Codex Terra today | 16 | 0 | daily | owner CP0 value; Terra implementers and fix rounds |
 | Claude Sonnet today | 44 | 0 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
-| Claude Opus today | 16 | 0 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
+| Claude Opus today | 16 | 1 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
 | Advisor consults | 20 | 0 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
 | Fable consults | 1 | 0 | never | copied; only if the owner asks; never --over |
 | Agents this wave | 0 | 0 | wave | unused: this plan has no waves |
@@ -66,9 +66,9 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | ID | Title | Wave | Tier | Needs | Slot | State | Depends | PR | Started | Timebox | Next |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| G0 | [G0 password-on-wake](cards/G0-password-on-wake.md) | - | worker | - | - | todo | - | - | - | 3h | dispatch now; note only |
-| G1 | [G1 power readings](cards/G1-power-readings.md) | - | worker | - | - | todo | - | - | - | 1d | dispatch now; macOS host |
-| W1 | [W1 lease and watchdog](cards/W1-lease-and-watchdog.md) | - | worker-hard | - | - | todo | - | - | - | 1d | dispatch now; reviews add privilege and failsafe lenses |
+| G0 | [G0 password-on-wake](cards/G0-password-on-wake.md) | - | worker | - | codex-luna | active | - | - | 2026-11-17T06:56 | 3h | dispatch now; note only |
+| G1 | [G1 power readings](cards/G1-power-readings.md) | - | worker | - | codex-luna | active | - | - | 2026-11-17T06:56 | 1d | dispatch now; macOS host |
+| W1 | [W1 lease and watchdog](cards/W1-lease-and-watchdog.md) | - | worker-hard | - | claude-opus | active | - | - | 2026-11-17T06:56 | 1d | dispatch now; reviews add privilege and failsafe lenses |
 | L2-POL | [L2-POL level 2 policy](cards/L2-POL-level2-policy.md) | - | worker-hard | - | - | todo | - | - | - | 1d | dispatch when a slot is free; merge only after Q1-Q3 answered (gate item 8) |
 | OG-CAP | [Owner gate: MacBook captures](owner-gates.md) | - | - | - | - | owner | - | - | - | 30m | rule: owner runs OG-CAP section of owner-gates.md; seven folders under artifacts/awake-level2-2026-11/captures/OG-CAP |
 | G2 | [G2 level 1 battery floor](cards/G2-level1-battery-floor.md) | - | worker-hard | - | - | todo | G1,OG-CAP | - | - | 1d | after G1 merged and OG-CAP; merge only after Q2 and Q4 |
@@ -104,3 +104,6 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Agent | Role | Slot | Model | Step | Started | State |
 |---|---|---|---|---|---|---|
+| G0-1 | implementer | codex-luna | gpt-6-luna max | G0 | 2026-11-17T06:56 | running |
+| G1-1 | implementer | codex-luna | gpt-6-luna max | G1 | 2026-11-17T06:56 | running |
+| W1-1 | implementer | claude-opus | opus (ad62c17fc6af47519) | W1 | 2026-11-17T06:56 | running |
