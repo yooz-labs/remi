@@ -1,0 +1,147 @@
+# Card P1B-fix-round-1: PR 1811 round-1 review fixes (issue #1748)
+
+Status: ready
+Tier: worker-hard
+Timebox: M, 1 day; escalate at 2 days or two failed approaches
+Needs: none (no Xcode, no simulator); macOS host
+Depends: PR 1811 open at head `b4284e6b` (develop merged in at `68800000`); the lead checked every citation below against that head on 2026-11-17
+Branch: `feature/issue-1748-profile-launch` (the PR's branch; no new branch, no new PR)
+Worktree: `/Volumes/S1/worktrees/remi/profiles-p1b`
+Plan: the P1B card (`cards/P1B-launches-follow-profile.md`) plus this card; where they differ, this card wins. Review findings: the manager's round-1 findings file (four lenses: contract C, verification V, maintainability M, privacy P)
+
+## Goal
+
+Every round-1 finding of PR 1811 is fixed as decided below, with its test and its mutation, in one push: no profile directory reaches a client, the credential scrub matches what the documentation says, a damaged sidecar cannot break a profile-free launch, profile-free behavior is back to `develop`'s, and each untested refusal is pinned.
+
+## Context
+
+Read the P1B card first; its rules still hold except where an item below changes them. Line numbers are on head `b4284e6b`.
+
+Where a profile directory reaches the wire today (lead's trace; the review named the first two):
+- `hello_ack.transcriptPath`, from `makeCurrentSessionResolver` (`cli/current-session.ts:38, 67`; resolver built at `cli.ts:2645`), sent from `cli/handlers/connection-events.ts:152`, `cli.ts:2844`, `cli/handlers/resume-session-events.ts:419, 523`; the same resolver feeds `currentTranscriptPath` in the `NOT_FOUND` error details (`cli/handlers/transcript-events.ts:241`).
+- `session_list_response` own entries (`cli/handlers/session-list-entries.ts:93-96`) and external entries (`transcriptPath: file.filePath`, `transcript/transcript-discovery.ts:280`, returned at `session-list-entries.ts:120`); `buildSessionList` is the one builder for the request (`cli/handlers/session-events.ts:139`), the workspace broadcast (`session-list-entries.ts:56`) and the live-sessions update (`cli.ts:2017`).
+- `session_rotated.newTranscriptPath` (`transcript/transcript-binder.ts:753-775`), a required string in `packages/shared/src/protocol.ts:1072` (builder at line 2773).
+- Not a leak: `session_views` already strips paths (`cli/session-phases/hook-bridge-setup.ts:379-390`); transcript loading reads the real path through `harness.transcriptPath` (`transcript-events.ts:180`) and must keep it.
+
+What clients do with those fields (checked, so the fix breaks none):
+- `hello_ack.transcriptPath` is optional and nullable in the protocol (`protocol.ts:546`), as Codex sessions already send it; the web client maps null to absent (`packages/web/src/App.tsx:570-572`); native decodes it as optional (`packages/native/RemiKit/Sources/RemiKit/Protocol/WireMessages.swift:90`).
+- A session-list entry's `transcriptPath` is optional (`packages/shared/src/types.ts:596`); native decodes it as optional (`Protocol/Session.swift:33`); the web keeps it only when present (`App.tsx:1072`).
+- `session_rotated`: the web copies `newTranscriptPath` into the session (`App.tsx:887`) and only displays or copies it (`components/chat/ChatHeader.tsx:149-154`, falling back to the Claude session id); native RemiKit does not decode `session_rotated` at all; the daemon's attach client ignores it (`cli/attach-client.ts:479`) and the Telegram adapter does not read the path. No shipped client requires the path.
+
+Other facts the fixes rely on:
+- Path 2 cannot be reached by a black-box test: a non-hub process answers a resume of another session with "This daemon already has an active session" while its own session runs, and a session daemon exits when its session ends (#641; `tests/integration/launch-characterization.test.ts`, "the daemon exits once claude exits"). Its check is therefore tested as a function with real store files, plus the handler seam.
+- `SessionStore.write` always calls `SessionProfilesFile.reconcile` (`session/session-store.ts:417-446`), and `reconcile` throws on a sidecar it cannot read (`session/session-profiles-file.ts:19-47, 56-62`); `resumeProfile` (`profiles/resume-profile.ts`) maps an unreadable sidecar to the "changed" refusal, and reads the sidecar for every resume, profile-free ones included.
+- The early `--resume` refusal for a Codex default (`cli.ts:555-557`) now needs an explicit Codex choice; `tests/cli/default-harness-dispatch.test.ts` case `--resume missing` fails on the head (11 of 12).
+- The forwarded-argument resume lookup (`cli.ts:1117-1155`) refuses when the store read throws, also with no profile configured, where `develop` launched Claude with the arguments as given.
+- Argument order on the head: Claude puts the profile's `args` after the session's own (`cli.ts:1251` wrapper, `cli.ts:3876` daemon); Codex puts them before (`cli.ts:2607-2611`).
+
+## Scope
+
+May change (each file names the items that need it; the P1B card's Scope list still applies on top):
+- `packages/daemon/src/cli.ts` [P1, V1, V3, C1, C1b, C3, X1, O1, O2];
+- `packages/daemon/src/cli/current-session.ts` [P1]; `cli/handlers/session-list-entries.ts` and `cli/handlers/session-events.ts` [P1]; `cli/handlers/resume-session-events.ts` [V1, P2, M2]; `cli/session-phases/hook-bridge-setup.ts` [P1]; `cli/session-phases/pty-session-setup.ts` [M3, comments only]; `cli/daemon-manager.ts` [O5];
+- `packages/daemon/src/transcript/transcript-binder.ts` [P1];
+- `packages/daemon/src/harness/claude-session.ts` [P1, to pass the withholding flag to the binder]; `harness/codex/codex-session.ts` [O3];
+- `packages/daemon/src/pty/pty-session.ts` and `pty/child-env.ts` [M3, comments only];
+- `packages/daemon/src/profiles/` [M1, M4, V1, V2, V3, X1, C2, C3, O4, O6];
+- `packages/daemon/src/session/session-profiles-file.ts` and `session/session-store.ts` [X1];
+- `packages/daemon/src/tunnel/file-download-session-host.ts`, only if V3's function is placed beside `downloadProtectionRoots` [V3];
+- `packages/shared/src/protocol.ts`: `SessionRotatedMessage.newTranscriptPath` becomes optional and `createSessionRotated` omits it when not given [P1]; nothing else in `packages/shared/src`; no fixture under `packages/shared/tests/fixtures/` changes;
+- `packages/shared/tests/binding-protocol.test.ts` [P1];
+- `packages/web/src/App.tsx` (the `session_rotated` case only), `packages/web/src/lib/session-binding.ts` (one helper) and `packages/web/tests/lib/session-binding.test.ts` [P1];
+- tests anywhere under `packages/daemon/tests/` (helpers included);
+- `docs/agent-reference/profiles.md` [P1, M1, M2, P2, X1, C2, C3, known limits]; the PR 1811 body.
+
+Not in scope: any other wire message, field or fixture; the protocol version and capabilities (ADR 0035: unchanged, see P1); `packages/native/`, `packages/macos/`, `packages/signaling/`; any other web file; refactoring the profile-selection block of `cli.ts` beyond what an item says (O7 is a known limit).
+
+## Decided design
+
+**P1 (Important, privacy): withhold the profile session's transcript path from every client.** A session that runs a configured profile (the resolution is not the built-in `default`) sends no path under its profile directory:
+- `hello_ack.transcriptPath` is `null`, and so is the `NOT_FOUND` details' `currentTranscriptPath`: `makeCurrentSessionResolver` gains a required option (for example `withholdTranscriptPath: boolean`), and with it `transcriptPath` is `null` while the identity is unchanged.
+- `buildSessionList` gains a required `withholdTranscriptPaths: boolean` in `SessionListDeps`: own entries then carry no `transcriptPath` (the existing lookup-miss shape) and every external entry has its `transcriptPath` removed. All three callers pass it.
+- `session_rotated`: `SessionRotatedMessage.newTranscriptPath` becomes `readonly newTranscriptPath?: string | undefined` with the comment "Absent when the daemon withholds it (a profile session, #1748)"; `createSessionRotated` takes `newTranscriptPath: string | undefined` and leaves the key out when it is undefined. `TranscriptBinderDeps` gains a required `withholdTranscriptPath: boolean`; the binder still watches the real path and still requires one before it announces a rotation, but the message carries none when the flag is set.
+- The web client: a small exported helper in `lib/session-binding.ts` applies a rotation to a session (new Claude id; the new path when present; when absent, the stored `transcriptPath` is removed, never kept from before), and `App.tsx`'s `session_rotated` case uses it.
+- Transcript loading and the binder's watcher keep the real path; the built-in `default` keeps sending every path exactly as now.
+- ADR 0035: the protocol version and capabilities do not change. `hello_ack` and session-list entries already allow the absent or null value, and for `session_rotated` no shipped client requires the path (Context). This adds no profile field; whether a profile session's transcript path is ever shown remotely is P2B's call. Not an owner question: no client needs the path, and the P1B card already says nothing about profiles goes on the wire.
+
+**M1 (Important): the scrub covers whole cloud families.** Exact names cannot keep up with the AWS, Azure and Google Cloud variables (the review found six that survive), and the owner's rule is that the list errs wide. Add five prefixes to `PROFILE_CREDENTIAL_ENV_PREFIXES`: `AWS_`, `AZURE_`, `CLOUDSDK_`, `GCLOUD_`, `GOOGLE_` (this covers the six found: `AWS_CONTAINER_AUTHORIZATION_TOKEN`, `AWS_CONTAINER_CREDENTIALS_FULL_URI`, `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, `AWS_ROLE_ARN`, `CLOUDSDK_AUTH_ACCESS_TOKEN`, `GOOGLE_OAUTH_ACCESS_TOKEN`). `AZURE_` is included because Claude Code's Foundry path, whose selectors are already on the list, authenticates through Azure identity variables; that Claude Code reads them is not verified, and the list errs wide. The exact AWS and Google names stay on the list (pinned and explicit). Final counts: 85 names and 7 prefixes; the guard test hard-codes both. The loader refuses a profile `env` name with any of these prefixes (`not supported in this build`), which J20 (owner, open, default a) covers. The documentation states what ships: "every inherited variable whose name starts with `AWS_`, `AZURE_`, `CLOUDSDK_`, `GCLOUD_` or `GOOGLE_` is removed, identity or not (region, endpoint and project settings included)". The PR body lists the five prefixes as new, the reason, and the known limit.
+
+**M4 (Minor): one predicate.** Export `isProfileCredentialEnvName(name)` (on the list, or starting with a prefix) from `profile-env.ts`, and use it in `profileEnvironment`, the loader (`profile-config.ts:172-175`) and `configWarnings` (`config-warnings.ts:85`, beside its other checks). A project setting such as `AWS_REGION` in a settings file's `env` then gets the existing names-only warning; that is intended.
+
+**X1 (Moderate): an unreadable sidecar never breaks a profile-free write or launch.** "Unreadable" means any read error other than a missing file, invalid JSON, a `version` other than 1, or a bad shape.
+1. A sessions write without a profile addition: `reconcile` catches the failure, writes one warning to the host log naming the file path and the kind of failure (never any content), leaves the sidecar untouched (no prune, no rewrite), and returns; the sessions write stands.
+2. A write that carries an addition (the first save of a profile record) checks the sidecar under its lock **before** `sessions.json` is renamed into place; unreadable, it throws and `sessions.json` is left unchanged. If the sidecar becomes unreadable between that check and the reconcile, the reconcile throws too; the record then has no sidecar entry, which resume refuses (fail closed).
+3. A configured-profile launch checks the sidecar in the profile-selection block of `cli.ts`, before anything is spawned, and refuses with `Could not read <path>, which records session profiles; a profile session cannot start until it is repaired or moved aside.` (a hub child exits 78, so a remote requester sees only item 6's text).
+4. `resumeProfile` keeps refusing with the "changed" text when the sidecar cannot be read, with one exception: when no profile is configured (no `[profiles]` table, an empty one, or a broken one) and the record has neither `profile` nor `profileSnapshot`, it returns `default` without reading the sidecar, so a profile-free resume neither reads it nor creates its lock file, as on `develop`.
+
+**C1 (Important): profile-free `--resume` under a Codex default is back to `develop`.** Let `hasConfiguredProfiles` be `!('error' in remiConfig.profiles) && Object.keys(remiConfig.profiles.entries).length > 0`. The early refusal at `cli.ts:555-557` fires when `harnessId === 'codex' && cliResume !== undefined && (parsedArgs.harness === 'codex' || cliSubcommand === 'codex' || !hasConfiguredProfiles)`; the late branch stays for the configured case.
+
+**C1b (lead's consistency pass; same class as C1): a forwarded-argument lookup failure refuses only when a profile is configured.** In the resume-key lookups (`cli.ts:1117-1155`), a store read that throws is refused when `hasConfiguredProfiles` (fail closed, as now); otherwise it writes one log line and the launch continues with no record, exactly as `develop` launched it.
+
+**V1, P2, M2 (Path 2).** Move the check now inline at `cli.ts:2714-2728` into an exported function under `profiles/` (for example `inProcessResumeRefusal`) that takes the store, the configured profiles, this process's own profile id (`default` for the built-in) and the Claude id, and returns `null` or the answer text; `cli.ts` passes it as the handler's dependency, and `checkResumeProfile` becomes **required** in `ResumeSessionHandlerDeps` (`resume-session-events.ts:158`), called without `?.`; the existing handler tests pass `() => null`. Answers:
+- the record's profile (by `resumeProfile`) differs from this process's: the existing `This session belongs to profile <id>, and this remi runs a different one. Resume it through the hub or with remi --resume on the machine.`;
+- `resumeProfile` refuses: its own text (ids only, no paths);
+- no record, and this process runs a configured profile (M2): `This session has no remi record, so its profile cannot be confirmed. Resume it through the hub or with remi --resume on the machine.`;
+- no record, and this process runs the built-in `default`: `null` (today's behavior);
+- the store read throws (P2): the detail goes to the host log only, and the answer is `This session's profile could not be checked: the host's session records could not be read.`; an `AmbiguousSessionIdentityError` passes its own message, as `resolveResumeTarget` does (`resume-session-events.ts:227-237`).
+
+**V3: download roots through one tested function.** Add an exported function (under `profiles/`, or beside `downloadProtectionRoots` in `tunnel/file-download-session-host.ts`) that takes the selected profile (or none) and the environment and calls `downloadProtectionRoots` with the profile's Claude directory and Codex home when a profile is selected, and with the environment's values otherwise; `cli.ts:1731-1732` calls it. Rename the existing test in `tests/profiles/profile-paths.test.ts` so its name claims only the helper it calls.
+
+**C2: `remi profile ls`, `show` and `login` use the launch environment.** `cmd-profile.ts:37` and `:292` call `profileLaunchEnvironment(process.env, id, profile)`. If it throws, `ls` and `show` print its text in place of that profile's status lines, and `login` prints it to stderr and exits 1 before running anything.
+
+**C3: one argument order for both harnesses.** The profile's `args` come first and the session's own arguments (typed, forwarded by a hub, or the resume flag) after them, for Claude as Codex already does: `[...profile.args, ...sessionArgs]` in the wrapper (`cli.ts:1251`) and the daemon (`cli.ts:3876`). Reason: Codex treats the first `--` as the start of the prompt, so the profile's flags cannot follow the session's arguments there, and a per-session choice placed last wins wherever the agent CLI keeps the last of a repeated option (not verified for every option; the docs say only the order). The loader refuses a profile `args` entry that is exactly `--`: `profiles.<id>.args: "--" is not allowed; the session's own arguments follow the profile's`. The resume-key scan keeps reading the session's own arguments only.
+
+**M3 (Minor): comments say what ships.** `completeEnv` on `PtyLaunch` and on `PTYSessionConfig`: "true: `env` is the whole environment and `process.env` is not inherited; remi's own secrets are still removed by `withoutRemiSecrets`". The `childEnv` comment no longer says it is always added on top of `process.env`; `pty/child-env.ts` gets the same sentence if its header describes only the overlay.
+
+**Omitted notes, fixed now (cheap):**
+- O1: remove the dead `resumeProfile ?? 'default'` (`checked.id` is always a string).
+- O2: one constant for the Claude-only `--resume` refusal text in `cli.ts` (used twice).
+- O3: `harness/codex/codex-session.ts`: replace the inline `import('../../session/session-store.ts').StoredSession` type with an `import type` at the top (`session/session-store` is on the Codex allowlist).
+- O4: `profile-env.ts`: move its imports (now at lines 116-118) to the top of the file.
+- O5: `spawnRemiDaemon`: after `process.kill(pid, 0)` fails, wait for the child's `exit` event for up to 500 ms (a promise resolved by the `once('exit')` handler, raced with a timer) before classifying, instead of one `setTimeout(0)`.
+- O6: `comparisonPath` (`profile-config.ts:85-90`): walk with `lstat`; a symbolic link whose target does not exist yet is followed through `readlink` (relative targets against the link's directory, at most 40 links, then an error) before the longest-existing-ancestor rule applies, so a dangling alias of another profile's directory is refused as a duplicate.
+
+**Rejected, with the reason (list in the PR body):** moving `cli.ts`'s mid-file profile imports to the top (`cli.ts` already places imports beside their first use, for example `cli/target-resolver.ts` near line 570; O4 fixes the one file where this is not the convention).
+
+**Known limits, in the PR body and, where marked, `profiles.md`:**
+- O7: the profile-selection block of `cli.ts` (about 165 lines) is reachable only through spawned processes; V1 and V3 take out the two parts the review found untested.
+- O8: `remi new --recent` checks Codex arguments with the harness chosen before the profile is known (the preflight checks them again after the profile).
+- O9: `sessions.json` (mode 0644) holds `profileSnapshot.claudeDir` and `codexDir`, as it already holds `projectPath`; the sidecar is 0600.
+- O10 (`profiles.md`): the Codex `config.toml` of a profile that configures Codex is read for every launch of that profile, so an unreadable one also refuses a Claude launch of it (fail closed).
+- O11 (`profiles.md`): a Claude-only profile leaves `CODEX_HOME` as inherited (P1A design).
+- O12: a hub child whose Codex preflight fails exits 1 or 2, not 78, so the requester sees the generic start-failure text.
+- O13: the case-variant alias test skips its assertion on a case-sensitive file system.
+
+## Acceptance
+
+Evidence folder: `/Volumes/S1/yooz/remi/artifacts/profiles-epic-2026-11/P1B/r8/`, with `revert-index.md` (one line per mutation: the mutation, the exact command, the failing test names, the isolated failing log).
+1. P1, black box (`tests/integration/profile-launch.test.ts`): a profile daemon with a fake `claude`, and a synthetic transcript planted under `<profile claude dir>/projects/` for another directory so the external list is not empty; a client connects with the existing hello helper and sends `session_list_request`; the raw text of every frame it receives contains neither the profile's Claude directory nor its Codex directory; `hello_ack.transcriptPath` is `null`, the own entry has no `transcriptPath`, the external entry has none. Control: the same test on the built-in `default` still receives the real path in all three.
+2. P1, rotation: a binder test (`tests/transcript/transcript-binder.test.ts` or `tests/cli/session-phases/transcript-binder-drive.test.ts`) shows that with `withholdTranscriptPath: true` the `session_rotated` it sends has no `newTranscriptPath` key while the watcher follows the new path, and with `false` the message is as before; in `packages/shared/tests/binding-protocol.test.ts`, `createSessionRotated` without a path leaves the key out and survives serialize and deserialize; the web helper test: a rotation without a path removes a stored `transcriptPath`, one with a path sets it.
+3. M1 and V2: `tests/profiles/model.test.ts` refuses, for each of the 7 prefixes, both the bare prefix and the prefix plus `FOO` as a profile `env` name with `profiles.work.env.<name>: not supported in this build`; acceptance 2 of the P1B card plants the six names M1 found plus `AWS_REGION` and `AZURE_CLIENT_SECRET` and finds none in the fake's environment; the guard test pins 85 names and 7 prefixes.
+4. M4: a project `.claude/settings.json` whose `env` sets `CLAUDE_CODE_OAUTH_FUTURE_MODE` gets the `env` warning.
+5. X1 (`tests/session/`): with `session-profiles.json` set to `not json`, then to `{"version": 2, "sessions": {}}`: saving a record without a profile succeeds, `sessions.json` holds it, the sidecar bytes are unchanged, and one warning names the path and no content; saving a profile record throws and `sessions.json` bytes are unchanged; `resumeProfile` with configured profiles refuses a profile record with the "changed" text; with no profile configured, a record without profile fields resolves to `default` and no `session-profiles.json` file or lock file is created in a `REMI_HOME` that had none. Black box: a configured-profile launch with an unreadable sidecar prints X1 item 3's text and the fake's invocation log stays empty.
+6. C1: `tests/cli/default-harness-dispatch.test.ts` passes unchanged (12 of 12), plus one new case: with a configured profile and `[harness] default = "codex"`, `--resume` of a stored record without a profile ends with exit 2 and the Claude-flag text.
+7. C1b: with no `[profiles]` table and a `sessions.json` that holds two live rows of one Claude id, the wrapper `remi -- --resume <uuid>` starts the fake `claude` with `--resume <uuid>` as `develop` does; with a configured profile the same refuses with the ambiguity text and spawns nothing.
+8. V1, P2, M2: unit tests of the extracted function with real store and sidecar files in a temporary `REMI_HOME`: own `other` with a `work` record gives the "belongs to profile work" text; own `work` with a `work` record gives `null`; no record with own `work` gives M2's text; no record with own `default` gives `null`; a record without a profile with own `work` gives the "belongs to profile default" text; a malformed `sessions.json` gives P2's text, which does not contain the temporary directory, while the log line has the detail; a handler test shows a refusal from the dependency is sent and `createNewSession` is not called. Do not add a black-box Path 2 test (Context).
+9. V3: the roots function with a profile returns the profile's Claude directory and Codex home as required roots, and without one returns what `downloadProtectionRoots` returns for the same environment.
+10. V4 (in the "wrapper resumes" test): the latest record's sidecar entry rewritten to profile `other` gives `This session's profile information was changed by another remi process. Start a new session.` with an empty fake log; its revision rewritten to another string gives the same; `--resume --remi-profile other` against a `work` record gives `This session belongs to profile work. Resume it without --remi-profile, or with --remi-profile work.`
+11. C2 (`tests/profiles/commands.test.ts`): with a Codex profile whose `config.toml` names `env_key = "MY_PROVIDER_KEY"` and that name planted in the environment, neither `profile ls` nor `profile login --harness codex` passes `MY_PROVIDER_KEY` to the fake `codex` (its recorded environment names); with an unparsable `config.toml`, `ls` prints `Could not read the Codex configuration of profile work (config.toml).` and `login` exits 1 with that text and runs nothing.
+12. C3: a Claude profile with `args = ["--model", "profile-model"]` and a session argument `--model user-model` (wrapper `-- --model user-model`, and a hub `create_session_request` with `args: ["--model", "user-model"]`): the fake's argv has the profile's pair before the session's; a profile `args` entry `--` is refused with C3's text.
+13. O6: a dangling symbolic link to a not-yet-existing directory that another profile names is refused as a duplicate.
+14. Mutations, each in `revert-index.md` with its failing test: pass `withholdTranscriptPath: false` for a profile session (1 fails); stop removing external entries' paths (1 fails); let the binder send the path (2 fails); drop the five cloud prefixes (3 fails); make `isProfileCredentialEnvName` ignore prefixes (3 and 4 fail); remove X1's catch in `reconcile` (5 fails); move X1's addition check after the rename (5's unchanged-bytes case fails); drop `!hasConfiguredProfiles` from C1's condition (6 fails); refuse C1b's lookup failure without a configured profile (7 fails); add `return null;` as the first statement of the extracted Path 2 function (8 fails); return the raw error text from it (8's no-path case fails); remove `sidecar.profile !== record.profile ||` in `resume-profile.ts` (10 fails); remove the sidecar revision clause (10 fails); delete the `parsedArgs.remiProfile` conflict clause in `cli.ts` (10 fails); make the roots function ignore the profile (9 fails); use `profileEnvironment` again in `cmd-profile.ts` (11 fails); put Claude's profile args last (12 fails).
+15. The PR 1811 body gains a "Round 2" section: each finding with its outcome (fixed with the test, or rejected with the reason), the known limits O7 to O13, the final 85 names and 7 prefixes, the `session_rotated` field change and the ADR 0035 reasoning from P1, and "Part of #1748" only (no closing keyword).
+
+## Gates
+
+In the preamble's canonical environment: `bun test packages/daemon/tests/profiles packages/daemon/tests/integration/profile-launch.test.ts packages/daemon/tests/integration/launch-characterization.test.ts packages/daemon/tests/integration/hub-create-session.test.ts packages/daemon/tests/pty-child-env-secrets.test.ts packages/daemon/tests/harness packages/daemon/tests/license-boundary.test.ts packages/daemon/tests/cli packages/daemon/tests/session packages/daemon/tests/session-store.test.ts packages/daemon/tests/transcript packages/daemon/tests/hello-ack-sources.test.ts packages/daemon/tests/tunnel packages/shared/tests packages/web/tests/lib/session-binding.test.ts` passes, apart from the sandbox exemption below (this widens the round-1 gate to every directory the fixes touch, `tests/cli` included, which holds C1's `default-harness-dispatch.test.ts`); `bunx biome check .` ends with no errors; `bun run typecheck`, `bun run typecheck:web`, `bun run typecheck:web-tests` and `bun run typecheck:signaling` pass; `bun scripts/third-party-notices.ts --check` passes; `typos` on the changed files is clean; `git diff --check origin/develop...HEAD` prints nothing; hosted CI must pass on the final head (the full daemon suite runs there only, J19 (a)).
+
+**Sandbox exemption (unchanged rule, wider set).** A test that fails inside the Codex sandbox only because the operating system refused to start or signal a process (`EPERM`, `Operation not permitted` or Python's `PermissionError` on `/bin/ps` or another system binary; `tests/cli` has more such tests than round 1, for example the wrapper-suspend fixtures that call `/bin/ps`) is listed by name with its error line in `report-details.md` as "not run in sandbox"; it is not a stop and is not edited. Any other failure is a failure. The manager reruns the whole command above outside the sandbox on the pushed head, from `/Volumes/S1/worktrees/remi/profiles-p1b`, with `mkdir -p /private/tmp/remi-canon-P1B && env -i HOME="$HOME" PATH=/opt/homebrew/bin:/usr/bin:/bin TMPDIR=/private/tmp/remi-canon-P1B/` in front of `bun test`, and records the last line on the board before the delta review.
+
+## Stop conditions
+
+Stop only for a **material** discrepancy: a client (web, native or macOS) that turns out to require `transcriptPath` or `newTranscriptPath` at run time, contrary to Context; a fix that would need a new wire message, field, capability or protocol version; a test that would need a mock replacing the resolver, the check, the PTY, the store or the hub starter (the handler seams named above are the existing ones and allowed); anything that would touch a real login, a credential value, the owner's state or ports 18765 to 18769.
+Not stop conditions, because this card decides them: every item above, its text and its test; a cited line that moved (list it under "Card corrections" in the PR body); the sandbox exemption; Path 2's missing black-box test; a count that differs from 85 and 7 (a PR note).
+
+## Report
+
+The preamble's report; one line per acceptance item with its test or command, and the final `PROFILE_CREDENTIAL_ENV` and `PROFILE_CREDENTIAL_ENV_PREFIXES`, go into `report-details.md` in the evidence folder; the head after the round's single push.

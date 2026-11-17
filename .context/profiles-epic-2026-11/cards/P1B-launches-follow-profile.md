@@ -8,6 +8,7 @@ Depends: P1A (#1798) and P1C (#1800), both merged into `develop`; this card was 
 Branch: `feature/issue-1748-profile-launch` off `origin/develop`
 Worktree: `/Volumes/S1/worktrees/remi/profiles-p1b` (the manager creates it with `git worktree add --no-track -b` and runs `bun install`)
 Plan: plan.md section 2 (P1B); issue #1748 Scope and Acceptance criteria; ADR 0049 D1, D6, D10; backend plan "Profile contract and wrapper settings (#1157)"
+Round 2: PR 1811's review fixes are in `cards/P1B-fix-round-1.md`; read it together with this card, and where the two differ, the fix card wins.
 
 ## Goal
 
@@ -51,7 +52,7 @@ May change (complete after the lead's scope walk of round 6: every design and ac
 Tests, under `packages/daemon/tests/`: new or changed test files anywhere under it, the shared helpers included (`tests/helpers/fake-agent-clis.ts` for a fake that records its argv, `CLAUDE_CONFIG_DIR` and the names in its environment and answers in the V27 shapes [2, 5, 9, 11, 12]; `tests/helpers/fake-app-server.ts` for a stand-in listening under a given `CODEX_HOME` [3, 12]; `tests/integration/hub-test-utils.ts` for a hub started with a profiles configuration, with `REMI_PROFILE` in its environment, or as a second hub on the same `REMI_HOME` [9, 10, 11, 12]). An existing test's assertion changes only where the card says the behavior changes (P1A's `AWS_PROFILE` fixtures, the `codexUsesFileStore` tests, the guard test's list, prefixes and exemption, the worker's own replaced daemon-resume test); every such change is listed in the PR body. The two existing tests that pin the generic start-failure text (`tests/cli/handlers/create-session-start.test.ts:149`, `tests/cli/handlers/resume-session-events.test.ts:510`) keep passing unchanged.
 
 Documentation: `docs/agent-reference/profiles.md` [7]; `AGENTS.md`, `README.md`, `docs/agent-reference/hub-mode.md` and `docs/agent-reference/harnesses-and-codex.md` only for a sentence this change makes untrue (repository rule 3 of "Verify before you describe"). The PR body.
-Not in scope: any wire message or fixture (`packages/shared/`), the profile on session-list entries, remote visibility and remote selection (P2B), the hub's multi-profile transcript discovery, the status line, download protection of inactive profiles (P2A), the web client, the apps, `packages/signaling/`.
+Not in scope: any wire message or fixture (`packages/shared/`), the profile on session-list entries, remote visibility and remote selection (P2B), the hub's multi-profile transcript discovery, the status line, download protection of inactive profiles (P2A), the web client, the apps, `packages/signaling/`. Exception from round 2: the fix card's P1 lets one `packages/shared` field (`session_rotated.newTranscriptPath`) become optional and changes the web client's handling of it.
 
 ## Decided design
 
