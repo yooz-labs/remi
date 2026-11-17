@@ -118,7 +118,7 @@ Board order is dispatch priority.
 | G1 | [G1](cards/G1-power-readings.md) | parsers and bounded readers for assertions, thermal pressure and the root domain | worker | - | 1d | `env -i ... bun test packages/daemon/tests/power/readings` (canonical) ends `0 fail`, no skip on this Mac; every item of the card |
 | W1 | [W1](cards/W1-lease-and-watchdog.md) | root-boundary constants, the lease, the watchdog script and property lists, tested without privileges | worker-hard | - | 1d | `env -i ... bun test` of the three W1 test files (canonical) ends `0 fail`, no skip; every item of the card |
 | L2-POL | [L2-POL](cards/L2-POL-level2-policy.md) | the pure level 2 reducer, settings validator and foreign-holder classifier; arming per the owner's Q1 (b); merges only after Q9 and Q10 are answered | worker-hard | - | 1d | `env -i ... bun test` of the three L2-POL test files (canonical) ends `0 fail`; every item of the card |
-| OG-CAP | rule | the owner's MacBook captures in seven states | owner | - | 30m | [owner-gates.md](owner-gates.md) OG-CAP recorded; the seven folders exist under `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/captures/OG-CAP/` |
+| OG-CAP | rule | the owner's MacBook captures in seven states (eight with `lock-never`) | owner | - | 30m | [owner-gates.md](owner-gates.md) OG-CAP recorded; the seven folders (eight with `lock-never`) exist under `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/captures/OG-CAP/` |
 | G2 | [G2](cards/G2-level1-battery-floor.md) | the level 1 battery floor; `level1_battery_floor_percent` and `battery_check_seconds` supported; merges only after Q2 and Q4 are answered | worker-hard | G1, OG-CAP | 1d | `env -i ... bun test packages/daemon/tests/power packages/daemon/tests/integration/keep-awake-daemon-smoke.test.ts` (canonical) ends `0 fail`, no skip; every item of the card |
 | OG-G2 | rule | the owner checks the floor on the MacBook | owner | G2 | 30m | owner-gates.md OG-G2 recorded |
 | CP-L2 | rule | lead checkpoint before level 2; starts only when Q9 and Q10 are also answered | lead | G0, G1, W1, L2-POL, G2, OG-CAP | - | a `decide` line starting `CP-L2:` (section 4) |
@@ -191,7 +191,7 @@ None of these runs a darwin-only test, hence gate item 7 and DV-AWAKE.
 
 ## 4. Checkpoints and owner gates
 
-**CP-L2** (the lead, when G0, G1, W1, L2-POL and G2 are merged, OG-CAP is recorded and Q9 and Q10 are answered): read G0's note, the OG-CAP folder list and the answers; re-verify every path and line that L2-CORE, L2-HUB and L2-CLI cite on the current `develop` (P1A and P1B move `config.ts` and `cli.ts`); edit those cards where an answer, G0's result or the code changed; run `manager_board.py card` on them; record `CP-L2: ...` with `decide --by lead`.
+**CP-L2** (the lead, when G0, G1, W1, L2-POL and G2 are merged, OG-CAP is recorded and Q9 and Q10 are answered): read G0's note, the OG-CAP folder list (with the `lock-*` captures' `sysadminctl-screenlock.stdout`, `.stderr` and `.exit` files, which settle or refute G0's parse rule per stream) and the answers; re-verify every path and line that L2-CORE, L2-HUB and L2-CLI cite on the current `develop` (P1A and P1B move `config.ts` and `cli.ts`); edit those cards where an answer, G0's result or the code changed; run `manager_board.py card` on them; record `CP-L2: ...` with `decide --by lead`.
 If G0 is "not settled", the decision line says that level 2 will refuse until the owner sets `require_password_on_wake = false` and asks the owner whether to proceed.
 **CP-HW** (the lead, after OG-L2): read the owner's OG-L2 record; decide whether L2-SLEEPNOW is needed (step (b)); complete L2-APP (and L2-SLEEPNOW if needed); file issues for any failed step; record `CP-HW: ...`.
 
@@ -212,7 +212,7 @@ No agent installs the sudoers file, the boot daemon or (on the owner's machine) 
 | ID | Risk | Read by | If it reads bad | Who decides |
 | --- | --- | --- | --- | --- |
 | R1 | `disablesleep 0` with the lid closed leaves the Mac awake | OG-L2 (b) | L2-SLEEPNOW at CP-HW (owner decision 6) | lead, owner |
-| R2 | no read-only password-on-wake source | G0 | level 2 refuses unless `require_password_on_wake = false`; ask the owner at CP-L2 | owner |
+| R2 | no read-only password-on-wake source | G0, then OG-CAP step 5 (the `lock-*` captures with separate `.stdout`, `.stderr` and `.exit` files, including `lock-never` where offered) | level 2 refuses unless `require_password_on_wake = false`; ask the owner at CP-L2 | owner |
 | R3 | a reading's format differs on the MacBook | OG-CAP, G2, L2-CORE | the card stops; the lead adapts the parser rule at CP-L2 | lead |
 | R4 | a test reaches the real switch, `sudo` or `launchctl` | every review (`privilege`), the after-run check of section 0.2 item 4 | stop all dispatching; ask the owner | owner |
 | R5 | an unknown `[awake]` key on an older binary (a downgrade, or a config copied to the MacBook's older remi) stops every `remi` command | Q4 | as answered | owner |

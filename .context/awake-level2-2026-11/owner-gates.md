@@ -20,8 +20,9 @@ capture() {
   /usr/bin/notifyutil -g com.apple.system.thermalpressurelevel > "$d/notifyutil-thermal.txt" 2>&1
   /usr/sbin/ioreg -r -c IOPMrootDomain -d 1 > "$d/ioreg-rootdomain.txt" 2>&1
   /usr/sbin/ioreg -r -c AppleSmartBattery -d 1 > "$d/ioreg-applesmartbattery.txt" 2>&1
-  { /usr/bin/timeout 10 /usr/sbin/sysadminctl -screenLock status </dev/null; echo "exit=$?"; } > "$d/sysadminctl-screenlock.txt" 2>&1
-  { defaults read com.apple.screensaver askForPassword; defaults read com.apple.screensaver askForPasswordDelay; } > "$d/defaults-screensaver.txt" 2>&1
+  /usr/bin/timeout 10 /usr/sbin/sysadminctl -screenLock status </dev/null > "$d/sysadminctl-screenlock.stdout" 2> "$d/sysadminctl-screenlock.stderr"; echo "$?" > "$d/sysadminctl-screenlock.exit"
+  defaults read com.apple.screensaver askForPassword > "$d/defaults-askForPassword.stdout" 2> "$d/defaults-askForPassword.stderr"; echo "$?" > "$d/defaults-askForPassword.exit"
+  defaults read com.apple.screensaver askForPasswordDelay > "$d/defaults-askForPasswordDelay.stdout" 2> "$d/defaults-askForPasswordDelay.stderr"; echo "$?" > "$d/defaults-askForPasswordDelay.exit"
   echo "captured $1"
 }
 ```
@@ -31,11 +32,13 @@ Then, with nothing else holding the Mac awake (no video, no call, no remi sessio
 2. Unplug, then at once: `capture battery-just-unplugged` (the time estimate is usually missing right after unplugging).
 3. Still unplugged, after about 3 minutes: `capture battery-idle`.
 4. Still unplugged, a video playing in Safari in the foreground: `capture battery-video`; stop the video.
-5. Password on wake (System Settings, Lock Screen, "Require password after screen saver begins or display is turned off"): set it to "Immediately" and run `capture lock-immediately`; set it to "After 5 minutes" and run `capture lock-5-minutes`; set it back to the value you use (level 2 will require "Immediately").
+5. Password on wake (System Settings, Lock Screen, "Require password after screen saver begins or display is turned off"): set it to "Immediately" and run `capture lock-immediately`; set it to "After 5 minutes" and run `capture lock-5-minutes`; if the menu offers "Never", set it and run `capture lock-never` (skip this capture if there is no "Never" option); set it back to the value you use (level 2 will require "Immediately").
 6. Still unplugged, in a FaceTime call (or the call app you use): `capture battery-call`; end the call.
 7. Copy the folder to the Mac mini, for example from the Mac mini: `mkdir -p /Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/captures/OG-CAP && scp -r mba:remi-awake-captures/. /Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/captures/OG-CAP/`; then you may delete `~/remi-awake-captures` on the MacBook.
 The captures can hold application names, a page title, serial numbers and your user name; agents redact them before anything is committed (preamble item 6), and nothing raw leaves the artifacts folder.
-Record: done per state (seven folders), the model and the build.
+Each folder holds one file per command; the screen-lock reads keep standard output, standard error and the exit code in separate files (`.stdout`, `.stderr`, `.exit`), because the parse rule depends on the stream (G0 saw the answer only on standard error).
+The `sysadminctl` call is the read-only `-screenLock status` only, never any other verb, and no command changes a setting.
+Record: done per state (seven folders, eight with `lock-never`), whether the menu offered "Never", the model and the build.
 
 ## OG-G2: the level 1 battery floor on the MacBook (after G2 merged)
 
