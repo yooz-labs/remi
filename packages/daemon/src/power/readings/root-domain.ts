@@ -3,13 +3,19 @@ import { runReading } from './run-reading.ts';
 export interface RootDomainReading {
   /** `"SleepDisabled"`: yes only while `pmset disablesleep 1` (or similar) is in force. */
   readonly sleepDisabled: 'yes' | 'no' | 'unknown';
-  /** `"AppleClamshellState"`; `absent` on a Mac with no lid (a Mac mini). */
+  /**
+   * `"AppleClamshellState"`.
+   * `absent` means the key is not listed in a complete read (true of a Mac mini); it is not proof
+   * that the Mac has no lid, and a laptop whose key goes missing would read the same.
+   */
   readonly clamshell: 'open' | 'closed' | 'absent' | 'unknown';
 }
 
 const UNKNOWN: RootDomainReading = { sleepDisabled: 'unknown', clamshell: 'unknown' };
 
 const ROOT_LINE = /^\+-o IOPMrootDomain\b/m;
+// The property block of `ioreg -r` ends with a lone closing brace, before an optional blank line.
+const CLOSING_LINE = /^\s*\}\s*$/;
 
 function singleBoolean(
   lines: readonly string[],
@@ -26,11 +32,14 @@ function singleBoolean(
 /**
  * Reads `ioreg -r -c IOPMrootDomain -d 1`.
  * A key that appears twice, or with another value, is unknown; output with no `IOPMrootDomain`
- * header is unknown for both fields (so an empty read is never "no lid").
+ * header, or cut before the property block's closing brace, is unknown for both fields (so an
+ * empty or truncated read is never "no lid").
  */
 export function parseRootDomain(text: string): RootDomainReading {
   if (!ROOT_LINE.test(text)) return UNKNOWN;
   const lines = text.split(/\r?\n/);
+  const lastContent = [...lines].reverse().find((line) => line.trim() !== '');
+  if (lastContent === undefined || !CLOSING_LINE.test(lastContent)) return UNKNOWN;
   const sleep = singleBoolean(lines, 'SleepDisabled', 'unknown');
   const clamshell = singleBoolean(lines, 'AppleClamshellState', 'absent');
   return {

@@ -57,3 +57,16 @@ test('an empty read is unknown for both fields, never "no lid"', () => {
     clamshell: 'unknown',
   });
 });
+
+test('a read cut before the closing brace is unknown for both fields, never "no lid"', () => {
+  expect(parseRootDomain(fixture('ioreg-iopmrootdomain.cut-before-closing-brace.txt'))).toEqual({
+    sleepDisabled: 'unknown',
+    clamshell: 'unknown',
+  });
+});
+
+test('absent means the key is not listed in a complete read', () => {
+  const text = fixture('ioreg-iopmrootdomain.txt');
+  expect(text).not.toContain('AppleClamshellState');
+  expect(parseRootDomain(text).clamshell).toBe('absent');
+});
