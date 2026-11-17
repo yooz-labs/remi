@@ -304,6 +304,7 @@ function buildReplayRig(): ReplayRig {
 
   const handle = setupHookBridge(
     {
+      withholdTranscriptPath: false,
       sessionRegistry,
       bindingStore,
       liveSessionsRegistry,

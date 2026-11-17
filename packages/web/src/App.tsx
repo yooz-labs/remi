@@ -68,7 +68,7 @@ import {
 } from '@/lib/question-collection';
 import { dismissDeliveredNotification } from '@/lib/notifications';
 import { mapQuestionToUIQuestion } from '@/lib/question-mapping';
-import { bindingRotated } from '@/lib/session-binding';
+import { applySessionRotation, bindingRotated } from '@/lib/session-binding';
 import { shouldEvictCachedSession } from '@/lib/session-eviction';
 import { autoSelectIfNone, evictIfActive, evictManyIfActive } from '@/lib/session-selection';
 import { dedupSessions } from '@/lib/session-dedup';
@@ -881,11 +881,7 @@ function App() {
         setSessions((prev) =>
           prev.map((s) =>
             s.id === rotatedId && s.connectionId === connectionId
-              ? {
-                  ...s,
-                  claudeSessionId: message.newClaudeSessionId as string,
-                  transcriptPath: message.newTranscriptPath,
-                }
+              ? applySessionRotation(s, message)
               : s,
           ),
         );

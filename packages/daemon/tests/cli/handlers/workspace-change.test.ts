@@ -72,6 +72,7 @@ async function fixture(harnessKind: 'claude' | 'codex' = 'claude') {
     fs.rmSync(root, { recursive: true, force: true });
   });
   const deps = {
+    withholdTranscriptPaths: false,
     sessionRegistry: registry,
     bindingStore: binding,
     transcriptDiscovery: discovery,

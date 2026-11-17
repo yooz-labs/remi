@@ -214,7 +214,11 @@ export class SessionBindingStore {
     // otherwise a caller passing an unnormalized projectPath would seed
     // TranscriptIndex with a value that silently diverges from what
     // SessionStore actually persisted (#680 review).
-    const saved = this.store.save(session);
+    const profileEntry =
+      session.profile && session.profileSnapshot
+        ? { profile: session.profile, revision: session.profileSnapshot.revision }
+        : undefined;
+    const saved = this.store.save(session, profileEntry);
     // Seed the durable mirror at spawn so the binding is recoverable even if the
     // session never rotates and is later purged from sessions.json (#577).
     if (saved.claudeSessionId) {

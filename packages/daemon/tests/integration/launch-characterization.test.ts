@@ -28,9 +28,14 @@ import type {
   ReplayBatchMessage,
   SessionUpdateMessage,
 } from '@remi/shared/protocol.ts';
+import { DEFAULT_CONFIG } from '../../src/config/config.ts';
+import { PROFILE_CREDENTIAL_ENV } from '../../src/profiles/profile-env.ts';
+import { reserveRange } from '../session/port-test-helpers.ts';
 import {
+  CLI_TS,
   cleanupHub,
   connectAndHello,
+  isolatedEnv,
   makeIsolatedDirs,
   pollUntil,
   spawnDaemon,
@@ -70,6 +75,9 @@ d="$FAKE_CLAUDE_DIR"
 printf '%s' "$*" > "$d/argv"
 printf '%s' "$REMI_PORT" > "$d/remi_port"
 printf '%s' "$CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN" > "$d/alt_screen"
+printf '%s' "$CLAUDE_CONFIG_DIR" > "$d/claude_config_dir"
+printf '%s' "$CODEX_HOME" > "$d/codex_home"
+env | cut -d= -f1 | sort > "$d/env_names"
 pwd -P > "$d/cwd"
 echo $$ > "$d/pid"
 project="$HOME/.claude/projects/$(pwd -P | sed 's#/#-#g')"
@@ -108,7 +116,11 @@ function track(
   return daemon;
 }
 
-async function startDaemon(): Promise<RunningDaemon> {
+const plantedCredentials = Object.fromEntries(
+  PROFILE_CREDENTIAL_ENV.map((name) => [name, 'planted']),
+);
+
+async function startDaemon(wrapper = false): Promise<RunningDaemon> {
   const { home, work } = makeIsolatedDirs();
   const fakeDir = path.join(home, 'fake-claude');
   const fakeBin = path.join(home, 'fake-bin');
@@ -118,15 +130,42 @@ async function startDaemon(): Promise<RunningDaemon> {
   fs.writeFileSync(fakeClaude, FAKE_CLAUDE);
   fs.chmodSync(fakeClaude, 0o755);
 
-  const daemon = track(
-    home,
-    work,
-    fakeDir,
-    await spawnDaemon(home, work, {
-      PATH: `${fakeBin}:${process.env['PATH'] ?? ''}`,
-      FAKE_CLAUDE_DIR: fakeDir,
-    }),
-  );
+  const fakeShell = path.join(fakeBin, 'sh-path');
+  fs.writeFileSync(fakeShell, '#!/bin/sh\necho "$PATH"\n', { mode: 0o755 });
+  const overrides = {
+    ...plantedCredentials,
+    PATH: `${fakeBin}:/usr/bin:/bin`,
+    SHELL: fakeShell,
+    FAKE_CLAUDE_DIR: fakeDir,
+    CLAUDE_CONFIG_DIR: path.join(home, 'inherited-claude'),
+    CODEX_HOME: path.join(home, 'inherited-codex'),
+  };
+  const spawned = wrapper
+    ? await (async () => {
+        const port = await reserveRange(1, 50, DEFAULT_CONFIG.daemon.bind);
+        const proc = Bun.spawn(
+          [
+            process.execPath,
+            CLI_TS,
+            '--port',
+            String(port),
+            '--no-relay',
+            '--no-telegram',
+            '--no-mdns',
+            '--no-auth',
+          ],
+          {
+            cwd: work,
+            env: isolatedEnv(home, overrides),
+            stdin: 'ignore',
+            stdout: 'pipe',
+            stderr: 'pipe',
+          },
+        );
+        return { proc, port };
+      })()
+    : await spawnDaemon(home, work, overrides);
+  const daemon = track(home, work, fakeDir, spawned);
   const { proc } = daemon;
 
   // `claudeChildPid` is written once the PTY is up: the last step of
@@ -186,6 +225,21 @@ function helloAck(received: ProtocolMessage[]): HelloAckMessage {
   if (!ack) throw new Error('no hello_ack received');
   return ack;
 }
+
+describe('unconfigured profile launch characterization', () => {
+  for (const wrapper of [false, true]) {
+    test(`${wrapper ? 'wrapper' : 'daemon'} preserves the inherited profile environment`, async () => {
+      const d = await startDaemon(wrapper);
+      expect(read(path.join(d.fakeDir, 'argv'))).toMatch(/^--session-id \S+ -n remi:\d+$/);
+      expect(read(path.join(d.fakeDir, 'claude_config_dir'))).toBe(
+        path.join(d.home, 'inherited-claude'),
+      );
+      expect(read(path.join(d.fakeDir, 'codex_home'))).toBe(path.join(d.home, 'inherited-codex'));
+      const names = read(path.join(d.fakeDir, 'env_names')).split('\n');
+      for (const name of PROFILE_CREDENTIAL_ENV) expect(names).toContain(name);
+    }, 40000);
+  }
+});
 
 describe('daemon launch of Claude (black-box characterization, #1164)', () => {
   test('spawns claude with the bound session id and wires the session around it', async () => {

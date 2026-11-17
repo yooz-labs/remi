@@ -31,6 +31,7 @@ afterEach(() => {
 
 function resolver(primary: UUID | null) {
   return makeCurrentSessionResolver({
+    withholdTranscriptPath: false,
     getPrimarySessionId: () => primary,
     sessionStore,
     harness: new ClaudeHarness(transcriptDiscovery),
@@ -93,6 +94,7 @@ test('claude id present but no stored record -> null binding (sessionId still re
 // understands, otherwise the daemon's own harness with no session id, never a guess at Claude.
 function resolverFor(harnessId: 'claude' | 'codex') {
   return makeCurrentSessionResolver({
+    withholdTranscriptPath: false,
     getPrimarySessionId: () => REMI,
     sessionStore,
     harness: new ClaudeHarness(transcriptDiscovery),

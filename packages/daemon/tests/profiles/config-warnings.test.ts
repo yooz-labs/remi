@@ -153,3 +153,26 @@ test('each settings location and warning trigger is independently detected', () 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('a future OAuth-prefixed setting receives an env warning', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-warning-prefix-'));
+  try {
+    const project = path.join(root, 'project');
+    fs.mkdirSync(path.join(project, '.claude'), { recursive: true });
+    fs.writeFileSync(
+      path.join(project, '.claude', 'settings.json'),
+      JSON.stringify({ env: { CLAUDE_CODE_OAUTH_FUTURE_MODE: 'placeholder' } }),
+    );
+    expect(
+      configWarnings({
+        cwd: project,
+        claudeDir: path.join(root, 'claude'),
+        anthropicDir: path.join(root, 'anthropic'),
+        managedDir: path.join(root, 'managed'),
+        expects: 'subscription',
+      }),
+    ).toContainEqual({ source: 'project_settings', key: 'env' });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

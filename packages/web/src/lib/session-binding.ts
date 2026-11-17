@@ -27,3 +27,13 @@ export function bindingRotated(
     prevClaudeSessionId !== ackClaudeSessionId
   );
 }
+
+/** Apply a rotation without retaining a path the daemon withheld. */
+export function applySessionRotation<T extends { claudeSessionId?: string | undefined; transcriptPath?: string | undefined }>(
+  session: T,
+  rotation: { newClaudeSessionId: string; newTranscriptPath?: string | undefined },
+): Omit<T, 'transcriptPath'> & { transcriptPath?: string | undefined } {
+  const { transcriptPath: _oldPath, ...rest } = session;
+  return { ...rest, claudeSessionId: rotation.newClaudeSessionId,
+    ...(rotation.newTranscriptPath !== undefined && { transcriptPath: rotation.newTranscriptPath }) };
+}

@@ -4,7 +4,7 @@
  * The harness (Claude Code, Codex) and every command it runs can read its
  * environment, so remi's own secrets are not inherited by it: the identity
  * passphrase, the push bearer and the Telegram bot token. They are removed
- * after the session's own `env` is laid over `process.env`, so no launch path
+ * after the session's environment is assembled, so no launch path
  * can hand one through. A hub-spawned child daemon is not a harness and is
  * spawned elsewhere (`spawnDaemon`), so it still receives what it needs.
  *

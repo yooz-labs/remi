@@ -80,8 +80,10 @@ describe('createResumeSessionHandlers', () => {
     ) => Promise<unknown> = async () => {
       throw new Error('createNewSession should not be called in this test');
     },
+    checkResumeProfile?: (id: string) => string | null,
   ) {
     return createResumeSessionHandlers({
+      checkResumeProfile: () => null,
       childSessions: null,
       harnessId: 'claude',
       harnesses: () => ['claude'],
@@ -90,6 +92,7 @@ describe('createResumeSessionHandlers', () => {
       bindingStore,
       transcriptDiscovery,
       harness: new ClaudeHarness(transcriptDiscovery),
+      ...(checkResumeProfile && { checkResumeProfile }),
       createNewSession,
       send,
     });
@@ -170,6 +173,7 @@ describe('createResumeSessionHandlers', () => {
       },
     } as unknown as SessionStore;
     const handlers = createResumeSessionHandlers({
+      checkResumeProfile: () => null,
       childSessions: null,
       harnessId: 'claude',
       harnesses: () => ['claude'],
@@ -206,6 +210,7 @@ describe('createResumeSessionHandlers', () => {
       },
     } as unknown as TranscriptDiscovery;
     const handlers = createResumeSessionHandlers({
+      checkResumeProfile: () => null,
       childSessions: null,
       harnessId: 'claude',
       harnesses: () => ['claude'],
@@ -274,6 +279,7 @@ describe('createResumeSessionHandlers', () => {
         sessionRegistry.registerSession(sessionId, '/resumed/dir', fakePTY(), fakeMessageAPI());
         return undefined;
       },
+      () => null,
     );
 
     await handlers.onResumeSessionRequest(CID, 'abababab-abab-abab-abab-abababababab', REQ);
@@ -285,6 +291,42 @@ describe('createResumeSessionHandlers', () => {
     expect(types).toContain('hello_ack');
     const attachedId = spawnHistory[0]?.sessionId as UUID;
     expect(sessionRegistry.getSession(attachedId)?.attachedConnections.has(CID)).toBe(true);
+  });
+
+  test('a different profile refuses Path 2 without creating a session', async () => {
+    const project = path.join(tmpDir, 'different-profile-project');
+    fs.mkdirSync(project);
+    const id = 'abababab-abab-abab-abab-abababababab' as UUID;
+    const claudeId = '44444444-4444-4444-4444-444444444444';
+    sessionStore.save({
+      remiSessionId: id,
+      claudeSessionId: claudeId,
+      projectPath: project,
+      port: 0,
+      pid: null,
+      startedAt: new Date().toISOString(),
+      exitedAt: null,
+      exitCode: null,
+    });
+    let created = false;
+    const message =
+      'This session belongs to profile work, and this remi runs a different one. Resume it through the hub or with remi --resume on the machine.';
+    const handlers = makeHandlers(
+      async () => {
+        created = true;
+      },
+      (requested) => {
+        expect(requested).toBe(claudeId);
+        return message;
+      },
+    );
+    await handlers.onResumeSessionRequest(CID, id, REQ);
+    expect(created).toBe(false);
+    expect(sendCalls[0]?.message).toMatchObject({
+      type: 'resume_session_response',
+      success: false,
+      error: message,
+    });
   });
 
   test('closes the newly-spawned session and reports failure when createNewSession throws', async () => {
@@ -367,6 +409,7 @@ describe('createResumeSessionHandlers', () => {
     /** The hub's handler: no `createNewSession` (it throws if reached), a child starter that records. */
     function hubHandlers() {
       return createResumeSessionHandlers({
+        checkResumeProfile: () => null,
         childSessions: async (directory, extra) => {
           asked.push({ directory, extra });
           await gate;
@@ -519,6 +562,7 @@ describe('createResumeSessionHandlers', () => {
         },
       } as unknown as SessionStore;
       const handlers = createResumeSessionHandlers({
+        checkResumeProfile: () => null,
         childSessions: async (directory, extra) => {
           asked.push({ directory, extra });
           return { ok: true, sessionId: CHILD, port: 19931 };
@@ -599,6 +643,7 @@ describe('createResumeSessionHandlers', () => {
         },
       } as unknown as SessionStore;
       const handlers = createResumeSessionHandlers({
+        checkResumeProfile: () => null,
         childSessions: async () => ({ ok: true, sessionId: CHILD, port: 19931 }),
         harnessId: 'claude',
         harnesses: () => ['claude'],

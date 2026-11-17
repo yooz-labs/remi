@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
+import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { validateProfileLabel } from '@remi/shared';
 import { remiHome } from '../config/remi-home.ts';
 import { REMI_SECRET_ENV } from '../pty/child-env.ts';
-import { PROFILE_CREDENTIAL_ENV } from './profile-env.ts';
+import { codexProviderCredentialNames, isProfileCredentialEnvName } from './profile-env.ts';
 
 export interface ProfileHarness {
   readonly dir: string;
@@ -75,6 +76,35 @@ function absolute(value: unknown, key: string): string {
   if (!path.isAbsolute(expanded)) throw new Error(`${key}: expected an absolute or ~/ path`);
   return path.resolve(expanded);
 }
+
+/** Resolve symlink aliases even when the final components do not exist yet. */
+function comparisonPath(dir: string): string {
+  let current = path.resolve(dir);
+  let links = 0;
+  for (;;) {
+    const parts = current.split(path.sep).filter(Boolean);
+    let ancestor = path.parse(current).root;
+    let redirected = false;
+    for (let i = 0; i < parts.length; i++) {
+      const candidate = path.join(ancestor, parts[i] as string);
+      try {
+        const stat = fs.lstatSync(candidate);
+        if (stat.isSymbolicLink()) {
+          if (++links > 40) throw new Error('Too many symbolic links');
+          const target = fs.readlinkSync(candidate);
+          current = path.resolve(ancestor, target, ...parts.slice(i + 1));
+          redirected = true;
+          break;
+        }
+        ancestor = fs.realpathSync.native(candidate);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        return path.join(ancestor, ...parts.slice(i));
+      }
+    }
+    if (!redirected) return ancestor;
+  }
+}
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (typeof value === 'object' && value !== null) {
@@ -127,6 +157,10 @@ export function parseProfiles(raw: unknown): Profiles {
       if (harness !== undefined && harness !== 'claude' && harness !== 'codex')
         throw new Error(`${prefix}.harness: expected claude or codex`);
       const args = p['args'] === undefined ? [] : strings(p['args'], `${prefix}.args`);
+      if (args.includes('--'))
+        throw new Error(
+          `${prefix}.args: "--" is not allowed; the session's own arguments follow the profile's`,
+        );
       const dirs =
         p['folders'] === undefined
           ? []
@@ -147,10 +181,30 @@ export function parseProfiles(raw: unknown): Profiles {
           throw new Error(`${key}: set the profile's directory with \`dir\`, not \`env\``);
         if (REMI_SECRET_ENV.includes(name))
           throw new Error(`${key}: remi does not store credentials; use the harness's own sign-in`);
-        if (PROFILE_CREDENTIAL_ENV.includes(name))
+        if (isProfileCredentialEnvName(name))
           throw new Error(`${key}: not supported in this build`);
-        if (isCredentialName(name))
+        if (isCredentialName(name)) {
+          const codex = p['codex'];
+          if (codex && typeof codex === 'object' && !Array.isArray(codex)) {
+            const rawDir = (codex as Record<string, unknown>)['dir'];
+            const dir =
+              rawDir === undefined
+                ? path.resolve(remiHome(), 'p', id, 'codex')
+                : absolute(rawDir, `${prefix}.codex.dir`);
+            let dynamic = false;
+            try {
+              dynamic = codexProviderCredentialNames(id, dir).has(name);
+            } catch {
+              // A launch reports an unreadable Codex config. A credential-named
+              // profile value remains refused even if its config is unreadable.
+            }
+            if (dynamic)
+              throw new Error(
+                `Profile ${id} sets ${name}, which its Codex configuration reads as a credential; remi does not store credentials.`,
+              );
+          }
           throw new Error(`${key}: remi does not store credentials; use the harness's own sign-in`);
+        }
         if (typeof value !== 'string') throw new Error(`${key}: expected a string`);
         env[name] = value;
       }
@@ -165,13 +219,17 @@ export function parseProfiles(raw: unknown): Profiles {
             ? path.resolve(remiHome(), 'p', id, name)
             : absolute(h['dir'], `${prefix}.${name}.dir`);
         const key = `${prefix}.${name}.dir`;
-        if (dir === path.resolve(os.homedir(), name === 'claude' ? '.claude' : '.codex'))
+        const compared = comparisonPath(dir);
+        if (
+          compared ===
+          comparisonPath(path.resolve(os.homedir(), name === 'claude' ? '.claude' : '.codex'))
+        )
           throw new Error(
             `${key}: This is the built-in default's directory; use the built-in default instead`,
           );
-        const prior = harnessDirs.get(dir);
+        const prior = harnessDirs.get(compared);
         if (prior) throw new Error(`${key} uses the same directory as ${prior}`);
-        harnessDirs.set(dir, key);
+        harnessDirs.set(compared, key);
         return {
           dir,
           expects: h['expects'],

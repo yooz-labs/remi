@@ -1068,8 +1068,8 @@ export interface SessionRotatedMessage {
   readonly oldClaudeSessionId?: UUID | undefined;
   /** The new Claude session id Claude is now writing under. */
   readonly newClaudeSessionId: UUID;
-  /** Absolute path to the new transcript .jsonl. */
-  readonly newTranscriptPath: string;
+  /** Absent when the daemon withholds it (a profile session, #1748). */
+  readonly newTranscriptPath?: string | undefined;
   /** Diagnostic: what triggered the rotation. */
   readonly reason: 'clear' | 'resume' | 'restart';
 }
@@ -2773,7 +2773,7 @@ export function createHubStatus(counts: {
 export function createSessionRotated(
   sessionId: UUID,
   newClaudeSessionId: UUID,
-  newTranscriptPath: string,
+  newTranscriptPath: string | undefined,
   reason: 'clear' | 'resume' | 'restart' = 'restart',
   oldClaudeSessionId?: UUID,
 ): SessionRotatedMessage {
@@ -2784,7 +2784,7 @@ export function createSessionRotated(
     sessionId,
     ...(oldClaudeSessionId !== undefined && { oldClaudeSessionId }),
     newClaudeSessionId,
-    newTranscriptPath,
+    ...(newTranscriptPath !== undefined && { newTranscriptPath }),
     reason,
   };
 }

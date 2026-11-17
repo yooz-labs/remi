@@ -36,6 +36,7 @@ import {
   serialize,
 } from '@remi/shared/protocol.ts';
 import { DEFAULT_CONFIG } from '../../src/config/config.ts';
+import { PROFILE_CREDENTIAL_ENV } from '../../src/profiles/profile-env.ts';
 import { SessionStore } from '../../src/session/session-store.ts';
 import {
   type FakeAgents,
@@ -170,12 +171,19 @@ test('the per-process fake exits without a release marker', async () => {
 async function startHub(
   which: { codex?: boolean; claude?: boolean },
   cliPath?: string,
+  pinEnvironment = false,
 ): Promise<Running> {
   const dirs = makeIsolatedDirs();
   let server: FakeAppServer | undefined;
   try {
     const agents = installFakeAgents(dirs.home, which);
     server = FakeAppServer.start();
+    if (pinEnvironment) {
+      const fake = path.join(dirs.home, 'fake-bin', 'codex');
+      const original = fs.readFileSync(fake, 'utf8');
+      const record = `d="$FAKE_CODEX_DIR"\nprintf '%s' "$CLAUDE_CONFIG_DIR" > "$d/claude_config_dir"\nprintf '%s' "$CODEX_HOME" > "$d/codex_home"\nenv | cut -d= -f1 | sort > "$d/env_names"\n`;
+      fs.writeFileSync(fake, original.replace('#!/bin/sh\n', `#!/bin/sh\n${record}`));
+    }
     // A random probed port, not the lowest free one from 19200 that every test process is given (P11).
     // The hub's children probe from `base_port` (which `REMI_PORT` sets) over the next 20 ports, and
     // the default base, 18765, is shared by every hub on the machine and by real sessions: so the
@@ -183,7 +191,15 @@ async function startHub(
     const port = await reserveRange(20, 50, DEFAULT_CONFIG.daemon.bind);
     const hub = await spawnHub(
       dirs,
-      { ...agents.env, CODEX_HOME: server.codexHome, REMI_PORT: String(port) },
+      {
+        ...agents.env,
+        ...(pinEnvironment
+          ? Object.fromEntries(PROFILE_CREDENTIAL_ENV.map((name) => [name, 'planted']))
+          : {}),
+        ...(pinEnvironment ? { CLAUDE_CONFIG_DIR: path.join(dirs.home, 'inherited-claude') } : {}),
+        CODEX_HOME: server.codexHome,
+        REMI_PORT: String(port),
+      },
       cliPath,
       port,
     );
@@ -617,6 +633,23 @@ describe('a hub creating a session for a harness (#1179)', () => {
       ws.close();
     }
   }, 60000);
+
+  test('an unconfigured hub Codex launch preserves the inherited environment', async () => {
+    const r = await startHub({ codex: true }, undefined, true);
+    const { response } = await ask(r, { harness: 'codex', args: ['-m', 'fixture-model'] });
+    expect(response.success, why(r, response)).toBe(true);
+    expect(await waitForArgv(r.agents.codexDir)).toEqual([
+      '--no-alt-screen',
+      '-m',
+      'fixture-model',
+    ]);
+    const readPin = (name: string) =>
+      fs.readFileSync(path.join(r.agents.codexDir, name), 'utf8').trim();
+    expect(readPin('claude_config_dir')).toBe(path.join(r.hub.home, 'inherited-claude'));
+    expect(readPin('codex_home')).toBe(r.server.codexHome);
+    const names = readPin('env_names').split('\n');
+    for (const name of PROFILE_CREDENTIAL_ENV) expect(names).toContain(name);
+  }, 40000);
 
   test('a Codex request starts a Codex session with the validated arguments, headless', async () => {
     const r = await startHub({ codex: true });

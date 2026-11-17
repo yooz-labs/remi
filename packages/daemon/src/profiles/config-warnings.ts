@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { isCredentialName } from './profile-config.ts';
-import { PROFILE_CREDENTIAL_ENV } from './profile-env.ts';
+import { isProfileCredentialEnvName } from './profile-env.ts';
 
 export interface ProfileWarning {
   readonly source: 'anthropic_profile' | 'managed_settings' | 'user_settings' | 'project_settings';
@@ -82,7 +82,7 @@ export function configWarnings(input: {
       !Array.isArray(env) &&
       Object.keys(env).some(
         (key) =>
-          PROFILE_CREDENTIAL_ENV.includes(key) ||
+          isProfileCredentialEnvName(key) ||
           isCredentialName(key) ||
           key === 'CLAUDE_CONFIG_DIR' ||
           key === 'ANTHROPIC_BASE_URL',

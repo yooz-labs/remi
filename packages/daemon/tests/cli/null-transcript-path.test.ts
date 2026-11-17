@@ -81,6 +81,7 @@ describe('Harness.transcriptPath returning null is "no file"', () => {
   test('the current-session resolver reports the id and a null transcript path', () => {
     saveBound();
     const current = makeCurrentSessionResolver({
+      withholdTranscriptPath: false,
       getPrimarySessionId: () => REMI_ID,
       sessionStore,
       harness: noFile,
@@ -109,6 +110,7 @@ describe('Harness.transcriptPath returning null is "no file"', () => {
       const sent: ProtocolMessage[] = [];
       const harness: SessionHandlerDeps['harness'] = { gracefulExitInput: null, ...noFile };
       createSessionHandlers({
+        withholdTranscriptPaths: false,
         sessionRegistry,
         bindingStore: new SessionBindingStore(sessionStore),
         transcriptDiscovery: new TranscriptDiscovery({ projectsDir: path.join(tmpDir, 'p') }),

@@ -138,6 +138,7 @@ export function terminalNoticeReason(
 const SLOW_TOOL_MS = 5_000;
 
 export interface HookBridgeDeps {
+  withholdTranscriptPath: boolean;
   sessionRegistry: SessionRegistry;
   bindingStore: SessionBindingStore;
   liveSessionsRegistry: SessionRegistryFile;
@@ -746,6 +747,7 @@ export function setupHookBridge(
       transcriptWatchers,
       transcriptFallbackTimers,
       transcriptDiscovery,
+      withholdTranscriptPath: deps.withholdTranscriptPath,
       messageApi,
       sendAndRecord,
       currentPort,

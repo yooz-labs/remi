@@ -178,6 +178,7 @@ describe('AskUserQuestion and ExitPlanMode through held hooks, end to end (#1127
     const hasLocalTerminal = opts.hasLocalTerminal ?? true;
     handle = setupHookBridge(
       {
+        withholdTranscriptPath: false,
         sessionRegistry: registry,
         bindingStore,
         liveSessionsRegistry: new SessionRegistryFile(path.join(tmpDir, 'live-sessions')),

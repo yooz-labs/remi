@@ -92,7 +92,7 @@ test('real CLI reports states without identity or environment values', () => {
     const config = ['signed', 'out', 'other', 'unknown']
       .map(
         (name) =>
-          `[profiles.${name}]\nlabel="${name}"\nenv={AWS_PROFILE="planted-value"}\n[profiles.${name}.claude]\ndir=${JSON.stringify(path.join(f.root, name))}\nexpects="subscription"\n`,
+          `[profiles.${name}]\nlabel="${name}"\nenv={MY_TOOL_MODE="planted-value"}\n[profiles.${name}.claude]\ndir=${JSON.stringify(path.join(f.root, name))}\nexpects="subscription"\n`,
       )
       .join('');
     fs.writeFileSync(f.config, config);
@@ -107,7 +107,7 @@ test('real CLI reports states without identity or environment values', () => {
     ])
       expect(listing.out).toContain(state);
     const show = f.run('show', 'signed');
-    expect(show.out).toContain('AWS_PROFILE');
+    expect(show.out).toContain('MY_TOOL_MODE');
     for (const output of [listing.out, listing.err, show.out, show.err]) {
       expect(output).not.toContain('planted@example.com');
       expect(output).not.toContain('planted-value');
@@ -117,7 +117,7 @@ test('real CLI reports states without identity or environment values', () => {
   }
 });
 
-test('real CLI does not invoke Codex without an explicit file store', () => {
+test('real CLI checks Codex with default, keyring and file stores', () => {
   const f = fixture();
   try {
     const codexDir = path.join(f.root, 'codex');
@@ -132,18 +132,17 @@ test('real CLI does not invoke Codex without an explicit file store', () => {
           path.join(codexDir, 'config.toml'),
           `cli_auth_credentials_store = "${store}"\n`,
         );
-      expect(f.run('ls').out).toContain('codex: unknown (not_checked)');
-      expect(fs.existsSync(f.log)).toBe(false);
+      expect(f.run('ls').out).toContain('codex: signed in');
     }
     fs.writeFileSync(path.join(codexDir, 'config.toml'), 'cli_auth_credentials_store = "file"\n');
     expect(f.run('ls').out).toContain('codex: signed in');
-    expect(fs.readFileSync(f.log, 'utf8')).toBe('login status\n');
+    expect(fs.readFileSync(f.log, 'utf8')).toBe('login status\nlogin status\nlogin status\n');
   } finally {
     fs.rmSync(f.root, { recursive: true, force: true });
   }
 });
 
-test('login requires a terminal and an isolated Codex file store', async () => {
+test('login requires a terminal and accepts Codex stores', async () => {
   const f = fixture();
   const savedPath = process.env['PATH'];
   const savedLog = process.env['FAKE_LOG'];
@@ -175,16 +174,14 @@ test('login requires a terminal and an isolated Codex file store', async () => {
     const terminal = { ...io, isTerminal: () => true };
     expect(
       await runProfileCommand(['login', 'work', '--harness', 'codex'], profiles, terminal),
-    ).toBe(1);
+    ).toBe(0);
     fs.writeFileSync(
       path.join(codexDir, 'config.toml'),
       'cli_auth_credentials_store = "keyring"\n',
     );
     expect(
       await runProfileCommand(['login', 'work', '--harness', 'codex'], profiles, terminal),
-    ).toBe(1);
-    expect(lines.join('\n')).toContain('does not keep apart per profile');
-    expect(fs.existsSync(f.log)).toBe(false);
+    ).toBe(0);
     fs.writeFileSync(path.join(codexDir, 'config.toml'), 'cli_auth_credentials_store = "file"\n');
     expect(
       await runProfileCommand(['login', 'work', '--harness', 'codex'], profiles, terminal),
@@ -194,7 +191,7 @@ test('login requires a terminal and an isolated Codex file store', async () => {
     ).toBe(0);
     expect(await runProfileCommand(['login', 'api'], profiles, terminal)).toBe(0);
     expect(fs.readFileSync(f.log, 'utf8')).toBe(
-      'login\nauth login --claudeai\nauth login --console\n',
+      'login\nlogin\nlogin\nauth login --claudeai\nauth login --console\n',
     );
     expect(lines.join('\n')).toContain(
       'A Console sign-in without an API key signs out every claude.ai sign-in',
@@ -414,6 +411,58 @@ test('real commands discard managed-key and gateway identity fields throughout f
         expect(fs.readFileSync(filename, 'utf8')).not.toContain('planted@example.com');
     }
   } finally {
+    fs.rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test('profile status and login omit dynamic Codex credential names and refuse invalid config', async () => {
+  const f = fixture();
+  const oldPath = process.env['PATH'];
+  const oldLog = process.env['FAKE_LOG'];
+  const oldKey = process.env['MY_PROVIDER_KEY'];
+  process.env['PATH'] = `${f.bin}:/usr/bin:/bin`;
+  process.env['FAKE_LOG'] = f.log;
+  process.env['MY_PROVIDER_KEY'] = 'placeholder';
+  try {
+    const dir = path.join(f.root, 'codex');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(
+      path.join(f.bin, 'codex'),
+      '#!/bin/sh\nenv | cut -d= -f1 | sort >> "$FAKE_LOG"\n',
+      { mode: 0o700 },
+    );
+    fs.writeFileSync(
+      path.join(dir, 'config.toml'),
+      '[model_providers.test]\nenv_key = "MY_PROVIDER_KEY"\n',
+    );
+    const profiles = parseProfiles({
+      work: { label: 'Work', codex: { dir, expects: 'subscription' } },
+    });
+    const lines: string[] = [];
+    const io = {
+      out: (line: string) => lines.push(line),
+      err: (line: string) => lines.push(line),
+      isTerminal: () => true,
+    };
+    expect(await runProfileCommand(['ls'], profiles, io)).toBe(0);
+    expect(await runProfileCommand(['login', 'work', '--harness', 'codex'], profiles, io)).toBe(0);
+    expect(fs.readFileSync(f.log, 'utf8')).not.toContain('MY_PROVIDER_KEY');
+    fs.rmSync(f.log);
+    fs.writeFileSync(path.join(dir, 'config.toml'), 'invalid = [');
+    lines.length = 0;
+    expect(await runProfileCommand(['ls'], profiles, io)).toBe(0);
+    expect(lines.join('\n')).toContain(
+      'Could not read the Codex configuration of profile work (config.toml).',
+    );
+    expect(await runProfileCommand(['login', 'work', '--harness', 'codex'], profiles, io)).toBe(1);
+    expect(fs.existsSync(f.log)).toBe(false);
+  } finally {
+    if (oldPath === undefined) Reflect.deleteProperty(process.env, 'PATH');
+    else process.env['PATH'] = oldPath;
+    if (oldLog === undefined) Reflect.deleteProperty(process.env, 'FAKE_LOG');
+    else process.env['FAKE_LOG'] = oldLog;
+    if (oldKey === undefined) Reflect.deleteProperty(process.env, 'MY_PROVIDER_KEY');
+    else process.env['MY_PROVIDER_KEY'] = oldKey;
     fs.rmSync(f.root, { recursive: true, force: true });
   }
 });

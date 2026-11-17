@@ -38,6 +38,7 @@ export interface CurrentSessionResolverDeps {
   harness: Pick<Harness, 'transcriptPath'>;
   /** The harness this daemon hosts: the identity of a session whose record is missing or names none this build knows. */
   harnessId: HarnessId;
+  withholdTranscriptPath: boolean;
 }
 
 /**
@@ -63,7 +64,7 @@ export function makeCurrentSessionResolver(
       // `harness.transcriptPath` may itself be null (a harness with no file),
       // which reads as "no file", the same as an unknown id or project.
       const transcriptPath =
-        claudeSessionId && projectPath
+        !deps.withholdTranscriptPath && claudeSessionId && projectPath
           ? harness.transcriptPath(projectPath, claudeSessionId)
           : null;
       const identity = (stored ? identityOfRecord(stored) : null) ?? {

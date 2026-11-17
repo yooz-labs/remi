@@ -60,7 +60,10 @@ export interface PTYSessionConfig {
   readonly cwd?: string;
 
   /** Environment variables */
-  readonly env?: Record<string, string>;
+  readonly env?: Readonly<Record<string, string | undefined>>;
+
+  /** True: env is the whole environment and process.env is not inherited; remi's own secrets are still removed by withoutRemiSecrets. */
+  readonly completeEnv?: boolean;
 
   /** Initial terminal size */
   readonly size?: TerminalSize;
@@ -127,6 +130,7 @@ export class PTYSession {
       args: config.args ?? [],
       cwd: config.cwd ?? process.cwd(),
       env: config.env ?? {},
+      completeEnv: config.completeEnv ?? false,
       size: config.size ?? DEFAULT_SIZE,
     };
   }
@@ -209,7 +213,7 @@ export class PTYSession {
         cwd: this.config.cwd,
         // The agent never sees remi's own secrets (#1249, `child-env.ts`).
         env: withoutRemiSecrets({
-          ...process.env,
+          ...(this.config.completeEnv ? {} : process.env),
           ...this.config.env,
           // Force color output
           FORCE_COLOR: '1',

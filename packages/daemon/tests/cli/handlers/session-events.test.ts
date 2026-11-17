@@ -88,6 +88,7 @@ describe('createSessionHandlers', () => {
 
   function makeHandlers(opts: { exitFallbackMs?: number; screen?: PromptUpDeps } = {}) {
     const handlers = createSessionHandlers({
+      withholdTranscriptPaths: false,
       sessionRegistry,
       bindingStore,
       transcriptDiscovery,

@@ -23,6 +23,13 @@ import { formatVersionDrift } from './version-drift.ts';
 // version-drift.ts so `remi ls` shares the exact wording (#766 review).
 export { formatVersionDrift };
 
+export const PROFILE_REFUSED_EXIT_CODE = 78;
+export class ProfileRefusedError extends Error {
+  constructor() {
+    super('The session profile was refused.');
+  }
+}
+
 const REMI_DIR = remiHome();
 export const PID_FILE = path.join(REMI_DIR, 'daemon.pid');
 const STATUS_FILE = path.join(REMI_DIR, 'daemon-status.json');
@@ -658,12 +665,25 @@ export async function spawnRemiDaemon(
     throw new Error(`Failed to start daemon process (command: ${command})`);
   }
 
+  let exitCode: number | null | undefined;
+  const exited = new Promise<void>((resolve) => {
+    child.once('exit', (code) => {
+      exitCode = code;
+      resolve();
+    });
+  });
   child.unref();
   fs.closeSync(logFd);
 
   // Poll live-sessions registry until the new daemon registers
   const startTime = Date.now();
   while (Date.now() - startTime < timeoutMs) {
+    if (exitCode === PROFILE_REFUSED_EXIT_CODE) {
+      throw new ProfileRefusedError();
+    }
+    if (exitCode !== undefined) {
+      throw new Error(`Daemon process exited unexpectedly. Check logs: ${LOG_FILE}`);
+    }
     const entries = liveRegistry.listLive();
     const entry = entries.find((e) => e.wsPort === port && e.pid === pid);
     if (entry) {
@@ -674,6 +694,11 @@ export async function spawnRemiDaemon(
     try {
       process.kill(pid, 0);
     } catch {
+      // Allow the child's exit event to supply its code before classifying it.
+      await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
+      if (exitCode === PROFILE_REFUSED_EXIT_CODE) {
+        throw new ProfileRefusedError();
+      }
       throw new Error(`Daemon process exited unexpectedly. Check logs: ${LOG_FILE}`);
     }
 

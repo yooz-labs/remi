@@ -6,9 +6,9 @@ import { PROFILE_USAGE } from '../cli/help.ts';
 import { CONFIG_PATH, parseConfigText } from '../config/config.ts';
 import { remiHome } from '../config/remi-home.ts';
 import { configWarnings } from './config-warnings.ts';
-import { checkLogin, codexUsesFileStore } from './login-check.ts';
+import { checkLogin } from './login-check.ts';
 import { type Profile, type Profiles, parseProfiles } from './profile-config.ts';
-import { profileEnvironment } from './profile-env.ts';
+import { profileLaunchEnvironment } from './profile-env.ts';
 
 interface IO {
   out: (line: string) => void;
@@ -33,8 +33,13 @@ function statusText(result: Awaited<ReturnType<typeof checkLogin>>): string {
       return `unknown (${result.reason ?? 'error'})`;
   }
 }
-async function statuses(profile: Profile, cwd: string): Promise<string[]> {
-  const env = profileEnvironment(process.env, profile);
+async function statuses(id: string, profile: Profile, cwd: string): Promise<string[]> {
+  let env: ReturnType<typeof profileLaunchEnvironment>;
+  try {
+    env = profileLaunchEnvironment(process.env, id, profile);
+  } catch (error) {
+    return [error instanceof Error ? error.message : String(error)];
+  }
   return Promise.all(
     (['claude', 'codex'] as const)
       .filter((name) => profile[name])
@@ -277,12 +282,6 @@ async function runLogin(
     io.err(`Profile ${id} expects ${spec.expects}, which this build does not support.`);
     return 1;
   }
-  if (harness === 'codex' && !codexUsesFileStore(spec.dir)) {
-    io.err(
-      `Profile ${id} keeps its Codex sign-in in the system keychain, which Codex does not keep apart per profile. Add this line to ${spec.dir}/config.toml and sign in again: cli_auth_credentials_store = "file"`,
-    );
-    return 1;
-  }
   try {
     if (spec.dir === path.join(remiHome(), 'p', id, harness))
       fs.mkdirSync(spec.dir, { recursive: true, mode: 0o700 });
@@ -295,7 +294,13 @@ async function runLogin(
     io.out(
       'A Console sign-in without an API key signs out every claude.ai sign-in on this machine and is not kept apart per profile.',
     );
-  const env = profileEnvironment(process.env, profile);
+  let env: ReturnType<typeof profileLaunchEnvironment>;
+  try {
+    env = profileLaunchEnvironment(process.env, id, profile);
+  } catch (error) {
+    io.err(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
   const command = Bun.which(harness, { PATH: env['PATH'] ?? '' });
   if (!command) {
     io.err(`${harness} is not installed.`);
@@ -331,7 +336,7 @@ export async function runProfileCommand(
     io.out('default (built-in): your existing sign-ins; remi changes nothing');
     for (const [name, profile] of Object.entries(profiles.entries)) {
       io.out(`${name}  ${profile.label}${profiles.default === name ? ' (machine default)' : ''}`);
-      for (const line of await statuses(profile, cwd)) io.out(`  ${line}`);
+      for (const line of await statuses(name, profile, cwd)) io.out(`  ${line}`);
     }
     return 0;
   }
@@ -348,7 +353,7 @@ export async function runProfileCommand(
     for (const name of ['claude', 'codex'] as const)
       if (profile[name])
         io.out(`${name}: dir = ${profile[name]?.dir}, expects = ${profile[name]?.expects}`);
-    for (const line of await statuses(profile, cwd)) io.out(line);
+    for (const line of await statuses(id, profile, cwd)) io.out(line);
     if (profile.claude) {
       for (const warning of configWarnings({
         claudeDir: profile.claude.dir,

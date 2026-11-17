@@ -220,6 +220,7 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
 
     const handle = setupHookBridge(
       {
+        withholdTranscriptPath: false,
         sessionRegistry,
         bindingStore,
         liveSessionsRegistry,

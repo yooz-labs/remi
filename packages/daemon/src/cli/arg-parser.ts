@@ -164,6 +164,7 @@ export interface ParsedArgs {
    * of `new` lists it.
    */
   readonly harness: HarnessId | undefined;
+  readonly remiProfile: string | undefined;
   readonly showVersion: boolean;
   readonly showHelp: boolean;
   /** Callers MUST check this before using any other field. */
@@ -226,6 +227,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   const passthroughArgs: string[] = [];
   const explicitArgs: string[] = [];
   let harness: HarnessId | undefined;
+  let remiProfile: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -414,6 +416,13 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
         host = nextArg;
         i++;
       }
+    } else if (arg === '--remi-profile') {
+      if (!nextArg || nextArg.startsWith('-')) {
+        error = 'Error: --remi-profile requires a value.';
+      } else {
+        remiProfile = nextArg;
+        i++;
+      }
     } else if (arg === '--harness') {
       if (!nextArg || nextArg.startsWith('-')) {
         error = 'Error: --harness requires a value.';
@@ -515,6 +524,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   }
 
   return {
+    remiProfile,
     port,
     noTelegram,
     maxBulletLength,
