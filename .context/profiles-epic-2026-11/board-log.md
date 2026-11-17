@@ -34,6 +34,7 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-17T04:10-08:00 | CP0: J19 answered: (a) hosted full suite plus local focused tests; DV runs the profile tests and the test folders the merged PR touched under env -i with a canonical TMPDIR; DV-1 failures are not a baseline | owner |  |
 | 2026-11-17T05:28-08:00 | Owner 2026-11-17: merge gate item 3 (fresh base) is relaxed: commits that develop gained since a PR's checks ran count as a fresh base when they are docs-only files or version bumps (merge commits of docs-only PRs included); any code, config, workflow or test change on develop still forces the worker to merge develop and the checks to rerun | owner |  |
 | 2026-11-17T05:52-08:00 | Owner 2026-11-17: the relaxed fresh-base rule also covers config/app-release.json (read only by the TestFlight scripts) | owner |  |
+| 2026-11-17T11:11-08:00 | J21: Advisor consults limit raised from 20 to 100 (owner answer, 2026-11-17); Budget row edited at the owner's instruction | owner |  |
 
 ## Log
 
@@ -109,3 +110,4 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-17T10:57-08:00 | Lead cdcc4eae verified (cards/P1B-fix-round-1.md decides every finding: profile dir withheld from 4 wire frames incl. session_rotated optional field, AWS_/AZURE_/CLOUDSDK_/GCLOUD_/GOOGLE_ prefixes (85 names + 7 prefixes), damaged-sidecar behavior, Codex-default --resume refusal kept, Path 2 function extracted, 17 mutations); P1B PR 1811 fix round dispatched (r8) |
 | 2026-11-17T11:06-08:00 | P1B-8 (PR 1811 fix round) stopped before any commit on a safety discrepancy: the fix card's widened gate (all of packages/daemon/tests/cli) includes daemon-manager tests that use the real HOME (PID_FILE under ~/.remi, daemon.pid); the sandbox refused the writes and the worker stopped; I did NOT run that gate outside the sandbox (never touch the owner's real state); lead asked for a safe gate (named files or a scratch HOME) and an r9 continuation from the dirty uncommitted tree; develop still 68800000 |
 | 2026-11-17T11:06-08:00 | Advisor consults limit reached (spend refused at 21 of 20): the ninth P1B lead consult (safe gate) was sent before the spend was refused, my ordering error; no further lead consult until the owner answers J21 |
+| 2026-11-17T11:11-08:00 | Owner answered J21: raise the advisor consult limit to 100; Budget row updated; the consult sent before the refused spend is now counted (21 of 100) |
