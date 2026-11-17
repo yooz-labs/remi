@@ -1,4 +1,4 @@
-import { runReading } from './run-reading.ts';
+import { type SpawnBoundedOptions, runReading } from './run-reading.ts';
 
 /** One line of "Listed by owning process" in `pmset -g assertions`. */
 export interface AssertionHolder {
@@ -132,8 +132,10 @@ export function parseAssertions(text: string): AssertionsReading {
 }
 
 /** `pmset -g assertions`, parsed. */
-export async function readAssertions(): Promise<AssertionsReading> {
-  const run = await runReading('/usr/bin/pmset', ['-g', 'assertions']);
+export async function readAssertions(
+  options: SpawnBoundedOptions = {},
+): Promise<AssertionsReading> {
+  const run = await runReading('/usr/bin/pmset', ['-g', 'assertions'], options);
   if (!run.ok) return unknown(`run failed: ${run.reason}`);
   return parseAssertions(run.stdout);
 }

@@ -13,6 +13,18 @@ if (process.platform !== 'darwin') {
     expect(['open', 'closed', 'absent']).toContain(reading.clamshell);
   });
 
+  test('the readers pass their options on: a 16-byte stdout cap makes ioreg oversize', async () => {
+    expect(await readRootDomain({ maxStdoutBytes: 16 })).toEqual({
+      sleepDisabled: 'unknown',
+      clamshell: 'unknown',
+      reason: 'oversize',
+    });
+    const assertions = await readAssertions({ maxStdoutBytes: 16 });
+    expect(assertions).toEqual({ kind: 'unknown', reason: 'run failed: oversize' });
+    const thermal = await readThermal({ maxStdoutBytes: 4 });
+    expect(thermal).toEqual({ kind: 'unknown', reason: 'run failed: oversize' });
+  });
+
   test('readThermal reads a level', async () => {
     const reading = await readThermal();
     if (reading.kind !== 'ok') throw new Error(`thermal unknown: ${reading.reason}`);

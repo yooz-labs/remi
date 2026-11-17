@@ -1,4 +1,4 @@
-import { runReading } from './run-reading.ts';
+import { type SpawnBoundedOptions, runReading } from './run-reading.ts';
 
 export interface RootDomainReading {
   /** `"SleepDisabled"`: yes only while `pmset disablesleep 1` (or similar) is in force. */
@@ -9,6 +9,8 @@ export interface RootDomainReading {
    * that the Mac has no lid, and a laptop whose key goes missing would read the same.
    */
   readonly clamshell: 'open' | 'closed' | 'absent' | 'unknown';
+  /** Set only when the run itself failed (`timeout`, `oversize`, `exit N`, ...); never output text. */
+  readonly reason?: string;
 }
 
 const UNKNOWN: RootDomainReading = { sleepDisabled: 'unknown', clamshell: 'unknown' };
@@ -56,8 +58,14 @@ export function parseRootDomain(text: string): RootDomainReading {
 }
 
 /** `ioreg -r -c IOPMrootDomain -d 1`; a failed run makes both fields unknown. */
-export async function readRootDomain(): Promise<RootDomainReading> {
-  const run = await runReading('/usr/sbin/ioreg', ['-r', '-c', 'IOPMrootDomain', '-d', '1']);
-  if (!run.ok) return UNKNOWN;
+export async function readRootDomain(
+  options: SpawnBoundedOptions = {},
+): Promise<RootDomainReading> {
+  const run = await runReading(
+    '/usr/sbin/ioreg',
+    ['-r', '-c', 'IOPMrootDomain', '-d', '1'],
+    options,
+  );
+  if (!run.ok) return { ...UNKNOWN, reason: run.reason };
   return parseRootDomain(run.stdout);
 }

@@ -27,10 +27,14 @@ const IOREG_CLASSES: readonly string[] = ['IOPMrootDomain', 'AppleSmartBattery']
 
 const THERMAL_KEY = 'com.apple.system.thermalpressurelevel';
 
-const DEFAULT_TIMEOUT_MS = 2000;
-const DEFAULT_MAX_STDOUT_BYTES = 262144;
-const MAX_STDERR_BYTES = 65536;
-const KILL_GRACE_MS = 500;
+/** Deadline after which a reading is killed; the `[awake]` key `reading_deadline_ms` feeds it in G2. */
+export const DEFAULT_TIMEOUT_MS = 2000;
+/** Stdout cap; the `[awake]` key `reading_stdout_max_bytes` feeds it in G2. */
+export const DEFAULT_MAX_STDOUT_BYTES = 262144;
+/** Stderr cap, when stderr is kept; the `[awake]` key `reading_stderr_max_bytes` feeds it in G2. */
+export const DEFAULT_MAX_STDERR_BYTES = 65536;
+/** Wait after the kill before finishing without an exit; the `[awake]` key `reading_kill_grace_ms` feeds it in G2. */
+export const DEFAULT_KILL_GRACE_MS = 500;
 
 export interface SpawnBoundedOptions {
   /** Deadline after which the child is sent SIGKILL (default 2000). */
@@ -39,6 +43,10 @@ export interface SpawnBoundedOptions {
   readonly maxStdoutBytes?: number;
   /** Return stderr (capped at 65536 bytes) instead of discarding it. */
   readonly captureStderr?: boolean;
+  /** Stderr size kept when `captureStderr` is set (default 65536). */
+  readonly maxStderrBytes?: number;
+  /** Wait after the kill before finishing even if the child's exit has not arrived (default 500). */
+  readonly killGraceMs?: number;
 }
 
 /**
@@ -91,6 +99,8 @@ export function spawnBounded(
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxStdoutBytes = options.maxStdoutBytes ?? DEFAULT_MAX_STDOUT_BYTES;
   const captureStderr = options.captureStderr === true;
+  const maxStderrBytes = options.maxStderrBytes ?? DEFAULT_MAX_STDERR_BYTES;
+  const killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
 
   return new Promise((resolve) => {
     let settled = false;
@@ -124,7 +134,7 @@ export function spawnBounded(
         return;
       }
       target.once('exit', done);
-      setTimeout(done, KILL_GRACE_MS).unref();
+      setTimeout(done, killGraceMs).unref();
       try {
         if (target.pid === undefined) throw new Error('no pid');
         process.kill(-target.pid, 'SIGKILL');
@@ -166,8 +176,8 @@ export function spawnBounded(
     });
     // stderr is always drained so a chatty tool cannot block on a full pipe.
     child.stderr?.on('data', (chunk: Buffer) => {
-      if (!captureStderr || stderrBytes >= MAX_STDERR_BYTES) return;
-      const room = MAX_STDERR_BYTES - stderrBytes;
+      if (!captureStderr || stderrBytes >= maxStderrBytes) return;
+      const room = maxStderrBytes - stderrBytes;
       const kept = chunk.length > room ? chunk.subarray(0, room) : chunk;
       stderrBytes += kept.length;
       stderrChunks.push(kept);

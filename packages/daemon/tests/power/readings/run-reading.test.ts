@@ -4,6 +4,10 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  DEFAULT_KILL_GRACE_MS,
+  DEFAULT_MAX_STDERR_BYTES,
+  DEFAULT_MAX_STDOUT_BYTES,
+  DEFAULT_TIMEOUT_MS,
   READING_EXECUTABLES,
   isReadOnlyInvocation,
   readingSpawnCount,
@@ -186,6 +190,34 @@ test('stderr is discarded unless asked for, and capped when kept', async () => {
   if (!result.ok) throw new Error(`flood failed: ${result.reason}`);
   expect(result.stdout).toBe('done\n');
   expect(result.stderr.length).toBe(65536);
+});
+
+test('maxStderrBytes bounds the stderr kept, and defaults to 65536', async () => {
+  const flood = script('stderr1000.sh', 'head -c 1000 /dev/zero | tr "\\0" e >&2\necho done');
+  const capped = await spawnBounded(flood, [], { captureStderr: true, maxStderrBytes: 100 });
+  if (!capped.ok) throw new Error(`flood failed: ${capped.reason}`);
+  expect(capped.stderr.length).toBe(100);
+  const whole = await spawnBounded(flood, [], { captureStderr: true });
+  if (!whole.ok) throw new Error(`flood failed: ${whole.reason}`);
+  expect(whole.stderr.length).toBe(1000);
+  expect(DEFAULT_MAX_STDERR_BYTES).toBe(65536);
+});
+
+test('the defaults are the documented numbers', () => {
+  expect([
+    DEFAULT_TIMEOUT_MS,
+    DEFAULT_MAX_STDOUT_BYTES,
+    DEFAULT_MAX_STDERR_BYTES,
+    DEFAULT_KILL_GRACE_MS,
+  ]).toEqual([2000, 262144, 65536, 500]);
+});
+
+test('killGraceMs is the wait after the kill: a child that ignores SIGTERM is back within deadline plus grace', async () => {
+  const stubborn = script('stubborn.sh', 'trap "" TERM\nexec sleep 5');
+  const started = Date.now();
+  const result = await spawnBounded(stubborn, [], { timeoutMs: 300, killGraceMs: 100 });
+  expect(result).toEqual({ ok: false, reason: 'timeout' });
+  expect(Date.now() - started).toBeLessThan(300 + 100 + 500);
 });
 
 test('the child gets exactly LC_ALL and PATH, and no stdin', async () => {

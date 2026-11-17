@@ -1,4 +1,4 @@
-import { runReading } from './run-reading.ts';
+import { type SpawnBoundedOptions, runReading } from './run-reading.ts';
 
 /** macOS thermal pressure, from `OSThermalNotification.h` (`TARGET_OS_OSX`): 0 to 4. */
 export type ThermalLevel = 'nominal' | 'moderate' | 'heavy' | 'trapping' | 'sleeping';
@@ -36,11 +36,12 @@ export function parseThermal(text: string): ThermalReading {
  * Callers (the battery and level-2 slices) must treat `nominal` as "no pressure reported", and
  * only a level above nominal as a positive signal.
  */
-export async function readThermal(): Promise<ThermalReading> {
-  const run = await runReading('/usr/bin/notifyutil', [
-    '-g',
-    'com.apple.system.thermalpressurelevel',
-  ]);
+export async function readThermal(options: SpawnBoundedOptions = {}): Promise<ThermalReading> {
+  const run = await runReading(
+    '/usr/bin/notifyutil',
+    ['-g', 'com.apple.system.thermalpressurelevel'],
+    options,
+  );
   if (!run.ok) return { kind: 'unknown', reason: `run failed: ${run.reason}` };
   return parseThermal(run.stdout);
 }
