@@ -127,7 +127,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | RV-W1-failsafe | reviewer failsafe | claude-sonnet | sonnet xhigh | W1 PR1807 | 2026-11-17T08:58 | done |
 | L2-POL-1 | implementer | claude-opus | opus (a37ea6ad9be74c593) | L2-POL | 2026-11-17T09:10 | done |
 | FX-W1 | fix round 1 (PR1807) | claude-opus | opus (ad62c17fc6af47519, resumed) | W1 PR1807 | 2026-11-17T09:20 | done |
-| RV-POL-contract abb5a638150408212 | reviewer (contract abb5a638150408212) | claude-sonnet | sonnet () | L2-POL PR1809 | 2026-11-17T09:52 | running |
-| RV-POL-verification adb8086a849545b27 | reviewer (verification adb8086a849545b27) | claude-sonnet | sonnet () | L2-POL PR1809 | 2026-11-17T09:52 | running |
-| RV-POL-failsafe a8c447f6023c80181 | reviewer (failsafe a8c447f6023c80181) | claude-sonnet | sonnet () | L2-POL PR1809 | 2026-11-17T09:52 | running |
+| RV-POL-contract abb5a638150408212 | reviewer (contract abb5a638150408212) | claude-sonnet | sonnet () | L2-POL PR1809 | 2026-11-17T09:52 | done |
+| RV-POL-verification adb8086a849545b27 | reviewer (verification adb8086a849545b27) | claude-sonnet | sonnet () | L2-POL PR1809 | 2026-11-17T09:52 | done |
+| RV-POL-failsafe a8c447f6023c80181 | reviewer (failsafe a8c447f6023c80181) | claude-sonnet | sonnet () | L2-POL PR1809 | 2026-11-17T09:52 | done |
 | FX-POL | fix round 1 (PR1809) | claude-opus | opus (a37ea6ad9be74c593, resumed) | L2-POL PR1809 | 2026-11-17T10:25 | running |
