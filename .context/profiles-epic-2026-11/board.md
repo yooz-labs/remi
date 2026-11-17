@@ -173,4 +173,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | FX-P1B-pin | CI pin fix (PR1811) | claude-sonnet | sonnet (ab2939c5fdd25abe1; pin + 2 CI fixes) | P1B PR1811 | 2026-11-17T11:55 | done |
 | RV-P1BD-privacy a855aabc460e82bf1 | delta reviewer (privacy a855aabc460e82bf1) | claude-sonnet | sonnet () | P1B PR1811 | 2026-11-17T12:05 | done |
 | RV-P1BD-tests ad5fc22485bcba174 | delta reviewer (tests ad5fc22485bcba174) | claude-sonnet | sonnet () | P1B PR1811 | 2026-11-17T12:05 | done |
-| FX-P1B-r12 | final test fix (PR1811 delta) | claude-sonnet | sonnet (ab2939c5fdd25abe1, resumed) | P1B PR1811 | 2026-11-17T12:45 | running |
+| FX-P1B-r12 | final test fix (PR1811 delta) | claude-sonnet | sonnet (ab2939c5fdd25abe1, resumed) | P1B PR1811 | 2026-11-17T12:45 | done |
