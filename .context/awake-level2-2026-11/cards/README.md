@@ -40,7 +40,7 @@ This preamble is the profiles pack's (`chore/profiles-epic-plan`, `cards/README.
 11. PR text: what changed, what was tested (with the commands), what is not verified, and what ships disabled or unfinished; no emojis, no AI attribution; one paragraph or list item per line (GitHub renders every newline).
     Extend an existing PR body, never replace it.
     Refer to the issue only as "Part of #1773".
-    **Never write a closing word followed by an issue number** in a commit message, the PR title or the PR body: `close-on-develop.yml` closes issue N for close, closes, closed, fix, fixes, fixed, resolve, resolves or resolved followed by `#N` in any pushed commit (`packages/shared/src/issue-closing.ts`); this already closed #1773 once by mistake (PR #1782).
+    **Never write a closing word followed by an issue number** in a commit message, the PR title or the PR body: `close-on-develop.yml` closes issue N for close, closes, closed, fix, fixes, fixed, resolve, resolves or resolved followed by `#N` in any pushed commit (`packages/shared/src/issue-closing.ts`); a commit message of PR #1782 already closed this plan's issue once by mistake.
 12. Stop and report on any stop condition, or when the card seems wrong.
 13. No computer use and no visible GUI runs; no secrets; never read `~/.appstoreconnect`, `.p8` files, tokens or keychains.
 14. The final message is the report: PR number and head commit hash; each gate with its quoted last line; evidence paths (under `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/`); a revert check per fix; deviations; questions for the lead; patch notes.
