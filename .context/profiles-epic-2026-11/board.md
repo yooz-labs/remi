@@ -49,12 +49,12 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 100 | 37 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Agents today | 100 | 39 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
 | Codex Luna today | 24 | 3 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
-| Codex Terra today | 16 | 4 | daily | owner CP0 value; Terra implementers and fix rounds |
+| Codex Terra today | 16 | 5 | daily | owner CP0 value; Terra implementers and fix rounds |
 | Claude Sonnet today | 44 | 16 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
-| Claude Opus today | 16 | 13 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
-| Advisor consults | 20 | 14 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
+| Claude Opus today | 16 | 14 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
+| Advisor consults | 20 | 15 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
 | Fable consults | 1 | 1 | never | copied; only if the owner asks; never --over |
 | Agents this wave | 0 | 0 | wave | unused: this plan has no waves |
 
@@ -154,3 +154,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | LEAD-AWAKE2 | lead: awake level 2 cards (owner go 2026-11-17) | claude-opus | opus xhigh | none | 2026-11-17T06:00 | running |
 | DV-2 | DV on develop 884dcf80 (merged PRs 1795 and 1798) | claude-sonnet | sonnet high | DV@884dcf80 | 2026-11-17T08:47 | done |
 | P1B-1 | implementer | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T08:55 | stopped-incomplete |
+| P1B-2 | implementer (continuation) | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T09:05 | stopped-incomplete |
