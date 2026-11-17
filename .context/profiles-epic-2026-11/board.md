@@ -49,12 +49,12 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 100 | 34 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Agents today | 100 | 37 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
 | Codex Luna today | 24 | 3 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
-| Codex Terra today | 16 | 3 | daily | owner CP0 value; Terra implementers and fix rounds |
+| Codex Terra today | 16 | 4 | daily | owner CP0 value; Terra implementers and fix rounds |
 | Claude Sonnet today | 44 | 16 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
-| Claude Opus today | 16 | 11 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
-| Advisor consults | 20 | 12 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
+| Claude Opus today | 16 | 13 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
+| Advisor consults | 20 | 14 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
 | Fable consults | 1 | 1 | never | copied; only if the owner asks; never --over |
 | Agents this wave | 0 | 0 | wave | unused: this plan has no waves |
 
@@ -70,7 +70,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | CP0 | [Plan approval: defaults, merge authority, J1a to J15 and J18](plan.md) | - | - | - | - | done | - | - | - | - | rule: owner approves; J1a-J15, J18 answered, J16/J17 recorded deferred; CP0: lines recorded, then done (runbook 2); no dispatch before |
 | P1A | [Profile model and commands #1748](cards/P1A-profile-model-and-commands.md) | - | worker-hard | - | - | done | CP0 | - | 2026-11-17T04:14-08:00 | 1.5d | dispatch after CP0 (owner approves the plan); Codex Terra |
 | P1C | [Codex credential characterization #1748](cards/P1C-codex-credential-characterization.md) | - | worker | - | - | done | CP0 | - | 2026-11-17T04:14-08:00 | 4h | dispatch after CP0; beside P1A; docs lens review |
-| P1B | [Launches follow the profile #1748](cards/P1B-launches-follow-profile.md) | - | worker-hard | - | - | todo | P1A, P1C | - | - | 2d | after P1A and P1C merge; card follows J9 and J11 answers |
+| P1B | [Launches follow the profile #1748](cards/P1B-launches-follow-profile.md) | - | worker-hard | - | codex-terra | active | P1A, P1C | - | 2026-11-17T08:55 | 2d | after P1A and P1C merge; card follows J9 and J11 answers |
 | DOCS-P1 | [Profile guide, phase 1 (yooz-docs)](cards/DOCS-P1-profile-guide.md) | - | worker | docs | - | todo | P1B | - | - | 6h | after P1B's bump and green DV; done = draft docs PR verified and reviewed, not merged; merges only at REL-DOCS |
 | OG-P1 | [Owner gate: two profiles, 24 h](owner-gates.md) | - | - | - | - | blocked | P1B | - | - | - | rule: set owner when P1B is done; notify owner-gates.md OG-P1 |
 | CP1 | [Checkpoint after phase 1](checkpoints.md) | - | - | - | - | blocked | P1B, DOCS-P1 | - | - | - | rule: wake lead (complete P2A-P2D, DOCS-P2); ask go and J17 in one batch; owner go |
@@ -152,4 +152,5 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | MB-C | research C prior art+security (issue 1801) | claude-sonnet | sonnet (acfd6b47e0d6c051c) | none | 2026-11-17T05:20 | running |
 | MB-PLAN | Fable planner (owner asked, issue 1801) | claude-fable | fable | none | 2026-11-17T05:45 | done |
 | LEAD-AWAKE2 | lead: awake level 2 cards (owner go 2026-11-17) | claude-opus | opus xhigh | none | 2026-11-17T06:00 | running |
-| DV-2 | DV on develop 884dcf80 (merged PRs 1795 and 1798) | claude-sonnet | sonnet high | DV@884dcf80 | 2026-11-17T08:47 | running |
+| DV-2 | DV on develop 884dcf80 (merged PRs 1795 and 1798) | claude-sonnet | sonnet high | DV@884dcf80 | 2026-11-17T08:47 | done |
+| P1B-1 | implementer | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T08:55 | stopped-incomplete |
