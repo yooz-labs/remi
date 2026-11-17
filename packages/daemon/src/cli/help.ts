@@ -47,8 +47,25 @@ import type { Subcommand } from './arg-parser.ts';
 
 /** `~/.remi/config.toml`, or the real path under `REMI_HOME` (#1126). */
 const CONFIG_HINT = configPathForDisplay();
+export const PROFILE_USAGE = 'Usage: remi profile ls | add <id> | show <id> | login <id>';
 
 const commandHelp: Record<Subcommand, string[]> = {
+  profile: [
+    'Manage account profiles.',
+    '',
+    bold('Usage:'),
+    entry('remi profile ls', 'List profiles and sign-in states'),
+    entry('remi profile add <id> --label <text>', 'Add a profile'),
+    entry('remi profile show <id>', 'Show a profile and warnings'),
+    entry('remi profile login <id>', 'Sign in interactively'),
+    '',
+    bold('Options:'),
+    entry('--claude, --codex', 'Select harnesses to add'),
+    entry('--expects subscription|api_key', 'Expected sign-in type'),
+    entry('--claude-dir PATH', 'Adopt an existing Claude directory'),
+    entry('--codex-dir PATH', 'Adopt an existing Codex directory'),
+    entry('--harness claude|codex', 'Choose the harness for login'),
+  ],
   devices: [
     'Usage: remi devices [revoke <exact fingerprint>]',
     'List relay devices or revoke authorization and request acknowledged Worker removal.',
@@ -470,6 +487,7 @@ export function formatHelp(version: string): string {
     entry('remi --sessions exited', 'List exited sessions only'),
     '',
     bold('Configuration:'),
+    entry('remi profile ls|add|show|login', 'Manage account profiles'),
     entry('remi config', 'Show effective configuration'),
     entry('remi config init', 'Create default config file'),
     entry('remi reload', 'Hot-reload config on running daemons'),
