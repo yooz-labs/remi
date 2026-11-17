@@ -4,7 +4,7 @@ Status: ready
 Tier: worker-hard
 Timebox: L, 1.5 days; escalate at 3 days or two failed approaches
 Needs: none; any host (pure code, no macOS tool runs)
-Depends: none for dispatch; the merge waits for the owner's answers to Q15 and Q16 (plan section 6; Q1 to Q14, the Q9 amendment and the rule that every limit is a setting were answered on 2026-11-17)
+Depends: none (the owner answered Q1 to Q16, the Q9 amendment and the rule that every number is a setting on 2026-11-17)
 Branch: `feature/issue-1773-level2-policy` off `origin/develop`
 Worktree: `/Volumes/S1/worktrees/remi/awake-l2pol` (the manager creates it with `git worktree add --no-track -b` and runs `bun install`)
 Plan: plan.md section 2 (L2-POL) and section 6a (armed mode, pause and resume); ADR 0050 "Fail-safe design for level 2" items 2 and 5, "Refusing while another app holds the Mac awake", "Battery, thermal, duration and display inputs", owner decisions 2, 4, 5, 7 and 8
@@ -28,7 +28,8 @@ The owner's answers of 2026-11-17 (recorded in the pack's `board-log.md`):
 - Q14 (a): `level2_default_hours` is the longest continuous run, and `level2_cap_hours` is the on-time in a rolling window (`level2_window_hours`, default 24).
 - The owner's rule: every limit is a setting the person can change; the plan only sets defaults (no maximum, sanity validation only).
 
-Open, implemented here as the lead recommends (a different answer is a fix round before merge): Q15 (a), every former maximum and the 5-point gap become warnings, never refusals; Q16 (a), mechanism constants (subprocess deadlines, size caps, the clock-skew tolerance) stay named constants.
+- Q15 (a): no hard limit at all; every former maximum and the 5-point gap are warnings, never refusals.
+- Q16 (b): mechanism and format bounds are settings too; the level 2 ones are validated here with the policy keys.
 
 Lead decisions under owner decision 8 and the owner's rule: `lease_stale_seconds` (default 120, ADR 0050 line 97), the four pause-and-resume bounds, `level2_window_hours` and `level2_wake_gap_seconds` are keys; the watchdog must be loaded and bound to this remi home to turn on, and on every heartbeat.
 
@@ -69,7 +70,8 @@ Settled:
    - `level2_resume_min_interval_minutes`: integer, 0 or more, default 10 (no automatic resume sooner after the last pause; 0 turns it off);
    - `level2_max_resumes_per_day`: integer, 0 or more, default 12 (automatic starts and resumes in `level2_window_hours`; the next one disarms instead; 0 means level 2 never turns on by itself, only by an explicit `start`);
    - `level2_breaker_failures`: positive integer, default 3 (failures of item 7 in `level2_window_hours` that disarm);
-   - `level2_wake_gap_seconds`: positive integer, default 90 (new: a beat whose `wallNow` is more than this after the previous beat counts as a wake from sleep and restarts the dwell; 90 is three heartbeats at the default).
+   - `level2_wake_gap_seconds`: positive integer, default 90 (new: a beat whose `wallNow` is more than this after the previous beat counts as a wake from sleep and restarts the dwell; 90 is three heartbeats at the default);
+   - mechanism and format keys (Q16 (b); validated here, read by L2-CORE, L2-HUB and L2-CLI, each a positive integer with no maximum): `clock_skew_tolerance_seconds` (60, item 9; 0 allowed), `switch_deadline_ms` (5000), `switch_sync_deadline_ms` (3000), `shutdown_budget_ms` (3000), `status_file_max_bytes` (65536), `process_start_time_deadline_ms` (2000), `lease_max_bytes` (4096), `lease_start_time_max_length` (64), `endpoint_body_max_bytes` (4096), `endpoint_read_deadline_ms` (2000), `cli_request_timeout_ms` (5000), `watchdog_command_deadline_seconds` (10), `lease_integer_max_digits` (16) and `sudoers_user_max_length` (32; only the length is a setting: the character class of a safe short name stays fixed, because it is what keeps a sudoers injection out, W1).
    Warnings, never refusals, each returned by the validator and printed at config load and in `remi keep-awake status` (Q15 asks the owner whether any should refuse instead):
    - the start percent less than 5 above the revert percent (pause and resume may alternate);
    - the revert percent below 10 (whether a Mac with sleep disabled still makes its emergency low-battery sleep is unverified, ADR 0050 line 104);
@@ -78,7 +80,11 @@ Settled:
    - `level2_wake_gap_seconds` at or below `heartbeat_seconds` (every beat would count as a wake, so nothing resumes);
    - `level2_default_hours` above `level2_cap_hours`, or `level2_cap_hours` at or above `level2_window_hours` (the larger value has no effect);
    - `level2_resume_dwell_seconds` or `level2_resume_min_interval_minutes` set to 0 (no protection against flapping but the daily resume count);
-   - `require_password_on_wake = false` (the Mac stays awake and unlocked with the lid closed, ADR 0050 table: "logged loudly").
+   - `require_password_on_wake = false` (the Mac stays awake and unlocked with the lid closed, ADR 0050 table: "logged loudly");
+   - `shutdown_budget_ms` at or above the time `remi stop` waits before SIGKILL (5 s, `cli/daemon-manager.ts:470`; Q17): a stop can then kill the hub before its revert, and sleep stays disabled until the watchdog acts;
+   - `watchdog_command_deadline_seconds` at or above `watchdog_interval_seconds` (launchd skips a run while the previous one is still running, so a revert can be late);
+   - `lease_integer_max_digits` above 18 (the watchdog's shell arithmetic overflows at 19 digits and could misjudge a lease);
+   - `lease_max_bytes` below 1024 (the hub's own lease no longer fits, so every period is reverted).
    Export `LEVEL2_DEFAULTS` and `validateLevel2Settings(value: unknown): { ok: true, settings, warnings: string[] } | { ok: false, errors: string[] }`; each error and warning names the key and the rule (for example `awake.level2_revert_battery_percent must be below awake.level2_start_battery_percent`) and never echoes a string value from `foreign_holder_ignore`.
 2. **Foreign holders** (`level2-foreign-holders.ts`): `classifyForeignHolders(holders, remiPids, ignore)`; a holder is `{ pid, process, type, name, createdForPid }` (structurally the same as G1's parsed holder; declare it here, do not import G1).
    A holder is remi's when its `pid` or its `createdForPid` is in `remiPids`.
@@ -159,7 +165,7 @@ Settled:
    `start` from `disarmed` arms, clearing the counters, and then evaluates item 6 as an explicit start.
    `extend` while `on` moves the run's end later, never past the on-time left under `level2_cap_hours` (the status says when the cap cut it); hours that are not a positive number are refused with `hours-invalid`.
    `hub-exit` while `starting`, `on` or `reverting` emits `disable`, and persists `cleanExit` true only after the revert; from any other state it persists `cleanExit` true and changes nothing else.
-9. **Clocks**: timers use the monotonic clock, clamped to the last observed value as `awake-policy.ts:130` does; the window counters use `wallNow`, and a recorded time later than `wallNow` plus `CLOCK_SKEW_TOLERANCE_SECONDS` (a named mechanism constant, 60, Q16) counts as `wallNow` (a backward clock step cannot drop a counted resume or failure).
+9. **Clocks**: timers use the monotonic clock, clamped to the last observed value as `awake-policy.ts:130` does; the window counters use `wallNow`, and a recorded time later than `wallNow` plus `clock_skew_tolerance_seconds` (default 60) counts as `wallNow` (a backward clock step cannot drop a counted resume or failure).
 10. **Status**: `level2Status(state, now, wallNow)` returns `{ state, reason, origin, runEnd, onTimeLeftToday, resumesLeftToday, failuresToday, waitingFor }`.
     `waitingFor` names what a `paused` or `armed` level 2 needs to turn on, for example `battery at 35 percent or AC power`, `lid open`, `2 minutes without a blocking condition`.
 The implementer may choose: internal field names, the effect and event type spellings beyond the state names and reason strings above (which are fixed: the CLI, the endpoint and the docs will print them), test names.
