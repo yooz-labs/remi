@@ -150,4 +150,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | MB-A | research A Remi inventory (issue 1801) | claude-sonnet | sonnet (ab2308c26d8716d42) | none | 2026-11-17T05:20 | running |
 | MB-B | research B harness mechanisms (issue 1801) | claude-sonnet | sonnet (a31ddf35a2971942c) | none | 2026-11-17T05:20 | running |
 | MB-C | research C prior art+security (issue 1801) | claude-sonnet | sonnet (acfd6b47e0d6c051c) | none | 2026-11-17T05:20 | running |
-| MB-PLAN | Fable planner (owner asked, issue 1801) | claude-fable | fable | none | 2026-11-17T05:45 | running |
+| MB-PLAN | Fable planner (owner asked, issue 1801) | claude-fable | fable | none | 2026-11-17T05:45 | done |
