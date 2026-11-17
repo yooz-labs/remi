@@ -115,6 +115,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | ID | Step | Question | Options | Default | Needed by | State | Answer |
 |---|---|---|---|---|---|---|---|
 | J20 | - | May a profile env carry cloud identity pointers (AWS_PROFILE, GOOGLE_APPLICATION_CREDENTIALS...)? Detail in plan section 7 J20; P1B proceeds under a. | a scrub and refuse (Recommended) / b allow pointers in profile env / c stop scrubbing | none | 2026-11-19T12:00 | open |  |
+| J21 | - | Advisor consults reached 20 of 20 (the P1B card needed 9 lead consults). Raise the limit to 40? One more consult was already sent before the spend was refused. | Raise to 40 (Recommended) / Keep 20 and stop lead consults | none | 2026-11-17T14:00 | open |  |
 
 ## Proposals
 
