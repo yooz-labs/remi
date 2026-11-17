@@ -259,11 +259,12 @@ describe('the printed setup', () => {
     const checked = new Set<string>();
     const installed: string[] = [];
     for (const { line } of commands.slice(1)) {
-      const tee = /^sudo tee "\$D\/([^"/]+)" >\/dev\/null <<'[A-Z_]+'$/.exec(line);
-      const check = /^sudo (?:visudo -cf|\/usr\/bin\/plutil -lint) "\$D\/([^"/]+)"$/.exec(line);
-      const install = /^sudo install -m (?:0440|0644) -o root -g wheel "\$D\/([^"/]+)" (\S+)$/.exec(
+      const tee = /^sudo tee "\$\{D:\?\}\/([^"/]+)" >\/dev\/null <<'[A-Z_]+'$/.exec(line);
+      const check = /^sudo (?:visudo -cf|\/usr\/bin\/plutil -lint) "\$\{D:\?\}\/([^"/]+)"$/.exec(
         line,
       );
+      const install =
+        /^sudo install -m (?:0440|0644) -o root -g wheel "\$\{D:\?\}\/([^"/]+)" (\S+)$/.exec(line);
       if (tee) {
         written.add(tee[1] ?? '');
       } else if (check) {
@@ -278,7 +279,7 @@ describe('the printed setup', () => {
         // staging directory, lists the rule, or prints an installed file.
         expect([
           `sudo ${LAUNCHCTL_PATH} bootstrap system ${BOOT_DAEMON_PLIST}`,
-          'sudo rm -rf "$D"',
+          'sudo rm -rf "${D:?}"',
           `sudo ${sudoListArgv(DISABLESLEEP_ON).join(' ')}`,
           `sudo ${sudoListArgv(DISABLESLEEP_OFF).join(' ')}`,
           `sudo cat ${SUDOERS_FILE}`,
@@ -291,6 +292,27 @@ describe('the printed setup', () => {
       // No redirection writes anywhere but /dev/null.
       expect(line.replaceAll('>/dev/null', '')).not.toContain('>');
     }
+  });
+
+  test('a staged path refuses to expand when the staging directory is empty', () => {
+    // A failed mktemp line leaves D empty; the printed path must stop the
+    // command instead of naming a file in the root directory. Only printf runs.
+    const staged = /"\$\{D:\?\}\/[^"/]+"/.exec(commands[1]?.line ?? '')?.[0];
+    expect(staged).toBe('"${D:?}/remi-keep-awake"');
+    const empty = spawnSync('/bin/sh', ['-c', `D=; printf '%s' ${staged}`], {
+      encoding: 'utf8',
+      env: {},
+    });
+    expect(empty.status).not.toBe(0);
+    expect(empty.stdout).toBe('');
+    const set = spawnSync('/bin/sh', ['-c', `D=/private/tmp/stage; printf '%s' ${staged}`], {
+      encoding: 'utf8',
+      env: {},
+    });
+    expect({ status: set.status, stdout: set.stdout }).toEqual({
+      status: 0,
+      stdout: '/private/tmp/stage/remi-keep-awake',
+    });
   });
 
   test('checks both the enable and the revert with sudo -n -l', () => {

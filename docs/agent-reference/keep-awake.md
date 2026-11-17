@@ -85,6 +85,7 @@ The boot LaunchDaemon, `/Library/LaunchDaemons/com.yooz.remi.keep-awake-boot.pli
 ```
 
 The setup text (`setupText`) stages both files only in a directory that root creates with `sudo mktemp -d /private/tmp/remi-keep-awake.XXXXXX` (mode 0700 inside the sticky `/private/tmp`), writes them there with `sudo tee` from quoted here-documents, checks them there (`visudo -cf`, `plutil -lint`), installs them from there with `sudo install`, loads the daemon (`launchctl bootstrap system`, which runs it once and only clears the flag), removes the directory, and then has the owner run `sudo -n -l` for both commands; each must print the command, since a rule that allows the enable but not the revert must never stay in place.
+Every staged path is written `"${D:?}/NAME"`, so a failed `mktemp` line (an empty `D`) stops the command instead of naming a file in `/`.
 The removal text (`removalText`) starts with `remi keep-awake stop` and a check that `ioreg` reads `"SleepDisabled" = No`, removes the sudoers file, the boot daemon, the watchdog agent and its script, and ends with the owner's own `sudo /usr/bin/pmset -a disablesleep 0`.
 
 ### The lease

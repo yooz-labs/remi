@@ -201,7 +201,9 @@ export function setupText(options: { user: string; remiHome: string }): string {
   assertRemiHome(remiHome);
   const rule = sudoersLine(user);
   const bootPlist = bootDaemonPlist().trimEnd();
-  const staged = (name: string) => `"$D/${name}"`;
+  // `${D:?}` stops the command when D is empty (a failed mktemp line), so a
+  // staged path never falls back to the root directory.
+  const staged = (name: string) => `"\${D:?}/${name}"`;
   return [
     `Keep-awake level 2 setup for the user ${user} (remi home ${remiHome}).`,
     'None of these commands is run by remi. Run them yourself in Terminal, in this order; sudo asks for your password.',
@@ -230,7 +232,7 @@ export function setupText(options: { user: string; remiHome: string }): string {
     '',
     '4. Remove the staging directory:',
     '',
-    'sudo rm -rf "$D"',
+    'sudo rm -rf "${D:?}"',
     '',
     '5. Check the rule. Both commands must print the pmset command they name; a rule that allows the enable but not the revert must never stay in place, so if either prints nothing, remove the rule with the removal steps:',
     '',
