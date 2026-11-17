@@ -49,10 +49,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 100 | 52 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Agents today | 100 | 53 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
 | Codex Luna today | 24 | 3 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
 | Codex Terra today | 16 | 14 | daily | owner CP0 value; Terra implementers and fix rounds |
-| Claude Sonnet today | 44 | 20 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
+| Claude Sonnet today | 44 | 21 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
 | Claude Opus today | 16 | 14 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
 | Advisor consults | 100 | 22 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
 | Fable consults | 1 | 1 | never | copied; only if the owner asks; never --over |
@@ -169,4 +169,5 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | P1B-8 | implementer (PR1811 fix round) | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T11:30 | stopped-incomplete |
 | P1B-9 | implementer (PR1811 fix round, continuation) | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T11:25 | stopped-incomplete |
 | P1B-10 | implementer (PR1811 fix round, continuation) | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T11:40 | stopped-incomplete |
-| P1B-11 | implementer (PR1811 fix round, continuation) | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T11:35 | running |
+| P1B-11 | implementer (PR1811 fix round, continuation) | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T11:35 | done |
+| FX-P1B-pin | CI pin fix (PR1811) | claude-sonnet | sonnet (ab2939c5fdd25abe1) | P1B PR1811 | 2026-11-17T11:55 | running |
