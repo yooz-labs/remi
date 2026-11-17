@@ -90,10 +90,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Q2 | - | Q2: Do the battery limits (level 1 floor; level 2 start, revert and time limits) apply only on battery power, with AC power exempt? | Yes (Recommended) / No, also on AC | none | 2026-11-18T12:00 | answered | Yes (owner, 2026-11-17T06:56-08:00) |
 | Q3 | - | Q3: Level 2 on a Mac with no battery (a desktop): refuse it or allow it? | Refuse (Recommended) / Allow | none | 2026-11-18T12:00 | answered | Refuse (owner, 2026-11-17T06:56-08:00) |
 | Q4 | - | Q4: An unknown [awake] key: keep stopping every remi command at config load, or warn and ignore ADR 0050 keys this build lacks? | Keep stopping (Recommended) / Warn and ignore | none | 2026-11-18T12:00 | answered | Keep stopping (owner, 2026-11-17T06:56-08:00) |
-| Q5 | - | Q5: Add a total time limit to level 1? ADR 0050 gives it only the question cap and the stuck bound. | No (Recommended) / Yes | none | 2026-11-18T12:00 | open |  |
-| Q6 | - | Q6: Run this plan beside the profiles plan on shared slots and budget, worker-hard steps on claude-opus, codex-terra left to the profiles lane? | Yes (Recommended) / Other | none | 2026-11-18T12:00 | open |  |
-| Q7 | - | Q7: May a release contain level 2 (off by default, marked experimental) before the MacBook gate OG-L2 passes, or hold such releases? | (a) ship marked experimental (Recommended) / (b) hold releases / (c) gate an unmerged branch | none | 2026-11-18T12:00 | open |  |
-| Q8 | - | Q8: Confirm ADR 0050's level 2 battery defaults: refuse to start below 35 percent, revert at 30 percent (both configurable)? | Yes (Recommended) / Other values | none | 2026-11-18T12:00 | open |  |
+| Q5 | - | Q5: Add a total time limit to level 1? ADR 0050 gives it only the question cap and the stuck bound. | No (Recommended) / Yes | none | 2026-11-18T12:00 | answered | No (owner, 2026-11-17T07:02-08:00) |
+| Q6 | - | Q6: Run this plan beside the profiles plan on shared slots and budget, worker-hard steps on claude-opus, codex-terra left to the profiles lane? | Yes (Recommended) / Other | none | 2026-11-18T12:00 | answered | Yes (owner, 2026-11-17T07:02-08:00) |
+| Q7 | - | Q7: May a release contain level 2 (off by default, marked experimental) before the MacBook gate OG-L2 passes, or hold such releases? | (a) ship marked experimental (Recommended) / (b) hold releases / (c) gate an unmerged branch | none | 2026-11-18T12:00 | answered | (a) ship experimental (owner, 2026-11-17T07:02-08:00) |
+| Q8 | - | Q8: Confirm ADR 0050's level 2 battery defaults: refuse to start below 35 percent, revert at 30 percent (both configurable)? | Yes (Recommended) / Other values | none | 2026-11-18T12:00 | answered | Yes (owner, 2026-11-17T07:02-08:00) |
 
 ## Proposals
 

@@ -14,6 +14,10 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-17T06:56-08:00 | Q2 answered: Yes, battery limits apply only on battery power | owner |  |
 | 2026-11-17T06:56-08:00 | Q3 answered: Refuse level 2 on a Mac with no battery | owner |  |
 | 2026-11-17T06:56-08:00 | Q4 answered: Keep stopping on an unknown [awake] key | owner |  |
+| 2026-11-17T07:02-08:00 | Q5 answered: No total time limit for level 1 | owner |  |
+| 2026-11-17T07:02-08:00 | Q6 answered: Yes, shared slots and budget; worker-hard on claude-opus, codex-terra left to the profiles lane | owner |  |
+| 2026-11-17T07:02-08:00 | Q7 answered: ship level 2 marked experimental (off by default) before OG-L2 passes | owner |  |
+| 2026-11-17T07:02-08:00 | Q8 answered: Yes, 35 percent start and 30 percent revert | owner |  |
 
 ## Log
 
