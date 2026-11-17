@@ -137,7 +137,10 @@ The lease is crash safety, not a security boundary: any process of the same user
 It sets `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, `LC_ALL=C` and `TZ=UTC0`, and uses no `jq` and no `timeout`.
 Each command that reads state or changes the lease runs in a wrapper subshell that writes the command's status to a file in a private work directory, which the script polls every `pollIntervalMs`.
 At `commandDeadlineSeconds` the command is killed; after `killGraceSeconds` more the script gives up on it without waiting, so a child stuck in the kernel stays behind as an orphan and the run goes on (launchd does not start a job that is still running, so one hung run would stop every later one).
-A run that spends `runLimitSeconds` waiting stops, logs `run exceeded N s` and counts as a failure; the limit is counted in poll intervals, so a run can last somewhat longer than it.
+A run that lasts `runLimitSeconds` stops, logs `run exceeded N s` and counts as a failure.
+The deadline, the grace and the run limit are sleeping timers that create a file the poll looks for, so they are wall-clock time whatever the load; counting poll intervals instead stretched a 10 s deadline to 14.3 to 14.8 s at a load average of 9 to 13 on the owner's Mac mini, because starting each `sleep` took about 9 ms of every 20 ms interval.
+A run whose flag read hangs at the defaults takes the 10 s deadline plus about 30 short commands at one poll interval or more each: 10.8 to 10.9 s measured at a load average of 13 to 15.
+Only the revert without any work directory (below) still counts poll intervals, so its deadline stretches under load.
 The work directory sits next to the lease; when that directory cannot hold one, it goes under `fallbackWorkParent`, and when neither works the script logs `work directory unavailable` once and the revert reason says `flag unreadable (no work directory)` rather than a plain `flag unreadable`.
 It decides:
 
