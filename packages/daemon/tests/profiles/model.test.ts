@@ -67,7 +67,7 @@ describe('profile configuration', () => {
   test.each([
     [
       'bad id',
-      `[profiles."bad id"]\nlabel="Work"\n[profiles."bad id".claude]\nexpects="subscription"\n`,
+      `[profiles."PLANTED bad"]\nlabel="Work"\n[profiles."PLANTED bad".claude]\nexpects="subscription"\n`,
       'profiles: invalid profile id',
     ],
     [
@@ -140,7 +140,7 @@ describe('profile configuration', () => {
       'profiles.work.args: these change which settings, and so which credential, Claude Code uses',
     ]),
   ])('%s isolates the invalid table', (_name, raw, message) => {
-    const result = config(raw);
+    const result = config(raw.replaceAll(/label\s*=\s*"Work"/g, 'label="PLANTED"'));
     expect(result.daemon.bind).toBe('127.0.0.2');
     expect(result.profiles).toEqual({ error: message });
     expect(JSON.stringify(result.profiles)).not.toContain('PLANTED');
