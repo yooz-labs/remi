@@ -16,6 +16,7 @@ const SUBCOMMAND_LIST = [
   'code',
   'pair',
   'devices',
+  'profile',
   'config',
   'keygen',
   'export-key',
@@ -63,6 +64,7 @@ const SUBCOMMANDS_WITH_POSITIONAL_ARG: ReadonlySet<Subcommand> = new Set<Subcomm
 const SUBCOMMANDS_WITH_ARG_LIST: ReadonlySet<Subcommand> = new Set<Subcommand>([
   'model',
   'devices',
+  'profile',
 ]);
 
 /** Auto-approve switches removed in #1125 (ADR 0030). Accepted and ignored. */
@@ -441,6 +443,11 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       // Once either harness alias is selected, later command-looking words are its arguments.
       // An alias only starts a command when none was given: `remi stop codex` still stops.
       subcommand = arg as Subcommand;
+      if (subcommand === 'profile') {
+        subcommandArgs.push(...args.slice(i + 1));
+        subcommandArg = subcommandArgs[0];
+        break;
+      }
       if (SUBCOMMANDS_WITH_ARG_LIST.has(subcommand)) {
         // Consume every following operand up to the first flag: the verb and
         // its arguments both belong to this subcommand.

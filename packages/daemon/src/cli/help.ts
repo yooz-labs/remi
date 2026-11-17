@@ -49,6 +49,7 @@ import type { Subcommand } from './arg-parser.ts';
 const CONFIG_HINT = configPathForDisplay();
 
 const commandHelp: Record<Subcommand, string[]> = {
+  profile: ['Usage: remi profile ls | add <id> | show <id> | login <id>'],
   devices: [
     'Usage: remi devices [revoke <exact fingerprint>]',
     'List relay devices or revoke authorization and request acknowledged Worker removal.',

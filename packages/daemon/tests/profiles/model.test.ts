@@ -1,0 +1,223 @@
+import { describe, expect, test } from 'bun:test';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { loadConfig } from '../../src/config/config.ts';
+import { parseProfiles } from '../../src/profiles/profile-config.ts';
+import { PROFILE_CREDENTIAL_ENV, profileEnvironment } from '../../src/profiles/profile-env.ts';
+import { resolveProfile } from '../../src/profiles/resolve-profile.ts';
+import developBaseline from './develop-config-baseline.json';
+
+function config(raw: string) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-model-'));
+  try {
+    const file = path.join(dir, 'config.toml');
+    fs.writeFileSync(file, `[daemon]\nbind = "127.0.0.2"\n${raw}`);
+    return loadConfig(file);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+const basic = `[profiles.work]\nlabel = "Work"\nfolders = ["/a/b"]\n[profiles.work.claude]\nexpects = "subscription"\n`;
+
+describe('profile configuration', () => {
+  test('loads a complete profile and keeps revision independent of label and folders', () => {
+    const first = parseProfiles({
+      default: 'work',
+      work: {
+        label: 'Work',
+        harness: 'claude',
+        args: ['--model', 'opus'],
+        folders: ['/a/b'],
+        env: { AWS_PROFILE: 'work' },
+        claude: { dir: '/a/claude', expects: 'subscription' },
+        codex: { dir: '/a/codex', expects: 'api_key' },
+      },
+    });
+    const second = parseProfiles({
+      work: {
+        label: 'Personal',
+        harness: 'claude',
+        args: ['--model', 'opus'],
+        folders: ['/other'],
+        env: { AWS_PROFILE: 'work' },
+        claude: { dir: '/a/claude', expects: 'subscription' },
+        codex: { dir: '/a/codex', expects: 'api_key' },
+      },
+    });
+    if (!('entries' in first) || !('entries' in second)) throw new Error('fixture failed');
+    expect(first.default).toBe('work');
+    expect(first.entries['work']).toMatchObject({
+      label: 'Work',
+      harness: 'claude',
+      args: ['--model', 'opus'],
+      folders: ['/a/b'],
+      env: { AWS_PROFILE: 'work' },
+      claude: { dir: '/a/claude', expects: 'subscription' },
+      codex: { dir: '/a/codex', expects: 'api_key' },
+    });
+    expect(first.entries['work']?.revision).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.entries['work']?.revision).toBe(second.entries['work']?.revision);
+  });
+  test('loads a profile without changing the other tables', () => {
+    const result = config(basic);
+    expect(result.daemon.bind).toBe('127.0.0.2');
+    expect('entries' in result.profiles && result.profiles.entries['work']?.label).toBe('Work');
+  });
+  test.each([
+    ['bad id', `[profiles."bad id"]\nlabel="Work"\n`],
+    ['reserved default', `[profiles.default]\nlabel="Work"\n`],
+    ['email', `[profiles.work]\nlabel="a@b.com"\n`],
+    ['unsafe label', `[profiles.work]\nlabel="Bad\\u001bName"\n`],
+    [
+      '33 profiles',
+      Array.from(
+        { length: 33 },
+        (_, i) =>
+          `[profiles.p${i}]\nlabel="Work"\n[profiles.p${i}.claude]\nexpects="subscription"\n`,
+      ).join(''),
+    ],
+    [
+      'duplicate folder',
+      `${basic}[profiles.other]\nlabel="Other"\nfolders=["/a/b"]\n[profiles.other.codex]\nexpects="subscription"\n`,
+    ],
+    [
+      'remi secret',
+      `[profiles.work]\nlabel="Work"\nenv={REMI_PASSPHRASE="x"}\n[profiles.work.claude]\nexpects="subscription"\n`,
+    ],
+    ['missing expects', `[profiles.work]\nlabel="Work"\n[profiles.work.claude]\n`],
+    ['unknown key', `[profiles.work]\nlabel="Work"\nextra=true\n`],
+    [
+      'relative dir',
+      `[profiles.work]\nlabel="Work"\n[profiles.work.claude]\nexpects="subscription"\ndir="relative"\n`,
+    ],
+    ['unknown default', `[profiles]\ndefault="other"\n${basic}`],
+    [
+      'credential',
+      `[profiles.work]\nlabel="Work"\nenv={CUSTOM_API_KEY="planted"}\n[profiles.work.claude]\nexpects="subscription"\n`,
+    ],
+    [
+      'provider',
+      `[profiles.work]\nlabel="Work"\nenv={CLAUDE_CODE_USE_BEDROCK="1"}\n[profiles.work.claude]\nexpects="subscription"\n`,
+    ],
+    ...['--settings', '--settings=x', '--managed-settings', '--setting-sources'].map((flag) => [
+      flag,
+      `[profiles.work]\nlabel="Work"\nargs=["${flag}"]\n[profiles.work.claude]\nexpects="subscription"\n`,
+    ]),
+  ])('%s isolates the invalid table', (_name, raw) => {
+    const result = config(raw);
+    expect(result.daemon.bind).toBe('127.0.0.2');
+    expect('error' in result.profiles).toBe(true);
+  });
+  test('email refusal does not include the label', () => {
+    const result = parseProfiles({ work: { label: 'person@example.com' } });
+    expect(result).toEqual({
+      error: 'profiles.work.label: Use a name such as Work, not an email address',
+    });
+  });
+  test.each(['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'HOME', 'XDG_CONFIG_HOME'])(
+    'refuses directory selector %s in profile env without affecting other config',
+    (name) => {
+      const result = config(
+        `[profiles.work]\nlabel="Work"\nenv={${name}="/other"}\n[profiles.work.claude]\nexpects="subscription"\n`,
+      );
+      expect(result.daemon.bind).toBe('127.0.0.2');
+      expect(result.profiles).toEqual({
+        error: `profiles.work.env.${name}: set the profile's directory with \`dir\`, not \`env\``,
+      });
+    },
+  );
+  test('reserved keys and future expects load', () => {
+    const result = parseProfiles({
+      work: { label: 'Work', remote_visible: true, claude: { expects: 'future_kind' } },
+    });
+    expect('entries' in result && result.entries['work']?.claude?.expects).toBe('future_kind');
+    expect('notices' in result && result.notices).toHaveLength(1);
+  });
+  test('no profiles leaves the existing configuration unchanged', () => {
+    const result = config('');
+    const { profiles, ...rest } = result;
+    expect(profiles).toEqual({ entries: {}, notices: [] });
+    // Captured by loading the same input with origin/develop fbd2841d.
+    expect<unknown>(rest).toEqual(developBaseline);
+  });
+});
+
+describe('profile selection and environment', () => {
+  const profiles = parseProfiles({
+    default: 'work',
+    work: { label: 'Work', folders: ['/a/b'], claude: { expects: 'subscription' } },
+    nested: { label: 'Nested', folders: ['/a/b/c'], codex: { expects: 'subscription' } },
+  });
+  test('selects flag, environment, longest folder, default and built in', () => {
+    expect(resolveProfile({ profiles, cwd: '/a/b/c/d', flag: 'work', envValue: 'nested' })).toEqual(
+      { id: 'work', source: 'flag' },
+    );
+    expect(resolveProfile({ profiles, cwd: '/a/b/c/d', envValue: 'work' })).toEqual({
+      id: 'work',
+      source: 'env',
+    });
+    expect(resolveProfile({ profiles, cwd: '/a/b/c/d' })).toEqual({
+      id: 'nested',
+      source: 'folder',
+    });
+    expect(resolveProfile({ profiles, cwd: '/a/bc' })).toEqual({
+      id: 'work',
+      source: 'machine_default',
+    });
+    expect(resolveProfile({ profiles: parseProfiles(undefined), cwd: '/' })).toEqual({
+      id: 'default',
+      source: 'built_in',
+    });
+    expect(resolveProfile({ profiles, cwd: '/', flag: 'default' })).toEqual({
+      id: 'default',
+      source: 'flag',
+    });
+    expect(resolveProfile({ profiles, cwd: '/', flag: 'missing' })).toEqual({
+      error: 'Unknown profile missing. Run remi profile ls.',
+    });
+  });
+  test('scrubs credentials without mutating the inherited environment', () => {
+    if (!('entries' in profiles)) throw new Error('invalid fixture');
+    const profile = profiles.entries['work'];
+    if (!profile) throw new Error('missing fixture');
+    const inherited = Object.fromEntries(PROFILE_CREDENTIAL_ENV.map((name) => [name, 'fixture']));
+    const env = profileEnvironment(inherited, profile);
+    for (const name of PROFILE_CREDENTIAL_ENV) expect(env[name]).toBeUndefined();
+    expect(Object.keys(inherited)).toHaveLength(PROFILE_CREDENTIAL_ENV.length);
+  });
+  test('configured harness directories override even unvalidated profile env', () => {
+    if (!('entries' in profiles)) throw new Error('invalid fixture');
+    const profile = profiles.entries['work'];
+    if (!profile || !profile.claude) throw new Error('missing fixture');
+    const env = profileEnvironment(
+      {},
+      {
+        ...profile,
+        codex: { dir: '/configured/codex', expects: 'subscription' },
+        env: { CLAUDE_CONFIG_DIR: '/other/claude', CODEX_HOME: '/other/codex' },
+      },
+    );
+    expect(env['CLAUDE_CONFIG_DIR']).toBe(profile.claude.dir);
+    expect(env['CODEX_HOME']).toBe('/configured/codex');
+  });
+  test('canonicalizes symlinked working directories', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-symlink-'));
+    try {
+      const target = path.join(dir, 'target');
+      fs.mkdirSync(target);
+      const link = path.join(dir, 'link');
+      fs.symlinkSync(target, link);
+      const p = parseProfiles({
+        work: { label: 'Work', folders: [target], claude: { expects: 'subscription' } },
+      });
+      expect(resolveProfile({ profiles: p, cwd: link })).toEqual({ id: 'work', source: 'folder' });
+      expect(resolveProfile({ profiles: p, cwd: '/', envValue: 'default' })).toEqual({
+        id: 'default',
+        source: 'env',
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

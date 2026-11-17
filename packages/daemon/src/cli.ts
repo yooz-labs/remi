@@ -288,6 +288,7 @@ import { createTurnEventSink } from './notifications/turn-events.ts';
 import { createTurnFailedRoutes } from './notifications/turn-failed.ts';
 import { TurnTimer } from './notifications/turn-timer.ts';
 import { AwakeWiring } from './power/awake-wiring.ts';
+import { runProfileCommand } from './profiles/cmd-profile.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
 import { HubRelay } from './remote/hub-relay.ts';
 import { NativeAnswerLedger } from './remote/native-answer-ledger.ts';
@@ -427,6 +428,13 @@ if (loadedConfig.removedRequireLocalAuth)
   console.error(
     'daemon.require_local_auth is retired and ignored (#873). Loopback clients must prove identity or present the local capability token when authentication is enabled.',
   );
+
+if ('notices' in remiConfig.profiles)
+  for (const notice of remiConfig.profiles.notices) console.error(notice);
+
+if (parsedArgs.subcommand === 'profile') {
+  process.exit(await runProfileCommand(parsedArgs.subcommandArgs, remiConfig.profiles));
+}
 
 // Handle 'config' subcommand
 if (parsedArgs.subcommand === 'config') {

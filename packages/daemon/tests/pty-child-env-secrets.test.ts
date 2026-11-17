@@ -10,6 +10,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { PROFILE_CREDENTIAL_ENV } from '../src/profiles/profile-env';
 import { PTYSession } from '../src/pty/pty-session';
 
 const SECRETS = {
@@ -113,6 +114,24 @@ const NOT_ENVIRONMENT = new Set([
 ]);
 
 describe('the denylist covers every secret the daemon reads (#1249)', () => {
+  test('the profile scrub includes every supported credential and provider name', () => {
+    for (const name of [
+      'CLAUDE_CODE_USE_BEDROCK',
+      'CLAUDE_CODE_USE_VERTEX',
+      'CLAUDE_CODE_USE_FOUNDRY',
+      'ANTHROPIC_AUTH_TOKEN',
+      'ANTHROPIC_API_KEY',
+      'CLAUDE_CODE_OAUTH_TOKEN',
+      'ANTHROPIC_PROFILE',
+      'ANTHROPIC_FEDERATION_RULE_ID',
+      'ANTHROPIC_ORGANIZATION_ID',
+      'ANTHROPIC_IDENTITY_TOKEN_FILE',
+      'OPENAI_API_KEY',
+      'CODEX_ACCESS_TOKEN',
+      'CODEX_API_KEY',
+    ])
+      expect(PROFILE_CREDENTIAL_ENV).toContain(name);
+  });
   test('each environment variable read under packages/daemon/src whose name says secret is denied', async () => {
     const { REMI_SECRET_ENV } = await import('../src/pty/child-env');
     const names = new Set<string>();
@@ -125,13 +144,14 @@ describe('the denylist covers every secret the daemon reads (#1249)', () => {
 
     expect(names.size).toBeGreaterThan(0);
     for (const name of names) {
-      if (!NOT_ENVIRONMENT.has(name)) expect(REMI_SECRET_ENV).toContain(name);
+      if (!NOT_ENVIRONMENT.has(name) && !PROFILE_CREDENTIAL_ENV.includes(name))
+        expect(REMI_SECRET_ENV).toContain(name);
     }
   });
 
   test('no exempted secret-named literal is read from the environment', () => {
     const source = daemonSources().join('\n');
-    const read = [...NOT_ENVIRONMENT].filter((name) =>
+    const read = [...NOT_ENVIRONMENT, ...PROFILE_CREDENTIAL_ENV].filter((name) =>
       new RegExp(`env(\\[['"\`]${name}['"\`]\\]|\\.${name}\\b)`).test(source),
     );
     expect(read).toEqual([]);

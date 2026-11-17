@@ -10,6 +10,8 @@ import * as path from 'node:path';
 import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
 import { parse as parseToml } from 'smol-toml';
 import { DEFAULT_PUSH_LEASE_HOURS } from '../notifications/push-lease.ts';
+import { parseProfiles } from '../profiles/profile-config.ts';
+import type { Profiles } from '../profiles/profile-config.ts';
 import { remiHome } from './remi-home.ts';
 
 const REMI_DIR = remiHome();
@@ -209,6 +211,7 @@ export interface HarnessConfig {
 
 /** Complete Remi configuration */
 export interface RemiConfig {
+  readonly profiles: Profiles;
   readonly harness: HarnessConfig;
   readonly daemon: DaemonConfig;
   readonly awake: AwakeConfig;
@@ -224,6 +227,7 @@ export interface RemiConfig {
 
 /** Built-in defaults used when no config file or CLI flags are provided */
 export const DEFAULT_CONFIG: RemiConfig = {
+  profiles: { entries: {}, notices: [] },
   harness: { default: 'claude' },
   awake: {
     level1: true,
@@ -336,6 +340,7 @@ function deepMerge(base: RemiConfig, partial: Record<string, unknown>): RemiConf
   }
 
   return {
+    profiles: parseProfiles(partial['profiles']),
     harness: mergeSection(base.harness, partial['harness'] as Record<string, unknown> | undefined),
     daemon: mergeSection(base.daemon, partial['daemon'] as Record<string, unknown> | undefined),
     awake: mergeSection(base.awake, partial['awake'] as Record<string, unknown> | undefined),
@@ -408,6 +413,11 @@ export function loadConfigWithNotices(configPath: string = CONFIG_PATH): LoadedC
     );
   }
 
+  return parseConfigText(raw, configPath);
+}
+
+/** Validate configuration text through the same path as a file load. */
+export function parseConfigText(raw: string, configPath: string = CONFIG_PATH): LoadedConfig {
   try {
     let parsed: Record<string, unknown>;
     try {
@@ -807,6 +817,11 @@ export function generateDefaultConfig(): string {
 # Priority: CLI flags > environment variables > this file > built-in defaults
 # Run 'remi reload' to validate changes. Restart the daemon to apply.
 
+# [profiles.work]
+# label = "Work"
+# [profiles.work.claude]
+# expects = "subscription"
+
 [harness]
 # CLI session launches only; remi claude/remi codex and --harness override this.
 default = "${DEFAULT_CONFIG.harness.default}"
@@ -940,6 +955,12 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   const lines: string[] = [];
 
   lines.push(`Config file: ${configPath} (${fileExists ? 'loaded' : 'not found, using defaults'})`);
+  lines.push('');
+  lines.push('[profiles]');
+  if ('error' in config.profiles) lines.push(`  ${config.profiles.error}`);
+  else
+    for (const [id, profile] of Object.entries(config.profiles.entries))
+      lines.push(`  ${id}  ${profile.label}`);
   lines.push('');
   lines.push('[harness]');
   lines.push(`  default = "${config.harness.default}"`);

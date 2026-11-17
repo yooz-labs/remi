@@ -344,3 +344,5 @@ export {
   decodeTerminalViewFrame,
   encodeTerminalViewFrame,
 } from './terminal-view.ts';
+
+export { PROFILE_EMAIL_REFUSAL, validateProfileLabel } from './profile-label.ts';
