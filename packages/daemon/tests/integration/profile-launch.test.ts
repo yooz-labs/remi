@@ -1324,7 +1324,7 @@ test('ambiguous forwarded resume is refused before spawning in daemons and wrapp
   }
 }, 45000);
 
-test('configured Codex default refuses a profile-free top-level Claude resume', async () => {
+test('with profiles configured and Codex as the default, a profile-free top-level --resume is refused by the late branch', async () => {
   const f = fixture();
   fs.appendFileSync(path.join(f.remi, 'config.toml'), '\n[harness]\ndefault="codex"\n');
   const record = {
@@ -1348,6 +1348,58 @@ test('configured Codex default refuses a profile-free top-level Claude resume', 
   );
   expect(fs.existsSync(path.join(f.output, 'argv'))).toBe(false);
 }, 25000);
+
+test('Codex profile arguments precede session arguments in a daemon and a wrapper', async () => {
+  const f = fixture();
+  const server = FakeAppServer.start();
+  servers.push(server);
+  fs.appendFileSync(
+    path.join(f.remi, 'config.toml'),
+    `[profiles.code]\nlabel="Code"\nharness="codex"\nargs=["--model", "profile-model"]\n[profiles.code.codex]\ndir=${JSON.stringify(server.codexHome)}\nexpects="subscription"\n`,
+  );
+  fs.writeFileSync(
+    path.join(f.home, 'bin', 'codex'),
+    `#!/bin/sh
+if [ "$1 $2" = 'login status' ]; then
+  exit 0
+fi
+printf '%s\\n' "$@" > "$FAKE_OUTPUT/codex-argv"
+i=0
+while [ ! -e "$FAKE_OUTPUT/release" ] && [ "$i" -lt 600 ]; do sleep 0.1; i=$((i + 1)); done
+`,
+    { mode: 0o700 },
+  );
+  for (const daemon of [true, false]) {
+    fs.rmSync(path.join(f.output, 'release'), { force: true });
+    fs.rmSync(path.join(f.output, 'codex-argv'), { force: true });
+    const launched = daemon
+      ? await spawnDaemon(f.home, f.work, f.env, [
+          '--harness',
+          'codex',
+          '--remi-profile',
+          'code',
+          '--',
+          '--model',
+          'user-model',
+        ])
+      : {
+          proc: await spawnWrapper(f, ['--remi-profile', 'code', '--model', 'user-model']),
+          port: 0,
+        };
+    if (daemon) running.push({ ...launched, home: f.home, work: f.work });
+    await pollUntil(
+      () => fs.existsSync(path.join(f.output, 'codex-argv')) || launched.proc.exitCode !== null,
+      15000,
+      'Codex profile argument launch',
+    );
+    expect(launched.proc.exitCode).toBeNull();
+    expect(fs.readFileSync(path.join(f.output, 'codex-argv'), 'utf8')).toContain(
+      '--model\nprofile-model\n--model\nuser-model',
+    );
+    fs.writeFileSync(path.join(f.output, 'release'), '');
+    expect(await launched.proc.exited).toBe(0);
+  }
+}, 45000);
 
 test('profile arguments precede session arguments in a wrapper', async () => {
   const f = fixture();
