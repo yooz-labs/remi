@@ -10,8 +10,8 @@
  * generated with the test's tool paths and options.
  */
 
-import { afterEach, describe, expect, test } from 'bun:test';
-import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
+import { afterAll, afterEach, describe, expect, test } from 'bun:test';
+import { type ChildProcess, type SpawnSyncOptions, spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -133,36 +133,73 @@ interface Run {
 }
 
 const roots: string[] = [];
+/** The processes the tests spawn directly; each is killed (if needed) and awaited after its test. */
 const children: ChildProcess[] = [];
+const awaited: ChildProcess[] = [];
+/**
+ * The process group of every script run in this file. Each run is a group
+ * leader, as a launchd job is, so everything the script starts (its wrapper
+ * subshells, timers and their sleeps, the fakes, and the children it abandons
+ * by design) stays in that group, out of the test process's own group.
+ */
+const runGroups: number[] = [];
 
-/** Kills a process a fake recorded, only when it is still the process the fake was. */
-function killRecorded(pidFile: string, scriptPath: string): void {
-  if (!existsSync(pidFile)) return;
-  for (const text of readFileSync(pidFile, 'utf8').split('\n')) {
-    const pid = Number(text);
-    if (!Number.isSafeInteger(pid) || pid <= 1) continue;
-    const command = spawnSync(PS_PATH, ['-o', 'command=', '-p', String(pid)], {
-      encoding: 'utf8',
-    }).stdout.trim();
-    if (command === '/bin/sleep 30' || command === `/bin/sh ${scriptPath}`) {
-      try {
-        process.kill(pid, 'SIGKILL');
-      } catch {
-        // Gone already.
-      }
-    }
+/**
+ * `spawnSync` options that make the child the leader of a new process group.
+ * Bun honors `detached` in `spawnSync`, which Node's types do not declare; a
+ * test below checks that the child's process group id is its own pid.
+ */
+const GROUP_LEADER: SpawnSyncOptions = { detached: true } as SpawnSyncOptions;
+
+/** Whether any process is left in the process group `pgid`. */
+function groupAlive(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
 
-afterEach(() => {
+/**
+ * Ends a run's process group the way launchd ends a job's when its main
+ * process exits: SIGKILL to whatever is left (a stopped wrapper, a hung fake,
+ * a timer's sleep), then a wait of at most 5 s until the group is empty.
+ */
+function endRunGroup(pgid: number): void {
+  if (!groupAlive(pgid)) return;
+  try {
+    process.kill(-pgid, 'SIGKILL');
+  } catch {
+    // Emptied meanwhile.
+  }
+  const deadline = Date.now() + 5_000;
+  while (groupAlive(pgid) && Date.now() < deadline) Bun.sleepSync(20);
+}
+
+afterEach(async () => {
   for (const child of children.splice(0)) {
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+      child.kill('SIGKILL');
+      await exited;
+    }
+    awaited.push(child);
   }
   for (const root of roots.splice(0)) {
-    killRecorded(join(root, 'pids'), join(root, 'watchdog.sh'));
     spawnSync('/bin/chmod', ['-R', 'u+rwx', root]);
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// No process a test of this file started outlives the file: every run's
+// group is empty and every direct child has exited.
+afterAll(() => {
+  const live = runGroups.filter(groupAlive);
+  for (const pgid of live) endRunGroup(pgid);
+  expect({ liveRunGroups: live }).toEqual({ liveRunGroups: [] });
+  const running = awaited.filter((child) => child.exitCode === null && child.signalCode === null);
+  expect({ runningChildren: running.map((child) => child.pid) }).toEqual({ runningChildren: [] });
 });
 
 function quote(text: string): string {
@@ -201,9 +238,8 @@ fi
 state=$(/bin/cat ${at('state')})
 case $state in
 ${ioregCases}
-  hang) printf '%s\\n' "$$" >> ${at('pids')}; exec /bin/sleep 30 ;;
+  hang) exec /bin/sleep 30 ;;
   stopparent)
-    printf '%s\\n%s\\n' "$$" "$PPID" >> ${at('pids')}
     kill -STOP "$PPID"
     exec /bin/sleep 30 ;;
 esac
@@ -308,15 +344,26 @@ exit 2
   };
 }
 
-/** Runs the script as launchd would: `/bin/sh SCRIPT` with no inherited environment. */
+/**
+ * Runs the script as launchd would: `/bin/sh SCRIPT` with no inherited
+ * environment, as the leader of its own process group, which is emptied when
+ * the script exits. The hung fakes sleep 30 s so that a deadline that did not
+ * work would show in the time; the script kills them at the deadline, and the
+ * group's end kills anything it abandoned by design.
+ */
 function runRaw(h: Harness, env: Record<string, string> = {}): Run {
   const started = Date.now();
   const result = spawnSync('/bin/sh', [h.scriptPath], {
+    ...GROUP_LEADER,
     cwd: h.root,
     env,
     encoding: 'utf8',
     timeout: SCRIPT_TIMEOUT_MS,
   });
+  if (typeof result.pid === 'number' && result.pid > 0) {
+    runGroups.push(result.pid);
+    endRunGroup(result.pid);
+  }
   return {
     status: result.status,
     signal: result.signal,
@@ -503,6 +550,25 @@ describe('the generated script takes every number as an option', () => {
 if (process.platform !== 'darwin') {
   test.skip('macOS-only: the watchdog script runs against plutil, ps and ioreg', () => {});
 } else {
+  describe('the runs process groups', () => {
+    test(
+      'a run leads its own process group, apart from the test process',
+      () => {
+        const probe = spawnSync('/bin/sh', ['-c', `${PS_PATH} -o pgid= -p $$`], {
+          ...GROUP_LEADER,
+          encoding: 'utf8',
+          env: {},
+        });
+        expect(Number(probe.stdout.trim())).toBe(probe.pid);
+        const own = spawnSync(PS_PATH, ['-o', 'pgid=', '-p', String(process.pid)], {
+          encoding: 'utf8',
+        });
+        expect(Number(own.stdout.trim())).not.toBe(probe.pid);
+      },
+      TEST_TIMEOUT_MS,
+    );
+  });
+
   describe('the watchdog with SleepDisabled clear', () => {
     test(
       'records nothing and keeps a fresh lease',
@@ -945,6 +1011,8 @@ if (process.platform !== 'darwin') {
         const run = runScript(h);
         expect(run.elapsedMs).toBeLessThan(runBoundMs(1));
         expectOneRevert(h, run, 'flag unreadable');
+        // The stopped wrapper it abandoned died with the run's process group.
+        expect(groupAlive(runGroups.at(-1) ?? 0)).toBe(false);
       },
       TEST_TIMEOUT_MS,
     );
