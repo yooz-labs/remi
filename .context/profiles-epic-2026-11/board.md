@@ -49,10 +49,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 100 | 10 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Agents today | 100 | 12 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
 | Codex Luna today | 24 | 1 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
-| Codex Terra today | 16 | 1 | daily | owner CP0 value; Terra implementers and fix rounds |
-| Claude Sonnet today | 44 | 4 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
+| Codex Terra today | 16 | 2 | daily | owner CP0 value; Terra implementers and fix rounds |
+| Claude Sonnet today | 44 | 5 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
 | Claude Opus today | 16 | 4 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
 | Advisor consults | 20 | 5 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
 | Fable consults | 1 | 0 | never | copied; only if the owner asks; never --over |
@@ -75,7 +75,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | OG-P1 | [Owner gate: two profiles, 24 h](owner-gates.md) | - | - | - | - | blocked | P1B | - | - | - | rule: set owner when P1B is done; notify owner-gates.md OG-P1 |
 | CP1 | [Checkpoint after phase 1](checkpoints.md) | - | - | - | - | blocked | P1B, DOCS-P1 | - | - | - | rule: wake lead (complete P2A-P2D, DOCS-P2); ask go and J17 in one batch; owner go |
 | D51 | Merge PR 1785 (ADR 0051) after owner approval | - | - | - | - | done | - | - | - | - | rule: owner approves PR 1785 (J5); then docs merge gate and merge |
-| P5A-PREP | [Capture prep for #1752](cards/P5A-PREP-capture-config.md) | - | worker | - | - | active | CP0 | - | 2026-11-17T04:14-08:00 | 4h | complete card; dispatch after CP0 beside P1A and P1C; docs lens review |
+| P5A-PREP | [Capture prep for #1752](cards/P5A-PREP-capture-config.md) | - | worker | - | - | review | CP0 | - | 2026-11-17T04:14-08:00 | 4h | complete card; dispatch after CP0 beside P1A and P1C; docs lens review |
 | P2A | [Profile paths #1749 (outline)](cards/P2A-profile-paths.md) | - | worker-hard | - | - | outline | CP1 | - | - | 1.5d | lead completes at CP1 |
 | P2B | [session_profiles #1749 (outline)](cards/P2B-session-profiles-protocol.md) | - | worker-hard | - | - | outline | P2A, D51 | - | - | 2d | lead completes at CP1 |
 | P2C | [profile_status #1749 (outline)](cards/P2C-profile-status-protocol.md) | - | worker-hard | - | - | outline | P2B | - | - | 2d | lead completes at CP1 |
@@ -129,7 +129,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | FX-D51 | fix round 1 | claude-sonnet | sonnet high | D51 PR1785 | 2026-11-14T18:42 | done |
 | P1A-1 | implementer | codex-terra | gpt-6.1-terra xhigh | P1A | 2026-11-17T04:14 | stopped-incomplete |
 | P1C-1 | implementer | codex-luna | gpt-6-luna max | P1C | 2026-11-17T04:14 | stopped-incomplete |
-| P5A-1 | implementer | codex-luna | gpt-6-luna max | P5A-PREP | 2026-11-17T04:14 | running |
+| P5A-1 | implementer | codex-luna | gpt-6-luna max | P5A-PREP | 2026-11-17T04:14 | done |
 | CI-1 | CI analysis (owner request, issue 1793) | claude-opus | opus high (agent a8e5c55d269096de4) | none | 2026-11-17T04:20 | running |
 | PAIRV2-1 | implementer (owner request, issue 1794) | claude-sonnet | sonnet high | none | 2026-11-17T04:25 | running |
 | P1A-2 | implementer (continuation) | codex-terra | gpt-6.1-terra xhigh | P1A | 2026-11-17T04:42 | stopped-incomplete |
@@ -137,3 +137,5 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | RV-PAIR-B | reviewer maintainability+docs | claude-sonnet | sonnet xhigh (ace81289b673465b5) | PR1795 | 2026-11-17T04:43 | done |
 | FX-PAIR | fix round 1 (PR1795) | claude-sonnet | sonnet high (a806c7b34bb738fb7) | PR1795 | 2026-11-17T04:55 | running |
 | P1C-2 | implementer (continuation) | codex-luna | gpt-6-luna max | P1C | 2026-11-17T05:00 | running |
+| RV-P5A | reviewer docs | claude-sonnet | sonnet xhigh | P5A-PREP PR1796 | 2026-11-17T05:05 | running |
+| P1A-3 | implementer (continuation 2) | codex-terra | gpt-6.1-terra xhigh | P1A | 2026-11-17T05:10 | running |
