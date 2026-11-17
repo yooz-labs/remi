@@ -91,7 +91,7 @@ describe('createResumeSessionHandlers', () => {
       bindingStore,
       transcriptDiscovery,
       harness: new ClaudeHarness(transcriptDiscovery),
-      checkResumeProfile,
+      ...(checkResumeProfile && { checkResumeProfile }),
       createNewSession,
       send,
     });
