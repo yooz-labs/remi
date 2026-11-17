@@ -48,6 +48,23 @@ This slice never requests a display assertion, uses `sudo` or changes power sett
 `pmset -g assertions` shows the holder as `pid <caffeinate-pid>(caffeinate): ... PreventUserIdleSystemSleep` with `Created for PID: <session-pid>`.
 The daemon log has one line when a hold starts, one when it ends and why, and one per stuck bound, question cap or caffeinate failure, never one per tick.
 
+## Readings for later slices
+
+`packages/daemon/src/power/readings/` holds three readers and their pure parsers for the guard-rails slice (#1773, ADR 0050).
+Nothing calls them yet: level 1 does not read any of them, and no setting or message mentions them.
+
+- `readAssertions()` runs `pmset -g assertions` and returns the system-wide assertion counts and each holder (`pid`, process, type, name, and the `Created for PID` target when present).
+  Any line in the owning-process block that the grammar does not know makes the whole reading `unknown`, never a skipped line; the reason names the line number, not its text, because assertion names can carry application or document names.
+- `readThermal()` runs `notifyutil -g com.apple.system.thermalpressurelevel` and maps 0 to 4 to nominal, moderate, heavy, trapping and sleeping; anything else is `unknown`.
+- `readRootDomain()` runs `ioreg -r -c IOPMrootDomain -d 1` and returns `SleepDisabled` (yes, no or unknown) and the lid (`AppleClamshellState`: open, closed, absent on a Mac with no lid, or unknown).
+
+All three go through `runReading` (`run-reading.ts`), which spawns only `/usr/bin/pmset`, `/usr/sbin/ioreg` and `/usr/bin/notifyutil`, and `pmset` only as `-g` with `assertions`, `batt`, `therm` or `ps`; anything else is `refused` without a spawn.
+That guard is what keeps a reading from ever changing power state.
+Each run has no shell, no stdin, an environment of `LC_ALL=C` and `PATH` only, a 2 s deadline and a 256 KiB stdout cap, and a failure never throws.
+The parsers are tested against redacted captures of a Mac16,11 (`packages/daemon/tests/power/fixtures/mac16-11-macos-27.2/`, with its `SOURCE.md`).
+Not verified: the lid reading on a laptop (the capture is a Mac mini; the `clamshell` fixtures are edited, not captured) and the assertions text on other macOS builds.
+Battery (`pmset -g batt`) and the password-on-wake reading are later slices.
+
 ## Not verified
 
 Level 1 does not implement a lid-closed mode and cannot override lid-close or emergency low-battery sleep.
