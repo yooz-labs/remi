@@ -15,7 +15,7 @@
 2026-11-14: R1 authMethod value unobserved; OG-P1 confirms.
 2026-11-14: R2 claude.ai status carries email; privacy lens on every daemon PR.
 2026-11-14: R3 phase 1 without P2A in a release (J3).
-2026-11-14: R4 Codex keyring separation unknown until P1C.
+2026-11-17: R4 read good: Codex default store file, keyring separated; J11 moot; CODEX_API_KEY added.
 
 ## Next intentions
 2026-11-14: CP0: owner answers J1a to J15, J18; J16, J17 deferred (CP2, CP1); runbook 2.

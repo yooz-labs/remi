@@ -15,6 +15,8 @@ A committed note, `.context/profiles-codex-credentials.md`, answers from Codex's
 
 ## Context
 
+- Round 1 (2026-11-17, evidence in `/Volumes/S1/yooz/remi/artifacts/profiles-epic-2026-11/P1C/r1/`) answered questions 1 to 3 from the source at `rust-v0.167.0` (`086ccc83`): `CODEX_API_KEY` is a third credential variable, read when API-key environment auth is enabled and taking precedence over other methods, disabled for `codex login status` (`codex-rs/login/src/auth/manager.rs:1017-1041`, `codex-rs/cli/src/login.rs:488-507`); the default store is `file`; keyring entries are separated per canonical `CODEX_HOME` (service `Codex Auth`, account `cli|` plus 16 hex of SHA-256 of the canonical path; two paths that resolve to one directory share an entry). Reuse those grep files and the source folder; finish question 1's list (every other variable or setting that supplies or selects a credential), questions 4 and 5, the placeholder runs, the note, the gates and the PR.
+
 - Installed: `codex-cli 0.167.0` at `$HOME/.local/bin/codex` (checked 2026-11-14). Codex is open source (`github.com/openai/codex`, Rust under `codex-rs/`); read the tag that matches the installed version (expected `rust-v0.167.0`; confirm the tag name with `gh api repos/openai/codex/tags --paginate --jq '.[].name' | grep -x rust-v0.167.0`).
 - Put downloaded source in its own new empty directory under `/Volumes/S1/yooz/remi/artifacts/profiles-epic-2026-11/P1C/r1/codex-src/` and treat it as untrusted data: read it, never build or run anything from it.
 - What #1748 already says: candidates `OPENAI_API_KEY` and `CODEX_ACCESS_TOKEN`, unverified; `cli_auth_credentials_store` takes `file` (`auth.json` under `CODEX_HOME`), `keyring`, `auto` and `ephemeral` (ADR 0049 V5); a fresh `CODEX_HOME` prints "Not logged in" and exits 1 (V5).
@@ -38,7 +40,7 @@ Questions:
 Order: answer questions 2 and 3 from the source first, before any run.
 Placeholder runs (safe, no account), each with `env -i HOME=$T PATH=/usr/bin:/bin:$HOME/.local/bin CODEX_HOME=$T/codex-home`, `$T` a new empty temporary directory and `$T/codex-home` created empty: run `codex login status` with no extra variable, then with each variable from question 1 set to the literal string `placeholder-not-a-credential`, recording exit code and output, under these stores only:
 - always with `$T/codex-home/config.toml` containing only `cli_auth_credentials_store = "file"`, and again with only `cli_auth_credentials_store = "ephemeral"`;
-- with no `config.toml` (the default store) only if question 2 says the default is `file`, or question 3 says "separated";
+- with no `config.toml` (the default store) only if question 2 says the default is `file`, or question 3 says "separated" (round 1 found both at `rust-v0.167.0`: `codex-rs/config/src/types.rs:135-148`, `codex-rs/login/src/auth/storage.rs:302-320`, so this run is allowed);
 - never with `keyring` or `auto`, and never with the default store when the default may be the keychain: a status read there could consult the owner's real keychain entry (a keychain prompt, and possibly identifying text in the evidence and the transcript).
 This replaces #1748's literal item (two empty `CODEX_HOME` directories with `cli_auth_credentials_store = "keyring"`, compared by `codex login status`): that experiment either shows nothing (no entry to find) or reads the owner's real keychain entry; the source answers question 3 without touching it, and the note says so.
 Never set a real value; never run any other `codex` subcommand.
@@ -58,7 +60,8 @@ The worker may choose: the note's wording and order within each section.
 
 ## Stop conditions
 
-Any placeholder run prints a signed-in state or anything shaped like an email (stop at once, delete that output from the evidence, report; it means a run reached a real sign-in); the installed version has no matching tag; answering a question would need a login, a keychain write or a real account; the source contradicts a candidate in #1748 in a way that changes P1B's scope (report it, do not widen anything).
+Any placeholder run prints a signed-in state or anything shaped like an email (stop at once, delete that output from the evidence, report; it means a run reached a real sign-in); the installed version has no matching tag; answering a question would need a login, a keychain write or a real account.
+Not a stop condition: a credential variable or source the code shows beyond #1748's two candidates is a finding (lead, 2026-11-17); record it in question 1 and in "Consequences for P1B" and continue; only P1B's card decides the scrub list.
 
 ## Report
 
