@@ -54,7 +54,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Codex Terra today | 16 | 12 | daily | owner CP0 value; Terra implementers and fix rounds |
 | Claude Sonnet today | 44 | 20 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
 | Claude Opus today | 16 | 14 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
-| Advisor consults | 100 | 21 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
+| Advisor consults | 100 | 22 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
 | Fable consults | 1 | 1 | never | copied; only if the owner asks; never --over |
 | Agents this wave | 0 | 0 | wave | unused: this plan has no waves |
 
@@ -167,4 +167,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | RV-P1B-maintainability a4b6837124bf454b8 | reviewer (maintainability a4b6837124bf454b8) | claude-sonnet | sonnet () | P1B PR1811 | 2026-11-17T10:35 | done |
 | RV-P1B-privacy a06f51febcdeef94b | reviewer (privacy a06f51febcdeef94b) | claude-sonnet | sonnet () | P1B PR1811 | 2026-11-17T10:35 | done |
 | P1B-8 | implementer (PR1811 fix round) | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T11:30 | stopped-incomplete |
-| P1B-9 | implementer (PR1811 fix round, continuation) | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T11:25 | running |
+| P1B-9 | implementer (PR1811 fix round, continuation) | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T11:25 | stopped-incomplete |
