@@ -735,10 +735,17 @@ restore_claims() {
   fi
 }
 
-# remove_orphans: work directories and claims that killed runs left behind,
-# once they are older than ORPHAN_AGE.
+# remove_orphans: work directories that killed runs left behind, once they are
+# older than ORPHAN_AGE; and old claims, but only while a lease is in place. A
+# claim is a renamed lease and keeps that lease's modification time, so the
+# claim of an expired or stale lease looks old at once: with no lease in place
+# it may be the only copy (restore_claims could not link it back), and deleting
+# it would leave the flag set with nothing for any later run to act on.
 remove_orphans() {
-  run_bounded find "$LEASE_DIR" -mindepth 1 -maxdepth 1 \\( -name 'watchdog-run.*' -o -name 'lease.json.watchdog-*' \\) -mtime "$ORPHAN_AGE" -exec rm -rf {} +
+  run_bounded find "$LEASE_DIR" -mindepth 1 -maxdepth 1 -name 'watchdog-run.*' -mtime "$ORPHAN_AGE" -exec rm -rf {} +
+  if [ -e "$LEASE" ] || [ -L "$LEASE" ]; then
+    run_bounded find "$LEASE_DIR" -mindepth 1 -maxdepth 1 -name 'lease.json.watchdog-*' -mtime "$ORPHAN_AGE" -exec rm -rf {} +
+  fi
 }
 
 # has_lease_or_claim: a lease, or a lease a killed run renamed aside, exists

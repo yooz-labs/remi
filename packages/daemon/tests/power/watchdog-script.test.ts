@@ -1132,6 +1132,54 @@ if (process.platform !== 'darwin') {
       },
       TEST_TIMEOUT_MS,
     );
+
+    test(
+      'an old claim that cannot be linked back is kept, not removed as an orphan',
+      () => {
+        // A claim keeps the modification time of the lease it was, so the
+        // claim of an expired lease looks old at once. With no lease in place
+        // it is the only copy: removing it would leave the flag set with
+        // nothing for any later run to act on.
+        const h = makeHarness({ lnStandIn: true, script: { orphanMaxAgeSeconds: 60 } });
+        h.setFlag('Yes');
+        writeLease(h.remiHome, freshLease({ expiresAt: nowSeconds() - 2 }));
+        const claim = `${leasePath(h.remiHome)}.watchdog-4242`;
+        renameSync(leasePath(h.remiHome), claim);
+        const january = new Date('2026-01-01T00:00:00Z');
+        utimesSync(claim, january, january);
+        h.setLn('fail');
+        const first = runScript(h, { allowLeftovers: true });
+        expect(first.stdout).toBe('');
+        expect(h.revertCalls()).toEqual([]);
+        expect(existsSync(claim)).toBe(true);
+        expect(existsSync(leasePath(h.remiHome))).toBe(false);
+
+        // The next run links it back and acts on it.
+        expectOneRevert(h, runScript(h), 'expired');
+        expect(existsSync(claim)).toBe(false);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    test(
+      'once the newest claim is linked back as the lease, an older claim is removed as an orphan',
+      () => {
+        const h = makeHarness({ script: { orphanMaxAgeSeconds: 60 } });
+        h.setFlag('No');
+        const lease = freshLease();
+        writeLease(h.remiHome, lease);
+        const dir = dirname(leasePath(h.remiHome));
+        renameSync(leasePath(h.remiHome), join(dir, 'lease.json.watchdog-222'));
+        writeFileSync(join(dir, 'lease.json.watchdog-111'), '{}', { mode: 0o600 });
+        const twoMinutesAgo = new Date(Date.now() - 120_000);
+        const tenMinutesAgo = new Date(Date.now() - 600_000);
+        utimesSync(join(dir, 'lease.json.watchdog-222'), twoMinutesAgo, twoMinutesAgo);
+        utimesSync(join(dir, 'lease.json.watchdog-111'), tenMinutesAgo, tenMinutesAgo);
+        expectNothing(h, runScript(h));
+        expect(readLease(h.remiHome)).toEqual({ kind: 'valid', lease });
+      },
+      TEST_TIMEOUT_MS,
+    );
   });
 
   describe('when the keep-awake directory cannot hold a work directory', () => {
