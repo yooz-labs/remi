@@ -49,11 +49,11 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 100 | 0 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Agents today | 100 | 1 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
 | Codex Luna today | 24 | 0 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
 | Codex Terra today | 16 | 0 | daily | owner CP0 value; Terra implementers and fix rounds |
 | Claude Sonnet today | 44 | 0 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
-| Claude Opus today | 16 | 0 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
+| Claude Opus today | 16 | 1 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
 | Advisor consults | 20 | 2 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
 | Fable consults | 1 | 0 | never | copied; only if the owner asks; never --over |
 | Agents this wave | 0 | 0 | wave | unused: this plan has no waves |
@@ -130,3 +130,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | P1A-1 | implementer | codex-terra | gpt-6.1-terra xhigh | P1A | 2026-11-17T04:14 | running |
 | P1C-1 | implementer | codex-luna | gpt-6-luna max | P1C | 2026-11-17T04:14 | running |
 | P5A-1 | implementer | codex-luna | gpt-6-luna max | P5A-PREP | 2026-11-17T04:14 | running |
+| CI-1 | CI analysis (owner request, issue 1793) | claude-opus | opus high (agent a8e5c55d269096de4) | none | 2026-11-17T04:20 | running |

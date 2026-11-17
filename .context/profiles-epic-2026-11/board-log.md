@@ -52,3 +52,4 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-17T04:14-08:00 | budget reset (daily): Codex Terra today was 1 |
 | 2026-11-17T04:14-08:00 | budget reset (daily): Claude Sonnet today was 3 |
 | 2026-11-17T04:14-08:00 | budget reset (daily): Claude Opus today was 2 |
+| 2026-11-17T04:15-08:00 | Owner request 2026-11-17: CI optimization. Issue 1793 filed; analysis-only agent CI-1 (Opus, worktree ci-optimization, branch docs/issue-1793-ci-optimization) writes .context/ci-optimization-2026-11.md; no workflow changes until the owner approves the proposal (coverage trade-offs are the owner's) |
