@@ -321,7 +321,7 @@ import { BrowserLinkService } from './tunnel/browser-link-service.ts';
 import { BrowserLinkSessionHost } from './tunnel/browser-link-session-host.ts';
 import {
   FileDownloadSessionHost,
-  downloadProtectionRoots,
+  profileDownloadProtectionRoots,
 } from './tunnel/file-download-session-host';
 import { ImageInsertionCoordinator } from './tunnel/image-insertion-coordinator.ts';
 import { ImageStagingService } from './tunnel/image-staging-service.ts';
@@ -535,6 +535,10 @@ const claudeArgs = [...parsedArgs.claudeArgs];
 // Hub/management commands keep Claude; a hub explicitly selects each child's harness.
 let { harnessId, remoteHarness } = resolveLaunchHarness(parsedArgs, remiConfig.harness.default);
 const remiProfileEnv = process.env['REMI_PROFILE'] || undefined;
+const hasConfiguredProfiles =
+  !('error' in remiConfig.profiles) && Object.keys(remiConfig.profiles.entries).length > 0;
+const CLAUDE_RESUME_ONLY =
+  "--resume is remi's flag for Claude sessions; resume a Codex thread with `remi codex resume <thread id>` (`remi --sessions` lists the ids).";
 let resumeRecord: StoredSession | null = null;
 {
   // `--host` sends only what follows `--`. `--resume` is remi's own flag, so `parseArgs` consumes it
@@ -554,8 +558,10 @@ let resumeRecord: StoredSession | null = null;
             ? 'The hub hosts no session of its own, so it takes no --harness.'
             : harnessId === 'codex' &&
                 cliResume !== undefined &&
-                (parsedArgs.harness === 'codex' || cliSubcommand === 'codex')
-              ? "--resume is remi's flag for Claude sessions; resume a Codex thread with `remi codex resume <thread id>` (`remi --sessions` lists the ids)."
+                (parsedArgs.harness === 'codex' ||
+                  cliSubcommand === 'codex' ||
+                  !hasConfiguredProfiles)
+              ? CLAUDE_RESUME_ONLY
               : null;
   if (refusal !== null) {
     console.error(refusal);
@@ -1097,6 +1103,7 @@ if (isSessionLaunch(parsedArgs) && cliDir && !cliHost) {
 }
 
 import { configWarnings } from './profiles/config-warnings.ts';
+import { inProcessResumeRefusal } from './profiles/in-process-resume.ts';
 import { checkLogin } from './profiles/login-check.ts';
 import type { Profile } from './profiles/profile-config.ts';
 import { profileLaunchEnvironment } from './profiles/profile-env.ts';
@@ -1104,6 +1111,7 @@ import { profileLaunchEnvironment } from './profiles/profile-env.ts';
 // before constructing the harness or transcript discovery.
 import { resolveProfile } from './profiles/resolve-profile.ts';
 import { resumeProfile as validateResumeProfile } from './profiles/resume-profile.ts';
+import { SessionProfilesFile } from './session/session-profiles-file.ts';
 
 let selectedProfile: Profile | undefined;
 let launchEnvironment: Record<string, string | undefined> | undefined;
@@ -1129,7 +1137,8 @@ if (isSessionLaunch(parsedArgs) && !serveMode) {
         try {
           resumeRecord = new SessionStore().findResumableByClaudeSessionId(id.toLowerCase());
         } catch (error) {
-          refuseProfile(errorToString(error));
+          if (hasConfiguredProfiles) refuseProfile(errorToString(error));
+          log(`Could not read resume records: ${errorToString(error)}`);
         }
         break;
       }
@@ -1149,16 +1158,21 @@ if (isSessionLaunch(parsedArgs) && !serveMode) {
                 s.harness === 'codex' && s.harnessSessionId?.toLowerCase() === args.resumeThreadId,
             ) ?? null;
       } catch (error) {
-        refuseProfile(errorToString(error));
+        if (hasConfiguredProfiles) refuseProfile(errorToString(error));
+        log(`Could not read resume records: ${errorToString(error)}`);
       }
     }
   }
   let resumeProfile: string | undefined;
   if (resumeRecord) {
-    const checked = validateResumeProfile(resumeRecord, remiConfig.profiles);
+    const checked = validateResumeProfile(
+      resumeRecord,
+      remiConfig.profiles,
+      new SessionProfilesFile(REMI_DIR),
+    );
     if ('error' in checked) refuseProfile(checked.error);
     resumeProfile = checked.id;
-    const recordedProfile = resumeProfile ?? 'default';
+    const recordedProfile = checked.id;
     if (
       (parsedArgs.remiProfile && parsedArgs.remiProfile !== recordedProfile) ||
       (!cliDaemonMode && remiProfileEnv && remiProfileEnv !== recordedProfile)
@@ -1171,7 +1185,7 @@ if (isSessionLaunch(parsedArgs) && !serveMode) {
     profiles: remiConfig.profiles,
     cwd: process.cwd(),
     ...(resumeRecord
-      ? { flag: resumeProfile ?? 'default' }
+      ? { flag: resumeProfile as string }
       : {
           ...(parsedArgs.remiProfile !== undefined && { flag: parsedArgs.remiProfile }),
           ...(remiProfileEnv !== undefined && { envValue: remiProfileEnv }),
@@ -1184,6 +1198,13 @@ if (isSessionLaunch(parsedArgs) && !serveMode) {
   }
   if (resolution.id !== 'default') {
     if ('error' in remiConfig.profiles) refuseProfile(remiConfig.profiles.error);
+    try {
+      new SessionProfilesFile().assertReadable();
+    } catch {
+      refuseProfile(
+        `Could not read ${path.join(REMI_DIR, 'session-profiles.json')}, which records session profiles; a profile session cannot start until it is repaired or moved aside.`,
+      );
+    }
     selectedProfile = remiConfig.profiles.entries[resolution.id];
     if (!selectedProfile) refuseProfile(`Unknown profile ${resolution.id}. Run remi profile ls.`);
     const explicitHarness =
@@ -1248,11 +1269,9 @@ if (isSessionLaunch(parsedArgs) && !serveMode) {
         }),
       },
     };
-    if (harnessId === 'claude') claudeArgs.push(...selectedProfile.args);
+    if (harnessId === 'claude') claudeArgs.unshift(...selectedProfile.args);
   } else if (cliResume !== undefined && harnessId === 'codex') {
-    console.error(
-      "--resume is remi's flag for Claude sessions; resume a Codex thread with `remi codex resume <thread id>` (`remi --sessions` lists the ids).",
-    );
+    console.error(CLAUDE_RESUME_ONLY);
     process.exit(2);
   }
 }
@@ -1545,6 +1564,7 @@ const workspaceCache = new WorkspaceCache({
         bindingStore,
         transcriptDiscovery,
         harness,
+        withholdTranscriptPaths: selectedProfile !== undefined,
         currentPort: () => PORT,
         getLivePorts: () => liveSessionsRegistry.getLivePorts(),
         machine: machineDescriptor,
@@ -1723,14 +1743,16 @@ if (
       return adapter instanceof WebSocketAdapter ? adapter : undefined;
     },
     rootsFor: (workingDirectory) =>
-      downloadProtectionRoots({
-        home: REMI_DIR,
-        userHome: os.homedir(),
-        workingDirectory,
-        harness: harnessId,
-        claudeConfigDirectory: selectedProfile?.claude?.dir ?? process.env['CLAUDE_CONFIG_DIR'],
-        codexHome: selectedProfile?.codex?.dir ?? process.env['CODEX_HOME'],
-      }),
+      profileDownloadProtectionRoots(
+        {
+          home: REMI_DIR,
+          userHome: os.homedir(),
+          workingDirectory,
+          harness: harnessId,
+        },
+        selectedProfile,
+        process.env,
+      ),
     onReady: (id) => publishDownloadReadiness(id),
   });
 }
@@ -2015,7 +2037,13 @@ function collectLiveSessionsUpdate(): LiveSessionsCollectResult | null {
   if (newPorts.length === 0) return null;
   // The same entries a session_list_request gets, harness identity included (#1274).
   const { own, external } = buildSessionList(
-    { sessionRegistry, bindingStore, transcriptDiscovery, harness },
+    {
+      sessionRegistry,
+      bindingStore,
+      transcriptDiscovery,
+      harness,
+      withholdTranscriptPaths: selectedProfile !== undefined,
+    },
     true,
   );
   return { sessions: [...own, ...external], newPorts, machine: machineDescriptor() };
@@ -2620,6 +2648,7 @@ if (codexHarness) {
 }
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({
+  withholdTranscriptPaths: selectedProfile !== undefined,
   machine: machineDescriptor,
   sessionRegistry,
   bindingStore,
@@ -2643,6 +2672,7 @@ resolveStopOnClose = sessionHandlers.resolveStopOnClose;
 // The single authoritative "current owned session" accessor (#499), shared by
 // the transcript-request redirect and the hello_ack binding so they never diverge.
 const currentOwnedSession = makeCurrentSessionResolver({
+  withholdTranscriptPath: selectedProfile !== undefined,
   getPrimarySessionId,
   sessionStore,
   harness,
@@ -2711,22 +2741,15 @@ const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers
   bindingStore,
   transcriptDiscovery,
   harness,
-  checkResumeProfile: (claudeSessionId) => {
-    try {
-      const record = sessionStore.findResumableByClaudeSessionId(claudeSessionId.toLowerCase());
-      if (!record)
-        return selectedProfile
-          ? 'This session belongs to profile default, and this remi runs a different one. Resume it through the hub or with remi --resume on the machine.'
-          : null;
-      const checked = validateResumeProfile(record, remiConfig.profiles);
-      if ('error' in checked) return checked.error;
-      return checked.id === (profileMetadata?.profile ?? 'default')
-        ? null
-        : `This session belongs to profile ${checked.id}, and this remi runs a different one. Resume it through the hub or with remi --resume on the machine.`;
-    } catch (error) {
-      return errorToString(error);
-    }
-  },
+  checkResumeProfile: (claudeSessionId) =>
+    inProcessResumeRefusal(
+      sessionStore,
+      new SessionProfilesFile(REMI_DIR),
+      remiConfig.profiles,
+      profileMetadata?.profile ?? 'default',
+      claudeSessionId,
+      log,
+    ),
   createNewSession,
   send: sendToConnection,
 });
@@ -3873,7 +3896,7 @@ if (cliDaemonMode) {
         ptyMessageFanout,
         harnessId === 'codex'
           ? codexLaunchArgs
-          : [...parsedArgs.explicitArgs, ...(selectedProfile?.args ?? [])],
+          : [...(selectedProfile?.args ?? []), ...parsedArgs.explicitArgs],
       );
     } catch (err) {
       const msg = errorToString(err);

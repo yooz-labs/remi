@@ -259,12 +259,14 @@ export async function cleanupHub(hub: HubHandle): Promise<void> {
  *  the socket plus a growing message log the test can keep asserting on. */
 export async function connectAndHello(
   port: number,
-): Promise<{ ws: WebSocket; received: ProtocolMessage[] }> {
+): Promise<{ ws: WebSocket; received: ProtocolMessage[]; raw: string[] }> {
   const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
   const received: ProtocolMessage[] = [];
+  const raw: string[] = [];
   await new Promise<void>((resolve, reject) => {
     ws.onopen = () => ws.send(serialize(createHello('hub-test-client', '1.0.0')));
     ws.onmessage = (e) => {
+      raw.push(e.data.toString());
       const msg = deserialize(e.data.toString());
       if (msg) received.push(msg);
       if (msg?.type === 'hello_ack') resolve();
@@ -272,5 +274,5 @@ export async function connectAndHello(
     ws.onerror = () => reject(new Error('WebSocket error'));
     setTimeout(() => reject(new Error('Timeout waiting for hello_ack')), 5000);
   });
-  return { ws, received };
+  return { ws, received, raw };
 }

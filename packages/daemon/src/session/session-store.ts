@@ -426,6 +426,8 @@ export class SessionStore {
     // renames second hits ENOENT because the first already moved it away.
     // The pid scopes the tmp per process; the synchronous write+rename
     // serialize within a process, so the pid alone makes collisions impossible.
+    const sidecar = new SessionProfilesFile(path.dirname(this.filePath));
+    if (addition) sidecar.assertReadable();
     const tmpPath = `${this.filePath}.${process.pid}.tmp`;
     fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
     try {
@@ -439,7 +441,7 @@ export class SessionStore {
       }
       throw err;
     }
-    new SessionProfilesFile(path.dirname(this.filePath)).reconcile(
+    sidecar.reconcile(
       sessions.map((s) => s.remiSessionId),
       addition,
     );

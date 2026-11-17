@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import {
   createCreateSessionRequest,
   createResumeSessionRequest,
+  createSessionListRequest,
   createTranscriptLoadRequest,
   serialize,
 } from '@remi/shared/protocol.ts';
@@ -77,6 +78,14 @@ while [ ! -e "$FAKE_OUTPUT/release" ] && [ "$i" -lt 600 ]; do sleep 0.1; i=$((i 
       PROFILE_CREDENTIAL_ENV_PREFIXES.map((prefix) => [`${prefix}REMI_TEST`, 'planted-value']),
     ),
     AWS_PROFILE: 'planted-value',
+    AWS_CONTAINER_AUTHORIZATION_TOKEN: 'planted-value',
+    AWS_CONTAINER_CREDENTIALS_FULL_URI: 'planted-value',
+    AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: 'planted-value',
+    AWS_ROLE_ARN: 'planted-value',
+    CLOUDSDK_AUTH_ACCESS_TOKEN: 'planted-value',
+    GOOGLE_OAUTH_ACCESS_TOKEN: 'planted-value',
+    AWS_REGION: 'planted-value',
+    AZURE_CLIENT_SECRET: 'planted-value',
     ANTHROPIC_SECRET_PLACEHOLDER_REMI_TEST: 'planted-value',
     CLAUDE_CODE_OAUTH_REMI_TEST: 'planted-value',
     PATH: `${bin}:/usr/bin:/bin`,
@@ -606,6 +615,13 @@ while [ ! -e "$FAKE_OUTPUT/release" ] && [ "$i" -lt 600 ]; do sleep 0.1; i=$((i 
 
 test('hub resumes the recorded profile and reports a refused child', async () => {
   const f = fixture();
+  const workConfig = path.join(f.remi, 'config.toml');
+  fs.writeFileSync(
+    workConfig,
+    fs
+      .readFileSync(workConfig, 'utf8')
+      .replace('label="Work"', 'label="Work"\nargs=["--model", "profile-model"]'),
+  );
   const other = path.join(f.home, 'other');
   const otherWork = path.join(f.home, 'other-work');
   fs.mkdirSync(other);
@@ -673,9 +689,14 @@ test('hub resumes the recorded profile and reports a refused child', async () =>
     fs.rmSync(path.join(f.output, 'argv'));
   };
   try {
-    const first = await ask(createCreateSessionRequest(f.work));
+    const first = await ask(
+      createCreateSessionRequest(f.work, { args: ['--model', 'user-model'] }),
+    );
     expect(first.success).toBe(true);
     await pollUntil(() => fs.existsSync(path.join(f.output, 'argv')), 15000, 'first profile child');
+    expect(fs.readFileSync(path.join(f.output, 'argv'), 'utf8')).toContain(
+      '--model\nprofile-model\n--model\nuser-model',
+    );
     expect(fs.readFileSync(path.join(f.output, 'dir'), 'utf8')).toBe(f.profile);
     const original = records().find((s) => s.remiSessionId === first.sessionId);
     expect(original?.profile).toBe('work');
@@ -901,6 +922,12 @@ test('wrapper resumes use the recorded profile and detect older writers', async 
     'This session belongs to profile work. Resume it without --remi-profile, or with --remi-profile work.',
   );
   expect(fs.existsSync(path.join(f.output, 'argv'))).toBe(false);
+  const flagConflict = await wrapper(['--resume', '--remi-profile', 'other']);
+  expect(await flagConflict.exited).not.toBe(0);
+  expect(await new Response(flagConflict.stderr).text()).toContain(
+    'This session belongs to profile work. Resume it without --remi-profile, or with --remi-profile work.',
+  );
+  expect(fs.existsSync(path.join(f.output, 'argv'))).toBe(false);
   const file = path.join(f.remi, 'sessions.json');
   const sessions = JSON.parse(fs.readFileSync(file, 'utf8'));
   const latest = sessions.sessions.sort((a: { startedAt: string }, b: { startedAt: string }) =>
@@ -908,6 +935,20 @@ test('wrapper resumes use the recorded profile and detect older writers', async 
   )[0];
   const sidecarPath = path.join(f.remi, 'session-profiles.json');
   const sidecarRaw = fs.readFileSync(sidecarPath, 'utf8');
+  for (const [key, value] of [
+    ['profile', 'other'],
+    ['revision', 'different-revision'],
+  ]) {
+    const changedSidecar = JSON.parse(sidecarRaw);
+    changedSidecar.sessions[latest.remiSessionId][key as string] = value;
+    fs.writeFileSync(sidecarPath, JSON.stringify(changedSidecar));
+    const conflict = await wrapper(['--resume']);
+    expect(await conflict.exited).not.toBe(0);
+    expect(await new Response(conflict.stderr).text()).toContain(
+      "This session's profile information was changed by another remi process. Start a new session.",
+    );
+    expect(fs.existsSync(path.join(f.output, 'argv'))).toBe(false);
+  }
   const sidecar = JSON.parse(sidecarRaw);
   Reflect.deleteProperty(sidecar.sessions, latest.remiSessionId);
   fs.writeFileSync(sidecarPath, JSON.stringify(sidecar));
@@ -966,3 +1007,173 @@ test('wrapper resumes use the recorded profile and detect older writers', async 
     expect(await proc.exited).toBe(0);
   }
 }, 45000);
+
+for (const configured of [true, false]) {
+  test(`session frames ${configured ? 'withhold profile paths' : 'retain default paths'}`, async () => {
+    const f = fixture();
+    const directory = configured ? f.profile : path.join(f.home, '.claude');
+    const codexDirectory = path.join(f.home, 'profile-codex');
+    if (configured) {
+      fs.mkdirSync(codexDirectory);
+      fs.appendFileSync(
+        path.join(f.remi, 'config.toml'),
+        `\n[profiles.work.codex]\ndir=${JSON.stringify(codexDirectory)}\nexpects="subscription"\n`,
+      );
+    }
+    if (!configured) fs.writeFileSync(path.join(f.remi, 'config.toml'), '');
+    const other = path.join(f.home, 'external-work');
+    const projectDir = path.join(directory, 'projects', other.replace(/\//g, '-'));
+    fs.mkdirSync(projectDir, { recursive: true });
+    const externalId = '77777777-7777-4777-8777-777777777777';
+    fs.writeFileSync(
+      path.join(projectDir, `${externalId}.jsonl`),
+      `${JSON.stringify({ type: 'user', uuid: crypto.randomUUID(), sessionId: externalId, cwd: other, timestamp: new Date().toISOString(), message: { role: 'user', content: 'external' } })}\n`,
+    );
+    const started = await spawnDaemon(
+      f.home,
+      f.work,
+      f.env,
+      configured ? ['--remi-profile', 'work'] : [],
+    );
+    running.push({ ...started, home: f.home, work: f.work });
+    await pollUntil(() => fs.existsSync(path.join(f.output, 'argv')), 15000, 'agent started');
+    const { ws, received, raw } = await connectAndHello(started.port);
+    try {
+      const request = createSessionListRequest(true);
+      ws.send(serialize(request));
+      await pollUntil(
+        () =>
+          received.some(
+            (message) =>
+              message.type === 'session_list_response' && message.requestId === request.id,
+          ),
+        10000,
+        'session list',
+      );
+      const hello = received.find((message) => message.type === 'hello_ack');
+      const list = received.find(
+        (message) => message.type === 'session_list_response' && message.requestId === request.id,
+      );
+      if (hello?.type !== 'hello_ack' || list?.type !== 'session_list_response')
+        throw new Error('missing response');
+      const external = list.sessions.find(
+        (session) => session.claudeSessionId === externalId || session.sessionId === externalId,
+      );
+      const own = list.sessions.find((session) => session.sessionId !== externalId);
+      expect(external).toBeDefined();
+      expect(own).toBeDefined();
+      if (configured) {
+        expect(hello.transcriptPath).toBeNull();
+        expect(Object.hasOwn(own as object, 'transcriptPath')).toBe(false);
+        expect(Object.hasOwn(external as object, 'transcriptPath')).toBe(false);
+        expect(raw.join('\n')).not.toContain(f.profile);
+        expect(raw.join('\n')).not.toContain(codexDirectory);
+      } else {
+        expect(hello.transcriptPath).toContain(directory);
+        expect(own?.transcriptPath).toContain(directory);
+        expect(external?.transcriptPath).toContain(directory);
+      }
+    } finally {
+      ws.close();
+      fs.writeFileSync(path.join(f.output, 'release'), '');
+    }
+  }, 30000);
+}
+
+test('a damaged sidecar refuses a configured launch before probing', async () => {
+  const f = fixture();
+  fs.writeFileSync(path.join(f.remi, 'session-profiles.json'), 'not json');
+  const proc = await spawnWrapper(f, ['--remi-profile', 'work']);
+  expect(await proc.exited).not.toBe(0);
+  expect(await new Response(proc.stderr).text()).toContain(
+    `Could not read ${path.join(f.remi, 'session-profiles.json')}, which records session profiles; a profile session cannot start until it is repaired or moved aside.`,
+  );
+  expect(fs.existsSync(path.join(f.output, 'argv'))).toBe(false);
+}, 25000);
+
+test('ambiguous forwarded resume is refused before spawning in daemons and wrappers', async () => {
+  for (const [daemon, configured] of [
+    [true, false],
+    [true, true],
+    [false, false],
+    [false, true],
+  ] as const) {
+    const f = fixture();
+    if (!configured) fs.writeFileSync(path.join(f.remi, 'config.toml'), '');
+    const claudeId = crypto.randomUUID();
+    const records = [0, 1].map(() => ({
+      remiSessionId: crypto.randomUUID(),
+      claudeSessionId: claudeId,
+      projectPath: f.work,
+      port: 19200,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      exitedAt: null,
+      exitCode: null,
+    }));
+    fs.writeFileSync(
+      path.join(f.remi, 'sessions.json'),
+      JSON.stringify({ version: 1, sessions: records }),
+    );
+    const started = daemon
+      ? await spawnDaemon(f.home, f.work, f.env, ['--', '--resume', claudeId])
+      : { proc: await spawnWrapper(f, ['--', '--resume', claudeId]), port: 0 };
+    if (daemon) running.push({ ...started, home: f.home, work: f.work });
+    expect(await started.proc.exited).toBe(daemon && configured ? 78 : 1);
+    const stdout = await new Response(started.proc.stdout).text();
+    const stderr = await new Response(started.proc.stderr).text();
+    const logPath = path.join(f.remi, 'remi.log');
+    const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : '';
+    expect(stdout + stderr + log).toContain(
+      `Ambiguous Claude session ID ${claudeId.slice(0, 8)}: 2 records; refusing to choose one`,
+    );
+    expect(fs.existsSync(path.join(f.output, 'argv'))).toBe(false);
+  }
+}, 45000);
+
+test('configured Codex default refuses a profile-free top-level Claude resume', async () => {
+  const f = fixture();
+  fs.appendFileSync(path.join(f.remi, 'config.toml'), '\n[harness]\ndefault="codex"\n');
+  const record = {
+    remiSessionId: crypto.randomUUID(),
+    claudeSessionId: crypto.randomUUID(),
+    projectPath: f.work,
+    port: 19200,
+    pid: null,
+    startedAt: new Date().toISOString(),
+    exitedAt: new Date().toISOString(),
+    exitCode: 0,
+  };
+  fs.writeFileSync(
+    path.join(f.remi, 'sessions.json'),
+    JSON.stringify({ version: 1, sessions: [record] }),
+  );
+  const proc = await spawnWrapper(f, ['--resume']);
+  expect(await proc.exited).toBe(2);
+  expect(await new Response(proc.stderr).text()).toContain(
+    "--resume is remi's flag for Claude sessions",
+  );
+  expect(fs.existsSync(path.join(f.output, 'argv'))).toBe(false);
+}, 25000);
+
+test('profile arguments precede session arguments in a wrapper', async () => {
+  const f = fixture();
+  const config = path.join(f.remi, 'config.toml');
+  fs.writeFileSync(
+    config,
+    fs
+      .readFileSync(config, 'utf8')
+      .replace('label="Work"', 'label="Work"\nargs=["--model", "profile-model"]'),
+  );
+  const proc = await spawnWrapper(f, ['--remi-profile', 'work', '--', '--model', 'user-model']);
+  await pollUntil(
+    () => fs.existsSync(path.join(f.output, 'argv')) || proc.exitCode !== null,
+    15000,
+    'profile argument launch',
+  );
+  expect(fs.readFileSync(path.join(f.output, 'argv'), 'utf8')).toContain(
+    '--model\nprofile-model\n--model\nuser-model',
+  );
+  fs.writeFileSync(path.join(f.output, 'release'), '');
+  expect(await proc.exited).toBe(0);
+}, 25000);

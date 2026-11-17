@@ -37,6 +37,7 @@ import type { SendToConnection } from './trivial-events.ts';
 
 export interface SessionHandlerDeps {
   machine?: () => MachineDescriptor | undefined;
+  withholdTranscriptPaths?: boolean;
   sessionRegistry: SessionRegistry;
   bindingStore: SessionBindingStore;
   /** Typed by shape (`buildSessionList`'s), so this module imports nothing from `transcript/`. */
@@ -137,7 +138,13 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
     onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean): void => {
       // One builder for the requested list and the live-sessions broadcast (#1274).
       const { own: daemonSessions, external } = buildSessionList(
-        { sessionRegistry, bindingStore, transcriptDiscovery, harness },
+        {
+          sessionRegistry,
+          bindingStore,
+          transcriptDiscovery,
+          harness,
+          withholdTranscriptPaths: deps.withholdTranscriptPaths === true,
+        },
         includeExternal,
       );
       const allSessions = [...daemonSessions, ...external];

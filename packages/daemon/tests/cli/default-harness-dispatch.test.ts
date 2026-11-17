@@ -25,10 +25,11 @@ const cases = [
   { args: ['config'], code: 0, text: 'default = "codex"' },
 ] as const;
 
-async function run(args: readonly string[], config: string) {
+async function run(args: readonly string[], config: string, setup?: (home: string) => void) {
   const home = fs.mkdtempSync(path.join(tmpdir(), 'remi-default-harness-'));
   try {
     fs.writeFileSync(path.join(home, 'config.toml'), config, { mode: 0o600 });
+    setup?.(home);
     const child = Bun.spawn([process.execPath, '--no-env-file', cli, ...args], {
       cwd: home,
       env: { ...process.env, REMI_HOME: home },
@@ -51,6 +52,35 @@ async function run(args: readonly string[], config: string) {
     fs.rmSync(home, { recursive: true, force: true });
   }
 }
+
+test('configured profiles retain the late Codex default resume refusal', async () => {
+  const id = crypto.randomUUID();
+  const result = await run(
+    ['--resume', id],
+    '[harness]\ndefault="codex"\n[profiles.work]\nlabel="Work"\n[profiles.work.claude]\nexpects="subscription"\n',
+    (home) =>
+      fs.writeFileSync(
+        path.join(home, 'sessions.json'),
+        JSON.stringify({
+          version: 1,
+          sessions: [
+            {
+              remiSessionId: id,
+              claudeSessionId: crypto.randomUUID(),
+              projectPath: home,
+              port: 19200,
+              pid: null,
+              startedAt: new Date().toISOString(),
+              exitedAt: new Date().toISOString(),
+              exitCode: 0,
+            },
+          ],
+        }),
+      ),
+  );
+  expect(result.code).toBe(2);
+  expect(result.text).toContain("--resume is remi's flag for Claude sessions");
+});
 
 for (const scenario of cases) {
   test(`real CLI configured Codex early dispatch: ${scenario.args.join(' ')}`, async () => {

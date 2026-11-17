@@ -666,8 +666,11 @@ export async function spawnRemiDaemon(
   }
 
   let exitCode: number | null | undefined;
-  child.once('exit', (code) => {
-    exitCode = code;
+  const exited = new Promise<void>((resolve) => {
+    child.once('exit', (code) => {
+      exitCode = code;
+      resolve();
+    });
   });
   child.unref();
   fs.closeSync(logFd);
@@ -692,7 +695,7 @@ export async function spawnRemiDaemon(
       process.kill(pid, 0);
     } catch {
       // Allow the child's exit event to supply its code before classifying it.
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
       if (exitCode === PROFILE_REFUSED_EXIT_CODE) {
         throw new ProfileRefusedError();
       }

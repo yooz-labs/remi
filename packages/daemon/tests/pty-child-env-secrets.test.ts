@@ -210,6 +210,11 @@ describe('the denylist covers every secret the daemon reads (#1249)', () => {
     expect(PROFILE_CREDENTIAL_ENV_PREFIXES).toEqual([
       'ANTHROPIC_SECRET_PLACEHOLDER_',
       'CLAUDE_CODE_OAUTH_',
+      'AWS_',
+      'AZURE_',
+      'CLOUDSDK_',
+      'GCLOUD_',
+      'GOOGLE_',
     ]);
   });
   test('each environment variable read under packages/daemon/src whose name says secret is denied', async () => {

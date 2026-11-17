@@ -179,6 +179,7 @@ export async function makeFileDownloadIngressFixture(
           onSessionListRequest(id: string, requestId: string, includeExternal: boolean) {
             const { own, external } = buildSessionList(
               {
+                withholdTranscriptPaths: false,
                 sessionRegistry: registry,
                 bindingStore: bindings,
                 transcriptDiscovery,

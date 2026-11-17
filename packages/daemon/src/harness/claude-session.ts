@@ -397,6 +397,7 @@ export async function createClaudeSession(
       const holdPolicy = permissionHoldPolicy(passThrough, deps.prompts());
       const hookBridgeHandle = setupHookBridge(
         {
+          withholdTranscriptPath: deps.profileMetadata !== undefined,
           sessionRegistry,
           bindingStore,
           liveSessionsRegistry,

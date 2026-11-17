@@ -175,6 +175,7 @@ async function buildFixture(
   registry.registerSession(sessionId, directory, new PTYSession({ cwd: directory }), messageApi);
   const bridge = setupHookBridge(
     {
+      withholdTranscriptPath: false,
       sessionRegistry: registry,
       bindingStore,
       liveSessionsRegistry: liveSessions,

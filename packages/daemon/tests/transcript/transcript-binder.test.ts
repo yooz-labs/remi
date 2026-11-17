@@ -115,6 +115,7 @@ describe('TranscriptBinder', () => {
 
   function deps(): TranscriptBinderDeps {
     return {
+      withholdTranscriptPath: false,
       sessionRegistry,
       bindingStore,
       liveSessionsRegistry,
@@ -467,6 +468,35 @@ describe('TranscriptBinder', () => {
       ]);
       expect(sessionStore.findByRemiSessionId(SID)?.claudeSessionId).toBe('claude-B');
       expect(binder.snapshot().claudeSessionId).toBe('claude-B');
+    });
+
+    test('rotation withholds its path while retaining the real watcher path', () => {
+      registerSession();
+      sessionStore.save({
+        remiSessionId: SID,
+        claudeSessionId: 'claude-A',
+        projectPath: tmpDir,
+        port: 8765,
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        exitedAt: null,
+        exitCode: null,
+      });
+      const binder = new TranscriptBinder(
+        { ...deps(), withholdTranscriptPath: true },
+        { sessionId: SID, workingDirectory: tmpDir },
+        'drive',
+      );
+      binder.onHookEvent({ session_id: 'claude-A', transcript_path: path.join(tmpDir, 'a.jsonl') });
+      ptyState.running = false;
+      const newPath = path.join(tmpDir, 'b.jsonl');
+      binder.onHookEvent({ session_id: 'claude-B', transcript_path: newPath });
+      const event = sent.find((m) => m.type === 'session_rotated');
+      expect(event).toBeDefined();
+      expect(Object.hasOwn(event as object, 'newTranscriptPath')).toBe(false);
+      expect(binder.snapshot().claudeSessionId).toBe('claude-B');
+      expect(transcriptWatchers.has(SID)).toBe(true);
+      binder.close();
     });
 
     test('path-less restart emits NOTHING and resets the lock without rebinding', () => {

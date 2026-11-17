@@ -401,6 +401,7 @@ describe('setupHookBridge', () => {
 
     const handle = setupHookBridge(
       {
+        withholdTranscriptPath: false,
         sessionRegistry,
         bindingStore,
         liveSessionsRegistry,
@@ -1891,6 +1892,7 @@ describe('setupHookBridge', () => {
 
     const handle = setupHookBridge(
       {
+        withholdTranscriptPath: false,
         sessionRegistry,
         bindingStore,
         liveSessionsRegistry,
@@ -1992,6 +1994,7 @@ describe('setupHookBridge', () => {
     bridgeHandles.push(
       setupHookBridge(
         {
+          withholdTranscriptPath: false,
           sessionRegistry,
           bindingStore,
           liveSessionsRegistry,
@@ -4999,6 +5002,7 @@ describe('setupHookBridge', () => {
         ...promptUpWiring,
       });
       const session = createSessionHandlers({
+        withholdTranscriptPaths: false,
         sessionRegistry,
         bindingStore,
         transcriptDiscovery: new TranscriptDiscovery({

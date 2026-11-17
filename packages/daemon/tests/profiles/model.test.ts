@@ -481,3 +481,49 @@ test('profile command help reaches the global parser', async () => {
     parseArgs(['profile', 'add', 'work', '--label', 'Work', '--claude']).subcommandArgs,
   ).toEqual(['add', 'work', '--label', 'Work', '--claude']);
 });
+
+test('refuses bare and extended credential prefixes and profile argument delimiter', () => {
+  for (const prefix of [
+    'ANTHROPIC_SECRET_PLACEHOLDER_',
+    'CLAUDE_CODE_OAUTH_',
+    'AWS_',
+    'AZURE_',
+    'CLOUDSDK_',
+    'GCLOUD_',
+    'GOOGLE_',
+  ]) {
+    for (const name of [prefix, `${prefix}FOO`]) {
+      expect(
+        parseProfiles({
+          work: {
+            label: 'Work',
+            env: { [name]: 'placeholder' },
+            claude: { expects: 'subscription' },
+          },
+        }),
+      ).toEqual({ error: `profiles.work.env.${name}: not supported in this build` });
+    }
+  }
+  expect(
+    parseProfiles({ work: { label: 'Work', args: ['--'], claude: { expects: 'subscription' } } }),
+  ).toEqual({
+    error:
+      'profiles.work.args: "--" is not allowed; the session\'s own arguments follow the profile\'s',
+  });
+});
+
+test('rejects a dangling symlink to another profile directory', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-dangling-'));
+  try {
+    const target = path.join(root, 'future');
+    const alias = path.join(root, 'alias');
+    fs.symlinkSync(target, alias);
+    const result = parseProfiles({
+      work: { label: 'Work', claude: { dir: target, expects: 'subscription' } },
+      other: { label: 'Other', claude: { dir: alias, expects: 'subscription' } },
+    });
+    expect('error' in result && result.error).toContain('uses the same directory');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

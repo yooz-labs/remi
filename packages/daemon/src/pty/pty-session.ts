@@ -62,7 +62,7 @@ export interface PTYSessionConfig {
   /** Environment variables */
   readonly env?: Readonly<Record<string, string | undefined>>;
 
-  /** The supplied environment replaces, rather than extends, the inherited one. */
+  /** True: env is the whole environment and process.env is not inherited; remi's own secrets are still removed by withoutRemiSecrets. */
   readonly completeEnv?: boolean;
 
   /** Initial terminal size */

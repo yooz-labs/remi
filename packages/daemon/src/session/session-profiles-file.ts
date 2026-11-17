@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { logError } from '../cli/logger.ts';
 import { remiHome } from '../config/remi-home.ts';
 import { withInterprocessFileLock } from '../storage/interprocess-file-lock.ts';
 
@@ -52,6 +53,13 @@ export class SessionProfilesFile {
     return withInterprocessFileLock(this.file, () => this.readUnlocked()[id]);
   }
 
+  /** Fail before a profile record is committed when ownership evidence is unreadable. */
+  assertReadable(): void {
+    withInterprocessFileLock(this.file, () => {
+      this.readUnlocked();
+    });
+  }
+
   /** Called while the sessions file lock is held; preserve evidence erased by an older writer. */
   reconcile(
     ids: readonly string[],
@@ -59,7 +67,18 @@ export class SessionProfilesFile {
   ): void {
     if (!fs.existsSync(this.file) && !addition) return;
     withInterprocessFileLock(this.file, () => {
-      const entries = this.readUnlocked();
+      let entries: Record<string, SessionProfileEntry>;
+      try {
+        entries = this.readUnlocked();
+      } catch (error) {
+        if (addition) throw error;
+        const kind =
+          error instanceof SyntaxError
+            ? 'invalid JSON'
+            : ((error as NodeJS.ErrnoException).code ?? 'invalid shape');
+        logError(`Could not read ${this.file}: ${kind}`);
+        return;
+      }
       const live = new Set(ids);
       for (const id of Object.keys(entries)) if (!live.has(id)) Reflect.deleteProperty(entries, id);
       if (addition)

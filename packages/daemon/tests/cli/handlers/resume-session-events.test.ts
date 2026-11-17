@@ -83,6 +83,7 @@ describe('createResumeSessionHandlers', () => {
     checkResumeProfile?: (id: string) => string | null,
   ) {
     return createResumeSessionHandlers({
+      checkResumeProfile: () => null,
       childSessions: null,
       harnessId: 'claude',
       harnesses: () => ['claude'],
@@ -172,6 +173,7 @@ describe('createResumeSessionHandlers', () => {
       },
     } as unknown as SessionStore;
     const handlers = createResumeSessionHandlers({
+      checkResumeProfile: () => null,
       childSessions: null,
       harnessId: 'claude',
       harnesses: () => ['claude'],
@@ -208,6 +210,7 @@ describe('createResumeSessionHandlers', () => {
       },
     } as unknown as TranscriptDiscovery;
     const handlers = createResumeSessionHandlers({
+      checkResumeProfile: () => null,
       childSessions: null,
       harnessId: 'claude',
       harnesses: () => ['claude'],
@@ -406,6 +409,7 @@ describe('createResumeSessionHandlers', () => {
     /** The hub's handler: no `createNewSession` (it throws if reached), a child starter that records. */
     function hubHandlers() {
       return createResumeSessionHandlers({
+        checkResumeProfile: () => null,
         childSessions: async (directory, extra) => {
           asked.push({ directory, extra });
           await gate;
@@ -558,6 +562,7 @@ describe('createResumeSessionHandlers', () => {
         },
       } as unknown as SessionStore;
       const handlers = createResumeSessionHandlers({
+        checkResumeProfile: () => null,
         childSessions: async (directory, extra) => {
           asked.push({ directory, extra });
           return { ok: true, sessionId: CHILD, port: 19931 };
@@ -638,6 +643,7 @@ describe('createResumeSessionHandlers', () => {
         },
       } as unknown as SessionStore;
       const handlers = createResumeSessionHandlers({
+        checkResumeProfile: () => null,
         childSessions: async () => ({ ok: true, sessionId: CHILD, port: 19931 }),
         harnessId: 'claude',
         harnesses: () => ['claude'],

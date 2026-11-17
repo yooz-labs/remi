@@ -92,6 +92,7 @@ describe('buildSessionList (#1274)', () => {
       claude,
       list: buildSessionList(
         {
+          withholdTranscriptPaths: false,
           sessionRegistry,
           bindingStore: new SessionBindingStore(sessionStore),
           transcriptDiscovery: discovery,

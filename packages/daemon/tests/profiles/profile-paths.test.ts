@@ -4,7 +4,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { ClaudeHarness } from '../../src/harness/claude.ts';
 import { TranscriptDiscovery } from '../../src/transcript/transcript-discovery.ts';
-import { downloadProtectionRoots } from '../../src/tunnel/file-download-session-host.ts';
+import {
+  downloadProtectionRoots,
+  profileDownloadProtectionRoots,
+} from '../../src/tunnel/file-download-session-host.ts';
 
 test('profile transcript discovery excludes the default home project', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-transcript-'));
@@ -30,21 +33,29 @@ test('profile transcript discovery excludes the default home project', () => {
   }
 });
 
-test('download roots protect selected profile directories and preserve the default roots', () => {
+test('profile download roots select the profile or inherited environment', () => {
   const base = {
     home: '/tmp/remi-test',
     userHome: '/tmp/user-test',
     workingDirectory: '/tmp/work-test',
     harness: 'claude' as const,
   };
+  const env = { CLAUDE_CONFIG_DIR: '/tmp/inherited-claude', CODEX_HOME: '/tmp/inherited-codex' };
+  expect(profileDownloadProtectionRoots(base, undefined, env)).toEqual(
+    downloadProtectionRoots({
+      ...base,
+      claudeConfigDirectory: env.CLAUDE_CONFIG_DIR,
+      codexHome: env.CODEX_HOME,
+    }),
+  );
   const plain = downloadProtectionRoots(base);
   expect(plain).toContainEqual({ pathname: '/tmp/user-test/.claude', required: true });
   expect(plain).toContainEqual({ pathname: '/tmp/user-test/.codex', required: false });
-  const profile = downloadProtectionRoots({
-    ...base,
-    claudeConfigDirectory: '/tmp/profile-claude',
-    codexHome: '/tmp/profile-codex',
-  });
+  const profile = profileDownloadProtectionRoots(
+    base,
+    { claude: { dir: '/tmp/profile-claude' }, codex: { dir: '/tmp/profile-codex' } },
+    env,
+  );
   expect(profile).toContainEqual({ pathname: '/tmp/profile-claude', required: true });
   expect(profile).toContainEqual({ pathname: '/tmp/profile-codex', required: true });
 });

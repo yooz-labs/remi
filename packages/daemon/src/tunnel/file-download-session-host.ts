@@ -50,6 +50,24 @@ export function downloadProtectionRoots(options: {
   return [...unique.values()];
 }
 
+/** Select the protected roots from the same profile used for the agent launch. */
+export function profileDownloadProtectionRoots(
+  options: Omit<
+    Parameters<typeof downloadProtectionRoots>[0],
+    'claudeConfigDirectory' | 'codexHome'
+  >,
+  profile:
+    | { readonly claude?: { readonly dir: string }; readonly codex?: { readonly dir: string } }
+    | undefined,
+  env: Readonly<Record<string, string | undefined>>,
+): readonly DownloadProtectedRoot[] {
+  return downloadProtectionRoots({
+    ...options,
+    claudeConfigDirectory: profile?.claude?.dir ?? env['CLAUDE_CONFIG_DIR'],
+    codexHome: profile?.codex?.dir ?? env['CODEX_HOME'],
+  });
+}
+
 interface SessionRecord {
   readonly id: UUID;
   readonly project: string;

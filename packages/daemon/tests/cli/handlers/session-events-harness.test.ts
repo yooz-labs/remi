@@ -99,6 +99,7 @@ describe('createSessionHandlers, driven by the harness (#1163)', () => {
 
     const sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
     const handlers = createSessionHandlers({
+      withholdTranscriptPaths: false,
       sessionRegistry,
       bindingStore: new SessionBindingStore(sessionStore),
       transcriptDiscovery: new TranscriptDiscovery({
@@ -175,6 +176,7 @@ describe('createSessionHandlers, driven by the harness (#1163)', () => {
     });
 
     createSessionHandlers({
+      withholdTranscriptPaths: false,
       sessionRegistry,
       bindingStore: new SessionBindingStore(sessionStore),
       transcriptDiscovery: new TranscriptDiscovery({

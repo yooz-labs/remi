@@ -155,7 +155,7 @@ export interface ResumeSessionHandlerDeps {
   now?: () => number;
   /** Builds the launch arguments that resume a stored session (`resumeArgs`). */
   harness: Pick<Harness, 'resumeArgs'>;
-  checkResumeProfile?: (claudeSessionId: string) => string | null;
+  checkResumeProfile: (claudeSessionId: string) => string | null;
   createNewSession: CreateNewSessionFn;
   send: SendToConnection;
 }
@@ -469,7 +469,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
       }
       const { claudeSessionId, workingDirectory } = target;
 
-      const profileRefusal = deps.checkResumeProfile?.(claudeSessionId);
+      const profileRefusal = deps.checkResumeProfile(claudeSessionId);
       if (profileRefusal) {
         send(
           connectionId,

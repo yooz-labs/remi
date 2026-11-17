@@ -14,6 +14,7 @@ import type { SessionBindingStore, SessionRegistry } from '../../session/index.t
 import { logError } from '../logger.ts';
 
 export interface SessionListDeps {
+  readonly withholdTranscriptPaths: boolean;
   readonly sessionRegistry: Pick<SessionRegistry, 'listSessions' | 'getActiveSessionIds'>;
   readonly bindingStore: Pick<SessionBindingStore, 'getIdentity' | 'get'>;
   /**
@@ -101,7 +102,12 @@ export function buildSessionList(deps: SessionListDeps, includeExternal: boolean
       return s;
     }
   });
-  if (!includeExternal) return { own, external: [] };
+  const stripPath = (session: DiscoverableSession): DiscoverableSession => {
+    const { transcriptPath: _path, ...rest } = session;
+    return rest;
+  };
+  const visibleOwn = deps.withholdTranscriptPaths ? own.map(stripPath) : own;
+  if (!includeExternal) return { own: visibleOwn, external: [] };
 
   const managedIds = new Set<string>(sessionRegistry.getActiveSessionIds());
   // Also exclude by Claude session ID (JSONL filename UUID is a different namespace from remi IDs).
@@ -117,5 +123,9 @@ export function buildSessionList(deps: SessionListDeps, includeExternal: boolean
       );
     }
   }
-  return { own, external: transcriptDiscovery.discoverSessions(managedIds) };
+  const external = transcriptDiscovery.discoverSessions(managedIds);
+  return {
+    own: visibleOwn,
+    external: deps.withholdTranscriptPaths ? external.map(stripPath) : external,
+  };
 }

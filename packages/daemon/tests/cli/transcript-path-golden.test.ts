@@ -96,6 +96,7 @@ describe('Claude transcript path golden (#1163)', () => {
     saveBinding(REMI_ID);
 
     const current = makeCurrentSessionResolver({
+      withholdTranscriptPath: false,
       getPrimarySessionId: () => REMI_ID,
       sessionStore,
       harness: new ClaudeHarness(discovery),
@@ -119,6 +120,7 @@ describe('Claude transcript path golden (#1163)', () => {
 
     const sent: ProtocolMessage[] = [];
     createSessionHandlers({
+      withholdTranscriptPaths: false,
       sessionRegistry,
       bindingStore,
       transcriptDiscovery: discovery,

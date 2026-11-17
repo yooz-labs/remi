@@ -105,6 +105,7 @@ export interface BinderDecision {
 export type BinderMode = 'shadow' | 'drive';
 
 export interface TranscriptBinderDeps {
+  withholdTranscriptPath: boolean;
   sessionRegistry: SessionRegistry;
   bindingStore: SessionBindingStore;
   liveSessionsRegistry: SessionRegistryFile;
@@ -762,7 +763,7 @@ export class TranscriptBinder {
         createSessionRotated(
           this.sessionId,
           newId as UUID,
-          transcriptPath,
+          this.deps.withholdTranscriptPath ? undefined : transcriptPath,
           'restart',
           (prev ?? undefined) as UUID | undefined,
         ),

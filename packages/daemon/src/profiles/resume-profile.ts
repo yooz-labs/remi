@@ -1,4 +1,4 @@
-import { SessionProfilesFile } from '../session/session-profiles-file.ts';
+import type { SessionProfilesFile } from '../session/session-profiles-file.ts';
 import type { StoredSession } from '../session/session-store.ts';
 import type { Profiles } from './profile-config.ts';
 
@@ -6,12 +6,19 @@ import type { Profiles } from './profile-config.ts';
 export function resumeProfile(
   record: StoredSession,
   profiles: Profiles,
+  sidecarFile: SessionProfilesFile,
 ): { id: string } | { error: string } {
   const changed =
     "This session's profile information was changed by another remi process. Start a new session.";
+  if (
+    !record.profile &&
+    !record.profileSnapshot &&
+    ('error' in profiles || Object.keys(profiles.entries).length === 0)
+  )
+    return { id: 'default' };
   let sidecar: ReturnType<SessionProfilesFile['get']>;
   try {
-    sidecar = new SessionProfilesFile().get(record.remiSessionId);
+    sidecar = sidecarFile.get(record.remiSessionId);
   } catch {
     return { error: changed };
   }

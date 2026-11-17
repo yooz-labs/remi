@@ -1,3 +1,4 @@
+import type { StoredSession } from '../../session/session-store.ts';
 /**
  * The Codex launch behind the harness seam (epic #1175; phase 3 #1177 launched
  * it and reported its status, phase 4 #1178 added the approvals, phase 6 #1180
@@ -88,10 +89,7 @@ import type { ThreadStatus } from './thread-protocol.ts';
 import { ThreadClaimedError, ThreadTracker, type ThreadTrackerDeps } from './thread-tracker.ts';
 
 export interface CodexLaunchDeps {
-  profileMetadata?: Pick<
-    import('../../session/session-store.ts').StoredSession,
-    'profile' | 'profileSnapshot'
-  >;
+  profileMetadata?: Pick<StoredSession, 'profile' | 'profileSnapshot'>;
   completeEnv?: boolean;
   sessionRegistry: SessionRegistry;
   sessionStore: SessionStore;

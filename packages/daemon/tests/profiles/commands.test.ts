@@ -414,3 +414,55 @@ test('real commands discard managed-key and gateway identity fields throughout f
     fs.rmSync(f.root, { recursive: true, force: true });
   }
 });
+
+test('profile status and login omit dynamic Codex credential names and refuse invalid config', async () => {
+  const f = fixture();
+  const oldPath = process.env['PATH'];
+  const oldLog = process.env['FAKE_LOG'];
+  const oldKey = process.env['MY_PROVIDER_KEY'];
+  process.env['PATH'] = `${f.bin}:/usr/bin:/bin`;
+  process.env['FAKE_LOG'] = f.log;
+  process.env['MY_PROVIDER_KEY'] = 'placeholder';
+  try {
+    const dir = path.join(f.root, 'codex');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(
+      path.join(f.bin, 'codex'),
+      '#!/bin/sh\nenv | cut -d= -f1 | sort >> "$FAKE_LOG"\n',
+      { mode: 0o700 },
+    );
+    fs.writeFileSync(
+      path.join(dir, 'config.toml'),
+      '[model_providers.test]\nenv_key = "MY_PROVIDER_KEY"\n',
+    );
+    const profiles = parseProfiles({
+      work: { label: 'Work', codex: { dir, expects: 'subscription' } },
+    });
+    const lines: string[] = [];
+    const io = {
+      out: (line: string) => lines.push(line),
+      err: (line: string) => lines.push(line),
+      isTerminal: () => true,
+    };
+    expect(await runProfileCommand(['ls'], profiles, io)).toBe(0);
+    expect(await runProfileCommand(['login', 'work', '--harness', 'codex'], profiles, io)).toBe(0);
+    expect(fs.readFileSync(f.log, 'utf8')).not.toContain('MY_PROVIDER_KEY');
+    fs.rmSync(f.log);
+    fs.writeFileSync(path.join(dir, 'config.toml'), 'invalid = [');
+    lines.length = 0;
+    expect(await runProfileCommand(['ls'], profiles, io)).toBe(0);
+    expect(lines.join('\n')).toContain(
+      'Could not read the Codex configuration of profile work (config.toml).',
+    );
+    expect(await runProfileCommand(['login', 'work', '--harness', 'codex'], profiles, io)).toBe(1);
+    expect(fs.existsSync(f.log)).toBe(false);
+  } finally {
+    if (oldPath === undefined) Reflect.deleteProperty(process.env, 'PATH');
+    else process.env['PATH'] = oldPath;
+    if (oldLog === undefined) Reflect.deleteProperty(process.env, 'FAKE_LOG');
+    else process.env['FAKE_LOG'] = oldLog;
+    if (oldKey === undefined) Reflect.deleteProperty(process.env, 'MY_PROVIDER_KEY');
+    else process.env['MY_PROVIDER_KEY'] = oldKey;
+    fs.rmSync(f.root, { recursive: true, force: true });
+  }
+});

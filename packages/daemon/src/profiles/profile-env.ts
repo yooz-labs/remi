@@ -1,3 +1,6 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { parse as parseToml } from 'smol-toml';
 import { withoutRemiSecrets } from '../pty/child-env.ts';
 import type { Profile } from './profile-config.ts';
 
@@ -93,17 +96,27 @@ export const PROFILE_CREDENTIAL_ENV: readonly string[] = [
 export const PROFILE_CREDENTIAL_ENV_PREFIXES: readonly string[] = [
   'ANTHROPIC_SECRET_PLACEHOLDER_',
   'CLAUDE_CODE_OAUTH_',
+  'AWS_',
+  'AZURE_',
+  'CLOUDSDK_',
+  'GCLOUD_',
+  'GOOGLE_',
 ];
+
+export function isProfileCredentialEnvName(name: string): boolean {
+  return (
+    PROFILE_CREDENTIAL_ENV.includes(name) ||
+    PROFILE_CREDENTIAL_ENV_PREFIXES.some((prefix) => name.startsWith(prefix))
+  );
+}
 
 export function profileEnvironment(
   inherited: Readonly<Record<string, string | undefined>>,
   profile: Profile,
 ): Record<string, string | undefined> {
   const result = { ...inherited };
-  for (const name of PROFILE_CREDENTIAL_ENV) delete result[name];
   for (const name of Object.keys(result)) {
-    if (PROFILE_CREDENTIAL_ENV_PREFIXES.some((prefix) => name.startsWith(prefix)))
-      Reflect.deleteProperty(result, name);
+    if (isProfileCredentialEnvName(name)) Reflect.deleteProperty(result, name);
   }
   // An explicit profile setting may restore this after inherited values are removed.
   // biome-ignore lint/performance/noDelete: the inherited variable must be absent
@@ -113,10 +126,6 @@ export function profileEnvironment(
   if (profile.codex) result['CODEX_HOME'] = profile.codex.dir;
   return withoutRemiSecrets(result);
 }
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import { parse as parseToml } from 'smol-toml';
-
 /** Read only the configured names of provider environment sources. */
 export function codexProviderCredentialNames(id: string, dir: string): Set<string> {
   let raw: string;

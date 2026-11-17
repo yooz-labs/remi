@@ -128,7 +128,7 @@ export interface PtySessionSetupArgs {
 export interface PtyLaunch {
   readonly command: string;
   /**
-   * Environment overrides added on top of `process.env` for the child (minus
+   * Environment supplied for the child (minus
    * remi's own secrets, which the PTY layer removes from the result, #1249).
    * `{}` adds nothing of this launch's own: no `REMI_PORT` and none of Claude's
    * variables. The PTY layer still sets `FORCE_COLOR=1` and `TERM` (the
@@ -136,6 +136,7 @@ export interface PtyLaunch {
    * (`pty/pty-session.ts`).
    */
   readonly childEnv: Readonly<Record<string, string | undefined>>;
+  /** True: env is the whole environment and process.env is not inherited; remi's own secrets are still removed by withoutRemiSecrets. */
   readonly completeEnv?: boolean;
 }
 
