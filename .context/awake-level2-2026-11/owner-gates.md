@@ -77,20 +77,24 @@ mbaflag() { ssh -o ConnectTimeout=5 mba "/usr/sbin/ioreg -r -c IOPMrootDomain -d
 ```
 
 Before starting, make sure nothing else holds the Mac awake: `pmset -g assertions` shows no video, call or other `caffeinate` holder, and your regular remi hub's sessions are idle (they live in another remi home, so this test hub counts their holders as another app's and refuses).
+Record `pmset -g | grep -E '^ *(sleep|displaysleep) '` (the idle timers).
 
 Setup (the commands marked sudo are yours to type; remi prints them and runs none):
-1. `ka setup` and follow its printed steps (sudo: `visudo -cf`, `install` of `/etc/sudoers.d/remi-keep-awake`, `install` and `launchctl bootstrap system` of `/Library/LaunchDaemons/com.yooz.remi.keep-awake-boot.plist`).
-2. `sudo -n -l /usr/bin/pmset -a disablesleep 1` prints that command (this also shows that macOS reads `/etc/sudoers.d`, which ADR 0050 could not verify).
+1. `ka setup` and follow its printed steps (sudo: a root-owned staging directory from `sudo mktemp -d`, `visudo -cf`, `install` of `/etc/sudoers.d/remi-keep-awake`, `install` and `launchctl bootstrap system` of `/Library/LaunchDaemons/com.yooz.remi.keep-awake-boot.plist`); compare the printed `sudo cat` and `sudo plutil -p` output with `docs/agent-reference/keep-awake.md`.
+2. `sudo -n -l /usr/bin/pmset -a disablesleep 1` and `sudo -n -l /usr/bin/pmset -a disablesleep 0` each print their command (this also shows that macOS reads `/etc/sudoers.d`, which ADR 0050 could not verify).
 3. `ka watchdog install`, then `launchctl print "gui/$(id -u)/com.yooz.remi.keep-awake-watchdog" | head -3` shows the agent.
-4. `printf '[daemon]\nbase_port = 18801\n[awake]\nlevel2 = true\n' > "$G/config.toml"`; start the test hub in its own terminal with `REMI_HOME="$G" "$REMI" serve`; in a scratch project folder start a session with `REMI_HOME="$G" "$REMI" --port 18810` and ask Claude for a long task (for example `sleep 1800`).
+4. `printf '[daemon]\nbase_port = 18801\n[awake]\nlevel2 = true\n' > "$G/config.toml"`; start the test hub in its own terminal with `REMI_HOME="$G" "$REMI" serve`; in a scratch project folder start a session with `REMI_HOME="$G" "$REMI" --port 18810` and ask Claude for a long task (`sleep 3600`); ask again whenever a step below needs the session busy.
 5. `ka status` shows `level2: off`, the sudoers file and the boot daemon present, and the watchdog loaded.
 
 Tests, on battery unless a step says otherwise:
 - (a) Start and close the lid: `ka start 1` prints `on` and the expiry; close the lid; after 2 minutes `mbaflag` on the Mac mini shows `"SleepDisabled" = Yes` and `"AppleClamshellState" = Yes`, and the phone still reaches your regular hub on the MacBook.
 - (b0) Hub killed, lid open: open the lid, `kill -9 "$(/usr/bin/jq -r .pid "$G/daemon-status.json")"`; within 3 minutes `flag` shows `"SleepDisabled" = No` and `"$G/keep-awake/watchdog.log"` has one revert line.
-- (b) Hub killed, lid closed (the riskiest assumption): restart the test hub, `ka start 1`, close the lid; on the Mac mini, `ssh mba 'kill -9 "$(/usr/bin/jq -r .pid "$HOME/.remi-awake-gate/daemon-status.json")"'`; within 4 minutes the MacBook stops answering `ssh -o ConnectTimeout=5 mba true` (it slept).
-  After opening the lid, `pmset -g log | grep -E " Sleep | Wake " | tail -5` shows a sleep within 4 minutes of the kill.
-  If it stayed awake with the flag `No`, record that: it triggers L2-SLEEPNOW (owner decision 6).
+- (b1) Hub killed and restarted before the watchdog: `ka start 1`, `kill -9` the hub as in (b0), and start it again within 30 seconds: `grep '\[Awake2\]' "$G/remi.log" | tail -3` shows one reconcile line that turned the flag off, and `flag` shows `No`.
+- (b) Hub killed, lid closed, level 1 still holding (the riskiest assumption): restart the test hub, make sure the session is busy and `pmset -g assertions | grep -A3 caffeinate` shows its holder, `ka start 1`, close the lid; on the Mac mini, `ssh mba 'pmset -g assertions | grep -c caffeinate; kill -9 "$(/usr/bin/jq -r .pid "$HOME/.remi-awake-gate/daemon-status.json")"'` (the count must be at least 1).
+  Wait 5 minutes, probing at most once a minute with `ssh -o ConnectTimeout=5 mba true`, then open the lid.
+  Pass only if `pmset -g log | grep -E " Sleep | Wake " | tail -8` shows a Sleep entry after the revert time in `"$G/keep-awake/watchdog.log"`; record its time and its reason text as printed.
+  If the Mac stayed awake with the flag `No`, record that: it triggers L2-SLEEPNOW (owner decision 6).
+- (b') The same with no idle assertion: stop the session first, so `pmset -g assertions` shows no `caffeinate`, then repeat (b); record whether and when it slept and the reason text (idle sleep after the `sleep` timer would explain a pass here, which is why (b) keeps level 1 holding).
 - (c) Reboot with the flag set: `ka start 1` (on AC is fine), then (sudo) `sudo shutdown -r now`.
   At the login window, if `mbaflag` answers, it shows `"SleepDisabled" = No`; after logging in, `flag` shows `No` (the boot daemon cleared it).
   Start the test hub again: afterwards `ls "$G/keep-awake/lease.json"` reports no such file.
@@ -101,5 +105,5 @@ Tests, on battery unless a step says otherwise:
 - (g) Display: during (a), the internal display is dark with the lid closed (no light at the hinge), and `grep '\[Awake2\]' "$G/remi.log"` shows the lid-closed display-sleep line without a failure.
 - (h) Clean stops: `ka start 1` then `ka stop`: `flag` shows `No` within 5 seconds; `ka start 1` again, then `REMI_HOME="$G" "$REMI" stop`: the hub exits and `flag` shows `No`; restart the hub, `ka start 1` again, then Control-C in the hub's terminal: `flag` shows `No`.
 
-Afterwards: keep the setup for daily use, or undo it with the removal commands `ka setup` printed, then `ka watchdog uninstall`, and delete the folder `$G`.
-Record: pass or fail of setup steps 2, 3 and 5 and of (a) to (h); for (b), whether the Mac slept and within how many minutes; for (c), whether the login window answered ssh; the remi version, the model and the build.
+Afterwards, either remove everything (`ka stop`, the removal commands `ka setup` printed, `ka watchdog uninstall`, then delete the folder `$G`), or keep level 2 for daily use: `ka stop`, `ka watchdog uninstall`, then from your daily remi home `"$REMI" keep-awake watchdog install` (the watchdog serves one remi home), and delete the folder `$G`.
+Record: the idle timers; pass or fail of setup steps 2, 3 and 5 and of (a), (b0), (b1), (b), (b'), (c) to (h); for (b) and (b'), whether the Mac slept, the minutes from the kill, and the reason text; for (c), whether the login window answered ssh; the remi version, the model and the build.

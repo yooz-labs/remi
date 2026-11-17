@@ -30,11 +30,12 @@ May change:
 - `packages/daemon/src/cli.ts` (the hub construction, the reconcile before serving, the cleanup and `exit` paths, the endpoint handler);
 - `packages/daemon/src/server/websocket-server.ts`, `adapters/websocket-adapter.ts`, `adapters/connection-adapter.ts` (the route and its event, beside `/local-secure-push`);
 - new `packages/daemon/src/power/level2-endpoint.ts` (request parsing and responses);
+- `packages/daemon/src/power/awake-session.ts`, `awake-wiring.ts` and `cli/status-writer.ts`, only for the `awakeHold` field of item 7;
 - tests under `packages/daemon/tests/power/` (existing `AwakeConfig` literals in tests may gain the new keys or be built from `DEFAULT_CONFIG.awake`, with no assertion changed), `packages/daemon/tests/config/` if one exists for `[awake]`, and a new `packages/daemon/tests/integration/keep-awake-level2-hub.test.ts`; the L2-CORE guard test (now one `new SudoPmsetSwitch(` in `cli.ts`);
 - `docs/agent-reference/keep-awake.md`, ADR 0050's status line (slice 3 keys shipped; `lease_stale_seconds` row added to the table), `AGENTS.md:248`;
 - the PR body.
 Evidence (not committed): `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/L2-HUB/r1/`.
-Not in scope: the `remi keep-awake` command (L2-CLI), `allow_phone` and any protocol message (L2-APP), session daemons' behavior, `arg-parser.ts`, `help.ts`.
+Not in scope: the `remi keep-awake` command (L2-CLI), `allow_phone` and any protocol message (L2-APP), session daemons' behavior beyond publishing `awakeHold`, `arg-parser.ts`, `help.ts`.
 
 ## Decided design
 
@@ -53,8 +54,10 @@ Settled:
    Body at most 4096 bytes and 2 s: `{ "v": 1, "action": "status" | "start" | "stop" | "extend", "hours"?: integer }`; anything else is 400 with `{ v: 1, ok: false, error: 'invalid' }` (no echo of the body).
    Response 200 with `{ v: 1, ok, status }` where `status` is the controller's `status()` and `ok` is false when the request was refused (the refusal reason is `status.lastRefusal`).
    No other route, header or query changes the controller.
-5. **Logs**: the controller's `[Awake2]` lines go to the hub's log; the endpoint logs one line per request with the action and outcome, never the body.
+5. **Logs**: the controller's `[Awake2]` lines go to the hub's log; the endpoint logs one line per request with the action and outcome, never the body; a hub with `level2 = true` and `require_password_on_wake = false` prints and logs a warning at boot.
 6. **Docs**: `keep-awake.md` gains "Level 2 (lid-closed mode)": who owns it, every key with its default, every refusal and revert reason, the exit and crash behavior, the endpoint's gate, and a "Not verified" list (nothing on a MacBook until OG-L2: the lid, `disablesleep 0` with the lid closed, the boot daemon, `displaysleepnow` without root); the generated config, `AGENTS.md:248` and ADR 0050's status line agree with it.
+7. **`awakeHold`**: each session daemon and wrapper publishes its level 1 policy's held verdict (true while it holds or is in its idle grace) as `awakeHold` in its `status-PORT.json` on every change, through a callback from `AwakeSession` through `AwakeWiring` to `updateRemiStatus`; L2-CORE's census reads it.
+8. **Threat model in the docs**: the endpoint's section states ADR 0050's same-user model: any process of the same user, the agent remi runs included, can read the capability token or run `remi keep-awake start`; the rails, not the endpoint, bound what that can do.
 The implementer may choose: where in `cli.ts` the construction sits (it must be after `liveSessionsRegistry` and the config exist and before the server listens), names inside `level2-endpoint.ts`, test names.
 
 ## Acceptance
@@ -63,10 +66,12 @@ Evidence folder: `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/L2-HUB/r1
 1. Config tests: defaults load; each key's bounds and each relation of L2-POL item 1 refuse with the key's name; the generated config round-trips to `DEFAULT_CONFIG.awake`; a config holding every key of ADR 0050's table except `allow_phone` loads; `allow_phone` is refused as unsupported.
 2. Endpoint tests (in-process, the real server class with a controller over the recording switch): no capability header, a wrong token, and a GET each give the gate's answer and record no switch call; an oversized body, a non-JSON body, an unknown action and a fractional `hours` give 400; `status` returns the controller's status; a `start` that passes reaches the recording switch exactly once; the response never contains the request body.
 3. Exit-path tests: with a controller in the `on` state over the recording switch, the code path `performCleanup()` runs records one disable before it resolves, and the `exit` listener path records one synchronous disable; with level 2 off, neither records anything.
+   A darwin test also runs a real child process that builds the controller in the `on` state with `spawnRootSync` set to a recorder executable and then calls `process.exit(0)`: the recorder file holds exactly one disable argv, so the `exit` listener path is proven with a real `spawnSync`.
    If `cli.ts`'s functions cannot be reached from a test, extract the level 2 part into a function in `power/` that `cli.ts` calls and test that function (no copy of the logic in the test).
 4. Black-box hub test (darwin-only, `keep-awake-level2-hub.test.ts`): a real `cli.ts serve` started as `keep-awake-daemon-smoke.test.ts` starts its daemon (through `/usr/bin/env -i`, not `spawnServeRaw`, which passes `process.env` through), with a temporary `HOME` and `REMI_HOME`, a port from `reserveRange` (above 18790), `--no-relay --no-telegram --no-mdns`, and `[awake] level2 = true` in its config.
    Precondition, asserted first: `readRootDomain()` reads `sleepDisabled: 'no'` (otherwise fail with that message; never continue).
-   It asserts: a lease planted before start with a dead `hubPid` is gone after the hub listens; `POST /local-keep-awake` without the token is 403 and with the token (read from the temporary remi home) `status` answers with `level2: 'off'`; after SIGTERM the process exits within 5 s and no lease exists.
+   It plants no lease (the planted-lease reconcile is L2-CORE's in-process test 2g and OG-L2 step (b1)), and asserts: the hub logs its `[Awake2]` reconcile line with no lease; `POST /local-keep-awake` without the token is 403 and with the token (read from the temporary remi home) `status` answers with `level2: 'off'`; after SIGTERM the process exits within 5 s, no lease exists, and `readRootDomain()` still reads `sleepDisabled: 'no'`.
+   The level 1 smoke (or a new case in it) reads `awakeHold: true` in the session daemon's `status-PORT.json` during a turn and `false` after the grace.
    It never sends `start` or `extend` (the real switch must not run in a test); the `[Awake2]` log lines are printed to the test output for the evidence.
 5. The L2-CORE guard test now allows exactly one `new SudoPmsetSwitch(` in `packages/daemon/src`, in `cli.ts`, and still none without `spawnRoot` in tests.
 6. `mkdir -p /private/tmp/remi-canon-L2-HUB && env -i HOME="$HOME" PATH=/opt/homebrew/bin:/usr/bin:/bin TMPDIR=/private/tmp/remi-canon-L2-HUB/ bun test packages/daemon/tests/power packages/daemon/tests/integration/keep-awake-daemon-smoke.test.ts packages/daemon/tests/integration/keep-awake-level2-hub.test.ts packages/daemon/tests/notifications/local-push-forward.test.ts` ends with `0 fail` and no skipped power or keep-awake test on this Mac.
