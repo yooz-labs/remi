@@ -28,6 +28,7 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-17T08:51-08:00 | Q15 answered: (a) no hard limit at all (only sanity validation; everything else a warning) | owner |  |
 | 2026-11-17T08:51-08:00 | Q16 answered: (b) settings too: mechanism and format bounds (subprocess deadlines, size caps, retry backoff, shutdown budget) are also settings with defaults; differs from the recommendation (a) | owner |  |
 | 2026-11-17T08:51-08:00 | Owner 2026-11-17: merge gate item 3 extension: code merged on develop since a PR's checks ran counts as a fresh base when it touches no file the PR changes AND the PR's focused tests and typecheck pass on a local merge of develop into the PR head; any overlap still forces a branch update and a checks rerun | owner |  |
+| 2026-11-17T09:00-08:00 | Q17 answered: Yes, the 5 s remi stop wait becomes [daemon] stop_timeout_seconds in L2-HUB | owner |  |
 
 ## Log
 
@@ -43,3 +44,5 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-17T07:17-08:00 | PR 1804 (G0 note) merged after the verified fix round (head 6762f991: all four findings, one file, checks green, scan []); conclusion stays 'not settled' until the owner's OG-CAP step 5; OG-CAP stream fix 8154c18f verified (separate .stdout/.stderr/.exit, lock-never state, read-only) |
 | 2026-11-17T07:17-08:00 | PR 1806 round-1 reviews: contract (2 Moderate: guard pins only pmset; thermal nominal fails open on a dead key; 2 Minor), verification (1 Important: five fail-closed parser branches untested; 2 Moderate: the refusal test would run a real pmset sleepnow if the guard regressed; line-boundary truncation parses ok; 1 Minor); all accepted; fix round sent to the G1 worker (resumed) |
 | 2026-11-17T08:51-08:00 | Lead 7b446697 verified (every keep-awake limit a setting, Q15 a, Q16 b answered by the owner: mechanism bounds also settings, differs from the recommendation); G1 (#1806) and W1 (#1807) merges HOLD until the lead says how their constants (deadlines, size caps, lease max bytes, backoff, shutdown budget) become settings; L2-POL held for the same reconcile |
+| 2026-11-17T08:56-08:00 | W1 (Opus) reported PR 1807 (head ee4b9e6c, hosted CI green, 72 tests 0 fail 0 skip, 7 revert checks, ten deviations listed in the PR body); post-run power checks clean; four reviewers (contract, verification, privilege, failsafe) dispatched; merge also waits for the lead's Q16 reconcile of its mechanism constants |
+| 2026-11-17T09:00-08:00 | Lead 5e6b4d37 verified (every mechanism bound a setting; fix-round change lists for G1 and W1 in plan Appendix B); G1 fix round 2 done (head 491ec135, 54 pass 0 fail, my rerun confirms, CI restarted incl. soak); L2-POL dispatched on Opus |
