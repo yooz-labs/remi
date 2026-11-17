@@ -88,7 +88,7 @@ Evidence folder: `/Volumes/S1/yooz/remi/artifacts/profiles-epic-2026-11/P1B/r1/`
 
 ## Gates
 
-`bun test packages/daemon/tests/profiles packages/daemon/tests/integration/profile-launch.test.ts packages/daemon/tests/integration/launch-characterization.test.ts packages/daemon/tests/integration/hub-create-session.test.ts` passes; `bunx biome check .` ends with no errors; `bun run typecheck`, `bun run typecheck:web`, `bun run typecheck:web-tests` and `bun run typecheck:signaling` pass; `bun scripts/third-party-notices.ts --check` passes; `typos` on the changed files is clean; `git diff --check origin/develop...HEAD` prints nothing; a final `bun test packages/daemon` passes, or fails only in tests on the live facts' `baseline failing tests` list (from the latest green DV), each named in the report.
+`bun test packages/daemon/tests/profiles packages/daemon/tests/integration/profile-launch.test.ts packages/daemon/tests/integration/launch-characterization.test.ts packages/daemon/tests/integration/hub-create-session.test.ts` passes; `bunx biome check .` ends with no errors; `bun run typecheck`, `bun run typecheck:web`, `bun run typecheck:web-tests` and `bun run typecheck:signaling` pass; `bun scripts/third-party-notices.ts --check` passes; `typos` on the changed files is clean; `git diff --check origin/develop...HEAD` prints nothing; the full daemon suite is not run locally: hosted CI's `Test worker 0` to `2` and `Test` must pass on the PR's final head (merge gate item 4; owner, J19 (a)); every local `bun test` command in this card runs in the preamble's canonical environment.
 
 ## Stop conditions
 

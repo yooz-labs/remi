@@ -16,7 +16,8 @@ The merged `develop` tip passes the TypeScript gates, the profile tests, and the
 ## Context
 
 - Pushes to `develop` run only `auto-bump-dev.yml` and `close-on-develop.yml`; the test workflows run on pull requests only (land-branches-2026-11, verified 2026-11-12).
-- The live facts give the develop tip to verify (`DEV_SHA`), the PR that produced it, and `previous baseline` (the path of the previous green DV's `daemon-failures.txt`, or "none").
+- The live facts give the develop tip to verify (`DEV_SHA`) and the PR that produced it (`none` for the setup DV, which follows no PR).
+- The full daemon suite is not run here (owner, J19 (a)): hosted CI ran it on the PR's final head, and merge gate item 3 makes the merged tip that tree plus the version bump. On this Mac the full local suite fails for environmental reasons (plan Appendix C).
 - Local native baseline (owner, Q20 of land-branches-2026-11): `PairingAttemptTests` and `PairingSourceTests` fail locally with "owned empty launch directory required"; hosted CI runs them.
 
 ## Scope
@@ -32,7 +33,7 @@ The worker may choose: nothing.
 ## Acceptance
 
 All of these, run in the worktree at `DEV_SHA`, each with its last line quoted: `bunx biome check .`, `bun run typecheck`, `bun run typecheck:web`, `bun run typecheck:web-tests`, `bun run typecheck:signaling`, `node_modules/.bin/tsc -p tests/integration/tsconfig.relay-r3.json`, `bun scripts/third-party-notices.ts --check`, `bun test packages/daemon/tests/profiles` (once that folder exists on `develop`; otherwise say so), and `lockf -k -t 7200 /Volumes/S1/yooz/remi/locks/xcode.lock swift test --package-path packages/native/RemiKit --skip PairingAttemptTests --skip PairingSourceTests`.
-Also run `bun test packages/daemon` and write the names of its failing tests, one per line, to `daemon-failures.txt` in the evidence folder; this gate is red only when a test fails that is not on the live facts' `previous baseline` list (the previous green DV's `daemon-failures.txt`; on the first DV of the plan there is no list, and the file becomes the baseline only if the lead confirms its failures are environmental and the owner's J19 answer keeps this gate; DV-1's file from `095ef7cc` is not a baseline, plan Appendix C). The manager passes the latest green DV's list to implementation cards as `baseline failing tests`.
+Also run, each in the preamble's canonical environment with STEP `DV`: `bun test packages/daemon/tests/profiles` if that folder exists at `DEV_SHA` (skip it and say so when it does not, as on `develop` before P1A merges); and, for the merged PR (`gh pr diff N --repo yooz-labs/remi --name-only`), `bun test` on every test file the PR changed under `packages/daemon/tests/` or `packages/shared/tests/`, on `packages/daemon/tests/AREA/` for each changed source file under `packages/daemon/src/AREA/` when that test folder exists, and on `packages/shared/tests` when a file under `packages/shared/src/` changed. For the setup DV (no PR) this part is empty and says so. The DV is dispatchable today: with no profiles folder and no PR, its gates are the TypeScript and native ones above.
 
 ## Gates
 

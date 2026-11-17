@@ -23,8 +23,8 @@ git -C $HOME/Documents/git/yooz/remi worktree add --detach /Volumes/S1/worktrees
 cd /Volumes/S1/worktrees/remi/profiles-develop-verify && bun install --frozen-lockfile
 ```
 
-In the same tick, after the block: dispatch [DV](cards/DV-develop-verify.md) on the current `origin/develop` tip with `previous baseline: none`, and dispatch no implementation card before that DV reports green; its `daemon-failures.txt` is the first `baseline failing tests` list (section 6).
-**DV-1 (2026-11-14, `095ef7cc`) was red only on the local full daemon suite, for environmental reasons (plan Appendix C).** Its `daemon-failures.txt` is not a baseline. Dispatch no implementation card until the owner answers J19 and the lead applies the answer (section 11).
+In the same tick, after the block: dispatch [DV](cards/DV-develop-verify.md) on the current `origin/develop` tip (PR `none`), and dispatch no implementation card before that DV reports green.
+**DV-1 (2026-11-14, `095ef7cc`) was red only on the local full daemon suite, for environmental reasons (plan Appendix C); its `daemon-failures.txt` is not a baseline.** The owner answered J19 (a) (recorded in `board-log.md`), and the lead applied it: the hold is released. Under the J19 (a) gate DV-1 has no failing gate (its TypeScript and native gates were green, it followed no PR, and `packages/daemon/tests/profiles` does not exist yet), so it counts as the setup DV's green report; no rerun is needed.
 
 Owner-run, optional (as land-branches Q14): `cp /Volumes/S1/worktrees/remi/profiles-epic-plan/.context/profiles-epic-2026-11/codex-profiles.rules ~/.codex/rules/profiles-epic-2026-11.rules`; when the loop ends, `rm ~/.codex/rules/profiles-epic-2026-11.rules`.
 Whether `codex exec` loads that file, and applies it under `-s danger-full-access`, is unverified; the manager's checks after every run (section 5) stay in force either way.
@@ -122,8 +122,8 @@ Copied from the board and from `git`/`gh` at dispatch time, never from an earlie
 - for a fix round: the round number, the decided findings with their outcomes, and the line "This card was started earlier. Continue from the worktree: run `git status` and `git log --oneline -10` first.";
 - for a reviewer: repository, `Lens group`, `Base` (merge-base), `Head` (the reviewer reads those commits, never a moving worktree), and for delta reviews `Round1Head`;
 - the owner answers the card names (J9 for P1B, J11 for P1A and P1B, J13 to J15 for P1A and P1B, J4 for docs cards);
-- for every TypeScript implementation card: `baseline failing tests:` followed by the list of `bun test packages/daemon` failures from the latest green DV report (its `daemon-failures.txt`); if no DV has run yet, the baseline is empty and the card's `bun test packages/daemon` must pass (section 2 makes the first DV run before any implementation card);
-- for a DV dispatch: `DEV_SHA`, the merged PR's number, and `previous baseline` (the path of the previous green DV's `daemon-failures.txt`, or `none`).
+- no daemon-suite baseline for any card: the full suite's authority is hosted CI on the PR's final head (owner, J19 (a)), and local focused tests run in the canonical environment of the worker preamble (`cards/README.md`, item 7);
+- for a DV dispatch: `DEV_SHA` and the merged PR's number (`none` for the setup DV).
 
 ## 7. First tick of a session
 
@@ -185,7 +185,7 @@ At every update the lead overwrites or prunes: a resolved risk, a done intention
 Verify by observation, stop at the first failure (skill, "Verify by observation"):
 1. `gh pr view N --repo REPO --json headRefOid,baseRefName` equals the report's head and base (`develop`, or `main` for yooz-docs).
 2. `gh pr diff N --repo REPO --name-only` stays inside the card's Scope.
-3. Re-run the card's cheapest non-native Acceptance command in its worktree, or read the quoted gate output in `EVID`.
+3. Re-run the card's cheapest non-native Acceptance command in its worktree (a `bun test` in the preamble's canonical environment), or read the quoted gate output in `EVID`.
 4. Every fix has a revert check or a test that fails without it (the cards name the revert checks).
 5. Deviations are listed and triaged (accept, send back, or ask the lead).
 6. The checks of section 5, "After every worker run".
@@ -288,9 +288,9 @@ At CP0 the owner answers J1a to J15 and J18 (plan section 7); the lead or the ow
 | J17 rule-text paths | answered by CP1 | the CP1 lead completes P2C with the answer |
 | J18 loops | one loop at a time (recommended) | the land-branches board stays `paused` while this loop runs |
 | | distinct id | the owner sets the id and halves Slots Max on both boards; the start prompt changes |
-| J19 daemon-suite gate | (a) recommended | lead commit before any dispatch: DV acceptance replaces the full `bun test packages/daemon` with `bun test packages/daemon/tests/profiles` plus the test folders of the merged PR's changed paths, all under the canonical environment of plan Appendix C, and drops `daemon-failures.txt`; the preamble item 7 and the Gates of P1A and P1B replace "a final `bun test packages/daemon` ..." with "hosted CI's `Test worker 0` to `2` and `Test` pass on the PR's final head (merge gate item 4); locally, the card's named tests under the canonical environment"; section 2 drops "no implementation card before that DV reports green" for the daemon suite and section 6 drops `baseline failing tests` |
+| J19 daemon-suite gate | (a) recommended; **answered (a) by the owner and applied by the lead** | lead commit before any dispatch: DV acceptance replaces the full `bun test packages/daemon` with `bun test packages/daemon/tests/profiles` plus the test folders of the merged PR's changed paths, all under the canonical environment of plan Appendix C, and drops `daemon-failures.txt`; the preamble item 7 and the Gates of P1A and P1B replace "a final `bun test packages/daemon` ..." with "hosted CI's `Test worker 0` to `2` and `Test` pass on the PR's final head (merge gate item 4); locally, the card's named tests under the canonical environment"; section 2 drops "no implementation card before that DV reports green" for the daemon suite and section 6 drops `baseline failing tests` |
 | | (b) | lead writes a diagnosis card (one worker, the canonical environment, Node 24 if the owner installs it); until it shows the local full suite green or explains each failure, (a) applies |
-| | (c) | DV-1's `daemon-failures.txt` becomes the baseline as the DV card and section 6 say; the lead records that the baseline covers file-download protection and image staging tests |
+| | (c) (not chosen) | DV-1's `daemon-failures.txt` would have become the baseline; the lead records that the baseline covers file-download protection and image staging tests |
 
 ## 12. The parity question
 

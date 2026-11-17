@@ -35,7 +35,7 @@ From #1749, to be made literal at CP1: two sessions in two profiles both reach t
 
 ## Gates
 
-The preamble's TypeScript gates and `bun test packages/daemon`, as in P1B; completed at CP1.
+The preamble's TypeScript gates and focused tests in its canonical environment, with the full daemon suite on hosted CI (J19 (a)), as in P1B; completed at CP1.
 
 ## Stop conditions
 
