@@ -85,6 +85,21 @@ export const DEFAULT_INVALID_LEASE_MAX_AGE_MINUTES = 5;
 /** `fallbackWorkParent`: where the work directory goes when the lease directory cannot hold one. */
 export const DEFAULT_FALLBACK_WORK_PARENT = '/private/tmp';
 
+/**
+ * The most commands one run starts: nine `plutil` reads of the lease, `find`
+ * for orphans, the flag read, the clock read, `ps`, `pmset`, the revert, the
+ * second flag read, up to four clock reads for log lines and the throttle,
+ * `mv`, nine `plutil` reads of the claim, `ln`, `rm`, and the marker's `rm`,
+ * rounded up. Where a run's time goes: a command that hangs costs its
+ * deadline (a sleeping timer, so wall-clock time whatever the load), plus the
+ * grace only when the kill does not end it; every other command costs at
+ * least one poll interval plus starting its wrapper, itself, its timer and
+ * that timer's sleep. A run whose flag read hangs at the defaults therefore
+ * takes 10 s plus about 30 short commands: 10.8 to 10.9 s measured on the
+ * owner's Mac mini at a load average of 13 to 15 (2026-11-17).
+ */
+export const WATCHDOG_MAX_COMMANDS_PER_RUN = 32;
+
 export interface WatchdogScriptOptions {
   remiHome: string;
   tools?: WatchdogTools;
@@ -209,11 +224,12 @@ PS=${absoluteWord('ps', tools.ps)}
 DATE=${absoluteWord('date', tools.date)}
 LN=${absoluteWord('ln', tools.ln)}
 DEADLINE=${deadline}
+GRACE=${grace}
 POLL=${pollMs / 1000}
+RUN_LIMIT=${runLimit}
+# Only run_without_work counts poll intervals instead of timing with a timer.
 DEADLINE_TICKS=${ticks(deadline * 1000)}
 GRACE_TICKS=${ticks(grace * 1000)}
-RUN_LIMIT=${runLimit}
-RUN_TICKS_LIMIT=${ticks(runLimit * 1000)}
 DIGITS=${digits}
 MARKER_THRESHOLD=${threshold}
 LOG_INTERVAL=${logInterval}
@@ -242,14 +258,15 @@ lease_key_known() {
 
 /**
  * The fixed part of the script. Every command that reads state or changes the
- * lease runs through `run_bounded`; only `mktemp`, `sleep` (the poll tick) and
- * the final cleanup run directly.
+ * lease runs through `run_bounded`; only `mktemp`, `sleep` (the poll and the
+ * timers) and the final cleanup run directly.
  */
 const WATCHDOG_BODY = `
 TAB=$(printf '\\t')
 RB_SEQ=0
-RUN_TICKS=0
 RUN_OVER=no
+RUN_LATE=
+RUN_TIMER=
 WORK=
 NOW=
 
@@ -279,12 +296,6 @@ single_line() {
   [ "$sl_count" -eq 1 ]
 }
 
-# tick: one poll interval, counted against the run's time limit.
-tick() {
-  sleep "$POLL"
-  RUN_TICKS=$((RUN_TICKS + 1))
-}
-
 # kill_child PIDFILE: kills the command whose pid the file holds, if any.
 kill_child() {
   if [ -s "$1" ] && IFS= read -r kc_pid <"$1" && is_uint "$kc_pid"; then
@@ -292,51 +303,88 @@ kill_child() {
   fi
 }
 
+# start_timer FILE SECONDS [FILE2 SECONDS2]: a background timer that sleeps
+# SECONDS of wall-clock time and then creates FILE (and, SECONDS2 later,
+# FILE2); TIMER is its pid, and a TERM ends it and its sleep. It signals
+# nothing itself: the script polls for its files. One sleeping timer keeps a
+# deadline at its length whatever the load, where counting poll intervals
+# would stretch it by the time each poll takes to start sleep (about 9 ms per
+# 20 ms interval on the owner's Mac mini under load, 45 percent).
+start_timer() {
+  (
+    trap 'kill "$st_sleep" 2>/dev/null; exit 0' TERM
+    sleep "$2" &
+    st_sleep=$!
+    wait "$st_sleep"
+    : >"$1"
+    if [ -n "$3" ]; then
+      sleep "$4" &
+      st_sleep=$!
+      wait "$st_sleep"
+      : >"$3"
+    fi
+  ) </dev/null >/dev/null 2>&1 &
+  TIMER=$!
+}
+
+# check_run_limit: ends the run once its timer says it used up RUN_LIMIT.
+check_run_limit() {
+  if [ "$RUN_OVER" = no ] && [ -n "$RUN_LATE" ] && [ -e "$RUN_LATE" ]; then
+    run_over
+  fi
+}
+
 # run_bounded COMMAND [ARG...]: runs COMMAND with its output in RB_OUT and its
-# errors in RB_ERR and sets RB_STATUS to its exit status. At the deadline it
-# kills the command, waits at most the grace for it, and then gives up with
-# RB_STATUS 124 and RB_TIMED_OUT=yes. It never blocks on a child: a wrapper
-# subshell runs the command and writes its status to a file, which this shell
-# polls, so a child stuck in the kernel is left behind as an orphan and the run
-# goes on. Output goes to files, not pipes, so nothing a killed child leaves
-# behind can hold the script. Without a work directory nothing runs and
-# RB_STATUS is 125.
+# errors in RB_ERR and sets RB_STATUS to its exit status. At the deadline (a
+# wall-clock timer) it kills the command, waits at most the grace for it, and
+# then gives up with RB_STATUS 124 and RB_TIMED_OUT=yes. It never blocks on a
+# child: a wrapper subshell runs the command and writes its status to a file,
+# which this shell polls every POLL seconds, so a child stuck in the kernel is
+# left behind as an orphan and the run goes on. Output goes to files, not
+# pipes, so nothing a killed child leaves behind can hold the script. Without
+# a work directory nothing runs and RB_STATUS is 125.
+#
+# Its cost: a command that finishes costs at least one poll interval plus
+# starting the wrapper, the command, the timer and its sleep; one that hangs
+# costs the deadline, plus the grace only when the kill does not end it.
 run_bounded() {
   RB_STATUS=125
   RB_TIMED_OUT=no
   RB_OUT=/dev/null
   RB_ERR=/dev/null
   [ -n "$WORK" ] || return 125
+  check_run_limit
   RB_SEQ=$((RB_SEQ + 1))
   RB_OUT="$WORK/out.$RB_SEQ"
   RB_ERR="$WORK/err.$RB_SEQ"
   rb_pid="$WORK/pid.$RB_SEQ"
   rb_done="$WORK/done.$RB_SEQ"
+  rb_late="$WORK/late.$RB_SEQ"
+  rb_gone="$WORK/gone.$RB_SEQ"
   (
     "$@" >"$RB_OUT" 2>"$RB_ERR" </dev/null &
     echo "$!" >"$rb_pid"
     wait "$!"
     echo "$?" >"$rb_done"
   ) </dev/null >/dev/null 2>&1 &
-  rb_ticks=0
-  rb_limit=$DEADLINE_TICKS
+  start_timer "$rb_late" "$DEADLINE" "$rb_gone" "$GRACE"
+  rb_timer=$TIMER
   while [ ! -s "$rb_done" ]; do
-    if [ "$rb_ticks" -ge "$rb_limit" ]; then
-      if [ "$RB_TIMED_OUT" = yes ]; then
-        break
-      fi
+    if [ -e "$rb_gone" ]; then
+      break
+    fi
+    if [ "$RB_TIMED_OUT" = no ] && [ -e "$rb_late" ]; then
       RB_TIMED_OUT=yes
       kill_child "$rb_pid"
-      rb_ticks=0
-      rb_limit=$GRACE_TICKS
     fi
-    tick
-    rb_ticks=$((rb_ticks + 1))
-    if [ "$RUN_OVER" = no ] && [ "$RUN_TICKS" -ge "$RUN_TICKS_LIMIT" ]; then
+    if [ "$RUN_OVER" = no ] && [ -n "$RUN_LATE" ] && [ -e "$RUN_LATE" ]; then
+      kill "$rb_timer" 2>/dev/null
       kill_child "$rb_pid"
       run_over
     fi
+    sleep "$POLL"
   done
+  kill "$rb_timer" 2>/dev/null
   if [ "$RB_TIMED_OUT" = yes ]; then
     RB_STATUS=124
   elif IFS= read -r rb_status <"$rb_done" && is_uint "$rb_status"; then
@@ -347,8 +395,11 @@ run_bounded() {
 
 # run_without_work COMMAND [ARG...]: the revert when no work directory could be
 # made: no output is kept, the command is killed at the deadline, and the script
-# gives up on it after the grace without waiting. RB_STATUS is its exit status
-# when the shell has already collected it (bash does so by itself), else 124.
+# gives up on it after the grace without waiting. With no file for a timer to
+# create, the deadline and the grace are counted in poll intervals, so they
+# stretch under load (by about half on the owner's Mac mini). RB_STATUS is the
+# exit status when the shell has already collected it (bash does so by itself),
+# else 124.
 run_without_work() {
   RB_STATUS=124
   RB_TIMED_OUT=no
@@ -368,7 +419,7 @@ run_without_work() {
       rw_ticks=0
       rw_limit=$GRACE_TICKS
     fi
-    tick
+    sleep "$POLL"
     rw_ticks=$((rw_ticks + 1))
   done
   if [ "$RB_TIMED_OUT" = no ]; then
@@ -717,10 +768,18 @@ make_work() {
   fi
   if [ -z "$WORK" ]; then
     log_line 'work directory unavailable'
+    return 0
   fi
+  # The run's own wall-clock limit, polled by run_bounded.
+  RUN_LATE="$WORK/run-late"
+  start_timer "$RUN_LATE" "$RUN_LIMIT"
+  RUN_TIMER=$TIMER
 }
 
 cleanup() {
+  if [ -n "$RUN_TIMER" ]; then
+    kill "$RUN_TIMER" 2>/dev/null
+  fi
   if [ -n "$WORK" ]; then
     rm -rf "$WORK"
   fi
