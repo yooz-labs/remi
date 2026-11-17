@@ -31,6 +31,7 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-14T18:23-08:00 | CP0: J16 deferred to CP2 | owner |  |
 | 2026-11-14T18:23-08:00 | CP0: J17 deferred to CP1 | owner |  |
 | 2026-11-14T18:23-08:00 | CP0: plan approved with the answers above | owner |  |
+| 2026-11-17T04:10-08:00 | CP0: J19 answered: (a) hosted full suite plus local focused tests; DV runs the profile tests and the test folders the merged PR touched under env -i with a canonical TMPDIR; DV-1 failures are not a baseline | owner |  |
 
 ## Log
 
@@ -43,3 +44,4 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-14T18:42-08:00 | DV-1 on develop 095ef7cc: all TypeScript gates and swift test (1093) green; local full 'bun test packages/daemon' RED (178 fail, 31 errors: recovery unavailable, Owned listener unavailable, /var vs /private/var, git not found in PATH) while hosted CI on the same tree (PR 1787 head 96956f5f, Test worker 0-2) is green. Card gate cannot be met locally; manager does not change gates: no implementation dispatched; lead woken for a diagnosis (gate or environment) |
 | 2026-11-14T18:50-08:00 | D51: PR 1785 merged into develop (head 9cf3669c, all checks green, scan [], develop ancestor); ADR status Accepted edit is a separate small docs PR at CP1 (J5) |
 | 2026-11-14T18:52-08:00 | Lead diagnosis c0dde393: DV-1 red is the Mac environment (TMPDIR /var symlink gives 116 of 178 failures; 31 local Worker timeouts unexplained, Node 26 / Bun 1.4.4 vs CI); same 178+31 recorded on b4aa770a in land-branches; owner question J19 (a/b/c) asked; no dispatch until answered; scratch left: worktree profiles-dv-diag and /private/tmp/remi-dv-diag-canon (owner removes) |
+| 2026-11-17T04:10-08:00 | 2026-11-17 04:10: owner answered J19 (a) (asked 2026-11-14); lead to apply runbook section 11 J19 card edits; release PR 1792 macOS App job is cancelled by its own concurrency group (workflow says not a required gate); two reruns also cancelled |
