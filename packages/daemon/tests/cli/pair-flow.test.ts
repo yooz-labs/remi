@@ -22,6 +22,7 @@ import {
   pairFlow,
   pairPreconditions,
   pairingHosts,
+  pairingV2Hosts,
   selectPairingCandidates,
   storeErrorMessage,
 } from '../../src/cli/cmd-pair.ts';
@@ -239,8 +240,15 @@ describe('pairFlow (#1275)', () => {
       const controller = new AbortController();
       const flow = pairFlow(deps(env, async () => 'n', { ...extra, signal: controller.signal }));
       while (env.linkOf() === '') await Bun.sleep(10);
+      const shown = decodePairingLink(env.linkOf());
+      if (!shown.ok) throw new Error(`link refused: ${shown.error}`);
+      const open = env.store.peekPairing(shown.code.nonce);
+      expect(open?.state).toBe('open');
+      // The code carries whole seconds.
+      expect(Math.floor(Date.parse(open?.expiresAt ?? '') / 1000)).toBe(shown.code.exp);
       controller.abort();
       await flow;
+      expect(env.store.peekPairing(shown.code.nonce)?.state).toBe('cancelled');
       const text = env.out.join('');
       expect(text.split('\n').filter((l) => l.startsWith('Using a version 1'))).toEqual([
         `Using a version 1 pairing code: ${reason}.`,
@@ -546,6 +554,36 @@ describe('pairingHosts and pairPreconditions (#1275)', () => {
         '100.101.102.104',
       ]),
     ).toEqual(['192.168.1.23', '203.0.113.9', '192.168.64.1', '100.101.102.103']);
+  });
+
+  test('a v2 code carries no virtual-interface address while a real one exists (#1794)', () => {
+    const wildcard = {
+      en0: [{ address: '192.168.1.23', family: 'IPv4', internal: false }],
+      utun4: [{ address: '100.101.102.103', family: 'IPv4', internal: false }],
+      bridge100: [{ address: '192.168.64.1', family: 'IPv4', internal: false }],
+      docker0: [{ address: '172.17.0.1', family: 'IPv4', internal: false }],
+      vmnet8: [{ address: '172.16.5.1', family: 'IPv4', internal: false }],
+    } as never;
+    // Every address is still offered as a --host choice; only the code's candidates skip the bridges.
+    expect(pairingHosts('0.0.0.0', wildcard)).toEqual([
+      '192.168.1.23',
+      '100.101.102.103',
+      '192.168.64.1',
+      '172.17.0.1',
+      '172.16.5.1',
+    ]);
+    expect(pairingV2Hosts('0.0.0.0', wildcard)).toEqual(['192.168.1.23', '100.101.102.103']);
+    expect(selectPairingCandidates(pairingV2Hosts('0.0.0.0', wildcard))).toEqual([
+      '192.168.1.23',
+      '100.101.102.103',
+    ]);
+    // Without a real address the bridges are the last resort, as for v1.
+    const onlyVirtual = {
+      bridge100: [{ address: '192.168.64.1', family: 'IPv4', internal: false }],
+      docker0: [{ address: '172.17.0.1', family: 'IPv4', internal: false }],
+    } as never;
+    expect(pairingV2Hosts('0.0.0.0', onlyVirtual)).toEqual(['192.168.64.1', '172.17.0.1']);
+    expect(pairingV2Hosts('192.168.1.23', wildcard)).toEqual(['192.168.1.23']);
   });
 
   test('a specific bind offers that address alone', () => {

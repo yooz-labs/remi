@@ -396,6 +396,7 @@ const VIRTUAL_INTERFACE = /^(bridge|docker|br-|vmnet|vboxnet|veth|virbr|lxc|lxd|
 export function pairingHosts(
   bind: string,
   interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]>,
+  options: { readonly skipVirtual?: boolean } = {},
 ): string[] {
   if (bind !== '' && !isUnspecifiedHost(bind)) return [bind];
   const rank = (name: string, address: string): number => {
@@ -427,7 +428,22 @@ export function pairingHosts(
       found.push({ address: info.address, rank: rank(name, info.address), order: found.length });
     }
   }
-  return found.sort((a, b) => a.rank - b.rank || a.order - b.order).map((entry) => entry.address);
+  const sorted = found.sort((a, b) => a.rank - b.rank || a.order - b.order);
+  // Virtual-machine and container addresses are a last resort: dropped when any other exists.
+  const usable = options.skipVirtual ? sorted.filter((entry) => entry.rank !== 3) : sorted;
+  return (usable.length > 0 ? usable : sorted).map((entry) => entry.address);
+}
+
+/**
+ * The addresses a version 2 code may carry for a hub bound to `bind`: {@link pairingHosts} without
+ * the virtual-interface addresses (bridges, containers) that a phone cannot reach, unless nothing
+ * else exists. Those stay in the "Other addresses" hint, which is not limited to this list.
+ */
+export function pairingV2Hosts(
+  bind: string,
+  interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]>,
+): string[] {
+  return pairingHosts(bind, interfaces, { skipVirtual: true }).filter(isPairingCandidateHost);
 }
 
 /**
@@ -610,7 +626,10 @@ export async function runPairCommand(flags: { host?: string; qrVersion?: 1 | 2 }
       host: checked.host,
       port: checked.port,
       ...(flags.qrVersion !== undefined && { qrVersion: flags.qrVersion }),
-      hosts: flags.host === undefined ? [checked.host, ...checked.others] : [checked.host],
+      hosts:
+        flags.host === undefined
+          ? pairingV2Hosts(hub?.bind ?? '', os.networkInterfaces())
+          : [checked.host],
       others: checked.others,
       write: (text) => process.stdout.write(text),
       ask,

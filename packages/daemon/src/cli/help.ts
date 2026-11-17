@@ -366,7 +366,10 @@ const commandHelp: Record<Subcommand, string[]> = {
       'remi pair --qr-version 1',
       'Use a one-address code; the default is version 2, with up to four candidates',
     ),
-    entry('remi pair --qr-version 2', 'Require version 2 (the default); never falls back to 1'),
+    entry(
+      'remi pair --qr-version 2',
+      'Require version 2; fail instead of falling back to version 1',
+    ),
     entry(
       'remi pair --relay',
       'Pair a relay device through an authenticated hub started with --relay',
