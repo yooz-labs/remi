@@ -1,0 +1,49 @@
+2026-11-17 07:07:59 -0800 
+Assertion status system-wide:
+   BackgroundTask                 0
+   ApplePushServiceTask           0
+   UserIsActive                   1
+   PreventUserIdleDisplaySleep    1
+   SoftwareUpdateTask             0
+   PreventSystemSleep             1
+   PreventSystemSleepSecurityIndicator 0
+   ExternalMedia                  1
+   PreventUserIdleSystemSleep     1
+   NetworkClientActive            1
+Listed by owning process:
+	Details: orphan detail line
+   pid 377(powerd): [0x000436ed00018b8a] 168:36:25 PreventUserIdleSystemSleep named: "Powerd - Prevent sleep while display is on"  
+   pid 377(powerd): [0x0000e70f000885e7] 228:53:59 ExternalMedia named: "com.apple.powermanagement.externalmediamounted"  
+   pid 46453(caffeinate): [0x000912570005a393] 80:11:12 PreventUserIdleDisplaySleep named: "caffeinate command-line tool"  
+	Details: caffeinate asserting forever
+	Localized=THE CAFFEINATE TOOL IS PREVENTING SLEEP.
+   pid 54016(caffeinate): [0x000d791f0001a3e0] 00:03:37 PreventUserIdleSystemSleep named: "caffeinate command-line tool"  
+	Details: caffeinate asserting for 300 secs
+	Localized=THE CAFFEINATE TOOL IS PREVENTING SLEEP.
+	Timeout will fire in 83 secs Action=TimeoutActionRelease
+   pid 435(WindowServer): [0x000d53ab0009906b] 00:46:24 UserIsActive named: "com.apple.iohideventsystem.queue.tickle.nxevent service:IOHIDSystem pid:58431 process:ScreensharingAgent"  
+	Timeout will fire in 8016 secs Action=TimeoutActionRelease
+   pid 55885(caffeinate): [0x000d79b20001a403] 00:01:10 PreventUserIdleSystemSleep named: "caffeinate command-line tool"  
+	Details: caffeinate asserting for 300 secs
+	Localized=THE CAFFEINATE TOOL IS PREVENTING SLEEP.
+	Timeout will fire in 230 secs Action=TimeoutActionRelease
+   pid 592(coreaudiod): [0x00099a520001a1b9] 70:31:01 PreventUserIdleSystemSleep named: "com.apple.audio.0A1B2C3D-0000-0000-0000-0123456789AB.context.preventuseridlesleep"  
+	Created for PID: 662. 
+	Resources: audio-out 0A1B2C3D-0000-0000-0000-0123456789AB 
+   pid 51357(Sampleapp): [0x000a7ed600019ebd] 54:16:01 NoIdleSleepAssertion named: "Sample Framework"  
+   pid 56379(caffeinate): [0x000d79d90001a419] 00:00:31 PreventUserIdleSystemSleep named: "caffeinate command-line tool"  
+	Details: caffeinate asserting for 300 secs
+	Localized=THE CAFFEINATE TOOL IS PREVENTING SLEEP.
+	Timeout will fire in 268 secs Action=TimeoutActionRelease
+   pid 1568(AssetCacheTetheratorService): [0x00047f5500118196] 163:27:29 NetworkClientActive named: "com.apple.AssetCacheTetheratorService.ACTSConnectionHandler.powerAssertion"  
+   pid 28759(screensharingd): [0x000d76d70007a2c8] 00:13:21 PreventSystemSleep named: "Remote user is connected"  
+   pid 28759(screensharingd): [0x000d76d90009a2c9] 00:13:19 UserIsActive named: "Remote user active"  
+	Timeout will fire in 10001 secs Action=TimeoutActionRelease
+Kernel Assertions: 0x124=USB,THNDR,MAGICWAKE
+   id=546  level=255 0x20=THNDR creat=  mod= description=acio0 owner=AppleThunderboltHALType7
+   id=554  level=255 0x4=USB creat= description=com.apple.usb.externaldevice.00100000 owner=Sample Hub A
+   id=560  level=255 0x4=USB creat= description=com.apple.usb.externaldevice.03120000 owner=Sample Microphone
+   id=565  level=255 0x100=MAGICWAKE creat=  mod= description=en1 owner=IOSkywalkNetworkBSDClient
+   id=821  level=255 0x4=USB creat= description=com.apple.usb.externaldevice.02100000 owner=Sample Hub B
+   id=823  level=255 0x4=USB creat= description=com.apple.usb.externaldevice.02110000 owner=Sample Receiver
+   id=825  level=255 0x4=USB creat= description=com.apple.usb.externaldevice.02120000 owner=Sample Webcam
