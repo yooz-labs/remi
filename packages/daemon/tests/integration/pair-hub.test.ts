@@ -119,8 +119,13 @@ test('scan, claim, approve at the terminal, then hello_ack and the session list'
       .find((l) => l.includes('remi://pair#')) ?? '';
   const decoded = decodePairingLink(line.slice(line.indexOf('remi://pair#')).trim());
   if (!decoded.ok) throw new Error(`the link was refused: ${decoded.error}`);
+  // The hub is bound to loopback and the phone dials it, which a v2 code refuses: the default
+  // falls back to v1 and says so (#1794), so this setup still pairs.
   if (decoded.code.v !== 1)
-    throw new Error(`expected default v1 pairing link, found v${decoded.code.v}`);
+    throw new Error(`expected the v1 fallback pairing link, found v${decoded.code.v}`);
+  expect(out.join('')).toContain(
+    'Using a version 1 pairing code: an address cannot go in a version 2 pairing code.',
+  );
 
   // The phone.
   const phone = await unlockIdentity(phoneIdentity);
