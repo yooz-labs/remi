@@ -165,4 +165,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | RV-P1B-verification ae6e5c1a20fad9b9b | reviewer (verification ae6e5c1a20fad9b9b) | claude-sonnet | sonnet () | P1B PR1811 | 2026-11-17T10:35 | done |
 | RV-P1B-maintainability a4b6837124bf454b8 | reviewer (maintainability a4b6837124bf454b8) | claude-sonnet | sonnet () | P1B PR1811 | 2026-11-17T10:35 | done |
 | RV-P1B-privacy a06f51febcdeef94b | reviewer (privacy a06f51febcdeef94b) | claude-sonnet | sonnet () | P1B PR1811 | 2026-11-17T10:35 | done |
-| P1B-8 | implementer (PR1811 fix round) | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T11:30 | running |
+| P1B-8 | implementer (PR1811 fix round) | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T11:30 | stopped-incomplete |
