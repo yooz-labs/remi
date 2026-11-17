@@ -139,4 +139,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | FX-POLB | final fix (PR1809 delta) | claude-opus | opus (a37ea6ad9be74c593, resumed) | L2-POL PR1809 | 2026-11-17T11:05 | done |
 | DIAG-1812 | CI flake diagnosis (read-only) | claude-sonnet | sonnet (a8a84e22244f75833) | issue 1812 | 2026-11-17T12:35 | done |
 | IMPL-1812 | implementer (CI diagnostics PR, issue 1812) | claude-sonnet | sonnet (acb55c602f2dc18dc) | issue 1812 | 2026-11-17T12:55 | done |
-| RV-1813 | reviewer (PR1813 CI diagnostics) | claude-sonnet | sonnet | issue 1812 PR1813 | 2026-11-17T13:05 | running |
+| RV-1813 | reviewer (PR1813 CI diagnostics) | claude-sonnet | sonnet | issue 1812 PR1813 | 2026-11-17T13:05 | done |
