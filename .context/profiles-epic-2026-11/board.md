@@ -170,6 +170,6 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | P1B-9 | implementer (PR1811 fix round, continuation) | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T11:25 | stopped-incomplete |
 | P1B-10 | implementer (PR1811 fix round, continuation) | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T11:40 | stopped-incomplete |
 | P1B-11 | implementer (PR1811 fix round, continuation) | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T11:35 | done |
-| FX-P1B-pin | CI pin fix (PR1811) | claude-sonnet | sonnet (ab2939c5fdd25abe1) | P1B PR1811 | 2026-11-17T11:55 | done |
+| FX-P1B-pin | CI pin fix (PR1811) | claude-sonnet | sonnet (ab2939c5fdd25abe1; pin + 2 CI fixes) | P1B PR1811 | 2026-11-17T11:55 | done |
 | RV-P1BD-privacy a855aabc460e82bf1 | delta reviewer (privacy a855aabc460e82bf1) | claude-sonnet | sonnet () | P1B PR1811 | 2026-11-17T12:05 | running |
 | RV-P1BD-tests ad5fc22485bcba174 | delta reviewer (tests ad5fc22485bcba174) | claude-sonnet | sonnet () | P1B PR1811 | 2026-11-17T12:05 | running |
