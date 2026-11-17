@@ -23,7 +23,7 @@ Verified on `develop` `c9e13967`; re-verify at CP1.
 
 ## Scope
 
-Draft: the profiles module (`remote_visible`, default true, and remote selectability, default false for configured profiles, `default` keeps today's remote behavior), the shared protocol types and fixtures for `session_profiles_request` and response, `create_session_request.profile`, `profile: {id, label, state?}` on session-list entries, `hello_ack` and the create result; the daemon handler; the hub create path (refuse before a port is probed; pass the chosen profile to the child as `--remi-profile`); filtering of remote session and transcript lists; `capabilities.ts` and `PROTOCOL_CAPABILITIES`; the ADR 0049 amendment for these shapes; tests; agent reference; PR body.
+Draft: lift P1B's refusal of `--remi-profile` on `--host` launches (P1B design item 2): the CLI sends `create_session_request.profile` when the hub lists `session_profiles` and keeps refusing otherwise; clients that build a request send `harness` explicitly, because an omitted wire `harness` still means Claude (P1B design item 6); the profiles module (`remote_visible`, default true, and remote selectability, default false for configured profiles, `default` keeps today's remote behavior), the shared protocol types and fixtures for `session_profiles_request` and response, `create_session_request.profile`, `profile: {id, label, state?}` on session-list entries, `hello_ack` and the create result; the daemon handler; the hub create path (refuse before a port is probed; pass the chosen profile to the child as `--remi-profile`); filtering of remote session and transcript lists; `capabilities.ts` and `PROTOCOL_CAPABILITIES`; the ADR 0049 amendment for these shapes; tests; agent reference; PR body.
 
 ## Decided design
 
