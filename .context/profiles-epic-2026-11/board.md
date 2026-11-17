@@ -49,12 +49,12 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 100 | 17 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Agents today | 100 | 18 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
 | Codex Luna today | 24 | 2 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
 | Codex Terra today | 16 | 2 | daily | owner CP0 value; Terra implementers and fix rounds |
 | Claude Sonnet today | 44 | 9 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
-| Claude Opus today | 16 | 4 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
-| Advisor consults | 20 | 5 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
+| Claude Opus today | 16 | 5 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
+| Advisor consults | 20 | 6 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
 | Fable consults | 1 | 0 | never | copied; only if the owner asks; never --over |
 | Agents this wave | 0 | 0 | wave | unused: this plan has no waves |
 
@@ -130,7 +130,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | P1A-1 | implementer | codex-terra | gpt-6.1-terra xhigh | P1A | 2026-11-17T04:14 | stopped-incomplete |
 | P1C-1 | implementer | codex-luna | gpt-6-luna max | P1C | 2026-11-17T04:14 | stopped-incomplete |
 | P5A-1 | implementer | codex-luna | gpt-6-luna max | P5A-PREP | 2026-11-17T04:14 | done |
-| CI-1 | CI analysis (owner request, issue 1793) | claude-opus | opus high (agent a8e5c55d269096de4) | none | 2026-11-17T04:20 | running |
+| CI-1 | CI analysis (owner request, issue 1793) | claude-opus | opus high (agent a8e5c55d269096de4) | none | 2026-11-17T04:20 | done |
 | PAIRV2-1 | implementer (owner request, issue 1794) | claude-sonnet | sonnet high | none | 2026-11-17T04:25 | running |
 | P1A-2 | implementer (continuation) | codex-terra | gpt-6.1-terra xhigh | P1A | 2026-11-17T04:42 | stopped-incomplete |
 | RV-PAIR-A | reviewer contract+verification | claude-sonnet | sonnet xhigh (a92b6314a46035836) | PR1795 | 2026-11-17T04:43 | done |
@@ -140,7 +140,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | RV-P5A | reviewer docs | claude-sonnet | sonnet xhigh | P5A-PREP PR1796 | 2026-11-17T05:05 | done |
 | P1A-3 | implementer (continuation 2) | codex-terra | gpt-6.1-terra xhigh | P1A | 2026-11-17T05:10 | done |
 | FX-P5A | fix round 1 (PR1796) | codex-luna | gpt-6-luna max | P5A-PREP | 2026-11-17T05:20 | running |
-| RV-P1A-contract | reviewer contract | claude-sonnet | sonnet xhigh (ab8f6e1d337dd7f7c) | P1A PR1798 | 2026-11-17T05:30 | running |
-| RV-P1A-verification | reviewer verification | claude-sonnet | sonnet xhigh (a537eabc772199af5) | P1A PR1798 | 2026-11-17T05:30 | running |
-| RV-P1A-maintainability | reviewer maintainability | claude-sonnet | sonnet xhigh (ad4607de846f691b1) | P1A PR1798 | 2026-11-17T05:30 | running |
-| RV-P1A-privacy | reviewer privacy | claude-sonnet | sonnet xhigh (ae0962c4de508f2c9) | P1A PR1798 | 2026-11-17T05:30 | running |
+| RV-P1A-contract | reviewer contract | claude-sonnet | sonnet xhigh (ab8f6e1d337dd7f7c) | P1A PR1798 | 2026-11-17T05:30 | done |
+| RV-P1A-verification | reviewer verification | claude-sonnet | sonnet xhigh (a537eabc772199af5) | P1A PR1798 | 2026-11-17T05:30 | done |
+| RV-P1A-maintainability | reviewer maintainability | claude-sonnet | sonnet xhigh (ad4607de846f691b1) | P1A PR1798 | 2026-11-17T05:30 | done |
+| RV-P1A-privacy | reviewer privacy | claude-sonnet | sonnet xhigh (ae0962c4de508f2c9) | P1A PR1798 | 2026-11-17T05:30 | done |
