@@ -44,21 +44,30 @@ describe('level 2 foreign-holder rule', () => {
     ]);
   });
 
-  test("a holder created for a remi pid, and a holder whose own pid is remi's, are remi's", () => {
-    const caffeinateForRemi = holder({
-      pid: 5000,
-      process: 'caffeinate',
-      createdForPid: REMI_PID,
+  // One holder per case: a remi holder and a foreign one of the same process
+  // name and kind would collapse into one entry and hide a broken rule.
+  test("a holder created for a remi pid is remi's", () => {
+    const caffeinateForRemi = holder({ pid: 5000, process: 'caffeinate', createdForPid: REMI_PID });
+    expect(classifyForeignHolders([caffeinateForRemi], [REMI_PID], [])).toEqual({
+      blocking: [],
+      ignored: [],
     });
-    const remiItself = holder({ pid: REMI_PID, process: 'bun', type: 'PreventSystemSleep' });
+  });
+
+  test('a holder created for another pid is foreign', () => {
     const caffeinateForOther = holder({ pid: 5001, process: 'caffeinate', createdForPid: 77 });
-    expect(
-      classifyForeignHolders(
-        [caffeinateForRemi, remiItself, caffeinateForOther],
-        new Set([REMI_PID]),
-        [],
-      ),
-    ).toEqual({ blocking: [{ process: 'caffeinate', kind: 'system' }], ignored: [] });
+    expect(classifyForeignHolders([caffeinateForOther], [REMI_PID], [])).toEqual({
+      blocking: [{ process: 'caffeinate', kind: 'system' }],
+      ignored: [],
+    });
+  });
+
+  test("a holder whose own pid is remi's is remi's", () => {
+    const remiItself = holder({ pid: REMI_PID, process: 'bun', type: 'PreventSystemSleep' });
+    expect(classifyForeignHolders([remiItself], new Set([REMI_PID]), [])).toEqual({
+      blocking: [],
+      ignored: [],
+    });
   });
 
   test('a display holder in the ignore list still blocks', () => {
