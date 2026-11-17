@@ -14,7 +14,11 @@
  * `level2_cap_hours` the on-time in `level2_window_hours`).
  */
 import type { ForeignHolder } from './level2-foreign-holders.ts';
-import type { Level2Settings, Level2ThermalSetting } from './level2-settings.ts';
+import {
+  type Level2Settings,
+  THERMAL_SETTING_RANK,
+  representableEndSeconds,
+} from './level2-settings.ts';
 
 export type Level2StateName =
   | 'disabled'
@@ -70,6 +74,7 @@ export type Level2PauseReason =
   | 'flag-unknown'
   | 'heartbeat-failed'
   | 'lease-write-failed'
+  | 'enable-timeout'
   | 'idle'
   | 'no-session';
 
@@ -195,6 +200,8 @@ export type Level2Target =
   | { readonly name: 'disarmed'; readonly reason: Level2DisarmReason };
 
 export interface Level2Run {
+  /** Monotonic time the `enable` effect was emitted. */
+  readonly enableAt: number;
   /** Monotonic time the switch reported `enabled`; null while starting. */
   readonly startMono: number | null;
   /** Epoch seconds at `enabled`. */
@@ -231,6 +238,8 @@ export interface Level2State {
   readonly runs: readonly (readonly [number, number])[];
   /** Monotonic time of the last completed revert. */
   readonly pausedAt: number | null;
+  /** Why the last completed revert happened (it keeps a moderate-held pause from flapping). */
+  readonly lastPauseReason: Level2RevertReason | null;
   /** Monotonic time since every condition has been clear at each beat, without a gap. */
   readonly clearSince: number | null;
   readonly lastBeatMono: number | null;
@@ -318,19 +327,28 @@ export interface Level2Status {
   readonly waitingFor: string | null;
 }
 
-const THERMAL_RANK: Readonly<Record<string, number>> = {
-  nominal: 0,
-  moderate: 1,
-  heavy: 2,
-  trapping: 3,
-  sleeping: 4,
-};
+/**
+ * `Map`s, not object literals: a reading of `'constructor'` or `'toString'`
+ * must be `thermal-unknown`, never an inherited member that compares as a level.
+ */
+const THERMAL_RANK: ReadonlyMap<string, number> = new Map([
+  ['nominal', 0],
+  ['moderate', 1],
+  ['heavy', 2],
+  ['trapping', 3],
+  ['sleeping', 4],
+]);
 const MODERATE_RANK = 1;
-const SETTING_RANK: Readonly<Record<Level2ThermalSetting, number>> = {
-  moderate: 1,
-  heavy: 2,
-  trapping: 3,
-};
+const RUNNING: ReadonlySet<Level2StateName> = new Set(['starting', 'on', 'reverting']);
+
+function thermalRank(reading: unknown): number | undefined {
+  return typeof reading === 'string' ? THERMAL_RANK.get(reading) : undefined;
+}
+
+/** A setting's rank; an unknown value (settings that skipped validation) counts as `moderate`, the strictest. */
+function settingRank(level: unknown): number {
+  return (typeof level === 'string' ? THERMAL_SETTING_RANK.get(level) : undefined) ?? MODERATE_RANK;
+}
 const DISARM_REASONS: ReadonlySet<string> = new Set<Level2DisarmReason>([
   'stopped',
   'flag-cleared-by-other',
@@ -502,6 +520,7 @@ export function initialLevel2State(
     failures: normalizeTimes(p?.failures ?? [], wall, skew, windowSeconds),
     runs: normalizeRuns(p?.runs ?? [], wall, skew, windowSeconds),
     pausedAt: null,
+    lastPauseReason: null,
     clearSince: null,
     lastBeatMono: null,
     lastBeatWall: null,
@@ -610,6 +629,7 @@ function readingsBlock(
   r: Level2Readings,
   sessions: Level2Sessions,
   origin: Level2Origin,
+  moderateHeldPause: boolean,
 ): Block | null {
   if (sessions.live <= 0) return block('no-session');
   if (origin === 'automatic' && sessions.working <= 0) return block('no-work');
@@ -629,9 +649,15 @@ function readingsBlock(
   ) {
     return block('battery-time-low');
   }
-  const thermal = THERMAL_RANK[r.thermal];
+  const thermal = thermalRank(r.thermal);
   if (thermal === undefined) return block('thermal-unknown');
-  if (thermal >= SETTING_RANK[settings.thermal_refuse_level]) return block('thermal');
+  if (thermal >= settingRank(settings.thermal_refuse_level)) return block('thermal');
+  // After a moderate-held pause, an automatic resume waits for the level to drop
+  // below moderate, whatever the refuse level: otherwise it would resume at
+  // moderate and pause again after `thermal_moderate_revert_minutes`, in a loop.
+  if (moderateHeldPause && origin === 'automatic' && thermal >= MODERATE_RANK) {
+    return block('thermal');
+  }
   if (r.foreign?.kind !== 'ok' || !Array.isArray(r.foreign.blocking)) {
     return block('assertions-unknown');
   }
@@ -659,9 +685,15 @@ function observeSessions(ctx: Ctx, sessions: Level2Sessions | undefined): void {
   else s.idleSince = null;
 }
 
+/**
+ * Count one breaker failure. The list keeps at most `level2_breaker_failures`
+ * entries (the newest): once the breaker has tripped more would not change the
+ * decision, and a revert that keeps failing would otherwise grow the state file
+ * at every beat.
+ */
 function recordFailure(ctx: Ctx): boolean {
   const { s, settings } = ctx;
-  s.failures = [...s.failures, wallAt(ctx)];
+  s.failures = [...s.failures, wallAt(ctx)].slice(-settings.level2_breaker_failures);
   return s.failures.length >= settings.level2_breaker_failures;
 }
 
@@ -690,6 +722,7 @@ function setArmedFresh(s: WorkingState): void {
   s.failures = [];
   s.resumes = [];
   s.pausedAt = null;
+  s.lastPauseReason = null;
   s.clearSince = null;
 }
 
@@ -701,15 +734,28 @@ function setBlocked(ctx: Ctx, found: Block): void {
   s.reasonProcesses = found.processes;
 }
 
+/**
+ * Milliseconds from now to the latest end that can still be written (a `Date`
+ * and the lease's `lease_integer_max_digits`); the validator refuses hours that
+ * go past it, and this keeps a run inside it whatever the settings.
+ */
+function representableLeftMs(ctx: Ctx): number {
+  const wall = wallAt(ctx);
+  const latest = representableEndSeconds(ctx.settings.lease_integer_max_digits, wall);
+  return Math.max(0, (latest - wall) * SECOND);
+}
+
 function beginEnable(ctx: Ctx, origin: Level2Origin, lengthMs: number): void {
   const { s, now } = ctx;
   const capLeft = capLeftMs(ctx);
-  const length = Math.min(lengthMs, capLeft);
+  const representable = representableLeftMs(ctx);
+  const length = Math.min(lengthMs, capLeft, representable);
   const run: Level2Run = {
+    enableAt: now,
     startMono: null,
     startWall: null,
     end: now + length,
-    cutByCap: capLeft < lengthMs,
+    cutByCap: capLeft < lengthMs && capLeft <= representable,
   };
   s.run = run;
   s.name = 'starting';
@@ -768,7 +814,7 @@ function stepOn(ctx: Ctx, readings: Level2Readings | null): void {
       setDisarmed(ctx, 'flag-cleared-by-other');
       return;
     }
-    const thermal = THERMAL_RANK[readings.thermal];
+    const thermal = thermalRank(readings.thermal);
     s.moderateSince =
       thermal !== undefined && thermal >= MODERATE_RANK ? (s.moderateSince ?? now) : null;
     const foreignUnknown =
@@ -792,7 +838,7 @@ function stepOn(ctx: Ctx, readings: Level2Readings | null): void {
     reason = 'no-session';
   } else if (readings !== null) {
     const battery = batteryReading(readings.battery);
-    const thermal = THERMAL_RANK[readings.thermal];
+    const thermal = thermalRank(readings.thermal);
     if (readings.sleepDisabled !== 'yes') {
       reason = 'flag-unknown';
       failure = true;
@@ -810,7 +856,7 @@ function stepOn(ctx: Ctx, readings: Level2Readings | null): void {
       reason = 'battery-time-low';
     } else if (thermal === undefined) {
       reason = 'thermal-unknown';
-    } else if (thermal >= SETTING_RANK[settings.thermal_revert_level]) {
+    } else if (thermal >= settingRank(settings.thermal_revert_level)) {
       reason = 'thermal';
     } else if (
       s.moderateSince !== null &&
@@ -850,11 +896,47 @@ function stepOn(ctx: Ctx, readings: Level2Readings | null): void {
   beginRevert(ctx, reason, pauseTarget(reason, tripped));
 }
 
+/**
+ * While `starting`, the switch call is in flight and the controller answers it
+ * with `enabled` or `enable-failed`. If that answer is lost, sleep may be off
+ * with every rail blind, so a beat or census here is never a no-op: an
+ * unreadable flag, the run's end, or no answer within `switch_deadline_ms` plus
+ * `switch_sync_deadline_ms` of the `enable` reverts. An answer that comes late
+ * still counts the on-time while reverting.
+ */
+function stepStarting(ctx: Ctx, readings: Level2Readings | null): void {
+  const { s, settings, now } = ctx;
+  if (s.run === null) return;
+  let reason: Level2PauseReason | null = null;
+  let failure = false;
+  if (readings !== null && readings.sleepDisabled !== 'yes' && readings.sleepDisabled !== 'no') {
+    reason = 'flag-unknown';
+    failure = true;
+  } else if (now >= s.run.end) {
+    reason = s.run.cutByCap ? 'daily-cap' : 'run-limit';
+  } else if (
+    now >=
+    s.run.enableAt + settings.switch_deadline_ms + settings.switch_sync_deadline_ms
+  ) {
+    reason = 'enable-timeout';
+    failure = true;
+  }
+  if (reason === null) return;
+  const tripped = failure ? recordFailure(ctx) : false;
+  beginRevert(ctx, reason, pauseTarget(reason, tripped));
+}
+
 /** Item 6 for an automatic start or resume, on a `beat` while `armed` or `paused`. */
 function stepAutomatic(ctx: Ctx, readings: Level2Readings, gap: boolean): void {
   const { s, settings, now } = ctx;
   const sessions = s.sessions ?? { live: 0, working: 0 };
-  let found = readingsBlock(settings, readings, sessions, 'automatic');
+  let found = readingsBlock(
+    settings,
+    readings,
+    sessions,
+    'automatic',
+    s.lastPauseReason === 'thermal-moderate-held',
+  );
   if (found === null && capBlocks(ctx)) found = block('daily-cap');
   // Q13: an automatic start or resume needs the lid open for the whole dwell.
   if (found === null && readings.clamshell !== 'open') found = block('lid-closed');
@@ -923,7 +1005,7 @@ function stepStart(ctx: Ctx, event: Extract<Level2Event, { type: 'start' }>): vo
   }
   if (s.name === 'disarmed') setArmedFresh(s);
   const sessions = s.sessions ?? { live: 0, working: 0 };
-  let found = readingsBlock(settings, event.readings, sessions, 'explicit');
+  let found = readingsBlock(settings, event.readings, sessions, 'explicit', false);
   if (found === null && capBlocks(ctx)) found = block('daily-cap');
   if (found !== null) {
     // Armed either way; it then resumes by itself under the automatic rules.
@@ -950,9 +1032,10 @@ function stepExtend(ctx: Ctx, hours: unknown): void {
     return;
   }
   const wanted = s.run.end + hours * HOUR;
-  const limit = now + capLeftMs(ctx);
-  const end = Math.max(s.run.end, Math.min(wanted, limit));
-  const cutByCap = wanted > limit;
+  const capLimit = now + capLeftMs(ctx);
+  const representableLimit = now + representableLeftMs(ctx);
+  const end = Math.max(s.run.end, Math.min(wanted, capLimit, representableLimit));
+  const cutByCap = wanted > capLimit && capLimit <= representableLimit;
   s.run = { ...s.run, end, cutByCap };
   ctx.actions.push({
     type: 'extended',
@@ -1011,6 +1094,8 @@ export function stepLevel2Policy(
         stepAutomatic(ctx, event.readings, gap);
       } else if (s.name === 'on') {
         stepOn(ctx, event.readings);
+      } else if (s.name === 'starting') {
+        stepStarting(ctx, event.readings);
       } else if (s.name === 'reverting') {
         ctx.actions.push({ type: 'disable', reason: s.reason as Level2RevertReason });
       }
@@ -1030,6 +1115,8 @@ export function stepLevel2Policy(
         }
       } else if (s.name === 'on') {
         stepOn(ctx, null);
+      } else if (s.name === 'starting') {
+        stepStarting(ctx, null);
       } else if (s.name === 'reverting') {
         ctx.actions.push({ type: 'disable', reason: s.reason as Level2RevertReason });
       }
@@ -1102,6 +1189,7 @@ export function stepLevel2Policy(
         const target = s.target;
         s.target = null;
         s.pausedAt = now;
+        s.lastPauseReason = s.reason as Level2RevertReason;
         clearTrackers(s);
         if (s.exiting) s.cleanExit = true;
         s.name = target.name;
@@ -1143,7 +1231,11 @@ export function stepLevel2Policy(
 
   const effects: Level2Effect[] = [];
   const persisted = persistedOf(s);
+  // Every transition persists, and so does every beat while starting, on or
+  // reverting (card item 3): the run in progress moves its end to that beat.
+  const runningBeat = event.type === 'beat' && RUNNING.has(current.name);
   if (
+    runningBeat ||
     current.name !== s.name ||
     JSON.stringify(persistedOf(current)) !== JSON.stringify(persisted)
   ) {
@@ -1167,6 +1259,10 @@ function deadlineFor(s: Level2State, now: number): number | null {
   if (s.name === 'disabled' || s.name === 'disarmed') return null;
   if (s.exiting && (s.name === 'armed' || s.name === 'paused')) return null;
   const deadlines = [now + settings.heartbeat_seconds * SECOND];
+  if (s.name === 'starting' && s.run !== null) {
+    deadlines.push(s.run.end);
+    deadlines.push(s.run.enableAt + settings.switch_deadline_ms + settings.switch_sync_deadline_ms);
+  }
   if (s.name === 'on' && s.run !== null) {
     deadlines.push(s.run.end);
     if (s.idleSince !== null) {
@@ -1228,7 +1324,12 @@ function waitingFor(state: Level2State, now: number): string | null {
       return 'a readable thermal pressure level';
     case 'thermal':
     case 'thermal-moderate-held':
-      return `thermal pressure below ${settings.thermal_refuse_level}`;
+      // After a moderate-held pause an automatic resume needs the level below
+      // moderate, whatever `thermal_refuse_level` says.
+      return state.reason === 'thermal-moderate-held' ||
+        state.lastPauseReason === 'thermal-moderate-held'
+        ? 'thermal pressure below moderate'
+        : `thermal pressure below ${settings.thermal_refuse_level}`;
     case 'assertions-unknown':
       return 'a readable list of the apps holding the Mac awake';
     case 'foreign-holder':

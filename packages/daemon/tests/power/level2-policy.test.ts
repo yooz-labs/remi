@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { classifyForeignHolders } from '../../src/power/level2-foreign-holders.ts';
 import {
   type Level2BlockReason,
@@ -15,7 +17,12 @@ import {
   level2Status,
   stepLevel2Policy,
 } from '../../src/power/level2-policy.ts';
-import { LEVEL2_DEFAULTS, type Level2Settings } from '../../src/power/level2-settings.ts';
+import {
+  DATE_MAX_EPOCH_SECONDS,
+  LEVEL2_DEFAULTS,
+  LEVEL2_NUMERIC_KEYS,
+  type Level2Settings,
+} from '../../src/power/level2-settings.ts';
 
 /** Wall clock at the simulation's start, epoch seconds. */
 const W0 = 1_800_000_000;
@@ -56,6 +63,8 @@ interface SimOptions {
   readonly persisted?: Level2Persisted | null;
   readonly leaseFound?: boolean;
   readonly flag?: 'yes' | 'no' | 'unknown';
+  /** Leave `enable` and `disable` unanswered until `ackEnabled` or `ackDisabled`. */
+  readonly holdAcks?: boolean;
 }
 
 /**
@@ -73,6 +82,10 @@ class Sim {
   flag: 'yes' | 'no' | 'unknown';
   enableFailure: Level2EnableFailure | null = null;
   disableFails = false;
+  readonly holdAcks: boolean;
+  /** Effects left unanswered while `holdAcks` is set. */
+  pendingEnable = false;
+  pendingDisable = false;
   nextDeadline: number | null = null;
   readonly enables: { t: number; origin: string; runEndWall: number; cutByCap: boolean }[] = [];
   readonly disables: { t: number; reason: string }[] = [];
@@ -80,6 +93,7 @@ class Sim {
   constructor(options: SimOptions = {}) {
     this.settings = settingsWith(options.settings);
     this.flag = options.flag ?? 'no';
+    this.holdAcks = options.holdAcks ?? false;
     this.state = initialLevel2State(this.settings, options.persisted ?? null, {
       leaseFound: options.leaseFound ?? false,
       flag: this.flag,
@@ -105,6 +119,7 @@ class Sim {
       // Every transition persists (item 3).
       expect(result.effects.filter((e) => e.type === 'persist')).toHaveLength(1);
     }
+    expectDeadlineWithinHeartbeat(result.state, result.nextDeadline, this.t * 1000);
     const all: Level2Effect[] = [...result.effects];
     for (const effect of result.effects) {
       if (effect.type === 'enable') {
@@ -114,7 +129,9 @@ class Sim {
           runEndWall: effect.runEndWall,
           cutByCap: effect.cutByCap,
         });
-        if (this.enableFailure !== null) {
+        if (this.holdAcks) {
+          this.pendingEnable = true;
+        } else if (this.enableFailure !== null) {
           all.push(...this.send({ type: 'enable-failed', reason: this.enableFailure }));
         } else {
           this.flag = 'yes';
@@ -122,7 +139,9 @@ class Sim {
         }
       } else if (effect.type === 'disable') {
         this.disables.push({ t: this.t, reason: effect.reason });
-        if (this.disableFails) {
+        if (this.holdAcks) {
+          this.pendingDisable = true;
+        } else if (this.disableFails) {
           all.push(...this.send({ type: 'disable-failed' }));
         } else {
           this.flag = 'no';
@@ -131,6 +150,22 @@ class Sim {
       }
     }
     return all;
+  }
+
+  /** Answer a held `enable` as the switch would after success. */
+  ackEnabled(): Level2Effect[] {
+    expect(this.pendingEnable).toBe(true);
+    this.pendingEnable = false;
+    this.flag = 'yes';
+    return this.send({ type: 'enabled' });
+  }
+
+  /** Answer a held `disable` as the switch would after success. */
+  ackDisabled(): Level2Effect[] {
+    expect(this.pendingDisable).toBe(true);
+    this.pendingDisable = false;
+    this.flag = 'no';
+    return this.send({ type: 'disabled' });
   }
 
   readings(over: Over = {}): Level2Readings {
@@ -184,6 +219,25 @@ class Sim {
   status() {
     return level2Status(this.state, this.t * 1000, this.wall());
   }
+}
+
+/**
+ * While level 2 needs beats (not disabled, not disarmed, not an exiting hub
+ * that is off), the next deadline exists, lies ahead, and is at most one
+ * heartbeat away, so a timer for it never waits longer than a heartbeat.
+ */
+function expectDeadlineWithinHeartbeat(state: Level2State, deadline: number | null, now: number) {
+  const idle =
+    state.name === 'disabled' ||
+    state.name === 'disarmed' ||
+    (state.exiting && (state.name === 'armed' || state.name === 'paused'));
+  if (idle) {
+    expect(deadline).toBeNull();
+    return;
+  }
+  expect(deadline).not.toBeNull();
+  expect(deadline ?? 0).toBeGreaterThan(now);
+  expect(deadline ?? 0).toBeLessThanOrEqual(now + state.settings.heartbeat_seconds * 1000);
 }
 
 function label(state: Level2State): string {
@@ -333,6 +387,13 @@ const INPUT_BREAKS: readonly Break[] = [
     reason: 'thermal',
     field: 'thermal',
     readings: { thermal: 'moderate' },
+    explicit: true,
+    state: 'paused',
+  },
+  {
+    reason: 'thermal',
+    field: 'thermal',
+    readings: { thermal: 'sleeping' },
     explicit: true,
     state: 'paused',
   },
@@ -538,6 +599,18 @@ describe('level 2 conditions that block turning on (item 6)', () => {
     });
     capAndLid.beat({ clamshell: 'closed' });
     expect(label(capAndLid.state)).toBe('paused:daily-cap');
+
+    // Two rules on one reading: battery-low comes before battery-time-low, to
+    // start and while on. (Other same-field reasons, such as watchdog-unknown,
+    // missing and mismatch, are different values of one reading and cannot
+    // hold together.)
+    const both = new Sim({ settings: { level2_resume_dwell_seconds: 0 } });
+    both.beat({ battery: battery(34, 19) });
+    expect(label(both.state)).toBe('paused:battery-low');
+    const running = startedSim();
+    running.advance(30);
+    running.beat({ battery: battery(30, 19) });
+    expect(running.disables.map((d) => d.reason)).toEqual(['battery-low']);
   });
 
   test('Q2: on AC power at 10 percent the battery rules pass; unplugging pauses at the next beat', () => {
@@ -720,10 +793,16 @@ describe('level 2 explicit-only ends (item 8)', () => {
     expect(label(sim.state)).toBe('disarmed:stopped');
   });
 
-  test('stopped: stop while off disarms with no disable', () => {
-    for (const make of [() => new Sim(), () => new Sim()]) {
-      const sim = make();
-      sim.beat({ battery: battery(20) });
+  test('stopped: stop while off (paused or armed) disarms with no disable', () => {
+    const paused = new Sim();
+    paused.beat({ battery: battery(20) });
+    const armed = new Sim();
+    armed.census(IDLE);
+    expect([label(paused.state), label(armed.state)]).toEqual([
+      'paused:battery-low',
+      'armed:no-work',
+    ]);
+    for (const sim of [paused, armed]) {
       const effects = sim.send({ type: 'stop' });
       expect(ofType(effects, 'disable')).toEqual([]);
       expect(label(sim.state)).toBe('disarmed:stopped');
@@ -1279,7 +1358,19 @@ interface KeyRow {
   readonly scenario: Scenario;
   readonly byDefault: string | number;
   readonly changed: string | number;
+  /** Leave the switch's answers pending (see `SimOptions.holdAcks`). */
+  readonly hold?: boolean;
 }
+
+/** Started with the switch's answer held, then a beat `seconds` later. */
+const enableTimeoutAfter =
+  (seconds: number): Scenario =>
+  (sim) => {
+    sim.start();
+    sim.advance(seconds);
+    sim.beat();
+    return label(sim.state);
+  };
 
 const KEY_ROWS: readonly KeyRow[] = [
   {
@@ -1560,43 +1651,72 @@ const KEY_ROWS: readonly KeyRow[] = [
     byDefault: 'on',
     changed: 'disabled',
   },
+  {
+    // No answer to an `enable` within switch_deadline_ms + switch_sync_deadline_ms
+    // (5000 + 3000 by default) reverts with enable-timeout.
+    key: 'switch_deadline_ms',
+    value: 1000,
+    hold: true,
+    scenario: enableTimeoutAfter(7),
+    byDefault: 'starting',
+    changed: 'reverting:enable-timeout',
+  },
+  {
+    key: 'switch_sync_deadline_ms',
+    value: 1000,
+    hold: true,
+    scenario: enableTimeoutAfter(7),
+    byDefault: 'starting',
+    changed: 'reverting:enable-timeout',
+  },
+  {
+    // A run's end stays representable: 12 lease digits end it at 999999999999.
+    // (The validator would refuse these hours with 12 digits; the reducer clamps
+    // whatever it is given.)
+    key: 'lease_integer_max_digits',
+    value: 12,
+    base: { level2_default_hours: 3e8, level2_cap_hours: 3e8 },
+    scenario: (sim) => {
+      sim.start();
+      return sim.enables[0]?.runEndWall ?? 0;
+    },
+    byDefault: W0 + 3e8 * HOUR,
+    changed: 999_999_999_999,
+  },
 ];
 
 describe('level 2 per-key decisions (acceptance 1)', () => {
   test.each(KEY_ROWS.map((row) => [`${row.key} = ${JSON.stringify(row.value)}`, row] as const))(
     '%s changes the decision it governs',
     (_name, row) => {
-      const byDefault = new Sim({ settings: row.base ?? {}, persisted: row.persisted ?? null });
+      const byDefault = new Sim({
+        settings: row.base ?? {},
+        persisted: row.persisted ?? null,
+        holdAcks: row.hold ?? false,
+      });
       expect(row.scenario(byDefault)).toBe(row.byDefault);
       const changed = new Sim({
         settings: { ...row.base, [row.key]: row.value },
         persisted: row.persisted ?? null,
+        holdAcks: row.hold ?? false,
       });
       expect(row.scenario(changed)).toBe(row.changed);
     },
   );
 
   test('every numeric key the reducer reads has a row', () => {
+    // Derived, not typed by hand: the numeric keys of the settings table whose
+    // name appears in the reducer's code (comments removed).
+    const source = readFileSync(
+      fileURLToPath(new URL('../../src/power/level2-policy.ts', import.meta.url)),
+      'utf8',
+    )
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
+    const read = LEVEL2_NUMERIC_KEYS.filter((key) => new RegExp(`\\b${key}\\b`).test(source));
+    expect(read.length).toBeGreaterThan(15);
     const covered = new Set(KEY_ROWS.map((row) => row.key));
-    const read: (keyof Level2Settings)[] = [
-      'level2_start_battery_percent',
-      'level2_revert_battery_percent',
-      'level2_min_remaining_minutes',
-      'level2_default_hours',
-      'level2_cap_hours',
-      'level2_window_hours',
-      'level2_idle_revert_minutes',
-      'thermal_moderate_revert_minutes',
-      'heartbeat_seconds',
-      'foreign_holder_revert_minutes',
-      'level2_resume_dwell_seconds',
-      'level2_resume_min_interval_minutes',
-      'level2_max_resumes_per_day',
-      'level2_breaker_failures',
-      'level2_wake_gap_seconds',
-      'clock_skew_tolerance_seconds',
-    ];
-    for (const key of read) expect(covered.has(key)).toBe(true);
+    expect(read.filter((key) => !covered.has(key))).toEqual([]);
   });
 
   test('nextDeadline is never more than one heartbeat away while level 2 needs beats', () => {
@@ -1620,5 +1740,461 @@ describe('level 2 monotonic clock', () => {
     );
     expect(result.state.lastObservedAt).toBe(HOUR * 1000);
     expect(result.state.name).toBe('on');
+  });
+});
+
+describe('level 2 thermal lookups ignore inherited names (C3)', () => {
+  const inherited: string[] = ['constructor', 'toString'];
+
+  test.each(inherited)('a %s reading blocks an automatic start as thermal-unknown', (name) => {
+    const sim = new Sim({ settings: { level2_resume_dwell_seconds: 0 } });
+    sim.beat({ thermal: name as never });
+    expect(label(sim.state)).toBe('paused:thermal-unknown');
+  });
+
+  test.each(inherited)('a %s reading while on pauses with thermal-unknown', (name) => {
+    const sim = startedSim();
+    sim.advance(30);
+    sim.beat({ thermal: name as never });
+    expect(sim.disables.map((d) => d.reason)).toEqual(['thermal-unknown']);
+  });
+
+  test.each(inherited)(
+    'a %s reading during a held moderate level pauses with thermal-unknown',
+    (name) => {
+      const sim = startedSim();
+      sim.run(4 * MIN, { thermal: 'moderate' });
+      expect(sim.state.name).toBe('on');
+      sim.advance(30);
+      sim.beat({ thermal: name as never });
+      expect(sim.disables.map((d) => d.reason)).toEqual(['thermal-unknown']);
+    },
+  );
+
+  test('a thermal setting that skipped validation counts as moderate, the strictest', () => {
+    const refuse = new Sim({ settings: { thermal_refuse_level: 'constructor' as never } });
+    refuse.start({ thermal: 'moderate' });
+    expect(label(refuse.state)).toBe('paused:thermal');
+    const revert = startedSim({ settings: { thermal_revert_level: 'toString' as never } });
+    revert.advance(30);
+    revert.beat({ thermal: 'moderate' });
+    expect(revert.disables.map((d) => d.reason)).toEqual(['thermal']);
+  });
+});
+
+describe('level 2 after a moderate-held pause (C5)', () => {
+  test('it waits for the level to drop below moderate, whatever the refuse level', () => {
+    const sim = startedSim({
+      settings: { thermal_refuse_level: 'heavy', thermal_revert_level: 'heavy' },
+    });
+    sim.runUntil(notOn, 10 * MIN, { thermal: 'moderate' });
+    expect(sim.disables.map((d) => d.reason)).toEqual(['thermal-moderate-held']);
+    sim.run(2 * HOUR, { thermal: 'moderate' });
+    expect(sim.enables).toHaveLength(1);
+    expect(label(sim.state)).toBe('paused:thermal');
+    expect(sim.status().waitingFor).toBe('thermal pressure below moderate');
+    const nominalFrom = sim.t + 30;
+    sim.runUntil((s) => s.name === 'on', HOUR, { thermal: 'nominal' });
+    expect(sim.enables.map((e) => e.t)).toEqual([0, nominalFrom + 120]);
+  });
+
+  test('after any other pause, waitingFor names the refuse level', () => {
+    const sim = startedSim({ settings: { thermal_refuse_level: 'heavy' } });
+    sim.advance(30);
+    sim.beat({ thermal: 'heavy' });
+    expect(sim.status().waitingFor).toBe('thermal pressure below heavy');
+  });
+});
+
+describe('level 2 starting is bounded (F1)', () => {
+  test('no answer to an enable within the two switch deadlines reverts with enable-timeout', () => {
+    const sim = new Sim({ holdAcks: true });
+    sim.start();
+    expect(sim.state.name).toBe('starting');
+    // The deadline is the enable plus 5000 + 3000 ms.
+    expect(sim.nextDeadline).toBe(8000);
+    sim.advance(8);
+    const effects = sim.beat();
+    expect(ofType(effects, 'disable').map((e) => e.reason)).toEqual(['enable-timeout']);
+    expect(label(sim.state)).toBe('reverting:enable-timeout');
+    expect(sim.status().failuresToday).toBe(1);
+    sim.ackDisabled();
+    expect(label(sim.state)).toBe('paused:enable-timeout');
+  });
+
+  test('a beat before the deadline leaves it starting', () => {
+    const sim = new Sim({ holdAcks: true });
+    sim.start();
+    sim.advance(7);
+    const effects = sim.beat();
+    expect(ofType(effects, 'disable')).toEqual([]);
+    expect(sim.state.name).toBe('starting');
+  });
+
+  test('a census while starting also reverts after the deadline', () => {
+    const sim = new Sim({ holdAcks: true });
+    sim.start();
+    sim.advance(30);
+    sim.census(WORK);
+    expect(label(sim.state)).toBe('reverting:enable-timeout');
+  });
+
+  test('a beat while starting checks the flag and the run end too', () => {
+    const flag = new Sim({ holdAcks: true });
+    flag.start();
+    flag.advance(1);
+    flag.beat({ sleepDisabled: 'unknown' });
+    expect(label(flag.state)).toBe('reverting:flag-unknown');
+    expect(flag.status().failuresToday).toBe(1);
+
+    const ended = new Sim({ holdAcks: true, settings: { switch_deadline_ms: 100_000 } });
+    ended.start({}, WORK, 1 / 360);
+    ended.advance(10);
+    ended.beat();
+    expect(label(ended.state)).toBe('reverting:run-limit');
+  });
+
+  test('an enabled that arrives after the timeout still counts the on-time', () => {
+    const sim = new Sim({ holdAcks: true });
+    sim.start();
+    sim.advance(30);
+    sim.beat();
+    sim.advance(5);
+    sim.ackEnabled();
+    expect(sim.state.name).toBe('reverting');
+    sim.advance(25);
+    sim.ackDisabled();
+    expect(sim.status().onTimeLeftToday).toBe(12 * HOUR - 25);
+  });
+});
+
+describe('level 2 run ends stay representable (F2)', () => {
+  test('an enable never sets an end past what a Date holds', () => {
+    const sim = new Sim({ settings: { level2_default_hours: 3e9, level2_cap_hours: 3e9 } });
+    sim.start();
+    expect(sim.enables[0]?.runEndWall).toBe(DATE_MAX_EPOCH_SECONDS);
+    expect(Number.isNaN(new Date(DATE_MAX_EPOCH_SECONDS * 1000).getTime())).toBe(false);
+  });
+
+  test('an extend never moves the end past what a Date holds', () => {
+    const sim = startedSim({ settings: { level2_cap_hours: 3e9 } });
+    const effects = sim.send({ type: 'extend', hours: 3e9 });
+    expect(ofType(effects, 'extended')[0]?.runEndWall).toBe(DATE_MAX_EPOCH_SECONDS);
+  });
+});
+
+describe('level 2 failure list (F4)', () => {
+  test('a revert that keeps failing stores at most level2_breaker_failures failures', () => {
+    const sim = startedSim();
+    sim.disableFails = true;
+    sim.advance(30);
+    sim.beat({ battery: battery(20) });
+    const effects = sim.run(HOUR, { battery: battery(20) });
+    const sizes = ofType(effects, 'persist').map((p) => p.value.failures.length);
+    // Each beat and its failed disable persist: the list stays at three entries.
+    expect(sizes.length).toBeGreaterThanOrEqual(HOUR / 30);
+    expect(Math.max(...sizes)).toBe(3);
+    expect(sim.state.failures).toHaveLength(3);
+    expect(sim.state.target).toEqual({ name: 'disarmed', reason: 'breaker' });
+  });
+});
+
+describe('level 2 nextDeadline lands on each rule (V2)', () => {
+  // A long heartbeat and wake gap, so the next deadline is the rule's own.
+  const slow = { heartbeat_seconds: 100_000, level2_wake_gap_seconds: 200_000 };
+  const jump = (sim: Sim) => {
+    expect(sim.nextDeadline).not.toBeNull();
+    sim.t = (sim.nextDeadline ?? 0) / 1000;
+  };
+
+  test('the dwell end', () => {
+    const sim = new Sim({ settings: slow });
+    sim.beat();
+    expect(sim.nextDeadline).toBe(120_000);
+    jump(sim);
+    sim.beat();
+    expect(sim.state.name).toBe('on');
+  });
+
+  test('the end of the minimum interval', () => {
+    const sim = startedSim({ settings: { ...slow, level2_resume_dwell_seconds: 0 } });
+    sim.advance(30);
+    sim.beat({ battery: battery(20) });
+    sim.advance(30);
+    sim.beat({ battery: ac() });
+    expect(label(sim.state)).toBe('paused:resume-interval');
+    expect(sim.nextDeadline).toBe(630_000);
+    jump(sim);
+    sim.beat({ battery: ac() });
+    expect(sim.state.name).toBe('on');
+  });
+
+  test('the run end', () => {
+    const sim = new Sim({ settings: slow });
+    sim.start({}, WORK, 0.5);
+    expect(sim.nextDeadline).toBe(1_800_000);
+    jump(sim);
+    sim.beat();
+    expect(sim.disables.map((d) => d.reason)).toEqual(['run-limit']);
+  });
+
+  test('the idle end', () => {
+    const sim = new Sim({ settings: slow });
+    sim.start({}, IDLE);
+    expect(sim.nextDeadline).toBe(30 * MIN * 1000);
+    jump(sim);
+    sim.beat({}, IDLE);
+    expect(sim.disables.map((d) => d.reason)).toEqual(['idle']);
+  });
+
+  test('the end of a held moderate level', () => {
+    const sim = startedSim({ settings: slow });
+    sim.advance(10);
+    sim.beat({ thermal: 'moderate' });
+    expect(sim.nextDeadline).toBe((10 + 5 * MIN) * 1000);
+    jump(sim);
+    sim.beat({ thermal: 'moderate' });
+    expect(sim.disables.map((d) => d.reason)).toEqual(['thermal-moderate-held']);
+  });
+
+  test('the end of the foreign-holder grace', () => {
+    const sim = startedSim({ settings: slow });
+    sim.advance(10);
+    sim.beat({ foreign: holders('VideoApp') });
+    expect(sim.nextDeadline).toBe((10 + 2 * MIN) * 1000);
+    jump(sim);
+    sim.beat({ foreign: holders('VideoApp') });
+    expect(sim.disables.map((d) => d.reason)).toEqual(['foreign-holder']);
+  });
+});
+
+describe('level 2 window counters after a backward clock step (V3)', () => {
+  test('a failure from before the step plus one more trips a breaker of 2, and both expire one window after the step', () => {
+    const sim = new Sim({ settings: { level2_breaker_failures: 2 } });
+    sim.send({ type: 'heartbeat-failed' });
+    expect(label(sim.state)).toBe('armed');
+    sim.wallShift = -2 * HOUR;
+    sim.advance(60);
+    sim.census(IDLE);
+    sim.send({ type: 'heartbeat-failed' });
+    expect(label(sim.state)).toBe('disarmed:breaker');
+    // The step happened at monotonic 60 s: one window later both are gone.
+    sim.t = 60 + 24 * HOUR - 30;
+    expect(sim.status().failuresToday).toBe(2);
+    sim.t = 60 + 24 * HOUR + 30;
+    expect(sim.status().failuresToday).toBe(0);
+  });
+
+  test('a run that now lies in the future still counts against level2_cap_hours', () => {
+    const sim = startedSim({ settings: { level2_cap_hours: 3, level2_default_hours: 3 } });
+    sim.run(2 * HOUR - 30);
+    sim.advance(30);
+    sim.send({ type: 'stop' });
+    sim.send({ type: 'arm' });
+    // The clock steps back past the whole run.
+    sim.wallShift = -(2 * HOUR + 600);
+    sim.advance(30);
+    sim.census(IDLE);
+    sim.start();
+    expect(sim.enables[1]).toMatchObject({ cutByCap: true });
+    expect(sim.enables[1]?.runEndWall).toBe(sim.wall() + HOUR);
+  });
+
+  test('level2Status counts on-time and resumes in level2_window_hours', () => {
+    const persisted: Level2Persisted = {
+      armed: true,
+      disarmReason: null,
+      cleanExit: true,
+      resumes: [W0 - 5 * HOUR],
+      failures: [],
+      runs: [[W0 - 5 * HOUR, W0 - 4.5 * HOUR]],
+    };
+    const sim = new Sim({ settings: { level2_window_hours: 6 }, persisted });
+    expect(sim.status()).toMatchObject({ onTimeLeftToday: 11.5 * HOUR, resumesLeftToday: 11 });
+    // Two hours later both lie outside the six-hour window.
+    sim.t = 2 * HOUR;
+    expect(sim.status()).toMatchObject({ onTimeLeftToday: 12 * HOUR, resumesLeftToday: 12 });
+  });
+});
+
+describe('level 2 battery boundaries (V4)', () => {
+  const variants = [
+    { name: 'defaults', settings: {} },
+    {
+      name: 'non-default values',
+      settings: {
+        level2_start_battery_percent: 50,
+        level2_revert_battery_percent: 40,
+        level2_min_remaining_minutes: 45,
+      },
+    },
+  ];
+
+  test.each(variants)(
+    '$name: exactly at the start percent and the remaining minutes it starts',
+    ({ settings }) => {
+      const s = settingsWith(settings);
+      const atPercent = new Sim({ settings });
+      atPercent.start({ battery: battery(s.level2_start_battery_percent) });
+      expect(atPercent.state.name).toBe('on');
+      const atMinutes = new Sim({ settings });
+      atMinutes.start({ battery: battery(80, s.level2_min_remaining_minutes) });
+      expect(atMinutes.state.name).toBe('on');
+    },
+  );
+
+  test.each(variants)(
+    '$name: running, it stays on at the remaining minutes and one above the revert percent',
+    ({ settings }) => {
+      const s = settingsWith(settings);
+      const sim = startedSim({ settings });
+      sim.run(30, { battery: battery(80, s.level2_min_remaining_minutes) });
+      sim.run(30, { battery: battery(s.level2_revert_battery_percent + 1) });
+      expect(sim.state.name).toBe('on');
+      sim.run(30, { battery: battery(s.level2_revert_battery_percent) });
+      expect(sim.disables.map((d) => d.reason)).toEqual(['battery-low']);
+    },
+  );
+});
+
+describe('level 2 starting and reverting with the answers held (V5)', () => {
+  test('stop while starting: a late enabled, a beat that disables again, then disarmed with the run counted', () => {
+    const sim = new Sim({ holdAcks: true });
+    sim.start();
+    expect(ofType(sim.send({ type: 'stop' }), 'disable').map((e) => e.reason)).toEqual(['stopped']);
+    sim.advance(2);
+    sim.ackEnabled();
+    sim.advance(28);
+    expect(ofType(sim.beat(), 'disable').map((e) => e.reason)).toEqual(['stopped']);
+    sim.ackDisabled();
+    expect(label(sim.state)).toBe('disarmed:stopped');
+    expect(level2Persisted(sim.state).runs).toEqual([[W0 + 2, W0 + 30]]);
+  });
+
+  test('hub-exit while starting reverts and then records the clean exit', () => {
+    const sim = new Sim({ holdAcks: true });
+    sim.start();
+    const effects = sim.send({ type: 'hub-exit' });
+    expect(ofType(effects, 'disable').map((e) => e.reason)).toEqual(['hub-exit']);
+    expect(level2Persisted(sim.state).cleanExit).toBe(false);
+    sim.ackDisabled();
+    expect(level2Persisted(sim.state)).toMatchObject({ armed: true, cleanExit: true });
+  });
+
+  test('arm while reverting toward disarmed ends armed; stop while reverting ends disarmed', () => {
+    const armed = new Sim({ holdAcks: true });
+    armed.start();
+    armed.ackEnabled();
+    armed.send({ type: 'stop' });
+    armed.send({ type: 'arm' });
+    armed.ackDisabled();
+    expect(label(armed.state)).toBe('armed');
+
+    const stopped = new Sim({ holdAcks: true });
+    stopped.start();
+    stopped.ackEnabled();
+    stopped.advance(30);
+    stopped.beat({ battery: battery(20) });
+    expect(stopped.state.target).toEqual({ name: 'paused', reason: 'battery-low' });
+    const effects = stopped.send({ type: 'stop' });
+    expect(ofType(effects, 'disable').map((e) => e.reason)).toEqual(['stopped']);
+    stopped.ackDisabled();
+    expect(label(stopped.state)).toBe('disarmed:stopped');
+  });
+
+  test('heartbeat-failed while starting trips a breaker of 1 and reverts', () => {
+    const sim = new Sim({ holdAcks: true, settings: { level2_breaker_failures: 1 } });
+    sim.start();
+    const effects = sim.send({ type: 'heartbeat-failed' });
+    expect(ofType(effects, 'disable').map((e) => e.reason)).toEqual(['breaker']);
+    sim.ackDisabled();
+    expect(label(sim.state)).toBe('disarmed:breaker');
+  });
+
+  test('lease-write-failed with a breaker of 1 disarms at once', () => {
+    const sim = new Sim({ settings: { level2_breaker_failures: 1 } });
+    sim.enableFailure = 'lease-write-failed';
+    sim.start();
+    expect(label(sim.state)).toBe('disarmed:breaker');
+  });
+
+  test("start is refused with 'reverting' and with 'exiting'", () => {
+    const reverting = new Sim({ holdAcks: true });
+    reverting.start();
+    reverting.ackEnabled();
+    reverting.advance(30);
+    reverting.beat({ battery: battery(20) });
+    expect(ofType(reverting.start(), 'refused')).toEqual([
+      { type: 'refused', event: 'start', reason: 'reverting' },
+    ]);
+    const exiting = new Sim();
+    exiting.send({ type: 'hub-exit' });
+    expect(ofType(exiting.start(), 'refused')).toEqual([
+      { type: 'refused', event: 'start', reason: 'exiting' },
+    ]);
+    expect(exiting.enables).toEqual([]);
+  });
+
+  test('heavy with thermal_revert_level = trapping pauses as thermal-moderate-held after 5 minutes', () => {
+    const sim = startedSim({ settings: { thermal_revert_level: 'trapping' } });
+    sim.runUntil(notOn, 10 * MIN, { thermal: 'heavy' });
+    expect(sim.disables).toEqual([{ t: 330, reason: 'thermal-moderate-held' }]);
+  });
+
+  test('a census with no live session while paused returns to armed', () => {
+    const sim = new Sim();
+    sim.beat({ battery: battery(20) });
+    expect(label(sim.state)).toBe('paused:battery-low');
+    sim.advance(30);
+    sim.census(NONE);
+    expect(label(sim.state)).toBe('armed:no-session');
+  });
+});
+
+describe('level 2 persist order and per-beat persist (card item 3)', () => {
+  const indexOf = (effects: readonly Level2Effect[], type: Level2Effect['type']) =>
+    effects.findIndex((e) => e.type === type);
+
+  test('persist comes before enable and before disable in a step', () => {
+    const sim = new Sim({ holdAcks: true, settings: { level2_resume_dwell_seconds: 0 } });
+    const on = sim.beat();
+    expect(indexOf(on, 'persist')).toBeGreaterThanOrEqual(0);
+    expect(indexOf(on, 'persist')).toBeLessThan(indexOf(on, 'enable'));
+    sim.ackEnabled();
+    sim.advance(30);
+    const off = sim.beat({ battery: battery(20) });
+    expect(indexOf(off, 'persist')).toBeGreaterThanOrEqual(0);
+    expect(indexOf(off, 'persist')).toBeLessThan(indexOf(off, 'disable'));
+  });
+
+  test('every beat while starting, on or reverting persists', () => {
+    const sim = new Sim({ holdAcks: true });
+    sim.start();
+    sim.advance(1);
+    expect(ofType(sim.beat(), 'persist')).toHaveLength(1);
+    sim.ackEnabled();
+    sim.advance(30);
+    expect(ofType(sim.beat(), 'persist')).toHaveLength(1);
+    sim.advance(30);
+    sim.beat({ battery: battery(20) });
+    expect(sim.state.name).toBe('reverting');
+    sim.advance(30);
+    expect(ofType(sim.beat({ battery: battery(20) }), 'persist')).toHaveLength(1);
+  });
+});
+
+describe('level 2 minimum interval after an idle return (documented)', () => {
+  test('the first automatic start after an idle return to armed waits the minimum interval', () => {
+    const sim = new Sim({ settings: { level2_resume_dwell_seconds: 0 } });
+    sim.beat();
+    expect(sim.state.name).toBe('on');
+    sim.runUntil(notOn, HOUR, {}, IDLE);
+    const idleAt = sim.t;
+    expect(label(sim.state)).toBe('armed:no-work');
+    sim.advance(60);
+    sim.beat();
+    expect(label(sim.state)).toBe('paused:resume-interval');
+    sim.runUntil((s) => s.name === 'on', HOUR);
+    expect(sim.enables.map((e) => e.t)).toEqual([0, idleAt + 600]);
   });
 });
