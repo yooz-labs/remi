@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   READING_EXECUTABLES,
+  isReadOnlyInvocation,
   readingSpawnCount,
   runReading,
   spawnBounded,
@@ -39,21 +40,64 @@ test('the guard allows exactly the three reading tools', () => {
   ]);
 });
 
-test('runReading refuses every power-changing or unlisted command, and spawns nothing', async () => {
-  const refused: ReadonlyArray<readonly [string, readonly string[]]> = [
-    ['/usr/bin/pmset', ['-a', 'disablesleep', '0']],
-    ['/usr/bin/pmset', ['sleepnow']],
-    ['/usr/bin/pmset', ['displaysleepnow']],
-    ['/usr/bin/pmset', ['-g', 'sleepnow']],
-    ['/usr/bin/pmset', ['-g', 'assertions', '-a', 'disablesleep', '0']],
-    ['/usr/bin/pmset', []],
-    ['/usr/bin/sudo', ['-n', 'true']],
-    ['/usr/bin/caffeinate', ['-t', '1']],
+// The dangerous list is judged by the pure predicate only: a guard regression must never be able
+// to run a real power command (`pmset sleepnow` needs no root).
+const DANGEROUS: ReadonlyArray<readonly [string, readonly string[]]> = [
+  ['/usr/bin/pmset', ['-a', 'disablesleep', '0']],
+  ['/usr/bin/pmset', ['sleepnow']],
+  ['/usr/bin/pmset', ['displaysleepnow']],
+  ['/usr/bin/pmset', ['-g', 'sleepnow']],
+  ['/usr/bin/pmset', ['-g', 'assertions', '-a', 'disablesleep', '0']],
+  ['/usr/bin/pmset', []],
+  ['/usr/bin/sudo', ['-n', 'true']],
+  ['/usr/bin/caffeinate', ['-t', '1']],
+  ['/usr/bin/notifyutil', ['-p', 'com.apple.system.thermalpressurelevel']],
+  ['/usr/bin/notifyutil', ['-s', 'com.apple.system.thermalpressurelevel', '1']],
+  ['/usr/bin/notifyutil', ['-g', 'com.apple.system.thermalpressurelevel', '-p', 'x']],
+  ['/usr/bin/notifyutil', ['-g', 'com.apple.system.other']],
+  ['/usr/bin/notifyutil', ['-g']],
+  ['/usr/sbin/ioreg', []],
+  ['/usr/sbin/ioreg', ['-r', '-c', 'IOPMrootDomain', '-d', '1', '-w', '0']],
+  ['/usr/sbin/ioreg', ['-r', '-c', 'IOUSBHostDevice', '-d', '1']],
+  ['/usr/sbin/ioreg', ['-r', '-c', 'IOPMrootDomain', '-d', '2']],
+  ['/usr/sbin/ioreg', ['-c', 'IOPMrootDomain', '-r', '-d', '1']],
+  ['/bin/ls', []],
+  ['pmset', ['-g', 'assertions']],
+];
+
+const ALLOWED: ReadonlyArray<readonly [string, readonly string[]]> = [
+  ['/usr/bin/pmset', ['-g']],
+  ['/usr/bin/pmset', ['-g', 'assertions']],
+  ['/usr/bin/pmset', ['-g', 'batt']],
+  ['/usr/bin/pmset', ['-g', 'therm']],
+  ['/usr/bin/pmset', ['-g', 'ps']],
+  ['/usr/sbin/ioreg', ['-r', '-c', 'IOPMrootDomain', '-d', '1']],
+  ['/usr/sbin/ioreg', ['-r', '-c', 'AppleSmartBattery', '-d', '1']],
+  ['/usr/bin/notifyutil', ['-g', 'com.apple.system.thermalpressurelevel']],
+];
+
+test('the predicate refuses every power-changing or unlisted command, without spawning', () => {
+  for (const [executable, args] of DANGEROUS) {
+    expect(isReadOnlyInvocation(executable, args)).toBe(false);
+  }
+});
+
+test('the predicate allows exactly the read invocations', () => {
+  for (const [executable, args] of ALLOWED) {
+    expect(isReadOnlyInvocation(executable, args)).toBe(true);
+  }
+});
+
+test('runReading refuses unlisted commands and spawns nothing', async () => {
+  // Harmless entries only: a regression of the guard must not be able to run a power command.
+  const harmless: ReadonlyArray<readonly [string, readonly string[]]> = [
     ['/bin/ls', []],
+    ['/usr/bin/true', []],
+    ['/usr/bin/uname', []],
     ['pmset', ['-g', 'assertions']],
   ];
   const before = readingSpawnCount();
-  for (const [executable, args] of refused) {
+  for (const [executable, args] of harmless) {
     expect(await runReading(executable, args)).toEqual({ ok: false, reason: 'refused' });
   }
   expect(readingSpawnCount()).toBe(before);
@@ -78,6 +122,20 @@ test('a slow child is killed at the deadline and its pid is gone', async () => {
   const pid = Number(readFileSync(pidFile, 'utf8').trim());
   expect(pid).toBeGreaterThan(1);
   expect(pidExists(pid)).toBe(false);
+});
+
+test('a timeout reaches the whole process group, a wrapper shell included', async () => {
+  const grandchildFile = join(directory, 'grandchild.pid');
+  const wrapper = script('wrapper.sh', `sleep 5 &\necho $! > ${grandchildFile}\nwait`);
+  const result = await spawnBounded(wrapper, [], { timeoutMs: 300 });
+  expect(result).toEqual({ ok: false, reason: 'timeout' });
+  const grandchild = Number(readFileSync(grandchildFile, 'utf8').trim());
+  expect(grandchild).toBeGreaterThan(1);
+  const deadline = Date.now() + 2000;
+  while (pidExists(grandchild) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  expect(pidExists(grandchild)).toBe(false);
 });
 
 test('a child that prints 1 MiB is oversize and killed', async () => {

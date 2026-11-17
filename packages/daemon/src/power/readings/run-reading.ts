@@ -2,10 +2,11 @@ import { type ChildProcess, spawn } from 'node:child_process';
 
 /**
  * The one place a power reading spawns a process (#1773, ADR 0050).
- * `runReading` is what keeps a reading from ever changing power state: it spawns only the
- * three read-only tools below, and `pmset` only as `-g` with a read keyword.
- * `spawnBounded` is the unguarded runner under it, for tests and for later slices that
- * take their command from `level2-commands.ts`.
+ * `runReading` runs only the exact invocations `isReadOnlyInvocation` allows: `pmset -g
+ * [assertions|batt|therm|ps]`, `ioreg -r -c <IOPMrootDomain|AppleSmartBattery> -d 1` and
+ * `notifyutil -g com.apple.system.thermalpressurelevel`.
+ * `spawnBounded` is NOT guarded: it runs whatever it is given, so every later entry point that
+ * reaches it must go through `runReading` (or take its command from `level2-commands.ts`).
  */
 
 /** The tools a reading may run. */
@@ -21,9 +22,15 @@ export const READING_EXECUTABLES = [
  */
 const PMSET_READ_KEYWORDS: readonly string[] = ['assertions', 'batt', 'therm', 'ps'];
 
+/** The IORegistry classes `ioreg -r -c` may read (AppleSmartBattery is for the battery slice). */
+const IOREG_CLASSES: readonly string[] = ['IOPMrootDomain', 'AppleSmartBattery'];
+
+const THERMAL_KEY = 'com.apple.system.thermalpressurelevel';
+
 const DEFAULT_TIMEOUT_MS = 2000;
 const DEFAULT_MAX_STDOUT_BYTES = 262144;
 const MAX_STDERR_BYTES = 65536;
+const KILL_GRACE_MS = 500;
 
 export interface SpawnBoundedOptions {
   /** Deadline after which the child is sent SIGKILL (default 2000). */
@@ -105,19 +112,28 @@ export function spawnBounded(
 
     // After a kill the pipes may stay open through a grandchild, so wait for the child's exit
     // (not the pipes' close) and report the reason that caused the kill.
+    // The child leads its own process group, so the kill reaches a wrapper's children too.
+    // A short grace timer finishes with the same reason if 'exit' never arrives.
     const kill = (reason: 'timeout' | 'oversize'): void => {
       if (killedFor || settled || !child) return;
       killedFor = reason;
       const target = child;
+      const done = (): void => finish({ ok: false, reason });
       if (target.exitCode !== null || target.signalCode !== null) {
-        finish({ ok: false, reason });
+        done();
         return;
       }
-      target.once('exit', () => finish({ ok: false, reason }));
+      target.once('exit', done);
+      setTimeout(done, KILL_GRACE_MS).unref();
       try {
-        target.kill('SIGKILL');
+        if (target.pid === undefined) throw new Error('no pid');
+        process.kill(-target.pid, 'SIGKILL');
       } catch {
-        finish({ ok: false, reason });
+        try {
+          target.kill('SIGKILL');
+        } catch {
+          done();
+        }
       }
     };
 
@@ -126,6 +142,7 @@ export function spawnBounded(
     try {
       child = spawn(executable, [...args], {
         shell: false,
+        detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { LC_ALL: 'C', PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
       });
@@ -174,16 +191,38 @@ export function spawnBounded(
   });
 }
 
-function isReadOnlyInvocation(executable: string, args: readonly string[]): boolean {
-  if (!(READING_EXECUTABLES as readonly string[]).includes(executable)) return false;
-  if (executable !== '/usr/bin/pmset') return true;
-  if (args[0] !== '-g' || args.length > 2) return false;
-  return args.length === 1 || PMSET_READ_KEYWORDS.includes(args[1] ?? '');
+/**
+ * True only for the exact invocations a reading may run; every one of them is a read.
+ * Pure (no spawn), so a test can assert the refusal of a power-changing command without
+ * ever running it.
+ */
+export function isReadOnlyInvocation(executable: string, args: readonly string[]): boolean {
+  switch (executable) {
+    case '/usr/bin/pmset':
+      return (
+        args[0] === '-g' &&
+        args.length <= 2 &&
+        (args.length === 1 || PMSET_READ_KEYWORDS.includes(args[1] ?? ''))
+      );
+    case '/usr/sbin/ioreg':
+      return (
+        args.length === 5 &&
+        args[0] === '-r' &&
+        args[1] === '-c' &&
+        IOREG_CLASSES.includes(args[2] ?? '') &&
+        args[3] === '-d' &&
+        args[4] === '1'
+      );
+    case '/usr/bin/notifyutil':
+      return args.length === 2 && args[0] === '-g' && args[1] === THERMAL_KEY;
+    default:
+      return false;
+  }
 }
 
 /**
- * `spawnBounded` behind the read-only guard: anything but the three reading tools, or
- * `pmset` other than `-g [assertions|batt|therm|ps]`, returns `refused` without spawning.
+ * `spawnBounded` behind `isReadOnlyInvocation`: any other executable or argument list returns
+ * `refused` without spawning.
  */
 export function runReading(
   executable: string,
