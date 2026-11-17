@@ -1208,6 +1208,71 @@ for (const configured of [true, false]) {
   }, 60000);
 }
 
+for (const configured of [true, false]) {
+  test(`a rotated session ${configured ? 'withholds the profile transcript path' : 'announces the default transcript path'}`, async () => {
+    const { f, directory, started, ws, received, raw } = await startFrameDaemon(configured);
+    try {
+      const claudeId = /--session-id\s+(\S+)/.exec(
+        fs.readFileSync(path.join(f.output, 'argv'), 'utf8'),
+      )?.[1];
+      if (claudeId === undefined) throw new Error('no session id in the agent argv');
+      const liveDir = path.join(f.home, '.remi', 'live-sessions');
+      const own = fs
+        .readdirSync(liveDir)
+        .map(
+          (name) =>
+            JSON.parse(fs.readFileSync(path.join(liveDir, name), 'utf8')) as { hookPort: number },
+        )
+        .find((entry) => entry.hookPort > 0);
+      if (own === undefined) throw new Error('the daemon wrote no live-sessions entry');
+      const project = path.join(directory, 'projects', fs.realpathSync(f.work).replace(/\//g, '-'));
+      fs.mkdirSync(project, { recursive: true });
+      const post = async (
+        sessionId: string,
+        event: string,
+        extra: Record<string, unknown> = {},
+      ) => {
+        const response = await fetch(`http://127.0.0.1:${own.hookPort}/hooks`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            hook_event_name: event,
+            session_id: sessionId,
+            cwd: fs.realpathSync(f.work),
+            permission_mode: 'default',
+            transcript_path: path.join(project, `${sessionId}.jsonl`),
+            ...extra,
+          }),
+        });
+        await response.text();
+      };
+      // The agent's session locks, ends, and a new one starts in the same terminal: a restart.
+      const nextId = crypto.randomUUID();
+      for (const id of [claudeId, nextId]) fs.writeFileSync(path.join(project, `${id}.jsonl`), '');
+      await post(claudeId, 'UserPromptSubmit', { prompt_id: crypto.randomUUID(), prompt: 'hi' });
+      await post(claudeId, 'SessionEnd', { reason: 'clear' });
+      await post(nextId, 'UserPromptSubmit', { prompt_id: crypto.randomUUID(), prompt: 'hi' });
+      await pollUntil(
+        () => received.some((m) => m.type === 'session_rotated'),
+        10000,
+        'the session_rotated frame',
+      );
+      const rotated = received.find((m) => m.type === 'session_rotated');
+      if (rotated?.type !== 'session_rotated') throw new Error('no session_rotated');
+      if (configured) {
+        expect(Object.hasOwn(rotated, 'newTranscriptPath')).toBe(false);
+        expect(raw.join('\n')).not.toContain(f.profile);
+      } else {
+        expect(rotated.newTranscriptPath).toContain(directory);
+      }
+    } finally {
+      ws.close();
+      fs.writeFileSync(path.join(f.output, 'release'), '');
+      await started.proc.exited;
+    }
+  }, 45000);
+}
+
 test('a damaged sidecar refuses a configured launch before probing', async () => {
   const f = fixture();
   fs.writeFileSync(path.join(f.remi, 'session-profiles.json'), 'not json');
