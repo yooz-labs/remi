@@ -79,3 +79,85 @@ test('in-process resume checks real ownership records and conceals read errors',
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// Each case goes through `inProcessResumeRefusal` itself, so a dropped or reordered branch in it
+// (the resume-profile error return, the ambiguity passthrough) is a failure here, not only in the
+// helper's own tests.
+test('in-process resume returns the ownership refusal and the ambiguity message verbatim', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-refusal-'));
+  try {
+    const config = (args: string[]) =>
+      parseProfiles({ work: { label: 'Work', args, claude: { expects: 'subscription' } } });
+    const profiles = config([]);
+    if ('error' in profiles) throw new Error(profiles.error);
+    const revision = profiles.entries['work']?.revision as string;
+    const claudeId = crypto.randomUUID();
+    const remiSessionId = crypto.randomUUID();
+    const row = (overrides: Record<string, unknown> = {}) => ({
+      remiSessionId,
+      claudeSessionId: claudeId,
+      projectPath: root,
+      port: 19200,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      exitedAt: null,
+      exitCode: null,
+      profile: 'work',
+      profileSnapshot: { revision },
+      ...overrides,
+    });
+    const write = (rows: unknown[], sidecar: Record<string, unknown> | null) => {
+      fs.writeFileSync(
+        path.join(root, 'sessions.json'),
+        JSON.stringify({ version: 1, sessions: rows }),
+      );
+      const file = path.join(root, 'session-profiles.json');
+      if (sidecar === null) fs.rmSync(file, { force: true });
+      else fs.writeFileSync(file, JSON.stringify({ version: 1, sessions: sidecar }));
+    };
+    const refusal = (parsed = profiles) =>
+      inProcessResumeRefusal(
+        new SessionStore(path.join(root, 'sessions.json')),
+        new SessionProfilesFile(root),
+        parsed,
+        'work',
+        claudeId,
+        () => {},
+      );
+
+    write([row()], { [remiSessionId]: { profile: 'work', revision } });
+    expect(refusal()).toBeNull();
+
+    const changed =
+      "This session's profile information was changed by another remi process. Start a new session.";
+    write([row()], {});
+    expect(refusal()).toBe(changed);
+    write([row()], { [remiSessionId]: { profile: 'other', revision } });
+    expect(refusal()).toBe(changed);
+
+    write([row()], { [remiSessionId]: { profile: 'work', revision } });
+    const edited = config(['--model', 'other']);
+    if ('error' in edited) throw new Error(edited.error);
+    expect(edited.entries['work']?.revision).not.toBe(revision);
+    expect(refusal(edited)).toBe(
+      'Profile work changed after this session started. Start a new session.',
+    );
+
+    const removed = parseProfiles({
+      other: { label: 'Other', claude: { expects: 'subscription' } },
+    });
+    if ('error' in removed) throw new Error(removed.error);
+    expect(refusal(removed)).toBe(
+      'This session was started in profile work, which no longer exists. Start a new session.',
+    );
+
+    write([row(), row({ remiSessionId: crypto.randomUUID() })], {
+      [remiSessionId]: { profile: 'work', revision },
+    });
+    expect(refusal()).toBe(
+      `Ambiguous Claude session ID ${claudeId.slice(0, 8)}: 2 records; refusing to choose one`,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
