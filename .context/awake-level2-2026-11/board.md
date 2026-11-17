@@ -48,11 +48,11 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 100 | 14 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Agents today | 100 | 18 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
 | Codex Luna today | 24 | 2 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
 | Codex Terra today | 16 | 0 | daily | owner CP0 value; Terra implementers and fix rounds |
-| Claude Sonnet today | 44 | 10 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
-| Claude Opus today | 16 | 2 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
+| Claude Sonnet today | 44 | 13 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
+| Claude Opus today | 16 | 3 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
 | Advisor consults | 20 | 0 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
 | Fable consults | 1 | 0 | never | copied; only if the owner asks; never --over |
 | Agents this wave | 0 | 0 | wave | unused: this plan has no waves |
@@ -69,7 +69,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | G0 | [G0 password-on-wake](cards/G0-password-on-wake.md) | - | worker | - | codex-luna | done | - | 1804 | 2026-11-17T06:56 | 3h | dispatch now; note only |
 | G1 | [G1 power readings](cards/G1-power-readings.md) | - | worker | - | claude-sonnet | review | - | 1806 | 2026-11-17T06:56 | 1d | PR 1806 head 491ec135: wait CI incl. soak, then gate item 7 (done by me: 54 pass 0 fail) and merge; killGraceMs test cannot fail when the option is ignored (documented limit, accepted) |
 | W1 | [W1 lease and watchdog](cards/W1-lease-and-watchdog.md) | - | worker-hard | - | claude-opus | review | - | 1807 | 2026-11-17T06:56 | 1d | dispatch now; reviews add privilege and failsafe lenses |
-| L2-POL | [L2-POL level 2 policy](cards/L2-POL-level2-policy.md) | - | worker-hard | - | claude-opus | active | - | - | 2026-11-17T09:10 | 1d | hold until the lead verifies that every limit is a config key with a default (owner rule); then dispatch when a worker-hard slot is free; merge gate item 8 answers recorded (Q1-Q3, Q9, Q10, Q12-Q14) |
+| L2-POL | [L2-POL level 2 policy](cards/L2-POL-level2-policy.md) | - | worker-hard | - | claude-opus | review | - | - | 2026-11-17T09:10 | 1d | hold until the lead verifies that every limit is a config key with a default (owner rule); then dispatch when a worker-hard slot is free; merge gate item 8 answers recorded (Q1-Q3, Q9, Q10, Q12-Q14) |
 | OG-CAP | [Owner gate: MacBook captures](owner-gates.md) | - | - | - | - | owner | - | - | - | 30m | rule: owner runs OG-CAP section of owner-gates.md; seven folders under artifacts/awake-level2-2026-11/captures/OG-CAP |
 | G2 | [G2 level 1 battery floor](cards/G2-level1-battery-floor.md) | - | worker-hard | - | - | todo | G1,OG-CAP | - | - | 1d | after G1 merged and OG-CAP; keys per plan section 6 (Q15 a, Q16 b: mechanism bounds also settings: the lead reconciles) |
 | OG-G2 | [Owner gate: battery floor on the MacBook](owner-gates.md) | - | - | - | - | blocked | G2 | - | - | 30m | rule: set owner when G2 is done; owner-gates.md OG-G2 |
@@ -121,8 +121,12 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | RV-G1-verification | reviewer verification | claude-sonnet | sonnet xhigh | G1 PR1806 | 2026-11-17T07:20 | done |
 | FX-G0 | fix round 1 (PR1804) | claude-sonnet | sonnet high (ad42c5d0050dee321) | G0 PR1804 | 2026-11-17T07:25 | done |
 | FX-G1 | fix round 1 (PR1806) | claude-sonnet | sonnet high (a85bfd9e9ecd1e4d6, resumed) | G1 PR1806 | 2026-11-17T07:35 | running |
-| RV-W1-contract | reviewer contract | claude-sonnet | sonnet xhigh | W1 PR1807 | 2026-11-17T08:58 | running |
-| RV-W1-verification | reviewer verification | claude-sonnet | sonnet xhigh | W1 PR1807 | 2026-11-17T08:58 | running |
-| RV-W1-privilege | reviewer privilege | claude-sonnet | sonnet xhigh | W1 PR1807 | 2026-11-17T08:58 | running |
-| RV-W1-failsafe | reviewer failsafe | claude-sonnet | sonnet xhigh | W1 PR1807 | 2026-11-17T08:58 | running |
-| L2-POL-1 | implementer | claude-opus | opus (a37ea6ad9be74c593) | L2-POL | 2026-11-17T09:10 | running |
+| RV-W1-contract | reviewer contract | claude-sonnet | sonnet xhigh | W1 PR1807 | 2026-11-17T08:58 | done |
+| RV-W1-verification | reviewer verification | claude-sonnet | sonnet xhigh | W1 PR1807 | 2026-11-17T08:58 | done |
+| RV-W1-privilege | reviewer privilege | claude-sonnet | sonnet xhigh | W1 PR1807 | 2026-11-17T08:58 | done |
+| RV-W1-failsafe | reviewer failsafe | claude-sonnet | sonnet xhigh | W1 PR1807 | 2026-11-17T08:58 | done |
+| L2-POL-1 | implementer | claude-opus | opus (a37ea6ad9be74c593) | L2-POL | 2026-11-17T09:10 | done |
+| FX-W1 | fix round 1 (PR1807) | claude-opus | opus (ad62c17fc6af47519, resumed) | W1 PR1807 | 2026-11-17T09:20 | done |
+| RV-POL-contract abb5a638150408212 | reviewer (contract abb5a638150408212) | claude-sonnet | sonnet () | L2-POL PR1809 | 2026-11-17T09:52 | running |
+| RV-POL-verification adb8086a849545b27 | reviewer (verification adb8086a849545b27) | claude-sonnet | sonnet () | L2-POL PR1809 | 2026-11-17T09:52 | running |
+| RV-POL-failsafe a8c447f6023c80181 | reviewer (failsafe a8c447f6023c80181) | claude-sonnet | sonnet () | L2-POL PR1809 | 2026-11-17T09:52 | running |
