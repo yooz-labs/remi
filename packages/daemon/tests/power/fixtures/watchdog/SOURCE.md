@@ -13,6 +13,9 @@ Redaction, by class (the original text is not recorded here):
 
 - boot session UUID (`BootSessionUUID`): replaced with an invented UUID of the same shape.
 
+One edit that is not a redaction: `ioreg` ends its output with a line of four spaces and an empty line, which the repository's whitespace check (`git diff --check`) refuses; both are removed, so every `ioreg` file ends at the closing brace.
+The watchdog reads only the `"SleepDisabled"` line, so the trailing lines do not change what it decides.
+
 The capture holds no user name, home path, host name, email, URL, document or page title, third-party application name, serial number or hardware UUID.
 
 ## Derived

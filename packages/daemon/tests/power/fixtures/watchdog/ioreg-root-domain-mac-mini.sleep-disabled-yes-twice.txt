@@ -21,5 +21,3 @@
       "IOPMUserIsActive" = Yes
       "DriverPMAssertions" = 292
     }
-    
-
