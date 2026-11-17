@@ -13,7 +13,7 @@ That is the right trust step, and too much typing for a first-time user: an addr
 What must not change: a scan must never authorize a key by itself, the terminal stays the place a person approves, and nothing new is trusted because of where a connection comes from.
 
 **No released app scans the code yet.**
-The machine-side v1 flow ships here. V2 remains opt-in until a compatible native app is distributed. Native source implements strict payload decoding, whole-payload scanner/form handoff and initial candidate admission through `MachineStore.beginPairing` (#1574); signed phone acceptance remains pending.
+The machine-side v1 flow ships here. V2 became the default on 2026-11-17 (see the Amendment at the end). Native source implements strict payload decoding, whole-payload scanner/form handoff and initial candidate admission through `MachineStore.beginPairing` (#1574); signed phone acceptance remains pending.
 
 ## Decision
 
@@ -32,7 +32,7 @@ The machine-side v1 flow ships here. V2 remains opt-in until a compatible native
      - Every field is required. An unknown field or unsupported version is refused by name; a v2 body is never retried as v1.
      - The clocks may differ by two minutes: a code is expired once `exp` plus 120 seconds has passed, and refused as malformed when `exp` is more than seventeen minutes away.
      - A protocol version other than the client's is refused; pairing-code v2 does not change `PROTOCOL_VERSION` from 1.
-   - V1 remains the default while a compatible native app is not distributed. `--qr-version 2` opts in to v2, is refused with `--relay`, and must never create a code for an invalid version or relay combination.
+   - V2 is the default (amended 2026-11-17, #1794; it was opt-in before). `--qr-version 1` selects v1 and `--qr-version 2` selects v2, which is refused with `--relay` and must never create a code for an invalid version or relay combination.
    - For a wildcard bind, the CLI uses actual interface addresses of the listener's address family. It reserves the first Local and first Tailscale candidate when both exist, fills to four from the inventory, then emits Local candidates before Tailscale candidates with stable order in each layer. `100.64.0.0/10`, `fd7a:115c:a1e0::/48` and `.ts.net` names are Tailscale hints; every other permitted direct candidate is Local. A specific bind and explicit `--host` each produce one candidate.
    - The vectors in `packages/shared/tests/fixtures/pairing/vectors.json` (valid links each with the key's fingerprint, and refusals each with its error) are generated deterministically, and every client, the Swift one included, must decode them the same way. The future-version refusal vector uses v3 now that v2 is supported.
    - `PairingPayload.swift` decodes v1 and v2, exposes the payload version and produces ordered `candidateEndpoints(pairingLabel:)`; `endpoint` remains the first entry. Native scanner and Pairing code forms retain the complete payload through `AddMachineRequest` to `MachineStore.beginPairing`. The coordinator keeps candidates in memory until authenticated Hello, then adopts that socket and stores full-key-pinned address hints without the nonce or label. Source-hub controls exercise actual v2 fallback; distributed-app and signed-phone acceptance remain separate gates.
@@ -108,3 +108,12 @@ The machine-side v1 flow ships here. V2 remains opt-in until a compatible native
 - `auth_result` gains error codes a client shows one by one.
 - A new dependency, `uqr` (MIT, no dependencies of its own), draws the QR in the terminal; its notice ships in `THIRD_PARTY_NOTICES` like every bundled package (#1131).
 - Four pending slots are no longer available to ordinary first connections (28 of 32).
+
+## Amendment 2026-11-17: version 2 is the default (owner decision, issue #1794)
+
+- **What changed.** `remi pair` without `--qr-version` builds a version 2 code: one to four candidate hosts, Local before Tailscale, so a phone that sees both a LAN and a Tailscale address of the machine tries them in order (native source falls back across candidates, #1574). `--qr-version 1` selects v1 and `--qr-version 2` selects v2, as before.
+- **Fallback.** When the default (no `--qr-version`) v2 code cannot be built for a reason a v1 code does not have, for example a host a v2 code refuses (loopback, unspecified or link-local) or no candidate left after filtering while a v1 host exists, the command prints `Using a version 1 pairing code: <reason>.` and shows the v1 code, so a setup that paired before still pairs. An explicit `--qr-version 2` never falls back: it fails with the v2 message, shows no code and creates no pairing record. If the host is not valid for v1 either, the v1 refusal is printed alone.
+- **`--relay`.** `--qr-version` stays refused with `--relay`. `remi pair --relay` is the separate relay pairing command (`cmd-relay.ts`) and does not build a direct code at all, so the default change does not reach it.
+- **Unchanged.** The trust step (terminal approval by the fingerprint's first four characters), the pairing records, the nonce, the expiry, the protocol version (1), the codec and the hub's default bind (127.0.0.1, #880). Tailscale candidates still need a non-loopback bind or an explicit `--host`.
+- **Why.** The owner asked for it on 2026-11-17 so that a phone that sees both a LAN and a Tailscale address of the machine tries them in order.
+- **Not verified at the time of this amendment.** The phone check has not been run: the owner pairs once over Local and once over Tailscale (with #1512). The automated tests cover the code built, its candidate order and the fallback, not a signed phone scanning it. No distributed app build is known to decode v2 (TestFlight 0.2.0 (11) predates #1574), so a person using only an older distributed app may be shown a code it cannot read and then needs `--qr-version 1`.
