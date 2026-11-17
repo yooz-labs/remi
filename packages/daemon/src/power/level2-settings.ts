@@ -9,9 +9,10 @@
  *
  * The owner's rule of 2026-11-17: every number is a setting with a default, and
  * validation is sanity only (the type; positive, or 0 where 0 turns a rule off;
- * a percent from 0 to 100; a timer's delay within what a timer can wait; and
- * two order relations). No key has a maximum a person cannot raise: where a
- * value is unwise, the validator returns a warning and the value is used.
+ * a percent from 0 to 100; a duration whose value in milliseconds is a safe
+ * integer; an hours value that is representable as a time; and two order
+ * relations). No key has a maximum a person cannot raise: where a value is
+ * unwise, the validator returns a warning and the value is used.
  */
 
 export type Level2ThermalSetting = 'moderate' | 'heavy' | 'trapping';
@@ -97,8 +98,25 @@ export const LEVEL2_DEFAULTS: Readonly<Level2Settings> = Object.freeze({
   sudoers_user_max_length: 32,
 } satisfies Level2Settings);
 
-/** The longest delay `setTimeout` accepts (2^31 - 1 ms, about 24.8 days). */
-export const TIMER_LIMIT_MS = 2_147_483_647;
+/**
+ * The latest time a JavaScript `Date` can hold, in epoch seconds (the
+ * ECMAScript time range is 8.64e15 ms either side of 1970). A platform bound,
+ * not a setting: a run's end beyond it has no `Date`, so no lease or status.
+ */
+export const DATE_MAX_EPOCH_SECONDS = 8_640_000_000_000;
+
+/**
+ * The latest epoch second a run can end at and still be written: it must fit
+ * a `Date` and the lease's integers of at most `leaseIntegerMaxDigits` digits.
+ * When those digits cannot hold `wallNow` itself, no lease can be written at
+ * all (a warning says so) and only the `Date` bound applies here.
+ */
+export function representableEndSeconds(leaseIntegerMaxDigits: number, wallNow: number): number {
+  const digitsMax = 10 ** leaseIntegerMaxDigits - 1;
+  return digitsMax >= wallNow
+    ? Math.min(DATE_MAX_EPOCH_SECONDS, digitsMax)
+    : DATE_MAX_EPOCH_SECONDS;
+}
 
 /**
  * How long `remi stop` waits for the hub before SIGKILL (`cli/daemon-manager.ts`,
@@ -119,11 +137,15 @@ export const LEVEL2_THERMAL_SETTINGS: readonly Level2ThermalSetting[] = [
   'heavy',
   'trapping',
 ];
-const THERMAL_SETTING_RANK: Readonly<Record<Level2ThermalSetting, number>> = {
-  moderate: 1,
-  heavy: 2,
-  trapping: 3,
-};
+/**
+ * A `Map`, not an object literal: a lookup of `'constructor'` or `'toString'`
+ * must find nothing rather than an inherited member.
+ */
+export const THERMAL_SETTING_RANK: ReadonlyMap<string, number> = new Map([
+  ['moderate', 1],
+  ['heavy', 2],
+  ['trapping', 3],
+]);
 
 type Unit = 'ms' | 'seconds' | 'minutes' | 'hours';
 const UNIT_MS: Readonly<Record<Unit, number>> = {
@@ -145,20 +167,17 @@ type KeySpec =
       readonly min: 0 | 1;
       readonly noun: string;
       readonly unit?: Unit;
-      /** The value becomes a timer's delay or a deadline, so it must fit a timer. */
-      readonly timer?: boolean;
     }
   /** A positive number with decimals allowed, in `unit`. */
   | { readonly kind: 'number'; readonly unit: Unit };
 
 /**
- * Which durations get the timer limit: the ones a component hands to a timer
- * or a deadline (`setTimeout`, launchd's interval, a subprocess or request
- * deadline). The policy's own durations (the run, the cap, the window, the
- * dwell, the idle revert, the remaining-time threshold, ...) are compared with
- * clocks at each beat, and `stepLevel2Policy`'s `nextDeadline` is never more
- * than one `heartbeat_seconds` away, so no timer waits for them directly; for
- * those, the sanity check is that the value in milliseconds is finite.
+ * Every key with a unit is a duration. No duration has a timer ceiling (lead
+ * ruling of 2026-11-17 on this card): its only bound is that its value in
+ * milliseconds is a safe integer, a check that the number can be represented.
+ * The code that arms a timer from a setting chains delays longer than a single
+ * `setTimeout` can wait (`power/long-timeout.ts`, G2), and `stepLevel2Policy`'s
+ * `nextDeadline` is never more than one `heartbeat_seconds` away.
  */
 const KEY_SPECS: Readonly<Record<keyof Level2Settings, KeySpec>> = {
   level2: { kind: 'boolean' },
@@ -172,14 +191,13 @@ const KEY_SPECS: Readonly<Record<keyof Level2Settings, KeySpec>> = {
   thermal_refuse_level: { kind: 'thermal' },
   thermal_revert_level: { kind: 'thermal' },
   thermal_moderate_revert_minutes: { kind: 'integer', min: 1, noun: 'minutes', unit: 'minutes' },
-  heartbeat_seconds: { kind: 'integer', min: 1, noun: 'seconds', unit: 'seconds', timer: true },
+  heartbeat_seconds: { kind: 'integer', min: 1, noun: 'seconds', unit: 'seconds' },
   lease_stale_seconds: { kind: 'integer', min: 1, noun: 'seconds', unit: 'seconds' },
   watchdog_interval_seconds: {
     kind: 'integer',
     min: 1,
     noun: 'seconds',
     unit: 'seconds',
-    timer: true,
   },
   foreign_holder_revert_minutes: { kind: 'integer', min: 1, noun: 'minutes', unit: 'minutes' },
   foreign_holder_ignore: { kind: 'names' },
@@ -195,22 +213,20 @@ const KEY_SPECS: Readonly<Record<keyof Level2Settings, KeySpec>> = {
   level2_breaker_failures: { kind: 'integer', min: 1, noun: 'failures' },
   level2_wake_gap_seconds: { kind: 'integer', min: 1, noun: 'seconds', unit: 'seconds' },
   clock_skew_tolerance_seconds: { kind: 'integer', min: 0, noun: 'seconds', unit: 'seconds' },
-  switch_deadline_ms: { kind: 'integer', min: 1, noun: 'milliseconds', unit: 'ms', timer: true },
+  switch_deadline_ms: { kind: 'integer', min: 1, noun: 'milliseconds', unit: 'ms' },
   switch_sync_deadline_ms: {
     kind: 'integer',
     min: 1,
     noun: 'milliseconds',
     unit: 'ms',
-    timer: true,
   },
-  shutdown_budget_ms: { kind: 'integer', min: 1, noun: 'milliseconds', unit: 'ms', timer: true },
+  shutdown_budget_ms: { kind: 'integer', min: 1, noun: 'milliseconds', unit: 'ms' },
   status_file_max_bytes: { kind: 'integer', min: 1, noun: 'bytes' },
   process_start_time_deadline_ms: {
     kind: 'integer',
     min: 1,
     noun: 'milliseconds',
     unit: 'ms',
-    timer: true,
   },
   lease_max_bytes: { kind: 'integer', min: 1, noun: 'bytes' },
   lease_start_time_max_length: { kind: 'integer', min: 1, noun: 'characters' },
@@ -220,21 +236,18 @@ const KEY_SPECS: Readonly<Record<keyof Level2Settings, KeySpec>> = {
     min: 1,
     noun: 'milliseconds',
     unit: 'ms',
-    timer: true,
   },
   cli_request_timeout_ms: {
     kind: 'integer',
     min: 1,
     noun: 'milliseconds',
     unit: 'ms',
-    timer: true,
   },
   watchdog_command_deadline_seconds: {
     kind: 'integer',
     min: 1,
     noun: 'seconds',
     unit: 'seconds',
-    timer: true,
   },
   lease_integer_max_digits: { kind: 'integer', min: 1, noun: 'digits' },
   sudoers_user_max_length: { kind: 'integer', min: 1, noun: 'characters' },
@@ -244,13 +257,28 @@ export const LEVEL2_SETTING_KEYS = Object.freeze(
   Object.keys(KEY_SPECS) as (keyof Level2Settings)[],
 );
 
-/** The keys whose value becomes a timer's delay or a deadline (see `KEY_SPECS`). */
-export const LEVEL2_TIMER_KEYS: readonly (keyof Level2Settings)[] = Object.freeze(
+/** The numeric keys (counts, sizes, percents and durations). */
+export const LEVEL2_NUMERIC_KEYS: readonly (keyof Level2Settings)[] = Object.freeze(
   LEVEL2_SETTING_KEYS.filter((key) => {
-    const spec = KEY_SPECS[key];
-    return spec.kind === 'integer' && spec.timer === true;
+    const kind = KEY_SPECS[key].kind;
+    return kind === 'integer' || kind === 'number' || kind === 'percent';
   }),
 );
+
+/** Milliseconds per unit of a duration key, or null for a key that is not a duration. */
+export function level2DurationUnitMs(key: keyof Level2Settings): number | null {
+  const spec = KEY_SPECS[key];
+  if (spec.kind === 'number') return UNIT_MS[spec.unit];
+  if (spec.kind === 'integer' && spec.unit !== undefined) return UNIT_MS[spec.unit];
+  return null;
+}
+
+/** The hours keys, which must also be representable as a time (see `representableEndSeconds`). */
+const HOURS_KEYS: readonly (keyof Level2Settings)[] = [
+  'level2_default_hours',
+  'level2_cap_hours',
+  'level2_window_hours',
+];
 
 export type Level2SettingsValidation =
   | {
@@ -263,10 +291,30 @@ export type Level2SettingsValidation =
 export interface Level2ValidationOptions {
   /** How long `remi stop` waits before SIGKILL; default `DEFAULT_REMI_STOP_WAIT_MS`. */
   readonly stopWaitMs?: number;
+  /** Epoch seconds the hours keys are checked from; default the current time. */
+  readonly wallNow?: number;
 }
 
 // C0 controls, DEL and C1 controls.
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/;
+
+/** A duration's value in milliseconds must be a safe integer: representable, not a limit. */
+function safeMilliseconds(
+  name: string,
+  value: number,
+  unit: Unit,
+  noun: string,
+  errors: string[],
+): number | undefined {
+  if (!(value * UNIT_MS[unit] <= Number.MAX_SAFE_INTEGER)) {
+    const most = Math.floor(Number.MAX_SAFE_INTEGER / UNIT_MS[unit]);
+    errors.push(
+      `${name} must be at most ${most} ${noun}: its value in milliseconds must be a safe integer`,
+    );
+    return undefined;
+  }
+  return value;
+}
 
 function checkKey(key: keyof Level2Settings, value: unknown, errors: string[]): unknown {
   const spec = KEY_SPECS[key];
@@ -313,16 +361,11 @@ function checkKey(key: keyof Level2Settings, value: unknown, errors: string[]): 
       return ok ? Object.freeze([...(value as string[])]) : undefined;
     }
     case 'number': {
-      if (
-        typeof value !== 'number' ||
-        !Number.isFinite(value) ||
-        value <= 0 ||
-        !Number.isFinite(value * UNIT_MS[spec.unit])
-      ) {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
         errors.push(`${name} must be a positive number of ${spec.unit} (decimals allowed)`);
         return undefined;
       }
-      return value;
+      return safeMilliseconds(name, value, spec.unit, spec.unit, errors);
     }
     case 'integer': {
       const floorText =
@@ -331,21 +374,14 @@ function checkKey(key: keyof Level2Settings, value: unknown, errors: string[]): 
         errors.push(`${name} must be ${floorText} (${spec.noun})`);
         return undefined;
       }
-      if (spec.unit !== undefined && spec.timer === true) {
-        const limit = Math.floor(TIMER_LIMIT_MS / UNIT_MS[spec.unit]);
-        if (value > limit) {
-          errors.push(
-            `${name} must be at most ${limit} ${spec.noun}: it becomes a timer, and a timer waits at most ${TIMER_LIMIT_MS} ms`,
-          );
-          return undefined;
-        }
-      }
+      if (spec.unit !== undefined)
+        return safeMilliseconds(name, value, spec.unit, spec.noun, errors);
       return value;
     }
   }
 }
 
-function warningsFor(settings: Level2Settings, stopWaitMs: number): string[] {
+function warningsFor(settings: Level2Settings, stopWaitMs: number, wallNow: number): string[] {
   const warnings: string[] = [];
   const s = settings;
   if (s.level2_start_battery_percent - s.level2_revert_battery_percent < WARN_MIN_PERCENT_GAP) {
@@ -413,6 +449,11 @@ function warningsFor(settings: Level2Settings, stopWaitMs: number): string[] {
       `awake.lease_integer_max_digits is above ${WARN_LEASE_INTEGER_DIGITS_ABOVE}: the watchdog's shell arithmetic overflows at 19 digits and could misjudge a lease`,
     );
   }
+  if (10 ** s.lease_integer_max_digits - 1 < wallNow) {
+    warnings.push(
+      'awake.lease_integer_max_digits is too few to hold the current time in epoch seconds: no lease can be written, so level 2 would never stay on',
+    );
+  }
   if (s.lease_max_bytes < WARN_LEASE_MAX_BYTES_BELOW) {
     warnings.push(
       `awake.lease_max_bytes is below ${WARN_LEASE_MAX_BYTES_BELOW}: the hub's own lease may no longer fit, and every level 2 period would then be reverted`,
@@ -450,18 +491,37 @@ export function validateLevel2Settings(
       'awake.level2_revert_battery_percent must be below awake.level2_start_battery_percent',
     );
   }
-  const refuse = settings['thermal_refuse_level'] as Level2ThermalSetting | undefined;
-  const revertLevel = settings['thermal_revert_level'] as Level2ThermalSetting | undefined;
-  if (
-    refuse !== undefined &&
-    revertLevel !== undefined &&
-    THERMAL_SETTING_RANK[revertLevel] < THERMAL_SETTING_RANK[refuse]
-  ) {
+  const refuse = THERMAL_SETTING_RANK.get(String(settings['thermal_refuse_level']));
+  const revertLevel = THERMAL_SETTING_RANK.get(String(settings['thermal_revert_level']));
+  if (refuse !== undefined && revertLevel !== undefined && revertLevel < refuse) {
     errors.push('awake.thermal_revert_level must be at or above awake.thermal_refuse_level');
+  }
+  const wallNow =
+    typeof options.wallNow === 'number' && Number.isFinite(options.wallNow)
+      ? options.wallNow
+      : Date.now() / 1000;
+  const digits = settings['lease_integer_max_digits'];
+  if (typeof digits === 'number') {
+    // Representable, not a maximum: a run's end must have a `Date` and fit the
+    // lease's integers, or no lease and no status can be written for it.
+    const latest = representableEndSeconds(digits, wallNow);
+    for (const key of HOURS_KEYS) {
+      const hours = settings[key];
+      if (typeof hours === 'number' && wallNow + hours * 3_600 > latest) {
+        const most = Math.max(0, Math.floor((latest - wallNow) / 3_600));
+        errors.push(
+          `awake.${key} must be representable as a time: now plus ${hours} hours must fit a JavaScript Date and awake.lease_integer_max_digits digits (at most ${most} hours from now)`,
+        );
+      }
+    }
   }
   if (errors.length > 0) return { ok: false, errors };
 
   const validated = Object.freeze(settings as unknown as Level2Settings);
   const stopWaitMs = options.stopWaitMs ?? DEFAULT_REMI_STOP_WAIT_MS;
-  return { ok: true, settings: validated, warnings: warningsFor(validated, stopWaitMs) };
+  return {
+    ok: true,
+    settings: validated,
+    warnings: warningsFor(validated, stopWaitMs, wallNow),
+  };
 }

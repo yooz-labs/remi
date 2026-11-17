@@ -1,18 +1,22 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  DATE_MAX_EPOCH_SECONDS,
   DEFAULT_REMI_STOP_WAIT_MS,
   LEVEL2_DEFAULTS,
+  LEVEL2_NUMERIC_KEYS,
   LEVEL2_SETTING_KEYS,
-  LEVEL2_TIMER_KEYS,
   type Level2Settings,
-  TIMER_LIMIT_MS,
+  level2DurationUnitMs,
   validateLevel2Settings,
 } from '../../src/power/level2-settings.ts';
+
+/** The validator's clock for the hours keys: a fixed epoch second, so results do not depend on today. */
+const W0 = 1_800_000_000;
 
 function validate(overrides: Record<string, unknown>, stopWaitMs?: number) {
   return validateLevel2Settings(
     { ...LEVEL2_DEFAULTS, ...overrides },
-    stopWaitMs === undefined ? {} : { stopWaitMs },
+    stopWaitMs === undefined ? { wallNow: W0 } : { stopWaitMs, wallNow: W0 },
   );
 }
 
@@ -184,38 +188,83 @@ describe('level 2 settings: sanity checks', () => {
     expect(validate({ level2_default_hours: 0.5, level2_cap_hours: 1.25 }).ok).toBe(true);
   });
 
-  test.each([...LEVEL2_TIMER_KEYS])(
-    '%s, a timer, refuses a value beyond the timer limit',
+  const DURATION_KEYS = LEVEL2_SETTING_KEYS.filter((key) => level2DurationUnitMs(key) !== null);
+  const HOURS_KEYS = ['level2_default_hours', 'level2_cap_hours', 'level2_window_hours'];
+
+  test('the duration keys are every key with a unit', () => {
+    expect(DURATION_KEYS.length).toBe(21);
+    for (const key of DURATION_KEYS) expect(LEVEL2_NUMERIC_KEYS).toContain(key);
+  });
+
+  test.each([...DURATION_KEYS])(
+    '%s: its value in milliseconds must be a safe integer, and there is no timer ceiling',
     (key) => {
-      const unit = key.endsWith('_ms') ? 1 : 1000;
-      const limit = Math.floor(TIMER_LIMIT_MS / unit);
-      expect(validate({ [key]: limit }).ok).toBe(true);
-      const errors = errorsOf({ [key]: limit + 1 });
-      expect(errors).toHaveLength(1);
-      expect(errors[0]).toContain(`awake.${key} must be at most ${limit}`);
+      const unitMs = level2DurationUnitMs(key) ?? 0;
+      const most = Math.floor(Number.MAX_SAFE_INTEGER / unitMs);
+      const noun = { 1: 'milliseconds', 1000: 'seconds', 60000: 'minutes', 3600000: 'hours' }[
+        unitMs
+      ];
+      if (unitMs === 1) {
+        // For a millisecond key the value itself must be a safe integer, which
+        // the integer check already says.
+        expect(errorsOf({ [key]: most + 1 })).toEqual([
+          `awake.${key} must be a positive integer (milliseconds)`,
+        ]);
+      } else {
+        expect(errorsOf({ [key]: most + 1 })[0]).toBe(
+          `awake.${key} must be at most ${most} ${noun}: its value in milliseconds must be a safe integer`,
+        );
+      }
+      if (HOURS_KEYS.includes(key)) {
+        // An hours value that large is no longer a representable time either.
+        expect(errorsOf({ [key]: most })[0]).toContain(
+          `awake.${key} must be representable as a time`,
+        );
+      } else {
+        expect(validate({ [key]: most }).ok).toBe(true);
+      }
     },
   );
 
-  test('the timer keys are the heartbeat, the watchdog interval and every deadline', () => {
-    expect([...LEVEL2_TIMER_KEYS].sort() as string[]).toEqual(
-      [
-        'heartbeat_seconds',
-        'watchdog_interval_seconds',
-        'watchdog_command_deadline_seconds',
-        'switch_deadline_ms',
-        'switch_sync_deadline_ms',
-        'shutdown_budget_ms',
-        'process_start_time_deadline_ms',
-        'endpoint_read_deadline_ms',
-        'cli_request_timeout_ms',
-      ].sort(),
-    );
+  test('values beyond what a single timer can wait validate (no timer ceiling)', () => {
+    const beyondTimer = {
+      heartbeat_seconds: 3_000_000,
+      lease_stale_seconds: 6_000_000,
+      level2_wake_gap_seconds: 3_000_001,
+      watchdog_interval_seconds: 3_000_000,
+      watchdog_command_deadline_seconds: 2_999_999,
+      switch_deadline_ms: 3_000_000_000,
+      switch_sync_deadline_ms: 3_000_000_000,
+      process_start_time_deadline_ms: 3_000_000_000,
+      endpoint_read_deadline_ms: 3_000_000_000,
+      cli_request_timeout_ms: 3_000_000_000,
+    };
+    const result = validate(beyondTimer);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.settings.heartbeat_seconds).toBe(3_000_000);
   });
 
-  test('a duration the policy only compares with a clock has no upper bound but a finite one', () => {
-    expect(validate({ level2_window_hours: 1e6, level2_cap_hours: 1e5 }).ok).toBe(true);
-    expect(errorsOf({ level2_window_hours: Number.MAX_VALUE })).toEqual([
-      'awake.level2_window_hours must be a positive number of hours (decimals allowed)',
+  test.each(HOURS_KEYS)('%s must be representable as a time from now', (key) => {
+    const extra = key === 'level2_window_hours' ? {} : { level2_window_hours: 1e9 };
+    // The Date bound with the default 16 lease digits.
+    const most = Math.floor((DATE_MAX_EPOCH_SECONDS - W0) / 3600);
+    const big = key === 'level2_default_hours' ? { level2_cap_hours: most } : {};
+    expect(validate({ ...extra, ...big, [key]: most }).ok).toBe(true);
+    expect(errorsOf({ ...extra, ...big, [key]: most + 1 })).toEqual([
+      `awake.${key} must be representable as a time: now plus ${most + 1} hours must fit a JavaScript Date and awake.lease_integer_max_digits digits (at most ${most} hours from now)`,
+    ]);
+  });
+
+  test('the lease digits bound the hours keys when they can hold the current time', () => {
+    // 12 digits hold epoch seconds up to 999999999999.
+    const most = Math.floor((999_999_999_999 - W0) / 3600);
+    expect(validate({ lease_integer_max_digits: 12, level2_window_hours: most }).ok).toBe(true);
+    expect(errorsOf({ lease_integer_max_digits: 12, level2_window_hours: most + 1 })[0]).toContain(
+      'awake.level2_window_hours must be representable as a time',
+    );
+    // 9 digits cannot hold the current time: a warning, and only the Date bound applies.
+    expect(warningsOf({ lease_integer_max_digits: 9, level2_window_hours: most + 1 })).toEqual([
+      'awake.lease_integer_max_digits is too few to hold the current time in epoch seconds: no lease can be written, so level 2 would never stay on',
     ]);
   });
 
