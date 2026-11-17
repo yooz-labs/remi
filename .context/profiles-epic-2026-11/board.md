@@ -49,8 +49,8 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 100 | 12 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
-| Codex Luna today | 24 | 1 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
+| Agents today | 100 | 13 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Codex Luna today | 24 | 2 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
 | Codex Terra today | 16 | 2 | daily | owner CP0 value; Terra implementers and fix rounds |
 | Claude Sonnet today | 44 | 5 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
 | Claude Opus today | 16 | 4 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
@@ -137,5 +137,6 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | RV-PAIR-B | reviewer maintainability+docs | claude-sonnet | sonnet xhigh (ace81289b673465b5) | PR1795 | 2026-11-17T04:43 | done |
 | FX-PAIR | fix round 1 (PR1795) | claude-sonnet | sonnet high (a806c7b34bb738fb7) | PR1795 | 2026-11-17T04:55 | running |
 | P1C-2 | implementer (continuation) | codex-luna | gpt-6-luna max | P1C | 2026-11-17T05:00 | running |
-| RV-P5A | reviewer docs | claude-sonnet | sonnet xhigh | P5A-PREP PR1796 | 2026-11-17T05:05 | running |
+| RV-P5A | reviewer docs | claude-sonnet | sonnet xhigh | P5A-PREP PR1796 | 2026-11-17T05:05 | done |
 | P1A-3 | implementer (continuation 2) | codex-terra | gpt-6.1-terra xhigh | P1A | 2026-11-17T05:10 | running |
+| FX-P5A | fix round 1 (PR1796) | codex-luna | gpt-6-luna max | P5A-PREP | 2026-11-17T05:20 | running |
