@@ -48,11 +48,11 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 100 | 24 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Agents today | 100 | 25 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
 | Codex Luna today | 24 | 2 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
 | Codex Terra today | 16 | 0 | daily | owner CP0 value; Terra implementers and fix rounds |
 | Claude Sonnet today | 44 | 17 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
-| Claude Opus today | 16 | 5 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
+| Claude Opus today | 16 | 6 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
 | Advisor consults | 20 | 0 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
 | Fable consults | 1 | 0 | never | copied; only if the owner asks; never --over |
 | Agents this wave | 0 | 0 | wave | unused: this plan has no waves |
@@ -134,5 +134,6 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | RV-W1D-watchdog ad9df8c35ac4b5fa0 | delta reviewer (watchdog ad9df8c35ac4b5fa0) | claude-sonnet | sonnet () | W1 PR1807 | 2026-11-17T10:08 | done |
 | RV-W1D-setup a35f311fdea97f017 | delta reviewer (setup a35f311fdea97f017) | claude-sonnet | sonnet () | W1 PR1807 | 2026-11-17T10:08 | done |
 | FX-W1B | final fix (PR1807 delta) | claude-opus | opus (ad62c17fc6af47519, resumed) | W1 PR1807 | 2026-11-17T10:25 | done |
-| RV-POLD-src ae2e344c9b59cc94f | delta reviewer (src ae2e344c9b59cc94f) | claude-sonnet | sonnet () | L2-POL PR1809 | 2026-11-17T10:42 | running |
-| RV-POLD-tests a5e4b472f18643c1e | delta reviewer (tests a5e4b472f18643c1e) | claude-sonnet | sonnet () | L2-POL PR1809 | 2026-11-17T10:42 | running |
+| RV-POLD-src ae2e344c9b59cc94f | delta reviewer (src ae2e344c9b59cc94f) | claude-sonnet | sonnet () | L2-POL PR1809 | 2026-11-17T10:42 | done |
+| RV-POLD-tests a5e4b472f18643c1e | delta reviewer (tests a5e4b472f18643c1e) | claude-sonnet | sonnet () | L2-POL PR1809 | 2026-11-17T10:42 | done |
+| FX-POLB | final fix (PR1809 delta) | claude-opus | opus (a37ea6ad9be74c593, resumed) | L2-POL PR1809 | 2026-11-17T11:05 | running |
