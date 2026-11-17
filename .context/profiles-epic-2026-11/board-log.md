@@ -45,3 +45,10 @@ The manager reads the newest rows through `status`, never the whole file.
 | 2026-11-14T18:50-08:00 | D51: PR 1785 merged into develop (head 9cf3669c, all checks green, scan [], develop ancestor); ADR status Accepted edit is a separate small docs PR at CP1 (J5) |
 | 2026-11-14T18:52-08:00 | Lead diagnosis c0dde393: DV-1 red is the Mac environment (TMPDIR /var symlink gives 116 of 178 failures; 31 local Worker timeouts unexplained, Node 26 / Bun 1.4.4 vs CI); same 178+31 recorded on b4aa770a in land-branches; owner question J19 (a/b/c) asked; no dispatch until answered; scratch left: worktree profiles-dv-diag and /private/tmp/remi-dv-diag-canon (owner removes) |
 | 2026-11-17T04:10-08:00 | 2026-11-17 04:10: owner answered J19 (a) (asked 2026-11-14); lead to apply runbook section 11 J19 card edits; release PR 1792 macOS App job is cancelled by its own concurrency group (workflow says not a required gate); two reruns also cancelled |
+| 2026-11-17T04:14-08:00 | Dispatch 2026-11-17 04:25: P1A (terra), P1C and P5A-PREP (luna) on develop fbd2841d; deviation: each launch adds one writable root /private/tmp/remi-canon-STEP for the J19 canonical TMPDIR command (never /private/tmp or claude-501) |
+| 2026-11-17T04:14-08:00 | Threads: P1A 01a1e96e-0347-7163 (pid 41394), P1C 01a1e96e-0347-7d53 (pid 41398), P5A-PREP 01a1e96e-0347-7010 (pid 41402); rollouts show the right cwd; evidence A/<step>/r1; stat before-metadata saved in artifacts/stat-before-first-dispatch.txt |
+| 2026-11-17T04:14-08:00 | budget reset (daily): Agents today was 8 |
+| 2026-11-17T04:14-08:00 | budget reset (daily): Codex Luna today was 2 |
+| 2026-11-17T04:14-08:00 | budget reset (daily): Codex Terra today was 1 |
+| 2026-11-17T04:14-08:00 | budget reset (daily): Claude Sonnet today was 3 |
+| 2026-11-17T04:14-08:00 | budget reset (daily): Claude Opus today was 2 |
