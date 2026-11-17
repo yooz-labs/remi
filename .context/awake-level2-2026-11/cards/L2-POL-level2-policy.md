@@ -4,7 +4,7 @@ Status: ready
 Tier: worker-hard
 Timebox: L, 1.5 days; escalate at 3 days or two failed approaches
 Needs: none; any host (pure code, no macOS tool runs)
-Depends: none for dispatch; the merge waits for the owner's answers to Q12, Q13 and Q14 (plan section 6; Q1 to Q11 and the Q9 amendment were answered on 2026-11-17)
+Depends: none for dispatch; the merge waits for the owner's answers to Q15 and Q16 (plan section 6; Q1 to Q14, the Q9 amendment and the rule that every limit is a setting were answered on 2026-11-17)
 Branch: `feature/issue-1773-level2-policy` off `origin/develop`
 Worktree: `/Volumes/S1/worktrees/remi/awake-l2pol` (the manager creates it with `git worktree add --no-track -b` and runs `bun install`)
 Plan: plan.md section 2 (L2-POL) and section 6a (armed mode, pause and resume); ADR 0050 "Fail-safe design for level 2" items 2 and 5, "Refusing while another app holds the Mac awake", "Battery, thermal, duration and display inputs", owner decisions 2, 4, 5, 7 and 8
@@ -23,13 +23,14 @@ The owner's answers of 2026-11-17 (recorded in the pack's `board-log.md`):
 - Q2: the battery thresholds apply only while the Mac runs on battery power; on AC power only the other rails apply.
 - Q3: a Mac with no battery (a desktop) never turns level 2 on (`no-battery`).
 - Q10: no extra condition beyond the refusals; Q11: log and status now, a phone push with L2-APP.
+- Q12 (b): a new hub comes up armed only after a clean exit with no lease left, never after a crash.
+- Q13: an automatic start or resume needs the lid open for the whole dwell.
+- Q14 (a): `level2_default_hours` is the longest continuous run, and `level2_cap_hours` is the on-time in a rolling window (`level2_window_hours`, default 24).
+- The owner's rule: every limit is a setting the person can change; the plan only sets defaults (no maximum, sanity validation only).
 
-Open, implemented here as the lead recommends (a different answer is a fix round before merge):
-- Q12 (b): a new hub comes up armed only after a clean exit with no lease anomaly.
-- Q13 (yes): an automatic start or resume needs the lid open.
-- Q14 (a): `level2_default_hours` is the longest continuous run, and `level2_cap_hours` is the on-time in any 24 hours.
+Open, implemented here as the lead recommends (a different answer is a fix round before merge): Q15 (a), every former maximum and the 5-point gap become warnings, never refusals; Q16 (a), mechanism constants (subprocess deadlines, size caps, the clock-skew tolerance) stay named constants.
 
-Lead decisions under owner decision 8 (every tunable is a key): `lease_stale_seconds` (default 120, ADR 0050 line 97) and the four pause-and-resume bounds of item 1 are settings; the watchdog must be loaded and bound to this remi home to turn on, and on every heartbeat.
+Lead decisions under owner decision 8 and the owner's rule: `lease_stale_seconds` (default 120, ADR 0050 line 97), the four pause-and-resume bounds, `level2_window_hours` and `level2_wake_gap_seconds` are keys; the watchdog must be loaded and bound to this remi home to turn on, and on every heartbeat.
 
 ## Scope
 
@@ -45,28 +46,40 @@ Not in scope: `config/config.ts` (L2-HUB adds the keys), readers, the switch, th
 
 Settled:
 
-1. **Settings** (`level2-settings.ts`): `Level2Settings` uses the configuration key names, so L2-HUB can pass the `[awake]` table's values unchanged:
-   `level2` boolean, default false (true allows and arms level 2, Q1 (b));
-   `level2_start_battery_percent` integer 1 to 100, default 35 (no turning on, and no resuming, below it on battery power);
-   `level2_revert_battery_percent` integer 0 to 99, default 30 (pause at or below it on battery power), at least 5 below the start value (the hysteresis gap: a pause at 30 never resumes at 31);
-   `level2_min_remaining_minutes` integer 0 to 600, default 20 (0 turns the time rule off);
-   `level2_default_hours` integer 1 to 24, default 3, at most `level2_cap_hours` (Q14 (a): the longest continuous run, and the default for an explicit `start`);
-   `level2_cap_hours` integer 1 to 24, default 12 (Q14 (a): the most on-time in any 24 hours);
-   `level2_idle_revert_minutes` integer 1 to 1440, default 30;
-   `thermal_refuse_level` and `thermal_revert_level` each one of `"moderate"`, `"heavy"`, `"trapping"`, defaults `"moderate"` and `"heavy"`, the refuse level at or below the revert level (a thermal pause resumes only below the refuse level);
-   `thermal_moderate_revert_minutes` integer 1 to 120, default 5;
-   `heartbeat_seconds` integer 5 to 300, default 30;
-   `lease_stale_seconds` integer from twice `heartbeat_seconds` to 3600, default 120;
-   `watchdog_interval_seconds` integer 10 to 3600, default 60;
-   `foreign_holder_revert_minutes` integer 1 to 60, default 2;
-   `foreign_holder_ignore` array of at most 32 strings, each 1 to 64 characters with no control character, default empty;
-   `require_password_on_wake` boolean, default true;
-   new, the pause-and-resume bounds:
-   `level2_resume_dwell_seconds` integer 30 to 3600, default 120 (every condition must stay clear this long, without a gap, before an automatic start or resume);
-   `level2_resume_min_interval_minutes` integer 1 to 1440, default 10 (no automatic resume sooner than this after the last pause);
-   `level2_max_resumes_per_day` integer 1 to 100, default 12 (automatic starts and resumes in any 24 hours; the next one disarms instead);
-   `level2_breaker_failures` integer 1 to 20, default 3 (failures of item 7 in any 24 hours that disarm).
-   Export `LEVEL2_DEFAULTS` and `validateLevel2Settings(value: unknown): { ok: true, settings } | { ok: false, errors: string[] }`; each error names the key and the rule (for example `awake.level2_revert_battery_percent must be at least 5 below awake.level2_start_battery_percent`) and never echoes a string value from `foreign_holder_ignore`.
+1. **Settings** (`level2-settings.ts`): `Level2Settings` uses the configuration key names, so L2-HUB can pass the `[awake]` table's values unchanged.
+   The owner's rule of 2026-11-17 applies: every limit is a key, the plan only sets defaults, and validation is sanity only (preamble item 9: type, positive or 0 where 0 turns a rule off, percent from 0 to 100, durations within the timer limit, and the two order relations below); no key has a maximum.
+   Each key, with its default (the docs and the generated config say `default X; set KEY = Y to change`):
+   - `level2`: boolean, default false (true allows and arms level 2, Q1 (b));
+   - `level2_start_battery_percent`: percent, default 35 (no turning on, and no resuming, below it on battery power);
+   - `level2_revert_battery_percent`: percent, default 30 (pause at or below it on battery power); required relation: below `level2_start_battery_percent` (otherwise level 2 would turn on and pause at the same reading);
+   - `level2_min_remaining_minutes`: integer, 0 or more, default 20 (0 turns the time rule off);
+   - `level2_default_hours`: positive number, decimals allowed, default 3 (Q14 (a): the longest continuous run, and the length of an explicit `start` without hours);
+   - `level2_cap_hours`: positive number, default 12 (Q14 (a): the most on-time in `level2_window_hours`);
+   - `level2_window_hours`: positive number, default 24 (new: the rolling window of the on-time cap, the resume count and the breaker count);
+   - `level2_idle_revert_minutes`: positive integer, default 30;
+   - `thermal_refuse_level` and `thermal_revert_level`: each one of `"moderate"`, `"heavy"`, `"trapping"`, defaults `"moderate"` and `"heavy"`; required relation: the revert level at or above the refuse level (a thermal pause resumes only below the refuse level);
+   - `thermal_moderate_revert_minutes`: positive integer, default 5;
+   - `heartbeat_seconds`: positive integer, default 30;
+   - `lease_stale_seconds`: positive integer, default 120;
+   - `watchdog_interval_seconds`: positive integer, default 60;
+   - `foreign_holder_revert_minutes`: positive integer, default 2;
+   - `foreign_holder_ignore`: array of non-empty strings with no control character, default empty;
+   - `require_password_on_wake`: boolean, default true;
+   - `level2_resume_dwell_seconds`: integer, 0 or more, default 120 (every condition clear, without a gap, this long before an automatic start or resume; 0 turns the dwell off);
+   - `level2_resume_min_interval_minutes`: integer, 0 or more, default 10 (no automatic resume sooner after the last pause; 0 turns it off);
+   - `level2_max_resumes_per_day`: integer, 0 or more, default 12 (automatic starts and resumes in `level2_window_hours`; the next one disarms instead; 0 means level 2 never turns on by itself, only by an explicit `start`);
+   - `level2_breaker_failures`: positive integer, default 3 (failures of item 7 in `level2_window_hours` that disarm);
+   - `level2_wake_gap_seconds`: positive integer, default 90 (new: a beat whose `wallNow` is more than this after the previous beat counts as a wake from sleep and restarts the dwell; 90 is three heartbeats at the default).
+   Warnings, never refusals, each returned by the validator and printed at config load and in `remi keep-awake status` (Q15 asks the owner whether any should refuse instead):
+   - the start percent less than 5 above the revert percent (pause and resume may alternate);
+   - the revert percent below 10 (whether a Mac with sleep disabled still makes its emergency low-battery sleep is unverified, ADR 0050 line 104);
+   - `heartbeat_seconds` above 300 (the battery and thermal pauses are only as prompt as the heartbeat);
+   - `lease_stale_seconds` below twice `heartbeat_seconds` (the watchdog may revert a healthy period);
+   - `level2_wake_gap_seconds` at or below `heartbeat_seconds` (every beat would count as a wake, so nothing resumes);
+   - `level2_default_hours` above `level2_cap_hours`, or `level2_cap_hours` at or above `level2_window_hours` (the larger value has no effect);
+   - `level2_resume_dwell_seconds` or `level2_resume_min_interval_minutes` set to 0 (no protection against flapping but the daily resume count);
+   - `require_password_on_wake = false` (the Mac stays awake and unlocked with the lid closed, ADR 0050 table: "logged loudly").
+   Export `LEVEL2_DEFAULTS` and `validateLevel2Settings(value: unknown): { ok: true, settings, warnings: string[] } | { ok: false, errors: string[] }`; each error and warning names the key and the rule (for example `awake.level2_revert_battery_percent must be below awake.level2_start_battery_percent`) and never echoes a string value from `foreign_holder_ignore`.
 2. **Foreign holders** (`level2-foreign-holders.ts`): `classifyForeignHolders(holders, remiPids, ignore)`; a holder is `{ pid, process, type, name, createdForPid }` (structurally the same as G1's parsed holder; declare it here, do not import G1).
    A holder is remi's when its `pid` or its `createdForPid` is in `remiPids`.
    Exempt: exactly process `powerd`, type `PreventUserIdleSystemSleep`, name `Prevent sleep while display is on`.
@@ -77,7 +90,7 @@ Settled:
    - `disabled` when `level2` is false;
    - `disarmed` with reason `restart` when the persisted state says disarmed, the previous hub did not record a clean exit, `startup.leaseFound`, or `startup.flag` is not `no`;
    - else `armed`, also on the very first run, with no persisted state.
-   `persisted` is `{ armed, disarmReason, cleanExit, resumes, failures, runs }`: wall-clock epoch seconds of the resumes and failures, and the `[start, end]` on-time runs, of the last 24 hours.
+   `persisted` is `{ armed, disarmReason, cleanExit, resumes, failures, runs }`: wall-clock epoch seconds of the resumes and failures, and the `[start, end]` on-time runs, of the last `level2_window_hours`.
    Every transition emits `persist` with the new value, so a restart cannot reset a counter.
 4. **Inputs** on each `beat`, beside the monotonic `now`:
    - `battery`: `{ kind: 'none' }`, `{ kind: 'battery', source: 'ac' | 'battery', percent, remainingMinutes: number | null }` or `{ kind: 'unknown' }`;
@@ -91,7 +104,7 @@ Settled:
    - `wallNow`: epoch seconds.
    While `armed` with `working` 0, the controller sends a cheap `census` instead (no readings).
    As soon as `working` is above 0, and while `paused`, `starting`, `on` or `reverting`, it sends full `beat`s.
-5. **Events**: `start` (explicit; arms too; optional whole `hours`), `arm`, `stop`, `extend` (whole `hours`), `census`, `beat`, `enabled`, `enable-failed` (with the controller's reason), `disabled`, `disable-failed`, `heartbeat-failed`, `hub-exit`.
+5. **Events**: `start` (explicit; arms too; optional positive `hours`), `arm`, `stop`, `extend` (positive `hours`), `census`, `beat`, `enabled`, `enable-failed` (with the controller's reason), `disabled`, `disable-failed`, `heartbeat-failed`, `hub-exit`.
 6. **Conditions that block turning on** (an automatic start or resume, and an explicit `start`), in this order; the first that holds is the reported condition:
    - `no-session`;
    - `no-work` (`working` 0; not checked for an explicit `start`);
@@ -107,12 +120,12 @@ Settled:
    - `foreign-holder` (with the process names);
    - `password-on-wake-unknown` and `password-on-wake-off` (both only when `require_password_on_wake`);
    - `watchdog-unknown`, `watchdog-missing`, `watchdog-mismatch`;
-   - `daily-cap` (less than `level2_resume_min_interval_minutes` of on-time left under `level2_cap_hours` in the last 24 hours);
+   - `daily-cap` (less than `level2_resume_min_interval_minutes` of on-time left under `level2_cap_hours` in the last `level2_window_hours`);
    - for an automatic start or resume only:
      - `lid-closed` (`clamshell` not `open`, Q13);
      - `resume-interval` (less than `level2_resume_min_interval_minutes` since the last pause);
-     - `dwell` (the conditions have not all been clear for `level2_resume_dwell_seconds` without a gap; a beat whose `wallNow` is more than three heartbeats after the previous one counts as a wake from sleep and restarts the dwell).
-   If an automatic start or resume passes but would be the `level2_max_resumes_per_day`+1-th in 24 hours, it disarms with `resume-limit` instead.
+     - `dwell` (the conditions have not all been clear for `level2_resume_dwell_seconds` without a gap; a beat whose `wallNow` is more than `level2_wake_gap_seconds` after the previous one counts as a wake from sleep and restarts the dwell).
+   If an automatic start or resume passes but would be the `level2_max_resumes_per_day`+1-th in `level2_window_hours`, it disarms with `resume-limit` instead.
    A pass emits `enable` with the run's end and the origin (`automatic` or `explicit`), and the state is `starting`.
    The run's end is now plus `level2_default_hours` (or the `start` hours), never past the on-time left under the cap.
    A blocked automatic start leaves `armed` (`no-session`, `no-work`) or `paused` with the condition.
@@ -139,14 +152,14 @@ Settled:
    - `switch-failed`, `revert-not-permitted` and `sudo-refused`: an `enable-failed` from the switch.
      The enable is never retried automatically.
    - `resume-limit` (item 6).
-   - `breaker`: the failures of item 7 in 24 hours reach `level2_breaker_failures`.
+   - `breaker`: the failures of item 7 in `level2_window_hours` reach `level2_breaker_failures`.
      The current revert finishes first.
    - `restart` (item 3).
    `arm` from `disarmed` moves to `armed` and clears the failure and resume counters (the person has looked); from any armed state it is a no-op; from `disabled` it is refused with `disabled`.
    `start` from `disarmed` arms, clearing the counters, and then evaluates item 6 as an explicit start.
-   `extend` while `on` moves the run's end later, never past the on-time left under `level2_cap_hours`; otherwise it is refused with `hours-invalid`.
+   `extend` while `on` moves the run's end later, never past the on-time left under `level2_cap_hours` (the status says when the cap cut it); hours that are not a positive number are refused with `hours-invalid`.
    `hub-exit` while `starting`, `on` or `reverting` emits `disable`, and persists `cleanExit` true only after the revert; from any other state it persists `cleanExit` true and changes nothing else.
-9. **Clocks**: timers use the monotonic clock, clamped to the last observed value as `awake-policy.ts:130` does; the 24-hour counters use `wallNow`, and a recorded time later than `wallNow` plus one minute counts as `wallNow` (a backward clock step cannot drop a counted resume or failure).
+9. **Clocks**: timers use the monotonic clock, clamped to the last observed value as `awake-policy.ts:130` does; the window counters use `wallNow`, and a recorded time later than `wallNow` plus `CLOCK_SKEW_TOLERANCE_SECONDS` (a named mechanism constant, 60, Q16) counts as `wallNow` (a backward clock step cannot drop a counted resume or failure).
 10. **Status**: `level2Status(state, now, wallNow)` returns `{ state, reason, origin, runEnd, onTimeLeftToday, resumesLeftToday, failuresToday, waitingFor }`.
     `waitingFor` names what a `paused` or `armed` level 2 needs to turn on, for example `battery at 35 percent or AC power`, `lid open`, `2 minutes without a blocking condition`.
 The implementer may choose: internal field names, the effect and event type spellings beyond the state names and reason strings above (which are fixed: the CLI, the endpoint and the docs will print them), test names.
@@ -154,7 +167,14 @@ The implementer may choose: internal field names, the effect and event type spel
 ## Acceptance
 
 Evidence folder: `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/L2-POL/r1/`.
-1. Settings tests: `LEVEL2_DEFAULTS` validates; each key's lower and upper bound passes and one past each fails with an error naming the key; each relation fails alone (the start percent less than 5 above the revert percent, default above cap, refuse level above revert level, stale below twice the heartbeat); a wrong type per key fails; a 33-entry or control-character `foreign_holder_ignore` fails and the error does not contain the planted string.
+1. Settings tests:
+   - `LEVEL2_DEFAULTS` validates with no warning;
+   - each key refuses a wrong type, and each numeric key refuses a value below its floor (negative, or 0 where 0 is not allowed) and a duration beyond the timer limit, with an error naming the key;
+   - no key has a maximum: `level2_default_hours = 100`, `level2_cap_hours = 100`, `level2_window_hours = 1000`, `level2_idle_revert_minutes = 100000`, `heartbeat_seconds = 3600`, `level2_max_resumes_per_day = 1000`, `level2_breaker_failures = 1000`, `level2_min_remaining_minutes = 100000` and a 1000-entry `foreign_holder_ignore` all validate;
+   - each of the two required relations refuses alone (revert percent at or above start percent; thermal revert level below the refuse level);
+   - each warning of item 1 appears for its trigger and not otherwise, and the settings still validate;
+   - a control-character `foreign_holder_ignore` entry fails, and the error does not contain the planted string.
+   Per key: a table-driven reducer test with one row per numeric key of item 1 sets a non-default value and shows the decision it governs change (for example `level2_default_hours = 0.5` pauses with `run-limit` after 30 minutes; `level2_window_hours = 6` lets a resume counted 7 hours ago expire; `level2_wake_gap_seconds = 600` keeps a 5-minute gap from restarting the dwell), besides the default's row.
 2. Classifier tests: the powerd display-on assertion is exempt; a near miss (another name, another process or another type) is not; a holder created for a remi pid and a holder whose own pid is remi's are remi's; a display holder in the ignore list still blocks; a system holder in the ignore list is ignored; `UserIsActive` and a kernel type are ignored; the result never contains a holder's `name`.
 3. Condition tests, table-driven:
    - one row per blocking condition of item 6, for an automatic start and, where it applies, an explicit `start`; each row breaks exactly one rule with all others passing and asserts the exact reason string;
@@ -168,14 +188,14 @@ Evidence folder: `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/L2-POL/r1
    - a thermal pause at `heavy` does not resume at `moderate`, and resumes at `nominal` after the dwell;
    - a foreign holder that comes and goes every 30 s never resumes (the dwell);
    - Q13: `lid-closed` blocks a resume until the lid has been open for the whole dwell;
-   - a beat gap of more than three heartbeats (a wake from sleep) restarts the dwell;
-   - the `level2_max_resumes_per_day`+1-th automatic resume in 24 hours disarms with `resume-limit`;
+   - a beat gap of more than `level2_wake_gap_seconds` (a wake from sleep) restarts the dwell;
+   - the `level2_max_resumes_per_day`+1-th automatic resume in `level2_window_hours` disarms with `resume-limit`, and `level2_max_resumes_per_day = 0` never turns on by itself;
    - a run reaching `level2_default_hours` pauses with `run-limit` and resumes after the minimum interval;
-   - on-time reaching `level2_cap_hours` in 24 hours pauses with `daily-cap` until enough on-time is free;
+   - on-time reaching `level2_cap_hours` in `level2_window_hours` pauses with `daily-cap` until enough on-time is free;
    - `idle` returns to `armed`, and the next work episode turns it on again.
 5. Failure and person tests:
    - `enable-failed` with `switch-failed`, `revert-not-permitted` or `sudo-refused` disarms, and later beats with every condition clear emit no `enable`;
-   - `level2_breaker_failures` failures in 24 hours disarm with `breaker`;
+   - `level2_breaker_failures` failures in `level2_window_hours` disarm with `breaker`;
    - `disable-failed` re-emits `disable` on every beat;
    - `flag-cleared-by-other` emits `forget` and no `disable`, and disarms;
    - `stop` while on emits `disable`, then disarms with `stopped`, and nothing turns it on until `arm`;
@@ -192,7 +212,9 @@ Evidence folder: `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/L2-POL/r1
    - ignore the lid on a resume (the Q13 row fails);
    - retry `enable` after a switch failure (a row of item 5 fails);
    - emit `disable` for `flag-cleared-by-other` (its row fails);
-   - let a restart reset the resume counter (a row of item 5 fails).
+   - let a restart reset the resume counter (a row of item 5 fails);
+   - put back one maximum, for example `level2_default_hours` at most 24 (the no-maximum row of acceptance 1 fails);
+   - read the window as a fixed 24 hours instead of `level2_window_hours` (its per-key row fails).
 8. The PR body:
    - states that nothing is wired (no key is accepted by `config.toml` yet; L2-HUB adds them);
    - lists the state names and reason strings, which conditions pause and resume, and which only a person ends;

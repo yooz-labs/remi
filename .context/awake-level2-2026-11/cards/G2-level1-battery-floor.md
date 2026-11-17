@@ -28,7 +28,7 @@ Facts the lead read on this Mac (Mac16,11, macOS 27.2) on 2026-11-17, read-only:
 The laptop shapes come from OG-CAP: `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/captures/OG-CAP/` (one folder per state, see `owner-gates.md` OG-CAP).
 
 Owner answers of 2026-11-17 this card implements (plan section 6): Q2, the floor applies only on battery power (decision 3 is titled "Level 1 on battery"); Q4, an unknown `[awake]` key keeps stopping config load.
-Lead decision under owner decision 8: the read cadence is a key, `battery_check_seconds`.
+Lead decisions under owner decision 8 and the owner's rule of 2026-11-17 (every limit is a key, the plan only sets defaults): the read cadence is a key, `battery_check_seconds`, and so is the unknown-reading tolerance, `level1_battery_unknown_reads`; the four slice 1 keys lose their maxima (`AWAKE_MAX_*` at `config/config.ts:78-81`), keeping only sanity validation (preamble item 9).
 
 ## Scope
 
@@ -37,7 +37,7 @@ May change:
 - `packages/daemon/src/power/awake-policy.ts`, `awake-session.ts`, `awake-wiring.ts`;
 - `packages/daemon/src/config/config.ts` (only the `[awake]` parts listed in Context);
 - tests under `packages/daemon/tests/power/` and `packages/daemon/tests/integration/keep-awake-daemon-smoke.test.ts` or a new `packages/daemon/tests/integration/keep-awake-battery-smoke.test.ts`;
-- `docs/agent-reference/keep-awake.md`, the line at `AGENTS.md:248`, and ADR 0050 (`.context/decisions/0050-keep-the-mac-awake.md`: the status line's slice note and one new table row for `battery_check_seconds`);
+- `docs/agent-reference/keep-awake.md`, the line at `AGENTS.md:248`, and ADR 0050 (`.context/decisions/0050-keep-the-mac-awake.md`: the status line's slice note and table rows for `battery_check_seconds` and `level1_battery_unknown_reads`);
 - the PR body.
 Evidence (not committed): `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/G2/r1/`.
 Not in scope: `cli.ts`, level 2 files, the hub, any other configuration table.
@@ -54,13 +54,19 @@ Settled:
    `readBattery()` runs `runReading('/usr/bin/pmset', ['-g', 'batt'])` and `runReading('/usr/sbin/ioreg', ['-r', '-c', 'AppleSmartBattery', '-d', '1'])`; a failed run is unknown with the runner's reason.
    Reasons never contain the raw text.
 2. **Policy** (`awake-policy.ts`): a new event `{ type: 'battery', reading }`.
-   The floor allows a hold when the reading is `none`, or `source: 'ac'`, or on battery with `percent >= level1_battery_floor_percent`; `unknown` never starts a hold, and a held session releases on `unknown` only after two consecutive unknown readings (one slow `pmset` under an agent's load must not drop a turn's hold); the first `none` reading is kept for the daemon's lifetime and no further reads happen (a Mac does not gain a battery).
+   The floor allows a hold when the reading is `none`, or `source: 'ac'`, or on battery with `percent >= level1_battery_floor_percent`; `unknown` never starts a hold, and a held session releases on `unknown` only after `level1_battery_unknown_reads` consecutive unknown readings (default 2: one slow `pmset` under an agent's load must not drop a turn's hold); the first `none` reading is kept for the daemon's lifetime and no further reads happen (a Mac does not gain a battery).
    When the reducer wants a hold (its existing active reasons) and has no reading newer than `battery_check_seconds`, it emits one `{ type: 'read-battery' }` effect and does not emit another until a reading arrives or `battery_check_seconds` passes; a hold starts only after a reading allows it; a held session whose new reading does not allow it releases at once, without the idle grace, with reason `battery floor` or `battery unknown` (new members of `AwakeReleaseReason`); the next check is part of `nextDeadline` while a hold is wanted; nothing is read while no hold is wanted.
    `level1_battery_floor_percent = 0` turns the floor off: no reads and no battery release.
 3. **Session** (`awake-session.ts`): `AwakeSessionOptions` gains `readBattery?: () => Promise<BatteryReading>` (default the real `readBattery`), the same seam pattern as `createHolder`; at most one read in flight; the result is fed back as the `battery` event; a thrown or rejected read is fed as unknown.
    Log lines, one per transition, never per read: `[Awake] Hold ended for ID (battery floor: P% on battery, floor F%)`, `[Awake] Hold refused for ID (battery floor: P% on battery, floor F%)` once until a hold is allowed again, and the same two with `battery unknown: REASON`.
-4. **Configuration**, all in one commit (preamble item 9): `level1_battery_floor_percent` integer 0 to 99, default 20 (0 means no floor); `battery_check_seconds` integer 10 to 3600, default 60; error texts in the existing style (`Invalid awake.KEY in PATH: must be ...`); the generated `[awake]` section documents both and drops the "No battery floor yet" lines; `formatConfig` prints both.
-5. **Docs**: `keep-awake.md` replaces lines 40-41 with a "Battery floor" section (what is read, the AC and no-battery rules, unknown releases, the cadence, the log lines, that it is unverified on a MacBook until OG-G2); `AGENTS.md:248` drops "no battery floor yet" and mentions the floor; ADR 0050's table gains the `battery_check_seconds` row (default 60, slice 2) and its status line says slice 2's floor shipped.
+4. **Configuration**, all in one commit (preamble item 9):
+   - `level1_battery_floor_percent`: integer from 0 to 100, default 20 (0 means no floor);
+   - `battery_check_seconds`: positive integer within the timer limit, default 60 (a warning below 10: every check spawns two processes);
+   - `level1_battery_unknown_reads`: positive integer, default 2;
+   - the slice 1 keys `question_hold_minutes`, `idle_grace_seconds`, `stuck_busy_minutes` and `ttl_minutes` keep their defaults and lose their maxima (remove `AWAKE_MAX_*` and the "(1 to N ...)" comments); they are positive integers within the timer limit;
+   - error texts in the existing style (`Invalid awake.KEY in PATH: must be ...`);
+   - the generated `[awake]` section documents every level 1 key as `default X; set KEY = Y to change` and drops the "No battery floor yet" lines; `formatConfig` prints every key.
+5. **Docs**: `keep-awake.md` replaces lines 40-41 with a "Battery floor" section (what is read, the AC and no-battery rules, unknown releases, the cadence, the log lines, that it is unverified on a MacBook until OG-G2); `AGENTS.md:248` drops "no battery floor yet" and mentions the floor; ADR 0050's table gains the `battery_check_seconds` row (default 60, slice 2) and the `level1_battery_unknown_reads` row (default 2), its status line says slice 2's floor shipped and that the level 1 keys have no maxima; `keep-awake.md` documents every level 1 key as `default X; set KEY = Y to change`.
 The implementer may choose: names inside `battery.ts`, how the reducer stores the last reading, test names.
 
 ## Acceptance
@@ -69,10 +75,18 @@ Evidence folder: `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/G2/r1/`.
 1. Parser tests over committed, redacted fixtures: the Mac mini pair gives `none`; each OG-CAP state gives its exact `battery` value (source, percent, `remainingMinutes` or null); derived negatives give unknown: installed Yes with no battery line, installed No with a battery line, two `BatteryInstalled` lines, a `'UPS Power'` source, empty output, a percent above 100.
 2. Reducer tests: on battery below the floor no hold starts and one refusal is reported; a hold on battery that drops below the floor releases with `battery floor` and no grace; AC power at 5 percent holds; `none` holds; one unknown keeps a hold, two consecutive unknowns release it with `battery unknown`, and unknown never starts one; after a `none` no further `read-battery` is emitted; floor 0 emits no `read-battery`; no `read-battery` while idle; reads repeat no faster than `battery_check_seconds`; the existing level 1 tests pass with no assertion changed (adding the two new keys to their `AwakeConfig` literals, or building them from `DEFAULT_CONFIG.awake`, is the only edit allowed there, because `bun run typecheck` checks tests).
 3. Wiring tests through `AwakeWiring` with a fixture-backed `readBattery` (the real `parseBattery` over a committed capture): one log line per transition, none per read; a rejected read releases.
-4. Config tests: defaults load; both keys accept their bounds and refuse one past each and a wrong type with the key's name in the error; the generated config round-trips through `loadConfig` to `DEFAULT_CONFIG.awake`; the old rejection test is gone; a config holding every slice 1 and slice 2 key loads.
+4. Config tests:
+   - defaults load;
+   - each of the seven level 1 keys accepts a large value that the old maxima refused (for example `ttl_minutes = 600`, `question_hold_minutes = 2000`), refuses 0 or a negative, a wrong type and a value beyond the timer limit, with the key's name in the error;
+   - `level1_battery_floor_percent` refuses 101;
+   - `battery_check_seconds = 5` loads with a warning;
+   - the generated config round-trips through `loadConfig` to `DEFAULT_CONFIG.awake`, and each key's line reads `default X; set KEY = Y to change`;
+   - the old rejection test and the old maximum rows (`awake-config.test.ts:65-91`) are replaced;
+   - a config holding every slice 1 and slice 2 key loads.
+   Per-key behavior: a reducer or wiring test per new key reads a non-default value through `loadConfig` and shows the change: a floor of 50 releases at 45 percent where 20 would not, `battery_check_seconds = 10` reads every 10 s, and `level1_battery_unknown_reads = 1` releases on the first unknown.
 5. Real-daemon smoke on this Mac (darwin-only; it may skip only on a host whose `readBattery()` is not `none`, and must run here): a `cli.ts --daemon` under `env -i` with `[awake]` `level1_battery_floor_percent = 20`, `battery_check_seconds = 10` and `idle_grace_seconds = 1` holds a real `caffeinate` for its pid during a turn and releases after the grace (the existing smoke's method); a second daemon whose config has `level1_battery_floor_percent = 100` exits nonzero before listening, with `Invalid awake.level1_battery_floor_percent` in its output.
 6. `mkdir -p /private/tmp/remi-canon-G2 && env -i HOME="$HOME" PATH=/opt/homebrew/bin:/usr/bin:/bin TMPDIR=/private/tmp/remi-canon-G2/ bun test packages/daemon/tests/power packages/daemon/tests/integration/keep-awake-daemon-smoke.test.ts` (plus the new smoke file if you add one) ends with `0 fail` and no skipped test on this Mac.
-7. Revert checks, each with its failing log and a `revert-index.md` line: apply the floor on AC power (the AC row fails); treat unknown as allowed (its row fails); release on the first unknown (its row fails); keep the idle grace after a floor release (its row fails); add the key to `DEFAULT_CONFIG.awake` but not to the supported set (the config test fails).
+7. Revert checks, each with its failing log and a `revert-index.md` line: apply the floor on AC power (the AC row fails); treat unknown as allowed (its row fails); release on the first unknown with the default of 2 (its row fails); keep the old `ttl_minutes` maximum (the 600-minute row fails); keep the idle grace after a floor release (its row fails); add the key to `DEFAULT_CONFIG.awake` but not to the supported set (the config test fails).
 8. Fixture privacy: `rg -n -i '/Users/|@[a-z0-9.-]+\.[a-z]{2,}|https?://' packages/daemon/tests/power/fixtures` prints nothing.
 9. The PR body says what ships, that the floor is unverified on a MacBook until OG-G2, names Q2 and Q4 as answered or pending, and says "Part of #1773".
 
