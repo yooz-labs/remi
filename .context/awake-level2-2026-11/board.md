@@ -69,11 +69,11 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | G0 | [G0 password-on-wake](cards/G0-password-on-wake.md) | - | worker | - | codex-luna | active | - | - | 2026-11-17T06:56 | 3h | dispatch now; note only |
 | G1 | [G1 power readings](cards/G1-power-readings.md) | - | worker | - | codex-luna | active | - | - | 2026-11-17T06:56 | 1d | dispatch now; macOS host |
 | W1 | [W1 lease and watchdog](cards/W1-lease-and-watchdog.md) | - | worker-hard | - | claude-opus | active | - | - | 2026-11-17T06:56 | 1d | dispatch now; reviews add privilege and failsafe lenses |
-| L2-POL | [L2-POL level 2 policy](cards/L2-POL-level2-policy.md) | - | worker-hard | - | - | todo | - | - | - | 1d | dispatch when a slot is free; merge only after Q1-Q3 answered (gate item 8) |
+| L2-POL | [L2-POL level 2 policy](cards/L2-POL-level2-policy.md) | - | worker-hard | - | - | todo | - | - | - | 1d | dispatch when a worker-hard slot is free; owner answers Q1-Q3, Q9, Q10 are all recorded (merge gate item 8 satisfied) |
 | OG-CAP | [Owner gate: MacBook captures](owner-gates.md) | - | - | - | - | owner | - | - | - | 30m | rule: owner runs OG-CAP section of owner-gates.md; seven folders under artifacts/awake-level2-2026-11/captures/OG-CAP |
 | G2 | [G2 level 1 battery floor](cards/G2-level1-battery-floor.md) | - | worker-hard | - | - | todo | G1,OG-CAP | - | - | 1d | after G1 merged and OG-CAP; merge only after Q2 and Q4 |
 | OG-G2 | [Owner gate: battery floor on the MacBook](owner-gates.md) | - | - | - | - | blocked | G2 | - | - | 30m | rule: set owner when G2 is done; owner-gates.md OG-G2 |
-| CP-L2 | [Checkpoint before level 2](plan.md) | - | - | - | - | blocked | G0,G1,W1,L2-POL,G2,OG-CAP | - | - | - | rule: wake the lead only when Q1-Q3 are closed (plan 0.2 item 10); CP-L2: decide line, anticipation pass, ask go |
+| CP-L2 | [Checkpoint before level 2](plan.md) | - | - | - | - | blocked | G0,G1,W1,L2-POL,G2,OG-CAP | - | - | - | wake the lead when G0, G1, W1, L2-POL, G2 and OG-CAP are done (Q1-Q3, Q9, Q10 closed); CP-L2: decide line, anticipation pass, ask go |
 | L2-CORE | [L2-CORE switch and controller](cards/L2-CORE-switch-and-controller.md) | - | worker-hard | - | - | todo | CP-L2 | - | - | 1.5d | after CP-L2 go |
 | L2-HUB | [L2-HUB config and hub](cards/L2-HUB-config-and-hub.md) | - | worker-hard | - | - | todo | L2-CORE | - | - | 1.5d | after L2-CORE |
 | L2-CLI | [L2-CLI keep-awake command](cards/L2-CLI-keep-awake-command.md) | - | worker-hard | - | - | todo | L2-HUB | - | - | 1d | after L2-HUB and only when gh pr view 1798 prints MERGED |
@@ -94,6 +94,9 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Q6 | - | Q6: Run this plan beside the profiles plan on shared slots and budget, worker-hard steps on claude-opus, codex-terra left to the profiles lane? | Yes (Recommended) / Other | none | 2026-11-18T12:00 | answered | Yes (owner, 2026-11-17T07:02-08:00) |
 | Q7 | - | Q7: May a release contain level 2 (off by default, marked experimental) before the MacBook gate OG-L2 passes, or hold such releases? | (a) ship marked experimental (Recommended) / (b) hold releases / (c) gate an unmerged branch | none | 2026-11-18T12:00 | answered | (a) ship experimental (owner, 2026-11-17T07:02-08:00) |
 | Q8 | - | Q8: Confirm ADR 0050's level 2 battery defaults: refuse to start below 35 percent, revert at 30 percent (both configurable)? | Yes (Recommended) / Other values | none | 2026-11-18T12:00 | answered | Yes (owner, 2026-11-17T07:02-08:00) |
+| Q9 | - | Q9: After a level 2 period ends, what re-arms the automatic start? (a) only remi keep-awake arm; (b) also a clean hub restart; (c) natural ends re-arm, only safety reverts latch | (a) only arm (Recommended) / (b) arm or clean restart / (c) natural ends re-arm | none | 2026-11-18T12:00 | answered | (a) only arm (owner, 2026-11-17T07:06-08:00) |
+| Q10 | - | Q10: Extra condition for automatic starts? (a) none; (b) a phone or web client connected to the hub in the last 30 minutes; (c) only on AC power | (a) none, if Q9 is (a) (Recommended) / (b) recent remote client / (c) AC only | none | 2026-11-18T12:00 | answered | (a) none (owner, 2026-11-17T07:06-08:00) |
+| Q11 | - | Q11: Tell the person when an automatic period starts and ends? (a) hub log and status now, a phone push with L2-APP; (b) log and status only | (a) log, status, then push (Recommended) / (b) log and status only | none | 2026-11-18T12:00 | answered | (a) (owner, 2026-11-17T07:06-08:00) |
 
 ## Proposals
 
