@@ -49,9 +49,9 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 100 | 40 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Agents today | 100 | 41 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
 | Codex Luna today | 24 | 3 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
-| Codex Terra today | 16 | 6 | daily | owner CP0 value; Terra implementers and fix rounds |
+| Codex Terra today | 16 | 7 | daily | owner CP0 value; Terra implementers and fix rounds |
 | Claude Sonnet today | 44 | 16 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
 | Claude Opus today | 16 | 14 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
 | Advisor consults | 20 | 16 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
@@ -156,3 +156,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | P1B-1 | implementer | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T08:55 | stopped-incomplete |
 | P1B-2 | implementer (continuation) | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T09:05 | stopped-incomplete |
 | P1B-3 | implementer (continuation 2) | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T09:25 | stopped-incomplete |
+| P1B-4 | implementer (continuation 3) | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T09:20 | running |
