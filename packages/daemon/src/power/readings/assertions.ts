@@ -45,6 +45,9 @@ type Block = 'none' | 'system' | 'owners' | 'skipped';
  * Parses `pmset -g assertions`.
  * The grammar comes from a captured fixture (`tests/power/fixtures/`); anything that does not
  * match it is unknown, never skipped (ADR 0050: refuse level 2 on any parse failure).
+ * The `Kernel Assertions:` header is the last block of the captured output, and a read without it
+ * is unknown, so a cut at a line boundary inside the owning-process block is caught too.
+ * That makes a Mac that never prints the header read unknown (a refusal), never a false ok.
  * A reason names the kind of failure and the line number, never the line's text, because
  * assertion names can carry application or document names.
  */
@@ -60,6 +63,7 @@ export function parseAssertions(text: string): AssertionsReading {
   let block: Block = 'none';
   let sawSystem = false;
   let sawOwners = false;
+  let sawKernel = false;
   let sawContent = false;
 
   for (const [index, line] of lines.entries()) {
@@ -79,6 +83,7 @@ export function parseAssertions(text: string): AssertionsReading {
         sawOwners = true;
         block = 'owners';
       } else if (SKIPPED_HEADER.test(line)) {
+        if (line.startsWith('Kernel Assertions:')) sawKernel = true;
         block = 'skipped';
       } else {
         return unknown(`unrecognized header at line ${at}`);
@@ -122,6 +127,7 @@ export function parseAssertions(text: string): AssertionsReading {
 
   if (!sawSystem) return unknown('no system-wide block');
   if (!sawOwners) return unknown('no owning-process block');
+  if (!sawKernel) return unknown('no kernel-assertions header, so the output may be truncated');
   return { kind: 'ok', systemWide, holders };
 }
 

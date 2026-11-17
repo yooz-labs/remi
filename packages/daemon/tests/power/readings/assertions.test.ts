@@ -106,3 +106,93 @@ test('the kernel assertions block is skipped by its header, whatever its lines s
   const text = `${fixture('pmset-g-assertions.txt')}   id=999  level=1 anything at all\n`;
   expect(parseAssertions(text).kind).toBe('ok');
 });
+
+// Each edit below targets one fail-closed branch of the parser, with the real capture as the base.
+// Line numbers are computed from the capture, so an edit that lands elsewhere fails loudly.
+const lineOf = (lines: readonly string[], start: string): number => {
+  const index = lines.findIndex((line) => line.startsWith(start));
+  if (index < 0) throw new Error(`fixture has no line starting with ${start}`);
+  return index;
+};
+
+const DERIVED_UNKNOWN: ReadonlyArray<readonly [string, (lines: string[]) => number, string]> = [
+  [
+    'an unknown top-level header between blocks',
+    (lines) => {
+      const at = lineOf(lines, 'Kernel Assertions:');
+      lines.splice(at, 0, 'Some Future Block:');
+      return at + 1;
+    },
+    'unrecognized header at line',
+  ],
+  [
+    'a second owning-process header',
+    (lines) => {
+      const at = lineOf(lines, 'Kernel Assertions:');
+      lines.splice(at, 0, 'Listed by owning process:');
+      return at + 1;
+    },
+    'duplicate owning-process header at line',
+  ],
+  [
+    'a second system-wide header',
+    (lines) => {
+      const at = lineOf(lines, 'Kernel Assertions:');
+      lines.splice(at, 0, 'Assertion status system-wide:');
+      return at + 1;
+    },
+    'duplicate system-wide header at line',
+  ],
+  [
+    'a malformed system-wide line',
+    (lines) => {
+      const at = lineOf(lines, '   BackgroundTask');
+      lines[at] = '   BackgroundTask                 many';
+      return at + 1;
+    },
+    'unrecognized system-wide line',
+  ],
+  [
+    'two Created for PID lines under one holder',
+    (lines) => {
+      const at = lineOf(lines, '\tCreated for PID: 662.');
+      lines.splice(at + 1, 0, '\tCreated for PID: 663. ');
+      return at + 2;
+    },
+    'second created-for line at',
+  ],
+  [
+    'an indented line before the first header',
+    (lines) => {
+      lines.splice(1, 0, '   BackgroundTask                 0');
+      return 2;
+    },
+    'indented line before a header at line',
+  ],
+];
+
+for (const [name, edit, reason] of DERIVED_UNKNOWN) {
+  test(`${name} is unknown with an exact reason`, () => {
+    const lines = fixture('pmset-g-assertions.txt').split('\n');
+    const at = edit(lines);
+    expect(parseAssertions(lines.join('\n'))).toEqual({
+      kind: 'unknown',
+      reason: `${reason} ${at}`,
+    });
+  });
+}
+
+test('a cut after a complete holder is unknown: the Kernel Assertions header never arrived', () => {
+  const reason = 'no kernel-assertions header, so the output may be truncated';
+  expect(parseAssertions(fixture('pmset-g-assertions.cut-after-complete-holder.txt'))).toEqual({
+    kind: 'unknown',
+    reason,
+  });
+  const lines = fixture('pmset-g-assertions.txt').split('\n');
+  const kernel = lineOf(lines, 'Kernel Assertions:');
+  for (let cut = 3; cut <= kernel; cut += 1) {
+    const text = `${lines.slice(0, cut).join('\n')}\n`;
+    expect(parseAssertions(text).kind).toBe('unknown');
+  }
+  expect(parseAssertions(`${lines.slice(0, kernel + 1).join('\n')}\n`).kind).toBe('ok');
+});
