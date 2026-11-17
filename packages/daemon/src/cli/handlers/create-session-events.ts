@@ -32,7 +32,10 @@ import {
   parseWorkspaceRequest,
   prepareWorkspace,
 } from '../../workspace/worktree.ts';
-import { spawnRemiDaemon as defaultSpawnRemiDaemon } from '../daemon-manager.ts';
+import {
+  ProfileRefusedError,
+  spawnRemiDaemon as defaultSpawnRemiDaemon,
+} from '../daemon-manager.ts';
 import { log, logError } from '../logger.ts';
 import { normalizeProjectPath, resolveRequestedSessionDirectory } from '../path-resolver.ts';
 import type { SendToConnection } from './trivial-events.ts';
@@ -376,7 +379,13 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
             : `; the worktree it was made for stays at ${escapeUnsafeText(made.directory)} (nothing deletes a worktree, #1236)`
         }`,
       );
-      return { ok: false, error: START_FAILED_TEXT };
+      return {
+        ok: false,
+        error:
+          err instanceof ProfileRefusedError
+            ? "The session's profile could not start. Run remi profile ls on the machine."
+            : START_FAILED_TEXT,
+      };
     }
   };
 

@@ -135,7 +135,8 @@ export interface PtyLaunch {
    * daemon's own, or `xterm-256color`) for every launch, Claude's included
    * (`pty/pty-session.ts`).
    */
-  readonly childEnv: Readonly<Record<string, string>>;
+  readonly childEnv: Readonly<Record<string, string | undefined>>;
+  readonly completeEnv?: boolean;
 }
 
 /**
@@ -260,6 +261,7 @@ export function createPtySessionForSession(
       cwd: workingDirectory,
       size: termSize,
       env,
+      completeEnv: launch?.completeEnv ?? false,
     },
     {
       onRawData: (data: Uint8Array) => {

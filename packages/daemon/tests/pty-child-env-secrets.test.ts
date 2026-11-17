@@ -10,7 +10,10 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { PROFILE_CREDENTIAL_ENV } from '../src/profiles/profile-env';
+import {
+  PROFILE_CREDENTIAL_ENV,
+  PROFILE_CREDENTIAL_ENV_PREFIXES,
+} from '../src/profiles/profile-env';
 import { PTYSession } from '../src/pty/pty-session';
 
 const SECRETS = {
@@ -156,8 +159,58 @@ describe('the denylist covers every secret the daemon reads (#1249)', () => {
       'OPENAI_API_KEY',
       'CODEX_ACCESS_TOKEN',
       'CODEX_API_KEY',
+      'ANTHROPIC_AWS_WORKSPACE_ID',
+      'ANTHROPIC_GOOGLE_CLOUD_WORKSPACE_ID',
+      'ANTHROPIC_GOOGLE_CLOUD_PROJECT',
+      'ANTHROPIC_VERTEX_PROJECT_ID',
+      'ANTHROPIC_FOUNDRY_RESOURCE',
+      'ANTHROPIC_AWS_BASE_URL',
+      'ANTHROPIC_BEDROCK_BASE_URL',
+      'ANTHROPIC_BEDROCK_MANTLE_BASE_URL',
+      'ANTHROPIC_FOUNDRY_BASE_URL',
+      'ANTHROPIC_GOOGLE_CLOUD_BASE_URL',
+      'ANTHROPIC_VERTEX_BASE_URL',
+      'CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH',
+      'CLAUDE_CODE_SKIP_ANTHROPIC_GOOGLE_CLOUD_AUTH',
+      'CLAUDE_CODE_SKIP_BEDROCK_AUTH',
+      'CLAUDE_CODE_SKIP_FOUNDRY_AUTH',
+      'CLAUDE_CODE_SKIP_MANTLE_AUTH',
+      'CLAUDE_CODE_SKIP_VERTEX_AUTH',
+      'OPENAI_FEDERATION_RULE_ID',
+      'OPENAI_IDENTITY_TOKEN_FILE',
+      'OPENAI_WORKLOAD_IDENTITY_CONTEXT',
+      'CODEX_AUTHAPI_BASE_URL',
+      'CODEX_REFRESH_TOKEN_URL_OVERRIDE',
+      'CODEX_REVOKE_TOKEN_URL_OVERRIDE',
+      'CODEX_APP_SERVER_LOGIN_CLIENT_ID',
+      'OPENAI_BASE_URL',
+      'AWS_ACCESS_KEY_ID',
+      'AWS_SECRET_ACCESS_KEY',
+      'AWS_SESSION_TOKEN',
+      'AWS_SECURITY_TOKEN',
+      'AWS_PROFILE',
+      'AWS_DEFAULT_PROFILE',
+      'AWS_CONFIG_FILE',
+      'AWS_SHARED_CREDENTIALS_FILE',
+      'AWS_WEB_IDENTITY_TOKEN_FILE',
+      'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+      'GOOGLE_APPLICATION_CREDENTIALS',
+      'ANTHROPIC_ENVIRONMENT_ID',
+      'ANTHROPIC_SESSION_ID',
+      'ANTHROPIC_WEBHOOK_SIGNING_KEY',
+      'ANTHROPIC_WORK_ID',
+      'ANTHROPIC_WORK_SECRET',
+      'CLAUDE_CODE_CUSTOM_OAUTH_URL',
+      'CLAUDE_CODE_DESIGN_OAUTH_CLIENT_ID',
+      'CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH',
+      'CLAUDE_CODE_SDK_HAS_SESSIONS_OAUTH_REFRESH',
     ];
+    expect(expected).toHaveLength(85);
     expect([...PROFILE_CREDENTIAL_ENV].sort()).toEqual([...expected].sort());
+    expect(PROFILE_CREDENTIAL_ENV_PREFIXES).toEqual([
+      'ANTHROPIC_SECRET_PLACEHOLDER_',
+      'CLAUDE_CODE_OAUTH_',
+    ]);
   });
   test('each environment variable read under packages/daemon/src whose name says secret is denied', async () => {
     const { REMI_SECRET_ENV } = await import('../src/pty/child-env');
@@ -171,7 +224,11 @@ describe('the denylist covers every secret the daemon reads (#1249)', () => {
 
     expect(names.size).toBeGreaterThan(0);
     for (const name of names) {
-      if (!NOT_ENVIRONMENT.has(name) && !PROFILE_CREDENTIAL_ENV.includes(name))
+      if (
+        !NOT_ENVIRONMENT.has(name) &&
+        !PROFILE_CREDENTIAL_ENV.includes(name) &&
+        !PROFILE_CREDENTIAL_ENV_PREFIXES.includes(name)
+      )
         expect(REMI_SECRET_ENV).toContain(name);
     }
   });

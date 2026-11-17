@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { parse as parseToml } from 'smol-toml';
 import { canonicalPath } from './resolve-profile.ts';
 
 type Source =
@@ -48,19 +47,6 @@ function provider(value: unknown): Provider {
     ? value
     : 'other';
 }
-/** A missing or malformed file is not evidence of an isolated Codex store. */
-export function codexUsesFileStore(dir: string): boolean {
-  try {
-    return (
-      parseToml(fs.readFileSync(path.join(dir, 'config.toml'), 'utf8'))[
-        'cli_auth_credentials_store'
-      ] === 'file'
-    );
-  } catch {
-    return false;
-  }
-}
-
 export async function checkLogin(options: {
   harness: 'claude' | 'codex';
   expects: string;
@@ -74,8 +60,6 @@ export async function checkLogin(options: {
   const dir = env[harness === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME'];
   if (!dir || !fs.existsSync(dir)) return { login: 'signed_out', noDirectory: true };
   if (expects !== 'subscription' && expects !== 'api_key')
-    return { login: 'unknown', reason: 'not_checked' };
-  if (harness === 'codex' && !codexUsesFileStore(dir))
     return { login: 'unknown', reason: 'not_checked' };
   const command = options.command ?? Bun.which(harness, { PATH: env['PATH'] ?? '' });
   if (!command || !path.isAbsolute(command)) return { login: 'unknown', reason: 'harness_missing' };

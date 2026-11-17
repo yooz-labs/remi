@@ -92,7 +92,7 @@ test('real CLI reports states without identity or environment values', () => {
     const config = ['signed', 'out', 'other', 'unknown']
       .map(
         (name) =>
-          `[profiles.${name}]\nlabel="${name}"\nenv={AWS_PROFILE="planted-value"}\n[profiles.${name}.claude]\ndir=${JSON.stringify(path.join(f.root, name))}\nexpects="subscription"\n`,
+          `[profiles.${name}]\nlabel="${name}"\nenv={MY_TOOL_MODE="planted-value"}\n[profiles.${name}.claude]\ndir=${JSON.stringify(path.join(f.root, name))}\nexpects="subscription"\n`,
       )
       .join('');
     fs.writeFileSync(f.config, config);
@@ -107,7 +107,7 @@ test('real CLI reports states without identity or environment values', () => {
     ])
       expect(listing.out).toContain(state);
     const show = f.run('show', 'signed');
-    expect(show.out).toContain('AWS_PROFILE');
+    expect(show.out).toContain('MY_TOOL_MODE');
     for (const output of [listing.out, listing.err, show.out, show.err]) {
       expect(output).not.toContain('planted@example.com');
       expect(output).not.toContain('planted-value');
@@ -117,7 +117,7 @@ test('real CLI reports states without identity or environment values', () => {
   }
 });
 
-test('real CLI does not invoke Codex without an explicit file store', () => {
+test('real CLI checks Codex with default, keyring and file stores', () => {
   const f = fixture();
   try {
     const codexDir = path.join(f.root, 'codex');
@@ -132,18 +132,17 @@ test('real CLI does not invoke Codex without an explicit file store', () => {
           path.join(codexDir, 'config.toml'),
           `cli_auth_credentials_store = "${store}"\n`,
         );
-      expect(f.run('ls').out).toContain('codex: unknown (not_checked)');
-      expect(fs.existsSync(f.log)).toBe(false);
+      expect(f.run('ls').out).toContain('codex: signed in');
     }
     fs.writeFileSync(path.join(codexDir, 'config.toml'), 'cli_auth_credentials_store = "file"\n');
     expect(f.run('ls').out).toContain('codex: signed in');
-    expect(fs.readFileSync(f.log, 'utf8')).toBe('login status\n');
+    expect(fs.readFileSync(f.log, 'utf8')).toBe('login status\nlogin status\nlogin status\n');
   } finally {
     fs.rmSync(f.root, { recursive: true, force: true });
   }
 });
 
-test('login requires a terminal and an isolated Codex file store', async () => {
+test('login requires a terminal and accepts Codex stores', async () => {
   const f = fixture();
   const savedPath = process.env['PATH'];
   const savedLog = process.env['FAKE_LOG'];
@@ -175,16 +174,14 @@ test('login requires a terminal and an isolated Codex file store', async () => {
     const terminal = { ...io, isTerminal: () => true };
     expect(
       await runProfileCommand(['login', 'work', '--harness', 'codex'], profiles, terminal),
-    ).toBe(1);
+    ).toBe(0);
     fs.writeFileSync(
       path.join(codexDir, 'config.toml'),
       'cli_auth_credentials_store = "keyring"\n',
     );
     expect(
       await runProfileCommand(['login', 'work', '--harness', 'codex'], profiles, terminal),
-    ).toBe(1);
-    expect(lines.join('\n')).toContain('does not keep apart per profile');
-    expect(fs.existsSync(f.log)).toBe(false);
+    ).toBe(0);
     fs.writeFileSync(path.join(codexDir, 'config.toml'), 'cli_auth_credentials_store = "file"\n');
     expect(
       await runProfileCommand(['login', 'work', '--harness', 'codex'], profiles, terminal),
@@ -194,7 +191,7 @@ test('login requires a terminal and an isolated Codex file store', async () => {
     ).toBe(0);
     expect(await runProfileCommand(['login', 'api'], profiles, terminal)).toBe(0);
     expect(fs.readFileSync(f.log, 'utf8')).toBe(
-      'login\nauth login --claudeai\nauth login --console\n',
+      'login\nlogin\nlogin\nauth login --claudeai\nauth login --console\n',
     );
     expect(lines.join('\n')).toContain(
       'A Console sign-in without an API key signs out every claude.ai sign-in',

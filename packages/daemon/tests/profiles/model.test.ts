@@ -29,7 +29,7 @@ describe('profile configuration', () => {
         harness: 'claude',
         args: ['--model', 'opus'],
         folders: ['/a/b'],
-        env: { AWS_PROFILE: 'work' },
+        env: { MY_TOOL_MODE: 'work' },
         claude: { dir: '/a/claude', expects: 'subscription' },
         codex: { dir: '/a/codex', expects: 'api_key' },
       },
@@ -40,7 +40,7 @@ describe('profile configuration', () => {
         harness: 'claude',
         args: ['--model', 'opus'],
         folders: ['/other'],
-        env: { AWS_PROFILE: 'work' },
+        env: { MY_TOOL_MODE: 'work' },
         claude: { dir: '/a/claude', expects: 'subscription' },
         codex: { dir: '/a/codex', expects: 'api_key' },
       },
@@ -52,7 +52,7 @@ describe('profile configuration', () => {
       harness: 'claude',
       args: ['--model', 'opus'],
       folders: ['/a/b'],
-      env: { AWS_PROFILE: 'work' },
+      env: { MY_TOOL_MODE: 'work' },
       claude: { dir: '/a/claude', expects: 'subscription' },
       codex: { dir: '/a/codex', expects: 'api_key' },
     });
@@ -371,6 +371,97 @@ test('every credential selector is refused in profile env', () => {
     });
     expect(parsed).toEqual({ error: `profiles.work.env.${name}: not supported in this build` });
     expect(JSON.stringify(parsed)).not.toContain('PLANTED');
+  }
+});
+
+test('AWS profile selectors are not accepted in profile env', () => {
+  expect(
+    parseProfiles({
+      work: { label: 'Work', env: { AWS_PROFILE: 'work' }, claude: { expects: 'subscription' } },
+    }),
+  ).toEqual({ error: 'profiles.work.env.AWS_PROFILE: not supported in this build' });
+});
+
+test('profile directory comparisons resolve existing symlink ancestors', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-dirs-'));
+  try {
+    const target = path.join(root, 'target');
+    const link = path.join(root, 'link');
+    fs.mkdirSync(target);
+    fs.symlinkSync(target, link);
+    const parsed = parseProfiles({
+      one: { label: 'One', claude: { dir: path.join(target, 'new'), expects: 'subscription' } },
+      two: { label: 'Two', codex: { dir: path.join(link, 'new'), expects: 'subscription' } },
+    });
+    expect(parsed).toEqual({
+      error: 'profiles.two.codex.dir uses the same directory as profiles.one.claude.dir',
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('profile directories reject lexical, default and remi-home aliases', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-aliases-'));
+  const savedHome = process.env['HOME'];
+  const savedRemi = process.env['REMI_HOME'];
+  try {
+    const home = path.join(root, 'home');
+    const target = path.join(root, 'target');
+    const remi = path.join(root, 'remi');
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    fs.mkdirSync(target);
+    fs.mkdirSync(path.join(remi, 'p', 'one', 'claude'), { recursive: true });
+    fs.symlinkSync(path.join(home, '.claude'), path.join(root, 'default-alias'));
+    fs.symlinkSync(remi, path.join(root, 'remi-alias'));
+    process.env['HOME'] = home;
+    process.env['REMI_HOME'] = path.join(root, 'remi-alias');
+    const pair = (left: string, right: string) =>
+      parseProfiles({
+        one: { label: 'One', claude: { dir: left, expects: 'subscription' } },
+        two: { label: 'Two', codex: { dir: right, expects: 'subscription' } },
+      });
+    for (const alias of [`${target}/`, path.join(target, '..', 'target')]) {
+      expect(pair(target, alias)).toEqual({
+        error: 'profiles.two.codex.dir uses the same directory as profiles.one.claude.dir',
+      });
+    }
+    // Bun caches os.homedir at process start, so set HOME on a fresh process.
+    const program = `import {parseProfiles} from ${JSON.stringify(path.resolve(import.meta.dir, '../../src/profiles/profile-config.ts'))}; console.log(JSON.stringify(parseProfiles({one:{label:'One',claude:{dir:${JSON.stringify(path.join(root, 'default-alias'))},expects:'subscription'}}})));`;
+    const child = Bun.spawnSync([process.execPath, '-e', program], {
+      env: { HOME: home, PATH: '/usr/bin:/bin', REMI_HOME: path.join(root, 'remi-alias') },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(child.exitCode).toBe(0);
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      error:
+        "profiles.one.claude.dir: This is the built-in default's directory; use the built-in default instead",
+    });
+    expect(
+      parseProfiles({
+        one: { label: 'One', claude: { expects: 'subscription' } },
+        two: {
+          label: 'Two',
+          codex: { dir: path.join(remi, 'p', 'one', 'claude'), expects: 'subscription' },
+        },
+      }),
+    ).toEqual({
+      error: 'profiles.two.codex.dir uses the same directory as profiles.one.claude.dir',
+    });
+    const caseName = path.join(root, 'CaseProbe');
+    fs.writeFileSync(caseName, '');
+    if (fs.existsSync(path.join(root, 'caseprobe'))) {
+      expect(pair(caseName, path.join(root, 'caseprobe'))).toEqual({
+        error: 'profiles.two.codex.dir uses the same directory as profiles.one.claude.dir',
+      });
+    }
+  } finally {
+    if (savedHome === undefined) Reflect.deleteProperty(process.env, 'HOME');
+    else process.env['HOME'] = savedHome;
+    if (savedRemi === undefined) Reflect.deleteProperty(process.env, 'REMI_HOME');
+    else process.env['REMI_HOME'] = savedRemi;
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

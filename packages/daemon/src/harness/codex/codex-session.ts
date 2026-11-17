@@ -88,6 +88,11 @@ import type { ThreadStatus } from './thread-protocol.ts';
 import { ThreadClaimedError, ThreadTracker, type ThreadTrackerDeps } from './thread-tracker.ts';
 
 export interface CodexLaunchDeps {
+  profileMetadata?: Pick<
+    import('../../session/session-store.ts').StoredSession,
+    'profile' | 'profileSnapshot'
+  >;
+  completeEnv?: boolean;
   sessionRegistry: SessionRegistry;
   sessionStore: SessionStore;
   bindingStore: SessionBindingStore;
@@ -169,8 +174,12 @@ export function codexLaunchRefusal(error: unknown): { message: string; exitCode:
  * one shell word, so pasting the line cannot run anything else (a thread id is a UUID by
  * the time it is stored, but it is printed from a file, so it is quoted anyway).
  */
-export function codexResumeCommand(projectPath: string, threadId: string): string {
-  return `cd ${shellQuote(projectPath)} && remi codex resume ${shellQuote(threadId)}`;
+export function codexResumeCommand(
+  projectPath: string,
+  threadId: string,
+  profile?: string,
+): string {
+  return `cd ${shellQuote(projectPath)} && remi codex ${profile ? `--remi-profile ${shellQuote(profile)} ` : ''}resume ${shellQuote(threadId)}`;
 }
 
 /** What the launch prints so nobody learns the hazard from a lost session id (see the file header). */
@@ -322,6 +331,7 @@ export function createCodexSession(
       startedAt: new Date().toISOString(),
       exitedAt: null,
       exitCode: null,
+      ...deps.profileMetadata,
     });
   } catch (error) {
     // Another session took the thread between the check above and this write: a refusal,
@@ -695,7 +705,11 @@ export function createCodexSession(
       passThrough: ctx.passThrough,
       // Codex's inline mode manages its own scroll regions; the reserved status row was built for Claude's.
       reservedRows: 0,
-      launch: { command: 'codex', childEnv: {} },
+      launch: {
+        command: 'codex',
+        childEnv: deps.completeEnv ? deps.env() : {},
+        completeEnv: deps.completeEnv ?? false,
+      },
     },
   );
 

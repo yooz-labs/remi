@@ -73,6 +73,7 @@ import type {
   SessionRegistry,
   SessionRegistryFile,
   SessionStore,
+  StoredSession,
 } from '../session/index.ts';
 import type { TranscriptDiscovery, TranscriptWatcher } from '../transcript/index.ts';
 import type { BrowserLinkLaunch } from '../tunnel/browser-link-session-host.ts';
@@ -92,6 +93,8 @@ import type {
  * terminal-notice closures of the hook bridge.
  */
 export interface ClaudeLaunchDeps {
+  profileMetadata?: Pick<StoredSession, 'profile' | 'profileSnapshot'>;
+  profileEnv?: Readonly<Record<string, string | undefined>>;
   sessionRegistry: SessionRegistry;
   sessionStore: SessionStore;
   bindingStore: SessionBindingStore;
@@ -383,6 +386,7 @@ export async function createClaudeSession(
       startedAt: new Date().toISOString(),
       exitedAt: null,
       exitCode: null,
+      ...deps.profileMetadata,
     });
 
     browserLaunch = await deps.prepareBrowser?.(sessionId, binding.claudeSessionId);
@@ -481,13 +485,15 @@ export async function createClaudeSession(
         extraArgs: binding.args,
         passThrough,
         reservedRows,
-        ...(browserLaunch && {
+        ...((browserLaunch || deps.profileEnv) && {
           launch: {
             command: 'claude',
             childEnv: {
-              ...buildClaudeChildEnv(deps.wsPort(), reservedRows),
-              BROWSER: browserLaunch.browserPath,
+              ...deps.profileEnv,
+              ...buildClaudeChildEnv(deps.wsPort(), reservedRows, deps.profileEnv ?? process.env),
+              ...(browserLaunch && { BROWSER: browserLaunch.browserPath }),
             },
+            completeEnv: deps.profileEnv !== undefined,
           },
         }),
       },

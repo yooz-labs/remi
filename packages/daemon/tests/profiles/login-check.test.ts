@@ -131,7 +131,7 @@ describe('effective login checks', () => {
     expect(fs.readdirSync(remiHome, { recursive: true })).toEqual(['visited']);
     expect(fs.readFileSync(path.join(remiHome, 'visited'), 'utf8')).not.toContain('MARKER_');
   });
-  test('refuses to consult Codex until file storage is explicit', async () => {
+  test('consults Codex for the default, keyring and file stores', async () => {
     const dir = scratch();
     const command = fake(dir, '', 0);
     const options = {
@@ -141,9 +141,9 @@ describe('effective login checks', () => {
       cwd: dir,
       command,
     };
-    expect(await checkLogin(options)).toEqual({ login: 'unknown', reason: 'not_checked' });
+    expect(await checkLogin(options)).toEqual({ login: 'signed_in' });
     fs.writeFileSync(path.join(dir, 'config.toml'), 'cli_auth_credentials_store = "keyring"\n');
-    expect(await checkLogin(options)).toEqual({ login: 'unknown', reason: 'not_checked' });
+    expect(await checkLogin(options)).toEqual({ login: 'signed_in' });
     fs.writeFileSync(path.join(dir, 'config.toml'), 'cli_auth_credentials_store = "file"\n');
     expect(await checkLogin(options)).toEqual({ login: 'signed_in' });
     expect(await checkLogin({ ...options, command: fake(dir, '', 1) })).toEqual({

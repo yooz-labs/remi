@@ -6,7 +6,7 @@ import { PROFILE_USAGE } from '../cli/help.ts';
 import { CONFIG_PATH, parseConfigText } from '../config/config.ts';
 import { remiHome } from '../config/remi-home.ts';
 import { configWarnings } from './config-warnings.ts';
-import { checkLogin, codexUsesFileStore } from './login-check.ts';
+import { checkLogin } from './login-check.ts';
 import { type Profile, type Profiles, parseProfiles } from './profile-config.ts';
 import { profileEnvironment } from './profile-env.ts';
 
@@ -275,12 +275,6 @@ async function runLogin(
   }
   if (spec.expects !== 'subscription' && spec.expects !== 'api_key') {
     io.err(`Profile ${id} expects ${spec.expects}, which this build does not support.`);
-    return 1;
-  }
-  if (harness === 'codex' && !codexUsesFileStore(spec.dir)) {
-    io.err(
-      `Profile ${id} keeps its Codex sign-in in the system keychain, which Codex does not keep apart per profile. Add this line to ${spec.dir}/config.toml and sign in again: cli_auth_credentials_store = "file"`,
-    );
     return 1;
   }
   try {

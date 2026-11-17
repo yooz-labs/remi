@@ -24,6 +24,7 @@ export {
   SessionStoreLockError,
 } from '../storage/interprocess-file-lock.ts';
 import { isProcessAlive } from './process-alive.ts';
+import { SessionProfilesFile } from './session-profiles-file.ts';
 import { shellQuote } from './shell-quote.ts';
 
 export interface StoredSession {
@@ -58,6 +59,16 @@ export interface StoredSession {
    * meaningful only together with `harness`.
    */
   harnessSessionId?: string | null | undefined;
+  profile?: string | undefined;
+  profileSnapshot?: ProfileSnapshot | undefined;
+}
+
+export interface ProfileSnapshot {
+  revision: string;
+  claudeDir?: string;
+  codexDir?: string;
+  claudeExpects?: string;
+  codexExpects?: string;
 }
 
 interface SessionsFile {
@@ -178,6 +189,15 @@ function parseStoredSession(value: unknown, index: number, filePath: string): St
   const harnessSessionId = value['harnessSessionId'];
   if (typeof harnessSessionId === 'string' || harnessSessionId === null) {
     parsed.harnessSessionId = harnessSessionId;
+  }
+  if (typeof value['profile'] === 'string') parsed.profile = value['profile'];
+  const snapshot = value['profileSnapshot'];
+  if (isRecord(snapshot) && typeof snapshot['revision'] === 'string') {
+    const result: ProfileSnapshot = { revision: snapshot['revision'] };
+    for (const key of ['claudeDir', 'codexDir', 'claudeExpects', 'codexExpects'] as const) {
+      if (typeof snapshot[key] === 'string') result[key] = snapshot[key];
+    }
+    parsed.profileSnapshot = result;
   }
   return parsed;
 }
@@ -394,7 +414,10 @@ export class SessionStore {
    * transaction. Atomic rename protects readers from torn JSON, but cannot
    * prevent two processes from overwriting each other's updates.
    */
-  private write(sessions: StoredSession[]): void {
+  private write(
+    sessions: StoredSession[],
+    addition?: { id: string; profile: string; revision: string },
+  ): void {
     this.ensureDir();
     const data: SessionsFile = { version: 1, sessions };
     // Per-writer-unique tmp path. A fixed `${filePath}.tmp` shared across
@@ -416,6 +439,10 @@ export class SessionStore {
       }
       throw err;
     }
+    new SessionProfilesFile(path.dirname(this.filePath)).reconcile(
+      sessions.map((s) => s.remiSessionId),
+      addition,
+    );
   }
 
   /**
@@ -430,7 +457,10 @@ export class SessionStore {
    * normalized `projectPath` this store actually persisted, instead of
    * silently diverging from it (#680 review).
    */
-  save(session: StoredSession): StoredSession {
+  save(
+    session: StoredSession,
+    profileEntry?: { profile: string; revision: string },
+  ): StoredSession {
     const normalized: StoredSession = {
       ...session,
       projectPath: normalizeProjectPath(session.projectPath),
@@ -439,6 +469,8 @@ export class SessionStore {
       const sessions = this.read();
       assertUniqueSessionIdentities(sessions);
       const idx = sessions.findIndex((s) => s.remiSessionId === normalized.remiSessionId);
+      const addition =
+        idx < 0 && profileEntry ? { id: normalized.remiSessionId, ...profileEntry } : undefined;
       if (idx >= 0) {
         sessions[idx] = normalized;
       } else {
@@ -452,11 +484,11 @@ export class SessionStore {
         const removeIds = new Set(exited.slice(0, toRemove).map((s) => s.remiSessionId));
         const trimmed = sessions.filter((s) => !removeIds.has(s.remiSessionId));
         assertUniqueSessionIdentities(trimmed);
-        this.write(trimmed);
+        this.write(trimmed, addition);
         return normalized;
       }
       assertUniqueSessionIdentities(sessions);
-      this.write(sessions);
+      this.write(sessions, addition);
       return normalized;
     });
   }

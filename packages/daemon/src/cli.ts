@@ -160,7 +160,7 @@ import { runConfigCommand } from './cli/cmd-config.ts';
 import { runMigratePermissionsCommand } from './cli/cmd-migrate-permissions.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
 import { runUnstickCommand } from './cli/cmd-unstick.ts';
-import { PID_FILE, readPidFileLive } from './cli/daemon-manager.ts';
+import { PID_FILE, PROFILE_REFUSED_EXIT_CODE, readPidFileLive } from './cli/daemon-manager.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
 import {
   type ConnectionHandlers,
@@ -533,7 +533,9 @@ const claudeArgs = [...parsedArgs.claudeArgs];
 
 // #1473: explicit CLI choice wins over the configured session default.
 // Hub/management commands keep Claude; a hub explicitly selects each child's harness.
-const { harnessId, remoteHarness } = resolveLaunchHarness(parsedArgs, remiConfig.harness.default);
+let { harnessId, remoteHarness } = resolveLaunchHarness(parsedArgs, remiConfig.harness.default);
+const remiProfileEnv = process.env['REMI_PROFILE'] || undefined;
+let resumeRecord: StoredSession | null = null;
 {
   // `--host` sends only what follows `--`. `--resume` is remi's own flag, so `parseArgs` consumes it
   // and it is not a loose word (G2): without this a Claude `remi new --host h --resume X` looked X
@@ -550,7 +552,9 @@ const { harnessId, remoteHarness } = resolveLaunchHarness(parsedArgs, remiConfig
           ? `This build has no ${harnessId} adapter.`
           : harnessId !== 'claude' && serveMode
             ? 'The hub hosts no session of its own, so it takes no --harness.'
-            : harnessId === 'codex' && cliResume !== undefined
+            : harnessId === 'codex' &&
+                cliResume !== undefined &&
+                (parsedArgs.harness === 'codex' || cliSubcommand === 'codex')
               ? "--resume is remi's flag for Claude sessions; resume a Codex thread with `remi codex resume <thread id>` (`remi --sessions` lists the ids)."
               : null;
   if (refusal !== null) {
@@ -905,7 +909,7 @@ if (cliShowSessions) {
       // `remi codex resume` takes the whole thread id, which the label above cuts, and runs in
       // the current directory, so the line changes into the session's own.
       if (s.harness === 'codex' && s.exitedAt !== null && recordedId) {
-        console.log(`      resume: ${codexResumeCommand(s.projectPath, recordedId)}`);
+        console.log(`      resume: ${codexResumeCommand(s.projectPath, recordedId, s.profile)}`);
       }
     }
     if (filter === 'running') {
@@ -950,6 +954,7 @@ if (cliResume !== undefined) {
     console.error('Run `remi --sessions` to see stored sessions.');
     process.exit(1);
   }
+  if (!cliDaemonMode) resumeRecord = session;
 
   if (!session.claudeSessionId) {
     console.error(
@@ -981,6 +986,16 @@ if (cliResume !== undefined) {
 
 // remi new --host (and `remi codex --host`): create session on remote daemon, then auto-attach
 if (isSessionLaunch(parsedArgs) && cliHost) {
+  if (parsedArgs.remiProfile && parsedArgs.remiProfile !== 'default') {
+    console.error(
+      "Choosing a profile for a session on another machine is not supported yet. That machine's folder mapping or default profile applies; run the command without --remi-profile.",
+    );
+    process.exit(2);
+  }
+  if (remiProfileEnv && remiProfileEnv !== 'default')
+    console.error(
+      'REMI_PROFILE applies to this machine only; the remote machine chooses by its own folder mapping or default.',
+    );
   // Only the words after `--` go to the remote session. A loose one used to be dropped without a
   // word, so the host started its own defaults (a fresh session where a resume was typed, its own
   // sandbox where `-s read-only` was): refused instead, before anything is sent (#1179 review, G2).
@@ -1079,6 +1094,167 @@ if (isSessionLaunch(parsedArgs) && cliDir && !cliHost) {
     process.exit(1);
   }
   process.chdir(dirResult.resolved);
+}
+
+import { configWarnings } from './profiles/config-warnings.ts';
+import { checkLogin } from './profiles/login-check.ts';
+import type { Profile } from './profiles/profile-config.ts';
+import { profileLaunchEnvironment } from './profiles/profile-env.ts';
+// A session daemon selects once, after its working directory is known and
+// before constructing the harness or transcript discovery.
+import { resolveProfile } from './profiles/resolve-profile.ts';
+import { resumeProfile as validateResumeProfile } from './profiles/resume-profile.ts';
+
+let selectedProfile: Profile | undefined;
+let launchEnvironment: Record<string, string | undefined> | undefined;
+let profileMetadata: Pick<StoredSession, 'profile' | 'profileSnapshot'> | undefined;
+if (isSessionLaunch(parsedArgs) && !serveMode) {
+  function refuseProfile(message: string): never {
+    console.error(message);
+    log(message);
+    process.exit(cliDaemonMode ? PROFILE_REFUSED_EXIT_CODE : 1);
+  }
+  if (!resumeRecord && harnessId === 'claude') {
+    const args = cliDaemonMode ? parsedArgs.explicitArgs : claudeArgs;
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+      const id =
+        arg === '--resume' || arg === '-r'
+          ? args[i + 1]
+          : arg?.startsWith('--resume=')
+            ? arg.slice(9)
+            : undefined;
+      if (id && uuid.test(id)) {
+        try {
+          resumeRecord = new SessionStore().findResumableByClaudeSessionId(id.toLowerCase());
+        } catch (error) {
+          refuseProfile(errorToString(error));
+        }
+        break;
+      }
+    }
+  }
+  if (!resumeRecord && harnessId === 'codex') {
+    const args = validateCodexArgs(
+      cliDaemonMode ? parsedArgs.explicitArgs : parsedArgs.passthroughArgs,
+    );
+    if (args.ok && args.resumeThreadId) {
+      try {
+        resumeRecord =
+          new SessionStore()
+            .list()
+            .find(
+              (s) =>
+                s.harness === 'codex' && s.harnessSessionId?.toLowerCase() === args.resumeThreadId,
+            ) ?? null;
+      } catch (error) {
+        refuseProfile(errorToString(error));
+      }
+    }
+  }
+  let resumeProfile: string | undefined;
+  if (resumeRecord) {
+    const checked = validateResumeProfile(resumeRecord, remiConfig.profiles);
+    if ('error' in checked) refuseProfile(checked.error);
+    resumeProfile = checked.id;
+    const recordedProfile = resumeProfile ?? 'default';
+    if (
+      (parsedArgs.remiProfile && parsedArgs.remiProfile !== recordedProfile) ||
+      (!cliDaemonMode && remiProfileEnv && remiProfileEnv !== recordedProfile)
+    )
+      refuseProfile(
+        `This session belongs to profile ${recordedProfile}. Resume it without --remi-profile, or with --remi-profile ${recordedProfile}.`,
+      );
+  }
+  const resolution = resolveProfile({
+    profiles: remiConfig.profiles,
+    cwd: process.cwd(),
+    ...(resumeRecord
+      ? { flag: resumeProfile ?? 'default' }
+      : {
+          ...(parsedArgs.remiProfile !== undefined && { flag: parsedArgs.remiProfile }),
+          ...(remiProfileEnv !== undefined && { envValue: remiProfileEnv }),
+        }),
+  });
+  if ('error' in resolution) refuseProfile(resolution.error);
+  if (resolution.warning) {
+    console.error(resolution.warning);
+    log(resolution.warning);
+  }
+  if (resolution.id !== 'default') {
+    if ('error' in remiConfig.profiles) refuseProfile(remiConfig.profiles.error);
+    selectedProfile = remiConfig.profiles.entries[resolution.id];
+    if (!selectedProfile) refuseProfile(`Unknown profile ${resolution.id}. Run remi profile ls.`);
+    const explicitHarness =
+      parsedArgs.harness ??
+      (cliSubcommand === 'codex' || cliSubcommand === 'claude' ? cliSubcommand : undefined);
+    harnessId =
+      cliResume !== undefined
+        ? 'claude'
+        : (explicitHarness ?? selectedProfile.harness ?? remiConfig.harness.default);
+    if (harnessId !== 'claude' && harnessId !== 'codex')
+      refuseProfile(`This build has no ${harnessId} adapter.`);
+    const spec = selectedProfile[harnessId];
+    if (!spec) refuseProfile(`Profile ${resolution.id} does not configure ${harnessId}.`);
+    if (spec.expects !== 'subscription' && spec.expects !== 'api_key')
+      refuseProfile(
+        `Profile ${resolution.id} expects ${spec.expects}, which this build does not support.`,
+      );
+    try {
+      launchEnvironment = profileLaunchEnvironment(process.env, resolution.id, selectedProfile);
+    } catch (error) {
+      refuseProfile(errorToString(error));
+    }
+    const status = await checkLogin({
+      harness: harnessId,
+      expects: spec.expects,
+      env: launchEnvironment,
+      cwd: process.cwd(),
+      log,
+    });
+    if (status.login === 'signed_out')
+      refuseProfile(
+        `Profile ${resolution.id} is not signed in to ${harnessId}. Run: remi profile login ${resolution.id} --harness ${harnessId}`,
+      );
+    if (status.login === 'not_own_login')
+      refuseProfile(`This profile's login is not what will be used (${status.source ?? 'other'}).`);
+    if (status.login === 'unknown')
+      refuseProfile(
+        `Could not confirm the sign-in of profile ${resolution.id} (${status.reason ?? 'error'}). Run: remi profile ls`,
+      );
+    if (selectedProfile.claude) {
+      for (const warning of configWarnings({
+        claudeDir: selectedProfile.claude.dir,
+        expects: selectedProfile.claude.expects,
+        cwd: process.cwd(),
+      })) {
+        const message = `Profile warning: ${warning.source}: ${warning.key}`;
+        console.error(message);
+        log(message);
+      }
+    }
+    profileMetadata = {
+      profile: resolution.id,
+      profileSnapshot: {
+        revision: selectedProfile.revision,
+        ...(selectedProfile.claude && {
+          claudeDir: selectedProfile.claude.dir,
+          claudeExpects: selectedProfile.claude.expects,
+        }),
+        ...(selectedProfile.codex && {
+          codexDir: selectedProfile.codex.dir,
+          codexExpects: selectedProfile.codex.expects,
+        }),
+      },
+    };
+    if (harnessId === 'claude') claudeArgs.push(...selectedProfile.args);
+  } else if (cliResume !== undefined && harnessId === 'codex') {
+    console.error(
+      "--resume is remi's flag for Claude sessions; resume a Codex thread with `remi codex resume <thread id>` (`remi --sessions` lists the ids).",
+    );
+    process.exit(2);
+  }
 }
 
 // #1025: `gitInfo` above was computed from process.cwd() at module load,
@@ -1183,7 +1359,9 @@ if (cliDaemonMode) {
 // Core components
 // ---------------------------------------------------------------------------
 const _ptyManager = new PTYManager();
-const transcriptDiscovery = new TranscriptDiscovery();
+const transcriptDiscovery = new TranscriptDiscovery(
+  selectedProfile?.claude ? { projectsDir: path.join(selectedProfile.claude.dir, 'projects') } : {},
+);
 const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
 const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new Map();
 // Per-session harness sessions, keyed by sessionId (#1164): the answer, chat
@@ -1550,8 +1728,8 @@ if (
         userHome: os.homedir(),
         workingDirectory,
         harness: harnessId,
-        claudeConfigDirectory: process.env['CLAUDE_CONFIG_DIR'],
-        codexHome: process.env['CODEX_HOME'],
+        claudeConfigDirectory: selectedProfile?.claude?.dir ?? process.env['CLAUDE_CONFIG_DIR'],
+        codexHome: selectedProfile?.codex?.dir ?? process.env['CODEX_HOME'],
       }),
     onReady: (id) => publishDownloadReadiness(id),
   });
@@ -2245,6 +2423,8 @@ const inputHandlers: InputHandlers = createInputHandlers({
 // session launches, not when the harness is built, so they are passed as
 // getters.
 const claudeHarness = new ClaudeHarness(transcriptDiscovery, {
+  ...(profileMetadata && { profileMetadata }),
+  ...(launchEnvironment && { profileEnv: launchEnvironment }),
   sessionRegistry,
   sessionStore,
   bindingStore,
@@ -2314,7 +2494,9 @@ const codexHarness =
         currentPort: () => PORT,
         wsPort: () => remiStatus.wsPort,
         cleanup,
-        env: () => process.env,
+        env: () => launchEnvironment ?? process.env,
+        ...(launchEnvironment && { completeEnv: true }),
+        ...(profileMetadata && { profileMetadata }),
         onQuestionResolved,
         legacyWriters,
         remiVersion: REMI_VERSION,
@@ -2423,7 +2605,10 @@ if (codexHarness) {
     process.exit(2);
   }
   const preflight = codexHarness.preflight(
-    cliDaemonMode ? parsedArgs.explicitArgs : parsedArgs.passthroughArgs,
+    [
+      ...(selectedProfile?.args ?? []),
+      ...(cliDaemonMode ? parsedArgs.explicitArgs : parsedArgs.passthroughArgs),
+    ],
     process.cwd(),
   );
   if (!preflight.ok) {
@@ -2526,6 +2711,22 @@ const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers
   bindingStore,
   transcriptDiscovery,
   harness,
+  checkResumeProfile: (claudeSessionId) => {
+    try {
+      const record = sessionStore.findResumableByClaudeSessionId(claudeSessionId.toLowerCase());
+      if (!record)
+        return selectedProfile
+          ? 'This session belongs to profile default, and this remi runs a different one. Resume it through the hub or with remi --resume on the machine.'
+          : null;
+      const checked = validateResumeProfile(record, remiConfig.profiles);
+      if ('error' in checked) return checked.error;
+      return checked.id === (profileMetadata?.profile ?? 'default')
+        ? null
+        : `This session belongs to profile ${checked.id}, and this remi runs a different one. Resume it through the hub or with remi --resume on the machine.`;
+    } catch (error) {
+      return errorToString(error);
+    }
+  },
   createNewSession,
   send: sendToConnection,
 });
@@ -3670,7 +3871,9 @@ if (cliDaemonMode) {
         sessionId,
         workingDirectory,
         ptyMessageFanout,
-        harnessId === 'codex' ? codexLaunchArgs : [...parsedArgs.explicitArgs],
+        harnessId === 'codex'
+          ? codexLaunchArgs
+          : [...parsedArgs.explicitArgs, ...(selectedProfile?.args ?? [])],
       );
     } catch (err) {
       const msg = errorToString(err);
