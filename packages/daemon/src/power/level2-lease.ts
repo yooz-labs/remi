@@ -14,13 +14,19 @@ import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { writeRestrictedJson } from '../storage/restricted-json.ts';
-import { PS_PATH, keepAwakeDir } from './level2-commands.ts';
+import { PS_PATH, keepAwakeDir, positiveIntegerOption } from './level2-commands.ts';
 
 export const LEASE_VERSION = 1;
-/** A lease file larger than this is invalid and never parsed. */
-export const LEASE_MAX_BYTES = 4096;
-/** The deadline of one `ps` run in `processStartTime`. */
-export const PROCESS_START_TIME_TIMEOUT_MS = 2_000;
+
+// The defaults of the options below. Every number is an option (owner rule);
+// the configuration keys that set them arrive with the hub and command slices
+// (L2-HUB, L2-CLI).
+/** `readLease` `maxBytes`: a larger lease file is invalid and never parsed. */
+export const DEFAULT_LEASE_MAX_BYTES = 4096;
+/** `processStartTime` `timeoutMs`: the deadline of one `ps` run. */
+export const DEFAULT_PROCESS_START_TIME_TIMEOUT_MS = 2_000;
+/** `startTimeMaxLength`: the longest `hubStartTime` accepted; `ps` prints 24 characters. */
+export const DEFAULT_START_TIME_MAX_LENGTH = 64;
 
 export interface Level2Lease {
   version: typeof LEASE_VERSION;
@@ -45,8 +51,18 @@ export type LeaseRead =
   | { kind: 'valid'; lease: Level2Lease }
   | { kind: 'invalid'; reason: string };
 
+export interface LeaseValidationOptions {
+  /** Default `DEFAULT_START_TIME_MAX_LENGTH`. */
+  startTimeMaxLength?: number | undefined;
+}
+
+export interface LeaseReadOptions extends LeaseValidationOptions {
+  /** Default `DEFAULT_LEASE_MAX_BYTES`. */
+  maxBytes?: number | undefined;
+}
+
 /** The keys of a version 1 lease, in the order the writer emits them. */
-const LEASE_KEYS = [
+export const LEASE_KEYS = [
   'version',
   'hubPid',
   'hubStartTime',
@@ -67,17 +83,20 @@ const INTEGER_MINIMUMS = {
   revertBatteryPercent: 0,
 } as const;
 
-/** The longest `hubStartTime` accepted; `ps` prints 24 characters. */
-const START_TIME_MAX_LENGTH = 64;
-
 export function leasePath(remiHome: string): string {
   return path.join(keepAwakeDir(remiHome), 'lease.json');
 }
 
-/** Why `value` is not a version 1 lease, or the lease. */
+/** Why `value` is not a version 1 lease, or the lease. Throws for a non-positive option. */
 export function validateLease(
   value: unknown,
+  options: LeaseValidationOptions = {},
 ): { ok: true; lease: Level2Lease } | { ok: false; reason: string } {
+  const startTimeMaxLength = positiveIntegerOption(
+    'startTimeMaxLength',
+    options.startTimeMaxLength,
+    DEFAULT_START_TIME_MAX_LENGTH,
+  );
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return { ok: false, reason: 'not a JSON object' };
   }
@@ -105,7 +124,7 @@ export function validateLease(
   if (
     typeof start !== 'string' ||
     start === '' ||
-    start.length > START_TIME_MAX_LENGTH ||
+    start.length > startTimeMaxLength ||
     start.trim() !== start ||
     /[\u0000-\u001f\u007f]/.test(start)
   ) {
@@ -137,9 +156,13 @@ function assertRemiHome(remiHome: string): void {
  * reader sees the previous lease or this one, never part of one. Throws for a
  * lease `readLease` would call invalid, and for any write failure.
  */
-export function writeLease(remiHome: string, lease: Level2Lease): void {
+export function writeLease(
+  remiHome: string,
+  lease: Level2Lease,
+  options: LeaseValidationOptions = {},
+): void {
   assertRemiHome(remiHome);
-  const checked = validateLease(lease);
+  const checked = validateLease(lease, options);
   if (!checked.ok) throw new Error(`refusing to write an invalid lease: ${checked.reason}`);
   const ordered = Object.fromEntries(LEASE_KEYS.map((key) => [key, checked.lease[key]]));
   writeRestrictedJson(leasePath(remiHome), ordered);
@@ -152,11 +175,23 @@ function currentUid(): number {
 /**
  * Reads the lease. `none` when there is no file; `invalid` for a symlink, a
  * file that is not regular, not owned by `ownerUid` (the current user unless a
- * test names another), larger than 4 KiB, not JSON, or not exactly a version 1
- * lease (an extra or missing key, a wrong type, a non-integer).
+ * test names another), larger than `maxBytes`, not JSON, or not exactly a
+ * version 1 lease (an extra or missing key, a wrong type, a non-integer, a
+ * value out of range). Throws for a non-positive option.
  */
-export function readLease(remiHome: string, ownerUid: number = currentUid()): LeaseRead {
+export function readLease(
+  remiHome: string,
+  ownerUid: number = currentUid(),
+  options: LeaseReadOptions = {},
+): LeaseRead {
   assertRemiHome(remiHome);
+  const maxBytes = positiveIntegerOption('maxBytes', options.maxBytes, DEFAULT_LEASE_MAX_BYTES);
+  // Checked here too, so a bad option throws even when there is no lease to read.
+  positiveIntegerOption(
+    'startTimeMaxLength',
+    options.startTimeMaxLength,
+    DEFAULT_START_TIME_MAX_LENGTH,
+  );
   const file = leasePath(remiHome);
   let fd: number;
   try {
@@ -178,13 +213,13 @@ export function readLease(remiHome: string, ownerUid: number = currentUid()): Le
     if (stat.uid !== ownerUid) {
       return { kind: 'invalid', reason: 'the lease is not owned by the current user' };
     }
-    if (stat.size > LEASE_MAX_BYTES) {
-      return { kind: 'invalid', reason: `the lease is larger than ${LEASE_MAX_BYTES} bytes` };
+    if (stat.size > maxBytes) {
+      return { kind: 'invalid', reason: `the lease is larger than ${maxBytes} bytes` };
     }
-    const buffer = Buffer.alloc(LEASE_MAX_BYTES + 1);
+    const buffer = Buffer.alloc(maxBytes + 1);
     const length = fs.readSync(fd, buffer, 0, buffer.length, 0);
-    if (length > LEASE_MAX_BYTES) {
-      return { kind: 'invalid', reason: `the lease is larger than ${LEASE_MAX_BYTES} bytes` };
+    if (length > maxBytes) {
+      return { kind: 'invalid', reason: `the lease is larger than ${maxBytes} bytes` };
     }
     text = buffer.subarray(0, length).toString('utf8');
   } catch (error) {
@@ -199,7 +234,7 @@ export function readLease(remiHome: string, ownerUid: number = currentUid()): Le
   } catch {
     return { kind: 'invalid', reason: 'the lease is not valid JSON' };
   }
-  const checked = validateLease(parsed);
+  const checked = validateLease(parsed, options);
   return checked.ok
     ? { kind: 'valid', lease: checked.lease }
     : { kind: 'invalid', reason: checked.reason };
@@ -214,17 +249,26 @@ export function deleteLease(remiHome: string): void {
 /**
  * The start time of `pid` as `LC_ALL=C TZ=UTC0 ps -o lstart= -p PID` prints it,
  * trimmed, or null when the process does not exist, `ps` fails, or it takes
- * longer than 2 seconds. `ps` prints local time, so UTC is pinned: a time-zone
- * change while traveling must not make a live hub look gone. The watchdog
- * script reads the same command the same way.
+ * longer than `timeoutMs` (default `DEFAULT_PROCESS_START_TIME_TIMEOUT_MS`).
+ * `ps` prints local time, so UTC is pinned: a time-zone change while traveling
+ * must not make a live hub look gone. The watchdog script reads the same
+ * command the same way. Throws for a non-positive `timeoutMs`.
  */
-export function processStartTime(pid: number): string | null {
+export function processStartTime(
+  pid: number,
+  options: { timeoutMs?: number | undefined } = {},
+): string | null {
+  const timeoutMs = positiveIntegerOption(
+    'timeoutMs',
+    options.timeoutMs,
+    DEFAULT_PROCESS_START_TIME_TIMEOUT_MS,
+  );
   if (!Number.isSafeInteger(pid) || pid < 1) return null;
   const result = spawnSync(PS_PATH, ['-o', 'lstart=', '-p', String(pid)], {
     encoding: 'utf8',
     env: { LC_ALL: 'C', TZ: 'UTC0' },
     stdio: ['ignore', 'pipe', 'ignore'],
-    timeout: PROCESS_START_TIME_TIMEOUT_MS,
+    timeout: timeoutMs,
   });
   if (result.error || result.status !== 0 || typeof result.stdout !== 'string') return null;
   const text = result.stdout.trim();

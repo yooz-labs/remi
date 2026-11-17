@@ -12,7 +12,9 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
-  LEASE_MAX_BYTES,
+  DEFAULT_LEASE_MAX_BYTES,
+  DEFAULT_PROCESS_START_TIME_TIMEOUT_MS,
+  DEFAULT_START_TIME_MAX_LENGTH,
   type Level2Lease,
   deleteLease,
   leaseOwnedBy,
@@ -86,19 +88,115 @@ describe('writing and reading the lease', () => {
     expect(readLease(remiHome)).toEqual({ kind: 'none' });
   });
 
-  test('the writer refuses a lease the reader would call invalid and writes nothing', () => {
+  test('the writer refuses a lease the reader would call invalid, with the reason, and writes nothing', () => {
     const remiHome = tempRemiHome();
-    for (const bad of [
-      sampleLease({ hubPid: 0 }),
-      sampleLease({ expiresAt: 1.5 }),
-      sampleLease({ hubStartTime: ' padded ' }),
-      sampleLease({ revertBatteryPercent: 101 }),
-      { ...sampleLease(), version: 2 } as unknown as Level2Lease,
-    ]) {
-      expect(() => writeLease(remiHome, bad)).toThrow();
+    const cases: Array<[Level2Lease, string]> = [
+      [sampleLease({ hubPid: 0 }), 'hubPid is below 1'],
+      [sampleLease({ expiresAt: 1.5 }), 'expiresAt is not an integer'],
+      [sampleLease({ hubStartTime: ' padded ' }), 'hubStartTime is not a trimmed one-line string'],
+      [sampleLease({ revertBatteryPercent: 101 }), 'revertBatteryPercent is above 100'],
+      [{ ...sampleLease(), version: 2 } as unknown as Level2Lease, 'version is not 1'],
+    ];
+    for (const [bad, reason] of cases) {
+      expect(() => writeLease(remiHome, bad)).toThrow(
+        `refusing to write an invalid lease: ${reason}`,
+      );
     }
     expect(readLease(remiHome)).toEqual({ kind: 'none' });
     expect(() => writeLease('relative/home', sampleLease())).toThrow();
+  });
+});
+
+describe('out-of-range lease values read as invalid with their exact reason', () => {
+  const tooLong = 'T'.repeat(65);
+  const cases: Array<[string, Record<string, unknown>, string]> = [
+    ['hubPid 0', { hubPid: 0 }, 'hubPid is below 1'],
+    ['staleSeconds 0', { staleSeconds: 0 }, 'staleSeconds is below 1'],
+    ['a negative expiresAt', { expiresAt: -1 }, 'expiresAt is below 0'],
+    [
+      'revertBatteryPercent 101',
+      { revertBatteryPercent: 101 },
+      'revertBatteryPercent is above 100',
+    ],
+    [
+      'an empty hubStartTime',
+      { hubStartTime: '' },
+      'hubStartTime is not a trimmed one-line string',
+    ],
+    [
+      'a padded hubStartTime',
+      { hubStartTime: ' Tue Nov 17 14:09:43 2026' },
+      'hubStartTime is not a trimmed one-line string',
+    ],
+    [
+      'a 65-character hubStartTime',
+      { hubStartTime: tooLong },
+      'hubStartTime is not a trimmed one-line string',
+    ],
+    [
+      'a hubStartTime with a newline',
+      { hubStartTime: 'Tue Nov 17\n14:09:43 2026' },
+      'hubStartTime is not a trimmed one-line string',
+    ],
+    [
+      'a hubStartTime with a control character',
+      { hubStartTime: 'Tue Nov 17\u000714:09:43 2026' },
+      'hubStartTime is not a trimmed one-line string',
+    ],
+    [
+      'a numeric hubStartTime',
+      { hubStartTime: 1_794_900_000 },
+      'hubStartTime is not a trimmed one-line string',
+    ],
+  ];
+
+  for (const [name, override, reason] of cases) {
+    test(name, () => {
+      const remiHome = tempRemiHome();
+      writeRawLease(remiHome, JSON.stringify({ ...sampleRecord(), ...override }));
+      expect(readLease(remiHome)).toEqual({ kind: 'invalid', reason });
+    });
+  }
+
+  test('a 64-character hubStartTime is still valid', () => {
+    const remiHome = tempRemiHome();
+    writeRawLease(remiHome, JSON.stringify({ ...sampleRecord(), hubStartTime: 'T'.repeat(64) }));
+    expect(readLease(remiHome).kind).toBe('valid');
+  });
+});
+
+describe('every number of the lease module is an option', () => {
+  test('maxBytes: a lease larger than 100 bytes is invalid, while the default accepts it', () => {
+    const remiHome = tempRemiHome();
+    writeLease(remiHome, sampleLease());
+    expect(statSync(leasePath(remiHome)).size).toBeGreaterThan(100);
+    expect(readLease(remiHome).kind).toBe('valid');
+    expect(readLease(remiHome, undefined, { maxBytes: 100 })).toEqual({
+      kind: 'invalid',
+      reason: 'the lease is larger than 100 bytes',
+    });
+    expect(DEFAULT_LEASE_MAX_BYTES).toBe(4096);
+  });
+
+  test('startTimeMaxLength: a start time longer than 10 characters is invalid', () => {
+    const remiHome = tempRemiHome();
+    writeLease(remiHome, sampleLease());
+    expect(readLease(remiHome, undefined, { startTimeMaxLength: 10 })).toEqual({
+      kind: 'invalid',
+      reason: 'hubStartTime is not a trimmed one-line string',
+    });
+    expect(() => writeLease(tempRemiHome(), sampleLease(), { startTimeMaxLength: 10 })).toThrow();
+    expect(DEFAULT_START_TIME_MAX_LENGTH).toBe(64);
+  });
+
+  test('a non-positive or fractional option is refused', () => {
+    const remiHome = tempRemiHome();
+    for (const value of [0, -1, 1.5]) {
+      expect(() => readLease(remiHome, undefined, { maxBytes: value })).toThrow();
+      expect(() => readLease(remiHome, undefined, { startTimeMaxLength: value })).toThrow();
+      expect(() => processStartTime(process.pid, { timeoutMs: value })).toThrow();
+    }
+    expect(DEFAULT_PROCESS_START_TIME_TIMEOUT_MS).toBe(2000);
   });
 });
 
@@ -136,7 +234,8 @@ describe('an invalid lease', () => {
     ['a JSON array', (h) => writeRawLease(h, '[]'), 'not a JSON object'],
     [
       'a file larger than 4 KiB',
-      (h) => writeRawLease(h, `${JSON.stringify(sampleRecord())}${' '.repeat(LEASE_MAX_BYTES)}`),
+      (h) =>
+        writeRawLease(h, `${JSON.stringify(sampleRecord())}${' '.repeat(DEFAULT_LEASE_MAX_BYTES)}`),
       'the lease is larger than 4096 bytes',
     ],
     [
@@ -180,8 +279,8 @@ describe('an invalid lease', () => {
   test('a lease at exactly 4 KiB is still read', () => {
     const remiHome = tempRemiHome();
     const json = JSON.stringify(sampleRecord());
-    writeRawLease(remiHome, `${json}${' '.repeat(LEASE_MAX_BYTES - json.length)}`);
-    expect(statSync(leasePath(remiHome)).size).toBe(LEASE_MAX_BYTES);
+    writeRawLease(remiHome, `${json}${' '.repeat(DEFAULT_LEASE_MAX_BYTES - json.length)}`);
+    expect(statSync(leasePath(remiHome)).size).toBe(DEFAULT_LEASE_MAX_BYTES);
     expect(readLease(remiHome).kind).toBe('valid');
   });
 });
@@ -242,6 +341,11 @@ if (process.platform !== 'darwin') {
       expect(pid).toBeDefined();
       await new Promise<void>((resolve) => child.once('exit', () => resolve()));
       expect(processStartTime(pid ?? 0)).toBeNull();
+    });
+
+    test('timeoutMs: a 1 ms deadline is shorter than any ps run, so the answer is null', () => {
+      expect(processStartTime(process.pid)).not.toBeNull();
+      expect(processStartTime(process.pid, { timeoutMs: 1 })).toBeNull();
     });
   });
 }
