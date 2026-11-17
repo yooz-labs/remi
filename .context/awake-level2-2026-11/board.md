@@ -133,4 +133,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | FX-POL | fix round 1 (PR1809) | claude-opus | opus (a37ea6ad9be74c593, resumed) | L2-POL PR1809 | 2026-11-17T10:25 | running |
 | RV-W1D-watchdog ad9df8c35ac4b5fa0 | delta reviewer (watchdog ad9df8c35ac4b5fa0) | claude-sonnet | sonnet () | W1 PR1807 | 2026-11-17T10:08 | done |
 | RV-W1D-setup a35f311fdea97f017 | delta reviewer (setup a35f311fdea97f017) | claude-sonnet | sonnet () | W1 PR1807 | 2026-11-17T10:08 | done |
-| FX-W1B | final fix (PR1807 delta) | claude-opus | opus (ad62c17fc6af47519, resumed) | W1 PR1807 | 2026-11-17T10:25 | running |
+| FX-W1B | final fix (PR1807 delta) | claude-opus | opus (ad62c17fc6af47519, resumed) | W1 PR1807 | 2026-11-17T10:25 | done |
