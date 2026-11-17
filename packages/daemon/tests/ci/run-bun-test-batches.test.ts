@@ -471,6 +471,52 @@ test('actual failing rest assertion leaves NO threshold input and retains failur
   }
 });
 
+// On macOS the unchanged gate's kill(-pgid, 0) can fail with EPERM while the SIGTERMed survivor is
+// still dying, ahead of the descendant error, so this end-to-end check runs where it is stable.
+test.skipIf(process.platform === 'darwin')(
+  'linux only (macOS zombie-group EPERM): a lane that leaves an owned descendant records the survivor in failure.json evidence',
+  async () => {
+    const home = suiteFixture(false);
+    source(
+      home,
+      'rest.test.ts',
+      "import {test,expect} from 'bun:test';test('owned rest',()=>{Bun.spawn(['sleep','31339'],{stdin:'ignore',stdout:'ignore',stderr:'ignore'}).unref();expect(1).toBe(1)});\n",
+    );
+    const out = output();
+    const err = output();
+    const directory = path.join(home, 'coverage/test-lanes');
+    const summary = path.join(home, 'test-output.txt');
+    let survivorPid: number | null = null;
+    try {
+      await expect(
+        runSuite(home, directory, summary, { stdout: out.stream, stderr: err.stream }),
+      ).rejects.toThrow('Child left an owned descendant after exit');
+      const failure = JSON.parse(readFileSync(path.join(directory, 'failure.json'), 'utf8'));
+      expect(failure.error.split('\n')[0]).toBe('Child left an owned descendant after exit');
+      expect(failure.error).toContain('sleep 31339');
+      const entry = failure.evidence.find(
+        (row: { kind?: string }) => row.kind === 'owned-descendant',
+      );
+      expect(entry.lane).toBe('rest-1');
+      const member = entry.members.find((row: { args: string }) =>
+        row.args.includes('sleep 31339'),
+      );
+      expect(member).toBeDefined();
+      survivorPid = member.pid;
+      expect(failure.thresholdRowWritten).toBe(false);
+    } finally {
+      if (survivorPid !== null) {
+        try {
+          process.kill(survivorPid, 'SIGKILL');
+        } catch {
+          // Already gone.
+        }
+      }
+    }
+  },
+  60_000,
+);
+
 test('actual partial workers cannot publish coverage; aggregate requires every same-source report and verified cleanup', async () => {
   const home = suiteFixture(false);
   source(

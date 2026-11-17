@@ -26,7 +26,7 @@ import {
   sourceIdentity,
   unionLineCoverage,
 } from './merge-bun-line-coverage';
-import { runChild } from './run-bun-test-with-diagnostics';
+import { OwnedDescendantError, runChild } from './run-bun-test-with-diagnostics';
 
 export const TARGET = 'packages/daemon/tests/cli/remote-new-client.test.ts';
 export const OWNER_PREFIX = '[ci-target-module-owner] ';
@@ -506,11 +506,13 @@ export async function runSuite(
       'isolated target and daemon/other shared-cache cohorts; concurrent workers require separate runner machines; cross-worker cache interactions and hidden nested child imports are not attested',
   });
   let failed = false;
+  let activeLane: string | null = null;
   try {
     async function runLane(index: number, lane: string[]): Promise<void> {
       const elapsedMs = performance.now() - started;
       const deadline = laneDeadlineMs(index, elapsedMs);
       const name = index === 0 ? 'target' : `rest-${index}`;
+      activeLane = name;
       const laneOutput = path.join(output, name);
       mkdirSync(laneOutput);
       json(path.join(laneOutput, 'budget.json'), {
@@ -635,9 +637,14 @@ export async function runSuite(
     linkSync(temporary, summary);
     unlinkSync(temporary);
   } catch (error) {
+    // A lane that left an owned descendant has no lane record; name the survivor here.
+    const survivors =
+      error instanceof OwnedDescendantError
+        ? [{ lane: activeLane, kind: 'owned-descendant', ...error.snapshot }]
+        : [];
     json(path.join(output, 'failure.json'), {
       error: error instanceof Error ? error.message : String(error),
-      evidence: orderedEvidence(),
+      evidence: [...orderedEvidence(), ...survivors],
       elapsedMs: performance.now() - started,
       unvalidated: lanes.filter((_, index) => !evidence.has(index)),
       thresholdRowWritten: existsSync(summary),
