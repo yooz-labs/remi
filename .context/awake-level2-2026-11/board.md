@@ -48,10 +48,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 100 | 25 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Agents today | 100 | 26 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
 | Codex Luna today | 24 | 2 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
 | Codex Terra today | 16 | 0 | daily | owner CP0 value; Terra implementers and fix rounds |
-| Claude Sonnet today | 44 | 17 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
+| Claude Sonnet today | 44 | 18 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
 | Claude Opus today | 16 | 6 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
 | Advisor consults | 20 | 0 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
 | Fable consults | 1 | 0 | never | copied; only if the owner asks; never --over |
@@ -68,7 +68,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | G0 | [G0 password-on-wake](cards/G0-password-on-wake.md) | - | worker | - | codex-luna | done | - | 1804 | 2026-11-17T06:56 | 3h | dispatch now; note only |
 | G1 | [G1 power readings](cards/G1-power-readings.md) | - | worker | - | claude-sonnet | done | - | 1806 | 2026-11-17T06:56 | 1d | merged 2026-11-17 10:22 (PR 1806, merge 236d2991, bump 0.9.1-dev.7); DV-AWAKE waits to batch with W1 |
-| W1 | [W1 lease and watchdog](cards/W1-lease-and-watchdog.md) | - | worker-hard | - | claude-opus | review | - | 1807 | 2026-11-17T06:56 | 1d | PR 1807 must merge develop 9b9b0ae7 again (keep-awake.md), CI shard Test worker 2 failed twice with the owned-descendant wrapper error (issue 1812): worker asked to check its abandoned-child tests; then CI incl. soak, merge gate, DV-AWAKE |
+| W1 | [W1 lease and watchdog](cards/W1-lease-and-watchdog.md) | - | worker-hard | - | claude-opus | review | - | 1807 | 2026-11-17T06:56 | 1d | PR 1807 head 22429d3c (develop merged again; tests hygiene commit): CI incl. soak pending; shard Test worker 2 descendant flake diagnosis running (issue 1812); then merge gate and DV-AWAKE |
 | L2-POL | [L2-POL level 2 policy](cards/L2-POL-level2-policy.md) | - | worker-hard | - | claude-opus | done | - | - | 2026-11-17T09:10 | 1d | merged 2026-11-17 12:20 (PR 1809, merge b3b99501, bump 0.9.1-dev.8); DV-AWAKE after W1 |
 | OG-CAP | [Owner gate: MacBook captures](owner-gates.md) | - | - | - | - | owner | - | - | - | 30m | rule: owner runs OG-CAP section of owner-gates.md; seven folders under artifacts/awake-level2-2026-11/captures/OG-CAP |
 | G2 | [G2 level 1 battery floor](cards/G2-level1-battery-floor.md) | - | worker-hard | - | - | todo | G1,OG-CAP | - | - | 1d | after G1 merged and OG-CAP; keys per plan section 6 (Q15 a, Q16 b: mechanism bounds also settings: the lead reconciles) |
@@ -137,3 +137,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | RV-POLD-src ae2e344c9b59cc94f | delta reviewer (src ae2e344c9b59cc94f) | claude-sonnet | sonnet () | L2-POL PR1809 | 2026-11-17T10:42 | done |
 | RV-POLD-tests a5e4b472f18643c1e | delta reviewer (tests a5e4b472f18643c1e) | claude-sonnet | sonnet () | L2-POL PR1809 | 2026-11-17T10:42 | done |
 | FX-POLB | final fix (PR1809 delta) | claude-opus | opus (a37ea6ad9be74c593, resumed) | L2-POL PR1809 | 2026-11-17T11:05 | done |
+| DIAG-1812 | CI flake diagnosis (read-only) | claude-sonnet | sonnet (a8a84e22244f75833) | issue 1812 | 2026-11-17T12:35 | running |
