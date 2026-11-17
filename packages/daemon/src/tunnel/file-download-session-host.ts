@@ -68,6 +68,22 @@ export function profileDownloadProtectionRoots(
   });
 }
 
+/**
+ * The `rootsFor` of one daemon: the daemon's selected profile and environment are taken here once,
+ * so the host never reads them through a second route (a profile daemon protects the profile's
+ * directories, not the defaults).
+ */
+export function launchDownloadRoots(
+  launch: Omit<Parameters<typeof downloadProtectionRoots>[0], 'workingDirectory'> & {
+    readonly profile: Parameters<typeof profileDownloadProtectionRoots>[1];
+    readonly env: Readonly<Record<string, string | undefined>>;
+  },
+): (workingDirectory: string) => readonly DownloadProtectedRoot[] {
+  const { profile, env, ...base } = launch;
+  return (workingDirectory) =>
+    profileDownloadProtectionRoots({ ...base, workingDirectory }, profile, env);
+}
+
 interface SessionRecord {
   readonly id: UUID;
   readonly project: string;

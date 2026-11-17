@@ -319,10 +319,7 @@ import { TerminalViewService } from './terminal/view-service.ts';
 import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
 import { BrowserLinkService } from './tunnel/browser-link-service.ts';
 import { BrowserLinkSessionHost } from './tunnel/browser-link-session-host.ts';
-import {
-  FileDownloadSessionHost,
-  profileDownloadProtectionRoots,
-} from './tunnel/file-download-session-host';
+import { FileDownloadSessionHost, launchDownloadRoots } from './tunnel/file-download-session-host';
 import { ImageInsertionCoordinator } from './tunnel/image-insertion-coordinator.ts';
 import { ImageStagingService } from './tunnel/image-staging-service.ts';
 import { WorkspaceCache } from './workspace/describe.ts';
@@ -1742,17 +1739,13 @@ if (
       const adapter = registry.getAdapter('websocket');
       return adapter instanceof WebSocketAdapter ? adapter : undefined;
     },
-    rootsFor: (workingDirectory) =>
-      profileDownloadProtectionRoots(
-        {
-          home: REMI_DIR,
-          userHome: os.homedir(),
-          workingDirectory,
-          harness: harnessId,
-        },
-        selectedProfile,
-        process.env,
-      ),
+    rootsFor: launchDownloadRoots({
+      home: REMI_DIR,
+      userHome: os.homedir(),
+      harness: harnessId,
+      profile: selectedProfile,
+      env: process.env,
+    }),
     onReady: (id) => publishDownloadReadiness(id),
   });
 }

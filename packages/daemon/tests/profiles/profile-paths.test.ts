@@ -6,6 +6,7 @@ import { ClaudeHarness } from '../../src/harness/claude.ts';
 import { TranscriptDiscovery } from '../../src/transcript/transcript-discovery.ts';
 import {
   downloadProtectionRoots,
+  launchDownloadRoots,
   profileDownloadProtectionRoots,
 } from '../../src/tunnel/file-download-session-host.ts';
 
@@ -58,4 +59,31 @@ test('profile download roots select the profile or inherited environment', () =>
   );
   expect(profile).toContainEqual({ pathname: '/tmp/profile-claude', required: true });
   expect(profile).toContainEqual({ pathname: '/tmp/profile-codex', required: true });
+});
+
+test("a profile daemon's download roots protect the profile directories, not only the defaults", () => {
+  const launch = {
+    home: '/tmp/remi-test',
+    userHome: '/tmp/user-test',
+    harness: 'claude' as const,
+    env: {},
+  };
+  const profile = { claude: { dir: '/tmp/profile-claude' }, codex: { dir: '/tmp/profile-codex' } };
+  const protectedRoots = launchDownloadRoots({ ...launch, profile })('/tmp/work-test');
+  expect(protectedRoots).toContainEqual({ pathname: '/tmp/profile-claude', required: true });
+  expect(protectedRoots).toContainEqual({ pathname: '/tmp/profile-codex', required: true });
+  // Without the profile those directories are not protected: this is what passing no profile loses.
+  const unprotected = launchDownloadRoots({ ...launch, profile: undefined })('/tmp/work-test');
+  expect(unprotected.map((root) => root.pathname)).not.toContain('/tmp/profile-claude');
+  expect(unprotected.map((root) => root.pathname)).not.toContain('/tmp/profile-codex');
+});
+
+test("cli.ts builds the download host's roots from the daemon's selected profile", () => {
+  const source = fs.readFileSync(path.join(import.meta.dir, '../../src/cli.ts'), 'utf8');
+  const call = /rootsFor: launchDownloadRoots\(\{([^}]*)\}\)/.exec(source);
+  expect(call, 'cli.ts builds rootsFor with launchDownloadRoots').not.toBeNull();
+  expect(call?.[1]).toContain('profile: selectedProfile,');
+  expect(call?.[1]).toContain('env: process.env,');
+  // No second, hand-built route to the same roots.
+  expect(source).not.toContain('profileDownloadProtectionRoots(');
 });
