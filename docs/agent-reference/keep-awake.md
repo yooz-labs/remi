@@ -56,13 +56,19 @@ Nothing calls them yet: level 1 does not read any of them, and no setting or mes
 - `readAssertions()` runs `pmset -g assertions` and returns the system-wide assertion counts and each holder (`pid`, process, type, name, and the `Created for PID` target when present).
   Any line in the owning-process block that the grammar does not know makes the whole reading `unknown`, never a skipped line; the reason names the line number, not its text, because assertion names can carry application or document names.
 - `readThermal()` runs `notifyutil -g com.apple.system.thermalpressurelevel` and maps 0 to 4 to nominal, moderate, heavy, trapping and sleeping; anything else is `unknown`.
-- `readRootDomain()` runs `ioreg -r -c IOPMrootDomain -d 1` and returns `SleepDisabled` (yes, no or unknown) and the lid (`AppleClamshellState`: open, closed, absent on a Mac with no lid, or unknown).
+- `readRootDomain()` runs `ioreg -r -c IOPMrootDomain -d 1` and returns `SleepDisabled` (yes, no or unknown) and the lid (`AppleClamshellState`: open, closed, absent when the key is not listed, or unknown).
 
-All three go through `runReading` (`run-reading.ts`), which spawns only `/usr/bin/pmset`, `/usr/sbin/ioreg` and `/usr/bin/notifyutil`, and `pmset` only as `-g` with `assertions`, `batt`, `therm` or `ps`; anything else is `refused` without a spawn.
-That guard is what keeps a reading from ever changing power state.
+All three go through `runReading` (`run-reading.ts`), which runs only the exact invocations of `isReadOnlyInvocation`: `pmset -g` with at most one of `assertions`, `batt`, `therm` or `ps`; `ioreg -r -c IOPMrootDomain -d 1` (or the same with `AppleSmartBattery`); and `notifyutil -g com.apple.system.thermalpressurelevel`.
+Anything else is `refused` without a spawn, and a test asserts the refusal of `pmset sleepnow`, `displaysleepnow`, `-a disablesleep`, `notifyutil -p` and `-s` on the pure predicate, never by running them.
+Those invocations only read, which is what keeps a reading from changing power state.
+`spawnBounded` under it is not guarded and runs whatever it is given, so every later entry point must go through `runReading` or the predicate.
 Each run has no shell, no stdin, an environment of `LC_ALL=C` and `PATH` only, a 2 s deadline and a 256 KiB stdout cap, and a failure never throws.
+The child leads its own process group, and a timeout or oversize kill reaches the group (a wrapper shell's children too).
 The parsers are tested against redacted captures of a Mac16,11 (`packages/daemon/tests/power/fixtures/mac16-11-macos-27.2/`, with its `SOURCE.md`).
-Not verified: the lid reading on a laptop (the capture is a Mac mini; the `clamshell` fixtures are edited, not captured) and the assertions text on other macOS builds.
+Both text parsers need the end of the output: the assertions reading is unknown unless the `Kernel Assertions:` header was seen, and the root-domain reading is unknown unless the property block's closing brace was.
+`absent` for the lid means the key is not listed in a complete read; it is not proof that the Mac has no lid.
+A thermal `nominal` is not proof of health: `notifyutil -g` prints 0 for a notification nobody posted, and `pmset -g therm` cannot cross-check it (a healthy Mac and a dead key both read "No thermal warning level has been recorded"; the text of a recorded warning is UNVERIFIED), so a caller treats `nominal` as "no pressure reported" and only a level above it as a signal.
+Not verified: the lid reading on a laptop (the capture is a Mac mini; the `clamshell` fixtures are edited, not captured), that every Mac prints the `Kernel Assertions:` header, and the assertions text on other macOS builds.
 Battery (`pmset -g batt`) and the password-on-wake reading are later slices.
 
 ## Not verified

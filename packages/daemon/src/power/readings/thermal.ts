@@ -24,7 +24,18 @@ export function parseThermal(text: string): ThermalReading {
   return { kind: 'ok', level };
 }
 
-/** `notifyutil -g com.apple.system.thermalpressurelevel`; reads without root. */
+/**
+ * `notifyutil -g com.apple.system.thermalpressurelevel`; reads without root.
+ *
+ * `nominal` is NOT proof of health: `notifyutil -g` prints 0 for any notification name,
+ * including one nobody ever posted (VERIFIED on a made-up name), so a renamed or dead key reads
+ * as nominal.
+ * `pmset -g therm` cannot cross-check it: on a healthy Mac it prints "No thermal warning level has
+ * been recorded", which a dead key shows too, and the text it prints once a warning is recorded
+ * is UNVERIFIED here.
+ * Callers (the battery and level-2 slices) must treat `nominal` as "no pressure reported", and
+ * only a level above nominal as a positive signal.
+ */
 export async function readThermal(): Promise<ThermalReading> {
   const run = await runReading('/usr/bin/notifyutil', [
     '-g',

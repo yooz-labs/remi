@@ -37,6 +37,7 @@ Each is a real fixture with one edit, named for the edit.
 | `pmset-g-assertions.unrecognized-line-in-owners-block.txt` | `pmset-g-assertions.txt` | one unknown tab-indented line inserted after the first holder |
 | `pmset-g-assertions.duplicate-system-wide-type.txt` | `pmset-g-assertions.txt` | the `BackgroundTask` line repeated |
 | `pmset-g-assertions.detail-before-holder.txt` | `pmset-g-assertions.txt` | a `Details:` line inserted right after the `Listed by owning process:` header |
+| `pmset-g-assertions.cut-after-complete-holder.txt` | `pmset-g-assertions.txt` | cut at a line boundary right after the complete `coreaudiod` holder (its `Resources:` line), with a final newline |
 | `pmset-g-assertions.empty.txt` | none | empty |
 | `ioreg-iopmrootdomain.two-sleepdisabled-lines.txt` | `ioreg-iopmrootdomain.txt` | the `"SleepDisabled" = No` line repeated |
 | `ioreg-iopmrootdomain.sleepdisabled-other-value.txt` | `ioreg-iopmrootdomain.txt` | `"SleepDisabled" = 1` |
@@ -44,10 +45,28 @@ Each is a real fixture with one edit, named for the edit.
 | `ioreg-iopmrootdomain.clamshell-closed.txt` | `ioreg-iopmrootdomain.txt` | `"AppleClamshellState" = Yes` inserted after `SleepDisabled` |
 | `ioreg-iopmrootdomain.clamshell-open.txt` | `ioreg-iopmrootdomain.txt` | `"AppleClamshellState" = No` inserted after `SleepDisabled` |
 | `ioreg-iopmrootdomain.two-clamshell-lines.txt` | `ioreg-iopmrootdomain.txt` | both an Yes and a No `AppleClamshellState` line inserted |
+| `ioreg-iopmrootdomain.cut-before-closing-brace.txt` | `ioreg-iopmrootdomain.txt` | everything from the property block's closing `}` line on removed |
 | `ioreg-iopmrootdomain.empty.txt` | none | empty |
 | `notifyutil-thermalpressurelevel.value-5.txt` | `notifyutil-thermalpressurelevel.txt` | value 5 |
 | `notifyutil-thermalpressurelevel.non-numeric.txt` | `notifyutil-thermalpressurelevel.txt` | value `hot` |
 | `notifyutil-thermalpressurelevel.two-lines.txt` | `notifyutil-thermalpressurelevel.txt` | the line twice |
 | `notifyutil-thermalpressurelevel.empty.txt` | none | empty |
+
+Six more negatives are edited inline in `assertions.test.ts` from `pmset-g-assertions.txt`, each aimed at one fail-closed branch of `parseAssertions` (the expected reason names the line number):
+
+| Edit | Reason |
+|---|---|
+| a `Some Future Block:` line inserted before the `Kernel Assertions:` header | unrecognized header |
+| a second `Listed by owning process:` line inserted before the `Kernel Assertions:` header | duplicate owning-process header |
+| a second `Assertion status system-wide:` line inserted before the `Kernel Assertions:` header | duplicate system-wide header |
+| the `BackgroundTask` count changed to a non-number | unrecognized system-wide line |
+| a second `Created for PID:` line under the `coreaudiod` holder | second created-for line |
+| an indented `BackgroundTask` line inserted before the first header | indented line before a header |
+
+Two reader dependencies on the captured shape, both read off this one Mac:
+
+- `parseAssertions` requires the `Kernel Assertions:` header (the last block, printed in the capture) so that a cut at a line boundary is unknown.
+  Whether every Mac prints it is UNVERIFIED; a Mac that does not reads unknown, a refusal, never a false ok.
+- `parseRootDomain` requires the property block's closing `}` as the last non-blank line, for the same reason.
 
 The two `clamshell` fixtures with a single key are inventions: this Mac has no lid, so the real shape of `AppleClamshellState` on a laptop is UNVERIFIED (ADR 0050).
