@@ -49,10 +49,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 100 | 18 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
-| Codex Luna today | 24 | 2 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
-| Codex Terra today | 16 | 2 | daily | owner CP0 value; Terra implementers and fix rounds |
-| Claude Sonnet today | 44 | 9 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
+| Agents today | 100 | 24 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Codex Luna today | 24 | 3 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
+| Codex Terra today | 16 | 3 | daily | owner CP0 value; Terra implementers and fix rounds |
+| Claude Sonnet today | 44 | 13 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
 | Claude Opus today | 16 | 5 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
 | Advisor consults | 20 | 6 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
 | Fable consults | 1 | 0 | never | copied; only if the owner asks; never --over |
@@ -69,7 +69,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | CP0 | [Plan approval: defaults, merge authority, J1a to J15 and J18](plan.md) | - | - | - | - | done | - | - | - | - | rule: owner approves; J1a-J15, J18 answered, J16/J17 recorded deferred; CP0: lines recorded, then done (runbook 2); no dispatch before |
 | P1A | [Profile model and commands #1748](cards/P1A-profile-model-and-commands.md) | - | worker-hard | - | - | review | CP0 | - | 2026-11-17T04:14-08:00 | 1.5d | dispatch after CP0 (owner approves the plan); Codex Terra |
-| P1C | [Codex credential characterization #1748](cards/P1C-codex-credential-characterization.md) | - | worker | - | - | active | CP0 | - | 2026-11-17T04:14-08:00 | 4h | dispatch after CP0; beside P1A; docs lens review |
+| P1C | [Codex credential characterization #1748](cards/P1C-codex-credential-characterization.md) | - | worker | - | - | review | CP0 | - | 2026-11-17T04:14-08:00 | 4h | dispatch after CP0; beside P1A; docs lens review |
 | P1B | [Launches follow the profile #1748](cards/P1B-launches-follow-profile.md) | - | worker-hard | - | - | todo | P1A, P1C | - | - | 2d | after P1A and P1C merge; card follows J9 and J11 answers |
 | DOCS-P1 | [Profile guide, phase 1 (yooz-docs)](cards/DOCS-P1-profile-guide.md) | - | worker | docs | - | todo | P1B | - | - | 6h | after P1B's bump and green DV; done = draft docs PR verified and reviewed, not merged; merges only at REL-DOCS |
 | OG-P1 | [Owner gate: two profiles, 24 h](owner-gates.md) | - | - | - | - | blocked | P1B | - | - | - | rule: set owner when P1B is done; notify owner-gates.md OG-P1 |
@@ -136,7 +136,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | RV-PAIR-A | reviewer contract+verification | claude-sonnet | sonnet xhigh (a92b6314a46035836) | PR1795 | 2026-11-17T04:43 | done |
 | RV-PAIR-B | reviewer maintainability+docs | claude-sonnet | sonnet xhigh (ace81289b673465b5) | PR1795 | 2026-11-17T04:43 | done |
 | FX-PAIR | fix round 1 (PR1795) | claude-sonnet | sonnet high (a806c7b34bb738fb7) | PR1795 | 2026-11-17T04:55 | running |
-| P1C-2 | implementer (continuation) | codex-luna | gpt-6-luna max | P1C | 2026-11-17T05:00 | running |
+| P1C-2 | implementer (continuation) | codex-luna | gpt-6-luna max | P1C | 2026-11-17T05:00 | done |
 | RV-P5A | reviewer docs | claude-sonnet | sonnet xhigh | P5A-PREP PR1796 | 2026-11-17T05:05 | done |
 | P1A-3 | implementer (continuation 2) | codex-terra | gpt-6.1-terra xhigh | P1A | 2026-11-17T05:10 | done |
 | FX-P5A | fix round 1 (PR1796) | codex-luna | gpt-6-luna max | P5A-PREP | 2026-11-17T05:20 | running |
@@ -144,3 +144,9 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | RV-P1A-verification | reviewer verification | claude-sonnet | sonnet xhigh (a537eabc772199af5) | P1A PR1798 | 2026-11-17T05:30 | done |
 | RV-P1A-maintainability | reviewer maintainability | claude-sonnet | sonnet xhigh (ad4607de846f691b1) | P1A PR1798 | 2026-11-17T05:30 | done |
 | RV-P1A-privacy | reviewer privacy | claude-sonnet | sonnet xhigh (ae0962c4de508f2c9) | P1A PR1798 | 2026-11-17T05:30 | done |
+| P1A-4 | fix round 1 (PR1798) | codex-terra | gpt-6.1-terra xhigh | P1A | 2026-11-17T05:50 | running |
+| RV-P1C | reviewer docs | claude-sonnet | sonnet xhigh | P1C PR1800 | 2026-11-17T05:05 | done |
+| FX-P1C | fix round 1 (PR1800) | codex-luna | gpt-6-luna max | P1C | 2026-11-17T05:15 | running |
+| MB-A | research A Remi inventory (issue 1801) | claude-sonnet | sonnet (ab2308c26d8716d42) | none | 2026-11-17T05:20 | running |
+| MB-B | research B harness mechanisms (issue 1801) | claude-sonnet | sonnet (a31ddf35a2971942c) | none | 2026-11-17T05:20 | running |
+| MB-C | research C prior art+security (issue 1801) | claude-sonnet | sonnet (acfd6b47e0d6c051c) | none | 2026-11-17T05:20 | running |
