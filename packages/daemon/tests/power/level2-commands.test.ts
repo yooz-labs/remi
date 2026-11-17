@@ -14,6 +14,7 @@ import {
   PLUTIL_PATH,
   PMSET_PATH,
   SETUP_EXPOSURE_TEXT,
+  SETUP_REMOVAL_HEADING,
   SETUP_STAGING_TEMPLATE,
   SH_PATH,
   SUDOERS_FILE,
@@ -273,8 +274,11 @@ function parseSetup(text: string): SetupCommand[] {
 
 describe('the printed setup', () => {
   const user = 'owner';
-  const text = setupText({ user, remiHome: '/Users/owner/.remi' });
-  const commands = parseSetup(text);
+  const remiHome = '/Users/owner/.remi';
+  const text = setupText({ user, remiHome });
+  // The install steps, then the removal steps under their heading.
+  const [installPart = '', removalPart = ''] = text.split(`\n${SETUP_REMOVAL_HEADING}\n`);
+  const commands = parseSetup(installPart);
 
   test('contains the sudoers line verbatim', () => {
     expect(text).toContain(sudoersLine(user));
@@ -291,6 +295,7 @@ describe('the printed setup', () => {
     const installPattern =
       /^sudo install -m (?:0440|0644) -o root -g wheel "\$\{D:\?\}\/([^"/]+)" (\S+)$/;
     const bootstrap = `sudo ${LAUNCHCTL_PATH} bootstrap system ${BOOT_DAEMON_PLIST}`;
+    const bootLoaded = `sudo ${LAUNCHCTL_PATH} print system/${BOOT_DAEMON_LABEL} >/dev/null`;
     const written = new Set<string>();
     const installed: string[] = [];
     for (const { line } of commands.slice(1)) {
@@ -302,17 +307,25 @@ describe('the printed setup', () => {
       }
       if (segments.some((segment) => installPattern.test(segment) || segment === bootstrap)) {
         // An install runs only when the check of the same staged file in
-        // front of it succeeded, and the load only after the install.
-        const check = checkPattern.exec(segments[0] ?? '');
-        const install = installPattern.exec(segments[1] ?? '');
+        // front of it succeeded, and the load only after the install. The
+        // rule's chain starts with the check that the boot daemon is loaded,
+        // so a failed step 2 can never leave the rule without it.
+        const gated = segments[0] === bootLoaded;
+        const chain = gated ? segments.slice(1) : segments;
+        const check = checkPattern.exec(chain[0] ?? '');
+        const install = installPattern.exec(chain[1] ?? '');
         expect({ line, chained: check !== null && install !== null }).toEqual({
           line,
           chained: true,
         });
         expect(install?.[1]).toBe(check?.[1]);
         expect(written.has(check?.[1] ?? '')).toBe(true);
+        expect({ target: install?.[2], gated }).toEqual({
+          target: install?.[2],
+          gated: install?.[2] === SUDOERS_FILE,
+        });
         installed.push(install?.[2] ?? '');
-        const rest = segments.slice(2);
+        const rest = chain.slice(2);
         expect(rest).toEqual(install?.[2] === BOOT_DAEMON_PLIST ? [bootstrap] : []);
         continue;
       }
@@ -348,12 +361,31 @@ describe('the printed setup', () => {
     expect(load).toBeGreaterThan(bootout);
     expect(text).toContain('reports that the service is not loaded, which is expected');
     expect(text).toContain('If any step fails');
-    expect(text).toContain('run the removal steps');
+    expect(text).toContain('run the removal steps at the end of this text');
     expect(text).toContain('visudo must print "parsed OK"; if it prints anything else, stop');
     expect(lines).toContain(`sudo ${LAUNCHCTL_PATH} print system/${BOOT_DAEMON_LABEL}`);
     expect(text.split('\n')[0]).toBe(
       'Keep-awake level 2 setup for the user "owner" (remi home "/Users/owner/.remi").',
     );
+  });
+
+  test('ends with the removal steps, after step 6', () => {
+    const removal = removalText({ remiHome });
+    expect(removalPart.trim()).toBe(removal.trim());
+    const printLoaded = text.lastIndexOf(
+      `\nsudo ${LAUNCHCTL_PATH} print system/${BOOT_DAEMON_LABEL}\n`,
+    );
+    expect(printLoaded).toBeGreaterThan(text.indexOf('\n6. '));
+    expect(text.indexOf(SETUP_REMOVAL_HEADING)).toBeGreaterThan(printLoaded);
+    expect(text.indexOf(removal)).toBeGreaterThan(text.indexOf(SETUP_REMOVAL_HEADING));
+    for (const line of [
+      `REMI_HOME=${remiHome} remi keep-awake stop`,
+      `sudo rm -f ${SUDOERS_FILE}`,
+      `sudo rm -f ${BOOT_DAEMON_PLIST}`,
+    ]) {
+      expect(text.indexOf(`\n${line}\n`)).toBeGreaterThan(printLoaded);
+    }
+    expect(text.trimEnd().endsWith('\nsudo /usr/bin/pmset -a disablesleep 0')).toBe(true);
   });
 
   test('says plainly what the installed rule exposes', () => {

@@ -251,7 +251,7 @@ export function setupText(options: {
     `Keep-awake level 2 setup for the user ${JSON.stringify(user)} (remi home ${JSON.stringify(remiHome)}).`,
     'None of these commands is run by remi. Run them yourself in Terminal, in this order; sudo asks for your password.',
     'Root content is written only into a directory that root creates and only root can write, and each file is checked and installed from there in one chained command, so a failed check installs nothing.',
-    'If any step fails or prints something other than what it says to expect, stop and run the removal steps that remi prints with this text.',
+    'If any step fails or prints something other than what it says to expect, stop and run the removal steps at the end of this text.',
     '',
     SETUP_EXPOSURE_TEXT,
     '',
@@ -268,12 +268,12 @@ export function setupText(options: {
     `sudo ${LAUNCHCTL_PATH} bootout system/${BOOT_DAEMON_LABEL}`,
     `sudo ${PLUTIL_PATH} -lint ${staged(BOOT_STAGED)} && sudo install -m 0644 -o root -g wheel ${staged(BOOT_STAGED)} ${BOOT_DAEMON_PLIST} && sudo ${LAUNCHCTL_PATH} bootstrap system ${BOOT_DAEMON_PLIST}`,
     '',
-    '3. Write the sudoers rule there, then check and install it in one chained command. visudo must print "parsed OK"; if it prints anything else, stop and run the removal steps:',
+    '3. Write the sudoers rule there, then check and install it in one chained command, which installs nothing unless the boot daemon of step 2 is loaded. visudo must print "parsed OK"; if it prints anything else, stop and run the removal steps:',
     '',
     `sudo tee ${staged(SUDOERS_STAGED)} >/dev/null <<'REMI_SUDOERS'`,
     rule,
     'REMI_SUDOERS',
-    `sudo visudo -cf ${staged(SUDOERS_STAGED)} && sudo install -m 0440 -o root -g wheel ${staged(SUDOERS_STAGED)} ${SUDOERS_FILE}`,
+    `sudo ${LAUNCHCTL_PATH} print system/${BOOT_DAEMON_LABEL} >/dev/null && sudo visudo -cf ${staged(SUDOERS_STAGED)} && sudo install -m 0440 -o root -g wheel ${staged(SUDOERS_STAGED)} ${SUDOERS_FILE}`,
     '',
     '4. Remove the staging directory:',
     '',
@@ -296,8 +296,15 @@ export function setupText(options: {
     '',
     `Do not widen the rule. sudoers matches listed arguments exactly, so the line above allows only these two commands; a rule naming ${PMSET_PATH} with no arguments would let any process of your account run pmset as root with any arguments, among them hibernatefile (which points hibernation at a chosen file), tcpkeepalive 0 (which breaks Find My Mac), schedule, autorestart and restoredefaults.`,
     '',
+    SETUP_REMOVAL_HEADING,
+    '',
+    removalText({ remiHome }),
+    '',
   ].join('\n');
 }
+
+/** The heading in front of the removal steps at the end of the setup text. */
+export const SETUP_REMOVAL_HEADING = 'If any step failed, run these removal steps:';
 
 /** What the installed rule exposes, said in the setup text and in keep-awake.md. */
 export const SETUP_EXPOSURE_TEXT =
