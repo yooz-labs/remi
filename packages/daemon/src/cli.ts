@@ -2522,14 +2522,15 @@ const codexHarness =
         currentPort: () => PORT,
         wsPort: () => remiStatus.wsPort,
         cleanup,
+        // A finished turn is reported to the same sink Claude's Stop hook ends in (#1180).
+        // Kept ahead of the conditional spreads: notifications/turn-events.test.ts pins this text.
+        turnEvents,
         env: () => launchEnvironment ?? process.env,
         ...(launchEnvironment && { completeEnv: true }),
         ...(profileMetadata && { profileMetadata }),
         onQuestionResolved,
         legacyWriters,
         remiVersion: REMI_VERSION,
-        // A finished turn is reported to the same sink Claude's Stop hook ends in (#1180).
-        turnEvents,
         log,
       })
     : undefined;
