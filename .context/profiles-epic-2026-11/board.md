@@ -49,7 +49,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 100 | 55 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Agents today | 100 | 56 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
 | Codex Luna today | 24 | 3 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
 | Codex Terra today | 16 | 14 | daily | owner CP0 value; Terra implementers and fix rounds |
 | Claude Sonnet today | 44 | 23 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
@@ -171,5 +171,6 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | P1B-10 | implementer (PR1811 fix round, continuation) | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T11:40 | stopped-incomplete |
 | P1B-11 | implementer (PR1811 fix round, continuation) | codex-terra | gpt-6.1-terra xhigh | P1B | 2026-11-17T11:35 | done |
 | FX-P1B-pin | CI pin fix (PR1811) | claude-sonnet | sonnet (ab2939c5fdd25abe1; pin + 2 CI fixes) | P1B PR1811 | 2026-11-17T11:55 | done |
-| RV-P1BD-privacy a855aabc460e82bf1 | delta reviewer (privacy a855aabc460e82bf1) | claude-sonnet | sonnet () | P1B PR1811 | 2026-11-17T12:05 | running |
-| RV-P1BD-tests ad5fc22485bcba174 | delta reviewer (tests ad5fc22485bcba174) | claude-sonnet | sonnet () | P1B PR1811 | 2026-11-17T12:05 | running |
+| RV-P1BD-privacy a855aabc460e82bf1 | delta reviewer (privacy a855aabc460e82bf1) | claude-sonnet | sonnet () | P1B PR1811 | 2026-11-17T12:05 | done |
+| RV-P1BD-tests ad5fc22485bcba174 | delta reviewer (tests ad5fc22485bcba174) | claude-sonnet | sonnet () | P1B PR1811 | 2026-11-17T12:05 | done |
+| FX-P1B-r12 | final test fix (PR1811 delta) | claude-sonnet | sonnet (ab2939c5fdd25abe1, resumed) | P1B PR1811 | 2026-11-17T12:45 | running |
