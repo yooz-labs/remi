@@ -48,6 +48,32 @@ This slice never requests a display assertion, uses `sudo` or changes power sett
 `pmset -g assertions` shows the holder as `pid <caffeinate-pid>(caffeinate): ... PreventUserIdleSystemSleep` with `Created for PID: <session-pid>`.
 The daemon log has one line when a hold starts, one when it ends and why, and one per stuck bound, question cap or caffeinate failure, never one per tick.
 
+## Readings for later slices
+
+`packages/daemon/src/power/readings/` holds three readers and their pure parsers for the guard-rails slice (#1773, ADR 0050).
+Nothing calls them yet: level 1 does not read any of them, and no setting or message mentions them.
+
+- `readAssertions()` runs `pmset -g assertions` and returns the system-wide assertion counts and each holder (`pid`, process, type, name, and the `Created for PID` target when present).
+  Any line in the owning-process block that the grammar does not know makes the whole reading `unknown`, never a skipped line; the reason names the line number, not its text, because assertion names can carry application or document names.
+- `readThermal()` runs `notifyutil -g com.apple.system.thermalpressurelevel` and maps 0 to 4 to nominal, moderate, heavy, trapping and sleeping; anything else is `unknown`.
+- `readRootDomain()` runs `ioreg -r -c IOPMrootDomain -d 1` and returns `SleepDisabled` (yes, no or unknown) and the lid (`AppleClamshellState`: open, closed, absent when the key is not listed, or unknown).
+
+All three go through `runReading` (`run-reading.ts`), which runs only the exact invocations of `isReadOnlyInvocation`: `pmset -g` with at most one of `assertions`, `batt`, `therm` or `ps`; `ioreg -r -c IOPMrootDomain -d 1` (or the same with `AppleSmartBattery`); and `notifyutil -g com.apple.system.thermalpressurelevel`.
+Anything else is `refused` without a spawn, and a test asserts the refusal of `pmset sleepnow`, `displaysleepnow`, `-a disablesleep`, `notifyutil -p` and `-s` on the pure predicate, never by running them.
+Those invocations only read, which is what keeps a reading from changing power state.
+`spawnBounded` under it is not guarded and runs whatever it is given, so every later entry point must go through `runReading` or the predicate.
+Each run has no shell, no stdin, an environment of `LC_ALL=C` and `PATH` only, and a failure never throws.
+Every number is an option of `spawnBounded` (and, through `SpawnBoundedOptions`, of each reader) whose default is an exported constant:
+`DEFAULT_TIMEOUT_MS` (2000, the deadline), `DEFAULT_MAX_STDOUT_BYTES` (262144), `DEFAULT_MAX_STDERR_BYTES` (65536, kept only with `captureStderr`) and `DEFAULT_KILL_GRACE_MS` (500, the wait after the kill).
+Nothing reads them from configuration yet; G2 makes them `[awake]` settings (`reading_deadline_ms`, `reading_stdout_max_bytes`, `reading_stderr_max_bytes`, `reading_kill_grace_ms`).
+The child leads its own process group, and a timeout or oversize kill reaches the group (a wrapper shell's children too).
+The parsers are tested against redacted captures of a Mac16,11 (`packages/daemon/tests/power/fixtures/mac16-11-macos-27.2/`, with its `SOURCE.md`).
+Both text parsers need the end of the output: the assertions reading is unknown unless the `Kernel Assertions:` header was seen, and the root-domain reading is unknown unless the property block's closing brace was.
+`absent` for the lid means the key is not listed in a complete read; it is not proof that the Mac has no lid.
+A thermal `nominal` is not proof of health: `notifyutil -g` prints 0 for a notification nobody posted, and `pmset -g therm` cannot cross-check it (a healthy Mac and a dead key both read "No thermal warning level has been recorded"; the text of a recorded warning is UNVERIFIED), so a caller treats `nominal` as "no pressure reported" and only a level above it as a signal.
+Not verified: the lid reading on a laptop (the capture is a Mac mini; the `clamshell` fixtures are edited, not captured), that every Mac prints the `Kernel Assertions:` header, and the assertions text on other macOS builds.
+Battery (`pmset -g batt`) and the password-on-wake reading are later slices.
+
 ## Level 2 building blocks (not wired)
 
 ADR 0050's level 2 (lid-closed mode, option A) has three modules under `packages/daemon/src/power/`, and **nothing runs, prints or installs any of them yet**: no code calls them, remi runs no `sudo`, changes no power setting, writes no lease, and installs no sudoers file, LaunchDaemon, LaunchAgent or watchdog script.

@@ -1,0 +1,31 @@
+2026-11-17 07:07:59 -0800 
+Assertion status system-wide:
+   BackgroundTask                 0
+   ApplePushServiceTask           0
+   UserIsActive                   1
+   PreventUserIdleDisplaySleep    1
+   SoftwareUpdateTask             0
+   PreventSystemSleep             1
+   PreventSystemSleepSecurityIndicator 0
+   ExternalMedia                  1
+   PreventUserIdleSystemSleep     1
+   NetworkClientActive            1
+Listed by owning process:
+   pid 377(powerd): [0x000436ed00018b8a] 168:36:25 PreventUserIdleSystemSleep named: "Powerd - Prevent sleep while display is on"  
+   pid 377(powerd): [0x0000e70f000885e7] 228:53:59 ExternalMedia named: "com.apple.powermanagement.externalmediamounted"  
+   pid 46453(caffeinate): [0x000912570005a393] 80:11:12 PreventUserIdleDisplaySleep named: "caffeinate command-line tool"  
+	Details: caffeinate asserting forever
+	Localized=THE CAFFEINATE TOOL IS PREVENTING SLEEP.
+   pid 54016(caffeinate): [0x000d791f0001a3e0] 00:03:37 PreventUserIdleSystemSleep named: "caffeinate command-line tool"  
+	Details: caffeinate asserting for 300 secs
+	Localized=THE CAFFEINATE TOOL IS PREVENTING SLEEP.
+	Timeout will fire in 83 secs Action=TimeoutActionRelease
+   pid 435(WindowServer): [0x000d53ab0009906b] 00:46:24 UserIsActive named: "com.apple.iohideventsystem.queue.tickle.nxevent service:IOHIDSystem pid:58431 process:ScreensharingAgent"  
+	Timeout will fire in 8016 secs Action=TimeoutActionRelease
+   pid 55885(caffeinate): [0x000d79b20001a403] 00:01:10 PreventUserIdleSystemSleep named: "caffeinate command-line tool"  
+	Details: caffeinate asserting for 300 secs
+	Localized=THE CAFFEINATE TOOL IS PREVENTING SLEEP.
+	Timeout will fire in 230 secs Action=TimeoutActionRelease
+   pid 592(coreaudiod): [0x00099a520001a1b9] 70:31:01 PreventUserIdleSystemSleep named: "com.apple.audio.0A1B2C3D-0000-0000-0000-0123456789AB.context.preventuseridlesleep"  
+	Created for PID: 662. 
+	Resources: audio-out 0A1B2C3D-0000-0000-0000-0123456789AB 
