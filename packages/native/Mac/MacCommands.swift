@@ -6,6 +6,7 @@ import SwiftUI
 struct MacWorkspaceActions {
     let availability: RemiMacCommandAvailability
     let goToInbox: () -> Void
+    let jump: () -> Void
     let nextNeedsYou: () -> Void
     let previousNeedsYou: () -> Void
     let moveMachine: (Int) -> Void
@@ -75,6 +76,12 @@ struct MacCommands: Commands {
         }
 
         CommandMenu("Go") {
+            Button("Jump to…") { workspace?.jump() }
+                .keyboardShortcut("k", modifiers: .command)
+                .disabled(workspace == nil)
+
+            Divider()
+
             Button("Go to Inbox") { workspace?.goToInbox() }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
                 .disabled(workspace?.availability.goToInbox != true)

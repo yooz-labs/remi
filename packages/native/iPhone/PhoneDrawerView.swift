@@ -19,6 +19,7 @@ struct PhoneDrawerView: View {
     let onManageMachines: () -> Void
     let onResumeSession: (String, String) -> Void
     let onNewSessionHere: (String, String) -> Void
+    let onSelectBoard: () -> Void
     let onSelectInbox: () -> Void
     let onSelectSession: (RemiSessionSummary) -> Void
     let onNewSession: () -> Void
@@ -52,6 +53,7 @@ struct PhoneDrawerView: View {
         onManageMachines: @escaping () -> Void = {},
         onResumeSession: @escaping (String, String) -> Void = { _, _ in },
         onNewSessionHere: @escaping (String, String) -> Void = { _, _ in },
+        onSelectBoard: @escaping () -> Void,
         onSelectInbox: @escaping () -> Void,
         onSelectSession: @escaping (RemiSessionSummary) -> Void,
         onNewSession: @escaping () -> Void,
@@ -70,6 +72,7 @@ struct PhoneDrawerView: View {
         self.onManageMachines = onManageMachines
         self.onResumeSession = onResumeSession
         self.onNewSessionHere = onNewSessionHere
+        self.onSelectBoard = onSelectBoard
         self.onSelectInbox = onSelectInbox
         self.onSelectSession = onSelectSession
         self.onNewSession = onNewSession
@@ -284,7 +287,16 @@ struct PhoneDrawerView: View {
         // per pass. Like the list's own order, the membership is live while a drag freezes rows.
         let projects = RemiProjectSessions(sessions: sessions)
         return LazyVStack(alignment: .leading, spacing: RemiTheme.Spacing.xxs) {
-            PhoneDrawerInboxRow(
+            PhoneDrawerDestinationRow(
+                title: "Board",
+                symbol: "square.grid.2x2",
+                count: 0,
+                isSelected: destination == .board,
+                action: { if !blocksTaps { onSelectBoard() } }
+            )
+            PhoneDrawerDestinationRow(
+                title: "Inbox",
+                symbol: "tray",
                 count: questionCount,
                 isSelected: destination == .inbox,
                 action: { if !blocksTaps { onSelectInbox() } }
@@ -413,7 +425,9 @@ struct PhoneDrawerView: View {
     }
 }
 
-private struct PhoneDrawerInboxRow: View {
+private struct PhoneDrawerDestinationRow: View {
+    let title: LocalizedStringKey
+    let symbol: String
     let count: Int
     let isSelected: Bool
     let action: () -> Void
@@ -421,8 +435,8 @@ private struct PhoneDrawerInboxRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: RemiTheme.Spacing.s) {
-                Image(systemName: "tray")
-                Text("Inbox")
+                Image(systemName: symbol)
+                Text(title)
                 Spacer(minLength: RemiTheme.Spacing.xs)
                 if count > 0 { PhoneDrawerCountBadge(count: count) }
             }

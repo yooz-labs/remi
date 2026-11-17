@@ -2,7 +2,7 @@
 
 This is a runnable local gate, not a receipt that it passed.
 Record the immutable source head, runtime versions, complete logs and exit status for each run.
-The separate [Relay R7 workflow](../.github/workflows/relay-r7.yml) runs existing controls and the opt-in soak on Bun 1.3.11 with an esbuild Worker bundle.
+The separate [Relay R7 workflow](../.github/workflows/relay-r7.yml) runs existing controls and the opt-in soak on Bun 1.4.2 (#1273) with an esbuild Worker bundle.
 It has an 80-minute job budget; the ordinary 25-minute test job still skips the soak.
 No Cloudflare account, deployed Worker, Apple credential, Apple APNs endpoint or model turn is used.
 
@@ -61,8 +61,8 @@ Their presence is coverage inventory; a passing receipt must name the exact run 
 The existing Worker test named “older than an hour” advances a test clock and uses library endpoint wrappers.
 It guards against TTL reaping; it does not replace this wall-clock source-hub/client/session run.
 The new DATA-frame replay test fills a different gap from admission-proof/ticket replay and Channel counter unit tests.
-It carries R3's measured Bun 1.3.11 immediate-close defect (#1225): a missing reason or reset is accepted only with the source hub's failure-close log and the matching actual Worker close record.
-Other runtimes and uncorroborated close variants fail; this does not change the protocol's constant failure code/reason or the existing runtime exception.
+It requires the source hub's failure-close log, the matching actual Worker close record (`close 4400 "closed"`) and the complete failure close at the client.
+The former Bun 1.3.11 exception for R3's immediate-close defect (#1225), a missing reason or reset, was removed with the Bun 1.4.2 pin (#1273); this does not change the protocol's constant failure code/reason.
 The existing R3 production half-open, confirmation and offer clock probes remain opt-in; their commands are in [the daemon runbook](relay-daemon-v2.md).
 
 ## Local landing, default-on and owner gates

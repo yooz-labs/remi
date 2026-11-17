@@ -3,10 +3,38 @@ import Foundation
 import Security
 import Testing
 import UserNotifications
+import RemiUI
 @testable import RemiPush
 @testable import RemiKit
 
 struct NativePushActionTests {
+    @Test func foregroundPreferencesUseVerifiedKindAndRefuseFallbacks() throws {
+        let oracle = try NativePushOracle.load("push-vectors.json")
+        let vectors = try #require(oracle["cases"] as? [[String: Any]])
+        for name in ["question", "informational-question-no-authority", "turn_complete", "subagent_alert", "harness_denied", "turn_failed"] {
+            let vector = try #require(vectors.first(where: { $0["name"] as? String == name }))
+            let context = try OwnedPushContext(vector: vector, oracle: oracle)
+            defer { try? context.cleanup() }
+            let payload = try RelayOracle.hex(#require(vector["payloadHex"] as? String))
+            let carrier = try OwnedPushContext.resealed(vector, oracle: oracle, payload: payload,
+                now: UInt64(Date().timeIntervalSince1970))
+            let opened = try context.store.open(carrier: carrier)
+            let content = UNMutableNotificationContent()
+            content.title = opened.title; content.body = opened.body
+            content.userInfo = ["remiPush": try JSONSerialization.jsonObject(with: carrier)]
+            #expect(!context.store.allowsPresentation(content, policy: .selected(questions: false, turnComplete: false)))
+            let questionsOnly = context.store.allowsPresentation(content, policy: .selected(questions: true, turnComplete: false))
+            let turnsOnly = context.store.allowsPresentation(content, policy: .selected(questions: false, turnComplete: true))
+            #expect(questionsOnly == ["question", "informational-question-no-authority", "subagent_alert"].contains(name))
+            #expect(turnsOnly == ["turn_complete", "subagent_alert"].contains(name))
+            content.title = "Remi needs your attention"
+            content.body = "Open Remi to view this notification."
+            #expect(!context.store.allowsPresentation(content, policy: .selected(questions: true, turnComplete: true)))
+            content.userInfo = ["remiPush": ["v": 2]]
+            #expect(!context.store.allowsPresentation(content, policy: .selected(questions: true, turnComplete: true)))
+        }
+    }
+
     func inputs(category: String = "REMI_YN", change: String? = nil) throws -> (OwnedPushContext, Data) {
         let oracle = try NativePushOracle.load("push-vectors.json")
         let vector = try #require((oracle["cases"] as? [[String: Any]])?.first)
@@ -155,6 +183,41 @@ struct NativePushActionTests {
         }
     }
 
+    @MainActor @Test func notificationOnlyQuestionNavigatesToItsPairedSession() throws {
+        let (context, carrier) = try inputs(); defer { try? context.cleanup() }
+        let fullTrust = try #require(try context.store.machine(room: context.room))
+        try context.store.forgetMachine(room: context.room)
+        try context.store.commitNotificationMachine(room: context.room, machinePublicKey: fullTrust.machinePublicKey,
+            origin: fullTrust.origin, relayURL: fullTrust.relayURL, authority: context.authority, generation: context.generation)
+        let endpoint = MachineEndpoint(host: "review.example", port: 18790,
+            expectedPublicKey: fullTrust.machinePublicKey.base64EncodedString())
+        let profile = MachineRouteProfile(machineID: RelayCrypto.hex(context.room), routes: [endpoint],
+            connectionPreference: .localOnly, machinePublicKey: RelayCrypto.b64(fullTrust.machinePublicKey))
+        let store = MachineStore(profiles: [profile], identity: ClientIdentity(), clientVersion: "owned-notification-navigation",
+            clientId: UUID().uuidString.lowercased(), pushStore: context.store)
+        store.openRelayNotification(carrier: carrier)
+        let opened = try #require(store.verifiedRelayNotification)
+        let destination = try #require(store.notificationSessionDestination)
+        #expect(opened.machine.notificationOnly)
+        #expect(store.relayNotificationNotice == nil)
+        #expect(store.relayNotificationChoices.count == 2)
+        #expect(destination.machineID == store.machines[0].id)
+        #expect(destination.sessionID == opened.sessionID)
+        #expect(store.machines[0].connectionPreference == .localOnly)
+        #expect(store.machines[0].routes == [endpoint])
+        #expect(try context.store.completedMachines().isEmpty)
+        var shell = PhoneShellState()
+        let route = PhoneSessionRoute(machineKey: destination.machineID, sessionID: destination.sessionID)
+        let questionID = try #require(opened.questionID)
+        #expect(store.notificationQuestionID(for: destination) == questionID)
+        shell.openFromNotification(route: route, questionID: store.notificationQuestionID(for: destination))
+        #expect(shell.focusQuestionID(for: route) == questionID)
+        let wrongSession = MachineSessionKey(machineID: destination.machineID, sessionID: "another-session")
+        #expect(store.notificationQuestionID(for: wrongSession) == nil)
+        try context.store.forgetMachine(room: context.room)
+        #expect(store.notificationQuestionID(for: destination) == nil)
+    }
+
     @MainActor @Test func reviewNavigationRequiresAnExistingMatchingMachineAndCurrentTrust() throws {
         let (context, carrier) = try inputs(change: "appOnly"); defer { try? context.cleanup() }
         let trust = try #require(try context.store.machine(room: context.room))
@@ -168,6 +231,7 @@ struct NativePushActionTests {
         let destination = try #require(store.notificationSessionDestination)
         #expect(destination.machineID == store.machines[0].id)
         #expect(destination.sessionID == store.verifiedRelayNotification?.sessionID)
+        #expect(store.notificationQuestionID(for: destination) == nil)
         #expect(store.machines[0].connectionPreference == .localOnly)
         let otherKey = ClientIdentity().publicKeyRaw
         let otherProfile = MachineRouteProfile(machineID: RelayCrypto.hex(RelayCrypto.room(otherKey)),

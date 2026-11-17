@@ -22,9 +22,9 @@ public enum RemiMenuBarIcon {
     /// A thin border: a whole number of pixels at 1x and 2x.
     static let borderWidth: CGFloat = 1
     static let cornerRadius: CGFloat = 4
-    /// How much of the square's height the "r" takes. The mark is square, so this is also its
-    /// width fraction.
-    static let glyphHeightFraction: CGFloat = 0.66
+    /// How much of the square's height the "r" takes: 15% less than 0.66, which read as too large
+    /// in the real bar. The mark is square, so this is also its width fraction.
+    static let glyphHeightFraction: CGFloat = 0.56
 
     /// The icon for a state, drawn from `mask` (black with the "r" as its alpha), or `nil` when
     /// the mask has no bitmap.

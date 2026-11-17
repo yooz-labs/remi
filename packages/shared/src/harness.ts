@@ -70,7 +70,7 @@ export type AnswerPath = 'structured' | 'keystroke' | 'none';
  *
  * - `harness`: the harness's own dialog. Claude renders its own during a
  *   MAIN-agent hold; a background subagent's dialog does not render while its
- *   hook is held (AGENTS.md, ADR 0031).
+ *   hook is held (docs/agent-reference/questions-and-notifications.md, "Subagent permissions follow the terminal"; ADR 0031).
  * - `remi`: a dialog remi draws itself.
  * - `none`: nothing is drawn locally.
  */

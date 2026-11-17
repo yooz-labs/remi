@@ -18,7 +18,7 @@ const { NotificationHostService } = await import(
 const { SecurePushStore } = await import(
   `${root}/packages/daemon/src/notifications/secure-push-store.ts`
 );
-const { createHelloAck, createNotificationHostResponse } = await import(
+const { createHelloAck, createNotificationHostResponse, relayV2 } = await import(
   `${root}/packages/shared/src/index.ts`
 );
 const own = mkdtempSync(join(tmpdir(), 'remi-native-notifications-'));
@@ -27,9 +27,31 @@ const { RelayDeviceStore } = await import(
 );
 chmodSync(own, 0o700);
 const out = (value: object) => process.stdout.write(`${JSON.stringify(value)}\n`);
-const hub = await resumedHub({ pushLeaseMs: 10_000 });
+// The fixture's own initial probe consumes only its transport ACK. Later real
+// app peers also need the application hello_ack supplied by the daemon's
+// onConnect handler; leave the initial probe undisturbed.
+let relayHelloCount = 0;
+const helloResponder: { send?: (id: string) => void } = {};
+const hub = await resumedHub(
+  { pushLeaseMs: 10_000 },
+  {
+    events: {
+      onConnect: (id) => {
+        relayHelloCount++;
+        helloResponder.send?.(id);
+      },
+    },
+  },
+);
+helloResponder.send = (id) => {
+  hub.relay.sendRaw(id, createHelloAck('owned', null));
+};
 const subscriptions = new SecurePushStore(hub.dir, hub.trust, 64, { leaseMs: 10_000 });
 const machine = await hub.trust.unlock();
+const machineSigner = await relayV2.signerFromKey(
+  machine.privateKey,
+  new Uint8Array(Buffer.from(machine.publicKeyRaw, 'base64')),
+);
 writeFileSync(
   join(own, 'tls.cnf'),
   '[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=owned-remi-notifications\n[ext]\nsubjectAltName=IP:127.0.0.1\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,digitalSignature,keyCertSign\nextendedKeyUsage=serverAuth\n',
@@ -165,6 +187,8 @@ const service = new NotificationHostService({
 await direct.start();
 out({ kind: 'ready', directPort: direct.port, machineKey: machine.publicKeyRaw, relayUrl, ca });
 const lines = createInterface({ input: process.stdin });
+const terminate = () => lines.close();
+process.on('SIGTERM', terminate);
 const deadline = setTimeout(() => {
   lines.close();
 }, 60_000);
@@ -179,6 +203,11 @@ try {
           'owned existing full grant',
         );
       out({ kind: 'authorized' });
+    } else if (message.kind === 'prepare_relay') {
+      const epoch = hub.trust.captureAuthorizationEpoch(message.publicKey);
+      if (!epoch) throw new Error('OWNED_RELAY_GRANT_REQUIRED');
+      await hub.relay.enrollNotifications(message.publicKey, epoch, () => true);
+      out({ kind: 'relay-enrolled' });
     } else if (message.kind === 'expire') {
       expireSubscription();
       out({ kind: 'expired' });
@@ -188,8 +217,67 @@ try {
         kind: 'state',
         count: current.length,
         tokenMatches: current.length === 1 && current[0]?.token === message.expectedToken,
+        pushPrefs: current.length === 1 ? current[0]?.pushPrefs : null,
         expiredAtUpgrade,
+        relayLogs: hub.logs,
+        relayHelloCount,
       });
+    } else if (message.kind === 'issue_question') {
+      const recipient = subscriptions.listCurrent();
+      if (recipient.length !== 1 || !recipient[0]) throw new Error('OWNED_RECIPIENT_REQUIRED');
+      const now = Math.floor(Date.now() / 1000);
+      const rid = Buffer.from(await relayV2.ridOf(machineSigner.publicKey)).toString('hex');
+      const collapseId = relayV2.b64u(relayV2.systemRandom(16));
+      const content = {
+        machinePublicKey: relayV2.b64u(machineSigner.publicKey),
+        rid,
+        devicePublicKey: relayV2.b64u(
+          new Uint8Array(Buffer.from(recipient[0].publicKey, 'base64')),
+        ),
+        pushPublicKey: recipient[0].pushPublicKey,
+        keyVersion: recipient[0].keyVersion,
+        collapseId,
+        revision: 1,
+        kind: 'question' as const,
+        nonce: relayV2.b64u(relayV2.systemRandom(32)),
+        issuedAt: now,
+        expiresAt: now + 300,
+      };
+      const payload = {
+        type: 'question' as const,
+        actionable: true as const,
+        sessionId: 'owned-session',
+        runtimeInstance: relayV2.b64u(relayV2.systemRandom(32)),
+        questionId: 'owned-question',
+        title: 'Owned request',
+        body: 'Review this request',
+        category: 'REMI_YN' as const,
+        options: [
+          {
+            value: 'yes',
+            label: 'Yes',
+            isYes: true,
+            isNo: false,
+            description: null,
+            standingGrant: null,
+          },
+          {
+            value: 'no',
+            label: 'No',
+            isYes: false,
+            isNo: true,
+            description: null,
+            standingGrant: null,
+          },
+        ],
+      };
+      const sealed = await relayV2.sealPushContent(
+        machineSigner,
+        content,
+        payload,
+        relayV2.systemRandom,
+      );
+      out({ kind: 'question', carrier: { v: 2, rid, collapseId, sealed: relayV2.b64u(sealed) } });
     } else if (message.kind === 'expire_at_upgrade') {
       expireAtUpgrade = true;
       out({ kind: 'armed' });
@@ -205,6 +293,7 @@ try {
     } else if (message.kind === 'stop') break;
   }
 } finally {
+  process.off('SIGTERM', terminate);
   clearTimeout(deadline);
   lines.close();
   releaseEnable?.();

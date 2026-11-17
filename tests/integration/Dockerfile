@@ -1,5 +1,6 @@
 # Stage 1: Build remi binary
-FROM oven/bun:latest AS builder
+# Same Bun as the CI and release pin (#1273); a floating tag can pass it.
+FROM oven/bun:1.4.2 AS builder
 
 WORKDIR /build
 

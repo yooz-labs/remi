@@ -75,6 +75,13 @@ final class MacNotificationPermission {
         await refresh()
     }
 
+    func openSystemSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") else { return }
+        if !NSWorkspace.shared.open(url), let fallback = URL(string: "x-apple.systempreferences:") {
+            NSWorkspace.shared.open(fallback)
+        }
+    }
+
     nonisolated static func access(for status: UNAuthorizationStatus) -> MacNotificationAccess {
         switch status {
         case .denied: .denied
@@ -116,6 +123,8 @@ final class MacNotificationDelegate: NSObject, NSApplicationDelegate, UNUserNoti
     ) async -> UNNotificationPresentationOptions {
         if RemiPushStore.isSecureNotification(content: notification.request.content) {
             guard NativeRelayNotifications.allowsPresentation(notification.request.content) else { return [] }
+        } else if !NativeNotificationPreferences.read(from: .standard).questions {
+            return []
         }
         return [.banner, .list, .sound]
     }
@@ -170,6 +179,7 @@ enum MacNotificationCoordinator {
         message: QuestionMessage,
         store: MachineStore
     ) async {
+        guard NativeNotificationPreferences.read(from: .standard).questions else { return }
         let plan = store.localQuestionNotification(for: destination)
         let actionsPublished: Bool
         if plan != nil {
@@ -186,7 +196,8 @@ enum MacNotificationCoordinator {
                 ? await QuestionNotificationSummarizer.shared.summary(questionID: id, text: body)
                 : QuestionNotificationSummarizer.fallback(for: body)
         }
-        guard store.machine(withIdentifier: destination.machineID)?.questions.contains(message) == true else { return }
+        guard NativeNotificationPreferences.read(from: .standard).questions,
+              store.machine(withIdentifier: destination.machineID)?.questions.contains(message) == true else { return }
         let content = UNMutableNotificationContent()
         content.title = PushDisplayText.escape(title)
         content.body = PushDisplayText.escape(summarizedBody)

@@ -30,9 +30,8 @@ test('actual DATA replay fails uniformly and cannot produce a second semantic po
         }),
       ]);
       expect(closed.code).toBe(relayV2.FAILURE_CLOSE.code);
-      // Carry R3's measured Bun 1.3.11 close defect (#1225): an immediate
-      // failure close can lose its reason or reset. Require both real endpoints'
-      // records before accepting either exception, never just an empty reason.
+      // Require both real endpoints' records and the complete failure reason.
+      // The 1.4.2 pin has no historical 1.3.11 close exception (#1225/#1273).
       const deadline = Date.now() + 1500;
       let pipe: string | undefined;
       while (Date.now() < deadline) {
@@ -43,13 +42,8 @@ test('actual DATA replay fails uniformly and cannot produce a second semantic po
       expect(running.logs.filter((line) => line.startsWith('Relay pipe closed by '))).toEqual([
         `Relay pipe closed by the hub (${relayV2.FAILURE_CLOSE.code})`,
       ]);
-      if (Bun.version === '1.3.11' && pipe === 'close 4400 ""')
-        expect(closed).toEqual({ code: relayV2.FAILURE_CLOSE.code, reason: '' });
-      else {
-        if (!(Bun.version === '1.3.11' && pipe?.startsWith('close 1006 ')))
-          expect(pipe).toBe('close 4400 "closed"');
-        expect(closed).toEqual(relayV2.FAILURE_CLOSE);
-      }
+      expect(pipe).toBe('close 4400 "closed"');
+      expect(closed).toEqual(relayV2.FAILURE_CLOSE);
       expect(await running.socket.quiet(50)).toBe(true);
     } finally {
       clearTimeout(timer);

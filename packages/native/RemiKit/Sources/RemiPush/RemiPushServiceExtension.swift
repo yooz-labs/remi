@@ -26,7 +26,7 @@ open class RemiPushServiceExtension: UNNotificationServiceExtension, @unchecked 
         RemiPushPresentation.apply(.information, sessionID: nil, sound: sound, to: fallback)
         let carrier = request.content.userInfo["remiPush"]
         if let carrier { fallback.userInfo = ["remiPush": carrier] }
-        let bytes = carrier.flatMap { try? JSONSerialization.data(withJSONObject: $0) }
+        let bytes = NativePushCodec.carrierBytes(carrier)
         let id = UUID()
         lock.lock()
         let prior = delivery

@@ -30,6 +30,24 @@ B3a (#1617/#1618) supplies shared model/view reservations.
 B3b (#1620) adds [launch-time capture](../docs/terminal-capture.md) before either
 harness starts, with one bounded borrowed frame and disposal before quota release.
 It adds no terminal service, capability or pane; B3c/B4 remain required.
+Current owner decision(2026-10-23): qualify the complete terminal stack at4MiB
+per model while retaining32MiB/home, hence eight captured models. ADR0048 records
+version2 accounting and conservative compatibility with old reservations. The
+primitive keeps its independently qualified1MiB bound. C1ownership PR1642 and
+admission fixture1653 landed after hosted/actual61minute gates; signed service
+PR1655 records passing 320-case source lanes, actual leases and all six compiled
+resource/quota/held-No cells with causal controls. The fixed-delta review is
+complete; merge requires final-head hosted checks and the actual relay soak.
+B4 encrypted routing and the qualified caller precede capability advertisement.
+Original failures remain recorded; see the service report for scope and controls.
+Develop integration (2026-10-30) retains the three isolated CI workers and current
+worker/controller/cleanup caps. Fresh local source/static/actual-lease and six-cell
+compiled/resource/held-No controls pass on measured tree `a8812f4fb03bd3e815fea691a447368400f59858`
+and source manifest `85c4b21df442df772fb8b7d4d269e804d71bb52b7e90e29eae9c4afdee9ec505`; the exact receipt
+is in `docs/terminal-view-service-integration-qualification.json`. At this local
+qualification checkpoint, no push or PR merge had occurred. Fresh final-head
+hosted checks and the actual 61-minute same-child
+soak remain required; the old hosted soak is historical evidence only.
 Transferred-media preview cleanup uses the owner-confirmed oldest-cache eviction
 when full, preserving explicit Save/export and host source files.
 
@@ -157,7 +175,8 @@ Still open:
 - Each part of a fix is mutation-checked: revert it and a test fails.
 - No mocks that replace business logic.
 - Gates on every PR:
-  - the full `bun test` on Bun 1.4.2 and on the CI-pinned Bun 1.3.11;
+  - the full `bun test` on CI-pinned Bun 1.4.2 when the established scope policy selects runtime checks;
+  - historical two-version standalone proofs retain their original Bun 1.3.11 baseline;
   - `bun run typecheck`, `bunx biome check`, `typos`;
   - the macOS `RemiTests` for Swift changes;
   - the integration scripts and browser tests when the daemon wire or the web client changes.
@@ -711,6 +730,25 @@ Original failures, cleanup and source/test receipts remain on S1.
 Remaining gates are independent integration review, final hosted checks, relay routing, genuine fresh native hub first-thread identity and native UI.
 Keep1207 open; no phone or additional account quota is used for this direct phase.
 
+
+## Bun pin migration preparation (#1273)
+
+Continue the existing validation worktree on `chore/issue-1273-bun142-pins`.
+Six actual full CLI binaries (two Buns, three supported hosts) passed version/help
+and isolated signed-client hub authorization/revocation/stop controls at frozen
+`3826d1e0`. The full Mac Bun 1.4.2 suite passed 9,809 tests with 29 skips and no failures.
+The corrected local Linux run retained all 9,838 tests but failed three mDNS
+checks; its network-routing explanation remains a hypothesis, not a pass.
+
+The source PR moves the six executing CI and release pins and the strict relay producer runtime
+contract together.
+`native-app.yml` stays on Bun 1.3.11 for three native fixtures that refuse any other runtime; #1273 stays open for it.
+Preserve all 2,383 classifier controls and nine focused status
+controls; report new old-runtime/no-op-mutation controls separately. Remove only
+old-runtime test allowances, retaining production close/drain/grace behavior and
+historical receipts. Review before publication avoids unnecessary repeated soak
+runs. Fresh hosted full checks and one actual 1.4.2 producer must pass. The final
+merge also waits for the existing physical-phone gate; the phone is unavailable.
 
 ## Workspace updates after existing reads (#1285)
 

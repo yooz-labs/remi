@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.8.2'; // REMI_COMPILED_VERSION
+      return '0.9.0-dev.3'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.8.2'; // REMI_COMPILED_VERSION
+    return '0.9.0-dev.3'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -287,6 +287,7 @@ import { SecurePushTransport } from './notifications/secure-push-transport.ts';
 import { createTurnEventSink } from './notifications/turn-events.ts';
 import { createTurnFailedRoutes } from './notifications/turn-failed.ts';
 import { TurnTimer } from './notifications/turn-timer.ts';
+import { AwakeWiring } from './power/awake-wiring.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
 import { HubRelay } from './remote/hub-relay.ts';
 import { NativeAnswerLedger } from './remote/native-answer-ledger.ts';
@@ -312,6 +313,8 @@ import { findAvailableTcpPort } from './session/port-utils.ts';
 import { traceQuestionEvent } from './session/question-trace.ts';
 import { InterprocessFileLockError } from './storage/interprocess-file-lock.ts';
 import { TerminalCaptureHost } from './terminal/capture-host.ts';
+import type { TerminalIngress } from './terminal/ingress.ts';
+import { TerminalViewService } from './terminal/view-service.ts';
 import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
 import { BrowserLinkService } from './tunnel/browser-link-service.ts';
 import { BrowserLinkSessionHost } from './tunnel/browser-link-session-host.ts';
@@ -1178,6 +1181,13 @@ const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new 
 // launch filled in separately; every session has an entry, a session with no
 // hook server just has nothing held.
 const harnessSessions: Map<UUID, HarnessSession> = new Map();
+// Keep-awake (#1773): the glue, the creation condition and the registry hooks
+// live in power/awake-wiring.ts, which the wiring tests import.
+const awakeWiring = new AwakeWiring({
+  serveMode,
+  config: remiConfig.awake,
+  log: (message) => log(message),
+});
 // Created before the message API or harness can emit; retired before teardown, finished after the
 // disposal's dismissals are out (#1200).
 const securePushContexts = new SecurePushContexts({
@@ -1194,6 +1204,7 @@ let imageStagingService: ImageStagingService | undefined;
 let imageInsertionCoordinator: ImageInsertionCoordinator | undefined;
 let structuredChatService: StructuredChatService | undefined;
 let browserLinkService: BrowserLinkService | undefined;
+const terminalViewService: { current?: TerminalViewService } = {};
 let browserSessionHost: BrowserLinkSessionHost | undefined;
 let fileDownloadSessionHost: FileDownloadSessionHost | undefined;
 const terminalCaptureHost = new TerminalCaptureHost(REMI_DIR);
@@ -1304,6 +1315,7 @@ const bindingStore = new SessionBindingStore(
         beforeWrite: (id) => {
           browserSessionHost?.beforeBindingWrite(id);
           fileDownloadSessionHost?.beforeBindingWrite(id);
+          terminalViewService.current?.forgetSession(id);
         },
         afterCommit: (id, expected, mirrorVerified) => {
           browserSessionHost?.afterBindingCommit(id, expected, mirrorVerified);
@@ -1357,7 +1369,7 @@ const sessionRegistry = new SessionRegistry(
     redactQuestionLogs: true,
     workspaceOf: (directory) => workspaceCache.get(directory),
   },
-  {
+  awakeWiring.registryEvents({
     onSessionCreated: (sessionId) => {
       log(`Session created: ${sessionId}`);
     },
@@ -1365,6 +1377,7 @@ const sessionRegistry = new SessionRegistry(
       retireSecurePushRuntime(sessionId);
       browserSessionHost?.retireSession(sessionId, reason !== 'pty_exit');
       fileDownloadSessionHost?.retireSession(sessionId);
+      terminalViewService.current?.forgetSession(sessionId);
       terminalCaptureHost.retireSession(sessionId);
       void fileDownloadSessionHost?.closeSession(sessionId);
       void imageStagingService?.invalidateSession(sessionId);
@@ -1488,7 +1501,7 @@ const sessionRegistry = new SessionRegistry(
         detail: { liveQuestionIds: questions.map((q) => q.id) },
       });
     },
-  },
+  }),
 );
 
 // Own pending startup before public listeners can accept a feature client.
@@ -1745,6 +1758,7 @@ let updateWatcher: import('./cli/update-watcher.ts').UpdateWatcher | null = null
 // (issue #203). SIGKILL still leaves entries by definition; the next
 // startup's purgeStaleHooks recovers from that.
 process.on('exit', () => {
+  awakeWiring.disposeAll();
   if (hookConfigManager) {
     hookConfigManager.uninstallSync();
   }
@@ -1922,6 +1936,8 @@ async function createNewSession(
       },
       sessionId,
     );
+    // A no-op in serve mode, off macOS and with level1=false (#1773).
+    awakeWiring.attach(sessionId, messageApi);
     // Register this session's APNS dispatcher before the harness builds
     // anything that can fire a decision: the question-resolved path and the
     // harness's terminal-notice closures read `sessionNotifiers.get(sid)` to
@@ -1949,6 +1965,7 @@ async function createNewSession(
     try {
       await terminalCaptureHost.prepare(sessionId, ptySession);
     } catch {
+      terminalViewService.current?.forgetSession(sessionId);
       terminalCaptureHost.retireSession(sessionId);
       logError('[Terminal] Optional launch capture unavailable');
     }
@@ -2020,6 +2037,7 @@ async function createNewSession(
     return ptySession;
   } catch (error) {
     fileDownloadSessionHost?.retireSession(sessionId);
+    terminalViewService.current?.forgetSession(sessionId);
     terminalCaptureHost.retireSession(sessionId);
     browserSessionHost?.finishStartup(false);
     try {
@@ -2028,6 +2046,7 @@ async function createNewSession(
       logError('Session failure bookkeeping unavailable');
     }
     retireSecurePushRuntime(sessionId);
+    awakeWiring.close(sessionId);
     try {
       harnessSessions.get(sessionId)?.dispose();
     } catch {
@@ -2661,6 +2680,7 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
   onConnectionClosed: (id) => {
     fileDownloadSessionHost?.invalidateConnection(id);
     browserLinkService?.forgetConnection(id);
+    terminalViewService.current?.forgetConnection(id);
     structuredChatService?.forgetConnection(id);
     forgetConnectionToken(id);
     void imageStagingService?.invalidateConnection(id);
@@ -2676,6 +2696,8 @@ const recentRepositoriesHandlers = createRecentRepositoriesHandlers({
 });
 
 let sharedEvents = {
+  onTerminalView: (id: string, ingress: TerminalIngress) =>
+    terminalViewService.current?.handle(id, ingress),
   ...(fileDownloadSessionHost && {
     onFileDownload: async (
       id: UUID,
@@ -2997,6 +3019,17 @@ if (
   sharedEvents = ordinaryEvents;
   console.error('File downloads are unavailable on this host.');
 }
+terminalViewService.current = new TerminalViewService({
+  identityStore: relayTrust,
+  sessions: sessionRegistry,
+  bindings: bindingStore,
+  capture: terminalCaptureHost,
+  directAdapter: () => {
+    const adapter = registry.getAdapter('websocket');
+    return adapter instanceof WebSocketAdapter ? adapter : undefined;
+  },
+  runtimeFor: (id) => harnessSessions.get(id),
+});
 const wsAdapter = new WebSocketAdapter(websocketConfigFor(PORT), sharedEvents);
 registry.register(wsAdapter);
 
@@ -3187,6 +3220,7 @@ async function performCleanup(): Promise<void> {
   fileDownloadSessionHost?.cancelAll();
   browserSessionHost?.cancelAll();
   browserLinkService?.close();
+  terminalViewService.current?.close();
   imageInsertionCoordinator?.close();
   structuredChatService?.close();
   if (imageStagingService && !(await imageStagingService.close()))
@@ -3247,6 +3281,7 @@ async function performCleanup(): Promise<void> {
   // disposes them again when the PTY exits, which dispose()'s guard makes a
   // no-op. Before, cleanup cleared binderClosers and left the gate, tracker
   // and turn-filter maps.
+  awakeWiring.disposeAll();
   for (const session of harnessSessions.values()) {
     session.dispose();
   }

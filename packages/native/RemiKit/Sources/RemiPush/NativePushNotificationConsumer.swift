@@ -11,7 +11,7 @@ final class NativePushNotificationConsumer: @unchecked Sendable {
         let carrier: Data?
         init(identifier: String, userInfo: [AnyHashable: Any]) {
             self.identifier = identifier
-            carrier = (try? JSONSerialization.data(withJSONObject: userInfo["remiPush"] as Any))
+            carrier = NativePushCodec.carrierBytes(userInfo["remiPush"])
         }
     }
     enum DismissOutcome: Equatable { case removed(Int), ignored, unavailable }
@@ -48,7 +48,10 @@ final class NativePushNotificationConsumer: @unchecked Sendable {
         // Capture only strict, owned capsule bytes across the queue hop.
         let captured: NativePushCodec.Carrier
         do {
-            captured = try NativePushCodec.parseCarrier(JSONSerialization.data(withJSONObject: userInfo["remiPush"] as Any))
+            guard let bytes = NativePushCodec.carrierBytes(userInfo["remiPush"]) else {
+                completion(.unavailable); return
+            }
+            captured = try NativePushCodec.parseCarrier(bytes)
         } catch { completion(.unavailable); return }
         queue.async { [self] in
             let userInfo: [AnyHashable: Any] = ["remiPush": captured.userInfo]

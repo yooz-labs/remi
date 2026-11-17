@@ -5,7 +5,7 @@ import RemiUI
 import UIKit
 
 enum PhonePreferenceKey {
-    static let questionNotifications = "remi.phone.question-notifications"
+    static let questionNotifications = NativeNotificationPreferences.questionsKey
     static let notificationSounds = RemiPushPresentation.soundsPreferenceKey
     static let haptics = "remi.phone.haptics"
 }
@@ -15,6 +15,7 @@ struct PhonePreferencesSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(PhonePreferenceKey.questionNotifications) private var notificationsEnabled = true
+    @AppStorage(NativeNotificationPreferences.turnCompleteKey) private var turnCompleteEnabled = false
     @AppStorage(PhonePreferenceKey.notificationSounds) private var soundsEnabled = true
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
     @AppStorage(QuestionNotificationSummarizer.preferenceKey) private var summariesEnabled = true
@@ -30,8 +31,9 @@ struct PhonePreferencesSheet: View {
             Form {
                 Section {
                     Toggle("Question notifications", isOn: $notificationsEnabled)
+                    Toggle("Turn-complete notifications", isOn: $turnCompleteEnabled)
                     Toggle("Notification sounds", isOn: $soundsEnabled)
-                        .disabled(!notificationsEnabled)
+                        .disabled(!anyNotificationsEnabled)
                         .onChange(of: soundsEnabled) { _, enabled in
                             RemiPushPresentation.shareSoundsPreference(
                                 enabled, with: UserDefaults(suiteName: RemiPushPresentation.sharedDefaultsSuite))
@@ -60,11 +62,11 @@ struct PhonePreferencesSheet: View {
                     }
                     .frame(minHeight: 44)
 
-                    if notificationsEnabled && authorizationState == .notDetermined {
+                    if anyNotificationsEnabled && authorizationState == .notDetermined {
                         Button("Enable notifications", systemImage: "bell.badge") {
                             Task { authorizationState = await PhoneNotificationCoordinator.requestAuthorization() }
                         }
-                    } else if notificationsEnabled && authorizationState == .denied {
+                    } else if anyNotificationsEnabled && authorizationState == .denied {
                         Button("Open Notification Settings", systemImage: "gear") {
                             Task { await PhoneNotificationCoordinator.openSystemSettings() }
                         }
@@ -115,6 +117,12 @@ struct PhonePreferencesSheet: View {
                 }
             }
             .onChange(of: notificationsEnabled) { _, enabled in
+                NativeRelayNotifications.shared.notificationPreferencesDidChange()
+                guard enabled else { return }
+                Task { authorizationState = await PhoneNotificationCoordinator.requestAuthorization() }
+            }
+            .onChange(of: turnCompleteEnabled) { _, enabled in
+                NativeRelayNotifications.shared.notificationPreferencesDidChange()
                 guard enabled else { return }
                 Task { authorizationState = await PhoneNotificationCoordinator.requestAuthorization() }
             }
@@ -126,17 +134,16 @@ struct PhonePreferencesSheet: View {
         }
     }
 
+    private var anyNotificationsEnabled: Bool { notificationsEnabled || turnCompleteEnabled }
+
     private var notificationFooter: LocalizedStringResource {
-        if !notificationsEnabled {
-            return "Remi will not show local question alerts on this device."
+        if !anyNotificationsEnabled {
+            return "Question and turn-complete alerts are off. Host-configured subagent alerts may still arrive."
         }
         if authorizationState == .denied {
             return "Notifications are blocked by iOS. Open Settings to allow alerts when a connected session needs you."
         }
-        if summariesEnabled {
-            return "Show a local alert when a session needs an answer. Longer questions are summarized on device with Apple Intelligence when available."
-        }
-        return "Show the original question text in local alerts when a connected session needs an answer."
+        return "Turn-complete alerts require the host setting and minimum duration (60 seconds by default). Error and denial alerts are off; host-configured subagent alerts may still arrive. Changes apply when connected machines update their notification registration."
     }
 
     private var authorizationLabel: some View {

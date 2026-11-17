@@ -1,17 +1,29 @@
 import Foundation
 import SwiftUI
+#if os(macOS)
+import AppKit
+#elseif os(iOS)
+import UIKit
+#endif
 
 public struct RemiTranscriptEntryView: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    private let copyPayload: String?
+    private let dismissOutgoing: ((String) -> Void)?
     private let entry: RemiTranscriptEntry
     private let isSearchMatch: Bool
     private let isSelectedSearchMatch: Bool
 
     public init(
         entry: RemiTranscriptEntry,
+        copyText: String? = nil,
+        onDismissOutgoing: ((String) -> Void)? = nil,
         isSearchMatch: Bool = false,
         isSelectedSearchMatch: Bool = false
     ) {
         self.entry = entry
+        self.copyPayload = copyText
+        self.dismissOutgoing = onDismissOutgoing
         self.isSearchMatch = isSearchMatch
         self.isSelectedSearchMatch = isSelectedSearchMatch
     }
@@ -20,6 +32,23 @@ public struct RemiTranscriptEntryView: View {
         Group {
             switch entry {
             case .user(_, let text): TranscriptMessage(text: text, role: .user, forceExpanded: isSearchMatch)
+            case .pending(let id, let text, let state):
+                VStack(alignment: .trailing, spacing: RemiTheme.Spacing.xs) {
+                    TranscriptMessage(text: text, role: .user, forceExpanded: isSearchMatch, pending: state)
+                    outcomeActionsLayout {
+                        Button("Copy message", systemImage: "doc.on.doc") { copy(copyPayload ?? text) }
+                        if let dismissOutgoing {
+                            Button("Dismiss outcome", systemImage: "xmark") { dismissOutgoing(id) }
+                                .accessibilityHint("Removes this local outcome. Does not cancel or resend input.")
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .frame(minHeight: RemiTheme.Size.minimumTapTarget)
+                    Text(RemiOutgoingState.retentionNotice)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
             case .agent(_, let text): TranscriptMessage(text: text, role: .agent, forceExpanded: isSearchMatch)
             case .tool(_, let name, let summary): TranscriptToolEntry(name: name, summary: summary)
             case .error(_, let text): TranscriptErrorEntry(text: text)
@@ -37,6 +66,38 @@ public struct RemiTranscriptEntryView: View {
         }
         .accessibilityValue(isSelectedSearchMatch ? "Selected search result" : "")
     }
+    private var outcomeActionsLayout: AnyLayout {
+        if dynamicTypeSize.isAccessibilitySize {
+            AnyLayout(VStackLayout(alignment: .trailing))
+        } else {
+            AnyLayout(HStackLayout())
+        }
+    }
+
+    private func copy(_ text: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        #elseif os(iOS)
+        UIPasteboard.general.string = text
+        #endif
+    }
+
+}
+
+/// The delivery state of a not-yet-confirmed message, for VoiceOver. The label already says
+/// "not confirmed yet", so the value is only the state. A confirmed bubble gets no value.
+private struct PendingDeliveryValue: ViewModifier {
+    let pending: RemiOutgoingState?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let pending {
+            content.accessibilityValue(pending.title)
+        } else {
+            content
+        }
+    }
 }
 
 private struct TranscriptMessage: View {
@@ -48,12 +109,15 @@ private struct TranscriptMessage: View {
     let role: Role
     /// A search match is never hidden inside a collapsed message.
     let forceExpanded: Bool
+    /// Set for a message you sent that the conversation does not show yet.
+    let pending: RemiOutgoingState?
     private let collapse: RemiMessageCollapse
 
-    init(text: String, role: Role, forceExpanded: Bool = false) {
+    init(text: String, role: Role, forceExpanded: Bool = false, pending: RemiOutgoingState? = nil) {
         self.text = text
         self.role = role
         self.forceExpanded = forceExpanded
+        self.pending = pending
         collapse = RemiMessageCollapse(text: text)
     }
 
@@ -78,7 +142,18 @@ private struct TranscriptMessage: View {
                 .overlay {
                     if role == .user {
                         RoundedRectangle(cornerRadius: RemiTheme.Radius.control)
-                            .stroke(RemiTheme.Color.attention.opacity(0.28), lineWidth: 1)
+                            .stroke(
+                                RemiTheme.Color.attention.opacity(pending == nil ? 0.28 : 0.7),
+                                style: StrokeStyle(lineWidth: 1, dash: pending == nil ? [] : [4, 3])
+                            )
+                            .allowsHitTesting(false)
+                    }
+                }
+                .background {
+                    if pending != nil {
+                        HatchPattern()
+                            .stroke(RemiTheme.Color.attention.opacity(0.18), lineWidth: 1)
+                            .clipShape(.rect(cornerRadius: RemiTheme.Radius.control))
                             .allowsHitTesting(false)
                     }
                 }
@@ -87,13 +162,21 @@ private struct TranscriptMessage: View {
                     maxWidth: dynamicTypeSize.isAccessibilitySize ? .infinity : messageMaximumWidth,
                     alignment: role == .user ? .trailing : .leading
                 )
+            if let pending {
+                Text(pending.title)
+                    .font(.caption.weight(.semibold))
+                Text(pending.guidance)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if collapse.isCollapsible, !forceExpanded {
                 expandButton
             }
         }
         .frame(maxWidth: .infinity, alignment: role == .user ? .trailing : .leading)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(role == .user ? "Your message" : "Agent response")
+        .accessibilityLabel(role == .user ? (pending == nil ? "Your message" : "Your message, not confirmed yet") : "Agent response")
+        .modifier(PendingDeliveryValue(pending: pending))
     }
 
     private var expandButton: some View {
@@ -279,5 +362,20 @@ public struct RemiTranscriptRowsView<EntryContent: View>: View {
                 }
             }
         }
+    }
+}
+
+/// Diagonal hatching that fills whatever shape it is drawn in.
+private struct HatchPattern: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let step: CGFloat = 7
+        var x = -rect.height
+        while x < rect.width {
+            path.move(to: CGPoint(x: x, y: rect.height))
+            path.addLine(to: CGPoint(x: x + rect.height, y: 0))
+            x += step
+        }
+        return path
     }
 }

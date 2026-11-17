@@ -8,19 +8,36 @@ struct MacLiveRootView: View {
 
     @AppStorage("remi.mac.selected-machine") private var selectedMachineID = ""
     @AppStorage("remi.mac.selected-session") private var selectedSessionID = ""
+    @AppStorage("remi.mac.last-threads") private var lastThreadsStorage = ""
     @SceneStorage("remi.mac.column-layout") private var columnLayoutStorage = ""
     @SceneStorage("remi.mac.drafts") private var draftsStorage = ""
     @Environment(\.scenePhase) private var scenePhase
     @State private var draftBox = MacDraftBox()
     @State private var draftFlush: Task<Void, Never>?
     @State private var showingInbox = false
+    /// The command center is the landing view; leaving it for a conversation is remembered.
+    @AppStorage("remi.mac.shows-board") private var showingBoard = true
+    /// When each currently connected machine connected. A hub lists its sessions before its
+    /// per-session daemons do, so until a machine has been connected for the grace period a
+    /// remembered thread missing from its list is waited for, not replaced.
+    @State private var connectedAt: [String: Date] = [:]
+    /// Bumped when a machine's grace period ends, to run `reconcileNavigation` then.
+    @State private var graceTick = 0
+    /// The session `reconcileNavigation` chose as a fallback; `onChange` skips recording it.
+    @State private var autoSelected: (machineID: String, sessionID: String)?
     @State private var showingNewSession = false
+    @State private var showingMessageOutcomes = false
+    @State private var showingJump = false
     @State private var newSessionMachineID: String?
     @State private var newSessionRepository: String?
     @State private var showingAddMachine = false
     @State private var pairingAttemptID: UUID?
     @State private var pendingMachineRemoval: MachineState?
     @State private var notificationRouter = MacNotificationRouter.shared
+    @State private var notificationPermission = MacNotificationPermission.shared
+    @State private var dismissedNotificationPermission = false
+    @AppStorage(NativeNotificationPreferences.questionsKey) private var questionNotifications = true
+    @AppStorage(NativeNotificationPreferences.turnCompleteKey) private var turnCompleteNotifications = false
     @State private var notificationDestination: RemiNavigationDestination?
     @State private var pendingResume: ResumeSessionKey?
     @State private var relayNotifications = NativeRelayNotifications.shared
@@ -28,66 +45,77 @@ struct MacLiveRootView: View {
     @State private var expandedColumnVisibility = NavigationSplitViewVisibility.all
     @State private var preferredCompactColumn = NavigationSplitViewColumn.sidebar
 
+    private var sidebarColumn: some View {
+        List(selection: sidebarSelection) {
+            MacMachineProblemRows(
+                machines: machineSummaries,
+                onSelect: { sidebarSelection.wrappedValue = .machine($0) }
+            )
+            boardRow
+            inboxRow
+            ForEach(store.machines) { machine in
+                MacMachineSidebarRow(
+                    machine: machinePresentation(machine),
+                    label: machineLabels[machine.id] ?? machine.displayName,
+                    recovery: RemiMachineRecoveryState.resolve(
+                        status: machine.status,
+                        isRelay: machine.endpoint.relayPin != nil
+                    )
+                )
+                    .tag(RemiMacSidebarSelection.machine(machine.id))
+                    .contextMenu {
+                        PairedNotificationControls(state: store.pairedNotificationState(for: machine.endpoint),
+                            busy: relayNotifications.enabling, connected: machine.status == .connected,
+                            enable: { relayNotifications.enable(on: machine.endpoint) },
+                            revoke: { relayNotifications.revoke(on: machine.endpoint) })
+                        Button("Remove machine", systemImage: "trash", role: .destructive) {
+                            pendingMachineRemoval = machine
+                        }
+                    }
+            }
+        }
+        .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 300)
+        .navigationTitle("Remi")
+        .toolbar {
+            if #available(macOS 26.1, *) {
+                ToolbarItem {
+                    Button {
+                        showingAddMachine = true
+                    } label: {
+                        Label("Add machine", systemImage: "desktopcomputer.and.arrow.down")
+                    }
+                    .help("Add another Remi machine (Shift-Command-N)")
+                }
+                .visibilityPriority(.high)
+            } else {
+                ToolbarItem {
+                    Button {
+                        showingAddMachine = true
+                    } label: {
+                        Label("Add machine", systemImage: "desktopcomputer.and.arrow.down")
+                    }
+                    .help("Add another Remi machine (Shift-Command-N)")
+                }
+            }
+        }
+    }
+
     private var mainContent: some View {
         Group {
             if store.machines.isEmpty {
                 MacFirstRunView(onAddMachine: { showingAddMachine = true })
+            } else if showingBoard {
+                NavigationSplitView {
+                    sidebarColumn
+                } detail: {
+                    boardDetail
+                }
             } else {
                 NavigationSplitView(
                     columnVisibility: $columnVisibility,
                     preferredCompactColumn: $preferredCompactColumn
                 ) {
-                    List(selection: sidebarSelection) {
-                        MacMachineProblemRows(
-                            machines: machineSummaries,
-                            onSelect: { sidebarSelection.wrappedValue = .machine($0) }
-                        )
-                        inboxRow
-                        ForEach(store.machines) { machine in
-                            MacMachineSidebarRow(
-                                machine: machinePresentation(machine),
-                                label: machineLabels[machine.id] ?? machine.displayName,
-                                recovery: RemiMachineRecoveryState.resolve(
-                                    status: machine.status,
-                                    isRelay: machine.endpoint.relayPin != nil
-                                )
-                            )
-                                .tag(RemiMacSidebarSelection.machine(machine.id))
-                                .contextMenu {
-                                    PairedNotificationControls(state: store.pairedNotificationState(for: machine.endpoint),
-                                        busy: relayNotifications.enabling, connected: machine.status == .connected,
-                                        enable: { relayNotifications.enable(on: machine.endpoint) },
-                                        revoke: { relayNotifications.revoke(on: machine.endpoint) })
-                                    Button("Remove machine", systemImage: "trash", role: .destructive) {
-                                        pendingMachineRemoval = machine
-                                    }
-                                }
-                        }
-                    }
-                    .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 300)
-                    .navigationTitle("Remi")
-                    .toolbar {
-                        if #available(macOS 26.1, *) {
-                            ToolbarItem {
-                                Button {
-                                    showingAddMachine = true
-                                } label: {
-                                    Label("Add machine", systemImage: "desktopcomputer.and.arrow.down")
-                                }
-                                .help("Add another Remi machine (Shift-Command-N)")
-                            }
-                            .visibilityPriority(.high)
-                        } else {
-                            ToolbarItem {
-                                Button {
-                                    showingAddMachine = true
-                                } label: {
-                                    Label("Add machine", systemImage: "desktopcomputer.and.arrow.down")
-                                }
-                                .help("Add another Remi machine (Shift-Command-N)")
-                            }
-                        }
-                    }
+                    sidebarColumn
                 } content: {
                     Group {
                         if showingInbox {
@@ -161,14 +189,18 @@ struct MacLiveRootView: View {
                             initialQuestionID: notificationDestination?.questionID,
                             transcriptForView: { transcript(machineID: session.machineID, sessionID: $0) },
                             isLoadingTranscript: { store.isLoadingTranscript(machineID: session.machineID, sessionID: $0) },
-                            onSelectView: { store.loadTranscript(machineID: session.machineID, sessionId: $0) },
+                            onSelectView: { store.ensureTranscript(machineID: session.machineID, sessionId: $0) },
                             onAnswer: { questionId, value in
                                 store.answer(
                                     machineID: session.machineID,
                                     sessionId: session.id,
                                     questionId: questionId,
                                     answer: value,
-                                    claudeSessionId: rawQuestion(id: questionId)?.claudeSessionId
+                                    claudeSessionId: rawQuestion(
+                                        machineID: session.machineID,
+                                        sessionID: session.id,
+                                        questionID: questionId
+                                    )?.claudeSessionId
                                 )
                             },
                             onSubmit: { questionId, selections in
@@ -177,7 +209,11 @@ struct MacLiveRootView: View {
                                     sessionId: session.id,
                                     questionId: questionId,
                                     answer: "",
-                                    claudeSessionId: rawQuestion(id: questionId)?.claudeSessionId,
+                                    claudeSessionId: rawQuestion(
+                                        machineID: session.machineID,
+                                        sessionID: session.id,
+                                        questionID: questionId
+                                    )?.claudeSessionId,
                                     selections: selections.compactMap { selection in
                                         guard let questionIndex = Int(selection.stepID) else { return nil }
                                         return AnswerSelection(
@@ -194,7 +230,11 @@ struct MacLiveRootView: View {
                                     sessionId: session.id,
                                     questionId: questionId,
                                     answer: "",
-                                    claudeSessionId: rawQuestion(id: questionId)?.claudeSessionId,
+                                    claudeSessionId: rawQuestion(
+                                        machineID: session.machineID,
+                                        sessionID: session.id,
+                                        questionID: questionId
+                                    )?.claudeSessionId,
                                     cancel: true
                                 )
                             },
@@ -208,6 +248,9 @@ struct MacLiveRootView: View {
                                     claudeSessionId: binding
                                 )
                             },
+                            onDismissOutgoing: { id in
+                                store.dismissOutgoing(presentationID: id)
+                            },
                             onResume: session.canResume ? { resume(session) } : nil,
                             onTerminate: { store.terminateSession(machineID: session.machineID, sessionId: session.id) },
                             initialDraft: liveDrafts.draft(for: session.key),
@@ -218,7 +261,7 @@ struct MacLiveRootView: View {
                             sessionID: session.id
                         ))
                         .task(id: store.transcriptRouteGeneration(machineID: session.machineID, sessionID: session.id)) {
-                            store.loadTranscript(machineID: session.machineID, sessionId: session.id)
+                            store.ensureTranscript(machineID: session.machineID, sessionId: session.id)
                         }
                     } else if notificationDestination != nil {
                         ContentUnavailableView(
@@ -242,12 +285,58 @@ struct MacLiveRootView: View {
         // Split columns can paint beneath a root safe-area inset on Mac (#1141).
         VStack(spacing: 0) {
             feedbackBanner
+            notificationPermissionBanner
+            if store.outgoingCount > 0 {
+                HStack {
+                    Spacer()
+                    Button("Message outcomes (\(store.outgoingCount))", systemImage: "tray") { showingMessageOutcomes = true }
+                }
+                .padding(.horizontal)
+                .padding(.vertical, RemiTheme.Spacing.xs)
+            }
             mainContent
         }
         .focusedSceneValue(\.macWorkspace, workspaceActions)
         .task {
             restoreColumnLayout()
             reconcileNavigation()
+            await notificationPermission.refresh()
+        }
+        .task(id: GraceWindow(connectedAt: connectedAt, tick: graceTick)) {
+            let now = Date()
+            let ends = connectedAt.values
+                .map { $0.addingTimeInterval(RemiLastThreads.defaultGrace) }
+                .filter { $0 > now }
+            guard let earliest = ends.min() else { return }
+            guard (try? await Task.sleep(for: .seconds(earliest.timeIntervalSince(now)))) != nil
+            else { return }
+            graceTick += 1
+            reconcileNavigation()
+        }
+        .onChange(of: connectedMachineIDs, initial: true) { _, ids in
+            let now = Date()
+            var next: [String: Date] = [:]
+            for id in ids { next[id] = connectedAt[id] ?? now }
+            connectedAt = next
+            reconcileNavigation()
+        }
+        .onChange(of: selectedSessionID) { _, sessionID in
+            // The flag never outlives the next selection change, whatever the outcome.
+            let auto = autoSelected
+            autoSelected = nil
+            guard RemiLastThreads.shouldRecord(
+                machineID: selectedMachineID, sessionID: sessionID, autoSelected: auto
+            ) else { return }
+            var threads = RemiLastThreads(storage: lastThreadsStorage)
+            threads.remember(machineID: selectedMachineID, sessionID: sessionID)
+            lastThreadsStorage = threads.storageValue
+        }
+        .onChange(of: store.machines.map(\.id), initial: true) { _, machineIDs in
+            // The store can fill asynchronously: an empty list must never wipe the memory.
+            guard !machineIDs.isEmpty else { return }
+            var threads = RemiLastThreads(storage: lastThreadsStorage)
+            threads.prune(keepingMachines: Set(machineIDs))
+            lastThreadsStorage = threads.storageValue
         }
         .onChange(of: currentColumnLayout) { _, layout in
             columnLayoutStorage = layout.storageValue
@@ -256,13 +345,16 @@ struct MacLiveRootView: View {
             MachineConfigurationStore.shared.saveProfiles(profiles)
             relayNotifications.reconcileEndpoints()
         }
+        .onChange(of: store.machines.map(\.status)) { _, _ in store.warmActiveTranscripts() }
         .onChange(of: navigationSnapshot, initial: true) { _, _ in
+            store.warmActiveTranscripts()
             reconcileNavigation()
             validateColumnLayout()
             pruneDrafts()
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { flushDrafts() }
+            if phase == .active { Task { await notificationPermission.refresh() } }
+            else { flushDrafts() }
         }
         // Command-Q may end the process without scenePhase leaving active.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
@@ -292,8 +384,33 @@ struct MacLiveRootView: View {
             guard let id = pairingAttemptID, let result = store.pairingAttempt(id: id),
                   case .admitted(let profileID) = result.phase else { return }
             showingInbox = false
+            showingBoard = false
             selectedMachineID = profileID
+            selectedSessionID = ""
+            pendingResume = nil
             pairingAttemptID = nil
+        }
+        .sheet(isPresented: $showingJump) {
+            MacJumpPalette(
+                sessions: allSessions,
+                questions: allQuestions,
+                onChoose: { result in
+                    showingJump = false
+                    switch result {
+                    case .session(let session): openFromBoard(session)
+                    case .question(let card, _):
+                        // The same path as the Inbox, so the card is focused, and the owner
+                        // session need not be in the list.
+                        openFromInbox(
+                            RemiInboxPresentation.OpenTarget(
+                                machineID: card.machineID, sessionID: card.sessionID, conversationID: card.agentID
+                            ),
+                            questionID: card.questionID
+                        )
+                    }
+                },
+                onClose: { showingJump = false }
+            )
         }
         .sheet(isPresented: $showingAddMachine) {
             MacAddMachineSheet(pairingAttempts: store.pairingAttempts,
@@ -327,6 +444,12 @@ struct MacLiveRootView: View {
                 relayNotifications.closeNotification()
             }
                 .frame(minWidth: 440, minHeight: 320)
+        }
+        .sheet(isPresented: $showingMessageOutcomes) {
+            RemiOutgoingHistoryView(groups: store.outgoingHistory) { key, id in
+                store.dismissOutgoing(groupID: key, messageID: id)
+            }
+            .frame(minWidth: 480, minHeight: 400)
         }
         .sheet(isPresented: $showingNewSession, onDismiss: {
             newSessionMachineID = nil
@@ -370,6 +493,20 @@ struct MacLiveRootView: View {
         }
     }
 
+    @ViewBuilder private var notificationPermissionBanner: some View {
+        if !dismissedNotificationPermission, questionNotifications || turnCompleteNotifications,
+           notificationPermission.access == .notDetermined || notificationPermission.access == .denied {
+            MacNotificationPermissionBanner(
+                denied: notificationPermission.access == .denied,
+                onEnable: {
+                    if notificationPermission.access == .denied { notificationPermission.openSystemSettings() }
+                    else { Task { await notificationPermission.request() } }
+                },
+                onDismiss: { dismissedNotificationPermission = true }
+            )
+        }
+    }
+
     @ViewBuilder private var feedbackBanner: some View {
         if let message = notificationRouter.notice {
             RemiFeedbackBanner(message: message, tone: .error, onDismiss: { notificationRouter.notice = nil })
@@ -394,6 +531,70 @@ struct MacLiveRootView: View {
         showingNewSession = true
     }
 
+    /// Connected machines whose session list has loaded and has had the grace period to settle,
+    /// the ones whose missing sessions really are gone.
+    private var settledMachineIDs: Set<String> {
+        let now = Date()
+        return Set(store.machines.filter {
+            $0.status == .connected && $0.hasLoadedSessions
+                && RemiLastThreads.isSettled(connectedAt: connectedAt[$0.id], now: now)
+        }.map(\.id))
+    }
+
+    private var boardDetail: some View {
+        MacCommandCenter(
+            sessions: allSessions,
+            machines: machineSummaries,
+            settledMachines: settledMachineIDs,
+            questions: allQuestions,
+            transcript: boardEntries,
+            onAnswer: { answerFromInbox(machineID: $0, sessionID: $1, questionID: $2, value: $3) },
+            onSubmit: { submitFromInbox(machineID: $0, sessionID: $1, questionID: $2, selections: $3) },
+            onCancel: { cancelFromInbox(machineID: $0, sessionID: $1, questionID: $2) },
+            onOpen: openFromBoard,
+            onSend: sendFromBoard
+        )
+        .navigationTitle("Board")
+        .toolbar {
+            ToolbarItem {
+                Button {
+                    presentNewSession()
+                } label: {
+                    Label("New session", systemImage: "plus")
+                }
+                .help("Start a new session (Command-N)")
+                .disabled(sessionCreationMachines.isEmpty)
+            }
+        }
+    }
+
+    private func openFromBoard(_ session: RemiSessionSummary) {
+        showingBoard = false
+        showingInbox = false
+        pendingResume = nil
+        notificationDestination = nil
+        selectedMachineID = session.machineID
+        selectedSessionID = session.id
+        preferredCompactColumn = .detail
+    }
+
+    private func sendFromBoard(_ session: RemiSessionSummary, _ content: String) async -> Bool {
+        let binding = store.machine(withIdentifier: session.machineID)?.sessions
+            .first { $0.sessionId == session.id }?.claudeSessionId
+        return await store.sendChat(
+            machineID: session.machineID,
+            sessionId: session.id,
+            content: content,
+            claudeSessionId: binding
+        )
+    }
+
+    private var boardRow: some View {
+        Label("Board", systemImage: "square.grid.2x2")
+            .badge(allSessions.count { $0.status == .needsYou })
+            .tag(RemiMacSidebarSelection.board)
+    }
+
     private var inboxRow: some View {
         let count = RemiInboxPresentation.waitingCount(questions: allQuestions)
         return Label("Inbox", systemImage: "tray")
@@ -404,13 +605,23 @@ struct MacLiveRootView: View {
 
     private var sidebarSelection: Binding<RemiMacSidebarSelection?> {
         Binding(
-            get: { RemiMacSidebarSelection.resolve(showsInbox: showingInbox, machineID: selectedMachineID) },
+            get: {
+                RemiMacSidebarSelection.resolve(
+                    showsInbox: showingInbox, machineID: selectedMachineID, showsBoard: showingBoard
+                )
+            },
             set: { newValue in
+                if newValue == .board {
+                    showingBoard = true
+                    showingInbox = false
+                    return
+                }
                 if newValue == .inbox {
                     showInbox()
                     return
                 }
                 showingInbox = false
+                showingBoard = false
                 machineSelection.wrappedValue = newValue?.machineID
             }
         )
@@ -419,17 +630,19 @@ struct MacLiveRootView: View {
     private func navigateToNotification(_ destination: RemiNavigationDestination) {
         pendingResume = nil
         showingInbox = false
+        showingBoard = false
         notificationDestination = destination
         selectedMachineID = destination.machineID
         selectedSessionID = destination.sessionID
         preferredCompactColumn = .detail
-        store.loadTranscript(machineID: destination.machineID, sessionId: destination.agentID ?? destination.sessionID)
+        store.ensureTranscript(machineID: destination.machineID, sessionId: destination.agentID ?? destination.sessionID)
     }
 
     /// Opens a card's conversation: switches machine and session by their qualified key, and
     /// focuses the card, the same way a notification tap does.
     private func openFromInbox(_ target: RemiInboxPresentation.OpenTarget, questionID: String) {
         showingInbox = false
+        showingBoard = false
         pendingResume = nil
         notificationDestination = RemiNavigationDestination(
             machineID: target.machineID,
@@ -440,15 +653,14 @@ struct MacLiveRootView: View {
         selectedMachineID = target.machineID
         selectedSessionID = target.sessionID
         preferredCompactColumn = .detail
-        store.loadTranscript(
+        store.ensureTranscript(
             machineID: target.machineID,
             sessionId: target.conversationID ?? target.sessionID
         )
     }
 
     private func rawQuestion(machineID: String, sessionID: String, questionID: String) -> QuestionMessage? {
-        store.machine(withIdentifier: machineID)?.questions
-            .first { $0.sessionId == sessionID && $0.question.id == questionID }
+        store.machine(withIdentifier: machineID)?.question(sessionID: sessionID, questionID: questionID)
     }
 
     private func answerFromInbox(machineID: String, sessionID: String, questionID: String, value: String) {
@@ -515,6 +727,7 @@ struct MacLiveRootView: View {
         Binding(
             get: { selectedSessionID.isEmpty ? nil : selectedSessionID },
             set: {
+                autoSelected = nil
                 selectedSessionID = $0 ?? ""
                 preferredCompactColumn = selectedSessionID.isEmpty ? .content : .detail
                 if pendingResume?.machineID != selectedMachineID
@@ -526,10 +739,19 @@ struct MacLiveRootView: View {
         )
     }
 
+    private var connectedMachineIDs: [String] {
+        store.machines.filter { $0.status == .connected }.map(\.id)
+    }
+
+    private func isSettled(_ machine: MachineState?) -> Bool {
+        guard let machine else { return false }
+        return RemiLastThreads.isSettled(connectedAt: connectedAt[machine.id], now: Date())
+    }
+
     private var navigationSnapshot: [[String]] {
         store.machines.map { machine in
             [machine.id, machine.hasLoadedSessions ? "loaded" : "loading"]
-                + machine.activeSessions.map(\.sessionId)
+                + machine.sessions.map(\.sessionId)
         }
     }
 
@@ -552,9 +774,22 @@ struct MacLiveRootView: View {
             selectedMachineID = store.machines.first?.id ?? ""
         }
         guard selectedMachine?.hasLoadedSessions == true else { return }
-        let sessionIDs = selectedMachine?.sessions.map(\.sessionId) ?? []
-        if !sessionIDs.contains(selectedSessionID) {
-            selectedSessionID = sessionIDs.first ?? ""
+        switch RemiLastThreads(storage: lastThreadsStorage).resolve(
+            machineID: selectedMachineID,
+            current: selectedSessionID,
+            available: selectedMachine?.sessions.map(\.sessionId) ?? [],
+            settled: isSettled(selectedMachine)
+        ) {
+        case .open(let sessionID): selectedSessionID = sessionID
+        case .fallback(let sessionID):
+            if sessionID != selectedSessionID {
+                autoSelected = (machineID: selectedMachineID, sessionID: sessionID)
+            }
+            selectedSessionID = sessionID
+        case .clear:
+            autoSelected = nil
+            selectedSessionID = ""
+        case .wait: break
         }
         preferredCompactColumn = RemiMacCompactDestination.resolve(
             hasMachine: selectedMachine != nil,
@@ -607,6 +842,7 @@ struct MacLiveRootView: View {
 
     private func selectMachine(_ machineID: String) {
         showingInbox = false
+        showingBoard = false
         machineSelection.wrappedValue = machineID
     }
 
@@ -621,13 +857,14 @@ struct MacLiveRootView: View {
             needsYouSessionCount: allSessions.count { $0.status == .needsYou },
             sessionListCount: showingInbox ? 0 : visibleSessions.count,
             reconnect: RemiMacCommandAvailability.Reconnect.resolve(recovery: selectedRecovery),
-            showsInbox: showingInbox
+            showsInbox: showingInbox || showingBoard
         )
     }
 
     /// The Inbox lives in the middle column, so a conversation-only layout gives the columns back.
     private func showInbox() {
         showingInbox = true
+        showingBoard = false
         applyColumnLayout(currentColumnLayout.revealingNavigation())
         preferredCompactColumn = .content
     }
@@ -636,6 +873,7 @@ struct MacLiveRootView: View {
         MacWorkspaceActions(
             availability: commandAvailability,
             goToInbox: showInbox,
+            jump: { showingJump = true },
             nextNeedsYou: { jumpToNeedsYou(offset: 1) },
             previousNeedsYou: { jumpToNeedsYou(offset: -1) },
             moveMachine: { moveMachineSelection(offset: $0) },
@@ -662,6 +900,7 @@ struct MacLiveRootView: View {
             offset: offset
         ) else { return }
         showingInbox = false
+        showingBoard = false
         pendingResume = nil
         notificationDestination = nil
         selectedMachineID = target.machineID
@@ -929,27 +1168,54 @@ struct MacLiveRootView: View {
     }
 
     private func transcript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
-        (store.transcriptsBySession[store.sessionKey(machineID: machineID, sessionID: sessionID)] ?? []).compactMap { message in
-            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !content.isEmpty {
-                return message.role == "user"
-                    ? .user(id: message.entryUuid, text: content)
-                    : .agent(id: message.entryUuid, text: content)
+        let confirmed = confirmedTranscript(machineID: machineID, sessionID: sessionID)
+        // Pending entries follow every confirmed entry, so an agent reply that arrives before
+        // the echo of an earlier message shows above that message.
+        return confirmed + pendingEntries(machineID: machineID, sessionID: sessionID)
+    }
+
+    private func confirmedTranscript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
+        let key = store.sessionKey(machineID: machineID, sessionID: sessionID)
+        return (store.transcriptsBySession[key]?.entries ?? [])
+            .compactMap(transcriptEntry)
+    }
+
+    private func pendingEntries(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
+        store.outgoingMessages(machineID: machineID, sessionID: sessionID).map {
+            let state: RemiOutgoingState = switch $0.delivery {
+            case .sending: .sending
+            case .handedOff: .handedOff
+            case .refused: .refused
+            case .uncertain: .uncertain
             }
-            guard let tool = message.contentBlocks?.first(where: {
-                $0.type == "tool_use" || $0.type == "tool_result"
-            }) else { return nil }
-            let summary = tool.toolInput ?? tool.toolOutput ?? ""
-            return .tool(
-                id: message.entryUuid,
-                name: tool.toolName ?? "Tool",
-                summary: String(summary.prefix(240))
-            )
+            return RemiTranscriptEntry.pending(id: $0.presentationID, text: $0.content, state: state)
         }
     }
 
-    private func rawQuestion(id: String) -> QuestionMessage? {
-        selectedMachine?.questions.first { $0.question.id == id }
+    /// The latest of a session's conversation, for its tile on the board.
+    private func boardEntries(_ session: RemiSessionSummary) -> [RemiTranscriptEntry] {
+        let key = store.sessionKey(machineID: session.machineID, sessionID: session.id)
+        let confirmed = (store.transcriptsBySession[key]?.suffix(60) ?? [])
+            .compactMap(transcriptEntry)
+        return confirmed + pendingEntries(machineID: session.machineID, sessionID: session.id)
+    }
+
+    private func transcriptEntry(_ message: TranscriptContentMessage) -> RemiTranscriptEntry? {
+        let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !content.isEmpty {
+            return message.role == "user"
+                ? .user(id: message.entryUuid, text: content)
+                : .agent(id: message.entryUuid, text: content)
+        }
+        guard let tool = message.contentBlocks?.first(where: {
+            $0.type == "tool_use" || $0.type == "tool_result"
+        }) else { return nil }
+        let summary = tool.toolInput ?? tool.toolOutput ?? ""
+        return .tool(
+            id: message.entryUuid,
+            name: tool.toolName ?? "Tool",
+            summary: String(summary.prefix(240))
+        )
     }
 
     private func answerPath(_ value: QuestionAnswerPath?) -> RemiAnswerPath? {
@@ -2408,3 +2674,10 @@ private var workspacePreviewSessions: [RemiSessionSummary] {
     return draft
 }
 #endif
+
+/// The state a grace-period task is keyed on, so it restarts when a machine connects,
+/// disconnects, or a grace period ends.
+private struct GraceWindow: Hashable {
+    let connectedAt: [String: Date]
+    let tick: Int
+}

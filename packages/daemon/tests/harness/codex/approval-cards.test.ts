@@ -1391,7 +1391,7 @@ describe('what a hostile or buggy server sends is bounded before a card is built
       `Allow Codex to run: echo a\nCodex's stated reason: ${'h'.repeat(300)} ${marker(huge.length - 300)}`,
     );
     expect(weight(spec.question)).toBeLessThan(500);
-    // The numbers the ADR, AGENTS.md and the README state: the bound is 20000, a reason of exactly
+    // The numbers in the ADR, docs/agent-reference/harnesses-and-codex.md and README: the bound is 20000, a reason of exactly
     // 300 characters is whole and one more is cut.
     expect(COMMAND_TEXT_MAX).toBe(20_000);
     expect(build({ reason: 'h'.repeat(300) }, {}, 'echo a').question.text).toBe(

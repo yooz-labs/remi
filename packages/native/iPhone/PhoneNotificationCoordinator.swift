@@ -52,10 +52,9 @@ final class PhoneNotificationDelegate: NSObject, UIApplicationDelegate, UNUserNo
     ) async -> UNNotificationPresentationOptions {
         if RemiPushStore.isSecureNotification(content: notification.request.content) {
             guard NativeRelayNotifications.allowsPresentation(notification.request.content) else { return [] }
-        }
-        guard UserDefaults.standard.object(
+        } else if !(UserDefaults.standard.object(
             forKey: PhonePreferenceKey.questionNotifications
-        ) as? Bool ?? true else { return [] }
+        ) as? Bool ?? true) { return [] }
         let soundEnabled = UserDefaults.standard.object(
             forKey: PhonePreferenceKey.notificationSounds
         ) as? Bool ?? true
@@ -64,24 +63,41 @@ final class PhoneNotificationDelegate: NSObject, UIApplicationDelegate, UNUserNo
 
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse
-    ) async {
-        if RemiPushStore.isSecureNotification(content: response.notification.request.content, identifier: response.actionIdentifier) {
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping @Sendable () -> Void
+    ) {
+        // UIKit updates its snapshot when this completion runs. The Swift async
+        // delegate bridge can invoke it on a worker after the method returns.
+        let action: PhoneNotificationResponse
+        let content = response.notification.request.content
+        if RemiPushStore.isSecureNotification(content: content, identifier: response.actionIdentifier) {
             if response.actionIdentifier == UNNotificationDefaultActionIdentifier ||
                 RemiPushStore.isForegroundNotificationAction(response.actionIdentifier) {
-                let carrier = NativeRelayNotifications.carrier(from: response.notification.request.content.userInfo)
-                await NativeRelayNotifications.shared.openDefaultTap(carrier: carrier)
+                action = .open(NativeRelayNotifications.carrier(from: content.userInfo))
             } else if response.actionIdentifier != UNNotificationDismissActionIdentifier {
-                let delivery = NativeRelayActionDelivery(content: response.notification.request.content,
-                    identifier: response.actionIdentifier)
-                _ = await NativeRelayNotifications.shared.receiveAction(delivery)
-            }
-            return
+                action = .answer(NativeRelayActionDelivery(content: content, identifier: response.actionIdentifier))
+            } else { action = .none }
+        } else if let destination = PhoneNotificationCoordinator.destination(from: content.userInfo) {
+            action = .navigate(destination)
+        } else { action = .none }
+        NotificationResponseCompletion.perform({ await action.handle() }, completion: completionHandler)
+    }
+}
+
+private enum PhoneNotificationResponse: Sendable {
+    case open(Data?)
+    case answer(NativeRelayActionDelivery)
+    case navigate(RemiNavigationDestination)
+    case none
+
+    @MainActor
+    func handle() async {
+        switch self {
+        case .open(let carrier): NativeRelayNotifications.shared.openDefaultTap(carrier: carrier)
+        case .answer(let delivery): _ = await NativeRelayNotifications.shared.receiveAction(delivery)
+        case .navigate(let destination): PhoneNotificationRouter.shared.destination = destination
+        case .none: break
         }
-        guard let destination = PhoneNotificationCoordinator.destination(
-            from: response.notification.request.content.userInfo
-        ) else { return }
-        await MainActor.run { PhoneNotificationRouter.shared.destination = destination }
     }
 }
 
@@ -108,7 +124,7 @@ enum PhoneNotificationCoordinator {
     }
 
     static func requestAuthorization() async -> NotificationAuthorizationState {
-        guard notificationsEnabled else { return await authorizationState() }
+        guard notificationsEnabled || turnCompleteEnabled else { return await authorizationState() }
         _ = try? await UNUserNotificationCenter.current()
             .requestAuthorization(options: [.alert, .sound])
         return await authorizationState()
@@ -136,6 +152,7 @@ enum PhoneNotificationCoordinator {
         let summarizedBody = summariesEnabled
             ? await QuestionNotificationSummarizer.shared.summary(questionID: id, text: body)
             : QuestionNotificationSummarizer.fallback(for: body)
+        guard notificationsEnabled else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = summarizedBody
@@ -173,6 +190,10 @@ enum PhoneNotificationCoordinator {
 
     private static var notificationsEnabled: Bool {
         UserDefaults.standard.object(forKey: PhonePreferenceKey.questionNotifications) as? Bool ?? true
+    }
+
+    private static var turnCompleteEnabled: Bool {
+        UserDefaults.standard.object(forKey: NativeNotificationPreferences.turnCompleteKey) as? Bool ?? false
     }
 
     private static var soundsEnabled: Bool {
@@ -229,11 +250,11 @@ enum NotificationAuthorizationState: Equatable {
         case .unknown:
             "Remi is checking whether iOS can show question alerts."
         case .notDetermined:
-            "Allow Remi to alert you when a connected session needs an answer."
+            "Allow Remi to show the alerts you choose."
         case .denied:
             "iOS is blocking Remi alerts. You can allow them in Notification Settings."
         case .authorized:
-            "iOS can show Remi alerts when a connected session needs an answer."
+            "iOS can show the Remi alerts you choose."
         case .provisional:
             "iOS delivers Remi alerts quietly without interrupting you."
         case .ephemeral:

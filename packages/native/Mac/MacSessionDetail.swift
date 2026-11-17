@@ -16,6 +16,7 @@ struct MacSessionDetail: View {
     let onSubmit: (String, [RemiQuestionStepSelection]) -> Void
     let onCancel: (String) -> Void
     let onSend: (String) async -> Bool
+    let onDismissOutgoing: (String) -> Void
     let onResume: (() -> Void)?
     let onTerminate: () -> Void
     let onDraftChange: (String) -> Void
@@ -51,6 +52,7 @@ struct MacSessionDetail: View {
         onSubmit: @escaping (String, [RemiQuestionStepSelection]) -> Void = { _, _ in },
         onCancel: @escaping (String) -> Void = { _ in },
         onSend: @escaping (String) async -> Bool = { _ in true },
+        onDismissOutgoing: @escaping (String) -> Void = { _ in },
         onResume: (() -> Void)? = nil,
         onTerminate: @escaping () -> Void = {},
         initialDraft: String = "",
@@ -73,6 +75,7 @@ struct MacSessionDetail: View {
         self.onSubmit = onSubmit
         self.onCancel = onCancel
         self.onSend = onSend
+        self.onDismissOutgoing = onDismissOutgoing
         self.onResume = onResume
         self.onTerminate = onTerminate
     }
@@ -142,6 +145,7 @@ struct MacSessionDetail: View {
                             ) { entry in
                                 RemiTranscriptEntryView(
                                     entry: entry,
+                                    onDismissOutgoing: onDismissOutgoing,
                                     isSearchMatch: matchingEntryIDs.contains(entry.id),
                                     isSelectedSearchMatch: reviewState.selectedEntryID == entry.id
                                 )

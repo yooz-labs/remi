@@ -82,6 +82,8 @@ function noopMessageAPI(): MessageAPI {
     handleStatusChange: () => {},
     handleQuestion: () => {},
     reset: () => {},
+    // #1773: the bridge reports keep-awake work events with a plain call.
+    noteWorkEvent: () => {},
   } as unknown as MessageAPI;
 }
 

@@ -85,6 +85,7 @@ final class MachineRecoveryProbe {
     private var brokerKey: String?
     #if DEBUG
     var ownedBeforeAdmission: (@MainActor () async -> Void)?
+    var ownedBeforeAdoptedReconnectState: (@MainActor () async -> Void)?
     #endif
 
     init(target: MachineRecoveryTarget, endpoint: MachineEndpoint, discovered: Bool, candidateID: String?,
@@ -140,6 +141,7 @@ final class MachineRecoveryProbe {
                 }, eventHandler: { [bridge, admissionFence] in
                     admissionFence.observe(.event($0)); bridge.yield(.event($0))
                 })
+            if endpoint.relayPin == nil { bridge.bindDirectParentFence(connection.directParentHelloFence) }
             self.connection = connection
             if let pin = endpoint.relayPin {
                 let key = RelayChannelBroker.key(device: identity.publicKeyRaw, room: RelayCrypto.room(try RelayCrypto.unb64(pin.machinePublicKey)))
@@ -159,14 +161,28 @@ final class MachineRecoveryProbe {
                 self.launch = launch
                 await launch.value
             } else { await connection.start() }
-            for await callback in bridge.stream {
+            for await receipt in bridge.stream {
+                let callback = receipt.callback
                 guard active else { break }
                 if bridge.didOverflow { result = .refused("Recovery stopped because the callback queue overflowed."); break }
                 if let adoption {
-                    _ = bridge.ifValid { forward(callback, adoption) }
-                    if case .state(.stopped) = callback { active = false; bridge.invalidate(); return }
+                    #if DEBUG
+                    switch callback {
+                    case .state(.reachabilityFailed), .state(.retrying): await ownedBeforeAdoptedReconnectState?()
+                    default: break
+                    }
+                    #endif
+                    var forwarded = adoption
+                    forwarded.callbackEpoch = receipt.epoch
+                    _ = bridge.ifValid { forward(callback, forwarded) }
+                    if case .state(.stopped) = callback,
+                       receipt.epoch.map(connection.directParentHelloFence.isCurrent) ?? true {
+                        active = false; bridge.invalidate(); return
+                    }
                     continue
                 }
+                if case .event(.hello) = callback, let epoch = receipt.epoch,
+                   !connection.directParentHelloFence.isCurrent(epoch) { continue }
                 switch callback {
                 case .state(.reachabilityFailed): result = .unreachable
                 case .state(.rejected(let reason)): result = .refused(reason)
@@ -184,6 +200,9 @@ final class MachineRecoveryProbe {
                     await ownedBeforeAdmission?()
                     #endif
                     try await connection.completeCoordinatedAdmission()
+                    if let epoch = receipt.epoch, !connection.directParentHelloFence.isCurrent(epoch) {
+                        throw PairingAdmissionError.refused("The recovery socket changed before admission.")
+                    }
                     try check()
                     let commitment = try bridge.ifValid { try admissionFence.commit { try admit(connection, id, hello, target.key) } }
                     guard let adopted = commitment ?? nil else {

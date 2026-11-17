@@ -14,10 +14,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import {
+  CONTROLLER_MS,
   TARGET,
   aggregateWorkers,
   caseMultiset,
   discoverTests,
+  laneDeadlineMs,
   parseCases,
   partitionTests,
   prepareSuite,
@@ -28,6 +30,10 @@ import {
 } from '../../../../scripts/ci/run-bun-test-batches';
 import { runChild } from '../../../../scripts/ci/run-bun-test-with-diagnostics';
 const root = path.resolve(import.meta.dir, '../../../..');
+/** The CI pin, Bun 1.4.2 (#1273); the committed target contract names this revision. */
+const PINNED_RUNTIME = '744846f844374847c902b5e7fd59b4342a51ef99';
+/** The former pin, Bun 1.3.11, whose reporter behavior these controls still record. */
+const FORMER_RUNTIME = 'af24e281ebacd6ac77c0f14b4206599cf4ae1c9f';
 const homes: string[] = [];
 function fixture(): string {
   const home = mkdtempSync(path.join(tmpdir(), 'remi-ci-discovery-'));
@@ -135,6 +141,24 @@ test('partition includes target once and every other file exactly once', () => {
     expect(() => partitionTests(files)).toThrow();
 });
 
+test('lane budgets retain the controller ceiling and reserved cleanup at every boundary', () => {
+  expect(CONTROLLER_MS).toBe(22 * 60_000);
+  for (const elapsed of [0, 1000, 300_000, CONTROLLER_MS - 10_001]) {
+    expect(laneDeadlineMs(0, elapsed)).toBeLessThanOrEqual(300_000);
+    for (const index of [0, 1, 2]) {
+      expect(laneDeadlineMs(index, elapsed)).toBeGreaterThan(0);
+      expect(laneDeadlineMs(index, elapsed)).toBe(
+        Math.min(index === 0 ? 300_000 : 1_200_000, CONTROLLER_MS - elapsed - 10_000),
+      );
+      expect(elapsed + laneDeadlineMs(index, elapsed) + 10_000).toBeLessThanOrEqual(CONTROLLER_MS);
+    }
+  }
+  for (const index of [0, 1, 2])
+    for (const elapsed of [-1, Number.NaN, Number.POSITIVE_INFINITY, CONTROLLER_MS - 10_000])
+      expect(() => laneDeadlineMs(index, elapsed)).toThrow();
+  for (const index of [-1, 0.5, 3, Number.NaN]) expect(() => laneDeadlineMs(index, 0)).toThrow();
+});
+
 test('actual Bun reporter C0 titles retain reported bytes and separate hook assertion accounting', async () => {
   const home = fixture();
   const file = 'reporter.test.ts';
@@ -174,9 +198,14 @@ test(${JSON.stringify('C0 \0\x07\x1b end')},()=>{note('body');expect(1).toBe(1)}
     .replaceAll('&#7;', '\x07')
     .replaceAll('&#27;', '\x1b');
   expect(run.parsed.cases[0]?.name).toBe(decoded);
-  if (Bun.revision === 'af24e281ebacd6ac77c0f14b4206599cf4ae1c9f') {
+  if (Bun.revision === FORMER_RUNTIME) {
     expect(reported).toContain('&#0;');
     for (const byte of ['\0', '\x07', '\x1b']) expect(decoded).toContain(byte);
+  }
+  if (Bun.revision === PINNED_RUNTIME) {
+    // Bun 1.4.2's reporter omits these C0 bytes from the title instead of encoding them.
+    expect(reported).toBe('C0  end');
+    expect(decoded).toBe('C0  end');
   }
   for (const entity of [
     '&#-1;',
@@ -255,7 +284,7 @@ test('the manually reviewed target/helper pins and case multiset cannot drift or
   const contract = JSON.parse(
     readFileSync(path.join(root, 'scripts/ci/remote-new-client-contract.json'), 'utf8'),
   );
-  expect(contract.runtime).toBe('af24e281ebacd6ac77c0f14b4206599cf4ae1c9f');
+  expect(contract.runtime).toBe(PINNED_RUNTIME);
   expect(() =>
     validateTargetContract({ ...contract, runtime: 'not-the-current-runtime' }, root, {
       cases: contract.cases,
@@ -384,6 +413,11 @@ test('actual controller publishes ONLY a complete validated summary, preserving 
   expect(evidence.files).toBe(2);
   expect(evidence.cases).toHaveLength(2);
   expect(evidence.assertions).toBe(2);
+  const budget = JSON.parse(readFileSync(path.join(directory, 'rest-1/budget.json'), 'utf8'));
+  expect(budget.deadlineMs).toBe(20 * 60_000);
+  expect(budget.elapsedMs + budget.deadlineMs + budget.cleanupReserveMs).toBeLessThanOrEqual(
+    CONTROLLER_MS,
+  );
   await expect(runSuite(home, directory, summary)).rejects.toThrow();
 });
 
@@ -394,16 +428,17 @@ test('actual failing rest assertion leaves NO threshold input and retains failur
   const directory = path.join(home, 'coverage/test-lanes');
   const summary = path.join(home, 'test-output.txt');
   const running = runSuite(home, directory, summary, { stdout: out.stream, stderr: err.stream });
-  if (Bun.revision === 'af24e281ebacd6ac77c0f14b4206599cf4ae1c9f') {
+  if (Bun.revision === FORMER_RUNTIME) {
     await expect(running).rejects.toThrow('lanes failed');
   } else {
-    // Bun 1.4.2 writes text inside failure elements, outside the pinned reader schema.
+    // Bun 1.4.2, the CI pin, writes text inside failure elements, outside the reader schema:
+    // a failing lane is refused before its cases are recorded, and no threshold row is written.
     await expect(running).rejects.toThrow('Unexpected JUnit text');
   }
   expect(() => readFileSync(summary)).toThrow();
   const failure = JSON.parse(readFileSync(path.join(directory, 'failure.json'), 'utf8'));
   expect(failure.thresholdRowWritten).toBe(false);
-  if (Bun.revision === 'af24e281ebacd6ac77c0f14b4206599cf4ae1c9f') {
+  if (Bun.revision === FORMER_RUNTIME) {
     expect(failure.evidence).toHaveLength(2);
     expect(failure.evidence[1].exit).not.toBe(0);
     expect(failure.evidence[1].cases[0].status).toBe('fail');
@@ -465,6 +500,17 @@ test('actual partial workers cannot publish coverage; aggregate requires every s
       JSON.parse(readFileSync(path.join(input, `worker-${index}`, name, 'worker.json'), 'utf8'))
         .home,
   );
+  for (const [index, name] of ['target', 'rest-1', 'rest-2'].entries()) {
+    const budget = JSON.parse(
+      readFileSync(path.join(input, `worker-${index}`, name, 'budget.json'), 'utf8'),
+    );
+    expect(budget.controllerMs).toBe(CONTROLLER_MS);
+    expect(budget.cleanupReserveMs).toBe(10_000);
+    expect(budget.deadlineMs).toBe(index === 0 ? 300_000 : 1_200_000);
+    expect(budget.elapsedMs + budget.deadlineMs + budget.cleanupReserveMs).toBeLessThanOrEqual(
+      CONTROLLER_MS,
+    );
+  }
   expect(new Set(workerHomes).size).toBe(3);
   for (const workerHome of workerHomes) expect(existsSync(workerHome)).toBe(false);
   // This owned component control runs serially on one machine. The production
@@ -529,7 +575,7 @@ test('new, removed and source-mode/discovery changes remain visible, not silentl
 
 test('actual checkout public-template inputs and partition retain the production runtime guard', () => {
   const prepared =
-    Bun.revision === 'af24e281ebacd6ac77c0f14b4206599cf4ae1c9f'
+    Bun.revision === PINNED_RUNTIME
       ? prepareSuite(root)
       : (() => {
           expect(() => prepareSuite(root)).toThrow('Unsupported target contract');

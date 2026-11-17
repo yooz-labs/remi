@@ -1,4 +1,4 @@
-# ADR 0002: Model B — hold the PermissionRequest hook; APNS-only question delivery
+# ADR 0002: Model B: hold the PermissionRequest hook, with APNS and iPhone local question notifications
 
 **Status:** accepted; amended by ADR 0030 (2026-10-01) and ADR 0031 (2026-10-02)
 **Date:** 2026-06-19
@@ -16,6 +16,8 @@
 > Phone answers are relayed by typing into that dialog, guarded by the exact-label screen check of #1134 (PR #1136; a refusal means answer at the terminal), until #1126 reintroduces holds with Claude's native dialog still visible.
 > The model below is kept as the design #1126 builds on, not a description of what ships today.
 
+> **Amended 2026-11-14 by owner decision.** The iPhone keeps local question notifications for questions first seen after an attach-confirmed session snapshot. A question already pending in that snapshot is not posted again on reconnect, including on hub child-session connections. A session without attach state or without an attach-time snapshot fails closed for local question notifications; APNS is unaffected. The rejection below concerns answering from a suspended app, not posting a local notification.
+
 ## Context
 
 The original flow parsed PTY output for permission prompts and injected
@@ -27,9 +29,10 @@ suspended, which local notifications cannot do.
 
 Hold the `PermissionRequest` hook open (Model B): the hook response IS the
 answer channel. Questions are delivered as WebSocket `question` (in-app) plus
-APNS push (lock screen) — never local notifications. Answering a held hook
-with an echoed `permission_suggestions` entry is equivalent to picking that
-option in the dialog.
+APNS push (lock screen). On iPhone, local notifications also post for questions
+first seen after an attach-confirmed session snapshot; the person still answers
+from the app or lock-screen APNS card. Answering a held hook with an echoed
+`permission_suggestions` entry is equivalent to picking that option in the dialog.
 
 ## Consequences
 
@@ -44,8 +47,8 @@ PTY parsing survives only as fallback and render-detection.
 
 - **PTY parse + inject (status quo ante):** lost to races and stale-answer
   injection (bug family #28/#382/#384/#537/#551/#560).
-- **Local notifications for questions:** cannot act from a suspended app;
-  rejected.
+- **Local notifications as an answer channel:** cannot act from a suspended app. That
+  limitation does not reject posting a local notification for a new question.
 
 ## Receipts
 

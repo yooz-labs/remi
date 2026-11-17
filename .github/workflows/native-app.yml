@@ -41,6 +41,11 @@ jobs:
         working-directory: packages/native/RemiKit
         run: swift test
 
+      - name: Test relay idle recovery against source Worker
+        run: |
+          bun install --frozen-lockfile
+          REMI_IDLE_RELAY_TESTS=1 swift test --package-path packages/native/RemiKit --filter RelayIdleRecoverySourceTests
+
       - name: Build native Mac app (Debug)
         run: |
           set -o pipefail

@@ -154,6 +154,8 @@ function fakeMessageAPI(
     reset: () => {
       log.resetCalls.n += 1;
     },
+    // #1773: the bridge reports keep-awake work events with a plain call.
+    noteWorkEvent: () => {},
   } as unknown as MessageAPI;
 }
 
@@ -5096,7 +5098,7 @@ describe('setupHookBridge', () => {
       built.tracker.onOrphanPTYPrompt(parseQuestion(WRAPPED_DIRECTORY_DIALOG).question as Question);
       expect(noticeLog.map((n) => n.reason)).toEqual(['subagent']);
       // A PTY-parsed status is a text guess: it clears the observation while
-      // the dialog is still up (AGENTS.md, chat guard limit 3).
+      // the dialog is still up (docs/agent-reference/questions-and-notifications.md, "Limits").
       built.tracker.onStatusChange('thinking');
       expect(built.tracker.observedPromptOptions()).toBeNull();
       const { input, session, refusal } = handlersFor(built);

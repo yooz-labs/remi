@@ -10,7 +10,7 @@ Input stays in chat and approval controls.
 The neutral `cli.ts:createNewSession` obtains an unstarted PTY from the harness,
 then calls `TerminalCaptureHost.prepare` before `session.start()`.
 This applies to both harness launch paths without adding a harness import.
-The host reserves one of the home's 32 fixed 1 MiB model slots before it
+The host reserves one of the home's eight fixed 4 MiB complete-stack slots before it
 constructs any screen model.
 A busy startup admission can retry asynchronously for at most 50 monotonic ms,
 before spawn; uncertain reservation completion never retries.
@@ -263,3 +263,8 @@ controls do not claim to resolve unrelated Mac wrapper/reset/quiet-wait issues.
 The complete-banner patch must land before this dependent phase merges.
 Fresh exact-head hosted checks and an actual 61-minute relay soak remain gates;
 no previous head's green check or the B1-only Mac exception substitutes for them.
+
+[ADR0048](../.context/decisions/0048-terminal-stack-budget-and-policy.md) updates
+shared accounting to 4 MiB per complete stack, eight models and the same 32 MiB
+home cap. The primitive and historical capture measurements above retain their
+independent 1 MiB oracle. New complete-stack service qualification is separate.

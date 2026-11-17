@@ -19,6 +19,7 @@ different checkout, build, or simulator does not satisfy this gate.
    opening Xcode. This refuses a different or dirty native checkout.
 5. Use an iPhone simulator at a standard text size, then repeat the affected
    screen at Accessibility 5. Test both light and dark appearances.
+   A change to the shell, the Board or any layout that reads a size class is also captured at the wide and the narrow ends: an iPad full screen, the narrowest regular-width iPad window the change claims, and the iPhone Duo folded and unfolded (the iPhone Duo simulator in Device Hub, Xcode 27.1 or later, with its fold controls). A pose or size that could not be run is listed as not run, with the reason; "checked on iPad and iPhone Duo" without a receipt and screenshots is not evidence.
 6. Repeat affected translucent surfaces with Reduce Transparency enabled and
    animated state changes with Reduce Motion enabled.
 

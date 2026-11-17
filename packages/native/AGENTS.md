@@ -43,6 +43,7 @@ The items marked #1233 are the owner's decisions; the rest were set with the sca
 - **Not set yet, decided when first needed:**
   - App Transport Security for `ws://` connections. The WebView app sets `NSAllowsLocalNetworking` for `ws://127.0.0.1` (`packages/macos/Remi/Info.plist`); check what the native apps need on their first live connection (Mac M2).
   - Export compliance (`ITSAppUsesNonExemptEncryption`): the owner's answer, at the first TestFlight upload.
+- **Wide, resizable and foldable canvases (#1629, #1745).** An iPad window, an iPad on an external display and the unfolded iPhone Duo are all "the size changed while the app runs". Decide layout from the horizontal size class or the width a view was given (`RemiLayoutMode`, `onGeometryChange`), never from the idiom, the device name, the orientation or `UIScreen.main`; keep held state (drafts, focus, scroll) above the layout switch. The Apple facts, what is still unverified and the rules are in [PLATFORM-KNOWLEDGE.md](PLATFORM-KNOWLEDGE.md), "Resizable windows, iPad external displays and iPhone Duo"; the Board design is [handoff/ipad-board.md](handoff/ipad-board.md).
 - American English, no em dashes, no emojis, in code, comments, commits and docs.
 
 ## The protocol
@@ -71,9 +72,10 @@ The items marked #1233 are the owner's decisions; the rest were set with the sca
 ## Security
 
 - **Keys:** device keys live in the Keychain, never in files or `UserDefaults`.
+- **Keychain reads** go through `NativeKeychainReadContext` (#1768); never create an `LAContext` per read.
 - **No secrets anywhere visible:** no credentials, tokens or keys in code, logs, previews, fixtures or commits.
 - **Escape text another party chose:** text from a machine (a command, a path, an agent's message) can hold control or bidirectional characters. Show it escaped where it could mislead (see `escapeUnsafeText` in `packages/shared/src/display-text.ts`).
-- **Cards follow the daemon's rules** (root AGENTS.md):
+- **Cards follow the daemon's rules** ([Question Detection and Notifications](../../docs/agent-reference/questions-and-notifications.md), including the "Notification channels (APNS push, plus iPhone local question notifications)" section):
   - an option is answered by its meaning;
   - a `terminalOnly` card has no answer controls;
   - a standing grant says it lasts "for this session";
@@ -91,6 +93,7 @@ The items marked #1233 are the owner's decisions; the rest were set with the sca
   - `xcodebuild -project packages/native/Remi.xcodeproj -scheme RemiPhone -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build`
 - **The gates build unsigned** (`CODE_SIGNING_ALLOWED=NO`), so they do not exercise the entitlements. To run the Mac app, or check its sandbox, without the team's certificate, sign it ad hoc: add `CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=` to the `xcodebuild` command. The Mac app it builds is sandboxed with `network.client` (`codesign -d --entitlements - <app>` shows it).
 - **Previews must render.** They are the design review surface.
+- **Opt-in Keychain stress diagnostic:** `REMI_LA_STRESS=1 swift test --package-path packages/native/RemiKit --filter LocalAuthenticationStressTests` (#1768).
 - **Known baseline failures** (check before blaming your change; remove an entry when it is fixed):
   - `PairingAttemptTests` (about 30 issues in `swift test --package-path packages/native/RemiKit`) fail locally on a clean `origin/develop` with `owned empty launch directory required` from `RemiKit/Tests/Integration/pairing-source-fixture.ts`: the fixture wants its launch directory empty. Reproduced 2026-10-21 on Xcode 27.1 with `bun install` done; cause not yet found. Run the rest with `--skip PairingAttemptTests` and say so in the PR.
 - **Xcode 27.1 compiler traps** seen in this tree (fix by splitting, not by suppressing):
@@ -105,6 +108,7 @@ The items marked #1233 are the owner's decisions; the rest were set with the sca
 - **Branches:** one per milestone, off `develop`, named `feature/issue-<number>-<short-name>` (for example `feature/issue-1244-remiui-tokens`). There is no epic branch.
 - **Pull requests** go into `develop`, never into `main`. Never push to `develop` or `main` directly.
 - **Worktrees live on `/Volumes/S1/worktrees/remi/`, never in the git folder** (builds and `node_modules` fill the home disk fast). Worktrees are optional: an agent that wants one creates it there (`git worktree add /Volumes/S1/worktrees/remi/<name> -b <branch> <base>`) and removes it once its branch is merged. `git worktree move` cannot cross devices, so to relocate one, save any uncommitted diff, `git worktree remove` it, and `git worktree add` the same branch on S1. (`../remi-worktrees/` is where hubs will create session worktrees, #1236; agents do not use it.)
+- **Where simulator runtimes, devices and DerivedData live on this Mac** is recorded at the ecosystem level, in `../../../AGENTS_master.md` ("Apple build storage on the main Mac"): devices and DerivedData are on S1; the simulator runtimes (iOS and watchOS 27.2) sit in Apple's internal asset store and cannot be moved, with re-import copies in `/Volumes/S1/xcode-runtimes`.
 - **Keep build output off the home disk.** Xcode writes DerivedData under `~/Library/Developer/Xcode/DerivedData` by default (about 400 to 600 MB per worktree). For worktree builds pass `-derivedDataPath /Volumes/S1/derived/remi-<worktree-name>` to every `xcodebuild`, and build the package from the worktree (its `.build` stays inside it).
 - **Clean up when a branch merges.** Remove the worktree (`git worktree remove`), delete the local branch, delete that worktree's DerivedData folder (`/Volumes/S1/derived/remi-<name>`, or the `Remi-*` folder under the default location whose `info.plist` `WorkspacePath` is the removed worktree), and delete scratch files under `/tmp` (verification screenshots can contain session text, so they go first). Only delete what your own work created; other worktrees and their build folders belong to other work.
 - **The dev app must never talk to a real hub.** The Add a machine sheet defaults to port 18765, which is the owner's real hub on this machine; adding it from a simulator creates a pending authorization request there. When verifying in a simulator, use your own hubs on other ports (for example 18790 and up with a throwaway `REMI_HOME`), and check the port field before every Add machine tap.
@@ -116,3 +120,5 @@ The items marked #1233 are the owner's decisions; the rest were set with the sca
   - a test that pins a behavior is committed before the change that satisfies it, where that applies.
 - **No AI attribution** in commits or PRs (no `Co-Authored-By` lines).
 - **In each PR,** say what was verified and how. A screenshot of the previews helps the design review.
+
+- The opt-in real Worker relay idle controls and their pinned Bun command are documented in `RelayIdleRecoverySourceTests`.

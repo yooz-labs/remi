@@ -71,7 +71,11 @@ struct MachinePanesTests {
             "type": "hello_ack", "serverVersion": "1.0.0", "protocolVersion": 1, "capabilities": capabilities,
             "machine": try Self.descriptor(),
         ])
-        store.receive(.hello(ack), from: origin, generation: generation)
+        // This suite enters at the post-verification Store seam; the matching
+        // socket-authentication controls run separately in DirectChildKeyIntegrationTests.
+        let authority = Data(repeating: 9, count: 32)
+        store.ownedObserveParentHello(origin, key: authority)
+        store.receive(.hello(ack, authorityPublicKey: authority), from: origin, generation: generation)
         store.receive(.connected(sessionId: nil), from: origin, generation: generation)
         let list: SessionListResponse = try Self.frame([
             "type": "session_list_response", "requestId": "list",

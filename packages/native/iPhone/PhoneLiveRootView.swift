@@ -8,6 +8,7 @@ enum PhoneShellSheet: Identifiable {
     case pairing
     case preferences
     case machines
+    case messageOutcomes
     /// A relay notification question. One presentation with the others: two `.sheet`
     /// modifiers on one host cannot both be up.
     case relayNotification
@@ -18,15 +19,20 @@ enum PhoneShellSheet: Identifiable {
         case .pairing: "pairing"
         case .preferences: "preferences"
         case .machines: "machines"
+        case .messageOutcomes: "messageOutcomes"
         case .relayNotification: "relayNotification"
         }
     }
 }
 
+private struct PhoneQuestionNotificationInput: Equatable {
+    let currentQuestionIDsBySession: [String: Set<String>]
+    let snapshotsBySession: [String: MachineQuestionConnectionSnapshot]
+}
+
 struct PhoneLiveRootView: View {
     let store: MachineStore
-    @State private var knownQuestionIDs: Set<String> = []
-    @State private var notificationBaselineEstablished = false
+    @State private var questionNotificationPolicyState = RemiQuestionNotificationPolicy.State()
     @State private var questionFeedbackTrigger = 0
     @State private var answerFeedbackTrigger = 0
     @State private var notificationRouter = PhoneNotificationRouter.shared
@@ -42,9 +48,9 @@ struct PhoneLiveRootView: View {
     @State private var relayNotifications = NativeRelayNotifications.shared
     @AppStorage(PhonePreferenceKey.haptics) private var hapticsEnabled = true
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    /// The sidebar's visibility at regular width; the Mac column helpers remember the
-    /// visible layout while it is hidden.
-    @State private var columnLayout = RemiMacColumnLayout(visibility: .all, expandedVisibility: .all)
+    @SceneStorage("remi.phone.sidebarChoice") private var sidebarChoiceStorage = ""
+    /// The shell root's width. Until its first geometry pass, an unchosen sidebar uses the narrow default.
+    @State private var measuredWindowWidth: CGFloat?
 
     private var layoutMode: RemiLayoutMode {
         RemiLayoutMode.resolve(horizontalSizeClass: horizontalSizeClass)
@@ -52,13 +58,17 @@ struct PhoneLiveRootView: View {
 
     private var chrome: RemiShellChrome { RemiShellChrome.resolve(mode: layoutMode) }
 
+    private var sidebarPlacement: RemiSidebarPlacement {
+        RemiSidebarPlacement(
+            windowWidth: measuredWindowWidth,
+            explicitChoice: RemiSidebarPlacement.ExplicitChoice(storageValue: sidebarChoiceStorage)
+        )
+    }
+
     private var columnVisibility: Binding<NavigationSplitViewVisibility> {
         Binding(
-            get: { columnLayout.visibility },
-            set: { visibility in
-                let expanded = visibility == .detailOnly ? columnLayout.expandedVisibility : visibility
-                columnLayout = RemiMacColumnLayout(visibility: visibility, expandedVisibility: expanded)
-            }
+            get: { sidebarPlacement.visibility },
+            set: { recordSidebarChoice(requestedVisibility: $0) }
         )
     }
 
@@ -68,6 +78,11 @@ struct PhoneLiveRootView: View {
         let sessions = allSessions
         let machines = machineSummaries
         return rootLayout(sessions: sessions, machines: machines)
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            measuredWindowWidth = width
+        }
         // A row's long-press menu is drawn here, above the drawer and the detail pane, so it can
         // open beside its row whichever column the row is in.
         .environment(\.projectMenu, $projectMenu)
@@ -82,6 +97,17 @@ struct PhoneLiveRootView: View {
         .onChange(of: layoutMode) { _, _ in projectMenu = nil }
         .environment(\.remiComposerFocusRequest, composerFocusRequest)
         .background { keyboardCommands }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if store.outgoingCount > 0 {
+                HStack {
+                    Spacer()
+                    Button("Message outcomes (\(store.outgoingCount))", systemImage: "tray") { present(.messageOutcomes) }
+                }
+                .padding(.horizontal)
+                .padding(.vertical, RemiTheme.Spacing.xs)
+                .background(.bar)
+            }
+        }
         .onChange(of: layoutMode, initial: true) { _, mode in
             shell.layoutModeChanged(to: mode)
         }
@@ -94,6 +120,9 @@ struct PhoneLiveRootView: View {
             // A filter on another machine would hide the one just paired.
             shell.clearFilter()
             pairingAttemptID = nil
+        }
+        .onChange(of: store.machines.map { "\($0.id)|\($0.status)|\($0.activeSessions.map(\.sessionId))" }, initial: true) { _, _ in
+            store.warmActiveTranscripts()
         }
         .onChange(of: store.machines.map(\.id), initial: true) { _, ids in
             shell.machinesChanged(ids: ids)
@@ -114,9 +143,10 @@ struct PhoneLiveRootView: View {
             guard store.notificationSessionDestination == destination else {
                 relayNotifications.consumeNotificationSessionNavigation(destination); return
             }
+            let questionID = store.notificationQuestionID(for: destination)
             activeSheet = nil
             shell.openFromNotification(route: PhoneSessionRoute(machineKey: destination.machineID,
-                sessionID: destination.sessionID), questionID: nil)
+                sessionID: destination.sessionID), questionID: questionID)
             relayNotifications.consumeNotificationSessionNavigation(destination)
             relayNotifications.closeNotification()
         }
@@ -133,15 +163,14 @@ struct PhoneLiveRootView: View {
         .sensoryFeedback(.impact(weight: .medium), trigger: answerFeedbackTrigger) { _, _ in
             hapticsEnabled
         }
-        .onChange(of: activeQuestionIDs, initial: true) { oldValue, newValue in
-            guard notificationBaselineEstablished else {
-                knownQuestionIDs = newValue
-                notificationBaselineEstablished = true
-                return
-            }
-            let removed = knownQuestionIDs.subtracting(newValue)
-            PhoneNotificationCoordinator.remove(ids: Array(removed))
-            for id in newValue.subtracting(knownQuestionIDs) {
+        .onChange(of: questionNotificationInput, initial: true) { _, input in
+            let update = RemiQuestionNotificationPolicy.update(
+                state: questionNotificationPolicyState,
+                currentQuestionIDsBySession: input.currentQuestionIDsBySession,
+                snapshotsBySession: input.snapshotsBySession
+            )
+            PhoneNotificationCoordinator.remove(ids: Array(update.identitiesToRemove))
+            for id in update.identitiesToPost {
                 guard let question = allQuestions.first(where: { $0.id == id }),
                       let destination = destination(forQuestionIdentity: id)
                 else { continue }
@@ -156,10 +185,10 @@ struct PhoneLiveRootView: View {
                     )
                 }
             }
-            if !newValue.subtracting(knownQuestionIDs).isEmpty {
+            if !update.identitiesToPost.isEmpty {
                 questionFeedbackTrigger += 1
             }
-            knownQuestionIDs = newValue
+            questionNotificationPolicyState = update.state
         }
         .onChange(of: notificationRouter.destination) { _, destination in
             guard destination != nil else { return }
@@ -270,10 +299,20 @@ struct PhoneLiveRootView: View {
 
     private func toggleSidebar() {
         if chrome.usesSidebar {
-            columnLayout = columnLayout.togglingNavigation()
+            let currentVisibility = sidebarPlacement.visibility
+            let requestedVisibility: NavigationSplitViewVisibility = currentVisibility == .detailOnly ? .all : .detailOnly
+            recordSidebarChoice(requestedVisibility: requestedVisibility)
         } else {
             shell.toggleDrawer()
         }
+    }
+
+    private func recordSidebarChoice(requestedVisibility: NavigationSplitViewVisibility) {
+        guard let choice = RemiSidebarPlacement.choiceToRecord(
+            requestedVisibility: requestedVisibility,
+            currentVisibility: sidebarPlacement.visibility
+        ) else { return }
+        sidebarChoiceStorage = choice.storageValue
     }
 
     private func shellContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
@@ -286,7 +325,7 @@ struct PhoneLiveRootView: View {
                 .toolbar {
                     if chrome.showsMenuButton {
                         ToolbarItem(placement: .topBarLeading) { menuButton }
-                    } else if chrome.showsSidebarToggle(sidebarHidden: columnLayout.visibility == .detailOnly) {
+                    } else if chrome.showsSidebarToggle(sidebarHidden: sidebarPlacement.visibility == .detailOnly) {
                         // Only while the sidebar shows. Once it is hidden the split view adds
                         // its own toggle to this bar, and drawing ours as well gave two
                         // sidebar icons side by side (iPad and iPhone Duo).
@@ -297,9 +336,10 @@ struct PhoneLiveRootView: View {
     }
 
     /// The sidebar toggle for while the sidebar shows, drawn here because the sidebar's own bar
-    /// is hidden and the system adds no toggle then. It is driven by the same column layout the
-    /// keyboard shortcut uses. When the sidebar is hidden the system's toggle appears in this
-    /// bar by itself (checked on iPad and on iPhone Duo), so this one steps aside.
+    /// is hidden and the system adds no toggle then. It follows the same recorded sidebar choice
+    /// and visibility as the keyboard shortcut through `sidebarPlacement` and `recordSidebarChoice`.
+    /// When the sidebar is hidden the system's toggle appears in this bar by itself (checked on
+    /// iPad and on iPhone Duo), so this one steps aside.
     private var sidebarToggleButton: some View {
         Button {
             toggleSidebar()
@@ -332,11 +372,39 @@ struct PhoneLiveRootView: View {
     @ViewBuilder
     private func destinationContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
         switch shell.destination {
+        case .board:
+            boardContent(sessions: sessions, machines: machines)
         case .inbox:
             inboxContent(sessions: sessions, machines: machines)
         case .session(let route):
             sessionContent(route, sessions: sessions)
         }
+    }
+
+    private func boardContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
+        PhoneBoardScreen(
+            sessions: sessions,
+            machines: machines,
+            loadedMachines: Set(store.machines.filter { $0.status == .connected && $0.hasLoadedSessions }.map(\.id)),
+            questions: allQuestions,
+            errorMessage: store.latestOperationError ?? store.latestError?.message,
+            noticeMessage: store.latestOperationNotice ?? relayNotifications.notice ?? store.relayNotificationNotice,
+            transcript: boardEntries,
+            onAnswer: { answer(machineID: $0, sessionId: $1, questionId: $2, value: $3) },
+            onSubmit: { submit(machineID: $0, sessionId: $1, questionId: $2, values: $3) },
+            onCancel: { cancel(machineID: $0, sessionId: $1, questionId: $2) },
+            onOpen: selectSession,
+            onSend: { session, content in
+                await sendChat(machineID: session.machineID, sessionId: session.id, content: content)
+            },
+            canCreateSession: !availableSessionMachines.isEmpty,
+            onNewSession: { activeSheet = .newSession(machineID: nil, repository: nil) },
+            onPresentPairing: { activeSheet = .pairing },
+            onPresentPreferences: { activeSheet = .preferences },
+            onManageMachines: { activeSheet = .machines },
+            onDismissError: store.clearLatestError,
+            onDismissNotice: dismissNotice
+        )
     }
 
     private func inboxContent(sessions: [RemiSessionSummary], machines: [RemiMachineSummary]) -> some View {
@@ -374,6 +442,7 @@ struct PhoneLiveRootView: View {
             onManageMachines: { present(.machines) },
             onResumeSession: resumeSession,
             onNewSessionHere: { present(.newSession(machineID: $0, repository: $1)) },
+            onSelectBoard: { shell.select(.board) },
             onSelectInbox: { shell.select(.inbox) },
             onSelectSession: selectSession,
             onNewSession: { present(.newSession(machineID: shell.filteredMachineKey, repository: nil)) },
@@ -395,13 +464,13 @@ struct PhoneLiveRootView: View {
     }
 
     private func selectSession(_ session: RemiSessionSummary) {
-        store.loadTranscript(machineID: session.machineID, sessionId: session.id)
+        store.ensureTranscript(machineID: session.machineID, sessionId: session.id)
         shell.selectSession(machineKey: session.machineID, sessionID: session.id)
     }
 
     /// Navigates to the conversation of `target` and focuses its question. It never answers.
     private func openQuestionSession(_ target: RemiInboxPresentation.OpenTarget, questionID: String) {
-        store.loadTranscript(machineID: target.machineID, sessionId: target.sessionID)
+        store.ensureTranscript(machineID: target.machineID, sessionId: target.sessionID)
         // Opening a subagent conversation of the session already on screen changes the
         // route's conversation id on purpose (the screen must show that conversation); the
         // same route is a no-op.
@@ -430,14 +499,20 @@ struct PhoneLiveRootView: View {
         case .pairing:
             pairingScreen { activeSheet = nil }
                 .presentationSizing(.form)
+        case .messageOutcomes:
+            RemiOutgoingHistoryView(groups: store.outgoingHistory) { key, id in
+                store.dismissOutgoing(groupID: key, messageID: id)
+            }
         case .preferences:
             PhonePreferencesSheet(publicIdentity: store.publicIdentity)
         case .relayNotification:
             RelayNotificationPanel(store: store, onClose: relayNotifications.closeNotification) { destination in
+                guard store.notificationSessionDestination == destination else { return }
+                let questionID = store.notificationQuestionID(for: destination)
                 relayNotifications.closeNotification()
                 activeSheet = nil
                 shell.openFromNotification(route: PhoneSessionRoute(machineKey: destination.machineID,
-                    sessionID: destination.sessionID), questionID: nil)
+                    sessionID: destination.sessionID), questionID: questionID)
             }
                 .presentationSizing(.form)
         case .machines:
@@ -564,16 +639,35 @@ struct PhoneLiveRootView: View {
         return active + resolved
     }
 
-    private var activeQuestionIDs: Set<String> {
-        Set(store.machines.flatMap { machine in
-            machine.questions.map { message in
-                RemiQuestionCardModel.identity(
-                    machineID: machine.id,
-                    sessionID: message.sessionId,
-                    questionID: message.question.id
-                )
+    private var questionNotificationInput: PhoneQuestionNotificationInput {
+        var currentQuestionIDsBySession: [String: Set<String>] = [:]
+        var snapshotsBySession: [String: MachineQuestionConnectionSnapshot] = [:]
+
+        for machine in store.machines {
+            let sessionIDs = Set(machine.activeSessions.map(\.sessionId))
+                .union(machine.questions.map(\.sessionId))
+            for sessionID in sessionIDs {
+                let session = questionNotificationSession(machineID: machine.id, sessionID: sessionID)
+                currentQuestionIDsBySession[session] = []
+                if let snapshot = machine.currentQuestionSnapshot(for: sessionID) {
+                    snapshotsBySession[session] = snapshot
+                }
             }
-        })
+
+            for message in machine.questions {
+                let session = questionNotificationSession(machineID: machine.id, sessionID: message.sessionId)
+                currentQuestionIDsBySession[session, default: []].insert(message.question.id)
+            }
+        }
+
+        return PhoneQuestionNotificationInput(
+            currentQuestionIDsBySession: currentQuestionIDsBySession,
+            snapshotsBySession: snapshotsBySession
+        )
+    }
+
+    private func questionNotificationSession(machineID: String, sessionID: String) -> String {
+        "\(machineID)|\(sessionID)"
     }
 
     private func questions(machineID: String, sessionID sessionId: String) -> [RemiQuestionCardModel] {
@@ -674,7 +768,27 @@ struct PhoneLiveRootView: View {
     }
 
     private func transcript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
-        (store.transcriptsBySession[store.sessionKey(machineID: machineID, sessionID: sessionID)] ?? []).compactMap { message in
+        // Pending entries follow every confirmed entry, so an agent reply that arrives before
+        // the echo of an earlier message shows above that message.
+        confirmedTranscript(machineID: machineID, sessionID: sessionID)
+            + pendingEntries(machineID: machineID, sessionID: sessionID)
+    }
+
+    private func pendingEntries(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
+        store.outgoingMessages(machineID: machineID, sessionID: sessionID).map {
+            let state: RemiOutgoingState = switch $0.delivery {
+            case .sending: .sending
+            case .handedOff: .handedOff
+            case .refused: .refused
+            case .uncertain: .uncertain
+            }
+            return RemiTranscriptEntry.pending(id: $0.presentationID, text: $0.content, state: state)
+        }
+    }
+
+    private func confirmedTranscript(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
+        let key = store.sessionKey(machineID: machineID, sessionID: sessionID)
+        return (store.transcriptsBySession[key]?.entries ?? []).compactMap { message in
             let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if !content.isEmpty {
                 return message.role == "user"
@@ -693,6 +807,13 @@ struct PhoneLiveRootView: View {
         }
     }
 
+    /// The latest of a session's conversation for its card on the board: the latest 24
+    /// confirmed entries, then the messages not confirmed yet.
+    private func boardEntries(_ session: RemiSessionSummary) -> [RemiTranscriptEntry] {
+        Array(confirmedTranscript(machineID: session.machineID, sessionID: session.id).suffix(24))
+            + pendingEntries(machineID: session.machineID, sessionID: session.id)
+    }
+
     private func answer(machineID: String, sessionId: String, questionId: String, value: String) {
         answerFeedbackTrigger += 1
         store.answer(
@@ -700,7 +821,7 @@ struct PhoneLiveRootView: View {
             sessionId: sessionId,
             questionId: questionId,
             answer: value,
-            claudeSessionId: rawQuestion(machineID: machineID, questionId)?.claudeSessionId
+            claudeSessionId: rawQuestion(machineID: machineID, sessionID: sessionId, questionID: questionId)?.claudeSessionId
         )
     }
 
@@ -716,7 +837,7 @@ struct PhoneLiveRootView: View {
             sessionId: sessionId,
             questionId: questionId,
             answer: "",
-            claudeSessionId: rawQuestion(machineID: machineID, questionId)?.claudeSessionId,
+            claudeSessionId: rawQuestion(machineID: machineID, sessionID: sessionId, questionID: questionId)?.claudeSessionId,
             selections: values.compactMap { value in
                 guard let questionIndex = Int(value.stepID) else { return nil }
                 return AnswerSelection(
@@ -735,7 +856,7 @@ struct PhoneLiveRootView: View {
             sessionId: sessionId,
             questionId: questionId,
             answer: "",
-            claudeSessionId: rawQuestion(machineID: machineID, questionId)?.claudeSessionId,
+            claudeSessionId: rawQuestion(machineID: machineID, sessionID: sessionId, questionID: questionId)?.claudeSessionId,
             cancel: true
         )
     }
@@ -791,8 +912,8 @@ struct PhoneLiveRootView: View {
         store.resumeSession(on: machine.endpoint, sessionId: sessionID)
     }
 
-    private func rawQuestion(machineID: String, _ id: String) -> QuestionMessage? {
-        store.machine(withIdentifier: machineID)?.questions.first { $0.question.id == id }
+    private func rawQuestion(machineID: String, sessionID: String, questionID: String) -> QuestionMessage? {
+        store.machine(withIdentifier: machineID)?.question(sessionID: sessionID, questionID: questionID)
     }
 
     private func destination(forQuestionIdentity id: String) -> RemiNavigationDestination? {
@@ -857,13 +978,16 @@ struct PhoneLiveRootView: View {
             initialConversationID: route.conversationID,
             initialQuestionID: focus,
             transcriptForView: { transcript(machineID: session.machineID, sessionID: $0) },
-            onSelectView: { store.loadTranscript(machineID: session.machineID, sessionId: $0) },
+            onSelectView: { store.ensureTranscript(machineID: session.machineID, sessionId: $0) },
             onAnswer: { answer(machineID: session.machineID, sessionId: session.id, questionId: $0, value: $1) },
             onSubmit: { submit(machineID: session.machineID, sessionId: session.id, questionId: $0, values: $1) },
             onCancel: { cancel(machineID: session.machineID, sessionId: session.id, questionId: $0) },
             onSend: { await sendChat(machineID: session.machineID, sessionId: session.id, content: $0) },
+            onDismissOutgoing: { id in
+                store.dismissOutgoing(presentationID: id)
+            },
             onTerminate: { store.terminateSession(machineID: session.machineID, sessionId: session.id) },
-            onClose: { shell.select(.inbox) },
+            onClose: { shell.select(.board) },
             focusQuestionRequest: focus,
             restoredState: sessionViewStates.state(for: session.key),
             onViewStateChange: { state in sessionViewStates.update(session.key) { $0 = state } },
@@ -872,7 +996,7 @@ struct PhoneLiveRootView: View {
         )
         .id(route)
         .task(id: store.transcriptRouteGeneration(machineID: session.machineID, sessionID: route.conversationID ?? session.id)) {
-            store.loadTranscript(machineID: session.machineID, sessionId: route.conversationID ?? session.id)
+            store.ensureTranscript(machineID: session.machineID, sessionId: route.conversationID ?? session.id)
         }
         .onChange(of: shell.pendingFocus, initial: true) { _, _ in
             guard shell.focusQuestionID(for: route) != nil else { return }

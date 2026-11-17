@@ -1,15 +1,17 @@
 # Shared terminal model and view accounting (#1617)
 
 This standalone B3a component implements the home quotas from the approved
-[#1595 plan](../.context/issue-1595-backend-plan.md) and ADR0046/0047.
+[#1595 plan](../.context/issue-1595-backend-plan.md) and ADR0046/0047 and [ADR0048](../.context/decisions/0048-terminal-stack-budget-and-policy.md).
 The original standalone phase added no production constructor or capture observer.
 [B3b (#1620)](terminal-capture.md) now composes model reservations with launch-time
-capture; secure terminal handlers, advertised capability and a pane remain pending.
+capture; the [signed service](terminal-view-service.md) implements direct WSS handlers.
+Capability advertisement and qualified pane integration remain pending.
 
 ## Counted resources
 
-`TerminalReservations` admits at most 32 model reservations per Remi home,
-each charging the approved fixed 1 MiB model allowance (32 MiB total).
+`TerminalReservations` admits at most eight model reservations per Remi home,
+each charging the approved fixed 4 MiB complete-stack allowance (32 MiB total).
+The primitive retains its independent 1 MiB qualification.
 Only one model may represent a session in a home.
 This counts reservations; it does not measure or impose an OS memory limit.
 The future host must reserve before construction and preserve the qualified
@@ -43,10 +45,18 @@ The captured owner cannot be reused after a process fork.
 The existing Remi home must be an absolute canonical directory owned by the
 current user, without group/world write access.
 `terminal-view/` is private (0700); `reservations.json` is an atomic restricted
-file (0600), bounded to 32 KiB, 40 rows and the existing strict JSON parser's
+file (0600), bounded to 32 KiB, 16 rows and the existing strict JSON parser's
 depth/node limits. Exact shapes, unique IDs, valid model references and every
 quota are checked on reads. Bounded descriptor reads refuse symlinks,
 hardlinks, unexpected modes/owners, unstable data and malformed/duplicate JSON.
+
+The version-2 root pins the exact model count, per-model bytes and home bytes.
+Both count and aggregate-byte limits precede admission. The same locked namespace
+can transition a strictly valid version-1 ledger only when empty or when every
+row belongs to this host and a kernel ESRCH proves its owner dead. Live, foreign,
+unknown and reused-PID charges remain unchanged. Malformed or unknown-policy
+state refuses admission. The archived actual version-1 reader/writer rejects
+version 2, preventing mixed policies from silently sharing a home.
 
 An exclusively created `.terminal-view-namespace` marker in Remi home binds
 the namespace's device/inode. Either surviving piece prevents automatic
@@ -77,7 +87,7 @@ a filesystem operation. Paths and terminal content are absent from its errors.
 
 The proof constructs this component against real private files and child
 processes. It covers quotas, cross-process device admission, four live owners
-competing for 32 slots, exact owned release, death/reaping, nonblocking lock
+competing for eight slots, exact owned release, death/reaping, nonblocking lock
 contention and 18 corrupt/lost-state cases. Each child is reaped; failed owned
 fixture directories are preserved. A separate killed-owner control waits a real
 30 seconds, verifies that both young and old abandoned locks stay nonblocking
@@ -89,7 +99,7 @@ Run `bun test packages/daemon/tests/terminal/reservations.test.ts` or
 `bun run scripts/terminal-reservations-proof.ts`.
 Compiled qualification invokes the same entry point with `--compiled` so its
 children execute that exact compiled binary.
-The final matrix passed all 30 groups on Mac ARM64, Linux ARM64 and Linux x64
+The original version-1 matrix passed all 30 groups on Mac ARM64, Linux ARM64 and Linux x64
 under both Bun 1.3.11 and 1.4.2 (180 group executions). Ten independent guard
 mutations failed their named assertion on both compiled Mac pins (20 negatives).
 The original 29-group/18-mutation pass remains a predecessor receipt.
@@ -131,3 +141,11 @@ permanent busy after the real age floor. The explicit operator-repair policy
 above resolves that contract honestly; it does not relabel the failed automatic
 recovery control as a pass. Atomic release completion wording was corrected
 in the same review round.
+
+The version-2 4 MiB/eight-model policy adds five actual migration groups, including
+live legacy charges, a reaped legacy process, the empty transition, old-writer
+refusal and unknown-policy refusal. The [service progress receipt](terminal-view-service-progress.json)
+records all 30 reservation and five migration groups passing on all six compiled
+cells under version 2. The [expanded receipt](terminal-view-service-expanded-qualification.json) also records
+passing current held-No and causal controls. Final-head hosted checks still gate
+merge; the version-1 receipts above remain historical.

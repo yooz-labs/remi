@@ -160,7 +160,7 @@ def context(protected=True):
         .strip()
     )
     require(
-        environment["bun"] == os.environ.get("BUN_VERSION") == "1.3.11", "Bun identity"
+        environment["bun"] == os.environ.get("BUN_VERSION") == "1.4.2", "Bun identity"
     )
     require(
         all(
