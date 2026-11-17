@@ -106,7 +106,7 @@ export interface ParsedArgs {
   readonly signalingUrl: string | undefined;
   readonly noRelay: boolean;
   readonly relay: boolean;
-  /** Explicit direct pairing QR version; absent keeps the shipped v1 default. */
+  /** Explicit direct pairing QR version; absent means v2, with a v1 fallback (#1794). */
   readonly qrVersion: 1 | 2 | undefined;
   readonly resume: string | true | undefined;
   readonly showSessions: 'running' | 'all' | 'exited' | false;

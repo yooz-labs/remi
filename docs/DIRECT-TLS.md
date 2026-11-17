@@ -56,7 +56,7 @@ TLS public port still requires a WSS-capable client at its other end.
 ## Current client and discovery limits
 
 Legacy mDNS does not advertise a configured TLS listener. When a same-PID local
-endpoint record confirms TLS, direct v1 `remi pair` refuses because its QR payload
+endpoint record confirms TLS, direct `remi pair` (any QR version) refuses because its QR payload
 cannot describe the secure endpoint. A missing record establishes no transport
 mode; it does not make the TLS listener accept plaintext. Local relay
 pairing/control uses the private connection.

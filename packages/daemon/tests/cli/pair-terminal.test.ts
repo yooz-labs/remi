@@ -273,6 +273,36 @@ describe('remi pair in a terminal (#1275)', () => {
     expect(t.screen()).not.toMatch(/\n\s+at /);
   }, 30000);
 
+  test('remi pair with no version shows a v2 code, and --qr-version 1 shows v1 (#1794)', async () => {
+    for (const [args, version] of [
+      [['pair'], 2],
+      [['pair', '--qr-version', '1'], 1],
+    ] as const) {
+      const { env } = await setup();
+      const t = runInTerminal(env, args);
+      await waitFor(() => t.screen().includes('Waiting for the phone'), 'the code');
+      const link = t.screen().match(/remi:\/\/pair#[A-Za-z0-9_-]+/)?.[0];
+      if (link === undefined) throw new Error('no link shown');
+      const decoded = decodePairingLink(link);
+      if (!decoded.ok) throw new Error(`link refused: ${decoded.error}`);
+      expect(decoded.code.v, args.join(' ')).toBe(version);
+      expect(t.screen()).not.toContain('Using a version 1');
+      t.proc.kill('SIGINT');
+      expect(await t.proc.exited).toBe(130);
+    }
+  }, 30000);
+
+  test('remi pair --help names the new default (#1794)', async () => {
+    const { env } = await setup();
+    const proc = Bun.spawn([process.execPath, CLI, 'pair', '--help'], { env, stdout: 'pipe' });
+    procs.push(proc);
+    await proc.exited;
+    const help = await new Response(proc.stdout).text();
+    expect(help).toContain('the default is version 2');
+    expect(help).toContain('--qr-version 1');
+    expect(help).not.toContain('Opt in');
+  });
+
   test('the main help lists remi pair', async () => {
     const { env } = await setup();
     const proc = Bun.spawn([process.execPath, CLI, '--help'], { env, stdout: 'pipe' });
