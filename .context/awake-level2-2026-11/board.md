@@ -69,7 +69,7 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | G0 | [G0 password-on-wake](cards/G0-password-on-wake.md) | - | worker | - | codex-luna | done | - | 1804 | 2026-11-17T06:56 | 3h | dispatch now; note only |
 | G1 | [G1 power readings](cards/G1-power-readings.md) | - | worker | - | claude-sonnet | done | - | 1806 | 2026-11-17T06:56 | 1d | merged 2026-11-17 10:22 (PR 1806, merge 236d2991, bump 0.9.1-dev.7); DV-AWAKE waits to batch with W1 |
 | W1 | [W1 lease and watchdog](cards/W1-lease-and-watchdog.md) | - | worker-hard | - | claude-opus | review | - | 1807 | 2026-11-17T06:56 | 1d | PR 1807 head c8d238f3: Test worker 2 flaked (0 fail, owned-descendant wrapper error, issue 1812); full workflow rerun started 11:12, soak ends about 12:15; then merge gate and DV-AWAKE with G1 |
-| L2-POL | [L2-POL level 2 policy](cards/L2-POL-level2-policy.md) | - | worker-hard | - | claude-opus | review | - | - | 2026-11-17T09:10 | 1d | Fix round after the 3 reviews (lead ea2c770e: no timer limit on any key, safe-integer check, persist every beat), then delta review, gate item 8, merge |
+| L2-POL | [L2-POL level 2 policy](cards/L2-POL-level2-policy.md) | - | worker-hard | - | claude-opus | review | - | - | 2026-11-17T09:10 | 1d | PR 1809 head 10bcad09: verified (398 pass, my mutation of hub-exit-while-reverting fails its test); wait for CI incl. soak (run 44151851469), then gate item 8 and merge; DV-AWAKE after W1 and L2-POL |
 | OG-CAP | [Owner gate: MacBook captures](owner-gates.md) | - | - | - | - | owner | - | - | - | 30m | rule: owner runs OG-CAP section of owner-gates.md; seven folders under artifacts/awake-level2-2026-11/captures/OG-CAP |
 | G2 | [G2 level 1 battery floor](cards/G2-level1-battery-floor.md) | - | worker-hard | - | - | todo | G1,OG-CAP | - | - | 1d | after G1 merged and OG-CAP; keys per plan section 6 (Q15 a, Q16 b: mechanism bounds also settings: the lead reconciles) |
 | OG-G2 | [Owner gate: battery floor on the MacBook](owner-gates.md) | - | - | - | - | blocked | G2 | - | - | 30m | rule: set owner when G2 is done; owner-gates.md OG-G2 |
@@ -136,4 +136,4 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | FX-W1B | final fix (PR1807 delta) | claude-opus | opus (ad62c17fc6af47519, resumed) | W1 PR1807 | 2026-11-17T10:25 | done |
 | RV-POLD-src ae2e344c9b59cc94f | delta reviewer (src ae2e344c9b59cc94f) | claude-sonnet | sonnet () | L2-POL PR1809 | 2026-11-17T10:42 | done |
 | RV-POLD-tests a5e4b472f18643c1e | delta reviewer (tests a5e4b472f18643c1e) | claude-sonnet | sonnet () | L2-POL PR1809 | 2026-11-17T10:42 | done |
-| FX-POLB | final fix (PR1809 delta) | claude-opus | opus (a37ea6ad9be74c593, resumed) | L2-POL PR1809 | 2026-11-17T11:05 | running |
+| FX-POLB | final fix (PR1809 delta) | claude-opus | opus (a37ea6ad9be74c593, resumed) | L2-POL PR1809 | 2026-11-17T11:05 | done |
