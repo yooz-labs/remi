@@ -62,7 +62,10 @@ All three go through `runReading` (`run-reading.ts`), which runs only the exact 
 Anything else is `refused` without a spawn, and a test asserts the refusal of `pmset sleepnow`, `displaysleepnow`, `-a disablesleep`, `notifyutil -p` and `-s` on the pure predicate, never by running them.
 Those invocations only read, which is what keeps a reading from changing power state.
 `spawnBounded` under it is not guarded and runs whatever it is given, so every later entry point must go through `runReading` or the predicate.
-Each run has no shell, no stdin, an environment of `LC_ALL=C` and `PATH` only, a 2 s deadline and a 256 KiB stdout cap, and a failure never throws.
+Each run has no shell, no stdin, an environment of `LC_ALL=C` and `PATH` only, and a failure never throws.
+Every number is an option of `spawnBounded` (and, through `SpawnBoundedOptions`, of each reader) whose default is an exported constant:
+`DEFAULT_TIMEOUT_MS` (2000, the deadline), `DEFAULT_MAX_STDOUT_BYTES` (262144), `DEFAULT_MAX_STDERR_BYTES` (65536, kept only with `captureStderr`) and `DEFAULT_KILL_GRACE_MS` (500, the wait after the kill).
+Nothing reads them from configuration yet; G2 makes them `[awake]` settings (`reading_deadline_ms`, `reading_stdout_max_bytes`, `reading_stderr_max_bytes`, `reading_kill_grace_ms`).
 The child leads its own process group, and a timeout or oversize kill reaches the group (a wrapper shell's children too).
 The parsers are tested against redacted captures of a Mac16,11 (`packages/daemon/tests/power/fixtures/mac16-11-macos-27.2/`, with its `SOURCE.md`).
 Both text parsers need the end of the output: the assertions reading is unknown unless the `Kernel Assertions:` header was seen, and the root-domain reading is unknown unless the property block's closing brace was.
