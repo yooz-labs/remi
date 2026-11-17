@@ -49,12 +49,12 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 100 | 1 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Agents today | 100 | 6 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
 | Codex Luna today | 24 | 0 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
-| Codex Terra today | 16 | 0 | daily | owner CP0 value; Terra implementers and fix rounds |
-| Claude Sonnet today | 44 | 0 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
-| Claude Opus today | 16 | 1 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
-| Advisor consults | 20 | 2 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
+| Codex Terra today | 16 | 1 | daily | owner CP0 value; Terra implementers and fix rounds |
+| Claude Sonnet today | 44 | 3 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
+| Claude Opus today | 16 | 2 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
+| Advisor consults | 20 | 3 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
 | Fable consults | 1 | 0 | never | copied; only if the owner asks; never --over |
 | Agents this wave | 0 | 0 | wave | unused: this plan has no waves |
 
@@ -127,7 +127,11 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | DV-1 | DV | claude-sonnet | sonnet high | DV@095ef7cc | 2026-11-14T18:31 | done |
 | RV-D51 | reviewer docs | claude-sonnet | sonnet xhigh | D51 PR1785 abd584fe | 2026-11-14T18:35 | done |
 | FX-D51 | fix round 1 | claude-sonnet | sonnet high | D51 PR1785 | 2026-11-14T18:42 | done |
-| P1A-1 | implementer | codex-terra | gpt-6.1-terra xhigh | P1A | 2026-11-17T04:14 | running |
+| P1A-1 | implementer | codex-terra | gpt-6.1-terra xhigh | P1A | 2026-11-17T04:14 | stopped-incomplete |
 | P1C-1 | implementer | codex-luna | gpt-6-luna max | P1C | 2026-11-17T04:14 | running |
 | P5A-1 | implementer | codex-luna | gpt-6-luna max | P5A-PREP | 2026-11-17T04:14 | running |
 | CI-1 | CI analysis (owner request, issue 1793) | claude-opus | opus high (agent a8e5c55d269096de4) | none | 2026-11-17T04:20 | running |
+| PAIRV2-1 | implementer (owner request, issue 1794) | claude-sonnet | sonnet high | none | 2026-11-17T04:25 | running |
+| P1A-2 | implementer (continuation) | codex-terra | gpt-6.1-terra xhigh | P1A | 2026-11-17T04:42 | running |
+| RV-PAIR-A | reviewer contract+verification | claude-sonnet | sonnet xhigh (a92b6314a46035836) | PR1795 | 2026-11-17T04:43 | running |
+| RV-PAIR-B | reviewer maintainability+docs | claude-sonnet | sonnet xhigh (ace81289b673465b5) | PR1795 | 2026-11-17T04:43 | running |
