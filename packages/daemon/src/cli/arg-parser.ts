@@ -443,11 +443,6 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       // Once either harness alias is selected, later command-looking words are its arguments.
       // An alias only starts a command when none was given: `remi stop codex` still stops.
       subcommand = arg as Subcommand;
-      if (subcommand === 'profile') {
-        subcommandArgs.push(...args.slice(i + 1));
-        subcommandArg = subcommandArgs[0];
-        break;
-      }
       if (SUBCOMMANDS_WITH_ARG_LIST.has(subcommand)) {
         // Consume every following operand up to the first flag: the verb and
         // its arguments both belong to this subcommand.
@@ -458,7 +453,9 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
         const OWN_FLAGS: ReadonlySet<string> = new Set(['--all']);
         while (
           args[i + 1] &&
-          (!(args[i + 1] as string).startsWith('-') || OWN_FLAGS.has(args[i + 1] as string))
+          (subcommand === 'profile'
+            ? !['--help', '-h', '--version', '-v'].includes(args[i + 1] as string)
+            : !(args[i + 1] as string).startsWith('-') || OWN_FLAGS.has(args[i + 1] as string))
         ) {
           subcommandArgs.push(args[i + 1] as string);
           i++;

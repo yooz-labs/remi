@@ -65,10 +65,26 @@ describe('profile configuration', () => {
     expect('entries' in result.profiles && result.profiles.entries['work']?.label).toBe('Work');
   });
   test.each([
-    ['bad id', `[profiles."bad id"]\nlabel="Work"\n`],
-    ['reserved default', `[profiles.default]\nlabel="Work"\n`],
-    ['email', `[profiles.work]\nlabel="a@b.com"\n`],
-    ['unsafe label', `[profiles.work]\nlabel="Bad\\u001bName"\n`],
+    [
+      'bad id',
+      `[profiles."bad id"]\nlabel="Work"\n[profiles."bad id".claude]\nexpects="subscription"\n`,
+      'profiles: invalid profile id',
+    ],
+    [
+      'reserved default',
+      `[profiles.default]\nlabel="Work"\n[profiles.default.claude]\nexpects="subscription"\n`,
+      'profiles.default: reserved for the built-in profile and machine default',
+    ],
+    [
+      'email',
+      `[profiles.work]\nlabel="PLANTED@example.com"\n[profiles.work.claude]\nexpects="subscription"\n`,
+      'profiles.work.label: Use a name such as Work, not an email address',
+    ],
+    [
+      'unsafe label',
+      `[profiles.work]\nlabel="PLANTED\\u001b"\n[profiles.work.claude]\nexpects="subscription"\n`,
+      'profiles.work.label: label contains unsafe characters',
+    ],
     [
       '33 profiles',
       Array.from(
@@ -76,38 +92,58 @@ describe('profile configuration', () => {
         (_, i) =>
           `[profiles.p${i}]\nlabel="Work"\n[profiles.p${i}.claude]\nexpects="subscription"\n`,
       ).join(''),
+      'profiles: at most 32 profiles',
     ],
     [
       'duplicate folder',
       `${basic}[profiles.other]\nlabel="Other"\nfolders=["/a/b"]\n[profiles.other.codex]\nexpects="subscription"\n`,
+      'profiles.other.folders: folder appears in more than one profile',
     ],
     [
       'remi secret',
-      `[profiles.work]\nlabel="Work"\nenv={REMI_PASSPHRASE="x"}\n[profiles.work.claude]\nexpects="subscription"\n`,
+      `[profiles.work]\nlabel="Work"\nenv={REMI_PASSPHRASE="PLANTED"}\n[profiles.work.claude]\nexpects="subscription"\n`,
+      "profiles.work.env.REMI_PASSPHRASE: remi does not store credentials; use the harness's own sign-in",
     ],
-    ['missing expects', `[profiles.work]\nlabel="Work"\n[profiles.work.claude]\n`],
-    ['unknown key', `[profiles.work]\nlabel="Work"\nextra=true\n`],
+    [
+      'missing expects',
+      `[profiles.work]\nlabel="Work"\n[profiles.work.claude]\n`,
+      'profiles.work.claude.expects: expected a safe token',
+    ],
+    [
+      'unknown key',
+      `[profiles.work]\nlabel="Work"\nPLANTED=true\n[profiles.work.claude]\nexpects="subscription"\n`,
+      'profiles.work: unknown key',
+    ],
     [
       'relative dir',
-      `[profiles.work]\nlabel="Work"\n[profiles.work.claude]\nexpects="subscription"\ndir="relative"\n`,
+      `[profiles.work]\nlabel="Work"\n[profiles.work.claude]\nexpects="subscription"\ndir="PLANTED"\n`,
+      'profiles.work.claude.dir: expected an absolute or ~/ path',
     ],
-    ['unknown default', `[profiles]\ndefault="other"\n${basic}`],
+    [
+      'unknown default',
+      `[profiles]\ndefault="PLANTED"\n${basic}`,
+      'profiles.default: must name a configured profile',
+    ],
     [
       'credential',
-      `[profiles.work]\nlabel="Work"\nenv={CUSTOM_API_KEY="planted"}\n[profiles.work.claude]\nexpects="subscription"\n`,
+      `[profiles.work]\nlabel="Work"\nenv={CUSTOM_API_KEY="PLANTED"}\n[profiles.work.claude]\nexpects="subscription"\n`,
+      "profiles.work.env.CUSTOM_API_KEY: remi does not store credentials; use the harness's own sign-in",
     ],
     [
       'provider',
-      `[profiles.work]\nlabel="Work"\nenv={CLAUDE_CODE_USE_BEDROCK="1"}\n[profiles.work.claude]\nexpects="subscription"\n`,
+      `[profiles.work]\nlabel="Work"\nenv={CLAUDE_CODE_USE_BEDROCK="PLANTED"}\n[profiles.work.claude]\nexpects="subscription"\n`,
+      'profiles.work.env.CLAUDE_CODE_USE_BEDROCK: not supported in this build',
     ],
     ...['--settings', '--settings=x', '--managed-settings', '--setting-sources'].map((flag) => [
       flag,
       `[profiles.work]\nlabel="Work"\nargs=["${flag}"]\n[profiles.work.claude]\nexpects="subscription"\n`,
+      'profiles.work.args: these change which settings, and so which credential, Claude Code uses',
     ]),
-  ])('%s isolates the invalid table', (_name, raw) => {
+  ])('%s isolates the invalid table', (_name, raw, message) => {
     const result = config(raw);
     expect(result.daemon.bind).toBe('127.0.0.2');
-    expect('error' in result.profiles).toBe(true);
+    expect(result.profiles).toEqual({ error: message });
+    expect(JSON.stringify(result.profiles)).not.toContain('PLANTED');
   });
   test('email refusal does not include the label', () => {
     const result = parseProfiles({ work: { label: 'person@example.com' } });
@@ -220,4 +256,125 @@ describe('profile selection and environment', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+  test('folder matching respects component boundaries without a machine default', () => {
+    const mapped = parseProfiles({
+      work: { label: 'Work', folders: ['/a/b'], claude: { expects: 'subscription' } },
+    });
+    expect(resolveProfile({ profiles: mapped, cwd: '/a/bc' })).toEqual({
+      id: 'default',
+      source: 'built_in',
+    });
+  });
+});
+
+test('broken profiles preserve plain selection and refuse raw mappings', () => {
+  const invalid = parseProfiles({
+    work: { label: 'bad@example.com', folders: ['/a/b'], claude: { expects: 'subscription' } },
+  });
+  expect(resolveProfile({ profiles: invalid, cwd: '/a/b/child' })).toEqual({
+    error:
+      'This folder or machine default selects a profile, but [profiles] has an error: profiles.work.label',
+  });
+  expect(resolveProfile({ profiles: invalid, cwd: '/a/bc' })).toEqual({
+    id: 'default',
+    source: 'built_in',
+    warning:
+      'Profiles are disabled by a configuration error (profiles.work.label); this session uses your default sign-in. Run remi profile ls.',
+  });
+  expect(resolveProfile({ profiles: invalid, cwd: '/', flag: 'work' })).toEqual({
+    error: 'profiles.work.label: Use a name such as Work, not an email address',
+  });
+  expect(resolveProfile({ profiles: invalid, cwd: '/', envValue: 'work' })).toEqual({
+    error: 'profiles.work.label: Use a name such as Work, not an email address',
+  });
+  const machine = parseProfiles({
+    default: 'work',
+    work: { label: 'bad@example.com', claude: { expects: 'subscription' } },
+  });
+  expect(resolveProfile({ profiles: machine, cwd: '/' })).toEqual({
+    error:
+      'This folder or machine default selects a profile, but [profiles] has an error: profiles.work.label',
+  });
+});
+
+test('profile harness directories cannot share another sign-in', () => {
+  const harness = { dir: '/shared-dir', expects: 'subscription' };
+  expect(
+    parseProfiles({
+      one: { label: 'One', claude: harness },
+      two: { label: 'Two', codex: harness },
+    }),
+  ).toEqual({ error: 'profiles.two.codex.dir uses the same directory as profiles.one.claude.dir' });
+  expect(parseProfiles({ one: { label: 'One', claude: harness, codex: harness } })).toEqual({
+    error: 'profiles.one.codex.dir uses the same directory as profiles.one.claude.dir',
+  });
+  for (const name of ['claude', 'codex'] as const) {
+    expect(
+      parseProfiles({
+        one: {
+          label: 'One',
+          [name]: { dir: path.join(os.homedir(), `.${name}`), expects: 'subscription' },
+        },
+      }),
+    ).toEqual({
+      error: `profiles.one.${name}.dir: This is the built-in default's directory; use the built-in default instead`,
+    });
+  }
+});
+
+test('profile environment rejects inherited sources and remi secrets last', () => {
+  const result = parseProfiles({ work: { label: 'Work', claude: { expects: 'subscription' } } });
+  if (!('entries' in result) || !result.entries['work']) throw new Error('fixture');
+  const profile = result.entries['work'];
+  expect(
+    profileEnvironment(
+      { ANTHROPIC_BASE_URL: 'inherited', ANTHROPIC_CONFIG_DIR: '/foreign' },
+      profile,
+    ),
+  ).not.toHaveProperty('ANTHROPIC_BASE_URL');
+  expect(profileEnvironment({ ANTHROPIC_CONFIG_DIR: '/foreign' }, profile)).not.toHaveProperty(
+    'ANTHROPIC_CONFIG_DIR',
+  );
+  const resultEnv = profileEnvironment(
+    {},
+    { ...profile, env: { ANTHROPIC_BASE_URL: 'profile', REMI_PASSPHRASE: 'not-a-secret' } },
+  );
+  expect(resultEnv['ANTHROPIC_BASE_URL']).toBe('profile');
+  expect(resultEnv['REMI_PASSPHRASE']).toBeUndefined();
+  expect(
+    parseProfiles({
+      work: {
+        label: 'Work',
+        env: { ANTHROPIC_CONFIG_DIR: '/foreign' },
+        claude: { expects: 'subscription' },
+      },
+    }),
+  ).toEqual({ error: 'profiles.work.env.ANTHROPIC_CONFIG_DIR: not supported in this build' });
+});
+
+test('every credential selector is refused in profile env', () => {
+  for (const name of PROFILE_CREDENTIAL_ENV) {
+    const parsed = parseProfiles({
+      work: { label: 'Work', env: { [name]: 'PLANTED' }, claude: { expects: 'subscription' } },
+    });
+    expect(parsed).toEqual({ error: `profiles.work.env.${name}: not supported in this build` });
+    expect(JSON.stringify(parsed)).not.toContain('PLANTED');
+  }
+});
+
+test('unknown keys do not echo control sequences', () => {
+  expect(
+    parseProfiles({
+      work: { label: 'Work', '\u001b[31mPLANTED': true, claude: { expects: 'subscription' } },
+    }),
+  ).toEqual({ error: 'profiles.work: unknown key' });
+});
+
+test('profile command help reaches the global parser', async () => {
+  const { parseArgs } = await import('../../src/cli/arg-parser.ts');
+  expect(parseArgs(['profile', '--help']).showHelp).toBe(true);
+  expect(parseArgs(['profile', '-h']).showHelp).toBe(true);
+  expect(
+    parseArgs(['profile', 'add', 'work', '--label', 'Work', '--claude']).subcommandArgs,
+  ).toEqual(['add', 'work', '--label', 'Work', '--claude']);
 });

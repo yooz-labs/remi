@@ -61,3 +61,88 @@ test('warnings name sources and keys, never settings values', () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('each settings location and warning trigger is independently detected', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-warning-matrix-'));
+  try {
+    const managedDir = path.join(root, 'managed');
+    const claudeDir = path.join(root, 'claude');
+    const cwd = path.join(root, 'project');
+    const anthropicDir = path.join(root, 'anthropic');
+    for (const dir of [
+      managedDir,
+      claudeDir,
+      path.join(cwd, '.claude'),
+      anthropicDir,
+      path.join(managedDir, 'managed-settings.d'),
+    ])
+      fs.mkdirSync(dir, { recursive: true });
+    const input = { managedDir, claudeDir, cwd, anthropicDir, expects: 'subscription' };
+    const cases = [
+      [
+        path.join(managedDir, 'managed-settings.json'),
+        { forceLoginMethod: 'PRIVATE_VALUE' },
+        'managed_settings',
+        'forceLoginMethod',
+      ],
+      [
+        path.join(managedDir, 'managed-settings.d', 'policy.json'),
+        { forceLoginOrgUUID: 'PRIVATE_VALUE' },
+        'managed_settings',
+        'forceLoginOrgUUID',
+      ],
+      [
+        path.join(managedDir, 'managed-settings.json'),
+        { apiKeyHelper: 'PRIVATE_VALUE' },
+        'managed_settings',
+        'apiKeyHelper',
+      ],
+      [
+        path.join(managedDir, 'managed-settings.json'),
+        { env: { CUSTOM_TOKEN: 'PRIVATE_VALUE' } },
+        'managed_settings',
+        'env',
+      ],
+      [
+        path.join(claudeDir, 'settings.json'),
+        { apiKeyHelper: 'PRIVATE_VALUE' },
+        'user_settings',
+        'apiKeyHelper',
+      ],
+      [
+        path.join(claudeDir, 'settings.json'),
+        { env: { ANTHROPIC_CONFIG_DIR: 'PRIVATE_VALUE' } },
+        'user_settings',
+        'env',
+      ],
+      [
+        path.join(cwd, '.claude', 'settings.json'),
+        { apiKeyHelper: 'PRIVATE_VALUE' },
+        'project_settings',
+        'apiKeyHelper',
+      ],
+      [
+        path.join(cwd, '.claude', 'settings.local.json'),
+        { env: { CLAUDE_CONFIG_DIR: 'PRIVATE_VALUE' } },
+        'project_settings',
+        'env',
+      ],
+      [
+        path.join(cwd, '.claude', 'settings.local.json'),
+        { env: { ANTHROPIC_BASE_URL: 'PRIVATE_VALUE' } },
+        'project_settings',
+        'env',
+      ],
+    ] as const;
+    for (const [file, data, source, key] of cases) {
+      fs.writeFileSync(file, JSON.stringify(data));
+      const result = configWarnings(input);
+      expect(result).toEqual([{ source, key }]);
+      expect(result.map((w) => `${w.source}: ${w.key}`).join('\n')).toBe(`${source}: ${key}`);
+      expect(JSON.stringify(result)).not.toContain('PRIVATE_VALUE');
+      fs.unlinkSync(file);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

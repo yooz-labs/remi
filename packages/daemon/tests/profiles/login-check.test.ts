@@ -15,9 +15,13 @@ afterEach(() => {
 });
 function fake(dir: string, output: string, status = 0): string {
   const script = path.join(dir, 'fake-harness');
-  fs.writeFileSync(script, `#!/bin/sh\nprintf '%s' ${JSON.stringify(output)}\nexit ${status}\n`, {
-    mode: 0o700,
-  });
+  fs.writeFileSync(
+    script,
+    `#!/bin/sh\nif [ -n "$REMI_HOME" ]; then : > "$REMI_HOME/visited"; fi\nprintf '%s' ${JSON.stringify(output)}\nexit ${status}\n`,
+    {
+      mode: 0o700,
+    },
+  );
   return script;
 }
 async function claude(data: unknown, expects = 'subscription') {
@@ -34,7 +38,9 @@ async function claude(data: unknown, expects = 'subscription') {
 
 describe('effective login checks', () => {
   test('maps subscription and API key states with a closed set of facts', async () => {
-    expect((await claude({ loggedIn: true, authMethod: 'claude.ai' })).login).toBe('signed_in');
+    expect(
+      (await claude({ loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty' })).login,
+    ).toBe('signed_in');
     expect((await claude({ loggedIn: false, authMethod: 'none' })).login).toBe('signed_out');
     expect(
       await claude({ loggedIn: true, authMethod: 'api_key', apiKeySource: 'apiKeyHelper' }),
@@ -122,7 +128,8 @@ describe('effective login checks', () => {
     }
     expect(JSON.stringify(logs)).not.toContain('MARKER_');
     expect(logs).toHaveLength(1);
-    expect(fs.readdirSync(remiHome, { recursive: true })).toEqual([]);
+    expect(fs.readdirSync(remiHome, { recursive: true })).toEqual(['visited']);
+    expect(fs.readFileSync(path.join(remiHome, 'visited'), 'utf8')).not.toContain('MARKER_');
   });
   test('refuses to consult Codex until file storage is explicit', async () => {
     const dir = scratch();
@@ -187,7 +194,7 @@ describe('effective login checks', () => {
     const dir = scratch();
     const command = path.join(dir, 'slow');
     const pidFile = path.join(dir, 'pid');
-    fs.writeFileSync(command, `#!/bin/sh\necho $$ > "${pidFile}"\nexec /bin/sleep 10\n`, {
+    fs.writeFileSync(command, `#!/bin/sh\necho $$ > "${pidFile}"\nexec /bin/sleep 3\n`, {
       mode: 0o700,
     });
     expect(
@@ -201,6 +208,87 @@ describe('effective login checks', () => {
       }),
     ).toEqual({ login: 'unknown', reason: 'timeout' });
     const pid = Number(fs.readFileSync(pidFile, 'utf8'));
-    expect(() => process.kill(pid, 0)).toThrow();
+    expect(
+      Bun.spawnSync(['/bin/ps', '-p', String(pid)], { stdout: 'ignore', stderr: 'ignore' })
+        .exitCode,
+    ).not.toBe(0);
   });
+});
+
+test('present non-string key sources never establish a profile sign-in', async () => {
+  for (const apiKeySource of [null, {}, 1, true]) {
+    for (const expects of ['subscription', 'api_key']) {
+      const authMethod = expects === 'subscription' ? 'claude.ai' : 'api_key';
+      expect(
+        await claude(
+          { loggedIn: true, authMethod, apiProvider: 'firstParty', apiKeySource },
+          expects,
+        ),
+      ).toMatchObject({ login: 'not_own_login', source: 'other' });
+    }
+  }
+});
+
+test('only firstParty claude.ai is a subscription sign-in', async () => {
+  expect(
+    await claude({ loggedIn: true, authMethod: 'claude.ai', apiProvider: 'gateway' }),
+  ).toMatchObject({ login: 'not_own_login', source: 'other' });
+});
+
+test('only closed facts survive all identity-bearing status shapes', async () => {
+  const shapes = [
+    [
+      { loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty', email: 'MARKER' },
+      { authMethod: 'claude.ai', apiProvider: 'firstParty' },
+    ],
+    [
+      {
+        loggedIn: true,
+        authMethod: 'api_key',
+        apiProvider: 'firstParty',
+        apiKeySource: '/login managed key',
+        email: 'MARKER',
+      },
+      { authMethod: 'api_key', apiProvider: 'firstParty', apiKeySource: '/login managed key' },
+    ],
+    [
+      { loggedIn: true, authMethod: 'api_key', apiProvider: 'gateway', email: 'MARKER' },
+      { authMethod: 'api_key', apiProvider: 'gateway' },
+    ],
+    [
+      { loggedIn: true, authMethod: 'MARKER', apiProvider: 'MARKER', apiKeySource: 'MARKER' },
+      { authMethod: 'other', apiProvider: 'other', apiKeySource: 'other' },
+    ],
+  ] as const;
+  for (const [input, facts] of shapes) {
+    const result = await claude(input);
+    expect(result.facts).toEqual(facts);
+    expect(JSON.stringify(result)).not.toContain('MARKER');
+  }
+  for (const invalid of [[], null])
+    expect(await claude(invalid)).toEqual({ login: 'unknown', reason: 'error' });
+});
+
+test('kills the child when stdout exceeds 65536 bytes', async () => {
+  const dir = scratch();
+  const command = path.join(dir, 'large');
+  const pidFile = path.join(dir, 'large-pid');
+  fs.writeFileSync(
+    command,
+    `#!/bin/sh\necho $$ > "${pidFile}"\nexec /usr/bin/head -c 100000 /dev/zero\n`,
+    { mode: 0o700 },
+  );
+  expect(
+    await checkLogin({
+      harness: 'claude',
+      expects: 'subscription',
+      env: { CLAUDE_CONFIG_DIR: dir },
+      cwd: dir,
+      command,
+    }),
+  ).toEqual({ login: 'unknown', reason: 'error' });
+  const pid = fs.readFileSync(pidFile, 'utf8').trim();
+  expect(
+    Bun.spawnSync(['/bin/ps', '-p', pid], { stdout: 'ignore', stderr: 'ignore' }).exitCode,
+  ).not.toBe(0);
 });

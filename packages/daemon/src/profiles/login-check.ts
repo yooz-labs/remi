@@ -133,7 +133,7 @@ export async function checkLogin(options: {
   const data = parsed as Record<string, unknown>;
   const authMethod = method(data['authMethod']);
   const apiProvider = provider(data['apiProvider']);
-  const hasSource = typeof data['apiKeySource'] === 'string';
+  const hasSource = Object.hasOwn(data, 'apiKeySource') && data['apiKeySource'] !== undefined;
   const apiKeySource = hasSource ? source(data['apiKeySource']) : undefined;
   const facts = { authMethod, apiProvider, ...(apiKeySource ? { apiKeySource } : {}) };
   if (
@@ -144,11 +144,13 @@ export async function checkLogin(options: {
   if (data['loggedIn'] !== true) return { login: 'signed_out', facts };
   if (expects === 'subscription') {
     if (apiKeySource) return { login: 'not_own_login', source: apiKeySource, facts };
-    return authMethod === 'claude.ai'
+    return authMethod === 'claude.ai' && apiProvider === 'firstParty'
       ? { login: 'signed_in', facts }
       : { login: 'not_own_login', source: 'other', facts };
   }
-  return (authMethod === 'api_key' || authMethod === 'api_key_helper') && hasSource
+  return (authMethod === 'api_key' || authMethod === 'api_key_helper') &&
+    hasSource &&
+    typeof data['apiKeySource'] === 'string'
     ? { login: 'signed_in', facts }
     : { login: 'not_own_login', source: 'other', facts };
 }

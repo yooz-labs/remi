@@ -21,7 +21,13 @@ export interface Profile {
   readonly revision: string;
 }
 export type Profiles =
-  | { readonly error: string }
+  | {
+      readonly error: string;
+      readonly rawSelection?: {
+        readonly machineDefault?: string;
+        readonly folders: readonly string[];
+      };
+    }
   | {
       readonly entries: Readonly<Record<string, Profile>>;
       readonly default?: string;
@@ -56,8 +62,7 @@ function table(value: unknown, key: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 function keys(value: Record<string, unknown>, allowed: ReadonlySet<string>, key: string): void {
-  for (const k of Object.keys(value))
-    if (!allowed.has(k)) throw new Error(`${key}.${k}: unknown key`);
+  for (const k of Object.keys(value)) if (!allowed.has(k)) throw new Error(`${key}: unknown key`);
 }
 function strings(value: unknown, key: string): string[] {
   if (!Array.isArray(value) || value.some((x) => typeof x !== 'string'))
@@ -100,10 +105,13 @@ export function parseProfiles(raw: unknown): Profiles {
   try {
     if (raw === undefined) return { entries: {}, notices: [] };
     const root = table(raw, 'profiles');
+    if (root['default'] !== undefined && typeof root['default'] !== 'string')
+      throw new Error('profiles.default: reserved for the built-in profile and machine default');
     const ids = Object.keys(root).filter((key) => key !== 'default');
     if (ids.length > 32) throw new Error('profiles: at most 32 profiles');
     const entries: Record<string, Profile> = Object.create(null);
     const folders = new Set<string>();
+    const harnessDirs = new Map<string, string>();
     const notices: string[] = [];
     for (const id of ids) {
       if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(id)) throw new Error('profiles: invalid profile id');
@@ -111,7 +119,8 @@ export function parseProfiles(raw: unknown): Profiles {
       const p = table(root[id], prefix);
       keys(p, PROFILE_KEYS, prefix);
       for (const key of LATER)
-        if (key in p) notices.push(`${prefix}.${key}: not used by this remi version`);
+        if (key in p && notices.length === 0)
+          notices.push('profiles: later settings are not used by this remi version');
       const labelError = validateProfileLabel(p['label']);
       if (labelError) throw new Error(`${prefix}.label: ${labelError}`);
       const harness = p['harness'];
@@ -151,11 +160,20 @@ export function parseProfiles(raw: unknown): Profiles {
         keys(h, new Set(['dir', 'expects']), `${prefix}.${name}`);
         if (typeof h['expects'] !== 'string' || !/^[a-z][a-z0-9_]{0,31}$/.test(h['expects']))
           throw new Error(`${prefix}.${name}.expects: expected a safe token`);
+        const dir =
+          h['dir'] === undefined
+            ? path.resolve(remiHome(), 'p', id, name)
+            : absolute(h['dir'], `${prefix}.${name}.dir`);
+        const key = `${prefix}.${name}.dir`;
+        if (dir === path.resolve(os.homedir(), name === 'claude' ? '.claude' : '.codex'))
+          throw new Error(
+            `${key}: This is the built-in default's directory; use the built-in default instead`,
+          );
+        const prior = harnessDirs.get(dir);
+        if (prior) throw new Error(`${key} uses the same directory as ${prior}`);
+        harnessDirs.set(dir, key);
         return {
-          dir:
-            h['dir'] === undefined
-              ? path.join(remiHome(), 'p', id, name)
-              : absolute(h['dir'], `${prefix}.${name}.dir`),
+          dir,
           expects: h['expects'],
         };
       };
@@ -196,6 +214,25 @@ export function parseProfiles(raw: unknown): Profiles {
       notices,
     };
   } catch (err) {
-    return { error: err instanceof Error ? err.message : 'profiles: invalid configuration' };
+    const result: Extract<Profiles, { error: string }> = {
+      error: err instanceof Error ? err.message : 'profiles: invalid configuration',
+    };
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      const root = raw as Record<string, unknown>;
+      const folders = Object.values(root).flatMap((value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+        const candidate = (value as Record<string, unknown>)['folders'];
+        return Array.isArray(candidate)
+          ? candidate.filter((v): v is string => typeof v === 'string')
+          : [];
+      });
+      Object.defineProperty(result, 'rawSelection', {
+        value: {
+          machineDefault: typeof root['default'] === 'string' ? root['default'] : undefined,
+          folders,
+        },
+      });
+    }
+    return result;
   }
 }

@@ -429,8 +429,15 @@ if (loadedConfig.removedRequireLocalAuth)
     'daemon.require_local_auth is retired and ignored (#873). Loopback clients must prove identity or present the local capability token when authentication is enabled.',
   );
 
-if ('notices' in remiConfig.profiles)
-  for (const notice of remiConfig.profiles.notices) console.error(notice);
+if (
+  'notices' in remiConfig.profiles &&
+  remiConfig.profiles.notices.length > 0 &&
+  process.env['REMI_SPAWNED_CHILD'] !== '1' &&
+  (parsedArgs.subcommand === undefined ||
+    parsedArgs.subcommand === 'serve' ||
+    parsedArgs.subcommand === 'config')
+)
+  process.stderr.write(`${remiConfig.profiles.notices[0]}\n`);
 
 if (parsedArgs.subcommand === 'profile') {
   process.exit(await runProfileCommand(parsedArgs.subcommandArgs, remiConfig.profiles));

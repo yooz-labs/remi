@@ -2,11 +2,12 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { PROFILE_USAGE } from '../cli/help.ts';
 import { CONFIG_PATH, parseConfigText } from '../config/config.ts';
 import { remiHome } from '../config/remi-home.ts';
 import { configWarnings } from './config-warnings.ts';
 import { checkLogin, codexUsesFileStore } from './login-check.ts';
-import type { Profile, Profiles } from './profile-config.ts';
+import { type Profile, type Profiles, parseProfiles } from './profile-config.ts';
 import { profileEnvironment } from './profile-env.ts';
 
 interface IO {
@@ -64,12 +65,7 @@ function argsOptions(
   return { positional, values, switches };
 }
 
-function add(
-  args: readonly string[],
-  configPath: string,
-  profiles: Exclude<Profiles, { error: string }>,
-  io: IO,
-): number {
+function add(args: readonly string[], configPath: string, io: IO): number {
   const opts = argsOptions(args);
   if (!opts || opts.positional.length !== 1 || Object.hasOwn(opts.values, '--harness')) {
     io.err('Usage: remi profile add <id> --label <text> [--claude] [--codex]');
@@ -81,25 +77,59 @@ function add(
   const harnesses = (['claude', 'codex'] as const).filter(
     (name) => opts.switches.has(`--${name}`) || opts.values[`--${name}-dir`] !== undefined,
   );
-  if (
-    !/^[a-z0-9][a-z0-9-]{0,31}$/.test(id) ||
-    id === 'default' ||
-    !label ||
-    !harnesses.length ||
-    !['subscription', 'api_key'].includes(expects) ||
-    Object.hasOwn(profiles.entries, id) ||
-    Object.keys(profiles.entries).length >= 32
-  ) {
-    io.err('Invalid profile, label, harness, expects, or duplicate profile id.');
+  if (!label || !harnesses.length || !['subscription', 'api_key'].includes(expects)) {
+    io.err(
+      !label
+        ? 'The --label option is required.'
+        : !harnesses.length
+          ? 'Select --claude or --codex.'
+          : 'The --expects option must be subscription or api_key.',
+    );
     return 1;
   }
-  const existing = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
-  let block = `\n${existing.endsWith('\n') || existing === '' ? '' : '\n'}[profiles.${id}]\nlabel = ${JSON.stringify(label)}\n`;
-  for (const name of harnesses)
-    block += `\n[profiles.${id}.${name}]\n${opts.values[`--${name}-dir`] !== undefined ? `dir = ${JSON.stringify(opts.values[`--${name}-dir`])}\n` : ''}expects = ${JSON.stringify(expects)}\n`;
-  const parent = path.dirname(configPath);
+  // Validate the id before interpolating it into TOML.
+  const idCheck = parseProfiles({ [id]: { label, claude: { expects } } });
+  if ('error' in idCheck) {
+    io.err(idCheck.error);
+    return 1;
+  }
+  let lock: string | undefined;
+  let lockFd: number | undefined;
   let temporary: string | undefined;
+  const created: string[] = [];
+  let createdParent: string | undefined;
+  let parent: string | undefined;
   try {
+    const destination = fs.existsSync(configPath) ? fs.realpathSync(configPath) : configPath;
+    parent = path.dirname(destination);
+    createdParent = fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+    lock = `${destination}.lock`;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      try {
+        lockFd = fs.openSync(lock, 'wx', 0o600);
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      }
+    }
+    if (lockFd === undefined) {
+      io.err('Another profile add is in progress. Try again.');
+      return 1;
+    }
+    const existing = fs.existsSync(destination) ? fs.readFileSync(destination, 'utf8') : '';
+    const current = parseConfigText(existing, destination).config.profiles;
+    if ('error' in current) {
+      io.err(current.error);
+      return 1;
+    }
+    if (Object.hasOwn(current.entries, id)) {
+      io.err(`Profile ${id} already exists.`);
+      return 1;
+    }
+    let block = `\n${existing.endsWith('\n') || existing === '' ? '' : '\n'}[profiles.${id}]\nlabel = ${JSON.stringify(label)}\n`;
+    for (const name of harnesses)
+      block += `\n[profiles.${id}.${name}]\n${opts.values[`--${name}-dir`] !== undefined ? `dir = ${JSON.stringify(opts.values[`--${name}-dir`])}\n` : ''}expects = ${JSON.stringify(expects)}\n`;
     const checked = parseConfigText(existing + block, configPath).config.profiles;
     if ('error' in checked) {
       io.err(checked.error);
@@ -113,8 +143,20 @@ function add(
     for (const name of harnesses) {
       const dir = profile[name]?.dir as string;
       if (opts.values[`--${name}-dir`] !== undefined) {
-        if (!fs.statSync(dir).isDirectory())
-          throw new Error('Adopted directory is not a directory.');
+        try {
+          if (!fs.statSync(dir).isDirectory()) {
+            io.err(`The --${name}-dir path is not a directory.`);
+            return 1;
+          }
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          io.err(
+            code === 'EACCES'
+              ? `Cannot access --${name}-dir.`
+              : `The --${name}-dir path does not exist or is not a directory.`,
+          );
+          return 1;
+        }
       } else if (fs.existsSync(dir) && fs.readdirSync(dir).length) {
         io.err(
           `The directory ${dir} already exists and is not empty. Adopt it with --claude-dir or --codex-dir, or delete it.`,
@@ -122,31 +164,73 @@ function add(
         return 1;
       }
     }
-    fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
     temporary = path.join(parent, `.config-${randomUUID()}.tmp`);
-    const mode = fs.existsSync(configPath) ? fs.statSync(configPath).mode & 0o777 : 0o600;
+    const mode = fs.existsSync(destination) ? fs.statSync(destination).mode & 0o777 : 0o600;
     const fd = fs.openSync(temporary, 'wx', mode);
     try {
+      fs.fchmodSync(fd, mode);
       fs.writeFileSync(fd, existing + block);
       fs.fsyncSync(fd);
     } finally {
       fs.closeSync(fd);
     }
-    for (const name of harnesses)
-      if (opts.values[`--${name}-dir`] === undefined)
-        fs.mkdirSync(profile[name]?.dir as string, { recursive: true, mode: 0o700 });
-    fs.renameSync(temporary, configPath);
+    for (const name of harnesses) {
+      if (opts.values[`--${name}-dir`] === undefined) {
+        const dir = profile[name]?.dir as string;
+        const first = fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+        if (first) {
+          let current = dir;
+          while (current.startsWith(first)) {
+            created.push(current);
+            if (current === first) break;
+            current = path.dirname(current);
+          }
+        }
+      }
+    }
+    fs.renameSync(temporary, destination);
     temporary = undefined;
+    created.length = 0;
     io.out(`Run remi profile login ${id}`);
     return 0;
-  } catch {
-    io.err('Could not add profile; check the config and directories.');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    io.err(
+      code === 'ENOENT'
+        ? 'A requested directory does not exist.'
+        : code === 'EACCES'
+          ? 'Permission denied while adding the profile.'
+          : code === 'ENOTDIR'
+            ? 'A requested path is not a directory.'
+            : 'Could not add profile; check the config and directories.',
+    );
     return 1;
   } finally {
     if (temporary) {
       try {
         fs.unlinkSync(temporary);
       } catch {}
+    }
+    for (const dir of created) {
+      try {
+        fs.rmdirSync(dir);
+      } catch {}
+    }
+    if (lockFd !== undefined && lock) {
+      fs.closeSync(lockFd);
+      fs.unlinkSync(lock);
+    }
+    if (createdParent && parent) {
+      let current = parent;
+      for (;;) {
+        try {
+          fs.rmdirSync(current);
+        } catch {
+          break;
+        }
+        if (current === createdParent) break;
+        current = path.dirname(current);
+      }
     }
   }
 }
@@ -179,13 +263,16 @@ async function runLogin(
       : profile.codex && !profile.claude
         ? 'codex'
         : undefined);
-  if ((selected !== 'claude' && selected !== 'codex') || !profile[selected]) {
+  if (selected !== 'claude' && selected !== 'codex') {
     io.err('Choose a configured harness with --harness claude|codex.');
     return 1;
   }
   const harness: Harness = selected;
   const spec = profile[harness];
-  if (!spec) return 1;
+  if (!spec) {
+    io.err('Choose a configured harness with --harness claude|codex.');
+    return 1;
+  }
   if (spec.expects !== 'subscription' && spec.expects !== 'api_key') {
     io.err(`Profile ${id} expects ${spec.expects}, which this build does not support.`);
     return 1;
@@ -239,7 +326,7 @@ export async function runProfileCommand(
   }
   const [verb, id, ...rest] = args;
   const cwd = paths.cwd ?? process.cwd();
-  if (verb === 'add') return add(args.slice(1), paths.configPath ?? CONFIG_PATH, profiles, io);
+  if (verb === 'add') return add(args.slice(1), paths.configPath ?? CONFIG_PATH, io);
   if (verb === 'ls' && args.length === 1) {
     io.out('default (built-in): your existing sign-ins; remi changes nothing');
     for (const [name, profile] of Object.entries(profiles.entries)) {
@@ -277,6 +364,10 @@ export async function runProfileCommand(
     }
     return 0;
   }
-  io.err('Usage: remi profile ls | add <id> | show <id> | login <id>');
+  if ((verb === 'show' || verb === 'login') && id) {
+    io.err(`Unknown profile ${id}. Run remi profile ls.`);
+    return 1;
+  }
+  io.err(PROFILE_USAGE);
   return 1;
 }
