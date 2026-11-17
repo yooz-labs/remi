@@ -78,6 +78,13 @@ test('each settings location and warning trigger is independently detected', () 
     ])
       fs.mkdirSync(dir, { recursive: true });
     const input = { managedDir, claudeDir, cwd, anthropicDir, expects: 'subscription' };
+    fs.writeFileSync(path.join(anthropicDir, 'active_config'), 'PRIVATE_VALUE');
+    expect(configWarnings(input)).toEqual([{ source: 'anthropic_profile', key: 'active_config' }]);
+    fs.unlinkSync(path.join(anthropicDir, 'active_config'));
+    fs.mkdirSync(path.join(anthropicDir, 'configs'));
+    fs.writeFileSync(path.join(anthropicDir, 'configs', 'active'), 'PRIVATE_VALUE');
+    expect(configWarnings(input)).toEqual([{ source: 'anthropic_profile', key: 'configs' }]);
+    fs.rmSync(path.join(anthropicDir, 'configs'), { recursive: true });
     const cases = [
       [
         path.join(managedDir, 'managed-settings.json'),

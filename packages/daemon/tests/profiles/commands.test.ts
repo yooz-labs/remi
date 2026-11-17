@@ -332,6 +332,26 @@ test('ls marks the machine default and show renders warnings without values', ()
   }
 });
 
+test('profile help is available through the real CLI', () => {
+  const f = fixture();
+  try {
+    const result = f.run('--help');
+    expect(result.code).toBe(0);
+    for (const option of [
+      '--label',
+      '--claude',
+      '--codex',
+      '--expects',
+      '--claude-dir',
+      '--codex-dir',
+      '--harness',
+    ])
+      expect(result.out).toContain(option);
+  } finally {
+    fs.rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
 test('concurrent adds do not lose either profile', async () => {
   const f = fixture();
   try {

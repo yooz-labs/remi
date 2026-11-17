@@ -295,6 +295,18 @@ test('broken profiles preserve plain selection and refuse raw mappings', () => {
     error:
       'This folder or machine default selects a profile, but [profiles] has an error: profiles.work.label',
   });
+  const sharedDir = parseProfiles({
+    one: { label: 'One', claude: { dir: '/shared', expects: 'subscription' } },
+    two: {
+      label: 'Two',
+      folders: ['/selected'],
+      codex: { dir: '/shared', expects: 'subscription' },
+    },
+  });
+  expect(resolveProfile({ profiles: sharedDir, cwd: '/selected' })).toEqual({
+    error:
+      'This folder or machine default selects a profile, but [profiles] has an error: profiles.two.codex.dir',
+  });
 });
 
 test('profile harness directories cannot share another sign-in', () => {

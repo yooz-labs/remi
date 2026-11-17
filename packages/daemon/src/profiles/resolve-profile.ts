@@ -35,7 +35,7 @@ export function resolveProfile(input: {
   if (selected?.id === 'default') return selected;
   if ('error' in profiles) {
     if (selected) return { error: profiles.error };
-    const key = profiles.error.split(':')[0];
+    const key = profiles.error.split(/[ :]/, 1)[0];
     const cwd = canonicalPath(input.cwd, input.realpath);
     const raw = profiles.rawSelection;
     const folderMatches = raw?.folders.some((folder) => {
