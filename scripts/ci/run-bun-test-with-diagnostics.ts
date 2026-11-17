@@ -728,12 +728,14 @@ export type OwnedGroupSnapshot = {
 const SNAPSHOT_MAX_MEMBERS = 20;
 const SNAPSHOT_MAX_ARGS_CHARS = 200;
 const SNAPSHOT_MAX_FAILURE_CHARS = 200;
-const SNAPSHOT_TIMEOUT_MS = 2_000;
-// procps (Linux) has `etimes` (seconds); BSD ps (macOS) has only `etime`
-// ([[dd-]hh:]mm:ss), so a failing first form falls through to the second.
-const SNAPSHOT_PS_COMMANDS: string[][] = [
-  ['ps', '-eo', 'pid=,ppid=,pgid=,stat=,etimes=,args='],
-  ['ps', '-eo', 'pid=,ppid=,pgid=,stat=,etime=,args='],
+/** One budget for the whole snapshot, all ps commands together. */
+const SNAPSHOT_BUDGET_MS = 2_000;
+// `-ww` (procps and BSD ps both accept it) keeps long command lines from being cut at the
+// terminal width. procps (Linux) has `etimes` (seconds); BSD ps (macOS) has only `etime`
+// ([[dd-]hh:]mm:ss), so a first form that fails fast falls through to the second.
+export const SNAPSHOT_PS_COMMANDS: string[][] = [
+  ['ps', '-ww', '-eo', 'pid=,ppid=,pgid=,stat=,etimes=,args='],
+  ['ps', '-ww', '-eo', 'pid=,ppid=,pgid=,stat=,etime=,args='],
 ];
 
 function parseElapsedSeconds(token: string): number | null {
@@ -748,9 +750,20 @@ function parseElapsedSeconds(token: string): number | null {
 
 function sanitizeArgs(args: string): string {
   // `ps -o args` prints the command line, never the environment, but a command
-  // line can still carry NAME=value pairs (tokens, passphrases): drop the values.
+  // line can still carry secrets: drop URL credentials, Authorization headers, the value of
+  // a secret-looking flag (`--token x` and `--token=x`) and every NAME=value value.
+  const quoted = '"[^"]*(?:"|$)|\'[^\']*(?:\'|$)|\\S+';
   const clean = args
-    .replace(/\b([A-Za-z_][A-Za-z0-9_]*)=\S+/g, '$1=<redacted>')
+    .replace(/(:\/\/)[^\s/@:]+(?::[^\s/@]*)?@/g, '$1<redacted>@')
+    .replace(/\b(Authorization:\s*)(?:(?:Bearer|Basic|Token)\s+)?\S+/gi, '$1<redacted>')
+    .replace(
+      new RegExp(
+        `(--?[\\w-]*(?:token|secret|pass(?:word|phrase)?|key|auth|cookie)[\\w-]*)([= ]+)(?:${quoted})`,
+        'gi',
+      ),
+      '$1$2<redacted>',
+    )
+    .replace(new RegExp(`\\b([A-Za-z_][A-Za-z0-9_]*)=(?:${quoted})`, 'g'), '$1=<redacted>')
     .replace(/[\u0000-\u001f\u007f]/g, '?');
   return clean.length > SNAPSHOT_MAX_ARGS_CHARS
     ? `${clean.slice(0, SNAPSHOT_MAX_ARGS_CHARS)}...`
@@ -781,45 +794,90 @@ function describeFailure(text: string): string {
     : flat;
 }
 
+type PsOutcome =
+  | { kind: 'ok'; stdout: string }
+  | { kind: 'failed'; text: string }
+  | { kind: 'timeout' };
+
+async function runPs(command: string[], budgetMs: number): Promise<PsOutcome> {
+  let proc: ReturnType<typeof Bun.spawn> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    proc = Bun.spawn(command, { stdout: 'pipe', stderr: 'pipe', stdin: 'ignore' });
+    const spawned = proc;
+    const work = (async (): Promise<PsOutcome> => {
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(spawned.stdout as ReadableStream).text(),
+        new Response(spawned.stderr as ReadableStream).text(),
+        spawned.exited,
+      ]);
+      if (code === 0) return { kind: 'ok', stdout };
+      const detail = describeFailure(stderr);
+      return {
+        kind: 'failed',
+        text: `${command.join(' ')} exited ${code ?? 'by signal'}${detail ? `: ${detail}` : ''}`,
+      };
+    })();
+    work.catch(() => undefined);
+    const expired = new Promise<PsOutcome>((resolve) => {
+      timer = setTimeout(() => resolve({ kind: 'timeout' }), Math.max(1, budgetMs));
+    });
+    const outcome = await Promise.race([work, expired]);
+    // A hung ps is killed and abandoned; its pipes are never awaited again.
+    if (outcome.kind === 'timeout') proc.kill('SIGKILL');
+    return outcome;
+  } catch (error) {
+    return {
+      kind: 'failed',
+      text: `${command.join(' ')} failed: ${describeFailure(error instanceof Error ? error.message : String(error))}`,
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /**
- * Read-only, bounded and never throwing: lists what is still in the process
- * group the wrapper owns, so a "left an owned descendant" failure names the
+ * Read-only, never throwing and bounded by 2 seconds in total (every ps command shares one
+ * budget; a timeout ends the snapshot instead of trying the next form): lists what is still
+ * in the process group the wrapper owns, so a "left an owned descendant" failure names the
  * survivor. `psCommands` exists so a test can exercise the failure paths.
  */
-export function snapshotOwnedGroup(
+export async function snapshotOwnedGroup(
   pgid: number,
   psCommands: string[][] = SNAPSHOT_PS_COMMANDS,
-): OwnedGroupSnapshot {
+): Promise<OwnedGroupSnapshot> {
   const failures: string[] = [];
+  const deadline = Date.now() + SNAPSHOT_BUDGET_MS;
+  const unavailable = (reason: string): OwnedGroupSnapshot => ({
+    pgid,
+    members: [],
+    omitted: 0,
+    unavailable: reason,
+  });
   for (const command of psCommands) {
-    try {
-      const result = Bun.spawnSync(command, {
-        stdout: 'pipe',
-        stderr: 'pipe',
-        stdin: 'ignore',
-        timeout: SNAPSHOT_TIMEOUT_MS,
-      });
-      if (result.exitCode !== 0) {
-        const detail = describeFailure(result.stderr.toString('utf8'));
-        failures.push(
-          `${command.join(' ')} exited ${result.exitCode ?? 'by signal'}${detail ? `: ${detail}` : ''}`,
-        );
-        continue;
-      }
-      const members = parseGroupMembers(result.stdout.toString('utf8'), pgid);
-      return {
-        pgid,
-        members: members.slice(0, SNAPSHOT_MAX_MEMBERS),
-        omitted: Math.max(0, members.length - SNAPSHOT_MAX_MEMBERS),
-        unavailable: null,
-      };
-    } catch (error) {
-      failures.push(
-        `${command.join(' ')} failed: ${describeFailure(error instanceof Error ? error.message : String(error))}`,
-      );
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      failures.push(`timed out after ${SNAPSHOT_BUDGET_MS} ms`);
+      return unavailable(failures.join('; '));
     }
+    const outcome = await runPs(command, remaining);
+    if (outcome.kind === 'timeout') {
+      failures.push(`${command.join(' ')} timed out after ${SNAPSHOT_BUDGET_MS} ms in total`);
+      return unavailable(failures.join('; '));
+    }
+    if (outcome.kind === 'failed') {
+      failures.push(outcome.text);
+      continue;
+    }
+    const members = parseGroupMembers(outcome.stdout, pgid);
+    return {
+      pgid,
+      members: members.slice(0, SNAPSHOT_MAX_MEMBERS),
+      omitted: Math.max(0, members.length - SNAPSHOT_MAX_MEMBERS),
+      unavailable: null,
+    };
   }
-  return { pgid, members: [], omitted: 0, unavailable: failures.join('; ') || 'no ps command' };
+  return unavailable(failures.join('; ') || 'no ps command');
 }
 
 export function formatGroupSnapshot(snapshot: OwnedGroupSnapshot): string {
@@ -1183,9 +1241,9 @@ export async function runChild(command: string[], options: RunOptions = {}): Pro
     await finishLoggingStageChannel();
     if (diagnosticWriteError) throw diagnosticWriteError;
     if (options.timeoutMs !== undefined && groupAlive(child.pid)) {
-      // Diagnostics only: look before cleanup kills the survivors; the check,
-      // the throw and the timing are unchanged.
-      const snapshot = snapshotOwnedGroup(child.pid);
+      // Diagnostics only: look before cleanup kills the survivors. The check and
+      // the throw are unchanged; the look adds one ps run, bounded by 2 seconds in total.
+      const snapshot = await snapshotOwnedGroup(child.pid);
       await startCleanup('SIGTERM');
       throw new OwnedDescendantError(snapshot);
     }
