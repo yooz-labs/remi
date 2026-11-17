@@ -48,10 +48,10 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Item | Limit | Used | Resets | Notes |
 |---|---|---|---|---|
-| Agents today | 100 | 3 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
+| Agents today | 100 | 9 | daily | owner CP0 value (J1b option 1, 2026-11-14); every agent dispatch incl. reviewers, lead, advisor; at the limit: stop and ask |
 | Codex Luna today | 24 | 2 | daily | owner CP0 value; Luna implementers, fix rounds, DV |
 | Codex Terra today | 16 | 0 | daily | owner CP0 value; Terra implementers and fix rounds |
-| Claude Sonnet today | 44 | 0 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
+| Claude Sonnet today | 44 | 6 | daily | owner CP0 value; Claude Sonnet implementers and every reviewer |
 | Claude Opus today | 16 | 1 | daily | owner CP0 value; Opus implementers, lead wakes, advisor consults |
 | Advisor consults | 20 | 0 | never | owner CP0 value; lead wakes and advisor consults, whole plan; never --over |
 | Fable consults | 1 | 0 | never | copied; only if the owner asks; never --over |
@@ -66,14 +66,14 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | ID | Title | Wave | Tier | Needs | Slot | State | Depends | PR | Started | Timebox | Next |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| G0 | [G0 password-on-wake](cards/G0-password-on-wake.md) | - | worker | - | codex-luna | active | - | - | 2026-11-17T06:56 | 3h | dispatch now; note only |
-| G1 | [G1 power readings](cards/G1-power-readings.md) | - | worker | - | codex-luna | active | - | - | 2026-11-17T06:56 | 1d | dispatch now; macOS host |
+| G0 | [G0 password-on-wake](cards/G0-password-on-wake.md) | - | worker | - | codex-luna | done | - | 1804 | 2026-11-17T06:56 | 3h | dispatch now; note only |
+| G1 | [G1 power readings](cards/G1-power-readings.md) | - | worker | - | claude-sonnet | review | - | 1806 | 2026-11-17T06:56 | 1d | dispatch now; macOS host |
 | W1 | [W1 lease and watchdog](cards/W1-lease-and-watchdog.md) | - | worker-hard | - | claude-opus | active | - | - | 2026-11-17T06:56 | 1d | dispatch now; reviews add privilege and failsafe lenses |
-| L2-POL | [L2-POL level 2 policy](cards/L2-POL-level2-policy.md) | - | worker-hard | - | - | todo | - | - | - | 1d | dispatch when a worker-hard slot is free; owner answers Q1-Q3, Q9, Q10 are all recorded (merge gate item 8 satisfied) |
+| L2-POL | [L2-POL level 2 policy](cards/L2-POL-level2-policy.md) | - | worker-hard | - | - | todo | - | - | - | 1d | hold until the lead verifies that every limit is a config key with a default (owner rule); then dispatch when a worker-hard slot is free; merge gate item 8 answers recorded (Q1-Q3, Q9, Q10, Q12-Q14) |
 | OG-CAP | [Owner gate: MacBook captures](owner-gates.md) | - | - | - | - | owner | - | - | - | 30m | rule: owner runs OG-CAP section of owner-gates.md; seven folders under artifacts/awake-level2-2026-11/captures/OG-CAP |
-| G2 | [G2 level 1 battery floor](cards/G2-level1-battery-floor.md) | - | worker-hard | - | - | todo | G1,OG-CAP | - | - | 1d | after G1 merged and OG-CAP; merge only after Q2 and Q4 |
+| G2 | [G2 level 1 battery floor](cards/G2-level1-battery-floor.md) | - | worker-hard | - | - | todo | G1,OG-CAP | - | - | 1d | after G1 merged and OG-CAP; keys per plan section 6 (Q15 a, Q16 b: mechanism bounds also settings: the lead reconciles) |
 | OG-G2 | [Owner gate: battery floor on the MacBook](owner-gates.md) | - | - | - | - | blocked | G2 | - | - | 30m | rule: set owner when G2 is done; owner-gates.md OG-G2 |
-| CP-L2 | [Checkpoint before level 2](plan.md) | - | - | - | - | blocked | G0,G1,W1,L2-POL,G2,OG-CAP | - | - | - | wake the lead when G0, G1, W1, L2-POL, G2 and OG-CAP are done (Q1-Q3, Q9, Q10 closed); CP-L2: decide line, anticipation pass, ask go |
+| CP-L2 | [Checkpoint before level 2](plan.md) | - | - | - | - | blocked | G0,G1,W1,L2-POL,G2,OG-CAP | - | - | - | wake the lead when G0, G1, W1, L2-POL, G2 and OG-CAP are done (Q1-Q3, Q9, Q10, Q12-Q14 closed); CP-L2: decide line, anticipation pass, ask go |
 | L2-CORE | [L2-CORE switch and controller](cards/L2-CORE-switch-and-controller.md) | - | worker-hard | - | - | todo | CP-L2 | - | - | 1.5d | after CP-L2 go |
 | L2-HUB | [L2-HUB config and hub](cards/L2-HUB-config-and-hub.md) | - | worker-hard | - | - | todo | L2-CORE | - | - | 1.5d | after L2-CORE |
 | L2-CLI | [L2-CLI keep-awake command](cards/L2-CLI-keep-awake-command.md) | - | worker-hard | - | - | todo | L2-HUB | - | - | 1d | after L2-HUB and only when gh pr view 1798 prints MERGED |
@@ -97,6 +97,11 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 | Q9 | - | Q9: After a level 2 period ends, what re-arms the automatic start? (a) only remi keep-awake arm; (b) also a clean hub restart; (c) natural ends re-arm, only safety reverts latch | (a) only arm (Recommended) / (b) arm or clean restart / (c) natural ends re-arm | none | 2026-11-18T12:00 | answered | (a) only arm (owner, 2026-11-17T07:06-08:00) |
 | Q10 | - | Q10: Extra condition for automatic starts? (a) none; (b) a phone or web client connected to the hub in the last 30 minutes; (c) only on AC power | (a) none, if Q9 is (a) (Recommended) / (b) recent remote client / (c) AC only | none | 2026-11-18T12:00 | answered | (a) none (owner, 2026-11-17T07:06-08:00) |
 | Q11 | - | Q11: Tell the person when an automatic period starts and ends? (a) hub log and status now, a phone push with L2-APP; (b) log and status only | (a) log, status, then push (Recommended) / (b) log and status only | none | 2026-11-18T12:00 | answered | (a) (owner, 2026-11-17T07:06-08:00) |
+| Q12 | - | Q12: When does a new hub come up armed? (a) never, arm after every restart; (b) only after a clean exit with no lease left, never after a crash; (c) always | (a) never / (b) only after a clean exit (Recommended) / (c) always | none | 2026-11-18T12:00 | answered | (b) clean exit only (owner, 2026-11-17T08:43-08:00) |
+| Q13 | - | Q13: Should automatic start and resume need the lid open for the whole dwell (a running level 2 stays on when the lid closes; explicit start unaffected)? | Yes (Recommended) / No | none | 2026-11-18T12:00 | answered | Yes (owner, 2026-11-17T08:43-08:00) |
+| Q14 | - | Q14: Period limits under pause and resume: (a) 3 h longest run then pause, 12 h on-time per 24 h; (b) only the 12 h per 24 h cap; (c) either limit disarms | (a) run limit and daily cap (Recommended) / (b) daily cap only / (c) limits disarm | none | 2026-11-18T12:00 | answered | (a) with every limit a setting (owner, 2026-11-17T08:43-08:00) |
+| Q15 | - | Q15: Every former maximum and the 5-point gap are now warnings. Keep any hard limit? (a) none; (b) refuse revert battery below 10 percent; (c) refuse a heartbeat above 300 s | (a) none (Recommended) / (b) refuse revert below 10 / (c) refuse heartbeat above 300 s | none | 2026-11-18T12:00 | answered | (a) none (owner, 2026-11-17T08:51-08:00) |
+| Q16 | - | Q16: Keep mechanism bounds (subprocess deadlines, size caps, retry backoff, shutdown budget) as named constants rather than settings? (a) named constants; (b) settings too | (a) named constants (Recommended) / (b) settings too | none | 2026-11-18T12:00 | answered | (b) settings too (owner, 2026-11-17T08:51-08:00) |
 
 ## Proposals
 
@@ -107,6 +112,12 @@ In Steps and Questions, the first column holds each row's identifier (ID); in St
 
 | Agent | Role | Slot | Model | Step | Started | State |
 |---|---|---|---|---|---|---|
-| G0-1 | implementer | codex-luna | gpt-6-luna max | G0 | 2026-11-17T06:56 | running |
-| G1-1 | implementer | codex-luna | gpt-6-luna max | G1 | 2026-11-17T06:56 | running |
+| G0-1 | implementer | codex-luna | gpt-6-luna max | G0 | 2026-11-17T06:56 | done |
+| G1-1 | implementer | codex-luna | gpt-6-luna max | G1 | 2026-11-17T06:56 | stopped-incomplete |
 | W1-1 | implementer | claude-opus | opus (ad62c17fc6af47519) | W1 | 2026-11-17T06:56 | running |
+| G1-2 | implementer (redispatch on a Claude slot) | claude-sonnet | sonnet high | G1 | 2026-11-17T07:08 | done |
+| RV-G0 | reviewer docs | claude-sonnet | sonnet xhigh | G0 PR1804 | 2026-11-17T07:12 | done |
+| RV-G1-contract | reviewer contract | claude-sonnet | sonnet xhigh | G1 PR1806 | 2026-11-17T07:20 | done |
+| RV-G1-verification | reviewer verification | claude-sonnet | sonnet xhigh | G1 PR1806 | 2026-11-17T07:20 | done |
+| FX-G0 | fix round 1 (PR1804) | claude-sonnet | sonnet high (ad42c5d0050dee321) | G0 PR1804 | 2026-11-17T07:25 | done |
+| FX-G1 | fix round 1 (PR1806) | claude-sonnet | sonnet high (a85bfd9e9ecd1e4d6, resumed) | G1 PR1806 | 2026-11-17T07:35 | running |
