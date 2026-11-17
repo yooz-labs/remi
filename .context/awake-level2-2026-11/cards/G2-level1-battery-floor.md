@@ -4,7 +4,7 @@ Status: ready
 Tier: worker-hard
 Timebox: M, 1 day; escalate at 2 days or two failed approaches
 Needs: none (no Xcode, no simulator); macOS host (live readers and the real-daemon smoke run only on macOS)
-Depends: G1 (its runner and folder), OG-CAP (the MacBook battery captures); the merge also waits for the owner's answers to Q2 and Q4 (plan section 6)
+Depends: G1 (its runner and folder), OG-CAP (the MacBook battery captures) (the owner answered Q2 and Q4 on 2026-11-17, as this card implements them)
 Branch: `feature/issue-1773-battery-floor` off `origin/develop` (after G1 merged)
 Worktree: `/Volumes/S1/worktrees/remi/awake-g2` (the manager creates it with `git worktree add --no-track -b` and runs `bun install`)
 Plan: plan.md section 2 (G2); ADR 0050 owner decisions 3 and 8, the table row `level1_battery_floor_percent`, "Battery, thermal, duration and display inputs"
@@ -27,7 +27,7 @@ What the code does today (`develop` `bbcec7d6`, checked by the lead on 2026-11-1
 Facts the lead read on this Mac (Mac16,11, macOS 27.2) on 2026-11-17, read-only: `pmset -g batt` prints only `Now drawing from 'AC Power'`; `ioreg -r -c AppleSmartBattery -d 1` lists an `AppleSmartBattery` node even here, with `"BatteryInstalled" = No`, `"ExternalConnected" = Yes`, `"CurrentCapacity" = 0` and `"MaxCapacity" = 0` (so the node's presence does not mean a battery).
 The laptop shapes come from OG-CAP: `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/captures/OG-CAP/` (one folder per state, see `owner-gates.md` OG-CAP).
 
-Owner questions this card implements as recommended (plan section 6; a different answer is a fix round before merge): Q2, the floor applies only on battery power (decision 3 is titled "Level 1 on battery"); Q4, an unknown `[awake]` key keeps stopping config load.
+Owner answers of 2026-11-17 this card implements (plan section 6): Q2, the floor applies only on battery power (decision 3 is titled "Level 1 on battery"); Q4, an unknown `[awake]` key keeps stopping config load.
 Lead decision under owner decision 8: the read cadence is a key, `battery_check_seconds`.
 
 ## Scope
