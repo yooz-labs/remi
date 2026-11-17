@@ -1,0 +1,2 @@
+com.apple.system.thermalpressurelevel 0
+com.apple.system.thermalpressurelevel 0
