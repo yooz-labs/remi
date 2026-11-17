@@ -16,6 +16,7 @@ const SUBCOMMAND_LIST = [
   'code',
   'pair',
   'devices',
+  'profile',
   'config',
   'keygen',
   'export-key',
@@ -63,6 +64,7 @@ const SUBCOMMANDS_WITH_POSITIONAL_ARG: ReadonlySet<Subcommand> = new Set<Subcomm
 const SUBCOMMANDS_WITH_ARG_LIST: ReadonlySet<Subcommand> = new Set<Subcommand>([
   'model',
   'devices',
+  'profile',
 ]);
 
 /** Auto-approve switches removed in #1125 (ADR 0030). Accepted and ignored. */
@@ -451,7 +453,9 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
         const OWN_FLAGS: ReadonlySet<string> = new Set(['--all']);
         while (
           args[i + 1] &&
-          (!(args[i + 1] as string).startsWith('-') || OWN_FLAGS.has(args[i + 1] as string))
+          (subcommand === 'profile'
+            ? !['--help', '-h', '--version', '-v'].includes(args[i + 1] as string)
+            : !(args[i + 1] as string).startsWith('-') || OWN_FLAGS.has(args[i + 1] as string))
         ) {
           subcommandArgs.push(args[i + 1] as string);
           i++;
