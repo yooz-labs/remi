@@ -2198,3 +2198,126 @@ describe('level 2 minimum interval after an idle return (documented)', () => {
     expect(sim.enables.map((e) => e.t)).toEqual([0, idleAt + 600]);
   });
 });
+
+describe('level 2 delta review fixes', () => {
+  /** On through an explicit start with the switch's answers held, then a battery pause. */
+  const revertingSim = (options: SimOptions = {}) => {
+    const sim = new Sim({ ...options, holdAcks: true });
+    sim.start();
+    sim.ackEnabled();
+    sim.advance(30);
+    sim.beat({ battery: battery(20) });
+    expect(label(sim.state)).toBe('reverting:battery-low');
+    return sim;
+  };
+
+  test('hub-exit while reverting emits one disable, and a failed revert is still retried', () => {
+    const sim = revertingSim();
+    const effects = sim.send({ type: 'hub-exit' });
+    expect(ofType(effects, 'disable')).toEqual([{ type: 'disable', reason: 'hub-exit' }]);
+    sim.send({ type: 'disable-failed' });
+    expect(sim.state.name).toBe('reverting');
+    sim.advance(30);
+    expect(ofType(sim.beat({ battery: battery(20) }), 'disable')).toHaveLength(1);
+    expect(level2Persisted(sim.state).cleanExit).toBe(false);
+  });
+
+  test('heartbeat-failed while reverting trips a breaker of 1: the revert ends disarmed', () => {
+    const sim = revertingSim({ settings: { level2_breaker_failures: 1 } });
+    expect(sim.state.target).toEqual({ name: 'paused', reason: 'battery-low' });
+    sim.send({ type: 'heartbeat-failed' });
+    expect(sim.state.target).toEqual({ name: 'disarmed', reason: 'breaker' });
+    sim.ackDisabled();
+    expect(label(sim.state)).toBe('disarmed:breaker');
+  });
+
+  test('enable-failed outside starting changes nothing (while reverting and while on)', () => {
+    const reverting = new Sim({ holdAcks: true });
+    reverting.start();
+    reverting.advance(8);
+    reverting.beat();
+    expect(label(reverting.state)).toBe('reverting:enable-timeout');
+    const before = reverting.state;
+    const effects = reverting.send({ type: 'enable-failed', reason: 'switch-failed' });
+    expect(effects).toEqual([]);
+    expect(label(reverting.state)).toBe('reverting:enable-timeout');
+    expect(reverting.state.run).toEqual(before.run);
+    expect(reverting.state.target).toEqual(before.target);
+
+    const on = new Sim({ holdAcks: true });
+    on.start();
+    on.ackEnabled();
+    const run = on.state.run;
+    expect(on.send({ type: 'enable-failed', reason: 'switch-failed' })).toEqual([]);
+    expect(on.state.name).toBe('on');
+    expect(on.state.run).toEqual(run);
+  });
+
+  test('arm while reverting toward disarmed clears the persisted failures and resumes', () => {
+    const sim = new Sim({ holdAcks: true, settings: { level2_resume_dwell_seconds: 0 } });
+    sim.beat();
+    sim.ackEnabled();
+    sim.send({ type: 'heartbeat-failed' });
+    sim.send({ type: 'stop' });
+    expect(sim.state.target).toEqual({ name: 'disarmed', reason: 'stopped' });
+    expect(level2Persisted(sim.state)).toMatchObject({ resumes: [W0], failures: [W0] });
+    sim.send({ type: 'arm' });
+    expect(sim.state.target).toEqual({ name: 'armed', reason: null });
+    expect(level2Persisted(sim.state)).toMatchObject({ resumes: [], failures: [] });
+  });
+
+  test('stop and arm are refused on disabled', () => {
+    const off = new Sim({ settings: { level2: false } });
+    expect(off.send({ type: 'stop' })).toEqual([
+      { type: 'refused', event: 'stop', reason: 'disabled' },
+    ]);
+    expect(off.send({ type: 'arm' })).toEqual([
+      { type: 'refused', event: 'arm', reason: 'disabled' },
+    ]);
+    expect(off.state.name).toBe('disabled');
+  });
+
+  test('the enable timeout counts from the enable, also late on the monotonic clock', () => {
+    const sim = new Sim({ holdAcks: true });
+    sim.t = 1_000_000;
+    sim.census(IDLE);
+    sim.start();
+    expect(sim.state.name).toBe('starting');
+    sim.advance(1);
+    sim.beat();
+    expect(sim.state.name).toBe('starting');
+    sim.advance(6);
+    sim.beat();
+    expect(sim.state.name).toBe('starting');
+    sim.advance(1);
+    sim.beat();
+    expect(label(sim.state)).toBe('reverting:enable-timeout');
+  });
+
+  test.each([
+    // The monotonic clock jumps 300 s while the wall clock stands still.
+    { clock: 'monotonic', mono: 300, wall: 0 },
+    // The wall clock jumps 300 s while the monotonic clock moves 60 s.
+    { clock: 'wall', mono: 60, wall: 300 },
+  ])('a gap on the $clock clock alone restarts the dwell', ({ mono, wall }) => {
+    const sim = new Sim();
+    sim.beat();
+    sim.advance(60);
+    sim.beat();
+    expect(label(sim.state)).toBe('paused:dwell');
+    // Clear since 0: without the gap rule this beat (at 120 s or later) would turn it on.
+    sim.advance(mono);
+    sim.wallShift += wall - mono;
+    sim.beat();
+    expect(label(sim.state)).toBe('paused:dwell');
+    expect(sim.enables).toEqual([]);
+
+    const control = new Sim();
+    control.beat();
+    control.advance(60);
+    control.beat();
+    control.advance(60);
+    control.beat();
+    expect(control.state.name).toBe('on');
+  });
+});
