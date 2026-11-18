@@ -80,11 +80,15 @@ test('real download host protects an inactive adopted directory inside the proje
     const configured = profiles;
     profiles = parseProfiles({});
     host.beginSession(id, f.files.work);
-    profiles = configured;
     host.bindSession(id, runtime);
     host.afterClaudeCommit(id, f.binding().harnessSessionId, true);
     host.started(id);
+    const before = host.contextFor(id);
+    expect(before).not.toBeNull();
+    expect(before?.protectedRootPaths).not.toContain(inactive);
+    profiles = configured;
     const context = host.contextFor(id);
+    expect(context).not.toBe(before);
     expect(context?.protectedRootPaths).toContain(inactive);
     f.setContext(context);
     const peer = await f.client();

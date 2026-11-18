@@ -5,8 +5,7 @@ import type { Profiles } from './profile-config.ts';
 
 const cache = new Map<string, { signature: string; profiles: Profiles }>();
 const failures = new Set<string>();
-const failureMessage =
-  '[Profiles] Could not read or parse configuration; retaining last good profiles';
+const failureMessage = '[Profiles] Could not read or parse configuration';
 
 /** Re-read changed configuration without putting configuration contents in logs. */
 export function currentProfiles(configPath = CONFIG_PATH): Profiles {

@@ -29,7 +29,7 @@ The hub discovers external Claude transcripts in the built-in root and every con
 
 A session's working directory is listed as its project path, as for any session, also when it is a profile's own directory; remi withholds only the paths it derives from a profile.
 
-A Claude profile session registers the status line in its own `settings.json` only when there is no existing `statusLine`; a scratch `REMI_HOME` permits registration only inside that home. The built-in default keeps its existing override behavior. Downloads protect configured profiles' Claude and Codex directories, including inactive profiles; inactive roots are non-required and may be absent until first seen, after which their presence is sticky for that host. Selected roots remain required.
+A Claude profile session registers the status line in its own `settings.json` only when the existing `statusLine` is falsy or absent; a scratch `REMI_HOME` permits registration only inside that home. The built-in default keeps its existing override behavior. Downloads protect configured profiles' Claude and Codex directories, including inactive profiles; inactive roots are non-required and may be absent until first seen, after which their presence is sticky for that host. Selected roots remain required.
 
 Until P2B adds visibility controls, every configured profile's external transcripts are listed to every client. P2A and P2B must ship in the same release. Profile labels on session-list entries and remote selection remain for P2B.
 
