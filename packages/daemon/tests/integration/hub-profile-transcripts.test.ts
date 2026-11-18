@@ -41,7 +41,7 @@ test('hub discovers and loads both profile transcripts without exposing profile 
     exitedAt: new Date().toISOString(),
     exitCode: 0,
   });
-  const hub = await spawnHub(dirs, { PATH: '/opt/homebrew/bin:/usr/bin:/bin' });
+  const hub = await spawnHub(dirs, { PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin` });
   const { ws, received, raw } = await connectAndHelloRaw(hub.port);
   try {
     const list = createSessionListRequest(true);

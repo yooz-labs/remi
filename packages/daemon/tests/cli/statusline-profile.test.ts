@@ -56,7 +56,7 @@ test('targets a profile safely and preserves existing settings', () => {
         model: { display_name: 'Fixture' },
         context_window: { used_percentage: 42 },
       }),
-      env: { PATH: '/opt/homebrew/bin:/usr/bin:/bin', REMI_PORT: '19999' },
+      env: { PATH: process.env['PATH'], REMI_PORT: '19999' },
       encoding: 'utf8',
     });
     expect(result.status).toBe(0);
