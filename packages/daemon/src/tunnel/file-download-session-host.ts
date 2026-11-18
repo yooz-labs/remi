@@ -19,6 +19,16 @@ export interface DownloadProtectedRoot {
   readonly required: boolean;
 }
 
+function mergeRoots(roots: readonly DownloadProtectedRoot[]): DownloadProtectedRoot[] {
+  const unique = new Map<string, DownloadProtectedRoot>();
+  for (const root of roots)
+    unique.set(root.pathname, {
+      pathname: root.pathname,
+      required: root.required || (unique.get(root.pathname)?.required ?? false),
+    });
+  return [...unique.values()];
+}
+
 /** Only known launch environment/default paths; no installed settings or credential reads. */
 export function downloadProtectionRoots(options: {
   readonly home: string;
@@ -42,13 +52,7 @@ export function downloadProtectionRoots(options: {
   for (const override of [options.claudeConfigDirectory, options.codexHome])
     if (override)
       roots.push({ pathname: path.resolve(options.workingDirectory, override), required: true });
-  const unique = new Map<string, DownloadProtectedRoot>();
-  for (const root of roots)
-    unique.set(root.pathname, {
-      pathname: root.pathname,
-      required: root.required || (unique.get(root.pathname)?.required ?? false),
-    });
-  return [...unique.values()];
+  return mergeRoots(roots);
 }
 
 /** Select the protected roots from the same profile used for the agent launch. */
@@ -84,18 +88,18 @@ export function launchDownloadRoots(
   const { profile, env, configuredProfiles, ...base } = launch;
   return (workingDirectory) => {
     const roots = profileDownloadProtectionRoots({ ...base, workingDirectory }, profile, env);
-    const unique = new Map(roots.map((root) => [root.pathname, root]));
+    const inactive: DownloadProtectedRoot[] = [];
     const profiles = configuredProfiles?.();
     if (profiles && 'entries' in profiles) {
       for (const entry of Object.values(profiles.entries)) {
         for (const harness of [entry.claude, entry.codex]) {
           if (!harness) continue;
           const pathname = path.resolve(harness.dir);
-          if (!unique.has(pathname)) unique.set(pathname, { pathname, required: false });
+          inactive.push({ pathname, required: false });
         }
       }
     }
-    return [...unique.values()];
+    return mergeRoots([...roots, ...inactive]);
   };
 }
 
@@ -184,7 +188,10 @@ export class FileDownloadSessionHost {
       id,
       project: workingDirectory,
       rootChoices: Object.freeze(
-        this.host.rootsFor(workingDirectory).map((root) => Object.freeze({ ...root })),
+        this.host
+          .rootsFor(workingDirectory)
+          .filter((root) => root.required)
+          .map((root) => Object.freeze({ ...root })),
       ),
       startup,
       finishStartup,
@@ -335,8 +342,18 @@ export class FileDownloadSessionHost {
     try {
       const present: DownloadProtectedRoot[] = [];
       const metadata: string[] = [];
-      for (const root of record.rootChoices) {
+      const choices = mergeRoots([...record.rootChoices, ...this.host.rootsFor(record.project)]);
+      for (const choice of choices) {
+        let root = choice;
+        if (!choice.required) {
+          try {
+            root = { ...choice, pathname: fs.realpathSync(choice.pathname) };
+          } catch {
+            if (this.seenRoots.has(choice.pathname)) throw new Error('Unavailable');
+          }
+        }
         const value = this.rootMetadata(root);
+        if (value !== null && !choice.required) this.seenRoots.add(choice.pathname);
         if (value !== null) {
           present.push(root);
           metadata.push(value);

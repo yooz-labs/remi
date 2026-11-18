@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { HarnessSession } from '../../src/harness/types.ts';
+import { currentProfiles } from '../../src/profiles/current-profiles.ts';
 import { parseProfiles } from '../../src/profiles/profile-config.ts';
 import {
   FileDownloadSessionHost,
@@ -53,7 +54,7 @@ test('real download host protects an inactive adopted directory inside the proje
   fs.mkdirSync(selected);
   fs.writeFileSync(path.join(inactive, 'private.txt'), 'private fixture');
   f.write('public.txt', 'public fixture');
-  const profiles = parseProfiles({
+  let profiles = parseProfiles({
     inactive: { label: 'Inactive', claude: { dir: inactive, expects: 'subscription' } },
   });
   const runtime = { pty: f.base.pty } as HarnessSession;
@@ -76,7 +77,10 @@ test('real download host protects an inactive adopted directory inside the proje
   const id = f.sessionId();
   try {
     expect(await host.open(f.base.trust)).toBe(true);
+    const configured = profiles;
+    profiles = parseProfiles({});
     host.beginSession(id, f.files.work);
+    profiles = configured;
     host.bindSession(id, runtime);
     host.afterClaudeCommit(id, f.binding().harnessSessionId, true);
     host.started(id);
@@ -85,6 +89,67 @@ test('real download host protects an inactive adopted directory inside the proje
     f.setContext(context);
     const peer = await f.client();
     expect(await peer.submit(peer.begin('inactive-profile/private.txt'))).toMatchObject({
+      type: 'file_fetch_refused',
+      code: 'unavailable',
+    });
+    const accepted = await peer.submit(peer.begin('public.txt'));
+    expect(accepted.type).toBe('file_fetch_accepted');
+    if (accepted.type === 'file_fetch_accepted') await peer.submit(peer.cancel(accepted.requestId));
+  } finally {
+    await host.closeAll();
+    await f.close();
+  }
+}, 20000);
+
+test('last good config and symlinked inactive root protect downloads', async () => {
+  const f = await downloadFixture();
+  const home = path.join(f.files.directory, 'host-state');
+  const selected = path.join(f.files.directory, 'selected');
+  const target = path.join(f.files.work, 'real-profile');
+  const link = path.join(f.files.directory, 'profile-link');
+  const config = path.join(f.files.directory, 'config.toml');
+  fs.mkdirSync(home, { mode: 0o700 });
+  fs.mkdirSync(selected);
+  fs.mkdirSync(target);
+  fs.symlinkSync(target, link);
+  fs.writeFileSync(path.join(target, 'private.txt'), 'fixture');
+  f.write('public.txt', 'fixture');
+  fs.writeFileSync(
+    config,
+    `[profiles.inactive]\nlabel="Inactive"\n[profiles.inactive.claude]\ndir="${link}"\nexpects="subscription"\n`,
+  );
+  const good = currentProfiles(config);
+  expect(good).toHaveProperty('entries');
+  fs.writeFileSync(config, '[[invalid');
+  const runtime = { pty: f.base.pty } as HarnessSession;
+  const host = new FileDownloadSessionHost({
+    home,
+    sessions: f.base.registry,
+    bindings: f.bindings,
+    runtimeFor: () => runtime,
+    directAdapter: () => undefined,
+    rootsFor: launchDownloadRoots({
+      home,
+      userHome: f.files.userHome,
+      harness: 'claude',
+      profile: { claude: { dir: selected } },
+      env: {},
+      configuredProfiles: () => currentProfiles(config),
+    }),
+    onReady: () => {},
+  });
+  const id = f.sessionId();
+  try {
+    expect(await host.open(f.base.trust)).toBe(true);
+    host.beginSession(id, f.files.work);
+    host.bindSession(id, runtime);
+    host.afterClaudeCommit(id, f.binding().harnessSessionId, true);
+    host.started(id);
+    const context = host.contextFor(id);
+    expect(context?.protectedRootPaths).toContain(target);
+    f.setContext(context);
+    const peer = await f.client();
+    expect(await peer.submit(peer.begin('real-profile/private.txt'))).toMatchObject({
       type: 'file_fetch_refused',
       code: 'unavailable',
     });
