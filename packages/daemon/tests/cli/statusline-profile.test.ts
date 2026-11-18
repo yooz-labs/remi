@@ -3,7 +3,11 @@ import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { installStatusLine, statusLineTarget } from '../../src/cli/statusline-installer.ts';
+import {
+  installStatusLine,
+  installStatusLineForLaunch,
+  statusLineTarget,
+} from '../../src/cli/statusline-installer.ts';
 
 test('targets a profile safely and preserves existing settings', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-statusline-'));
@@ -35,11 +39,14 @@ test('targets a profile safely and preserves existing settings', () => {
     const settings = path.join(profile, 'settings.json');
     installStatusLine(remiHome, settings, true);
     expect(JSON.parse(fs.readFileSync(settings, 'utf8')).statusLine.type).toBe('command');
-    for (const old of ['{"statusLine":{"type":"custom"}}', '{"statusLine":null}']) {
+    for (const old of ['{"statusLine":{"type":"custom"}}']) {
       fs.writeFileSync(settings, old);
       installStatusLine(remiHome, settings, true);
       expect(fs.readFileSync(settings, 'utf8')).toBe(old);
     }
+    fs.writeFileSync(settings, '{"statusLine":null}');
+    installStatusLine(remiHome, settings, true);
+    expect(JSON.parse(fs.readFileSync(settings, 'utf8')).statusLine.type).toBe('command');
     fs.writeFileSync(
       path.join(remiHome, 'status-19999.json'),
       JSON.stringify({ pid: process.pid }),
@@ -55,6 +62,21 @@ test('targets a profile safely and preserves existing settings', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('remi:19999');
     expect(result.stdout).toContain('[Fixture] 42% context');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('launch helper targets a profile and honors the default override', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'statusline-launch-'));
+  try {
+    const profile = path.join(root, 'p', 'work', 'claude');
+    installStatusLineForLaunch({ claude: { dir: profile } }, root, true);
+    expect(
+      JSON.parse(fs.readFileSync(path.join(profile, 'settings.json'), 'utf8')).statusLine.type,
+    ).toBe('command');
+    installStatusLineForLaunch(undefined, root, true);
+    expect(fs.existsSync(path.join(root, 'statusline.sh'))).toBe(true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -84,6 +84,19 @@ test("cli.ts builds the download host's roots from the daemon's selected profile
   expect(call, 'cli.ts builds rootsFor with launchDownloadRoots').not.toBeNull();
   expect(call?.[1]).toContain('profile: selectedProfile,');
   expect(call?.[1]).toContain('env: process.env,');
+  expect(call?.[1]).toContain('configuredProfiles: currentProfiles,');
   // No second, hand-built route to the same roots.
   expect(source).not.toContain('profileDownloadProtectionRoots(');
+});
+
+test('cli uses the same profile status line launch helper at both sites', () => {
+  const source = fs.readFileSync(path.join(import.meta.dir, '../../src/cli.ts'), 'utf8');
+  expect(
+    source.match(
+      /installStatusLineForLaunch\(selectedProfile, REMI_DIR, isRemiHomeOverridden\(\)\)/g,
+    ),
+  ).toHaveLength(2);
+  expect(source.match(/installStatusLine\(/g) ?? []).toHaveLength(0);
+  expect(source).toContain('primaryProfile: profileMetadata?.profile,');
+  expect(source).toContain('...(serveMode && {\n    profileRoots:');
 });

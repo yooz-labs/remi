@@ -132,7 +132,7 @@ export function installStatusLine(
         return;
       }
     }
-    if (!Object.hasOwn(settings, 'statusLine')) {
+    if (!settings['statusLine']) {
       fs.mkdirSync(path.dirname(claudeSettingsPath), { recursive: true });
       settings['statusLine'] = { type: 'command', command: scriptPath };
       fs.writeFileSync(claudeSettingsPath, `${JSON.stringify(settings, null, 2)}\n`);
@@ -140,4 +140,18 @@ export function installStatusLine(
   } catch (err) {
     console.error(`[warn] Failed to install status line: ${errorToString(err)}`);
   }
+}
+
+/** Install using the selected launch profile and its registration policy. */
+export function installStatusLineForLaunch(
+  profile: { readonly claude?: { readonly dir: string } } | undefined,
+  remiHome: string,
+  remiHomeOverridden: boolean,
+): void {
+  const target = statusLineTarget({
+    profileClaudeDir: profile?.claude?.dir,
+    remiHome,
+    remiHomeOverridden,
+  });
+  installStatusLine(remiHome, target.settingsPath, target.register);
 }

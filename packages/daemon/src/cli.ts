@@ -217,7 +217,7 @@ import { causeOfSessionClose, createQuestionResolver } from './cli/question-reso
 import { disposeAndDismiss } from './cli/session-close.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
 import { StatusBar, childRows } from './cli/status-bar.ts';
-import { installStatusLine, statusLineTarget } from './cli/statusline-installer.ts';
+import { installStatusLineForLaunch } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { loadDaemonTls } from './config/daemon-tls.ts';
@@ -3727,12 +3727,7 @@ if (cliDaemonMode) {
 
   // The session-less hub never runs Claude; only session daemons install the status line.
   if (!serveMode && harnessId === 'claude') {
-    const target = statusLineTarget({
-      profileClaudeDir: selectedProfile?.claude?.dir,
-      remiHomeOverridden: isRemiHomeOverridden(),
-      remiHome: REMI_DIR,
-    });
-    installStatusLine(REMI_DIR, target.settingsPath, target.register);
+    installStatusLineForLaunch(selectedProfile, REMI_DIR, isRemiHomeOverridden());
   }
 
   if (serveMode) {
@@ -4017,12 +4012,7 @@ if (cliDaemonMode) {
 
   // Install the script and register it in the selected profile where permitted.
   if (harnessId === 'claude') {
-    const target = statusLineTarget({
-      profileClaudeDir: selectedProfile?.claude?.dir,
-      remiHomeOverridden: isRemiHomeOverridden(),
-      remiHome: REMI_DIR,
-    });
-    installStatusLine(REMI_DIR, target.settingsPath, target.register);
+    installStatusLineForLaunch(selectedProfile, REMI_DIR, isRemiHomeOverridden());
   }
   const workingDirectory = process.cwd();
   const sessionId = sessionRegistry.createSessionId();
