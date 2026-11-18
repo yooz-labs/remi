@@ -27,7 +27,7 @@ test('refreshes changed configuration and hides invalid contents', () => {
     expect(second).not.toBe(first);
     expect('entries' in second && second.entries['home']?.label).toBe('Home');
     fs.writeFileSync(file, '[[PLANTED-PRIVATE-CONTENT');
-    expect(currentProfiles(file)).toHaveProperty('error');
+    expect(currentProfiles(file)).toBe(second);
     expect(JSON.stringify(currentProfiles(file))).not.toContain('PLANTED-PRIVATE-CONTENT');
     expect(logs.join('\n')).not.toContain('PLANTED-PRIVATE-CONTENT');
   } finally {
