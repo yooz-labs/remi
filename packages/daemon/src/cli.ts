@@ -214,6 +214,7 @@ import { defaultMachineName, machineIdForKey } from './cli/machine.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
 import { causeOfSessionClose, createQuestionResolver } from './cli/question-resolution.ts';
+import { makeResumeProfileOf } from './cli/resume-profile-of.ts';
 import { disposeAndDismiss } from './cli/session-close.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
 import { StatusBar, childRows } from './cli/status-bar.ts';
@@ -2710,19 +2711,7 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
   basePort: remiConfig.daemon.base_port,
   portRange: remiConfig.daemon.port_range,
   bindHost,
-  resumeProfileOf: (id, resumeId) => {
-    const record =
-      id === 'claude'
-        ? sessionStore.findResumableByClaudeSessionId(resumeId)
-        : sessionStore
-            .list()
-            .find(
-              (entry) =>
-                entry.harness === 'codex' && entry.harnessSessionId?.toLowerCase() === resumeId,
-            );
-    if (record) return undefined;
-    return id === 'claude' ? transcriptDiscovery.profileOfTranscript(resumeId) : undefined;
-  },
+  resumeProfileOf: makeResumeProfileOf({ sessionStore, discovery: transcriptDiscovery }),
   inheritedArgs: () => {
     const args: string[] = [];
     if (cliAuth === true) args.push('--auth');

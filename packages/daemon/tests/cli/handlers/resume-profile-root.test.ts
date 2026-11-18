@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createCreateSessionHandlers } from '../../../src/cli/handlers/create-session-events.ts';
 import { createResumeSessionHandlers } from '../../../src/cli/handlers/resume-session-events.ts';
+import { makeResumeProfileOf } from '../../../src/cli/resume-profile-of.ts';
 import { validateClaudeRemoteArgs } from '../../../src/harness/claude-args.ts';
 import { ClaudeHarness } from '../../../src/harness/claude.ts';
 import { HarnessRegistry } from '../../../src/harness/registry.ts';
@@ -45,10 +46,27 @@ test('create and resume routes carry only recordless profile ownership', async (
     exitCode: 0,
     profile: 'work',
   });
+  store.save({
+    remiSessionId: crypto.randomUUID(),
+    claudeSessionId: null,
+    harness: 'codex',
+    harnessSessionId: profileId,
+    profile: 'work',
+    projectPath: project,
+    port: 0,
+    pid: null,
+    startedAt: new Date().toISOString(),
+    exitedAt: new Date().toISOString(),
+    exitCode: 0,
+  });
   const discovery = new TranscriptDiscovery({
     projectsDir: primary,
     profileRoots: () => [{ profile: 'work', projectsDir: work }],
   });
+  const resumeProfileOf = makeResumeProfileOf({ sessionStore: store, discovery });
+  expect(resumeProfileOf('codex', profileId)).toBeUndefined();
+  expect(resumeProfileOf('claude', recordId)).toBeUndefined();
+  expect(resumeProfileOf('claude', profileId)).toBe('work');
   const registry = new SessionRegistry({});
   const args: string[][] = [];
   const handlers = createCreateSessionHandlers({
@@ -61,10 +79,7 @@ test('create and resume routes carry only recordless profile ownership', async (
     portRange: 1,
     bindHost: '127.0.0.1',
     inheritedArgs: () => ['--no-auth'],
-    resumeProfileOf: (harness, id) =>
-      harness === 'claude' && !store.findResumableByClaudeSessionId(id)
-        ? discovery.profileOfTranscript(id)
-        : undefined,
+    resumeProfileOf: makeResumeProfileOf({ sessionStore: store, discovery }),
     findAvailableTcpPort: async () => 19990,
     spawnDaemon: async (port, _dir, extra) => {
       args.push(extra);
