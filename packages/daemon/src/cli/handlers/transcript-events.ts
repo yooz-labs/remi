@@ -169,15 +169,17 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
 
       // Durable index fallback (#577): the session was purged from sessions.json
       // (100-entry cap or 7-day TTL), so bindingStore.get returned null, but the
-      // long-TTL transcript-index still holds its claude id + project path. Rebuild
-      // the deterministic transcript path and load it from disk if it exists. This
+      // long-TTL transcript-index still holds its claude id + project path. Search
+      // every discovery root first, then fall back to the primary-root path. This
       // is what stops the recurring "Transcript for session <id> not found" for an
       // old-but-still-on-disk session.
       if (!filePath) {
         try {
           const indexed = transcriptIndex.get(sessionId as UUID);
           if (indexed) {
-            const candidate = harness.transcriptPath(indexed.projectPath, indexed.claudeSessionId);
+            const candidate =
+              transcriptDiscovery.findTranscriptBySessionId(indexed.claudeSessionId) ??
+              harness.transcriptPath(indexed.projectPath, indexed.claudeSessionId);
             if (candidate === null) {
               // The harness names no file for this binding, so there is nothing to load.
               log(

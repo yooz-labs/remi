@@ -1,22 +1,47 @@
 /**
- * Install the Claude Code statusline integration.
- *
- * Writes a bash script to `~/.remi/statusline.sh` that the Claude Code
- * `statusLine` hook invokes on every prompt. The script reads the per-port
- * `~/.remi/status-$REMI_PORT.json` file and formats a compact status string.
- *
- * Auto-wires itself into `~/.claude/settings.json` only if no `statusLine`
- * key exists, preserving any user customization.
- *
- * Extracted from cli.ts as part of the cleanup epic (see
- * `.context/cleanup-audit.md`). Pure with respect to module state — the only
- * input is the Remi home directory.
+ * Install the Claude status line script under the selected Remi home.
+ * statusLineTarget selects the default or profile settings path and whether
+ * registration is allowed. Existing truthy statusLine settings are preserved.
  */
 
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
+import { canonicalPath } from '../profiles/resolve-profile.ts';
+
+/** Resolve existing ancestors too, so a missing directory beneath a symlink stays outside. */
+function canonicalWithMissing(value: string): string {
+  let current = path.resolve(value);
+  const missing: string[] = [];
+  while (!fs.existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    missing.unshift(path.basename(current));
+    current = parent;
+  }
+  return path.join(canonicalPath(current), ...missing);
+}
+
+export function statusLineTarget(input: {
+  profileClaudeDir?: string | undefined;
+  remiHomeOverridden: boolean;
+  remiHome: string;
+}): { settingsPath?: string; register: boolean } {
+  if (input.profileClaudeDir === undefined) return { register: !input.remiHomeOverridden };
+  const settingsPath = path.join(input.profileClaudeDir, 'settings.json');
+  if (!input.remiHomeOverridden) return { settingsPath, register: true };
+  const relative = path.relative(
+    canonicalWithMissing(input.remiHome),
+    canonicalWithMissing(input.profileClaudeDir),
+  );
+  return {
+    settingsPath,
+    register:
+      relative === '' ||
+      (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)),
+  };
+}
 
 /**
  * Build the statusline shell script. Takes `remiDir` as input so the script
@@ -60,21 +85,10 @@ echo "\${REMI:+\$REMI | }[\${C_MODEL:-?}] \${C_PCT:-0}% context"
 }
 
 /**
- * Install the statusline: write the script to `remiDir/statusline.sh` and
- * register it in `claudeSettingsPath` (defaults to `~/.claude/settings.json`)
- * if no `statusLine` key is set.
- *
- * Never throws — any failure is logged and swallowed. The statusline is a
- * convenience feature; if installation fails, Remi still functions.
- *
- * `claudeSettingsPath` is exposed for tests that need to run against an
- * isolated settings file. Production callers omit it.
- *
- * `registerInClaudeSettings` false writes the script but leaves Claude's
- * settings alone. The daemon passes false under a `REMI_HOME` override
- * (`config/remi-home.ts`): that directory is usually scratch, and pointing
- * the user's global Claude statusLine at a script inside it would outlive
- * the run that created it.
+ * Write the script and, when registration is allowed, register it at the given
+ * settings path (the default is ~/.claude/settings.json). Production passes a
+ * profile settings path selected by statusLineTarget for profile launches.
+ * A truthy statusLine is preserved; a falsy one is replaced. Never throws.
  */
 export function installStatusLine(
   remiDir: string,
@@ -87,7 +101,7 @@ export function installStatusLine(
     fs.writeFileSync(scriptPath, buildStatuslineScript(remiDir), { mode: 0o755 });
     if (!registerInClaudeSettings) return;
 
-    // Auto-configure Claude Code settings if no statusLine key exists.
+    // Auto-configure Claude Code settings if statusLine is falsy.
     // Preserves all other settings but rewrites the file.
     let settings: Record<string, unknown> = {};
     if (fs.existsSync(claudeSettingsPath)) {
@@ -106,4 +120,18 @@ export function installStatusLine(
   } catch (err) {
     console.error(`[warn] Failed to install status line: ${errorToString(err)}`);
   }
+}
+
+/** Install using the selected launch profile and its registration policy. */
+export function installStatusLineForLaunch(
+  profile: { readonly claude?: { readonly dir: string } } | undefined,
+  remiHome: string,
+  remiHomeOverridden: boolean,
+): void {
+  const target = statusLineTarget({
+    profileClaudeDir: profile?.claude?.dir,
+    remiHome,
+    remiHomeOverridden,
+  });
+  installStatusLine(remiHome, target.settingsPath, target.register);
 }
