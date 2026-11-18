@@ -1,6 +1,6 @@
 # ADR 0051: Profiles in the apps: profile manager, session profile, usage and confirmed continuation
 
-**Status:** Proposed (design for #1784; no implementation). The owner answered Q1 to Q11 on 2026-11-14 and approved the two proposals marked proposed in A9 and A11 ("Owner decisions"); none is open.
+**Status:** Accepted (design for #1784; owner decision 2026-11-17: phase 2 trimmed to what account switching needs, the rest deferred to phase 2b). The owner answered Q1 to Q11 on 2026-11-14 and approved the two proposals marked proposed in A9 and A11 ("Owner decisions"); none is open.
 **Date:** 2026-11-14
 **Owner:** Yahya
 **Builds on:** ADR 0049 (the daemon side, accepted as the direction), ADR 0035, ADR 0036, ADR 0038, ADR 0039, ADR 0019, #1157, #1748 to #1752
