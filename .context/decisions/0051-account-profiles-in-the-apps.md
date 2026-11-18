@@ -14,7 +14,7 @@ ADR 0049 designs the daemon side: profiles that select each harness's own state 
 Its D7 sketches what a phone shows, and the filed phases #1749 and #1750 put a badge, a picker and a usage panel in the web client.
 Nothing yet says where a person manages profiles, how the native iPhone, iPad and Mac apps show them, what is shared between devices, or what each screen needs on the wire.
 This ADR is that app-side design.
-It proposes; it contains no implementation.
+It records the design; it contains no implementation.
 
 Where inspiration and remi's own rules disagree, remi's rules win:
 ADR 0049 D10 (remi never reads, copies, stores, prints or relays a credential, never runs a login from a phone, never chooses a profile the person did not configure, never sends an email, workspace name or account identifier to a client, and does not switch automatically while phase 6 is unapproved);
