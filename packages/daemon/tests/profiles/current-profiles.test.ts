@@ -30,6 +30,16 @@ test('refreshes changed configuration and hides invalid contents', () => {
     expect(currentProfiles(file)).toBe(second);
     expect(JSON.stringify(currentProfiles(file))).not.toContain('PLANTED-PRIVATE-CONTENT');
     expect(logs.join('\n')).not.toContain('PLANTED-PRIVATE-CONTENT');
+    expect(logs.join('\n')).not.toContain(root);
+    const invalid = path.join(root, 'invalid.toml');
+    fs.writeFileSync(invalid, '[[invalid');
+    expect(currentProfiles(invalid)).toHaveProperty('error');
+    const loop = path.join(root, 'loop');
+    fs.symlinkSync(loop, loop);
+    const before = logs.length;
+    expect(currentProfiles(loop)).toHaveProperty('error');
+    expect(currentProfiles(loop)).toHaveProperty('error');
+    expect(logs.length).toBe(before + 1);
   } finally {
     __resetLoggerForTests();
     fs.rmSync(root, { recursive: true, force: true });

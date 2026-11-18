@@ -68,6 +68,7 @@ test('discovers profile roots, with stable duplicate precedence and private path
     expect(all.profileOfTranscript('primary-id')).toBeUndefined();
     expect(all.findTranscriptBySessionId('shared-id')).toBe(workWinner);
     expect(all.profileOfTranscript('shared-id')).toBe('work');
+    expect(logs).toHaveLength(2);
   } finally {
     __resetLoggerForTests();
     fs.rmSync(root, { recursive: true, force: true });
