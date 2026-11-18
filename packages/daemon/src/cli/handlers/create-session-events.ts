@@ -21,7 +21,7 @@ import {
   escapeUnsafeText,
   isHarnessId,
 } from '@remi/shared';
-import type { SessionWorkspace, UUID } from '@remi/shared';
+import type { HarnessId, SessionWorkspace, UUID } from '@remi/shared';
 
 import type { HarnessRegistry, StartedSession } from '../../harness/registry.ts';
 import type { CreateSessionExtra } from '../../server/client-message-events.ts';
@@ -150,11 +150,16 @@ export function checkHarnessRequest(
   registry: HarnessRegistry,
   extra: CreateSessionExtra | undefined,
 ):
-  | { ok: true; spawnArgs: string[]; noticeFor?: (session: StartedSession) => string }
+  | {
+      ok: true;
+      spawnArgs: string[];
+      resumeId: string | null;
+      noticeFor?: (session: StartedSession) => string;
+    }
   | { ok: false; error: string; detail?: string } {
   const { harness, args } = extra ?? {};
   if (harness === undefined && args === undefined) {
-    return { ok: true, spawnArgs: ['--harness', 'claude'] };
+    return { ok: true, spawnArgs: ['--harness', 'claude'], resumeId: null };
   }
 
   if (harness !== undefined && !isHarnessId(harness)) {
@@ -186,6 +191,7 @@ export function checkHarnessRequest(
   return {
     ok: true,
     spawnArgs: ['--harness', id, ...(checked.args.length > 0 ? ['--', ...checked.args] : [])],
+    resumeId: checked.resumeThreadId?.toLowerCase() ?? null,
     ...(spec.headlessNotice !== undefined && { noticeFor: spec.headlessNotice }),
   };
 }
@@ -217,6 +223,7 @@ export interface CreateSessionHandlerDeps {
    * Getter so the caller can populate the array after handler construction.
    */
   inheritedArgs: () => readonly string[];
+  resumeProfileOf?: (harness: HarnessId, resumeId: string) => string | undefined;
   send: SendToConnection;
   /** Best-effort history, installed only in hub mode (#1284); successful spawns only. */
   rememberRepository?: (directory: string, repository?: string) => Promise<void>;
@@ -342,8 +349,16 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
         log(
           `Spawning new daemon on port ${freePort} for directory ${escapeUnsafeText(resolvedDirectory)}`,
         );
+        const profile =
+          request.resumeId === null
+            ? undefined
+            : deps.resumeProfileOf?.(
+                isHarnessId(extra?.harness) ? extra.harness : 'claude',
+                request.resumeId,
+              );
         const result = await spawnDaemon(freePort, resolvedDirectory, [
           ...inheritedArgs(),
+          ...(profile === undefined ? [] : ['--remi-profile', profile]),
           ...request.spawnArgs,
         ]);
         try {

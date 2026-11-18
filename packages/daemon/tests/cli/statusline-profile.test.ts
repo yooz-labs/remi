@@ -1,0 +1,61 @@
+import { expect, test } from 'bun:test';
+import { spawnSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { installStatusLine, statusLineTarget } from '../../src/cli/statusline-installer.ts';
+
+test('targets a profile safely and preserves existing settings', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-statusline-'));
+  const remiHome = path.join(root, 'remi');
+  const profile = path.join(remiHome, 'p', 'work', 'claude');
+  const outside = path.join(root, 'outside');
+  try {
+    fs.mkdirSync(remiHome);
+    fs.mkdirSync(outside);
+    expect(statusLineTarget({ remiHome, remiHomeOverridden: false })).toEqual({ register: true });
+    expect(statusLineTarget({ remiHome, remiHomeOverridden: true })).toEqual({ register: false });
+    expect(
+      statusLineTarget({ profileClaudeDir: profile, remiHome, remiHomeOverridden: true }),
+    ).toEqual({ settingsPath: path.join(profile, 'settings.json'), register: true });
+    expect(
+      statusLineTarget({ profileClaudeDir: outside, remiHome, remiHomeOverridden: true }).register,
+    ).toBe(false);
+    expect(
+      statusLineTarget({ profileClaudeDir: outside, remiHome, remiHomeOverridden: false }),
+    ).toEqual({ settingsPath: path.join(outside, 'settings.json'), register: true });
+    fs.symlinkSync(outside, path.join(remiHome, 'link'));
+    expect(
+      statusLineTarget({
+        profileClaudeDir: path.join(remiHome, 'link', 'missing'),
+        remiHome,
+        remiHomeOverridden: true,
+      }).register,
+    ).toBe(false);
+    const settings = path.join(profile, 'settings.json');
+    installStatusLine(remiHome, settings, true);
+    expect(JSON.parse(fs.readFileSync(settings, 'utf8')).statusLine.type).toBe('command');
+    for (const old of ['{"statusLine":{"type":"custom"}}', '{"statusLine":null}']) {
+      fs.writeFileSync(settings, old);
+      installStatusLine(remiHome, settings, true);
+      expect(fs.readFileSync(settings, 'utf8')).toBe(old);
+    }
+    fs.writeFileSync(
+      path.join(remiHome, 'status-19999.json'),
+      JSON.stringify({ pid: process.pid }),
+    );
+    const result = spawnSync('/bin/bash', [path.join(remiHome, 'statusline.sh')], {
+      input: JSON.stringify({
+        model: { display_name: 'Fixture' },
+        context_window: { used_percentage: 42 },
+      }),
+      env: { PATH: '/opt/homebrew/bin:/usr/bin:/bin', REMI_PORT: '19999' },
+      encoding: 'utf8',
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('remi:19999');
+    expect(result.stdout).toContain('[Fixture] 42% context');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

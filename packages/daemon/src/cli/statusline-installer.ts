@@ -17,6 +17,40 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
+import { canonicalPath } from '../profiles/resolve-profile.ts';
+
+/** Resolve existing ancestors too, so a missing directory beneath a symlink stays outside. */
+function canonicalWithMissing(value: string): string {
+  let current = path.resolve(value);
+  const missing: string[] = [];
+  while (!fs.existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    missing.unshift(path.basename(current));
+    current = parent;
+  }
+  return path.join(canonicalPath(current), ...missing);
+}
+
+export function statusLineTarget(input: {
+  profileClaudeDir?: string | undefined;
+  remiHomeOverridden: boolean;
+  remiHome: string;
+}): { settingsPath?: string; register: boolean } {
+  if (input.profileClaudeDir === undefined) return { register: !input.remiHomeOverridden };
+  const settingsPath = path.join(input.profileClaudeDir, 'settings.json');
+  if (!input.remiHomeOverridden) return { settingsPath, register: true };
+  const relative = path.relative(
+    canonicalWithMissing(input.remiHome),
+    canonicalWithMissing(input.profileClaudeDir),
+  );
+  return {
+    settingsPath,
+    register:
+      relative === '' ||
+      (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)),
+  };
+}
 
 /**
  * Build the statusline shell script. Takes `remiDir` as input so the script
@@ -98,7 +132,7 @@ export function installStatusLine(
         return;
       }
     }
-    if (!settings['statusLine']) {
+    if (!Object.hasOwn(settings, 'statusLine')) {
       fs.mkdirSync(path.dirname(claudeSettingsPath), { recursive: true });
       settings['statusLine'] = { type: 'command', command: scriptPath };
       fs.writeFileSync(claudeSettingsPath, `${JSON.stringify(settings, null, 2)}\n`);

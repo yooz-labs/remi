@@ -6,6 +6,7 @@ import type { WebSocketAdapter } from '../adapters/websocket-adapter';
 import type { IdentityStore } from '../auth/identity-store';
 import type { HarnessSession } from '../harness/types';
 import type { SecurePushStore } from '../notifications/secure-push-store';
+import type { Profiles } from '../profiles/profile-config.ts';
 import type { SessionBindingStore } from '../session/session-binding-store';
 import type { ManagedSession, SessionRegistry } from '../session/session-registry';
 import type { StoredSession } from '../session/session-store';
@@ -77,11 +78,25 @@ export function launchDownloadRoots(
   launch: Omit<Parameters<typeof downloadProtectionRoots>[0], 'workingDirectory'> & {
     readonly profile: Parameters<typeof profileDownloadProtectionRoots>[1];
     readonly env: Readonly<Record<string, string | undefined>>;
+    readonly configuredProfiles?: () => Profiles;
   },
 ): (workingDirectory: string) => readonly DownloadProtectedRoot[] {
-  const { profile, env, ...base } = launch;
-  return (workingDirectory) =>
-    profileDownloadProtectionRoots({ ...base, workingDirectory }, profile, env);
+  const { profile, env, configuredProfiles, ...base } = launch;
+  return (workingDirectory) => {
+    const roots = profileDownloadProtectionRoots({ ...base, workingDirectory }, profile, env);
+    const unique = new Map(roots.map((root) => [root.pathname, root]));
+    const profiles = configuredProfiles?.();
+    if (profiles && 'entries' in profiles) {
+      for (const entry of Object.values(profiles.entries)) {
+        for (const harness of [entry.claude, entry.codex]) {
+          if (!harness) continue;
+          const pathname = path.resolve(harness.dir);
+          if (!unique.has(pathname)) unique.set(pathname, { pathname, required: false });
+        }
+      }
+    }
+    return [...unique.values()];
+  };
 }
 
 interface SessionRecord {

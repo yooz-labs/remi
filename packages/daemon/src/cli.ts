@@ -217,7 +217,7 @@ import { causeOfSessionClose, createQuestionResolver } from './cli/question-reso
 import { disposeAndDismiss } from './cli/session-close.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
 import { StatusBar, childRows } from './cli/status-bar.ts';
-import { installStatusLine } from './cli/statusline-installer.ts';
+import { installStatusLine, statusLineTarget } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { loadDaemonTls } from './config/daemon-tls.ts';
@@ -1100,6 +1100,7 @@ if (isSessionLaunch(parsedArgs) && cliDir && !cliHost) {
 }
 
 import { configWarnings } from './profiles/config-warnings.ts';
+import { currentProfiles } from './profiles/current-profiles.ts';
 import { inProcessResumeRefusal } from './profiles/in-process-resume.ts';
 import { checkLogin } from './profiles/login-check.ts';
 import type { Profile } from './profiles/profile-config.ts';
@@ -1375,9 +1376,22 @@ if (cliDaemonMode) {
 // Core components
 // ---------------------------------------------------------------------------
 const _ptyManager = new PTYManager();
-const transcriptDiscovery = new TranscriptDiscovery(
-  selectedProfile?.claude ? { projectsDir: path.join(selectedProfile.claude.dir, 'projects') } : {},
-);
+const transcriptDiscovery = new TranscriptDiscovery({
+  ...(selectedProfile?.claude && {
+    projectsDir: path.join(selectedProfile.claude.dir, 'projects'),
+    primaryProfile: profileMetadata?.profile,
+  }),
+  ...(serveMode && {
+    profileRoots: () => {
+      const profiles = currentProfiles();
+      return 'error' in profiles
+        ? []
+        : Object.entries(profiles.entries).flatMap(([profile, entry]) =>
+            entry.claude ? [{ profile, projectsDir: path.join(entry.claude.dir, 'projects') }] : [],
+          );
+    },
+  }),
+});
 const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
 const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new Map();
 // Per-session harness sessions, keyed by sessionId (#1164): the answer, chat
@@ -1745,6 +1759,7 @@ if (
       harness: harnessId,
       profile: selectedProfile,
       env: process.env,
+      configuredProfiles: currentProfiles,
     }),
     onReady: (id) => publishDownloadReadiness(id),
   });
@@ -2695,6 +2710,19 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
   basePort: remiConfig.daemon.base_port,
   portRange: remiConfig.daemon.port_range,
   bindHost,
+  resumeProfileOf: (id, resumeId) => {
+    const record =
+      id === 'claude'
+        ? sessionStore.findResumableByClaudeSessionId(resumeId)
+        : sessionStore
+            .list()
+            .find(
+              (entry) =>
+                entry.harness === 'codex' && entry.harnessSessionId?.toLowerCase() === resumeId,
+            );
+    if (record) return undefined;
+    return id === 'claude' ? transcriptDiscovery.profileOfTranscript(resumeId) : undefined;
+  },
   inheritedArgs: () => {
     const args: string[] = [];
     if (cliAuth === true) args.push('--auth');
@@ -3697,12 +3725,14 @@ if (cliDaemonMode) {
     onDirChange: hubClientTracker ? () => hubClientTracker.refresh() : undefined,
   });
 
-  // Statusline install mutates the GLOBAL ~/.claude/settings.json; a
-  // session-less hub never runs Claude, so it has no business touching it
-  // (the first session child installs it anyway). Session daemons keep the
-  // existing behavior.
+  // The session-less hub never runs Claude; only session daemons install the status line.
   if (!serveMode && harnessId === 'claude') {
-    installStatusLine(REMI_DIR, undefined, !isRemiHomeOverridden());
+    const target = statusLineTarget({
+      profileClaudeDir: selectedProfile?.claude?.dir,
+      remiHomeOverridden: isRemiHomeOverridden(),
+      remiHome: REMI_DIR,
+    });
+    installStatusLine(REMI_DIR, target.settingsPath, target.register);
   }
 
   if (serveMode) {
@@ -3985,9 +4015,15 @@ if (cliDaemonMode) {
   // Close log fd as the very last thing on process exit
   process.on('exit', endLogFileSession);
 
-  // Install status line script (<state dir>/statusline.sh) and auto-configure
-  // Claude Code settings, except under a REMI_HOME override (see installStatusLine).
-  if (harnessId === 'claude') installStatusLine(REMI_DIR, undefined, !isRemiHomeOverridden());
+  // Install the script and register it in the selected profile where permitted.
+  if (harnessId === 'claude') {
+    const target = statusLineTarget({
+      profileClaudeDir: selectedProfile?.claude?.dir,
+      remiHomeOverridden: isRemiHomeOverridden(),
+      remiHome: REMI_DIR,
+    });
+    installStatusLine(REMI_DIR, target.settingsPath, target.register);
+  }
   const workingDirectory = process.cwd();
   const sessionId = sessionRegistry.createSessionId();
   setPrimarySessionId(sessionId);

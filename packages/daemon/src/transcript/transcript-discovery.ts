@@ -11,6 +11,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { DiscoverableSession } from '@remi/shared';
+import { log } from '../cli/logger.ts';
 import type {
   AssistantEntry,
   ContentBlock,
@@ -33,6 +34,14 @@ export interface TranscriptDiscoveryConfig {
   /** Directory to scan for transcript files (default: ~/.claude/projects/) */
   readonly projectsDir?: string;
 
+  readonly profileRoots?:
+    | (() => readonly {
+        readonly profile: string;
+        readonly projectsDir: string;
+      }[])
+    | undefined;
+  readonly primaryProfile?: string | undefined;
+
   /** Maximum age in ms before a session is marked 'completed' (default: 1 hour). Sessions modified within 5 minutes are 'active'; between 5 minutes and this threshold are 'idle'. */
   readonly activeThresholdMs?: number;
 
@@ -43,6 +52,7 @@ export interface TranscriptDiscoveryConfig {
 /** Info extracted from scanning a transcript file */
 interface TranscriptFileInfo {
   readonly filePath: string;
+  readonly profile?: string;
   readonly sessionId: string;
   readonly projectPath: string;
   readonly lastModified: Date;
@@ -57,11 +67,16 @@ interface TranscriptFileInfo {
  * avoiding full file loads.
  */
 export class TranscriptDiscovery {
-  private readonly config: Required<TranscriptDiscoveryConfig>;
+  private readonly config: Required<
+    Pick<TranscriptDiscoveryConfig, 'projectsDir' | 'activeThresholdMs' | 'maxResults'>
+  > &
+    Pick<TranscriptDiscoveryConfig, 'primaryProfile' | 'profileRoots'>;
 
   constructor(config: TranscriptDiscoveryConfig = {}) {
     this.config = {
       projectsDir: config.projectsDir ?? CLAUDE_PROJECTS_DIR,
+      primaryProfile: config.primaryProfile,
+      profileRoots: config.profileRoots,
       activeThresholdMs: config.activeThresholdMs ?? 60 * 60 * 1000, // 1 hour
       maxResults: config.maxResults ?? 50,
     };
@@ -116,6 +131,10 @@ export class TranscriptDiscovery {
     return match?.filePath ?? null;
   }
 
+  profileOfTranscript(sessionId: string): string | undefined {
+    return this.findTranscriptFiles().find((file) => file.sessionId === sessionId)?.profile;
+  }
+
   /**
    * The directory a transcript was recorded in: the `cwd` of the first entry that names one, read
    * from the first 64 KiB of the file (#1129). A project directory's name is a lossy encoding of
@@ -160,37 +179,42 @@ export class TranscriptDiscovery {
    * Sorted by last modification time (most recent first).
    */
   private findTranscriptFiles(): TranscriptFileInfo[] {
-    if (!fs.existsSync(this.config.projectsDir)) {
-      return [];
-    }
-
-    const allFiles: TranscriptFileInfo[] = [];
-
-    try {
-      const projectDirs = fs.readdirSync(this.config.projectsDir);
-
-      for (const dirName of projectDirs) {
-        const dirPath = path.join(this.config.projectsDir, dirName);
-
-        try {
-          const stat = fs.statSync(dirPath);
-          if (!stat.isDirectory()) continue;
-        } catch {
-          continue; // Skip inaccessible directories
+    const roots = [
+      { projectsDir: this.config.projectsDir, profile: this.config.primaryProfile },
+      ...(this.config.profileRoots?.() ?? []),
+    ];
+    const winners = new Map<string, TranscriptFileInfo>();
+    const rootCounts = new Map<string, number>();
+    for (const root of roots) {
+      const idsInRoot = new Set<string>();
+      try {
+        for (const dirName of fs.readdirSync(root.projectsDir)) {
+          const dirPath = path.join(root.projectsDir, dirName);
+          try {
+            if (!fs.statSync(dirPath).isDirectory()) continue;
+          } catch {
+            continue;
+          }
+          for (const file of this.listJsonlFiles(dirPath)) {
+            idsInRoot.add(file.sessionId);
+            if (!winners.has(file.sessionId))
+              winners.set(file.sessionId, {
+                ...file,
+                ...(root.profile !== undefined && { profile: root.profile }),
+              });
+          }
         }
-
-        const files = this.listJsonlFiles(dirPath);
-        allFiles.push(...files);
+      } catch {
+        continue;
       }
-    } catch {
-      // Can't read projects directory
-      return [];
+      for (const id of idsInRoot) rootCounts.set(id, (rootCounts.get(id) ?? 0) + 1);
     }
-
-    // Sort by modification time (most recent first)
-    allFiles.sort((a, b) => b.lastModified.getTime() - a.lastModified.getTime());
-
-    return allFiles;
+    for (const [id, count] of rootCounts) {
+      if (count > 1) log(`[TranscriptDiscovery] Duplicate ${id.slice(0, 8)} in ${count} roots`);
+    }
+    return [...winners.values()].sort(
+      (a, b) => b.lastModified.getTime() - a.lastModified.getTime(),
+    );
   }
 
   /**
@@ -277,7 +301,7 @@ export class TranscriptDiscovery {
       // that these entries name none. This rule must flip, so that a discovered entry names its
       // harness, the day a non-Claude discovery exists.
       claudeSessionId: file.sessionId,
-      transcriptPath: file.filePath,
+      ...(file.profile === undefined && { transcriptPath: file.filePath }),
     };
   }
 

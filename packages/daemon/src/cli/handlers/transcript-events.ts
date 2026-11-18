@@ -177,7 +177,9 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
         try {
           const indexed = transcriptIndex.get(sessionId as UUID);
           if (indexed) {
-            const candidate = harness.transcriptPath(indexed.projectPath, indexed.claudeSessionId);
+            const candidate =
+              transcriptDiscovery.findTranscriptBySessionId(indexed.claudeSessionId) ??
+              harness.transcriptPath(indexed.projectPath, indexed.claudeSessionId);
             if (candidate === null) {
               // The harness names no file for this binding, so there is nothing to load.
               log(
