@@ -79,20 +79,20 @@ test('keeps both same-root duplicates and finds the newest', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'same-root-'));
   try {
     const id = 'same-root-id';
-    for (const [folder, time] of [
-      ['a-old', 10],
-      ['z-new', 20],
-    ] as const) {
+    for (const folder of ['first', 'second']) {
       fs.mkdirSync(path.join(root, folder));
       const file = path.join(root, folder, `${id}.jsonl`);
       fs.writeFileSync(
         file,
         `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello' } })}\n`,
       );
-      fs.utimesSync(file, time, time);
     }
+    const [older, newer] = fs.readdirSync(root);
+    if (!older || !newer) throw new Error('missing fixture directories');
+    fs.utimesSync(path.join(root, older, `${id}.jsonl`), 10, 10);
+    fs.utimesSync(path.join(root, newer, `${id}.jsonl`), 20, 20);
     const discovery = new TranscriptDiscovery({ projectsDir: root });
-    expect(discovery.findTranscriptBySessionId(id)).toBe(path.join(root, 'z-new', `${id}.jsonl`));
+    expect(discovery.findTranscriptBySessionId(id)).toBe(path.join(root, newer, `${id}.jsonl`));
     expect(discovery.discoverSessions().filter((s) => s.sessionId === id)).toHaveLength(2);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
