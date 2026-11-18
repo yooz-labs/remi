@@ -27,6 +27,7 @@ function isTextBlock(block: ContentBlock): block is TextBlock {
 }
 
 /** Default Claude Code projects directory */
+const loggedDuplicates = new Set<string>();
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 
 /** Configuration for transcript discovery */
@@ -183,7 +184,8 @@ export class TranscriptDiscovery {
       { projectsDir: this.config.projectsDir, profile: this.config.primaryProfile },
       ...(this.config.profileRoots?.() ?? []),
     ];
-    const winners = new Map<string, TranscriptFileInfo>();
+    const winners: TranscriptFileInfo[] = [];
+    const earlierIds = new Set<string>();
     const rootCounts = new Map<string, number>();
     for (const root of roots) {
       const idsInRoot = new Set<string>();
@@ -197,8 +199,8 @@ export class TranscriptDiscovery {
           }
           for (const file of this.listJsonlFiles(dirPath)) {
             idsInRoot.add(file.sessionId);
-            if (!winners.has(file.sessionId))
-              winners.set(file.sessionId, {
+            if (!earlierIds.has(file.sessionId))
+              winners.push({
                 ...file,
                 ...(root.profile !== undefined && { profile: root.profile }),
               });
@@ -207,14 +209,19 @@ export class TranscriptDiscovery {
       } catch {
         continue;
       }
-      for (const id of idsInRoot) rootCounts.set(id, (rootCounts.get(id) ?? 0) + 1);
+      for (const id of idsInRoot) {
+        earlierIds.add(id);
+        rootCounts.set(id, (rootCounts.get(id) ?? 0) + 1);
+      }
     }
     for (const [id, count] of rootCounts) {
-      if (count > 1) log(`[TranscriptDiscovery] Duplicate ${id.slice(0, 8)} in ${count} roots`);
+      const key = `${id.slice(0, 8)}:${count}`;
+      if (count > 1 && !loggedDuplicates.has(key)) {
+        loggedDuplicates.add(key);
+        log(`[TranscriptDiscovery] Duplicate ${id.slice(0, 8)} in ${count} roots`);
+      }
     }
-    return [...winners.values()].sort(
-      (a, b) => b.lastModified.getTime() - a.lastModified.getTime(),
-    );
+    return winners.sort((a, b) => b.lastModified.getTime() - a.lastModified.getTime());
   }
 
   /**
