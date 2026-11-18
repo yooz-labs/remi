@@ -1,8 +1,8 @@
 /**
  * TranscriptDiscovery - Discovers Claude Code sessions from transcript files.
  *
- * Scans ~/.claude/projects/ for .jsonl transcript files and extracts
- * session metadata for the discovery feature.
+ * Scans a primary projects directory and optional profile roots for .jsonl
+ * transcripts and extracts session metadata for the discovery feature.
  *
  * READ-ONLY: Never modifies any Claude Code files.
  */
@@ -35,12 +35,14 @@ export interface TranscriptDiscoveryConfig {
   /** Directory to scan for transcript files (default: ~/.claude/projects/) */
   readonly projectsDir?: string;
 
+  /** Hub-only roots, read on every scan in configuration order. */
   readonly profileRoots?:
     | (() => readonly {
         readonly profile: string;
         readonly projectsDir: string;
       }[])
     | undefined;
+  /** Profile owning the primary root, when this is a profile session. */
   readonly primaryProfile?: string | undefined;
 
   /** Maximum age in ms before a session is marked 'completed' (default: 1 hour). Sessions modified within 5 minutes are 'active'; between 5 minutes and this threshold are 'idle'. */
@@ -63,9 +65,10 @@ interface TranscriptFileInfo {
 /**
  * Discover Claude Code sessions from transcript files on disk.
  *
- * Scans the Claude Code projects directory for .jsonl files and
- * extracts session metadata by reading only the tail of each file (last 8KB),
- * avoiding full file loads.
+ * Scans the primary and optional profile roots, reading only each file tail.
+ * Within a root all files remain visible; across roots the first root wins for
+ * each ID. Duplicate IDs are logged once per ID prefix and root count, without paths.
+ * profileOfTranscript identifies the winning root for local resume decisions.
  */
 export class TranscriptDiscovery {
   private readonly config: Required<

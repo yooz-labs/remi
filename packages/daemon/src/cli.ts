@@ -1377,6 +1377,7 @@ if (cliDaemonMode) {
 // Core components
 // ---------------------------------------------------------------------------
 const _ptyManager = new PTYManager();
+// Session daemons scan their selected profile; the hub refreshes all profile roots.
 const transcriptDiscovery = new TranscriptDiscovery({
   ...(selectedProfile?.claude && {
     projectsDir: path.join(selectedProfile.claude.dir, 'projects'),
