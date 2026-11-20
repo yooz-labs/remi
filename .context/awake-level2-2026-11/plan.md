@@ -1,0 +1,402 @@
+# Plan: keep-awake level 2 and its guard rails (2026-11)
+
+Lead: Claude Opus, 2026-11-17.
+Status: written on the owner's instruction of 2026-11-17 ("write the level 2 cards, and start working on it"); the first cards are dispatchable now, the owner questions of section 6 are open.
+Issue: #1773 (reopened by the owner on 2026-11-17: PR #1782 closed it by a commit message; level 2 and the guard rails were not built).
+Pack: `.context/awake-level2-2026-11/` on branch `docs/issue-1773-awake-level2-plan` (worktree `/Volumes/S1/worktrees/remi/awake-l2-plan`), never on `develop`.
+Decisions this plan does not reopen: ADR 0050 (`.context/decisions/0050-keep-the-mac-awake.md`), accepted as the direction with the owner's eight decisions of 2026-11-14.
+
+## Summary
+
+**Goal.** Ship ADR 0050 slice 2 (guard rails: power readings, the lease and watchdog, the level 1 battery floor) and slice 3 (level 2, the lid-closed mode through one exact sudoers rule), tested without privileges wherever possible, then verified on the owner's MacBook by the owner.
+
+**Owner answers of 2026-11-17.** Q1 (b): level 2 is armed by configuration; Q2 yes; Q3 refuse; Q4 keep; Q5 no; Q6 yes; Q7 (a) ship marked experimental; Q8 yes; Q9 (a), then amended by the owner: while armed, level 2 stays on until a condition prevents it, pauses while the condition holds and resumes by itself when it is gone, and only a person's explicit action ends it until the person arms it again; Q10 (a) no extra condition; Q11 (a) log and status now, a phone push with L2-APP; Q12 (b) armed after a restart only after a clean exit; Q13 yes, the lid open to turn on; Q14 (a) a run limit and a cap per window.
+**Owner rule of 2026-11-17:** every limit is a setting the person can change, and the plan only sets defaults: no maximum anywhere in the level 1 guard rails or level 2, validation for sanity only, each key documented as `default X; set KEY = Y to change` and tested; section 6 lists the keys (Q15 and Q16 follow from the rule).
+Section 6a states what armed mode with pause and resume changes, which conditions pause and which only a person ends, the bounds and failure modes, and the conflict with ADR 0050 fail-safe item 5.
+
+**Order.** Guard rails first, then level 2.
+Dispatchable now (no privileges, no file shared with any open PR): G0, G1, W1 and L2-POL; the owner can run OG-CAP now.
+G2 (the battery floor) follows G1 and OG-CAP; level 2 (L2-CORE, L2-HUB, L2-CLI) follows the lead's checkpoint CP-L2; the owner's hardware gate OG-L2 closes it; the phone surface (L2-APP) and, only if needed, the third sudoers rule (L2-SLEEPNOW) are outlines completed at CP-HW.
+
+**Least sure about.**
+0. Pause and resume has the most moving parts of the plan: the dwell (120 s), the minimum interval (10 min) and the daily resume cap (12) are the lead's guesses, and whether real battery, thermal and app-holder readings flap around them is measured only in OG-L2; "real work" is level 1's own verdict (`awakeHold`), so even a short turn turns level 2 on while armed.
+1. Whether `disablesleep 0` with the lid already closed makes the Mac sleep (ADR 0050 line 103, UNVERIFIED and load-bearing).
+   Only OG-L2 step (b) can tell; if it does not, the fallback is the `pmset sleepnow` rule (owner decision 6, card L2-SLEEPNOW).
+2. Whether any read-only source reports the password-on-wake setting without a password (G0).
+   If none does, level 2 refuses to start unless the owner sets `require_password_on_wake = false`, which decision 7 makes the owner's call.
+3. The laptop formats: the `pmset -g batt` battery line, `AppleClamshellState` and the assertions of a video and a call are unverified until OG-CAP; G2 and L2-CORE stop rather than guess.
+4. The idle revert's signal: the hub reads each session's `sessionStatus` and pending questions, and a turn that only reasons reads `idle` there (ADR 0050 line 109); with a 30-minute default this should be rare, but it is not measured.
+5. Capacity: these steps share the owner's slots and reviewers with the profiles plan, whose daemon lane (P1A in review as PR #1798, P1B next) touches `config.ts` and `cli.ts`.
+6. Coverage: every macOS power test is skipped by hosted CI (Ubuntu); the workers' local runs and DV-AWAKE are their only authority.
+7. The crash rail's own integrity: the pack review found that the watchdog could watch the wrong remi home, hang on a child command, or be unable to revert under an edited sudoers rule; the cards now check the watchdog's identity on every heartbeat, give its commands deadlines and check the revert permission before every enable, but none of it runs on hardware before OG-L2 (b0), (b1) and (b).
+
+## 0. How the manager uses this plan
+
+### 0.1 Start prompt
+
+```text
+You are the manager of yooz-labs/remi awake-level2-2026-11.
+Run one tick of the profiles runbook pinned at commit e18eac02 (read it with `git -C /Volumes/S1/worktrees/remi/profiles-epic-plan show e18eac02:.context/profiles-epic-2026-11/runbook.md`), exactly as written, with the deltas in section 0.2 of /Volumes/S1/worktrees/remi/awake-l2-plan/.context/awake-level2-2026-11/plan.md, using the project:manager-loop skill.
+The state is the board at /Volumes/S1/worktrees/remi/awake-l2-plan/.context/awake-level2-2026-11/board.md.
+Your manager id is mba-claude-sonnet, the same on every tick.
+Do not write product code.
+Do not change the plan, a card, a gate, the parity, or a budget limit.
+When the runbook says to stop or to ask, or does not cover what you see, record it on the board, ask the owner with a structured question, and stop that thread of work.
+```
+
+The profiles manager may instead run this pack from its own loop; the deltas are the same.
+
+### 0.2 Deltas from the profiles runbook
+
+Apply the pinned profiles runbook's sections 4, 5, 6, 10, 12 and 13; from section 7, items 1, 3, 4 and 5; from section 8, the Order rule, the checkpoint paragraph of "Rule steps" (as item 8 below says) and the Outline steps rule.
+Do not apply: sections 1 to 3 and 11 (profiles-only), section 7 item 2 (this pack has no `lead.md`; the lead records its decisions with `decide --by lead`), section 8's "Not before approval" (this plan has no CP0: the owner's instruction of 2026-11-17 is the approval to dispatch the ready cards), its J-questions, parked steps, native lane, docs lane and phase-completion rules, section 9's `lead.md` format (the lead brief is in section 4 below), and merge gate item 6 (profiles step extras; items 7 and 8 below replace it).
+These changes apply:
+1. **Board, first tick.** Before section 7 item 1's `MB tick`, run `MB init BOARD --title "Keep-awake level 2 (awake-level2-2026-11)" --plan PACK/plan.md --repo yooz-labs/remi --branch develop`, then add the steps of section 2 in that order with their tiers, Depends and timeboxes (`MB set BOARD Steps ID ... --new`), and commit `board.md` and `board-log.md` on this pack's branch only (never on `develop`).
+   Copy the Parity rows from the profiles board; copy its Slots rows with `codex-terra` at Max 0 (Q6: `codex-terra` stays with the profiles daemon lane); copy its Budget rows with Used 0.
+   States at start: G0, G1, W1 and L2-POL `todo`; OG-CAP `owner` (send the owner the OG-CAP section of [owner-gates.md](owner-gates.md) on this first tick); G2, L2-CORE, L2-HUB and L2-CLI `todo` behind their Depends; CP-L2, OG-G2, OG-L2 and CP-HW `blocked` with their trigger in Next; L2-SLEEPNOW and L2-APP `outline`.
+   Record Q1 to Q8 with `MB ask BOARD QN --question TEXT --options OPTIONS --default none`, using the short "Ask text" and "Options" of section 6, and ask Q1 to Q4 in the first batch (they gate the earliest merges), then Q5 to Q8.
+2. **Paths.** Wherever the profiles runbook says `PACK`, `BOARD` or `EVID`, read `PACK` as `/Volumes/S1/worktrees/remi/awake-l2-plan/.context/awake-level2-2026-11`, `BOARD` as `PACK/board.md` and `EVID` as `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/STEP/rROUND/`; `MAIN` and `MB` keep their meaning.
+   Cards and preamble: this pack's `cards/`; evidence root `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/` (replace the profiles artifacts root in the Codex `writable_roots`); worktrees and branches as each card names them, created with `git -C "$HOME/Documents/git/yooz/remi" fetch origin && git -C "$HOME/Documents/git/yooz/remi" worktree add --no-track -b BRANCH WT origin/develop`, then `cd WT && bun install`.
+3. **Platform.** G1, G2, L2-CORE, L2-HUB and L2-CLI run real `pmset -g`, `ioreg`, `notifyutil`, `launchctl print` and `caffeinate` in tests: dispatch them on Claude slots when one is free; on Codex, a sandbox denial in the log is handled by the profiles runbook's full-access rule.
+4. **After every worker run**: the profiles checks 1 to 3, where a merge into `develop` or an issue closing done by the profiles manager (a PR or issue named on `/Volumes/S1/worktrees/remi/profiles-epic-plan/.context/profiles-epic-2026-11/board.md` or its `board-log.md`) counts as a merge or closing the manager made, and check 2 pauses this plan's dispatching instead of profile steps.
+   Also record at dispatch and compare after the run: (a) `ioreg -r -c IOPMrootDomain -d 1 | grep '"SleepDisabled"'`, which must print `"SleepDisabled" = No`; (b) `ls -l /etc/sudoers.d/remi-keep-awake /Library/LaunchDaemons/com.yooz.remi.keep-awake-boot.plist "$HOME/Library/LaunchAgents/com.yooz.remi.keep-awake-watchdog.plist" 2>&1`; (c) `launchctl print "gui/$(id -u)/com.yooz.remi.keep-awake-watchdog" >/dev/null 2>&1; echo $?`.
+   Any change in (a) to (c) stops all dispatching of this plan and goes to the owner at once.
+5. **Live facts** (profiles runbook section 6) add, for L2-CORE, L2-HUB and L2-CLI, the `CP-L2:` decision lines and the owner's answers to Q1 to Q3; for L2-CLI, the state of PR #1798.
+6. **Merge gate** (profiles runbook section 10).
+   Item 3, fresh base, as the owner relaxed it on 2026-11-17 (profiles `board-log.md`, Decisions): commits that `develop` gained since a PR's checks ran count as a fresh base when they are docs-only files or version bumps (merge commits of docs-only PRs included) or `config/app-release.json`; any code, config, workflow or test change on `develop` still makes the worker merge `origin/develop` and the checks rerun.
+   Item 6 is replaced by item 7: the manager reruns the card's canonical-environment `bun test` command from its Acceptance in the step's worktree at the final head, and it ends with `0 fail` and no skipped test under `packages/daemon/tests/power/` or in a `keep-awake-*` test.
+   Item 8: the owner answers a card names for its merge are recorded (all of Q1 to Q16 were answered on 2026-11-17); G1 (#1806) and W1 (#1807) merge only after their fix rounds of Appendix B (Q16 (b)).
+7. **After a merge**: DV-AWAKE (`cards/DV-awake-develop-verify.md`) replaces DV for every merge of a PR that changes `packages/`; G0 (a `.context` note only) needs none.
+   Before the first DV-AWAKE, create its worktree once: `git -C "$HOME/Documents/git/yooz/remi" fetch origin && git -C "$HOME/Documents/git/yooz/remi" worktree add --detach /Volumes/S1/worktrees/remi/awake-develop-verify DEV_SHA && cd /Volumes/S1/worktrees/remi/awake-develop-verify && bun install --frozen-lockfile`.
+   DV-AWAKE is an agent row (`DV-AWAKE-PR`), not a Steps row, as the profiles board runs DV.
+8. **Rule steps.** OG-G2 and OG-L2 are set `owner` when their Depends are done, and the owner gets that section of [owner-gates.md](owner-gates.md); the owner's result is recorded with `decide ... --by owner`, then the gate is `done` (passed) or the lead is woken (failed).
+   CP-L2 and CP-HW follow the runbook section 8 checkpoint paragraph without J-questions: wake the lead with the brief of section 4; when `board-log.md` holds the lead's `CP-L2:` (or `CP-HW:`) line, run the anticipation pass, then `MB ask BOARD QCP-L2 --question "CP-L2: go for level 2 (L2-CORE, L2-HUB, L2-CLI)?" --options "Go (Recommended) / Hold" --default none --step CP-L2` (for CP-HW: `QCP-HW`, "CP-HW: go for the cards the lead completed?"); on "Go", `MB decide BOARD "CP-L2: owner go" --by owner` and set the checkpoint `done`.
+   The lead sets the cards it completed from `outline` to `todo` with `MB set`.
+9. **Owner answers** (replacing section 11): `MB decide BOARD "QN answered: ANSWER" --by owner` and set the question `closed`; when the answer differs from the section 6 recommendation, wake the lead before dispatching or merging anything that question blocks.
+10. **Conditions outside the board's Depends**, written in each step's Next: CP-L2 wakes the lead only when Q17 is `closed`; record Q17 with `MB ask` (text in section 6); send G1 and W1 their fix rounds from Appendix B; L2-CLI is dispatched only when `gh pr view 1798 --repo yooz-labs/remi --json state --jq .state` prints `MERGED`; L2-POL and G2 merge only under item 6's gate item 8.
+
+### 0.3 Precedence
+
+The owner's later instructions override this plan and are logged with `decide ... --by owner`.
+`AGENTS.md` overrides this plan, with the profiles plan's exception 1 (never rebase a pushed branch; merge `origin/develop` instead).
+ADR 0050 and the owner's decisions in it are final; a card never reopens them; a gap is an owner question (section 6).
+
+### 0.4 Merge authority
+
+As in the profiles plan section 0.4 (the owner's authority of 2026-11-13): the manager merges a step PR into `develop` with `gh pr merge N --repo yooz-labs/remi --merge --match-head-commit SHA` only when the merge gate passes; never `main`, never a release, never a force-push.
+Never merged by the manager: a PR that relaxes a gate's assertion (to the lead), L2-POL or G2 before their owner answers (gate item 8).
+
+### 0.5 Question classes that may take a default
+
+None.
+Silence is never an answer.
+
+### 0.6 Routing and capacity
+
+Roles and models as in the profiles plan section 0.6.
+These steps share the owner's slots and budget with the profiles plan (Q6).
+Slots: before each implementer dispatch, run `MB status` on both boards and dispatch only when the slot's active implementers on both boards together are below its Max on the profiles board; worker-hard steps of this plan go to `claude-opus` (this board's `codex-terra` is Max 0), worker steps to `codex-luna` or `claude-sonnet`.
+Budget: every dispatch spends on both boards (`MB spend` on this board's row and on the same row of the profiles board); a refusal on either board stops dispatching on that row and asks the owner.
+Reviewers and DV are extra to the slots, as in the profiles plan.
+
+## 1. Inputs, verified on `develop` `bbcec7d6` (0.9.1-dev.4, 2026-11-17)
+
+- ADR 0050 in full, including the table of keys (lines 162-185) and owner decision 8 (every tunable is a key; a key lands with the slice that uses it).
+- Level 1 as shipped by PR #1782: `packages/daemon/src/power/awake-policy.ts`, `awake-session.ts`, `awake-holder.ts`, `awake-wiring.ts`; tests in `packages/daemon/tests/power/` and `packages/daemon/tests/integration/keep-awake-daemon-smoke.test.ts`; `docs/agent-reference/keep-awake.md`; the 0.9.0 changelog bullet (`CHANGELOG.md:7`).
+- `[awake]` validation: `validateAwakeTable` refuses any key outside `level1`, `question_hold_minutes`, `idle_grace_seconds`, `stuck_busy_minutes`, `ttl_minutes` (`packages/daemon/src/config/config.ts:458-478`), and an invalid config makes every `remi` command exit 1 at load (`cli.ts:396-403`; only `migrate-permissions` runs before it); `deepMerge` drops a key missing from the defaults (`config.ts:327-336`); so a `level1_battery_floor_percent` line in `config.toml` makes every `remi` command exit 1 today (`packages/daemon/tests/power/awake-config.test.ts:87-91` asserts the refusal), and preamble item 9 makes every new key land whole, in one commit.
+- Hub facts: `serveMode` (`cli.ts:475`), the live-sessions registry (`cli.ts:778`, `session/session-registry-file.ts:278`), `performCleanup` (`cli.ts:3219`), the `exit` listener (`cli.ts:1760`), the daemon-mode signal handlers (`cli.ts:3692-3703`; SIGUSR1 reload, SIGUSR2 unstick), `remi stop`'s 5 s (`cli/daemon-manager.ts:470`), the local-only endpoint precedent `/local-secure-push` (`server/websocket-server.ts:343-354`, `server/peer-helpers.ts:43-53`).
+- This Mac (Mac mini Mac16,11, macOS 27.2 build 26B123), read-only, 2026-11-17: `pmset -g batt` prints only `Now drawing from 'AC Power'`; `ioreg -r -c AppleSmartBattery -d 1` shows `"BatteryInstalled" = No`; `"SleepDisabled" = No`; no `AppleClamshellState`; thermal pressure level 0; `plutil -extract KEY raw` reads JSON fields; `ps -o lstart=` gives a comparable start time.
+- CI: every job in `.github/workflows/ci.yml` runs on `ubuntu-latest`; `local-relay` (`relay-r7.yml`) runs the soak for daemon PRs.
+- Open PRs on 2026-11-17: #1798 (profiles P1A: `config.ts`, `cli.ts`, `cli/arg-parser.ts`, `cli/help.ts`, `AGENTS.md`, `pty-child-env-secrets.test.ts`), drafts #1799 (CI optimization, docs) and #1802 (message board, docs).
+
+## 2. Steps
+
+Board order is dispatch priority.
+
+| ID | Card | Goal | Tier | Depends | Timebox | Acceptance gate (literal) |
+| --- | --- | --- | --- | --- | --- | --- |
+| G0 | [G0](cards/G0-password-on-wake.md) | settle the read-only source of the password-on-wake setting | worker | - | 3h | the note has five sections with every command's quoted output; `typos .context/awake-password-on-wake.md` clean; only that file changed |
+| G1 | [G1](cards/G1-power-readings.md) | parsers and bounded readers for assertions, thermal pressure and the root domain | worker | - | 1d | `env -i ... bun test packages/daemon/tests/power/readings` (canonical) ends `0 fail`, no skip on this Mac; every item of the card |
+| W1 | [W1](cards/W1-lease-and-watchdog.md) | root-boundary constants, the lease, the watchdog script and property lists, tested without privileges | worker-hard | - | 1d | `env -i ... bun test` of the three W1 test files (canonical) ends `0 fail`, no skip; every item of the card |
+| L2-POL | [L2-POL](cards/L2-POL-level2-policy.md) | the pure level 2 reducer (arming, pause and automatic resume, disarm; Q1 (b) and the Q9 amendment), settings validator (every policy and mechanism key, sanity only, no maximum) and foreign-holder classifier | worker-hard | - | 1.5d | `env -i ... bun test` of the three L2-POL test files (canonical) ends `0 fail`; every item of the card |
+| OG-CAP | rule | the owner's MacBook captures in seven states (eight with `lock-never`) | owner | - | 30m | [owner-gates.md](owner-gates.md) OG-CAP recorded; the seven folders (eight with `lock-never`) exist under `/Volumes/S1/yooz/remi/artifacts/awake-level2-2026-11/captures/OG-CAP/` |
+| G2 | [G2](cards/G2-level1-battery-floor.md) | the level 1 battery floor; `level1_battery_floor_percent` and `battery_check_seconds` supported; merges only after Q2 and Q4 are answered | worker-hard | G1, OG-CAP | 1d | `env -i ... bun test packages/daemon/tests/power packages/daemon/tests/integration/keep-awake-daemon-smoke.test.ts` (canonical) ends `0 fail`, no skip; every item of the card |
+| OG-G2 | rule | the owner checks the floor on the MacBook | owner | G2 | 30m | owner-gates.md OG-G2 recorded |
+| CP-L2 | rule | lead checkpoint before level 2; starts only when Q17 is also answered | lead | G0, G1, W1, L2-POL, G2, OG-CAP | - | a `decide` line starting `CP-L2:` (section 4) |
+| L2-CORE | [L2-CORE](cards/L2-CORE-switch-and-controller.md) | the switch and the hub's controller, not wired | worker-hard | CP-L2 | 1.5d | `env -i ... bun test packages/daemon/tests/power` (canonical) ends `0 fail`, no skip; every item of the card |
+| L2-HUB | [L2-HUB](cards/L2-HUB-config-and-hub.md) | level 2 keys, hub ownership, exit reverts, the local endpoint | worker-hard | L2-CORE | 1.5d | the card's Acceptance 6 command ends `0 fail`, no skip; every item of the card |
+| L2-CLI | [L2-CLI](cards/L2-CLI-keep-awake-command.md) | `remi keep-awake` status, start, extend, stop, setup, watchdog; dispatched only once PR #1798 shows `MERGED` | worker-hard | L2-HUB | 1d | the card's Acceptance 5 command ends `0 fail`, no skip; every item of the card |
+| OG-L2 | rule | the owner's setup and hardware tests (a) to (h) | owner | L2-CLI | 2h | owner-gates.md OG-L2 recorded |
+| CP-HW | rule | lead checkpoint after the hardware tests | lead | OG-L2 | - | a `decide` line starting `CP-HW:` |
+| L2-SLEEPNOW | outline | the third exact rule, only if OG-L2 (b) failed | worker-hard | CP-HW | 6h | completed at CP-HW |
+| L2-APP | outline | the phone surface: status, `allow_phone`, start and stop (web first) | worker-hard | CP-HW | 2d | completed at CP-HW |
+
+Reviewer cards: [RV-panel](cards/RV-panel.md) and [RV-delta](cards/RV-delta.md).
+After each code merge the manager dispatches [DV-AWAKE](cards/DV-awake-develop-verify.md) (worker, 1 hour) as an agent, not as a board step, the way the profiles board runs DV.
+Board states at start: G0, G1, W1, L2-POL `todo`; OG-CAP `owner`; G2 `todo` behind G1 and OG-CAP; CP-L2, OG-G2, OG-L2 and CP-HW `blocked`; L2-CORE, L2-HUB, L2-CLI `todo` behind their Depends; L2-SLEEPNOW and L2-APP `outline`.
+
+```text
+now          G0 ─────────────┐
+             G1 ──┬──────────┤
+             W1 ──┼──────────┤
+             L2-POL ─────────┤ (merge after Q15, Q16)
+owner        OG-CAP ─┐       │
+                     G2 ─────┤ (merge after Q2, Q4) ── OG-G2
+                             CP-L2 (+ Q17) ── L2-CORE ── L2-HUB ── L2-CLI (+ #1798 merged) ── OG-L2 ── CP-HW ─┬─ L2-SLEEPNOW (if needed)
+                                                                                                              └─ L2-APP
+```
+
+### Files and collisions
+
+| Step | Files it changes |
+| --- | --- |
+| G0 | `.context/awake-password-on-wake.md` |
+| G1 | new `packages/daemon/src/power/readings/` (`run-reading.ts`, `assertions.ts`, `thermal.ts`, `root-domain.ts`), new tests and fixtures under `packages/daemon/tests/power/`, `docs/agent-reference/keep-awake.md` |
+| W1 | new `packages/daemon/src/power/level2-commands.ts`, `level2-lease.ts`, `watchdog-script.ts`, new tests and fixtures, `docs/agent-reference/keep-awake.md` |
+| L2-POL | new `packages/daemon/src/power/level2-settings.ts`, `level2-policy.ts`, `level2-foreign-holders.ts`, new tests, `docs/agent-reference/keep-awake.md` |
+| G2 | new `power/readings/battery.ts`; `power/awake-policy.ts`, `awake-session.ts`, `awake-wiring.ts`; the `[awake]` parts of `config/config.ts`; tests; `keep-awake.md`, `AGENTS.md:248`, ADR 0050 (status line, one table row) |
+| L2-CORE | new `power/level2-switch.ts`, `level2-controller.ts`, `level2-census.ts`, `level2-readings.ts`, `readings/screen-lock.ts`, `readings/launchd.ts`; `readings/run-reading.ts`, `readings/assertions.ts` (if needed), `level2-commands.ts` (one constant); tests; `keep-awake.md` |
+| L2-HUB | the `[awake]` parts of `config/config.ts`; `cli.ts` (hub construction, cleanup, `exit` listener, handler); `server/websocket-server.ts`, `adapters/websocket-adapter.ts`, `adapters/connection-adapter.ts`; new `power/level2-endpoint.ts`; tests; `keep-awake.md`, `AGENTS.md:248`, ADR 0050 |
+| L2-CLI | new `cli/cmd-keep-awake.ts`; `cli/arg-parser.ts`, `cli/help.ts`, dispatch lines in `cli.ts`; tests; `keep-awake.md` |
+
+| Pair | Shared | Rule |
+| --- | --- | --- |
+| G1, W1, L2-POL | `keep-awake.md` (each adds a section) | may run together; the second and third to merge take `origin/develop` in and keep every section |
+| G1, G2 | `power/readings/` | G2 after G1 (Depends) |
+| G2, P1A (#1798) | `config/config.ts` (P1A: imports, `RemiConfig`, `DEFAULT_CONFIG` above `awake`, `deepMerge`, the `loadConfigWithNotices` split, the generated header; G2: the `[awake]` parts), `AGENTS.md` (P1A adds a line three lines above line 248) | may run together; the second to merge takes `origin/develop` in, keeps both, reruns its gates |
+| L2-HUB, P1B | `cli.ts` (P1B: the launch paths; L2-HUB: hub construction, cleanup, `exit` listener) | may run together; the second to merge takes `origin/develop` in, reruns its gates and its smoke tests |
+| L2-HUB, G2 | `config/config.ts` `[awake]` | L2-HUB after G2 (through CP-L2) |
+| L2-CLI, P1A | `cli/arg-parser.ts` (the subcommand list, `SUBCOMMANDS_WITH_ARG_LIST`, the operand loop P1A rewrites), `cli/help.ts`, `cli.ts` dispatch | L2-CLI only after #1798 merged (section 0.2 item 9) |
+| L2-APP, profiles P2B, P2C, P3B, P4A, P4B | `packages/shared/src/protocol.ts`, `protocol-version.ts`, `cli/capabilities.ts`, the fixture builders | never `active` together; the second to merge regenerates fixtures |
+| any step, `pty-child-env-secrets.test.ts` | an upper-case string literal under `packages/daemon/src` containing SECRET, TOKEN, PASSPHRASE, PASSWORD or PRIVATE_KEY fails it (lines 116-129); `require_password_on_wake` is lower case and does not | no step needs that file; a step that does stops and reports |
+
+## 3. Review policy, merge gate and hosted checks
+
+Every PR follows `project:pr-review-toolkit`'s `review-convergence.md`: round 1, an optional delta round (RV-delta), never a third; every finding fixed or rejected with a reason, none deferred.
+
+| Step | Round 1 lenses ([RV-panel](cards/RV-panel.md)) |
+| --- | --- |
+| G0 | `docs` |
+| G1 | `contract`, `verification`, `privacy` |
+| W1 | `contract`, `verification`, `privilege`, `failsafe` |
+| L2-POL | `contract`, `verification`, `failsafe` |
+| G2 | `contract`, `verification`, `maintainability`, `failsafe` |
+| L2-CORE | `contract`, `verification`, `privilege`, `failsafe` |
+| L2-HUB | `contract`, `verification`, `privilege`, `failsafe`, `maintainability` |
+| L2-CLI | `contract`, `verification`, `privilege`, `maintainability` |
+
+A finding on a `privilege` or `failsafe` path that the implementer contests goes to the advisor before any fix; a fix round with an accepted `privilege` or `failsafe` finding is worker-hard.
+Merge gate: section 0.2 item 6.
+Hosted checks on the final head (profiles runbook section 10, merge gate item 4): `CI Scope`, `Lint`, `Type Check`, `Test` (and `Test worker 0` to `2`), `Spelling`, `Relay Scope` and `local-relay`; every step except G0 changes `packages/daemon/`, so `local-relay` must be the real soak (more than 3300 seconds, about 65 minutes per head).
+None of these runs a darwin-only test, hence gate item 7 and DV-AWAKE.
+
+## 4. Checkpoints and owner gates
+
+**CP-L2** (the lead, when G0, G1, W1, L2-POL and G2 are merged, OG-CAP is recorded and Q17 is answered): read G0's note, the OG-CAP folder list (with the `lock-*` captures' `sysadminctl-screenlock.stdout`, `.stderr` and `.exit` files, which settle or refute G0's parse rule per stream) and the answers; re-verify every path and line that L2-CORE, L2-HUB and L2-CLI cite on the current `develop` (P1A and P1B move `config.ts` and `cli.ts`); edit those cards where an answer, G0's result or the code changed; run `manager_board.py card` on them; record `CP-L2: ...` with `decide --by lead`.
+If G0 is "not settled", the decision line says that level 2 will refuse until the owner sets `require_password_on_wake = false` and asks the owner whether to proceed.
+**CP-HW** (the lead, after OG-L2): read the owner's OG-L2 record; decide whether L2-SLEEPNOW is needed (step (b)); complete L2-APP (and L2-SLEEPNOW if needed); file issues for any failed step; record `CP-HW: ...`.
+
+Lead brief for a checkpoint or an escalation (one message; `MB` is `python3 $HOME/.claude/plugins/cache/research-skills/project/0.12.0/skills/manager-loop/scripts/manager_board.py`):
+
+```text
+You are the lead of yooz-labs/remi awake-level2-2026-11 (read-only for product code).
+Read first: /Volumes/S1/worktrees/remi/awake-l2-plan/.context/awake-level2-2026-11/plan.md sections 2 to 6, then `MB status BOARD`, then only what this wake names.
+Wake reason: CP-L2, CP-HW or the event, with links.
+Decide, then: edit cards or the plan only where the decision requires it, in one commit on docs/issue-1773-awake-level2-plan; re-verify every path and line a card you complete cites against the current origin/develop; run `MB card` on each completed card; record each decision with `MB decide BOARD "TEXT" --by lead`.
+Do not dispatch, merge, or edit the board's Parity, Slots or Budget.
+```
+**Owner gates** ([owner-gates.md](owner-gates.md)): OG-CAP (now, about 30 minutes), OG-G2 (after G2), OG-L2 (after L2-CLI: setup with the owner's own `sudo`, then tests (a) to (h)).
+No agent installs the sudoers file, the boot daemon or (on the owner's machine) the watchdog, and no agent runs `sudo`, a power-changing `pmset` or a writing `launchctl`.
+
+## 5. Risks
+
+| ID | Risk | Read by | If it reads bad | Who decides |
+| --- | --- | --- | --- | --- |
+| R1 | `disablesleep 0` with the lid closed leaves the Mac awake | OG-L2 (b) | L2-SLEEPNOW at CP-HW (owner decision 6) | lead, owner |
+| R2 | no read-only password-on-wake source | G0, then OG-CAP step 5 (the `lock-*` captures with separate `.stdout`, `.stderr` and `.exit` files, including `lock-never` where offered) | level 2 refuses unless `require_password_on_wake = false`; ask the owner at CP-L2 | owner |
+| R3 | a reading's format differs on the MacBook | OG-CAP, G2, L2-CORE | the card stops; the lead adapts the parser rule at CP-L2 | lead |
+| R4 | a test reaches the real switch, `sudo` or `launchctl` | every review (`privilege`), the after-run check of section 0.2 item 4 | stop all dispatching; ask the owner | owner |
+| R5 | an unknown `[awake]` key on an older binary (a downgrade, or a config copied to the MacBook's older remi) stops every `remi` command | Q4 | as answered | owner |
+| R6 | two remi homes on one Mac see each other's level 1 holders as another app's and refuse level 2 | OG-L2 setup | documented in L2-HUB's docs; the ignore list or idle sessions avoid it | lead |
+| R7 | collisions with the profiles daemon lane slow both | each merge | the merge-second rule of section 2 | manager |
+| R8 | a release ships level 2 code before OG-L2 | Q7 | as answered | owner |
+| R9 | the crash rail itself fails: the watchdog watches another remi home, hangs, or cannot revert | L2-CORE tests 2k and item 1, W1 item 5, OG-L2 (b0), (b1), (b) | a fix card before any release that enables level 2 | lead, owner |
+| R10 | armed mode keeps a lid-closed Mac awake with nobody deciding at that moment, and resumes by itself after a pause (section 6a) | OG-L2 (a) to (a3), (d), (e), (h), (l); the answers to Q12 to Q16 | tighten a bound of section 6a, or `level2 = false` | owner |
+
+## 6. Owner questions
+
+Each has the lead's recommendation; the cards follow it, and a different answer makes the lead correct the card before dispatch or merge.
+
+| ID | Question | Blocks | Recommendation |
+| --- | --- | --- | --- |
+| Q1 | How does a level 2 period start? (a) only by an explicit action: `remi keep-awake start [HOURS]` at the Mac now, the phone later (L2-APP); (b) armed: with `level2 = true` the hub turns it on at the first real work and keeps it for `level2_default_hours`, and after any revert it stays off until an explicit start | answered | **Answered (b) by the owner on 2026-11-17** (the lead had recommended (a)); applied to L2-POL, L2-CORE, L2-HUB, L2-CLI, L2-APP and OG-L2; consequences in section 6a |
+| Q2 | Do the battery limits apply only on battery power: the level 1 floor (decision 3 is "Level 1 on battery") and level 2's start, revert and time limits, with AC power exempt and unplugging below a limit acting at the next check? | answered | **Answered yes by the owner on 2026-11-17** |
+| Q3 | Level 2 on a Mac with no battery (a desktop): refuse (`no-battery`), or allow? | answered | **Answered refuse by the owner on 2026-11-17**; an armed hub on a desktop logs once that level 2 will never start there |
+| Q4 | An unknown `[awake]` key: keep stopping every `remi` command at config load (today's rule; it also catches a typo in a safety limit), or warn and ignore the keys ADR 0050 names that this build lacks? | answered | **Answered keep by the owner on 2026-11-17** |
+| Q5 | ADR 0050 gives level 1 no total time limit (only the question cap and the stuck bound); add one? | answered | **Answered no by the owner on 2026-11-17** (as recommended) |
+| Q6 | Capacity: run this plan beside the profiles plan on the same slots, worker-hard steps on `claude-opus` and worker steps on `codex-luna` or `claude-sonnet`, with this board's budget rows copied from the profiles board? | answered | **Answered yes by the owner on 2026-11-17** |
+| Q7 | Release: may a release contain L2-HUB and L2-CLI before OG-L2 passed? (a) yes, with `level2` off by default and `remi keep-awake setup` and the docs marked experimental and unverified until CP-HW removes the mark; (b) hold every release that contains them until OG-L2 (b) passed, which also holds the profiles releases; (c) the owner runs OG-L2 on a build of the reviewed, unmerged L2-CLI branch stacked on L2-HUB, and both merge after it passes | answered | **Answered (a) by the owner on 2026-11-17**: level 2 may ship off by default and marked experimental before OG-L2 (L2-CLI's `setup` line, the docs' "Not verified" list); CP-HW removes the mark |
+| Q8 | ADR 0050 decision 4 records 35 percent (start) and 30 percent (revert) as level 2's defaults, while the issue comment of 2026-11-14 called that reading "awaiting the owner's confirmation": confirm them? | answered | **Answered yes by the owner on 2026-11-17** |
+| Q9 | After a level 2 period ends (any revert, crash or reboot), it stays off until an explicit start (Q1 (b)). What brings back the automatic start? (a) only an explicit `remi keep-awake arm` (or the phone, with L2-APP); every period, automatic or explicit, uses up the arming, and the latch survives restarts and reboots; (b) also a clean hub restart (`remi stop`, then `remi start`), never a crash or a reboot; (c) periods that end naturally (expired, idle, last session ended) re-arm, and only `stop` and safety reverts (battery, thermal, another app, the watchdog, the flag cleared by someone else, a hub exit or crash, a switch failure) latch | answered | **Answered (a) by the owner on 2026-11-17, then amended**: while armed, level 2 pauses on a condition and resumes by itself when it is gone; only a person's `stop` (or a disarming bound) ends it until `arm`; applied in the cards and section 6a |
+| Q10 | Armed mode lets an agent session alone start a lid-closed period. Add a condition to automatic starts only (explicit starts unchanged)? (a) none beyond the existing refusals; (b) an automatic start also needs a remote client (the phone or the web app, not the local CLI) connected to the hub within `level2_auto_client_minutes` (a new key, default 30; the hub already classifies connections as local or remote, `cli.ts:2518-2534`), at the cost that a person whose app has been closed for longer gets no automatic period; (c) automatic starts only on AC power | answered | **Answered (a) by the owner on 2026-11-17**, before the Q9 amendment; with automatic resume, Q13 (the lid open) is the presence bound the lead proposes instead |
+| Q11 | Should the person be told when an automatic period starts and ends? (a) yes: one hub log line and `remi keep-awake status` now, and a push to the paired phone ("Mac kept awake with the lid closed until 14:30, 62 percent") when L2-APP adds its push kind; (b) log and status only; (c) also a macOS notification on the Mac (unseen with the lid closed) | answered | **Answered (a) by the owner on 2026-11-17**; with pause and resume, which transitions push is settled at CP-HW (L2-APP) |
+| Q12 | ADR 0050 fail-safe item 5 says the new hub "reverts a lease it does not own and never resumes level 2 by itself"; armed resume can contradict that. When does a new hub (after a crash, a reboot, an upgrade or `remi stop` and `remi start`) come up armed? (a) never: every hub start comes up disarmed and needs `remi keep-awake arm` (item 5 kept literally; one command after every restart, upgrade and reboot); (b) only when the previous hub recorded a clean exit after a successful revert, the startup found no lease and the flag reads `No`; after a crash, a leftover lease or any anomaly it comes up disarmed (`restart`); (c) always armed when `level2 = true`, relying on the resume bounds (contradicts item 5) | answered | **Answered (b) by the owner on 2026-11-17**; L2-HUB amends item 5 in ADR 0050 |
+| Q13 | With automatic resume, a closed MacBook could turn level 2 back on in a bag, after a dark wake or when a pausing condition clears. Require the lid open, for the whole dwell, for every automatic start and resume? A running level 2 stays on when the lid closes, and an explicit `start` is unaffected. (a) yes; (b) no | answered | **Answered yes by the owner on 2026-11-17** |
+| Q14 | What do the period limits become under pause and resume? (a) `level2_default_hours` (3) is the longest continuous run, then a pause (`run-limit`) that resumes under the resume rules, so with Q13 a lid-closed Mac needs the lid opened at least every 3 hours, and `level2_cap_hours` (12) is the most on-time in any 24 hours (`daily-cap`); (b) no continuous limit while work exists, only the 24-hour cap and the idle revert; (c) either limit disarms, and a person must `arm` again | answered | **Answered (a) by the owner on 2026-11-17**, with the rule that every limit, the 3-hour run included, is a setting the person can change |
+| Q15 | Your rule makes every limit a setting with no maximum; the cards turn every former maximum, and the old requirement that the start battery percent sit at least 5 above the revert percent, into warnings printed at config load and in `remi keep-awake status`, keeping only sanity checks and two order relations (revert percent below start percent; thermal revert level at or above the refuse level). Should any value stay a hard refusal? (a) none; (b) also refuse a `level2_revert_battery_percent` below 10, because whether a Mac with sleep disabled still makes its emergency low-battery sleep is unverified (ADR 0050 line 104); (c) also refuse a `heartbeat_seconds` above 300, because the battery and thermal pauses are only as prompt as the heartbeat | answered | **Answered (a) by the owner on 2026-11-17**: no hard limit at all; sanity checks, the two order relations and warnings only |
+| Q16 | Some numbers are mechanism bounds, not policy: they limit remi's own subprocesses and files and never decide when the Mac sleeps. In the open PRs and the cards: a reading's 2 s deadline, 256 KiB output and 64 KiB stderr caps and 500 ms kill grace (G1, #1806); the watchdog's 10 s command deadline, the 4 KiB lease cap, the 2 s `ps` deadline and the 64-character start-time and 32-character user-name formats (W1, #1807); the switch's 5 s and 3 s deadlines, the 3 s shutdown budget and the 64 KiB status-file cap (L2-CORE); the endpoint's 4 KiB body and 2 s read and the CLI's 5 s request (L2-HUB, L2-CLI); level 1's caffeinate retries (three, after 0.5, 1 and 2 s), the renewal at 80 percent of `ttl_minutes` and its 1 s overlap (shipped in 0.9.0); and a 60 s clock-skew tolerance. (a) keep them named constants in their modules with a comment that they are mechanism bounds, documented in `keep-awake.md`; (b) make them settings too | answered | **Answered (b) by the owner on 2026-11-17** (the lead had recommended (a)): mechanism and format bounds are settings too, with warnings where a value would defeat its own safety; G1 and W1 take a fix round (Appendix B), and the keys land with their callers (section 6 key list) |
+| Q17 | `remi stop` waits 5 s before it sends SIGKILL (`cli/daemon-manager.ts:470`), a general remi number outside keep-awake that level 2's shutdown revert must finish inside. Make it a setting too? (a) yes: a `[daemon] stop_timeout_seconds` key (default 5) added by L2-HUB, and the `shutdown_budget_ms` warning compares with it; it touches `cli/daemon-manager.ts`, which the profiles plan's P1B also changes (the merge-second rule applies); (b) no: it is outside keep-awake; file an issue for it | CP-L2 (L2-HUB's scope) | (a): your rule that every number is a setting, and the warning then follows the real value |
+
+Short texts for `MB ask` (each under 200 characters):
+
+| ID | Ask text | Options |
+| --- | --- | --- |
+| Q1 | Q1: How does a level 2 period start? (a) only by an explicit start (remi keep-awake start now, the phone later); (b) armed by level2 = true at the first real work | (a) explicit start (Recommended) / (b) armed |
+| Q2 | Q2: Do the battery limits (level 1 floor; level 2 start, revert and time limits) apply only on battery power, with AC power exempt? | Yes (Recommended) / No, also on AC |
+| Q3 | Q3: Level 2 on a Mac with no battery (a desktop): refuse it or allow it? | Refuse (Recommended) / Allow |
+| Q4 | Q4: An unknown [awake] key: keep stopping every remi command at config load, or warn and ignore ADR 0050 keys this build lacks? | Keep stopping (Recommended) / Warn and ignore |
+| Q5 | Q5: Add a total time limit to level 1? ADR 0050 gives it only the question cap and the stuck bound. | No (Recommended) / Yes |
+| Q6 | Q6: Run this plan beside the profiles plan on shared slots and budget, worker-hard steps on claude-opus, codex-terra left to the profiles lane? | Yes (Recommended) / Other |
+| Q7 | Q7: May a release contain level 2 (off by default, marked experimental) before the MacBook gate OG-L2 passes, or hold such releases? | (a) ship marked experimental (Recommended) / (b) hold releases / (c) gate an unmerged branch |
+| Q8 | Q8: Confirm ADR 0050's level 2 battery defaults: refuse to start below 35 percent, revert at 30 percent (both configurable)? | Yes (Recommended) / Other values |
+| Q9 | Q9: After a level 2 period ends, what re-arms the automatic start? (a) only remi keep-awake arm; (b) also a clean hub restart; (c) natural ends re-arm, only safety reverts latch | (a) only arm (Recommended) / (b) arm or clean restart / (c) natural ends re-arm |
+| Q10 | Q10: Extra condition for automatic starts? (a) none; (b) a phone or web client connected to the hub in the last 30 minutes; (c) only on AC power | (a) none, if Q9 is (a) (Recommended) / (b) recent remote client / (c) AC only |
+| Q11 | Q11: Tell the person when an automatic period starts and ends? (a) hub log and status now, a phone push with L2-APP; (b) log and status only | (a) log, status, then push (Recommended) / (b) log and status only |
+| Q12 | Q12: When does a new hub come up armed? (a) never, arm after every restart; (b) only after a clean exit with no lease left, never after a crash; (c) always | (a) never / (b) only after a clean exit (Recommended) / (c) always |
+| Q13 | Q13: Should automatic start and resume need the lid open for the whole dwell (a running level 2 stays on when the lid closes; explicit start unaffected)? | Yes (Recommended) / No |
+| Q14 | Q14: Period limits under pause and resume: (a) 3 h longest run then pause, 12 h on-time per 24 h; (b) only the 12 h per 24 h cap; (c) either limit disarms | (a) run limit and daily cap (Recommended) / (b) daily cap only / (c) limits disarm |
+| Q15 | Q15: Every former maximum is now a warning, not a refusal. Keep any hard limit? (a) none; (b) refuse a revert battery below 10 percent; (c) refuse a heartbeat above 5 minutes | (a) none (Recommended) / (b) battery revert floor / (c) heartbeat ceiling |
+| Q16 | Q16: Keep mechanism bounds (subprocess deadlines, size caps, retry backoff, the shutdown budget) as named constants, not settings? They never decide when the Mac sleeps | (a) named constants (Recommended) / (b) settings too |
+| Q17 | Q17: Make remi stop's 5 s wait before SIGKILL a setting too ([daemon] stop_timeout_seconds), so the shutdown warning compares with it? | (a) yes, in L2-HUB (Recommended) / (b) no, a separate issue |
+
+Lead decisions under ADR 0050 decision 8 (every tunable is a key), which the owner may override: two keys the ADR's table lacks, `battery_check_seconds` (default 60, G2) and `lease_stale_seconds` (default 120, the ADR's "heartbeat older than 120 s", L2-POL and L2-HUB); `level1_battery_floor_percent = 0` turns the floor off; the level 2 battery revert rule needs a time estimate only when one is shown; level 2 never turns on without the watchdog loaded, and the password setting and the watchdog are checked at every start and resume (the watchdog also on every heartbeat); six pause-and-resume bounds are keys (listed below), the revert percent must sit below the start percent (a smaller gap than 5 is a warning, Q15), and the arming state and the window counters persist in `keep-awake/state.json`; the Mac-side controls use a local-only HTTP endpoint on the hub (the `/local-secure-push` gate), not new protocol messages, so no protocol change happens before L2-APP; the idle revert counts a session as working from level 1's own `awakeHold` verdict, published in its status file (so it inherits the question cap and the stuck bound); remi's processes are the hub, the live sessions and all their descendants (a narrowing of "remi's process tree": a shared process such as Codex's app-server is foreign); level 1 keeps a `none` battery reading for the daemon's lifetime and releases a hold only after two consecutive unknown readings (fail toward sleep, without dropping a turn on one slow read); the watchdog's identity (this remi home's script, this build's bytes) is checked at start, extend and every heartbeat; sleep is never turned off unless `sudo -n -l` shows the revert command is allowed; the printed setup stages root content only in a root-owned directory.
+
+Keys after the owner's rule of 2026-11-17 (all `[awake]`, sanity validation only, no maximum; the defaults are the plan's only choice):
+- level 1 (G2): `level1` (true), `question_hold_minutes` (30), `idle_grace_seconds` (120), `stuck_busy_minutes` (15), `ttl_minutes` (20), the four losing their shipped maxima; `level1_battery_floor_percent` (20; 0 turns it off); `battery_check_seconds` (60); `level1_battery_unknown_reads` (2, new);
+- level 2 (L2-POL, L2-HUB): `level2` (false); `level2_start_battery_percent` (35); `level2_revert_battery_percent` (30; below the start percent); `level2_min_remaining_minutes` (20; 0 off); `level2_default_hours` (3, the longest run); `level2_cap_hours` (12, on-time per window); `level2_window_hours` (24, new); `level2_idle_revert_minutes` (30); `thermal_refuse_level` (moderate); `thermal_revert_level` (heavy; at or above the refuse level); `thermal_moderate_revert_minutes` (5); `heartbeat_seconds` (30); `lease_stale_seconds` (120); `watchdog_interval_seconds` (60); `foreign_holder_revert_minutes` (2); `foreign_holder_ignore` (empty, no length limit); `require_password_on_wake` (true); `level2_resume_dwell_seconds` (120; 0 off); `level2_resume_min_interval_minutes` (10; 0 off); `level2_max_resumes_per_day` (12; 0 means explicit `start` only); `level2_breaker_failures` (3); `level2_wake_gap_seconds` (90, new);
+- mechanism and format keys (Q16 (b)), each a positive integer with no maximum unless noted, read once at process start and passed down as options:
+  - readings and level 1 (G2): `reading_deadline_ms` (2000), `reading_stdout_max_bytes` (262144), `reading_stderr_max_bytes` (65536), `reading_kill_grace_ms` (500), `caffeinate_retry_delays_ms` (`[500, 1000, 2000]`; empty means no retry), `ttl_renewal_fraction` (0.8; above 0; a warning at 1 or more), `caffeinate_renew_overlap_ms` (1000; 0 allowed with a warning);
+  - level 2 runtime (L2-POL validates, L2-HUB supports, L2-CORE reads): `clock_skew_tolerance_seconds` (60; 0 allowed), `switch_deadline_ms` (5000), `switch_sync_deadline_ms` (3000), `shutdown_budget_ms` (3000; a warning at or above `remi stop`'s wait, Q17), `status_file_max_bytes` (65536), `process_start_time_deadline_ms` (2000), `lease_max_bytes` (4096; a warning below 1024), `lease_start_time_max_length` (64), `endpoint_body_max_bytes` (4096), `endpoint_read_deadline_ms` (2000);
+  - level 2 install and command line (L2-POL validates, L2-HUB supports, L2-CLI reads): `cli_request_timeout_ms` (5000), `watchdog_interval_seconds` (60), `watchdog_command_deadline_seconds` (10; a warning at or above the interval), `lease_integer_max_digits` (16; a warning above 18, where the watchdog's shell arithmetic overflows), `sudoers_user_max_length` (32; only the length: the safe character class of a short name stays fixed because it keeps a sudoers injection out, so a longer limit opens no injection);
+- slice 4 (L2-APP): `allow_phone` (false).
+Removed as hard limits and kept only as warnings (Q15 (a)): every former maximum, the 5-point start and revert gap, staleness at least twice the heartbeat, and the run at most the cap.
+The keys of a module whose caller arrives later land with that caller (preamble items 9 and 10); until then the module takes the value as an option whose default is an exported `DEFAULT_*` constant.
+
+## 6a. Armed mode with pause and resume (Q1 (b) and the Q9 amendment)
+
+The owner chose on 2026-11-17 that `level2 = true` arms the hub (Q1 (b)), and amended Q9: once armed, level 2 stays on while there is work until a condition prevents it, reverts to the safe state and pauses while the condition holds, and resumes by itself when the condition is gone; only a person's explicit action ends it until the person arms it again.
+What that changes, plainly: an agent session alone keeps a Mac whose lid is closed awake, on battery, for as long as its work continues and no condition holds, and after a pause level 2 comes back with nobody deciding at that moment; while it is on, every app keeps running (ADR 0050 line 19).
+Any process of the same user could already arm, start or configure level 2 (ADR 0050's threat model, which includes the agent remi runs); armed mode does not change who can, only that nobody has to, and how often.
+
+### Which conditions pause and resume, and which only a person ends
+
+Pause and resume (revert to the safe state, then resume by itself once the condition has been clear for the dwell, under the bounds below; L2-POL items 6 and 7):
+- no work: the `idle` revert after `level2_idle_revert_minutes` (30), and no live session; both return to `armed`, and the next work turns level 2 on again;
+- battery on battery power (Q2): pause at or below `level2_revert_battery_percent` (30) or under `level2_min_remaining_minutes` (20) of estimate; resume at or above `level2_start_battery_percent` (35), or on AC power; an unreadable battery pauses;
+- thermal: pause at `thermal_revert_level` (heavy) or after `thermal_moderate_revert_minutes` (5) at moderate; resume only below `thermal_refuse_level` (moderate), so nominal by default; an unreadable level pauses;
+- another app holding the Mac awake (after `foreign_holder_revert_minutes`, 2), or an unreadable assertion list; resume when it is gone;
+- password on wake off or unreadable (when required); the watchdog missing, not bound to this remi home or unreadable; the flag unreadable, or set by someone else before level 2 turned on;
+- a heartbeat or lease write failure (also counted by the breaker);
+- the run limit and the daily cap (Q14);
+- for turning on only: the lid closed (Q13), the minimum interval since the last pause, and the dwell;
+- a Mac with no battery never turns on (Q3).
+
+Explicit-only (disarmed until the person runs `remi keep-awake arm` or `start`; L2-POL item 8):
+- `remi keep-awake stop`;
+- the flag cleared by someone else while level 2 is on (for example the owner's own `sudo /usr/bin/pmset -a disablesleep 0`), treated as a person's kill switch;
+- a switch failure when turning on (`switch-failed`, `revert-not-permitted`, `sudo-refused`): never retried automatically;
+- the resume limit (`level2_max_resumes_per_day`) and the circuit breaker (`level2_breaker_failures` failures), both counted in `level2_window_hours`;
+- a hub start after a crash or with a lease anomaly (Q12);
+- `level2 = false` with a hub restart (state `disabled`).
+
+### Thresholds, hysteresis and the new keys
+
+A resume uses the start thresholds, which sit above the pause thresholds: battery resumes at `level2_start_battery_percent` (default 35) or on AC power after a pause at `level2_revert_battery_percent` (default 30); the only required relation is the revert percent below the start percent, and a gap under 5 points is a warning (Q15), so with the defaults a pause at 30 never resumes at 31; thermal resumes only below the refuse level after a pause at the revert level.
+Six keys bound how fast and how often level 2 comes back (lead decisions under owner decision 8 and the owner's rule; only defaults are chosen, and none has a maximum): `level2_resume_dwell_seconds` (default 120: every condition clear, without a gap, for this long; 0 turns it off), `level2_resume_min_interval_minutes` (default 10: no resume sooner after a pause; 0 turns it off), `level2_max_resumes_per_day` (default 12 in `level2_window_hours`: the next automatic start or resume disarms instead; 0 means only an explicit `start` turns level 2 on), `level2_breaker_failures` (default 3 failures in `level2_window_hours` disarm), `level2_window_hours` (default 24: the rolling window of the cap and both counts) and `level2_wake_gap_seconds` (default 90: a longer gap between beats counts as a wake from sleep).
+The arming state and the counters persist in `REMIHOME/keep-awake/state.json`, so a restart cannot reset a bound.
+
+### What the period limits and the idle revert become (Q14)
+
+The owner answered Q14 (a): `level2_default_hours` (default 3, any positive number of hours) becomes the longest continuous run, after which level 2 pauses (`run-limit`) and resumes only under the resume rules, so with Q13 a lid-closed Mac needs the lid opened again at least once per run; `level2_cap_hours` (default 12) becomes the most on-time in `level2_window_hours` (default 24, `daily-cap`); an explicit `extend` lengthens a run up to the cap; the owner's rule makes all three settings with no maximum.
+`level2_idle_revert_minutes` (30) stays the revert after no work, now returning to `armed`.
+
+### New failure modes and their bounds
+
+Each bound has a test (T) or an owner-gate check (G):
+1. Flapping at a threshold (battery at 30 and 31, thermal at the edge, an app that holds and releases, a noisy time estimate).
+   Bounds: resume thresholds above the pause thresholds, the dwell, the minimum interval, and the daily resume cap that disarms.
+   T: L2-POL acceptance 4 (the oscillation rows, the cap row).
+   G: OG-L2 (a2), (d), (e).
+2. A resume while the person is in a bag.
+   Bound: Q13, turning on needs the lid open for the whole dwell.
+   T: L2-POL acceptance 4 (the lid row), L2-CORE 2m.
+   G: OG-L2 (a3).
+3. An automatic resume after the Mac woke from a revert sleep (a dark wake or Power Nap with the lid closed).
+   Bounds: the lid rule, and a beat gap of more than `level2_wake_gap_seconds` (default 90) restarts the dwell, which a dark wake rarely outlasts.
+   T: L2-POL acceptance 4 (the wake row).
+   G: OG-L2 (a3) counts the dark wakes and checks that none resumed.
+4. A runaway loop against the sudo switch.
+   Bound: a switch failure when turning on disarms at once and is never retried; the `sudo -n -l` checks before an enable count as the switch.
+   T: L2-POL acceptance 5, L2-CORE 2m.
+   G: OG-L2 (k).
+5. A recurring failing switch on revert.
+   Bound: the revert keeps retrying (the safe direction, as the watchdog does) and each failure counts toward the breaker, which disarms so no enable follows.
+   T: L2-POL acceptance 5 (the breaker row).
+6. Restart loops (launchd restarting a crashing hub, an upgrade, a reboot).
+   Bounds: Q12 (b), disarmed after a crash or a lease anomaly; the counters persist across restarts.
+   T: L2-POL acceptance 5, L2-CORE 2m, L2-HUB acceptance 4.
+   G: OG-L2 (b0), (b1), (c), (h).
+7. A wall-clock step resetting a 24-hour counter.
+   Bound: a recorded time in the future counts as now.
+   T: L2-POL acceptance 5.
+8. A forgotten agent in a bag.
+   Bounds: the run limit and the daily cap (Q14), the idle revert, battery and thermal.
+   G: OG-L2 (a).
+9. Log and push noise from pauses and resumes.
+   Bound: a log line only on a change of state or condition; which transitions push is settled at CP-HW (L2-APP).
+   G: OG-L2 records the `[Awake2]` lines per hour.
+
+Still in force from before: the root piece exists only after the owner's own `sudo` setup, and `level2` is false by default; every condition above also blocks an explicit `start`; crash safety (the lease written first, the watchdog bound to this remi home and checked every heartbeat, the boot daemon, reverts on every clean exit path, the revert permission checked before every enable); kill switches (`remi keep-awake stop`, `level2 = false` with a hub restart, `remi stop`, the owner's own `sudo /usr/bin/pmset -a disablesleep 0`); visibility (`remi keep-awake status` and the hub log now; the phone and the apps with L2-APP, Q11).
+What does not bound it: nothing knows whether the person still wants a working agent to run; within the run limit and the daily cap a forgotten agent keeps a Mac awake, and with the lid open level 2 resumes after each pause.
+
+### The conflict with ADR 0050 fail-safe item 5
+
+ADR 0050 says the new hub "reverts a lease it does not own and never resumes level 2 by itself" (line 98).
+Under pause and resume, a hub that comes up armed after a restart would turn level 2 on by itself, which that sentence forbids; the owner answered Q12 (b): a new hub comes up armed only after a clean exit with no lease left and the flag `No`, never after a crash, and L2-HUB amends the ADR's sentence to say so.
+
+## 7. What ADR 0050 assigns where (for the "time limits" question)
+
+Slice 2 (guard rails) has one key, `level1_battery_floor_percent`, plus the readings, the watchdog script with its dry-run tests and the password-on-wake read (ADR 0050 lines 144 and 158); this plan adds `battery_check_seconds` under decision 8.
+Level 1's time limits, the question cap and the stuck bound, shipped in slice 1; level 1 has no per-session or total time limit (Q5).
+Level 2's time limits (`level2_default_hours`, `level2_cap_hours`, `level2_idle_revert_minutes`, `thermal_moderate_revert_minutes`, `foreign_holder_revert_minutes`) are slice 3 (L2-POL, L2-HUB).
+`allow_phone` is slice 4 (L2-APP).
+Linux (`systemd-inhibit`) is out of scope (ADR 0050 line 137).
+
+## Appendix A: pack review (2026-11-17)
+
+Two fresh reviewers read the pack before the first dispatch: an executability reviewer (Sonnet) and a design and safety reviewer (Opus).
+Every finding was accepted; none was rejected.
+
+Executability, fixed in commit `181757ae`: checks 1 and 3 would stop on the profiles manager's merges (0.2 item 4); the checkpoint go flow and owner answers were undefined (0.2 items 8 and 9); the board could not be built literally (0.2 item 1, `30m` timeboxes, DV out of the Steps table, short ask texts); the relaxed fresh-base rule was not written where the manager reads (0.2 item 6) and the runbook was not pinned (0.1, commit `e18eac02`); G0's stderr answer had no runner path (G1 `captureStderr`); shared slots and budget were unenforceable (0.6); DV-AWAKE's worktree was never created (0.2 item 7); `launchctl` had no constants (W1 `LAUNCHCTL_PATH`, L2-CLI argv builders and guard scan); test `AwakeConfig` literals would break typecheck (G2, L2-HUB); whole test directories in gates (L2-CLI names its files; L2-HUB's hub starts under `env -i`); OG-CAP's first-tick trigger, `init` before `tick`, `stop` while off (L2-POL); one wrong citation (G2).
+
+Design and safety, fixed in the next commit: the watchdog was not bound to its remi home (identity check at start, extend and every beat; `watchdog uninstall` refuses with a lease; OG-L2 reinstalls from the daily home); the revert permission was never checked (`sudoListArgv` before every enable; setup checks both commands; removal stops first and ends with the owner's own revert); the printed setup staged root content in user-writable files (root-owned `sudo mktemp -d` staging); OG-L2 (b) could pass for the wrong reason (the level 1 holder is checked before the kill, the pass needs a Sleep entry after the revert, (b') without an idle assertion, (b1) for the reconcile path); stale leases with the flag `No` (the watchdog deletes them without acting, deletes only the lease it read, the hub rewrites the whole lease); the census ignored level 1's caps (`awakeHold`); `ps` start times in local time (`TZ=UTC0`) and a backward clock step (future heartbeat counts as stale); one unknown battery reading dropped holds on desktops (sticky `none`, two unknowns); releases blocked by Q7 (Q7 reworded with three options) and Q1 now gates L2-POL; L2-CORE may adjust the watchdog's battery rule; untested `exit`-listener path (a real child-process test), reconcile on hardware ((b1)), hung watchdog children (deadlines); departures from ADR 0050 stated (process tree, the dry-run flag, the loud warning for `require_password_on_wake = false`, Q8 for the 35 and 30 percent defaults); the threat model's wording in Q1 and the endpoint docs; the black-box hub test no longer plants a lease.
+
+## Appendix B: fix rounds for G1 and W1 after Q16 (b) (2026-11-17)
+
+Both PRs have no caller and no configuration wiring, so their keys land later with their callers; before merge, each module takes every number as an option whose default is an exported `DEFAULT_*` constant, so no caller ever needs to edit their internals.
+No behavior changes at the defaults; each new option has a test that fails when the option is ignored (revert check: hard-code the default again), run in the canonical environment with no skip on this Mac.
+The manager sends each list as a fix round on the open PR (no third review round; the delta reviewer reads only these commits).
+
+**G1, PR #1806 (head `90e6594b`), needs a fix round:**
+1. `packages/daemon/src/power/readings/run-reading.ts`: export `DEFAULT_TIMEOUT_MS` (2000), `DEFAULT_MAX_STDOUT_BYTES` (262144), `DEFAULT_MAX_STDERR_BYTES` (65536) and `DEFAULT_KILL_GRACE_MS` (500); add `maxStderrBytes` and `killGraceMs` to `SpawnBoundedOptions` and use them in place of `MAX_STDERR_BYTES` and `KILL_GRACE_MS` (lines 32-33, 127 and the stderr cap near line 170); a comment on each default names the `[awake]` key that will feed it in G2 (`reading_deadline_ms`, `reading_stdout_max_bytes`, `reading_stderr_max_bytes`, `reading_kill_grace_ms`).
+2. `readAssertions`, `readRootDomain` and `readThermal` take an optional `SpawnBoundedOptions` and pass it to `runReading`.
+3. Tests: `maxStderrBytes: 100` returns at most 100 bytes of a fake executable's 1000-byte standard error; `killGraceMs` is the wait after the kill (a fake that ignores SIGTERM and a short grace returns within the deadline plus the grace plus a margin); a darwin test reads `readRootDomain({ maxStdoutBytes: 16 })` as unknown with `oversize`, proving the readers pass the options on.
+4. `docs/agent-reference/keep-awake.md`: the readings section lists the four defaults and says that G2 makes them settings.
+
+**W1, PR #1807 (head `ee4b9e6c`), needs a fix round:**
+1. `packages/daemon/src/power/level2-lease.ts`: export `DEFAULT_LEASE_MAX_BYTES` (4096), `DEFAULT_PROCESS_START_TIME_TIMEOUT_MS` (2000) and `DEFAULT_START_TIME_MAX_LENGTH` (64); `readLease(remiHome, ownerUid, options?: { maxBytes?, startTimeMaxLength? })`, `validateLease(value, options?: { startTimeMaxLength? })` and `processStartTime(pid, options?: { timeoutMs? })` use them in place of the constants (lines 21, 23, 71, 108, 181-187, 227).
+2. `packages/daemon/src/power/watchdog-script.ts`: `buildWatchdogScript` takes `commandDeadlineSeconds?` (default `DEFAULT_WATCHDOG_COMMAND_DEADLINE_SECONDS`, 10, replacing `WATCHDOG_COMMAND_DEADLINE_SECONDS` at lines 51 and 125) and `integerMaxDigits?` (default `DEFAULT_LEASE_INTEGER_MAX_DIGITS`, 16, replacing the literal 16 of `is_uint` at lines 188-193), each a positive integer (refuse non-positive; no maximum: the warning above 18 digits is the configuration's, L2-POL).
+3. `packages/daemon/src/power/level2-commands.ts`: `isSafeShortName(user, options?: { maxLength? })` with `DEFAULT_SUDOERS_USER_MAX_LENGTH` (32): the pattern becomes the fixed safe class `^[a-z_][a-z0-9_-]*$` plus a length check from 1 to `maxLength`; `sudoersLine` and `setupText` take and pass the option.
+   Only the length is a setting: the character class is what keeps a sudoers injection out (no space, comma, colon, `!`, `=`, `#` or upper-case keyword can pass at any length), so a longer limit opens no injection.
+4. Tests: a lease larger than `maxBytes: 100` is invalid while the default accepts it; a start time longer than `startTimeMaxLength: 10` is invalid; `processStartTime(process.pid, { timeoutMs: 1 })` returns null; `commandDeadlineSeconds: 1` with a fake `ioreg` that sleeps 3 s ends the run in under 3 s; `integerMaxDigits: 4` turns a 5-digit `heartbeatAt` into `lease invalid`; `maxLength: 40` accepts a 35-character safe name that the default refuses, and `a b`, `a,b`, `root ALL` and `ALL` are refused at every length.
+5. `docs/agent-reference/keep-awake.md`: the building-blocks section lists the defaults and says that L2-HUB and L2-CLI make them settings.
