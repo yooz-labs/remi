@@ -57,6 +57,8 @@ describe('chat acceptance through the hook bridge (#1818)', () => {
   let sessionId: UUID;
   let claudeId: string;
   let promptUp: PromptUp | null;
+  /** Runs between the typed text and its Enter: the window a late refusal happens in. */
+  let afterTextBeforeEnter: () => void;
   let handlers: ReturnType<typeof createInputHandlers>;
   const watchers = new Map();
   const timers = new Map<UUID, ReturnType<typeof setInterval>>();
@@ -68,6 +70,7 @@ describe('chat acceptance through the hook bridge (#1818)', () => {
     sent = [];
     clock = 1_000_000;
     promptUp = null;
+    afterTextBeforeEnter = () => {};
     claudeId = generateId();
     registry = new SessionRegistry({ orphanTimeoutMs: 60_000 });
     sessionId = registry.createSessionId();
@@ -83,7 +86,11 @@ describe('chat acceptance through the hook bridge (#1818)', () => {
           ptyOutput += data;
         },
       },
-      { submitDelay: async () => {} },
+      {
+        submitDelay: async () => {
+          afterTextBeforeEnter();
+        },
+      },
     );
     pty.start();
     await until(() => ptyOutput.includes('__ready__'), 'the terminal to start');
@@ -271,6 +278,27 @@ describe('chat acceptance through the hook bridge (#1818)', () => {
     await submitted('blocked by a menu');
     expect(results()).toEqual([]);
     expect(sent.some((s) => s.message.type === 'error')).toBe(true);
+  });
+
+  test('a message whose Enter the guard refused after the text was typed is never confirmed', async () => {
+    // A prompt appears between the text and its Enter (#1488): the handler stops before the Enter,
+    // tells the sender, and Claude never submits that text.
+    afterTextBeforeEnter = () => {
+      promptUp = 'terminal';
+    };
+    await send(CONN_A, 'half typed');
+    afterTextBeforeEnter = () => {};
+    promptUp = null;
+    const refusal = sent.find((s) => s.message.type === 'error');
+    expect(refusal?.message).toMatchObject({
+      code: 'PROMPT_WAITING',
+      details: { inputMayBePartial: true },
+    });
+    await until(() => ptyOutput.includes('half typed'), 'the typed text');
+    expect(ptyOutput).not.toContain('half typed\r');
+    // Whatever Claude later reports with that text, the refused message is not the one it took.
+    await submitted('half typed');
+    expect(results()).toEqual([]);
   });
 
   test('a message without an id and a raw keystroke are not tracked', async () => {
