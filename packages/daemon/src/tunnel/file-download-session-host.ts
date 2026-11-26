@@ -4,8 +4,10 @@ import * as path from 'node:path';
 import type { HarnessId, UUID } from '@remi/shared';
 import type { WebSocketAdapter } from '../adapters/websocket-adapter';
 import type { IdentityStore } from '../auth/identity-store';
+import { log } from '../cli/logger.ts';
 import type { HarnessSession } from '../harness/types';
 import type { SecurePushStore } from '../notifications/secure-push-store';
+import type { Profiles } from '../profiles/profile-config.ts';
 import type { SessionBindingStore } from '../session/session-binding-store';
 import type { ManagedSession, SessionRegistry } from '../session/session-registry';
 import type { StoredSession } from '../session/session-store';
@@ -13,9 +15,21 @@ import { DirectoryRoot } from './admission';
 import { type FileDownloadHostContext, FileDownloadService } from './file-download-service';
 import { recoveryNative } from './recovery-native';
 
+let loggedInvalidInactiveRoot = false;
+
 export interface DownloadProtectedRoot {
   readonly pathname: string;
   readonly required: boolean;
+}
+
+function mergeRoots(roots: readonly DownloadProtectedRoot[]): DownloadProtectedRoot[] {
+  const unique = new Map<string, DownloadProtectedRoot>();
+  for (const root of roots)
+    unique.set(root.pathname, {
+      pathname: root.pathname,
+      required: root.required || (unique.get(root.pathname)?.required ?? false),
+    });
+  return [...unique.values()];
 }
 
 /** Only known launch environment/default paths; no installed settings or credential reads. */
@@ -41,13 +55,7 @@ export function downloadProtectionRoots(options: {
   for (const override of [options.claudeConfigDirectory, options.codexHome])
     if (override)
       roots.push({ pathname: path.resolve(options.workingDirectory, override), required: true });
-  const unique = new Map<string, DownloadProtectedRoot>();
-  for (const root of roots)
-    unique.set(root.pathname, {
-      pathname: root.pathname,
-      required: root.required || (unique.get(root.pathname)?.required ?? false),
-    });
-  return [...unique.values()];
+  return mergeRoots(roots);
 }
 
 /** Select the protected roots from the same profile used for the agent launch. */
@@ -77,11 +85,25 @@ export function launchDownloadRoots(
   launch: Omit<Parameters<typeof downloadProtectionRoots>[0], 'workingDirectory'> & {
     readonly profile: Parameters<typeof profileDownloadProtectionRoots>[1];
     readonly env: Readonly<Record<string, string | undefined>>;
+    readonly configuredProfiles?: () => Profiles;
   },
 ): (workingDirectory: string) => readonly DownloadProtectedRoot[] {
-  const { profile, env, ...base } = launch;
-  return (workingDirectory) =>
-    profileDownloadProtectionRoots({ ...base, workingDirectory }, profile, env);
+  const { profile, env, configuredProfiles, ...base } = launch;
+  return (workingDirectory) => {
+    const roots = profileDownloadProtectionRoots({ ...base, workingDirectory }, profile, env);
+    const inactive: DownloadProtectedRoot[] = [];
+    const profiles = configuredProfiles?.();
+    if (profiles && 'entries' in profiles) {
+      for (const entry of Object.values(profiles.entries)) {
+        for (const harness of [entry.claude, entry.codex]) {
+          if (!harness) continue;
+          const pathname = path.resolve(harness.dir);
+          inactive.push({ pathname, required: false });
+        }
+      }
+    }
+    return mergeRoots([...roots, ...inactive]);
+  };
 }
 
 interface SessionRecord {
@@ -169,7 +191,10 @@ export class FileDownloadSessionHost {
       id,
       project: workingDirectory,
       rootChoices: Object.freeze(
-        this.host.rootsFor(workingDirectory).map((root) => Object.freeze({ ...root })),
+        this.host
+          .rootsFor(workingDirectory)
+          .filter((root) => root.required)
+          .map((root) => Object.freeze({ ...root })),
       ),
       startup,
       finishStartup,
@@ -292,7 +317,6 @@ export class FileDownloadSessionHost {
           return null;
         throw error;
       }
-      if (current === root.pathname && !root.required) this.seenRoots.add(root.pathname);
       if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unavailable');
       if (!(stat.mode & 0o444n) || !(stat.mode & 0o111n)) throw new Error('Unavailable');
       fs.accessSync(current, fs.constants.R_OK | fs.constants.X_OK);
@@ -320,11 +344,32 @@ export class FileDownloadSessionHost {
     try {
       const present: DownloadProtectedRoot[] = [];
       const metadata: string[] = [];
-      for (const root of record.rootChoices) {
-        const value = this.rootMetadata(root);
-        if (value !== null) {
-          present.push(root);
-          metadata.push(value);
+      const choices = mergeRoots([
+        ...record.rootChoices,
+        ...this.host.rootsFor(record.project).filter((root) => !root.required),
+      ]);
+      for (const choice of choices) {
+        let root = choice;
+        try {
+          if (!choice.required) {
+            try {
+              root = { ...choice, pathname: fs.realpathSync(choice.pathname) };
+            } catch {
+              if (this.seenRoots.has(choice.pathname)) throw new Error('Unavailable');
+            }
+          }
+          const value = this.rootMetadata(root);
+          if (value !== null && !choice.required) this.seenRoots.add(choice.pathname);
+          if (value !== null) {
+            present.push(root);
+            metadata.push(value);
+          }
+        } catch (error) {
+          if (choice.required || this.seenRoots.has(choice.pathname)) throw error;
+          if (!loggedInvalidInactiveRoot) {
+            loggedInvalidInactiveRoot = true;
+            log('[FileDownload] Skipping invalid inactive profile root');
+          }
         }
       }
       if (!present.length) throw new Error('Unavailable');

@@ -211,9 +211,9 @@ async function component(name: string) {
       } else if (name === 'metadata-errors') {
         const inactive = join(userHome, '.codex');
         fs.symlinkSync(work, inactive);
-        check(host.contextFor(id) === null);
+        check(host.contextFor(id)?.protectedRootPaths.includes(work));
         fs.unlinkSync(inactive);
-        check(host.contextFor(id) === null); // Seen symlink is never an ENOENT exemption later.
+        check(host.contextFor(id) === null); // A seen symlink is not an ENOENT exemption later.
         fs.mkdirSync(inactive, { mode: 0o700 });
         check(host.contextFor(id));
         fs.chmodSync(inactive, 0);
