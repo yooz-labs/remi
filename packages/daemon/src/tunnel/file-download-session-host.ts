@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import type { HarnessId, UUID } from '@remi/shared';
 import type { WebSocketAdapter } from '../adapters/websocket-adapter';
 import type { IdentityStore } from '../auth/identity-store';
+import { log } from '../cli/logger.ts';
 import type { HarnessSession } from '../harness/types';
 import type { SecurePushStore } from '../notifications/secure-push-store';
 import type { Profiles } from '../profiles/profile-config.ts';
@@ -13,6 +14,8 @@ import type { StoredSession } from '../session/session-store';
 import { DirectoryRoot } from './admission';
 import { type FileDownloadHostContext, FileDownloadService } from './file-download-service';
 import { recoveryNative } from './recovery-native';
+
+let loggedInvalidInactiveRoot = false;
 
 export interface DownloadProtectedRoot {
   readonly pathname: string;
@@ -314,7 +317,6 @@ export class FileDownloadSessionHost {
           return null;
         throw error;
       }
-      if (current === root.pathname && !root.required) this.seenRoots.add(root.pathname);
       if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unavailable');
       if (!(stat.mode & 0o444n) || !(stat.mode & 0o111n)) throw new Error('Unavailable');
       fs.accessSync(current, fs.constants.R_OK | fs.constants.X_OK);
@@ -345,18 +347,26 @@ export class FileDownloadSessionHost {
       const choices = mergeRoots([...record.rootChoices, ...this.host.rootsFor(record.project)]);
       for (const choice of choices) {
         let root = choice;
-        if (!choice.required) {
-          try {
-            root = { ...choice, pathname: fs.realpathSync(choice.pathname) };
-          } catch {
-            if (this.seenRoots.has(choice.pathname)) throw new Error('Unavailable');
+        try {
+          if (!choice.required) {
+            try {
+              root = { ...choice, pathname: fs.realpathSync(choice.pathname) };
+            } catch {
+              if (this.seenRoots.has(choice.pathname)) throw new Error('Unavailable');
+            }
           }
-        }
-        const value = this.rootMetadata(root);
-        if (value !== null && !choice.required) this.seenRoots.add(choice.pathname);
-        if (value !== null) {
-          present.push(root);
-          metadata.push(value);
+          const value = this.rootMetadata(root);
+          if (value !== null && !choice.required) this.seenRoots.add(choice.pathname);
+          if (value !== null) {
+            present.push(root);
+            metadata.push(value);
+          }
+        } catch (error) {
+          if (choice.required || this.seenRoots.has(choice.pathname)) throw error;
+          if (!loggedInvalidInactiveRoot) {
+            loggedInvalidInactiveRoot = true;
+            log('[FileDownload] Skipping invalid inactive profile root');
+          }
         }
       }
       if (!present.length) throw new Error('Unavailable');

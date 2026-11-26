@@ -165,3 +165,73 @@ test('last good config and symlinked inactive root protect downloads', async () 
     await f.close();
   }
 }, 20000);
+
+test.each(['file', 'unreadable', 'dangling', 'ancestor'] as const)(
+  'inactive %s root does not disrupt unrelated downloads',
+  async (kind) => {
+    const f = await downloadFixture();
+    const home = path.join(f.files.directory, 'host-state');
+    const selected = path.join(f.files.directory, 'selected');
+    const inactive =
+      kind === 'ancestor' ? f.files.directory : path.join(f.files.directory, 'inactive');
+    fs.mkdirSync(home, { mode: 0o700 });
+    fs.mkdirSync(selected);
+    if (kind === 'file') fs.writeFileSync(inactive, 'fixture');
+    if (kind === 'unreadable') {
+      fs.mkdirSync(inactive);
+      fs.chmodSync(inactive, 0o000);
+    }
+    if (kind === 'dangling') fs.symlinkSync(path.join(f.files.directory, 'missing'), inactive);
+    f.write('public.txt', 'fixture');
+    const runtime = { pty: f.base.pty } as HarnessSession;
+    const host = new FileDownloadSessionHost({
+      home,
+      sessions: f.base.registry,
+      bindings: f.bindings,
+      runtimeFor: () => runtime,
+      directAdapter: () => undefined,
+      rootsFor: launchDownloadRoots({
+        home,
+        userHome: f.files.userHome,
+        harness: 'claude',
+        profile: { claude: { dir: selected } },
+        env: {},
+        configuredProfiles: () => ({
+          entries: {
+            inactive: {
+              id: 'inactive',
+              label: 'Inactive',
+              claude: { dir: inactive, expects: 'subscription' },
+              revision: '',
+              args: [],
+              folders: [],
+              env: {},
+            },
+          },
+          notices: [],
+        }),
+      }),
+      onReady: () => {},
+    });
+    const id = f.sessionId();
+    try {
+      expect(await host.open(f.base.trust)).toBe(true);
+      host.beginSession(id, f.files.work);
+      host.bindSession(id, runtime);
+      host.afterClaudeCommit(id, f.binding().harnessSessionId, true);
+      host.started(id);
+      const context = host.contextFor(id);
+      expect(context).not.toBeNull();
+      f.setContext(context);
+      const peer = await f.client();
+      const result = await peer.submit(peer.begin('public.txt'));
+      expect(result.type).toBe(kind === 'ancestor' ? 'file_fetch_refused' : 'file_fetch_accepted');
+      if (result.type === 'file_fetch_accepted') await peer.submit(peer.cancel(result.requestId));
+    } finally {
+      if (kind === 'unreadable') fs.chmodSync(inactive, 0o700);
+      await host.closeAll();
+      await f.close();
+    }
+  },
+  20000,
+);
