@@ -43,9 +43,10 @@ public struct OutgoingMessage: Identifiable, Sendable, Equatable {
     public enum Delivery: Sendable, Equatable {
         case sending
         case handedOff
-        /// Claude Code reported that it submitted exactly this text (#1818). The only positive
-        /// proof of agent acceptance, so the transcript already shows the message and the row
-        /// leaves the pending list (`receive(_ result:)`), never to appear in it again.
+        /// Claude Code reported that it submitted exactly this text (#1818): the only positive
+        /// proof of agent acceptance. The row stays, drawn as an ordinary sent message, until the
+        /// transcript shows that message (`removeAccepted`), so it never vanishes before it can be
+        /// seen elsewhere.
         case accepted
         case refused
         case uncertain
@@ -69,8 +70,11 @@ public struct OutgoingMessage: Identifiable, Sendable, Equatable {
     }
 }
 
-/// Bounded, memory-only intent history for one machine/session. Only explicit dismissal removes
-/// an invoked intent: text matches, ACKs, age and reconnects prove no per-message outcome.
+/// Bounded, memory-only intent history for one machine/session. Text matches, ACKs, age and
+/// reconnects prove no per-message outcome, so an unsettled or refused intent leaves only by
+/// explicit dismissal. An intent Claude reported accepting (#1818) is the exception: delivery is
+/// already proven, so it also leaves once the transcript shows the message (`removeAccepted`), and
+/// it is the first thing evicted when the bounds below would otherwise refuse a new send.
 public struct OutgoingMessages: Sendable, Equatable {
     public static let limit = 50
     public private(set) var items: [OutgoingMessage] = []
@@ -84,6 +88,10 @@ public struct OutgoingMessages: Sendable, Equatable {
         items.append(OutgoingMessage(id: id, content: content, delivery: .sending, createdAt: now, origin: origin,
                                      groupID: groupID, awaitsAcceptance: awaitsAcceptance))
         return true
+    }
+
+    func message(id: String, origin: OutgoingOrigin) -> OutgoingMessage? {
+        index(id: id, origin: origin).map { items[$0] }
     }
 
     public mutating func markHandedOff(id: String, origin: OutgoingOrigin) {
@@ -121,18 +129,34 @@ public struct OutgoingMessages: Sendable, Equatable {
     /// session, message ID and authenticated origin that sent the message counts, the rules of
     /// `receive(_ error:)`. It is positive proof, so it also settles a message the local deadline
     /// marked uncertain, but it never undoes a refusal: the daemon never records a refused
-    /// message, so a result for one is not from this daemon. An accepted message leaves the
-    /// pending list because the transcript shows it. Returns whether it did, so the caller can
-    /// retire an emptied group. A result for a message already dismissed or never sent finds
-    /// nothing and changes nothing.
+    /// message, so a result for one is not from this daemon. The message stays, as `.accepted`, until
+    /// the transcript shows it. Returns whether it settled one. A result for a message already
+    /// dismissed or never sent finds nothing and changes nothing.
     @discardableResult
     public mutating func receive(_ result: UserInputResultMessage, sessionID: String, origin: OutgoingOrigin) -> Bool {
         guard result.sessionId == sessionID, result.outcome == UserInputResultMessage.accepted,
               let index = index(id: result.messageId, origin: origin),
               items[index].delivery != .refused else { return false }
         items[index].delivery = .accepted
-        items.remove(at: index)
         return true
+    }
+
+    /// Drops accepted messages the caller finds in the transcript. Display reconciliation only: the
+    /// caller's text match decides nothing about delivery, which the hook already proved.
+    @discardableResult
+    public mutating func removeAccepted(where isShown: (OutgoingMessage) -> Bool) -> Bool {
+        let before = items.count
+        items.removeAll { $0.delivery == .accepted && isShown($0) }
+        return items.count != before
+    }
+
+    /// The oldest accepted message's creation time, for eviction when a bound would refuse a send.
+    var oldestAcceptedAt: Date? { items.filter { $0.delivery == .accepted }.map(\.createdAt).min() }
+
+    mutating func evictOldestAccepted() {
+        guard let oldest = oldestAcceptedAt,
+              let index = items.firstIndex(where: { $0.delivery == .accepted && $0.createdAt == oldest }) else { return }
+        items.remove(at: index)
     }
 
     public mutating func connectionLost(endpoint: MachineEndpoint, connection: UUID) {

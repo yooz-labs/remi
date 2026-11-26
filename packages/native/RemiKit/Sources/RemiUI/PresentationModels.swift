@@ -298,6 +298,16 @@ public enum RemiOutgoingState: Sendable, Equatable, CaseIterable {
     }
 }
 
+extension RemiTranscriptEntry {
+    /// A message you sent, as the conversation draws it. One Claude accepted is an ordinary sent
+    /// bubble (#1818); every other state is pending, with what is known about it.
+    public init(outgoing message: OutgoingMessage) {
+        self = message.delivery == .accepted
+            ? .user(id: message.presentationID, text: message.content)
+            : .pending(id: message.presentationID, text: message.content, state: RemiOutgoingState(message: message))
+    }
+}
+
 public enum RemiTranscriptEntry: Identifiable, Sendable, Equatable {
     case user(id: String, text: String)
     case pending(id: String, text: String, state: RemiOutgoingState)

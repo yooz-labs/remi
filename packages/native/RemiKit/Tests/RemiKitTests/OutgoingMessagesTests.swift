@@ -25,7 +25,7 @@ import Testing
     }
 
     @Test(arguments: [OutgoingMessage.Delivery.sending, .handedOff, .uncertain])
-    func acceptanceFromTheSameOriginSettlesTheMessageAndLeavesThePendingList(_ state: OutgoingMessage.Delivery) throws {
+    func acceptanceFromTheSameOriginSettlesOnlyThatMessage(_ state: OutgoingMessage.Delivery) throws {
         var messages = OutgoingMessages()
         messages.add(id: "m1", content: "hello", origin: origin, awaitsAcceptance: true)
         messages.add(id: "m2", content: "hello", origin: origin, awaitsAcceptance: true)
@@ -35,9 +35,9 @@ import Testing
         default: break
         }
         do { let outcome = messages.receive(try result(), sessionID: "session", origin: origin); #expect(outcome) }
-        // Only the named message leaves; its identical-text neighbor is still waiting.
-        #expect(messages.items.map(\.id) == ["m2"])
-        #expect(messages.items.map(\.delivery) == [.sending])
+        // Only the named message is settled; its identical-text neighbor is still waiting.
+        #expect(messages.items.map(\.id) == ["m1", "m2"])
+        #expect(messages.items.map(\.delivery) == [.accepted, .sending])
     }
 
     @Test func acceptanceFromAnotherOriginSessionOrMessageChangesNothing() throws {
@@ -67,20 +67,45 @@ import Testing
         #expect(messages.items.map(\.delivery) == [.refused])
     }
 
-    @Test func aLateOrRepeatedResultAfterDismissalOrAcceptanceFindsNothing() throws {
+    @Test func aLateResultAfterDismissalFindsNothingAndARepeatChangesNothing() throws {
         var messages = OutgoingMessages()
         messages.add(id: "m1", content: "hello", origin: origin, awaitsAcceptance: true)
         messages.add(id: "m2", content: "hello", origin: origin, awaitsAcceptance: true)
         messages.dismiss(id: "m1")
         do { let outcome = messages.receive(try result(), sessionID: "session", origin: origin); #expect(!outcome) }
         do { let outcome = messages.receive(try result(message: "m2"), sessionID: "session", origin: origin); #expect(outcome) }
-        do { let outcome = messages.receive(try result(message: "m2"), sessionID: "session", origin: origin); #expect(!outcome) }
+        do { let outcome = messages.receive(try result(message: "m2"), sessionID: "session", origin: origin); #expect(outcome) }
+        #expect(messages.items.map(\.delivery) == [.accepted])
+        messages.dismiss(id: "m2")
         #expect(messages.items.isEmpty)
-        // Room is freed for new intents once accepted messages leave.
-        for index in 0..<OutgoingMessages.limit {
-            let added = messages.add(id: "n\(index)", content: "x", origin: origin)
-            #expect(added)
-        }
+    }
+
+    @Test func onlyAcceptedMessagesAreRemovedWhenTheTranscriptShowsThem() throws {
+        var messages = OutgoingMessages()
+        messages.add(id: "m1", content: "shown", origin: origin, awaitsAcceptance: true)
+        messages.add(id: "m2", content: "shown", origin: origin)
+        messages.add(id: "m3", content: "accepted, not shown yet", origin: origin, awaitsAcceptance: true)
+        messages.receive(try result(message: "m1"), sessionID: "session", origin: origin)
+        messages.receive(try result(message: "m3"), sessionID: "session", origin: origin)
+        let removed = messages.removeAccepted { $0.content == "shown" }
+        #expect(removed)
+        // The identical unconfirmed message m2 is not touched by text: only acceptance proves anything.
+        #expect(messages.items.map(\.id) == ["m2", "m3"])
+        #expect(messages.items.map(\.delivery) == [.sending, .accepted])
+    }
+
+    @Test func acceptedMessagesAreTheOnlyOnesEvictedForRoom() throws {
+        var messages = OutgoingMessages()
+        messages.add(id: "old", content: "a", origin: origin, awaitsAcceptance: true, now: .distantPast)
+        messages.add(id: "new", content: "b", origin: origin, awaitsAcceptance: true, now: Date())
+        messages.add(id: "open", content: "c", origin: origin)
+        messages.receive(try result(message: "old"), sessionID: "session", origin: origin)
+        messages.receive(try result(message: "new"), sessionID: "session", origin: origin)
+        messages.evictOldestAccepted()
+        #expect(messages.items.map(\.id) == ["new", "open"])
+        messages.evictOldestAccepted()
+        messages.evictOldestAccepted()
+        #expect(messages.items.map(\.id) == ["open"])
     }
 
     @Test func connectionLossMarksUncertainButALaterResultOnTheSameOriginStillSettles() throws {
@@ -90,7 +115,7 @@ import Testing
         messages.connectionLost(endpoint: origin.endpoint, connection: origin.connection)
         #expect(messages.items.map(\.delivery) == [.uncertain])
         do { let outcome = messages.receive(try result(), sessionID: "session", origin: origin); #expect(outcome) }
-        #expect(messages.items.isEmpty)
+        #expect(messages.items.map(\.delivery) == [.accepted])
     }
 
     @Test func handoffNeverOverridesARefusalRacingTheSendReturn() throws {

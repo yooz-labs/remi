@@ -454,6 +454,10 @@ public final class MachineStore {
     @ObservationIgnored var outgoingAcceptanceDelay: Duration = MachineStore.acceptanceWait
     /// The socket generation of each endpoint whose `hello_ack` listed `chat_acceptance`. A
     /// generation that is no longer current never matches an origin, so nothing is cleared (#1818).
+    /// Known corner: over a relay one endpoint carries every session's connection, a capable
+    /// child's ack and an incapable sibling's share this one flag, so a message to the incapable
+    /// sibling reads "Sending to agent" for `acceptanceWait` and then shows the uncertain warning.
+    /// That is the cost of the flag being per endpoint, not per session; it never claims acceptance.
     @ObservationIgnored private var chatAcceptanceGenerations: [MachineEndpoint: UUID] = [:]
     public private(set) var sessionViewsBySession: [MachineSessionKey: [SessionViewMeta]] = [:]
     public private(set) var recentRepositoriesByMachine: [String: [RecentRepository]] = [:]
@@ -1912,6 +1916,7 @@ public final class MachineStore {
             // Store the transcript so Observation publishes it: the staged instance on a first load,
             // otherwise the already published reference again, which copies nothing.
             transcriptsBySession[key] = transcript
+            reconcileAcceptedOutgoing(for: key)
         }
         transcriptLoadStartedOn[key] = nil
         if completed, let route = routeBySession[key], let generation = connectionGenerations[route],
@@ -2121,6 +2126,14 @@ public final class MachineStore {
         switch result {
         case .handedOff:
             outgoingByGroup[groupID]?.markHandedOff(id: messageID, origin: origin)
+            if let message = outgoingByGroup[groupID]?.message(id: messageID, origin: origin),
+               message.awaitsAcceptance, message.delivery == .handedOff {
+                let delay = outgoingAcceptanceDelay
+                Task { [weak self] in
+                    do { try await Task.sleep(for: delay) } catch { return }
+                    self?.outgoingByGroup[groupID]?.markUncertain(id: messageID, origin: origin)
+                }
+            }
         case .uncertain:
             outgoingByGroup[groupID]?.markUncertain(id: messageID, origin: origin)
         case .notInvoked:
@@ -2188,7 +2201,15 @@ public final class MachineStore {
         let machine = machine(withIdentifier: key.machineID)
         guard let scope = suppliedScope ?? machine.map({ ensureOutgoingScope(for: $0) }) else { return false }
         let groupID = OutgoingGroupID(profile: scope, sessionID: key.sessionID)
-        let retained = outgoingItems(in: quotaScopes(containing: scope), sessionID: key.sessionID).count
+        let related = quotaScopes(containing: scope)
+        if outgoingItems(in: related, sessionID: key.sessionID).count >= OutgoingMessages.limit {
+            evictOldestAccepted { related.contains($0.profile) && $0.sessionID == key.sessionID }
+        }
+        if outgoingCount >= Self.outgoingRowLimit { evictOldestAccepted { _ in true } }
+        if outgoingByGroup[groupID] == nil, outgoingByGroup.count >= Self.outgoingSessionLimit {
+            evictOldestAccepted { _ in true }
+        }
+        let retained = outgoingItems(in: related, sessionID: key.sessionID).count
         guard outgoingCount < Self.outgoingRowLimit, retained < OutgoingMessages.limit,
               outgoingByGroup[groupID] != nil || outgoingByGroup.count < Self.outgoingSessionLimit else { return false }
         // Only a connection that listed `chat_acceptance` will be told Claude's answer (#1818).
@@ -2199,16 +2220,75 @@ public final class MachineStore {
             outgoingLabels[groupID] = (key, machine?.displayName ?? key.machineID,
                 machine?.sessions.first { $0.sessionId == key.sessionID }?.name ?? key.sessionID)
         }
-        let delay = awaitsAcceptance ? outgoingAcceptanceDelay : outgoingUncertaintyDelay
+        // The receipt deadline covers the wait for the transport handoff. A message that was handed
+        // to a daemon that reports acceptance is then governed by the longer acceptance wait,
+        // armed at the handoff (`recordOutgoingSendResult`), so the 15 seconds never cuts it short.
+        let delay = outgoingUncertaintyDelay
         Task { [weak self] in
             do { try await Task.sleep(for: delay) } catch { return }
-            self?.outgoingByGroup[groupID]?.markUncertain(id: id, origin: origin)
+            guard let self else { return }
+            if let message = self.outgoingByGroup[groupID]?.message(id: id, origin: origin),
+               message.awaitsAcceptance, message.delivery == .handedOff { return }
+            self.outgoingByGroup[groupID]?.markUncertain(id: id, origin: origin)
         }
         return true
     }
 
     public func dismissOutgoing(groupID: OutgoingGroupID, messageID: String) {
         outgoingByGroup[groupID]?.dismiss(id: messageID)
+        retireOutgoingGroupIfEmpty(groupID)
+    }
+
+    /// How far a transcript entry's own clock may precede the app's when it is matched to a message
+    /// sent from here. The entry is stamped by the agent's machine and the message by this device;
+    /// a larger skew leaves an accepted bubble until it is dismissed, which is harmless.
+    nonisolated static let acceptedClockSkew: TimeInterval = 120
+
+    private static let fractionalISO8601: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let plainISO8601 = ISO8601DateFormatter()
+    private static func parseISO8601(_ text: String) -> Date? {
+        fractionalISO8601.date(from: text) ?? plainISO8601.date(from: text)
+    }
+
+    /// Removes this session's accepted messages that the transcript now shows: a user entry with the
+    /// same text, stamped no earlier than the message was created (less clock skew). This is display
+    /// reconciliation only, not a delivery claim: acceptance already came from Claude's hook, and
+    /// matching text proves nothing about delivery (#1710). Without a loaded transcript nothing
+    /// matches and the message stays as an accepted bubble until dismissed or the session ends.
+    private func reconcileAcceptedOutgoing(for key: MachineSessionKey) {
+        let entries = transcriptsBySession[key]?.suffix(200).filter { $0.role == "user" } ?? []
+        for groupID in Array(outgoingByGroup.keys) where outgoingLabels[groupID]?.key == key {
+            let changed = outgoingByGroup[groupID]?.removeAccepted { message in
+                let text = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                let earliest = message.createdAt.addingTimeInterval(-Self.acceptedClockSkew)
+                return entries.contains { entry in
+                    entry.content.trimmingCharacters(in: .whitespacesAndNewlines) == text
+                        && Self.parseISO8601(entry.message.createdAt).map { $0 >= earliest } == true
+                }
+            } ?? false
+            if changed { retireOutgoingGroupIfEmpty(groupID) }
+        }
+    }
+
+    /// The session is gone: its accepted messages were proven delivered and have nothing left to show.
+    private func dropAcceptedOutgoing(for key: MachineSessionKey) {
+        for groupID in Array(outgoingByGroup.keys) where outgoingLabels[groupID]?.key == key {
+            outgoingByGroup[groupID]?.removeAccepted { _ in true }
+            retireOutgoingGroupIfEmpty(groupID)
+        }
+    }
+
+    /// An accepted message is the first thing given up when a bound would refuse a new send.
+    private func evictOldestAccepted(where inScope: (OutgoingGroupID) -> Bool) {
+        let candidates = outgoingByGroup.compactMap { id, messages in
+            inScope(id) ? messages.oldestAcceptedAt.map { (id, $0) } : nil
+        }
+        guard let (groupID, _) = candidates.min(by: { $0.1 < $1.1 }) else { return }
+        outgoingByGroup[groupID]?.evictOldestAccepted()
         retireOutgoingGroupIfEmpty(groupID)
     }
 
@@ -3089,6 +3169,7 @@ public final class MachineStore {
                 // Store the transcript so Observation publishes the change: a new instance when none
                 // was published, otherwise the published reference again, which copies nothing.
                 transcriptsBySession[key] = transcript
+                if message.role == "user" { reconcileAcceptedOutgoing(for: key) }
             }
         case .sessionViews(let message):
             sessionViewsBySession[MachineSessionKey(machineID: machines[index].id, sessionID: message.sessionId)] = message.subagents.sorted {
@@ -3149,6 +3230,7 @@ public final class MachineStore {
                 machines[index].questions.removeAll { $0.sessionId == sessionId }
                 machines[index].questionConnectionSnapshots.removeValue(forKey: sessionId)
                 transcriptsBySession[killedKey] = nil
+                dropAcceptedOutgoing(for: killedKey)
                 transcriptRouteGenerations[killedKey] = nil
                 sessionViewsBySession[killedKey] = nil
                 routeBySession[killedKey] = nil
@@ -3169,8 +3251,10 @@ public final class MachineStore {
             guard let socket else { break }
             let origin = OutgoingOrigin(endpoint: endpoint, connection: generation, socket: socket)
             for groupID in outgoingByGroup.keys where groupID.sessionID == result.sessionId {
-                if outgoingByGroup[groupID]?.receive(result, sessionID: result.sessionId, origin: origin) == true {
-                    retireOutgoingGroupIfEmpty(groupID)
+                if outgoingByGroup[groupID]?.receive(result, sessionID: result.sessionId, origin: origin) == true,
+                   let key = outgoingLabels[groupID]?.key {
+                    // The transcript may already show it; otherwise it waits for the entry.
+                    reconcileAcceptedOutgoing(for: key)
                 }
             }
         case .error(let error, let socket):
