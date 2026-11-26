@@ -124,6 +124,7 @@ import type {
 } from '@remi/shared';
 import { isEncrypted, relayV2, unlockIdentity } from '@remi/shared';
 import {
+  CHAT_ACCEPTANCE_CAPABILITY,
   IMAGE_INSERTION_CAPABILITY,
   IMAGE_STAGING_CAPABILITY,
   STRUCTURED_CHAT_CAPABILITY,
@@ -162,6 +163,7 @@ import { runReloadCommand } from './cli/cmd-reload.ts';
 import { runUnstickCommand } from './cli/cmd-unstick.ts';
 import { PID_FILE, PROFILE_REFUSED_EXIT_CODE, readPidFileLive } from './cli/daemon-manager.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
+import { ChatAcceptanceTracker } from './cli/handlers/chat-acceptance.ts';
 import {
   type ConnectionHandlers,
   createConnectionHandlers,
@@ -1425,6 +1427,9 @@ const capabilitiesForConnection = (id: UUID): readonly string[] => [
     ? [IMAGE_STAGING_CAPABILITY, ...(imageInsertionCoordinator ? [IMAGE_INSERTION_CAPABILITY] : [])]
     : []),
   ...(structuredChatService?.isAvailable(id) ? [STRUCTURED_CHAT_CAPABILITY] : []),
+  // #1818: a Claude session with a running hook server reports Claude's own acceptance of each
+  // chat message typed into it (`user_input_result`); a hub, Codex and a failed hook server do not.
+  ...(harnessId === 'claude' && hookServer !== null ? [CHAT_ACCEPTANCE_CAPABILITY] : []),
   ...(notificationHostService?.isAvailable(id) ? ['notifications'] : []),
 ];
 function securePushForSession(sessionId: UUID): SecureSessionPush | undefined {
@@ -2402,10 +2407,19 @@ const promptUpWiring = promptUpDeps(
   (sessionId) => harnessSessions.get(sessionId)?.decisions.screen,
 );
 
+// #1818: Claude's `UserPromptSubmit` hook confirms a typed chat message to the connection that
+// sent it, and only to one that listed `chat_acceptance` in its `hello_ack`. The tracker is
+// shared by the input handler (records) and the hook bridge (resolves).
+const chatAcceptance = new ChatAcceptanceTracker({
+  send: sendToConnection,
+  canReceive: (id) => capabilitiesForConnection(id).includes(CHAT_ACCEPTANCE_CAPABILITY),
+});
+
 const inputHandlers: InputHandlers = createInputHandlers({
   sessionRegistry,
   bindingStore,
   send: sendToConnection,
+  chatAcceptance,
   // #573/#1126: the RIGHT session's decisions (`harnessSessions`, filled per
   // session by createNewSession from `harness.createSession`) retire an
   // answered question and answer a held
@@ -2460,6 +2474,7 @@ const claudeHarness = new ClaudeHarness(transcriptDiscovery, {
   onHarnessDenied,
   pushTurnFailed: turnFailedRoutes.push,
   dismissTurnFailed: turnFailedRoutes.dismiss,
+  chatAcceptance,
   prompts: () => remiConfig.prompts,
   hookServer: () => hookServer,
   currentPort: () => PORT,

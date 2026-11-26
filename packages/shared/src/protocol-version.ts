@@ -24,6 +24,9 @@ const VERSIONLESS_ACK_VERSION = 1;
 /** Said of a machine whose remi must change: a daemon keeps its binary until it restarts (#539). */
 const UPDATE_MACHINE = 'Update remi on that machine and restart it.';
 
+/** The capability name of `user_input_result` (#1818); see {@link PROTOCOL_CAPABILITIES}. */
+export const CHAT_ACCEPTANCE_CAPABILITY = 'chat_acceptance';
+
 /**
  * Every capability a daemon may list in `hello_ack.capabilities`, with what a
  * daemon that lists it does, phrased to follow "cannot" in a message to the
@@ -42,6 +45,14 @@ export const PROTOCOL_CAPABILITIES: Readonly<Record<string, string>> = {
   image_staging: 'upload an image to the attached Claude session',
   image_insertion: 'add an image to the attached Claude draft',
   structured_chat: 'send chat to the attached Codex session',
+  /**
+   * `user_input_result` (#1818): a Claude session reports, per chat message, that Claude Code
+   * submitted the prompt that message typed (its `UserPromptSubmit` hook carried the same text).
+   * Listed only where the daemon hosts a Claude session with the hook bridge, and sent only to
+   * the connection that sent the message. Absence of a result never means refusal.
+   */
+  [CHAT_ACCEPTANCE_CAPABILITY]:
+    'confirm that the attached Claude session accepted a sent chat message',
   browser_links: 'receive browser links from the attached Claude session',
   file_download: 'download a file from the attached session',
   notifications: 'manage paired-device background notifications',

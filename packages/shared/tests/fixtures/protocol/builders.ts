@@ -74,6 +74,7 @@ import {
   createTranscriptLoadRequest,
   createUnregisterDeviceToken,
   createUserInput,
+  createUserInputResult,
   generateId,
   now,
 } from '../../../src/protocol.ts';
@@ -403,6 +404,7 @@ export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => Protocol
   secure_push_unregister_request: () => createSecurePushUnregisterRequest(),
   secure_push_unregister_response: () =>
     createSecurePushUnregisterResponse(REQUEST_ID, { success: true }),
+  user_input_result: () => createUserInputResult(SESSION_ID, MESSAGE_ID, 'accepted'),
   answer_result: () => ({
     type: 'answer_result',
     id: MESSAGE_ID,

@@ -76,6 +76,8 @@ export type {
   StructuredAgentOutputMessage,
   UserInputMessage,
   AckMessage,
+  UserInputResultMessage,
+  UserInputResultOutcome,
   EditMessage,
   QuestionMessage,
   AnswerMessage,
@@ -149,6 +151,7 @@ export {
   createStructuredAgentOutput,
   createUserInput,
   createAck,
+  createUserInputResult,
   createEdit,
   createPing,
   createPong,
@@ -293,7 +296,12 @@ export {
 } from './pairing.ts';
 // The protocol version and capabilities on hello_ack (#1237, ADR 0035)
 export type { HubSupport, HubSupportAck } from './protocol-version.ts';
-export { hubSupport, PROTOCOL_CAPABILITIES, PROTOCOL_VERSION } from './protocol-version.ts';
+export {
+  CHAT_ACCEPTANCE_CAPABILITY,
+  hubSupport,
+  PROTOCOL_CAPABILITIES,
+  PROTOCOL_VERSION,
+} from './protocol-version.ts';
 
 // Ed25519 admission defense shared by direct auth and relay (#873).
 export { isSmallOrderPublicKey } from './ed25519-public-key.ts';

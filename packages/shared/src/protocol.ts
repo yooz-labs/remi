@@ -214,6 +214,7 @@ export interface ProtocolMessageMap {
   structured_agent_output: StructuredAgentOutputMessage;
   user_input: UserInputMessage;
   ack: AckMessage;
+  user_input_result: UserInputResultMessage;
   edit: EditMessage;
   question: QuestionMessage;
   answer: AnswerMessage;
@@ -378,6 +379,7 @@ export const MESSAGE_DIRECTION = {
   // by who constructs it instead would make the table disagree with the
   // daemon's own router the moment C6 (#899) uses it to gate inbound messages.
   ack: 'both',
+  user_input_result: 'd2c',
   edit: 'd2c',
   question: 'd2c',
   answer: 'c2d',
@@ -620,6 +622,27 @@ export interface AckMessage {
   readonly timestamp: Timestamp;
   readonly ack: Acknowledgment;
 }
+
+/**
+ * Chat acceptance (#1818): Claude Code itself reported that it submitted the prompt a
+ * `user_input` typed (its `UserPromptSubmit` hook carried that exact text). Sent to the
+ * connection that sent the `user_input`, once, by a daemon that lists `chat_acceptance`.
+ * `messageId` is that `user_input`'s own `id`.
+ *
+ * It is a positive signal only: its absence means unconfirmed, never refused, because the
+ * daemon matches a prompt only by exact equality and says nothing when it cannot.
+ */
+export interface UserInputResultMessage {
+  readonly type: 'user_input_result';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  readonly sessionId: UUID;
+  readonly messageId: UUID;
+  readonly outcome: UserInputResultOutcome;
+}
+
+/** The outcomes a `user_input_result` can name; `accepted` is the only one today (#1818). */
+export type UserInputResultOutcome = 'accepted';
 
 /** Edit an existing message */
 export interface EditMessage {
@@ -1971,6 +1994,24 @@ export function createAck(ack: Acknowledgment): AckMessage {
     id: generateId(),
     timestamp: now(),
     ack,
+  };
+}
+
+/**
+ * Create the `user_input_result` that tells a sender Claude accepted its chat message (#1818).
+ */
+export function createUserInputResult(
+  sessionId: UUID,
+  messageId: UUID,
+  outcome: UserInputResultOutcome = 'accepted',
+): UserInputResultMessage {
+  return {
+    type: 'user_input_result',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+    messageId,
+    outcome,
   };
 }
 
