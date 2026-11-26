@@ -145,6 +145,8 @@ export function parseProfiles(raw: unknown): Profiles {
     const notices: string[] = [];
     for (const id of ids) {
       if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(id)) throw new Error('profiles: invalid profile id');
+      if (!/[a-z]/.test(id))
+        throw new Error('profiles: invalid profile id: a profile id must contain a letter');
       const prefix = `profiles.${id}`;
       const p = table(root[id], prefix);
       keys(p, PROFILE_KEYS, prefix);
