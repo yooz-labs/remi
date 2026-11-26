@@ -317,6 +317,28 @@ row) onto the option above, at most two rows, never across footer rows
 at the first such row and drop every later option, "No" included.
 
 
+**A sent chat message is confirmed by Claude's own `UserPromptSubmit`** (#1818).
+A chat message typed into Claude's terminal used to be answered only by the `ack` (the daemon received it) and, on refusal, an `error` naming its `messageId`.
+Nothing said that Claude took that message, so the native apps could only call it "handed to connection".
+Claude's `UserPromptSubmit` hook is that signal, and the daemon already receives it.
+After `onUserInput` has written a message's text and its Enter (`pty.submitInput` returned without a refusal), `ChatAcceptanceTracker` (`cli/handlers/chat-acceptance.ts`) records `{messageId, text, sender connection, deadline}`.
+An admitted main-agent `UserPromptSubmit` (`binder.admits`, no `agent_id`; the listener in `hook-bridge-setup.ts`) whose `prompt` equals a recorded text exactly resolves the oldest unexpired entry with that text and sends one `user_input_result {sessionId, messageId, outcome: "accepted"}` to the connection that sent the message, and to no other.
+The match is plain string equality with no normalization, because the writer types the text unchanged and then a CR.
+A text with a control character other than a newline (CR, Escape, Tab, DEL, C1) is not recorded: the terminal interprets it, so what Claude submits is not the text, and that message stays unconfirmed.
+Blank text is not recorded either.
+
+It is a positive signal only.
+An entry nothing matches expires silently after 10 minutes (`CHAT_ACCEPTANCE_TTL_MS`; Claude queues a message typed while it works), the list per session holds 16 (`CHAT_ACCEPTANCE_MAX_PENDING`, the oldest dropped), and a prompt typed at the terminal with nothing pending does nothing.
+A message with no `messageId`, a raw keystroke and a message the handler refused are never recorded.
+The listener runs synchronously before Claude's hook response, so it walks at most 16 strings and sends one small frame; a failure there is logged and never reaches the hook response.
+A daemon lists the `chat_acceptance` capability (`CHAT_ACCEPTANCE_CAPABILITY`) in the `hello_ack` it sends while it hosts a Claude session with a running hook server, and records a message only for a connection that got that ack.
+The result reaches a relay peer through the hub's child proxy like any other message the child sends to that peer's connection (`hub-relay-chat-acceptance.test.ts`); a notification-only relay scope receives none.
+The web client has no "unconfirmed" bubble state (its states are sent, delivered and failed), so it ignores the result.
+The native apps settle the message in `OutgoingMessages.receive(_ result:)` when the result names the same session, message id and authenticated socket as the send, and drop it from the pending list.
+While a capable daemon has not confirmed, the pending row reads "Sending to agent" (`RemiOutgoingState.awaitingAgent`); it falls back to the existing uncertain warning after `MachineStore.acceptanceWait` (45 seconds), and a late result still clears it.
+A daemon without the capability keeps the old copy.
+Codex chat has its own accepted result (ADR 0043) and sends none of this.
+
 **Subagent permissions follow the terminal**
 ([ADR 0004](../../.context/decisions/0004-pty-as-arbiter-subagent-questions.md), amended
 by ADR 0030 and ADR 0031). A background subagent's dialog does NOT render while
