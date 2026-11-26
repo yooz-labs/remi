@@ -31,15 +31,34 @@ export function statusLineTarget(input: {
   if (input.profileClaudeDir === undefined) return { register: !input.remiHomeOverridden };
   const settingsPath = path.join(input.profileClaudeDir, 'settings.json');
   if (!input.remiHomeOverridden) return { settingsPath, register: true };
-  const relative = path.relative(
-    canonicalWithMissing(input.remiHome),
-    canonicalWithMissing(input.profileClaudeDir),
-  );
+  const home = canonicalWithMissing(input.remiHome);
+  const relative = path.relative(home, canonicalWithMissing(input.profileClaudeDir));
+  let settingsInside = true;
+  try {
+    const stat = fs.lstatSync(settingsPath);
+    if (stat.isSymbolicLink()) {
+      try {
+        const target = path.relative(home, fs.realpathSync(settingsPath));
+        settingsInside =
+          target !== '..' && !target.startsWith(`..${path.sep}`) && !path.isAbsolute(target);
+      } catch {
+        settingsInside = false;
+      }
+      if (!settingsInside) console.error('[warn] Skipping unsafe profile status line settings');
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      settingsInside = false;
+      console.error('[warn] Skipping unsafe profile status line settings');
+    }
+  }
+
   return {
     settingsPath,
     register:
-      relative === '' ||
-      (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)),
+      settingsInside &&
+      (relative === '' ||
+        (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))),
   };
 }
 

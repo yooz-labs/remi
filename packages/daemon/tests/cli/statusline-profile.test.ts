@@ -81,3 +81,25 @@ test('launch helper targets a profile and honors the default override', () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('scratch profile settings symlink cannot write outside the remi home', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'statusline-symlink-'));
+  const home = path.join(root, 'home');
+  const profile = path.join(home, 'profile');
+  const outside = path.join(root, 'outside.json');
+  try {
+    fs.mkdirSync(profile, { recursive: true });
+    fs.writeFileSync(outside, '{}\n');
+    fs.symlinkSync(outside, path.join(profile, 'settings.json'));
+    const target = statusLineTarget({
+      profileClaudeDir: profile,
+      remiHome: home,
+      remiHomeOverridden: true,
+    });
+    expect(target.register).toBe(false);
+    installStatusLineForLaunch({ claude: { dir: profile } }, home, true);
+    expect(fs.readFileSync(outside, 'utf8')).toBe('{}\n');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
