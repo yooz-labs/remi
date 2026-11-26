@@ -331,12 +331,19 @@ It is a positive signal only.
 An entry nothing matches expires silently after 10 minutes (`CHAT_ACCEPTANCE_TTL_MS`; Claude queues a message typed while it works), the list per session holds 16 (`CHAT_ACCEPTANCE_MAX_PENDING`, the oldest dropped), and a prompt typed at the terminal with nothing pending does nothing.
 A message with no `messageId`, a raw keystroke and a message the handler refused are never recorded.
 The listener runs synchronously before Claude's hook response, so it walks at most 16 strings and sends one small frame; a failure there is logged and never reaches the hook response.
-A daemon lists the `chat_acceptance` capability (`CHAT_ACCEPTANCE_CAPABILITY`) in the `hello_ack` it sends while it hosts a Claude session with a running hook server, and records a message only for a connection that got that ack.
+A daemon lists the `chat_acceptance` capability (`CHAT_ACCEPTANCE_CAPABILITY`) in the `hello_ack` it sends while it hosts a Claude session with a running hook server.
+The result is also opt-in per connection: a daemon records a message only for a connection whose own `hello.clientCapabilities` listed `chat_acceptance` (the native apps send it), so a client or an older hub's child proxy that does not ask never receives a frame it cannot decode.
+The hello-time capability check and the record-time check agree because the hook server is created once at startup and never replaced while clients are connected.
+The new `ChildProxy` copies its end client's `clientCapabilities` into the hello it makes for the child; an older hub copies nothing, so its children send nothing.
 The result reaches a relay peer through the hub's child proxy like any other message the child sends to that peer's connection (`hub-relay-chat-acceptance.test.ts`); a notification-only relay scope receives none.
 The web client has no "unconfirmed" bubble state (its states are sent, delivered and failed), so it ignores the result.
-The native apps settle the message in `OutgoingMessages.receive(_ result:)` when the result names the same session, message id and authenticated socket as the send, and drop it from the pending list.
+The native apps settle the message in `OutgoingMessages.receive(_ result:)` when the result names the same session, message id and authenticated socket as the send.
+The accepted message stays, drawn as an ordinary sent bubble, until the transcript shows a user entry with the same text stamped no earlier than the send (less 120 seconds of clock skew); that text match only reconciles the display, since acceptance already came from the hook.
+With no transcript loaded it stays until dismissed or the session is killed, and it is the first thing evicted when a retention bound would refuse a new send.
 While a capable daemon has not confirmed, the pending row reads "Sending to agent" (`RemiOutgoingState.awaitingAgent`); it falls back to the existing uncertain warning after `MachineStore.acceptanceWait` (45 seconds), and a late result still clears it.
 A daemon without the capability keeps the old copy.
+Limits of exact-text matching: two pending messages with identical text resolve first in, first out, so a result may be attributed to the older one; and a prompt typed at the terminal that is identical to a pending phone message confirms it.
+Both only move an acceptance between messages Claude did take with that text.
 Codex chat has its own accepted result (ADR 0043) and sends none of this.
 
 **Subagent permissions follow the terminal**
