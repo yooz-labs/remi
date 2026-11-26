@@ -344,7 +344,10 @@ export class FileDownloadSessionHost {
     try {
       const present: DownloadProtectedRoot[] = [];
       const metadata: string[] = [];
-      const choices = mergeRoots([...record.rootChoices, ...this.host.rootsFor(record.project)]);
+      const choices = mergeRoots([
+        ...record.rootChoices,
+        ...this.host.rootsFor(record.project).filter((root) => !root.required),
+      ]);
       for (const choice of choices) {
         let root = choice;
         try {

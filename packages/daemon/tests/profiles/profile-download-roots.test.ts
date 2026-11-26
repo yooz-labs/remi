@@ -235,3 +235,46 @@ test.each(['file', 'unreadable', 'dangling', 'ancestor'] as const)(
   },
   20000,
 );
+
+test('required environment roots remain frozen for a session', async () => {
+  const f = await downloadFixture();
+  const home = path.join(f.files.directory, 'host-state');
+  const first = path.join(f.files.directory, 'first');
+  const second = path.join(f.files.directory, 'second');
+  for (const dir of [home, first, second]) fs.mkdirSync(dir, { mode: 0o700 });
+  const previous = process.env['CLAUDE_CONFIG_DIR'];
+  process.env['CLAUDE_CONFIG_DIR'] = first;
+  const runtime = { pty: f.base.pty } as HarnessSession;
+  const host = new FileDownloadSessionHost({
+    home,
+    sessions: f.base.registry,
+    bindings: f.bindings,
+    runtimeFor: () => runtime,
+    directAdapter: () => undefined,
+    rootsFor: launchDownloadRoots({
+      home,
+      userHome: f.files.userHome,
+      harness: 'claude',
+      profile: undefined,
+      env: process.env,
+    }),
+    onReady: () => {},
+  });
+  const id = f.sessionId();
+  try {
+    expect(await host.open(f.base.trust)).toBe(true);
+    host.beginSession(id, f.files.work);
+    process.env['CLAUDE_CONFIG_DIR'] = second;
+    host.bindSession(id, runtime);
+    host.afterClaudeCommit(id, f.binding().harnessSessionId, true);
+    host.started(id);
+    const roots = host.contextFor(id)?.protectedRootPaths;
+    expect(roots).toContain(first);
+    expect(roots).not.toContain(second);
+  } finally {
+    if (previous === undefined) Reflect.deleteProperty(process.env, 'CLAUDE_CONFIG_DIR');
+    else process.env['CLAUDE_CONFIG_DIR'] = previous;
+    await host.closeAll();
+    await f.close();
+  }
+}, 20000);
