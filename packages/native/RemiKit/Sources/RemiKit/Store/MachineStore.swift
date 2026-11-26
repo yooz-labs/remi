@@ -444,6 +444,17 @@ public final class MachineStore {
     public private(set) var transcriptsLoading: Set<MachineSessionKey> = []
     /// A missing receipt cannot establish delivery. Tests shorten this local display deadline.
     @ObservationIgnored var outgoingUncertaintyDelay: Duration = .seconds(15)
+    /// How long a message sent to a daemon that lists `chat_acceptance` reads as in progress
+    /// before it is shown as uncertain (#1818). Claude reports a prompt it submits within a
+    /// fraction of a second when it is idle, but a message typed while Claude works waits for the
+    /// turn to take it, so this is longer than the receipt deadline above. After it the row
+    /// carries the same warning as any unconfirmed message, and a later result still clears it.
+    /// Tests shorten it.
+    public nonisolated static let acceptanceWait: Duration = .seconds(45)
+    @ObservationIgnored var outgoingAcceptanceDelay: Duration = MachineStore.acceptanceWait
+    /// The socket generation of each endpoint whose `hello_ack` listed `chat_acceptance`. A
+    /// generation that is no longer current never matches an origin, so nothing is cleared (#1818).
+    @ObservationIgnored private var chatAcceptanceGenerations: [MachineEndpoint: UUID] = [:]
     public private(set) var sessionViewsBySession: [MachineSessionKey: [SessionViewMeta]] = [:]
     public private(set) var recentRepositoriesByMachine: [String: [RecentRepository]] = [:]
     public private(set) var latestError: ErrorMessage?
@@ -2180,12 +2191,15 @@ public final class MachineStore {
         let retained = outgoingItems(in: quotaScopes(containing: scope), sessionID: key.sessionID).count
         guard outgoingCount < Self.outgoingRowLimit, retained < OutgoingMessages.limit,
               outgoingByGroup[groupID] != nil || outgoingByGroup.count < Self.outgoingSessionLimit else { return false }
-        guard outgoingByGroup[groupID, default: OutgoingMessages()].add(id: id, content: content, origin: origin, groupID: groupID) else { return false }
+        // Only a connection that listed `chat_acceptance` will be told Claude's answer (#1818).
+        let awaitsAcceptance = chatAcceptanceGenerations[origin.endpoint] == origin.connection
+        guard outgoingByGroup[groupID, default: OutgoingMessages()].add(
+            id: id, content: content, origin: origin, groupID: groupID, awaitsAcceptance: awaitsAcceptance) else { return false }
         if outgoingLabels[groupID] == nil {
             outgoingLabels[groupID] = (key, machine?.displayName ?? key.machineID,
                 machine?.sessions.first { $0.sessionId == key.sessionID }?.name ?? key.sessionID)
         }
-        let delay = outgoingUncertaintyDelay
+        let delay = awaitsAcceptance ? outgoingAcceptanceDelay : outgoingUncertaintyDelay
         Task { [weak self] in
             do { try await Task.sleep(for: delay) } catch { return }
             self?.outgoingByGroup[groupID]?.markUncertain(id: id, origin: origin)
@@ -2195,6 +2209,11 @@ public final class MachineStore {
 
     public func dismissOutgoing(groupID: OutgoingGroupID, messageID: String) {
         outgoingByGroup[groupID]?.dismiss(id: messageID)
+        retireOutgoingGroupIfEmpty(groupID)
+    }
+
+    /// A group with no message left is forgotten, whether its last message was dismissed or accepted.
+    private func retireOutgoingGroupIfEmpty(_ groupID: OutgoingGroupID) {
         if outgoingByGroup[groupID]?.items.isEmpty == true {
             outgoingByGroup[groupID] = nil
             outgoingLabels[groupID] = nil
@@ -2915,6 +2934,12 @@ public final class MachineStore {
                   pending.sessionId == result.sessionId, pending.questionId == result.questionId else { return }
             finishAnswer(result.requestId, outcome: result.outcome)
         case .hello(let acknowledgment, let authority):
+            // Set only when listed: a relay carries a hub's ack and a child's on one endpoint.
+            if acknowledgment.capabilities?.contains(where: {
+                WireGuards.same($0, HubCapability.chatAcceptance.rawValue)
+            }) == true {
+                chatAcceptanceGenerations[endpoint] = generation
+            }
             if let connection = machines[index].questionConnectionGenerations[endpoint.id],
                connection.generation == generation {
                 // Query and legacy acks lack attachState, so a later live snapshot cannot seed a baseline.
@@ -3137,6 +3162,16 @@ public final class MachineStore {
                 requestSessions(from: parent)
             } else {
                 latestOperationError = "Could not exit session: \(response.error ?? "Unknown daemon error")"
+            }
+        case .userInputResult(let result, let socket):
+            // The same origin rule as an error naming a message: only the authenticated socket
+            // that sent it can settle it (#1818).
+            guard let socket else { break }
+            let origin = OutgoingOrigin(endpoint: endpoint, connection: generation, socket: socket)
+            for groupID in outgoingByGroup.keys where groupID.sessionID == result.sessionId {
+                if outgoingByGroup[groupID]?.receive(result, sessionID: result.sessionId, origin: origin) == true {
+                    retireOutgoingGroupIfEmpty(groupID)
+                }
             }
         case .error(let error, let socket):
             if let socket, case .string(let sessionID)? = error.details?["sessionId"] {

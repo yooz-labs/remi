@@ -18,6 +18,20 @@ public struct AnswerResultMessage: Decodable, Sendable, Equatable {
     public let outcome: String
 }
 
+/// Claude Code's own report that it submitted the prompt a `user_input` typed (#1818). Positive
+/// only: its absence means unconfirmed, never refused. `messageId` is the `user_input`'s `id`.
+public struct UserInputResultMessage: Decodable, Sendable, Equatable {
+    public let type: String
+    public let id: String
+    public let timestamp: String
+    public let sessionId: String
+    public let messageId: String
+    public let outcome: String
+
+    /// The only outcome the daemon sends today.
+    static let accepted = "accepted"
+}
+
 public struct PingMessage: Decodable, Sendable, Equatable {
     public let type: String
     public let id: String

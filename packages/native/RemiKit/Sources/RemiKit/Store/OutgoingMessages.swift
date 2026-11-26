@@ -43,6 +43,10 @@ public struct OutgoingMessage: Identifiable, Sendable, Equatable {
     public enum Delivery: Sendable, Equatable {
         case sending
         case handedOff
+        /// Claude Code reported that it submitted exactly this text (#1818). The only positive
+        /// proof of agent acceptance, so the transcript already shows the message and the row
+        /// leaves the pending list (`receive(_ result:)`), never to appear in it again.
+        case accepted
         case refused
         case uncertain
     }
@@ -53,6 +57,10 @@ public struct OutgoingMessage: Identifiable, Sendable, Equatable {
     public let createdAt: Date
     public let origin: OutgoingOrigin
     public let groupID: OutgoingGroupID?
+    /// The connection this message went out on listed `chat_acceptance`, so the daemon will
+    /// report Claude's acceptance if it can match the text (#1818). Only changes the wording
+    /// while the message is handed off and unconfirmed; it never proves anything itself.
+    public let awaitsAcceptance: Bool
 
     /// An opaque UI identity, including the immutable group. Never parsed as routing authority.
     public var presentationID: String {
@@ -70,9 +78,11 @@ public struct OutgoingMessages: Sendable, Equatable {
     init(retainedItems: [OutgoingMessage]) { items = retainedItems }
 
     @discardableResult
-    public mutating func add(id: String, content: String, origin: OutgoingOrigin, groupID: OutgoingGroupID? = nil, now: Date = Date()) -> Bool {
+    public mutating func add(id: String, content: String, origin: OutgoingOrigin, groupID: OutgoingGroupID? = nil,
+                             awaitsAcceptance: Bool = false, now: Date = Date()) -> Bool {
         guard items.count < Self.limit, !items.contains(where: { $0.id == id }) else { return false }
-        items.append(OutgoingMessage(id: id, content: content, delivery: .sending, createdAt: now, origin: origin, groupID: groupID))
+        items.append(OutgoingMessage(id: id, content: content, delivery: .sending, createdAt: now, origin: origin,
+                                     groupID: groupID, awaitsAcceptance: awaitsAcceptance))
         return true
     }
 
@@ -82,7 +92,8 @@ public struct OutgoingMessages: Sendable, Equatable {
     }
 
     public mutating func markUncertain(id: String, origin: OutgoingOrigin) {
-        guard let index = index(id: id, origin: origin), items[index].delivery != .refused else { return }
+        guard let index = index(id: id, origin: origin),
+              items[index].delivery != .refused, items[index].delivery != .accepted else { return }
         items[index].delivery = .uncertain
     }
 
@@ -104,6 +115,24 @@ public struct OutgoingMessages: Sendable, Equatable {
         } else {
             markUncertain(id: id, origin: origin)
         }
+    }
+
+    /// Claude Code's report that it submitted this message (#1818). Only a result from the exact
+    /// session, message ID and authenticated origin that sent the message counts, the rules of
+    /// `receive(_ error:)`. It is positive proof, so it also settles a message the local deadline
+    /// marked uncertain, but it never undoes a refusal: the daemon never records a refused
+    /// message, so a result for one is not from this daemon. An accepted message leaves the
+    /// pending list because the transcript shows it. Returns whether it did, so the caller can
+    /// retire an emptied group. A result for a message already dismissed or never sent finds
+    /// nothing and changes nothing.
+    @discardableResult
+    public mutating func receive(_ result: UserInputResultMessage, sessionID: String, origin: OutgoingOrigin) -> Bool {
+        guard result.sessionId == sessionID, result.outcome == UserInputResultMessage.accepted,
+              let index = index(id: result.messageId, origin: origin),
+              items[index].delivery != .refused else { return false }
+        items[index].delivery = .accepted
+        items.remove(at: index)
+        return true
     }
 
     public mutating func connectionLost(endpoint: MachineEndpoint, connection: UUID) {

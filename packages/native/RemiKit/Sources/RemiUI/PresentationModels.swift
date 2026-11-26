@@ -251,24 +251,36 @@ public struct RemiMachineSummary: Identifiable, Sendable, Equatable {
     }
 }
 
-/// A local delivery outcome. None of these states proves harness acceptance (#1710).
+/// A local delivery outcome. Only `accepted` proves harness acceptance (#1818), and it is never
+/// shown: an accepted message leaves the pending list because the transcript shows it. Every
+/// other state is the best the app knows, and none of them proves acceptance (#1710).
 public enum RemiOutgoingState: Sendable, Equatable, CaseIterable {
-    case sending, handedOff, refused, uncertain
+    case sending, handedOff, awaitingAgent, accepted, refused, uncertain
     public static let retentionNotice = "Available while Remi is running; copy before closing."
 
-    public init(delivery: OutgoingMessage.Delivery) {
+    public init(delivery: OutgoingMessage.Delivery, awaitsAcceptance: Bool = false) {
         self = switch delivery {
         case .sending: .sending
-        case .handedOff: .handedOff
+        // A daemon that lists chat_acceptance is expected to report Claude's answer, so the
+        // unconfirmed message is in progress, not a warning. Without it, or after the wait, the
+        // warning copy stays (#1818).
+        case .handedOff: awaitsAcceptance ? .awaitingAgent : .handedOff
+        case .accepted: .accepted
         case .refused: .refused
         case .uncertain: .uncertain
         }
+    }
+
+    public init(message: OutgoingMessage) {
+        self.init(delivery: message.delivery, awaitsAcceptance: message.awaitsAcceptance)
     }
 
     public var title: String {
         switch self {
         case .sending: "Sending"
         case .handedOff: "Handed to connection"
+        case .awaitingAgent: "Sending to agent"
+        case .accepted: "Accepted by agent"
         case .refused: "Message refused"
         case .uncertain: "Delivery uncertain"
         }
@@ -278,6 +290,8 @@ public enum RemiOutgoingState: Sendable, Equatable, CaseIterable {
         switch self {
         case .sending: "Waiting for the connection."
         case .handedOff: "Agent acceptance is unconfirmed. Check the session before sending again."
+        case .awaitingAgent: "Waiting for Claude to confirm it took the message."
+        case .accepted: "Claude confirmed it took this message."
         case .refused: "The daemon refused this input. Inspect the terminal or waiting prompt before sending again."
         case .uncertain: "Some or all input may have arrived. Inspect the terminal and conversation before sending again."
         }

@@ -52,6 +52,14 @@ struct FixtureConformanceTests {
         #expect(message.question.answerPath != nil)
     }
 
+    @Test func userInputResultFixtureDecodes() throws {
+        let message = try JSONDecoder().decode(UserInputResultMessage.self, from: Self.fixture("user_input_result"))
+        #expect(message.type == "user_input_result")
+        #expect(message.sessionId == "fixture-session-id")
+        #expect(message.messageId == "fixture-message-id")
+        #expect(message.outcome == UserInputResultMessage.accepted)
+    }
+
     @Test func resolvedByFixtureDecodes() throws {
         let message = try JSONDecoder().decode(
             QuestionResolvedMessage.self,
