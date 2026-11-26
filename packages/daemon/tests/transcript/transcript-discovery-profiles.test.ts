@@ -98,3 +98,30 @@ test('keeps both same-root duplicates and finds the newest', () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('duplicate diagnostics have bounded memory', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'duplicate-bound-'));
+  const primary = path.join(root, 'primary', 'project');
+  const profile = path.join(root, 'profile', 'project');
+  const logs: string[] = [];
+  configureLogger({ writeLog: (line) => logs.push(line) });
+  try {
+    fs.mkdirSync(primary, { recursive: true });
+    fs.mkdirSync(profile, { recursive: true });
+    for (let i = 0; i < 1001; i++) {
+      const name = `${i.toString().padStart(8, '0')}.jsonl`;
+      for (const dir of [primary, profile]) fs.writeFileSync(path.join(dir, name), '{}\n');
+    }
+    const discovery = new TranscriptDiscovery({
+      projectsDir: path.dirname(primary),
+      profileRoots: () => [{ profile: 'work', projectsDir: path.dirname(profile) }],
+    });
+    discovery.discoverSessions();
+    expect(logs).toHaveLength(1001);
+    discovery.discoverSessions();
+    expect(logs.length).toBeGreaterThan(1001);
+  } finally {
+    __resetLoggerForTests();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}, 20000);

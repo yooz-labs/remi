@@ -26,8 +26,9 @@ function isTextBlock(block: ContentBlock): block is TextBlock {
   return block.type === 'text';
 }
 
-/** Default Claude Code projects directory */
 const loggedDuplicates = new Set<string>();
+
+/** Default Claude Code projects directory */
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 
 /** Configuration for transcript discovery */
@@ -221,6 +222,8 @@ export class TranscriptDiscovery {
       const key = `${id.slice(0, 8)}:${count}`;
       if (count > 1 && !loggedDuplicates.has(key)) {
         loggedDuplicates.add(key);
+        // Avoid retaining an unbounded history of duplicate IDs in a long-lived hub.
+        if (loggedDuplicates.size > 1000) loggedDuplicates.clear();
         log(`[TranscriptDiscovery] Duplicate ${id.slice(0, 8)} in ${count} roots`);
       }
     }
