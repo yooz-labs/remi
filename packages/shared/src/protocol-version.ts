@@ -24,7 +24,10 @@ const VERSIONLESS_ACK_VERSION = 1;
 /** Said of a machine whose remi must change: a daemon keeps its binary until it restarts (#539). */
 const UPDATE_MACHINE = 'Update remi on that machine and restart it.';
 
-/** The capability name of `user_input_result` (#1818); see {@link PROTOCOL_CAPABILITIES}. */
+/**
+ * The capability name of `user_input_result` (#1818). It is also the literal key in
+ * {@link PROTOCOL_CAPABILITIES}, where the native app's tests read it from source.
+ */
 export const CHAT_ACCEPTANCE_CAPABILITY = 'chat_acceptance';
 
 /**
@@ -51,8 +54,7 @@ export const PROTOCOL_CAPABILITIES: Readonly<Record<string, string>> = {
    * Listed only where the daemon hosts a Claude session with the hook bridge, and sent only to
    * the connection that sent the message. Absence of a result never means refusal.
    */
-  [CHAT_ACCEPTANCE_CAPABILITY]:
-    'confirm that the attached Claude session accepted a sent chat message',
+  chat_acceptance: 'confirm that the attached Claude session accepted a sent chat message',
   browser_links: 'receive browser links from the attached Claude session',
   file_download: 'download a file from the attached session',
   notifications: 'manage paired-device background notifications',
