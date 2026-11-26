@@ -957,7 +957,9 @@ public actor RemiConnection {
             timestamp: Date().ISO8601Format(),
             clientVersion: configuration.clientVersion,
             clientId: configuration.clientId,
-            deviceId: configuration.deviceId
+            deviceId: configuration.deviceId,
+            // The app consumes user_input_result (#1818); a daemon pushes it only on this request.
+            clientCapabilities: [HubCapability.chatAcceptance.rawValue]
         )
         if configuration.relayPin != nil { try await send(message) }
         else { try await task.send(.data(encoder.encode(message))) }

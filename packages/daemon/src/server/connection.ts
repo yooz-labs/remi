@@ -179,6 +179,7 @@ export class Connection {
   private resumeSessionId: UUID | null = null;
   private _mode: 'query' | undefined = undefined;
   private deviceId: string | null = null;
+  private clientCapabilities: readonly string[] = [];
   private readonly _peerAddress: string | null;
   private readonly relayChatAuthority: SecurePushAuthority | null;
   /** Authenticated client fingerprint from the Ed25519 challenge-response
@@ -283,6 +284,15 @@ export class Connection {
   /** Stable per-device identifier from the client's hello, if sent (#662). */
   get connectionDeviceId(): string | null {
     return this.deviceId;
+  }
+
+  /**
+   * The optional pushed features this client's hello asked for (#1818), such as
+   * `chat_acceptance`. Empty for a client that sent none (an older one). Bounded and
+   * string-only: it is a request for messages, never an authority.
+   */
+  get connectionClientCapabilities(): readonly string[] {
+    return this.clientCapabilities;
   }
 
   /** Authenticated client fingerprint, if this connection completed the
@@ -884,6 +894,11 @@ export class Connection {
     this.resumeSessionId = message.resumeSessionId ?? null;
     this._mode = message.mode === 'query' ? 'query' : undefined;
     this.deviceId = message.deviceId ?? null;
+    this.clientCapabilities = Array.isArray(message.clientCapabilities)
+      ? message.clientCapabilities
+          .filter((name): name is string => typeof name === 'string' && name.length <= 64)
+          .slice(0, 16)
+      : [];
     this.state = 'connected';
 
     // Send hello ack (unless skipHelloAck is set, which lets daemon handle it)

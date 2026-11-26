@@ -64,6 +64,9 @@ public struct HelloMessage: Codable, Sendable, Equatable {
     public let lastReceivedIndex: Int?
     public let mode: String?
     public let deviceId: String?
+    /// Optional pushed features this client understands (#1818). A daemon sends such a message only
+    /// to a connection that listed its capability, so an older hub or daemon never gets one it cannot decode.
+    public let clientCapabilities: [String]?
 
     public init(
         id: String,
@@ -74,7 +77,8 @@ public struct HelloMessage: Codable, Sendable, Equatable {
         resumeSessionId: String? = nil,
         lastReceivedIndex: Int? = nil,
         mode: String? = nil,
-        deviceId: String? = nil
+        deviceId: String? = nil,
+        clientCapabilities: [String]? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -85,6 +89,7 @@ public struct HelloMessage: Codable, Sendable, Equatable {
         self.lastReceivedIndex = lastReceivedIndex
         self.mode = mode
         self.deviceId = deviceId
+        self.clientCapabilities = clientCapabilities
     }
 }
 

@@ -152,6 +152,7 @@ export {
   createUserInput,
   createAck,
   createUserInputResult,
+  hasUniqueRootType,
   createEdit,
   createPing,
   createPong,

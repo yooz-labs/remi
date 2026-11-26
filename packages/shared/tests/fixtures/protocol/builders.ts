@@ -598,6 +598,12 @@ export const FIXTURE_VARIANTS: Record<
   string,
   { type: keyof ProtocolMessageMap; build: () => ProtocolMessageMap[keyof ProtocolMessageMap] }
 > = {
+  // A client that asks for optional pushed messages (#1818). The registry `hello` golden stays the
+  // older client's hello without the field, which every daemon must keep accepting.
+  hello_client_capabilities: {
+    type: 'hello',
+    build: () => createHello(CLIENT_ID, '1.0.0', { clientCapabilities: ['chat_acceptance'] }),
+  },
   hello_ack_machine: {
     type: 'hello_ack',
     build: () => createHelloAck('1.0.0', null, { machine: FIXED_MACHINE }),

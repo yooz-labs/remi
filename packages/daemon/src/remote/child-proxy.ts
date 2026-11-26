@@ -3,6 +3,7 @@ import {
   type AnswerMessage,
   type AnswerResultOutcome,
   type HelloAckMessage,
+  MESSAGE_DIRECTION,
   type NativeAnswerMessage,
   type ProtocolMessage,
   type SessionListResponseMessage,
@@ -10,6 +11,7 @@ import {
   createPong,
   createSessionListRequest,
   deserialize,
+  hasUniqueRootType,
   relayV2,
   serialize,
 } from '@remi/shared';
@@ -18,8 +20,23 @@ import {
   encodeRelayChatAuthority,
 } from '../auth/relay-chat-authority';
 import { resolveDaemonWsTarget } from '../cli/daemon-target.ts';
+import { log } from '../cli/logger.ts';
 import type { SecurePushAuthority } from '../notifications/secure-push-store';
 import type { SessionRegistryFile } from '../session/session-registry-file.ts';
+
+/** The root `type` of a frame this build does not register, or null (registered, malformed or not an object). */
+function unregisteredType(data: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(data);
+    if (typeof parsed !== 'object' || parsed === null || !hasUniqueRootType(data)) return null;
+    const type = (parsed as Record<string, unknown>)['type'];
+    if (typeof type !== 'string' || type === '' || Object.hasOwn(MESSAGE_DIRECTION, type))
+      return null;
+    return type;
+  } catch {
+    return null;
+  }
+}
 
 export class ChildProxy {
   private readonly children = new Map<
@@ -35,6 +52,12 @@ export class ChildProxy {
     }
   >();
   private closed = false;
+  /**
+   * What this channel's end client asked for in its own hello (#1818). The child's hello is made
+   * here, not forwarded, so the list is carried explicitly; an older hub does not, so its children
+   * never send the opt-in messages it cannot decode.
+   */
+  private clientCapabilities: readonly string[] | undefined;
   /** A consumed child sequence must never move to a replacement socket on this channel. */
   private retireStateOwner(sessionId: string, ws?: WebSocket): boolean {
     const child = this.children.get(sessionId);
@@ -170,6 +193,7 @@ export class ChildProxy {
     private readonly localHome?: string,
   ) {}
   async send(sessionId: string, message: ProtocolMessage): Promise<void> {
+    if (message.type === 'hello') this.clientCapabilities = message.clientCapabilities;
     return this.sendToChild(sessionId, { kind: 'message', message });
   }
   /** Original units only; the strict child service owns syntax and all transfer effects. */
@@ -238,6 +262,7 @@ export class ChildProxy {
               createHello(this.deviceId, '2.0.0', {
                 resumeSessionId: sessionId,
                 deviceId: this.deviceId,
+                ...(this.clientCapabilities && { clientCapabilities: this.clientCapabilities }),
               }),
             ),
           );
@@ -255,6 +280,18 @@ export class ChildProxy {
             return;
           }
           const incoming = typeof event.data === 'string' ? deserialize(event.data) : null;
+          // A verified child may speak a newer protocol: one whose single root `type` is not in this
+          // build's registry cannot be a frame of any family this proxy tracks state for (those
+          // are registered), so it is dropped with one line instead of closing the child (#1818).
+          // A registered type that fails to decode, a duplicate `type` key, an unverified child
+          // and non-text frames still close it as before.
+          if (!incoming && verified && typeof event.data === 'string') {
+            const unknownType = unregisteredType(event.data);
+            if (unknownType !== null) {
+              log(`[ChildProxy] dropped a child frame of unknown type ${unknownType.slice(0, 64)}`);
+              return;
+            }
+          }
           if (!incoming || incoming.type === 'auth_challenge' || incoming.type === 'auth_result') {
             this.retireStateOwner(sessionId, ws);
             reject(new Error('CHILD_UNVERIFIED'));

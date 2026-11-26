@@ -2412,7 +2412,18 @@ const promptUpWiring = promptUpDeps(
 // shared by the input handler (records) and the hook bridge (resolves).
 const chatAcceptance = new ChatAcceptanceTracker({
   send: sendToConnection,
-  canReceive: (id) => capabilitiesForConnection(id).includes(CHAT_ACCEPTANCE_CAPABILITY),
+  // Both sides must agree: this daemon lists the capability for the connection, and the client's
+  // own hello asked for it. A hub's older child proxy sends no such list, so it never gets one.
+  canReceive: (id) => {
+    if (!capabilitiesForConnection(id).includes(CHAT_ACCEPTANCE_CAPABILITY)) return false;
+    const adapter = registry.getAdapter('websocket');
+    if (!(adapter instanceof WebSocketAdapter)) return false;
+    return (
+      adapter
+        .getDirectConnection(id)
+        ?.connectionClientCapabilities.includes(CHAT_ACCEPTANCE_CAPABILITY) === true
+    );
+  },
 });
 
 const inputHandlers: InputHandlers = createInputHandlers({

@@ -653,6 +653,41 @@ describe('WebSocketServer', () => {
       await server.stop();
     });
 
+    test('connectionClientCapabilities carries the hello list, bounded and string-only (#1818)', async () => {
+      const receivedPromise = new Promise<readonly string[]>((resolve) => {
+        server = new WebSocketServer(
+          { port: testPort + 22 },
+          { onClientConnect: (connection) => resolve(connection.connectionClientCapabilities) },
+        );
+      });
+      await server.start();
+      const ws = new WebSocket(`ws://localhost:${testPort + 22}/ws`);
+      ws.onopen = () => {
+        const hello = createHello('test-client' as UUID, '1.0.0', {
+          clientCapabilities: ['chat_acceptance', 7 as never, 'x'.repeat(65)],
+        });
+        ws.send(serialize(hello));
+      };
+      expect(await receivedPromise).toEqual(['chat_acceptance']);
+      ws.close();
+      await server.stop();
+    });
+
+    test('an older hello without clientCapabilities lists none (#1818)', async () => {
+      const receivedPromise = new Promise<readonly string[]>((resolve) => {
+        server = new WebSocketServer(
+          { port: testPort + 23 },
+          { onClientConnect: (connection) => resolve(connection.connectionClientCapabilities) },
+        );
+      });
+      await server.start();
+      const ws = new WebSocket(`ws://localhost:${testPort + 23}/ws`);
+      ws.onopen = () => ws.send(serialize(createHello('test-client' as UUID, '1.0.0')));
+      expect(await receivedPromise).toEqual([]);
+      ws.close();
+      await server.stop();
+    });
+
     test('connectionDeviceId is null when hello omits deviceId (#662)', async () => {
       const receivedPromise = new Promise<string | null>((resolve) => {
         server = new WebSocketServer(

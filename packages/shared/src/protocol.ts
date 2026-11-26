@@ -473,6 +473,14 @@ export interface HelloMessage {
    * implements exclusivity and reclaim.
    */
   readonly deviceId?: string | undefined;
+  /**
+   * Optional features this client understands that a daemon would otherwise push unasked (#1818):
+   * the daemon sends such a message only to a connection whose hello lists its capability
+   * (`chat_acceptance` for `user_input_result`). Additive: absent means none, and a daemon that
+   * does not know the field ignores it. A hub's child proxy carries its end client's list to the
+   * child, so an older hub, which does not, never receives a message it cannot decode.
+   */
+  readonly clientCapabilities?: readonly string[] | undefined;
 }
 
 /** Server hello ack - confirms connection */
@@ -1720,7 +1728,7 @@ export function deserialize(data: string): ProtocolMessage | null {
 
 /** Grammar was validated by JSON.parse; scan only root member names, iteratively.
  * Native size/depth limits must not restrict legacy transcripts (#1201). */
-function hasUniqueRootType(data: string): boolean {
+export function hasUniqueRootType(data: string): boolean {
   let depth = 0;
   let rootKey = false;
   let typeSeen = false;
@@ -1825,6 +1833,8 @@ export interface CreateHelloOptions {
   readonly mode?: 'query' | undefined;
   /** Stable per-device identifier for same-device lock reclaim (#662). */
   readonly deviceId?: string | undefined;
+  /** Optional push-style features this client understands (#1818). */
+  readonly clientCapabilities?: readonly string[] | undefined;
 }
 
 /**
@@ -1838,7 +1848,8 @@ export function createHello(
   clientVersion: string,
   options: CreateHelloOptions = {},
 ): HelloMessage {
-  const { directory, resumeSessionId, lastReceivedIndex, mode, deviceId } = options;
+  const { directory, resumeSessionId, lastReceivedIndex, mode, deviceId, clientCapabilities } =
+    options;
   return {
     type: 'hello',
     id: generateId(),
@@ -1850,6 +1861,7 @@ export function createHello(
     ...(lastReceivedIndex !== undefined && { lastReceivedIndex }),
     ...(mode !== undefined && { mode }),
     ...(deviceId !== undefined && { deviceId }),
+    ...(clientCapabilities !== undefined && { clientCapabilities }),
   };
 }
 
