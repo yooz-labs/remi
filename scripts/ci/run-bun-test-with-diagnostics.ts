@@ -60,6 +60,10 @@ type RunOptions = {
   diagnosticAfterMs?: number;
   diagnosticEveryMs?: number;
   procSampler?: ProcSampler;
+  /** Test harness only: coordinate a real group with its snapshot. */
+  groupSnapshot?: typeof snapshotOwnedGroup;
+  /** Test harness only: control the post-exit group observation. */
+  groupProbe?: typeof groupAlive;
   timeoutMs?: number;
   cwd?: string;
   env?: Record<string, string | undefined>;
@@ -721,7 +725,7 @@ export type OwnedGroupSnapshot = {
   members: OwnedGroupMember[];
   /** Members beyond the cap that are not listed. */
   omitted: number;
-  /** Why no listing exists (ps missing, failing or timing out); null when ps answered. */
+  /** Why no listing exists (ps missing, failing, timing out or malformed); null when parsed. */
   unavailable: string | null;
 };
 
@@ -775,7 +779,9 @@ export function parseGroupMembers(output: string, pgid: number): OwnedGroupMembe
   const members: OwnedGroupMember[] = [];
   for (const line of output.split('\n')) {
     const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s*(.*)$/.exec(line);
-    if (!match || Number(match[3]) !== pgid) continue;
+    if (!line.trim()) continue;
+    if (!match) throw new Error('unparsable ps output');
+    if (Number(match[3]) !== pgid) continue;
     members.push({
       pid: Number(match[1]),
       ppid: Number(match[2]),
@@ -869,7 +875,12 @@ export async function snapshotOwnedGroup(
       failures.push(outcome.text);
       continue;
     }
-    const members = parseGroupMembers(outcome.stdout, pgid);
+    let members: OwnedGroupMember[];
+    try {
+      members = parseGroupMembers(outcome.stdout, pgid);
+    } catch {
+      return unavailable('unparsable ps output');
+    }
     return {
       pgid,
       members: members.slice(0, SNAPSHOT_MAX_MEMBERS),
@@ -886,7 +897,8 @@ export function formatGroupSnapshot(snapshot: OwnedGroupSnapshot): string {
   const lines = [
     `Owned process group ${snapshot.pgid} at failure time: ${snapshot.members.length + snapshot.omitted} process(es)`,
   ];
-  if (snapshot.members.length === 0) lines.push('  (none listed; the group ended after the check)');
+  if (snapshot.members.length === 0)
+    lines.push('  (no members listed; the group was still alive on re-check)');
   for (const member of snapshot.members)
     lines.push(
       `  pid=${member.pid} ppid=${member.ppid} state=${member.state} elapsed=${member.elapsedSeconds ?? '?'}s cmd=${member.args}`,
@@ -1240,12 +1252,29 @@ export async function runChild(command: string[], options: RunOptions = {}): Pro
     if (cleanupPromise) await cleanupPromise;
     await finishLoggingStageChannel();
     if (diagnosticWriteError) throw diagnosticWriteError;
-    if (options.timeoutMs !== undefined && groupAlive(child.pid)) {
-      // Diagnostics only: look before cleanup kills the survivors. The check and
-      // the throw are unchanged; the look adds one ps run, bounded by 2 seconds in total.
-      const snapshot = await snapshotOwnedGroup(child.pid);
-      await startCleanup('SIGTERM');
-      throw new OwnedDescendantError(snapshot);
+    const probeOwnedGroup = options.groupProbe ?? groupAlive;
+    if (options.timeoutMs !== undefined && probeOwnedGroup(child.pid)) {
+      // Look before cleanup kills survivors. An empty, available snapshot only clears
+      // the failure if a fresh group probe confirms that the group has ended.
+      const snapshot = await (options.groupSnapshot ?? snapshotOwnedGroup)(child.pid).catch(() => ({
+        pgid: child.pid,
+        members: [],
+        omitted: 0,
+        unavailable: 'snapshot failed',
+      }));
+      if (
+        snapshot.unavailable === null &&
+        snapshot.members.length === 0 &&
+        snapshot.omitted === 0 &&
+        !probeOwnedGroup(child.pid)
+      ) {
+        stderr.write(
+          `[ci-test-diagnostic] Owned process group ${child.pid} ended during the check (confirmed by re-check)\n`,
+        );
+      } else {
+        await startCleanup('SIGTERM');
+        throw new OwnedDescendantError(snapshot);
+      }
     }
     return {
       pid: child.pid,

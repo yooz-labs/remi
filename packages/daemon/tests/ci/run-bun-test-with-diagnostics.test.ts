@@ -920,13 +920,121 @@ itWhereZombieGroupProbeIsStable(
   15_000,
 );
 
+test('a group that ends during the snapshot is clean on re-check', async () => {
+  const out = sink();
+  const err = sink();
+  let probes = 0;
+  // The first observation models the race. The child is real and the second probe
+  // calls the OS on its actual process group after the real snapshot command.
+  const result = await runChild(['sh', '-c', 'exit 0'], {
+    stdout: out.stream,
+    stderr: err.stream,
+    timeoutMs: 5_000,
+    groupSnapshot: (pgid) => snapshotOwnedGroup(pgid, [['sh', '-c', 'exit 0']]),
+    groupProbe: (pgid) => {
+      probes++;
+      if (probes === 1) return true;
+      try {
+        process.kill(-pgid, 0);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+        throw error;
+      }
+    },
+  });
+  expect(probes).toBe(2);
+  expect(result.exitCode).toBe(0);
+  expect(result.cleanupVerified).toBe(true);
+  expect(err.text().trim()).toBe(
+    `[ci-test-diagnostic] Owned process group ${result.pid} ended during the check (confirmed by re-check)`,
+  );
+}, 15_000);
+
+test('an unavailable snapshot does not clear an ended group', async () => {
+  let probes = 0;
+  const failure = await runChild(['sh', '-c', 'exit 0'], {
+    stdout: sink().stream,
+    stderr: sink().stream,
+    timeoutMs: 5_000,
+    groupSnapshot: (pgid) => snapshotOwnedGroup(pgid, [['sh', '-c', 'exit 1']]),
+    groupProbe: () => {
+      probes++;
+      return true;
+    },
+  }).then(
+    () => null,
+    (error: unknown) => error,
+  );
+  expect(probes).toBe(1);
+  expect(failure).toBeInstanceOf(OwnedDescendantError);
+  expect((failure as OwnedDescendantError).snapshot.unavailable).toContain('exited 1');
+});
+
+test('an empty snapshot with a live group remains a descendant failure', async () => {
+  const out = sink();
+  let survivor: number | undefined;
+  try {
+    const failure = await runChild(
+      ['sh', '-c', 'sleep 31337 >/dev/null 2>&1 </dev/null & echo sleep-pid=$!'],
+      {
+        stdout: out.stream,
+        stderr: sink().stream,
+        timeoutMs: 5_000,
+        groupSnapshot: async (pgid) => {
+          const match = /sleep-pid=(\d+)/.exec(out.text());
+          if (!match?.[1]) throw new Error('owned sleep PID missing');
+          survivor = Number(match[1]);
+          return snapshotOwnedGroup(pgid, [['sh', '-c', 'exit 0']]);
+        },
+      },
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(OwnedDescendantError);
+    expect((failure as Error).message).toContain(
+      'no members listed; the group was still alive on re-check',
+    );
+  } finally {
+    if (survivor !== undefined) killIfAlive(survivor);
+  }
+}, 15_000);
+
+test('an unavailable snapshot with a live group remains a descendant failure', async () => {
+  const out = sink();
+  let survivor: number | undefined;
+  try {
+    const failure = await runChild(
+      ['sh', '-c', 'sleep 31337 >/dev/null 2>&1 </dev/null & echo sleep-pid=$!'],
+      {
+        stdout: out.stream,
+        stderr: sink().stream,
+        timeoutMs: 5_000,
+        groupSnapshot: async (pgid) => {
+          const match = /sleep-pid=(\d+)/.exec(out.text());
+          if (!match?.[1]) throw new Error('owned sleep PID missing');
+          survivor = Number(match[1]);
+          return snapshotOwnedGroup(pgid, [['sh', '-c', 'exit 1']]);
+        },
+      },
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(OwnedDescendantError);
+    expect((failure as OwnedDescendantError).snapshot.unavailable).toContain('exited 1');
+  } finally {
+    if (survivor !== undefined) killIfAlive(survivor);
+  }
+}, 15_000);
+
 test('the group snapshot lists only the requested group', () => {
   const output = [
     '  101     1   500 S        12 sleep 5',
     '  102   101   500 Z         0 [sleep] <defunct>',
     '  103     1   999 S         7 other-group',
     '  104   101   500 S     1:02 node run --flag',
-    'garbage line',
   ].join('\n');
   const members = parseGroupMembers(output, 500);
   expect(members.map((member) => member.pid)).toEqual([101, 102, 104]);
@@ -1002,7 +1110,7 @@ test('a non-UTF8 byte in a command line does not break the snapshot', async () =
   expect(snapshot.members[1]?.args).toBe('ok');
 });
 
-test('a missing, failing or garbled ps still yields a usable snapshot', async () => {
+test('a missing, failing or garbled ps yields an unavailable snapshot', async () => {
   const missing = await snapshotOwnedGroup(4242, [['remi-no-such-ps-binary']]);
   expect(missing.unavailable).toContain('remi-no-such-ps-binary');
   expect(missing.members).toEqual([]);
@@ -1021,11 +1129,19 @@ test('a missing, failing or garbled ps still yields a usable snapshot', async ()
     { pid: 77, ppid: 1, state: 'S', elapsedSeconds: 65, args: 'sleep 9' },
   ]);
   const garbled = await snapshotOwnedGroup(4242, [['sh', '-c', 'echo not ps output']]);
-  expect(garbled.unavailable).toBeNull();
+  expect(garbled.unavailable).toContain('unparsable ps output');
   expect(garbled.members).toEqual([]);
   expect(new OwnedDescendantError(missing).message).toBe(
     `Child left an owned descendant after exit\nOwned process group 4242 snapshot unavailable: ${missing.unavailable}`,
   );
+});
+
+test('mixed parseable and unparsable ps output is unavailable', async () => {
+  const snapshot = await snapshotOwnedGroup(4242, [
+    ['sh', '-c', 'echo "77 1 4242 S 5 sleep 9"; echo garbage'],
+  ]);
+  expect(snapshot.unavailable).toContain('unparsable ps output');
+  expect(snapshot.members).toEqual([]);
 });
 
 test('a hung ps is bounded by 2 seconds in total and never falls through to the next command', async () => {
