@@ -3729,7 +3729,7 @@ if (cliDaemonMode) {
     );
     if (probed === null) {
       console.error(
-        `All remi ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
+        `All remi ports in range ${remiConfig.daemon.base_port}-${remiConfig.daemon.base_port + DEFAULT_PORT_RANGE - 1} are in use.`,
       );
       console.error('Use --port to specify a different port, or stop existing sessions.');
       await registry.stopAll();

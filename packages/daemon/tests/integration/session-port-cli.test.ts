@@ -129,3 +129,66 @@ test('CLI session probes and bind retries use the configured reservation', async
     }
   }
 }, 100_000);
+
+test('daemon reports the configured range when the phase-two probe is exhausted', async () => {
+  const { home, work } = makeIsolatedDirs();
+  const agents = installFakeAgents(home, { claude: true });
+  const base = await reserveRange(22, 50, DEFAULT_CONFIG.daemon.bind);
+  const remi = path.join(home, '.remi');
+  const cli = path.join(path.dirname(CLI_TS), `cli-test-${crypto.randomUUID()}.ts`);
+  const listeners: Awaited<ReturnType<typeof occupyPort>>[] = [];
+  fs.mkdirSync(remi);
+  fs.writeFileSync(
+    path.join(remi, 'config.toml'),
+    `[daemon]\nbase_port = ${base}\nhub_auto_start = false\n[network]\nmdns = false\n`,
+  );
+  fs.writeFileSync(cli, instrumentCli());
+  const env = isolatedEnv(home, {
+    ...agents.env,
+    REMI_TEST_BARRIER: home,
+    REMI_TEST_PAUSE: 'probe',
+  });
+  const proc = Bun.spawn([process.execPath, cli, '--daemon', '--no-mdns', '--no-auth'], {
+    cwd: work,
+    env,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    stdin: 'ignore',
+    timeout: 25_000,
+  });
+  const stdout = { text: '' };
+  const stderr = { text: '' };
+  collect(proc.stdout, stdout);
+  collect(proc.stderr, stderr);
+  try {
+    await pollUntil(
+      () => {
+        if (proc.exitCode !== null) throw new Error(`CLI exited: ${stdout.text} ${stderr.text}`);
+        return fs.existsSync(path.join(home, 'ready'));
+      },
+      12_000,
+      'daemon probe barrier',
+    );
+    for (let offset = 1; offset <= 20; offset++)
+      listeners.push(await occupyPort(base + offset, DEFAULT_CONFIG.daemon.bind));
+    fs.writeFileSync(path.join(home, 'go'), '');
+    expect(await proc.exited).not.toBe(0);
+    await pollUntil(
+      () => stderr.text.includes('All remi ports in range'),
+      3000,
+      'port exhaustion message',
+    );
+    expect(stderr.text).toContain(`All remi ports in range ${base}-${base + 19} are in use.`);
+  } finally {
+    for (const listener of listeners)
+      await new Promise<void>((resolve) => listener.close(() => resolve()));
+    fs.writeFileSync(path.join(agents.claudeDir, 'release'), '');
+    if (proc.exitCode === null) {
+      proc.kill('SIGKILL');
+      await proc.exited;
+    }
+    fs.rmSync(cli, { force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(work, { recursive: true, force: true });
+  }
+}, 30_000);
