@@ -64,7 +64,7 @@ async function setup(extra = '') {
   fs.mkdirSync(path.join(dirs.home, '.remi'));
   fs.writeFileSync(
     path.join(dirs.home, '.remi', 'config.toml'),
-    `[daemon]\nbase_port = ${port}\n${extra === 'default' ? '' : `hub_auto_start = ${extra === 'off' ? 'false' : 'true'}\n`}[network]\nmdns = false\n${extra === 'fail' ? 'relay = true\nsignaling_url = "wss://remi-signaling.yooz.workers.dev/connect"\n' : ''}`,
+    `[daemon]\nbase_port = ${port}\n${extra === 'default' ? '' : `hub_auto_start = ${extra === 'off' ? 'false' : 'true'}\n`}[network]\nmdns = false\n`,
   );
   const env = isolatedEnv(dirs.home, {
     ...agents.env,
@@ -74,8 +74,15 @@ async function setup(extra = '') {
   return { ...dirs, agents, port, env };
 }
 
-function launch(f: Awaited<ReturnType<typeof setup>>, args: string[] = []) {
-  const proc = Bun.spawn([process.execPath, CLI_TS, ...args], {
+function launch(f: Awaited<ReturnType<typeof setup>>, args: string[] = [], failedLauncher = false) {
+  const command = failedLauncher
+    ? [
+        process.execPath,
+        '-e',
+        `process.argv[0] = 'test-parent'; process.argv[1] = 'test-parent'; await import(${JSON.stringify(CLI_TS)});`,
+      ]
+    : [process.execPath, CLI_TS, ...args];
+  const proc = Bun.spawn(command, {
     cwd: f.work,
     env: f.env,
     stdout: 'pipe',
@@ -173,14 +180,25 @@ test('a missing hub_auto_start setting starts the hub by default', async () => {
 test('disabled and failed startup warn and still launch', async () => {
   for (const mode of ['off', 'fail']) {
     const f = await setup(mode);
-    const run = launch(f);
-    await pollUntil(() => fs.existsSync(path.join(f.agents.claudeDir, 'argv')), 20_000, 'agent');
+    if (mode === 'fail') {
+      fs.writeFileSync(
+        path.join(f.home, 'fake-bin', 'remi'),
+        '#!/bin/sh\nprintf "deliberate launcher failure\\n" >&2\nexit 1\n',
+        { mode: 0o700 },
+      );
+    }
+    const run = launch(f, [], mode === 'fail');
+    await pollUntil(() => fs.existsSync(path.join(f.agents.claudeDir, 'argv')), 22_000, 'agent');
     expect(run.output.text).toContain(
       "No remi hub is running, so your phone may not see this session's questions or get its notifications. Start the hub with: remi start",
     );
     expect(fs.existsSync(path.join(f.home, '.remi', 'daemon-status.json'))).toBe(false);
+    if (mode === 'fail')
+      expect(fs.readFileSync(path.join(f.home, '.remi', 'daemon.log'), 'utf8')).toContain(
+        'deliberate launcher failure',
+      );
   }
-}, 50_000);
+}, 55_000);
 
 test('activated secure push changes the session and status warning', async () => {
   const f = await setup('off');
