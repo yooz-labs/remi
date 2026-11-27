@@ -62,6 +62,9 @@ public struct OutgoingMessage: Identifiable, Sendable, Equatable {
     /// report Claude's acceptance if it can match the text (#1818). Only changes the wording
     /// while the message is handed off and unconfirmed; it never proves anything itself.
     public let awaitsAcceptance: Bool
+    /// How many user transcript entries of this session had arrived when the message was tracked,
+    /// before it was sent. Only an entry that arrives after that can be this message's own (#1818).
+    public let arrivalAtSend: Int
 
     /// An opaque UI identity, including the immutable group. Never parsed as routing authority.
     public var presentationID: String {
@@ -83,10 +86,10 @@ public struct OutgoingMessages: Sendable, Equatable {
 
     @discardableResult
     public mutating func add(id: String, content: String, origin: OutgoingOrigin, groupID: OutgoingGroupID? = nil,
-                             awaitsAcceptance: Bool = false, now: Date = Date()) -> Bool {
+                             awaitsAcceptance: Bool = false, arrivalAtSend: Int = 0, now: Date = Date()) -> Bool {
         guard items.count < Self.limit, !items.contains(where: { $0.id == id }) else { return false }
         items.append(OutgoingMessage(id: id, content: content, delivery: .sending, createdAt: now, origin: origin,
-                                     groupID: groupID, awaitsAcceptance: awaitsAcceptance))
+                                     groupID: groupID, awaitsAcceptance: awaitsAcceptance, arrivalAtSend: arrivalAtSend))
         return true
     }
 
@@ -141,13 +144,21 @@ public struct OutgoingMessages: Sendable, Equatable {
         return true
     }
 
-    /// Drops accepted messages the caller finds in the transcript. Display reconciliation only: the
-    /// caller's text match decides nothing about delivery, which the hook already proved.
+    /// Drops accepted messages the caller decided the transcript shows. Display reconciliation only:
+    /// the caller's text match decides nothing about delivery, which the hook already proved.
     @discardableResult
     public mutating func removeAccepted(where isShown: (OutgoingMessage) -> Bool) -> Bool {
         let before = items.count
         items.removeAll { $0.delivery == .accepted && isShown($0) }
         return items.count != before
+    }
+
+    /// The accepted messages, oldest first.
+    var acceptedMessages: [OutgoingMessage] { items.filter { $0.delivery == .accepted } }
+
+    /// The one message a user transcript entry shows: only an accepted message, only by id.
+    mutating func removeAccepted(ids: Set<String>) {
+        items.removeAll { $0.delivery == .accepted && ids.contains($0.id) }
     }
 
     /// The oldest accepted message's creation time, for eviction when a bound would refuse a send.

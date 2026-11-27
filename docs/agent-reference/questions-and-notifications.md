@@ -334,12 +334,18 @@ The listener runs synchronously before Claude's hook response, so it walks at mo
 A daemon lists the `chat_acceptance` capability (`CHAT_ACCEPTANCE_CAPABILITY`) in the `hello_ack` it sends while it hosts a Claude session with a running hook server.
 The result is also opt-in per connection: a daemon records a message only for a connection whose own `hello.clientCapabilities` listed `chat_acceptance` (the native apps send it), so a client or an older hub's child proxy that does not ask never receives a frame it cannot decode.
 The hello-time capability check and the record-time check agree because the hook server is created once at startup and never replaced while clients are connected.
-The new `ChildProxy` copies its end client's `clientCapabilities` into the hello it makes for the child; an older hub copies nothing, so its children send nothing.
+The new `ChildProxy` copies its end client's `clientCapabilities`, bounded by the same `sanitizeClientCapabilities` (at most 16 strings of at most 64 characters) the daemon applies, into the hello it makes for the child; an older hub copies nothing, so its children send nothing.
+Known limit: a relay hello with no session id is not session-bound, so its list never reaches a child; the native apps always send session-bound hellos.
+A verified child's frame of a type this build does not register is dropped, logged once per child and type, instead of closing the child.
 The result reaches a relay peer through the hub's child proxy like any other message the child sends to that peer's connection (`hub-relay-chat-acceptance.test.ts`); a notification-only relay scope receives none.
 The web client has no "unconfirmed" bubble state (its states are sent, delivered and failed), so it ignores the result.
 The native apps settle the message in `OutgoingMessages.receive(_ result:)` when the result names the same session, message id and authenticated socket as the send.
-The accepted message stays, drawn as an ordinary sent bubble, until the transcript shows a user entry with the same text stamped no earlier than the send (less 120 seconds of clock skew); that text match only reconciles the display, since acceptance already came from the hook.
-With no transcript loaded it stays until dismissed or the session is killed, and it is the first thing evicted when a retention bound would refuse a new send.
+The accepted message stays, drawn as an ordinary sent bubble, until the transcript shows it: a user entry with the same text that the client first received after it tracked the message (an earlier identical prompt typed at the terminal cannot retire it), stamped no earlier than the send (less 120 seconds of clock skew).
+Each entry retires at most one accepted message, the oldest first, so one entry never removes two identical rows.
+That text match only reconciles the display, since acceptance already came from the hook.
+With no transcript loaded it stays until dismissed, until the session's own connection ends or it is killed (the proven rows go; unsettled ones stay for recovery).
+A row whose text Claude stores differently (a slash-command expansion, attachments) never matches and stays until dismissed or the session ends.
+An accepted message is evicted when a retention bound would refuse a new send, but only if evicting it makes that send fit; otherwise nothing is evicted.
 While a capable daemon has not confirmed, the pending row reads "Sending to agent" (`RemiOutgoingState.awaitingAgent`); it falls back to the existing uncertain warning after `MachineStore.acceptanceWait` (45 seconds), and a late result still clears it.
 A daemon without the capability keeps the old copy.
 Limits of exact-text matching: two pending messages with identical text resolve first in, first out, so a result may be attributed to the older one; and a prompt typed at the terminal that is identical to a pending phone message confirms it.
