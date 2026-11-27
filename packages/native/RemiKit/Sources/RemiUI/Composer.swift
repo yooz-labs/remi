@@ -3,6 +3,21 @@ import SwiftUI
 import AppKit
 #endif
 
+struct RemiComposerAction {
+    enum Role { case send, hideKeyboard, jumpToLatest }
+    let role: Role
+    let label: String
+    let isEnabled: Bool
+
+    static func resolve(draft: String, keyboardUp: Bool, atLatest: Bool) -> Self {
+        if RemiComposerSubmission.content(from: draft) != nil {
+            return Self(role: .send, label: "Send message", isEnabled: true)
+        }
+        if keyboardUp { return Self(role: .hideKeyboard, label: "Hide keyboard", isEnabled: true) }
+        return Self(role: .jumpToLatest, label: "Jump to latest", isEnabled: !atLatest)
+    }
+}
+
 public extension EnvironmentValues {
     /// Bumped to ask the composer to take keyboard focus (a hardware-keyboard shortcut).
     /// A composer that cannot take text right now, because a prompt is waiting or a
@@ -34,12 +49,16 @@ public struct RemiComposer<LeadingAccessory: View>: View {
     private let isSending: Bool
     private let onSend: () -> Void
     private let onInterrupt: (() -> Void)?
+    private let atLatest: Bool
+    private let onJumpToLatest: (() -> Void)?
     private let leadingAccessory: LeadingAccessory
 
     public init(
         text: Binding<String>,
         promptWaiting: Bool,
         isSending: Bool = false,
+        atLatest: Bool = true,
+        onJumpToLatest: (() -> Void)? = nil,
         onSend: @escaping () -> Void,
         onInterrupt: (() -> Void)?,
         @ViewBuilder leadingAccessory: () -> LeadingAccessory
@@ -47,6 +66,8 @@ public struct RemiComposer<LeadingAccessory: View>: View {
         _text = text
         self.promptWaiting = promptWaiting
         self.isSending = isSending
+        self.atLatest = atLatest
+        self.onJumpToLatest = onJumpToLatest
         self.onSend = onSend
         self.onInterrupt = onInterrupt
         self.leadingAccessory = leadingAccessory()
@@ -144,28 +165,32 @@ public struct RemiComposer<LeadingAccessory: View>: View {
         !isSending && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// With the keyboard up and nothing to send, the send button has nothing to do, so it puts the
-    /// keyboard away instead. Once there is text it sends, as before; a tap on the transcript also
-    /// lowers the keyboard. The control is in the composer's own row, not a bar above the keyboard,
-    /// so nothing floats over the field while someone is typing.
-    private var hidesKeyboard: Bool {
+    private var composerAction: RemiComposerAction {
         #if os(iOS)
-        !promptWaiting && !isSending && !canSend && isFocused
+        let keyboardUp = isFocused
         #else
-        false
+        let keyboardUp = false
         #endif
+        return .resolve(draft: text, keyboardUp: keyboardUp, atLatest: atLatest || onJumpToLatest == nil)
     }
 
     private var actionButton: some View {
-        let isActive = promptWaiting || canSend
-        let action: () -> Void = hidesKeyboard ? { isFocused = false } : (promptWaiting ? interrupt : onSend)
-        return Button(action: action) {
+        let selection = composerAction
+        let isActive = promptWaiting || (selection.isEnabled && !isSending)
+        return Button {
+            if promptWaiting { interrupt(); return }
+            switch selection.role {
+            case .send: onSend()
+            case .hideKeyboard: isFocused = false
+            case .jumpToLatest: onJumpToLatest?()
+            }
+        } label: {
             Group {
                 if isSending && !promptWaiting {
                     ProgressView()
                         .controlSize(.small)
                 } else {
-                    Image(systemName: promptWaiting ? "escape" : hidesKeyboard ? "keyboard.chevron.compact.down" : "arrow.up")
+                    Image(systemName: promptWaiting ? "escape" : selection.role == .hideKeyboard ? "keyboard.chevron.compact.down" : selection.role == .jumpToLatest ? "arrow.down" : "arrow.up")
                         .font(.body.weight(.semibold))
                 }
             }
@@ -178,13 +203,12 @@ public struct RemiComposer<LeadingAccessory: View>: View {
             tint: promptWaiting || !isActive ? nil : RemiTheme.Color.attention,
             reduceTransparency: reduceTransparency
         ))
-        .opacity(isActive || isSending || hidesKeyboard ? 1 : 0.6)
-        .disabled(!promptWaiting && !canSend && !hidesKeyboard)
+        .opacity(isActive || isSending ? 1 : 0.6)
+        .disabled(!isActive)
         .animation(RemiTheme.Motion.quick, value: isActive)
-        .animation(RemiTheme.Motion.quick, value: hidesKeyboard)
-        .accessibilityLabel(promptWaiting ? "Interrupt agent" : hidesKeyboard ? "Hide keyboard" : "Send message")
+        .animation(RemiTheme.Motion.quick, value: selection.role)
+        .accessibilityLabel(promptWaiting ? "Interrupt agent" : selection.label)
         .accessibilityValue(isSending ? "Sending" : "")
-        .accessibilityHint(isActive || isSending || hidesKeyboard ? "" : "Type a message first")
     }
 
     private func interrupt() {

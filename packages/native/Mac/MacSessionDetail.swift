@@ -33,6 +33,7 @@ struct MacSessionDetail: View {
     @State private var expandedEntryIDs: Set<String> = []
     @State private var transcriptRows: [RemiTranscriptRow] = []
     @State private var followsLatest = true
+    @State private var atLatest = true
     @State private var latestScrollRequest = 0
     @State private var reviewSessionID: String
     @AccessibilityFocusState private var accessibilityQuestionID: String?
@@ -89,7 +90,7 @@ struct MacSessionDetail: View {
                 onResume: onResume,
                 onTerminate: { confirmingTermination = true },
                 canJumpToFirst: firstActivityID != nil && firstActivityID.map(displayRowID) != visibleEntryID,
-                canJumpToLatest: latestActivityID != nil && !followsLatest,
+                canJumpToLatest: latestActivityID != nil && !atLatest,
                 onJumpToFirst: jumpToFirstActivity,
                 onJumpToLatest: jumpToLatestActivity
             )
@@ -160,19 +161,22 @@ struct MacSessionDetail: View {
                             ForEach(remainingQuestions) { question in
                                 questionCard(question)
                             }
+                            Color.clear.frame(height: 1).id(RemiTranscriptScrollTarget.latest)
                         }
                         .frame(maxWidth: 860)
                         .padding(.horizontal, RemiTheme.Spacing.m)
                         .padding(.vertical, RemiTheme.Spacing.m)
                         .frame(maxWidth: .infinity)
                         .scrollTargetLayout()
-                        .id(RemiTranscriptScrollTarget.latest)
                     }
-                    .modifier(RemiTranscriptScrollBehavior(followsLatest: $followsLatest,
+                    .modifier(RemiTranscriptScrollBehavior(followsLatest: $followsLatest, atLatest: $atLatest,
                         isReviewing: isSearchPresented || focusedQuestionID != nil,
                         onFollow: { scrollToLatest(using: proxy) }))
                     .scrollPosition(id: $visibleEntryID, anchor: .top)
-                    .onAppear { focusQuestion(using: proxy) }
+                    .onAppear {
+                        focusQuestion(using: proxy)
+                        scrollToLatest(using: proxy)
+                    }
                     .onChange(of: questions.map(\.questionID)) { _, questionIDs in
                         guard let focusedQuestionID else { return }
                         if questionIDs.contains(focusedQuestionID) {
@@ -192,12 +196,15 @@ struct MacSessionDetail: View {
                     .onChange(of: latestScrollRequest) { _, _ in scrollToLatest(using: proxy) }
                     .onChange(of: groupingInput, initial: true) { _, input in
                         transcriptRows = input.rows
+                        scheduleScrollToLatest(using: proxy)
                     }
                 }
             }
             .remiSessionInteractionBar(
                 draft: $draft,
                 state: interactionState,
+                atLatest: atLatest,
+                onJumpToLatest: jumpToLatestActivity,
                 onSend: onSend,
                 onInterrupt: nil
             )
@@ -476,6 +483,13 @@ struct MacSessionDetail: View {
         isSearchPresented = snapshot.isSearchPresented
         followsLatest = snapshot.visibleEntryID == nil && !snapshot.isSearchPresented
         if followsLatest { latestScrollRequest += 1 }
+    }
+
+    private func scheduleScrollToLatest(using proxy: ScrollViewProxy) {
+        Task { @MainActor in
+            await Task.yield()
+            scrollToLatest(using: proxy)
+        }
     }
 
     private func scrollToLatest(using proxy: ScrollViewProxy) {

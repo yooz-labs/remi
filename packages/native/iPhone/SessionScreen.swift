@@ -41,6 +41,7 @@ struct SessionScreen: View {
     @State private var expandedEntryIDs: Set<String> = []
     @State private var transcriptRows: [RemiTranscriptRow] = []
     @State private var followsLatest: Bool
+    @State private var atLatest = true
     @State private var latestScrollRequest = 0
     @State private var reviewSessionID: String
     @AccessibilityFocusState private var accessibilityQuestionID: String?
@@ -242,13 +243,13 @@ struct SessionScreen: View {
                             ForEach(remainingQuestions) { question in
                                 questionCard(question)
                             }
+                            Color.clear.frame(height: 1).id(RemiTranscriptScrollTarget.latest)
                         }
                         .padding(RemiTheme.Spacing.m)
                         .scrollTargetLayout()
                         .remiReadableScrollColumn()
-                        .id(RemiTranscriptScrollTarget.latest)
                     }
-                    .modifier(RemiTranscriptScrollBehavior(followsLatest: $followsLatest,
+                    .modifier(RemiTranscriptScrollBehavior(followsLatest: $followsLatest, atLatest: $atLatest,
                         isReviewing: isSearchPresented || focusedQuestionID != nil,
                         onFollow: { scrollToLatest(using: proxy) }))
                     .scrollPosition(id: $visibleEntryID, anchor: .top)
@@ -257,7 +258,10 @@ struct SessionScreen: View {
                     // (a question's free-text answer) does not fight that field for focus.
                     .simultaneousGesture(TapGesture().onEnded { composerDismissRequest += 1 })
                     .modifier(SessionNavigationBarBehavior())
-                    .onAppear { focusQuestion(using: proxy) }
+                    .onAppear {
+                        focusQuestion(using: proxy)
+                        scrollToLatest(using: proxy)
+                    }
                     .onChange(of: questions.map(\.questionID)) { _, questionIDs in
                         focusState.questionsChanged(questionIDs)
                         if focusedQuestionID != nil {
@@ -284,6 +288,7 @@ struct SessionScreen: View {
                     .onChange(of: latestScrollRequest) { _, _ in scrollToLatest(using: proxy) }
                     .onChange(of: groupingInput, initial: true) { _, input in
                         transcriptRows = input.rows
+                        scheduleScrollToLatest(using: proxy)
                     }
                 }
             }
@@ -292,6 +297,8 @@ struct SessionScreen: View {
         .remiSessionInteractionBar(
             draft: $draft,
             state: interactionState,
+            atLatest: atLatest,
+            onJumpToLatest: jumpToLatestActivity,
             onSend: onSend,
             onInterrupt: nil
         )
@@ -444,14 +451,16 @@ struct SessionScreen: View {
     }
 
     private var latestActivityButton: some View {
-        Button("Jump to latest activity", systemImage: "arrow.down.to.line") {
-            focusState.clear()
-            accessibilityQuestionID = nil
-            resetReview()
-            followsLatest = true
-            latestScrollRequest += 1
-        }
-        .disabled(latestActivityID == nil || followsLatest)
+        Button("Jump to latest activity", systemImage: "arrow.down.to.line", action: jumpToLatestActivity)
+            .disabled(latestActivityID == nil || atLatest)
+    }
+
+    private func jumpToLatestActivity() {
+        focusState.clear()
+        accessibilityQuestionID = nil
+        resetReview()
+        followsLatest = true
+        latestScrollRequest += 1
     }
 
     /// The entries the transcript groups and the ones it must keep visible (search matches).
@@ -577,6 +586,13 @@ struct SessionScreen: View {
         isSearchPresented = snapshot.isSearchPresented
         followsLatest = snapshot.visibleEntryID == nil && !snapshot.isSearchPresented
         if followsLatest { latestScrollRequest += 1 }
+    }
+
+    private func scheduleScrollToLatest(using proxy: ScrollViewProxy) {
+        Task { @MainActor in
+            await Task.yield()
+            scrollToLatest(using: proxy)
+        }
     }
 
     private func scrollToLatest(using proxy: ScrollViewProxy) {
