@@ -22,6 +22,17 @@ struct RemiTranscriptFollowPolicy {
 
 }
 
+/// Shared choice for the scroll position and its lifecycle across both native clients.
+public enum RemiScrollPositionPolicy {
+    public static func effectiveBinding<Value>(followsLatest: Bool, following: Value, review: Value) -> Value {
+        followsLatest ? following : review
+    }
+
+    public static func positionAfterFollowChange(followsLatest: Bool, visibleEntryID: String?) -> String? {
+        followsLatest ? nil : visibleEntryID
+    }
+}
+
 /// Follow content growth only while the reader remains near the latest activity.
 public struct RemiTranscriptScrollBehavior: ViewModifier {
     @Binding private var followsLatest: Bool

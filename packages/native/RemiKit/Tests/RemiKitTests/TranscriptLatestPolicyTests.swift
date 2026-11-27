@@ -45,6 +45,13 @@ import Testing
         #expect(result(false, false, 210, 10))
     }
 
+    @Test func scrollPositionIsReleasedAndClearedOnlyWhenFollowing() {
+        #expect(RemiScrollPositionPolicy.effectiveBinding(followsLatest: true, following: "tail", review: "saved") == "tail")
+        #expect(RemiScrollPositionPolicy.effectiveBinding(followsLatest: false, following: "tail", review: "saved") == "saved")
+        #expect(RemiScrollPositionPolicy.positionAfterFollowChange(followsLatest: true, visibleEntryID: "saved") == nil)
+        #expect(RemiScrollPositionPolicy.positionAfterFollowChange(followsLatest: false, visibleEntryID: "saved") == "saved")
+    }
+
     @Test func savedPositionAndReviewWinOverInitialFollow() {
         #expect(!RemiTranscriptFollowPolicy.shouldFollow(followsLatest: false, isReviewing: false))
         #expect(RemiTranscriptFollowPolicy.shouldFollow(followsLatest: true, isReviewing: false))
