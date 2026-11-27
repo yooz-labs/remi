@@ -22,7 +22,7 @@
  *     so the hook gets an empty response Claude ignores; a No or Esc makes
  *     Claude close the held request, which the hook server's abort signal
  *     reports (`onHoldAborted`), and the card is dismissed;
- *   - the hold deadline (`[prompts] hold_seconds`) releases the hook with an
+ *   - the per-tool hold deadline (#1837) releases the hook with an
  *     empty response, Claude's dialog simply stays, the card is dismissed
  *     and `onReleasedToTerminal` tells the phone to answer at the terminal
  *     (#733). Every other release of a live hold to the terminal (an
@@ -292,16 +292,14 @@ export interface AutoApproveGateDeps {
    *  `keystroke` for a passthrough one (typed behind the screen guards). */
   onHeldEscalate?: (questionId: UUID, answerPath: 'structured' | 'keystroke') => void;
   /**
-   * How long a binary prompt's hook is held for a phone answer, in ms
-   * (`[prompts] hold_seconds`, #1126). Required: a hold with no deadline
-   * would outlast the 2:00 auto-deny of auto-mode fallback prompts. At the
-   * deadline the hook is released with an empty response, so Claude's dialog
-   * stays and the terminal answers it.
+   * Hold in ms, or the per-tool hold selector (#1837). Wrapper permissions
+   * remain below Claude's 2:00 auto-deny; structured questions use the long
+   * safety cap. At the deadline the empty response leaves the dialog up.
    */
-  holdMs: number;
+  holdMs: number | ((toolName: string) => number);
   /**
-   * The PermissionRequest hook timeout registered with Claude, in ms (600 s
-   * in wrapper mode, 3600 s in daemon or hub mode, #1126). Claude closes a
+   * The PermissionRequest hook timeout registered with Claude, in ms (3600 s
+   * in all session modes, #1837). Claude closes a
    * held request at that timeout and decides nothing; the dialog stays. An
    * abort within `HOOK_TIMEOUT_MARGIN_MS` of it is therefore handled like
    * the deadline (released to the terminal, notice pushed), never as a No
@@ -383,8 +381,7 @@ export class AutoApproveGate {
    * its dialog rendered. A subset of `openQuestionSignatures`' keys, closed
    * only by a hook signal (its tool run, Stop, a new prompt, the agent's
    * next tool call or SubagentStop, teardown), never by a late phone answer
-   * (`retireQuestion`). An entry younger than the session's hold length is
-   * what `hasOpenHookPrompt` reports besides a live main hold.
+   * (`retireQuestion`). An entry younger than its tool-specific hold length is what `hasOpenHookPrompt` reports besides a live main hold.
    */
   private readonly terminalPrompts = new Map<UUID, number>();
 
@@ -512,8 +509,8 @@ export class AutoApproveGate {
    * True while a hook-backed dialog this gate knows about is (or may be) on
    * screen (#1126): a live main hold (its dialog renders during the hold),
    * or any prompt in `terminalPrompts` (main or subagent) younger than the
-   * session's hold length (`holdMs`). The presence tracker asks this before
-   * treating a PTY render as an orphan: such a render is that dialog or a
+   * prompt's tool-specific hold length (#1837). The presence tracker asks
+   * this before treating a PTY render as an orphan: such a render is that dialog or a
    * redraw of it, and must not be rebuilt into a card the phone would answer
    * by typing; for a wrapper-mode subagent prompt the phone keeps exactly one
    * artifact, its notice. Read live per call.
@@ -524,7 +521,7 @@ export class AutoApproveGate {
    * is excluded:
    *   - subagent HOLDS never count: their dialog does not render while held;
    *   - a `terminalPrompts` entry stops counting once it is older than
-   *     `holdMs` (a No answered in the terminal fires no hook), and a
+   *     its tool-specific hold (a No answered in the terminal fires no hook); a
    *     subagent's entry is also cleared by that agent's next tool call
    *     (`noteAgentToolCall`), `SubagentStop` or `SessionEnd`. A redraw past
    *     that takes the guarded hook-less path (#1134: typed only on an exact
@@ -535,9 +532,9 @@ export class AutoApproveGate {
    */
   hasOpenHookPrompt(): boolean {
     if (this.hasMainHold()) return true;
-    const cutoff = Date.now() - this.deps.holdMs;
-    for (const at of this.terminalPrompts.values()) {
-      if (at > cutoff) return true;
+    for (const [qid, at] of this.terminalPrompts) {
+      const toolName = this.openQuestionSignatures.get(qid)?.toolName;
+      if (toolName !== undefined && at > Date.now() - this.holdMsFor(toolName)) return true;
     }
     return false;
   }
@@ -698,6 +695,11 @@ export class AutoApproveGate {
     return this.holdForAnswer(input, signal, kind);
   }
 
+  private holdMsFor(toolName: string): number {
+    const hold = this.deps.holdMs;
+    return typeof hold === 'number' ? hold : hold(toolName);
+  }
+
   /**
    * Hold a binary prompt's hook for a phone answer (#1126, ADR 0031). The
    * card is stashed, the hold registered, and only then the card pushed, so
@@ -726,7 +728,7 @@ export class AutoApproveGate {
       return Promise.resolve('passthrough');
     }
     const startedAt = Date.now();
-    const holdMs = this.deps.holdMs;
+    const holdMs = this.holdMsFor(input.tool_name);
     const deadlineAtMs = startedAt + holdMs;
     const decision = new Promise<PermissionDecision>((resolve) => {
       const timer = setTimeout(() => this.releaseAtDeadline(qid), holdMs);
@@ -748,7 +750,7 @@ export class AutoApproveGate {
     });
     this.cueHeldEscalate(qid, 'structured');
     log(
-      `[AutoApprove ${this.sessionTag}] Holding ${qid.slice(0, 8)} for a phone answer (${input.tool_name}, up to ${Math.round(this.deps.holdMs / 1000)}s)`,
+      `[AutoApprove ${this.sessionTag}] Holding ${qid.slice(0, 8)} for a phone answer (${input.tool_name}, up to ${Math.round(holdMs / 1000)}s)`,
     );
     return decision;
   }

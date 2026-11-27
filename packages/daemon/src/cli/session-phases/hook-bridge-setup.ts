@@ -206,10 +206,10 @@ export interface HookBridgeDeps {
    */
   subagentAlerts?: SubagentAlertSink;
   /**
-   * How long a binary prompt's hook is held for a phone answer, in ms
-   * (`[prompts] hold_seconds`, #1126). Required: see `AutoApproveGateDeps.holdMs`.
+   * Hold duration in ms or the per-tool selector used in production (#1837);
+   * see `AutoApproveGateDeps.holdMs`.
    */
-  holdMs: number;
+  holdMs: number | ((toolName: string) => number);
   /** The registered PermissionRequest hook timeout, in ms (#1126). See
    *  `AutoApproveGateDeps.hookTimeoutMs`. Required, so no session silently
    *  treats Claude's own timeout as a terminal No. */
@@ -309,7 +309,7 @@ export interface SessionGateHandle {
   hasMainHold: () => boolean;
   /** Is a hook-backed dialog this gate knows about (or may be) on screen:
    *  a live main hold, or a prompt waiting in the terminal younger than the
-   *  session's hold length (#1126)? Forwards to
+   *  tool's hold length (#1837)? Forwards to
    *  `AutoApproveGate.hasOpenHookPrompt`; read by `promptUpDeps` (#1155). */
   hasOpenHookPrompt: () => boolean;
   /** A bare Escape reached the terminal through remi (#1155): resolve the

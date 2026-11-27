@@ -861,6 +861,64 @@ describe('AutoApproveGate held prompts (#1126)', () => {
     expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: YES })).toBe('unknown');
   });
 
+  test('each held tool uses its own deadline and presence cutoff (#1837)', async () => {
+    const g = gate({ holdMs: (tool) => (tool === 'AskUserQuestion' ? 240 : 40) });
+    const bash = g.resolvePermission(pr());
+    const bashId = ids[0] as UUID;
+    const ask = g.resolvePermission(
+      pr({ tool_name: 'AskUserQuestion', tool_input: { questions: [] } }),
+    );
+    const askId = ids[1] as UUID;
+    const validity = g.answerValidity(askId);
+    expect(validity?.kind).toBe('deadline');
+    if (validity?.kind !== 'deadline') throw new Error('missing question deadline');
+    expect(validity.expiresAtMs - Date.now()).toBeGreaterThan(150);
+    expect(await bash).toBe('passthrough');
+    expect(registry.getQuestion(SID, bashId)).toBeNull();
+    expect(g.isHeld(askId)).toBe(true);
+    expect(registry.getQuestion(SID, askId)).not.toBeNull();
+    expect(await ask).toBe('passthrough');
+    expect(registry.getQuestion(SID, askId)).toBeNull();
+    // Both are terminal entries now. The short permission cutoff has expired,
+    // while the question's own cutoff still keeps the presence probe active.
+    await Bun.sleep(70);
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    await Bun.sleep(200);
+    expect(g.hasOpenHookPrompt()).toBe(false);
+  });
+
+  test('paired terminal AskUserQuestion completion clears its held card (#1837)', async () => {
+    const g = gate({ holdMs: 60_000 });
+    const input = {
+      questions: [
+        {
+          question: 'Continue?',
+          header: 'Choice',
+          options: [
+            { label: 'Yes', description: 'Go' },
+            { label: 'No', description: 'Stop' },
+          ],
+          multiSelect: false,
+        },
+      ],
+    };
+    g.notePreToolUse({ toolName: 'AskUserQuestion', toolInput: input, toolUseId: 'ask-1' });
+    const hook = g.resolvePermission(pr({ tool_name: 'AskUserQuestion', tool_input: input }));
+    const qid = ids[0] as UUID;
+    g.cancelExternallyResolved(
+      {
+        toolName: 'AskUserQuestion',
+        toolInput: { ...input, answers: { 'Continue?': 'Yes' } },
+        toolUseId: 'ask-1',
+      },
+      'PostToolUse',
+      { toolFinished: true },
+    );
+    expect(await hook).toBe('passthrough');
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+    expect(deadlines).toEqual([]);
+  });
+
   test('the deadline releases the hook empty, tells the phone while the card is registered, then dismisses it', async () => {
     const g = gate({ holdMs: 30 });
     const hook = g.resolvePermission(pr());

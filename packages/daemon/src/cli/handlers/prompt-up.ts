@@ -13,7 +13,7 @@
  *   - `terminal`: a hook-backed prompt whose answer belongs to the terminal
  *     (`hasOpenHookPrompt` beyond a main hold): a hold released at its
  *     deadline or handed back early, or a rendered wrapper-mode subagent
- *     dialog, for at most the session's hold length. Its dialog is (or may
+ *     dialog, for at most the tool's hold length. Its dialog is (or may
  *     still be) on screen, and its card is gone.
  *   - `menu`: the tracker observes a numbered selection box
  *     (`observedPromptOptions` + `isNumberedMenu`), which covers hook-less
@@ -24,11 +24,11 @@
  * text.
  *
  * How long `terminal` lasts (#1155 review). An entry counts for the
- * session's hold length from when it is MARKED (the deadline release, the
+ * tool's hold length from when it is MARKED (the deadline release, the
  * early hand-back, or the subagent dialog's render), not from when the
  * prompt appeared:
- *   - wrapper mode, `[prompts] hold_seconds` (default 90): up to 90 s after
- *     a deadline release, so about twice the hold from the prompt's start;
+ *   - wrapper mode: `hold_seconds` for permissions, `daemon_hold_seconds`
+ *     for AskUserQuestion and ExitPlanMode (#1837);
  *   - daemon or hub mode, `[prompts] daemon_hold_seconds` (default 3540): up
  *     to about 59 minutes after the release.
  * A No answered at the terminal fires no hook, so within that window the
@@ -62,7 +62,7 @@ export type PromptUp = 'held' | 'terminal' | 'menu';
 export interface PromptUpGate {
   hasMainHold(): boolean;
   /** A live main hold, or a hook-backed prompt waiting in the terminal
-   *  younger than the session's hold length. */
+   *  younger than the tool's hold length. */
   hasOpenHookPrompt(): boolean;
 }
 

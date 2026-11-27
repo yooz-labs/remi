@@ -14,29 +14,35 @@ import { stripComments } from '../helpers/strip-comments.ts';
 
 const PROMPTS = { hold_seconds: 90, daemon_hold_seconds: 3540 };
 
-describe('permissionHoldPolicy (#1126)', () => {
-  test('wrapper mode: hold_seconds, a local terminal, a 600 s registration', () => {
-    expect(permissionHoldPolicy(true, PROMPTS)).toEqual({
-      hasLocalTerminal: true,
-      holdMs: 90_000,
-      permissionRequestTimeoutSec: 600,
-      hookTimeoutMs: 600_000,
-    });
+describe('permissionHoldPolicy (#1837)', () => {
+  test('wrapper holds structured questions longer and registers 3600 seconds', () => {
+    const p = permissionHoldPolicy(true, PROMPTS);
+    expect(p.hasLocalTerminal).toBe(true);
+    expect(p.holdMsFor('Bash')).toBe(90_000);
+    expect(p.holdMsFor('AskUserQuestion')).toBe(3_540_000);
+    expect(p.holdMsFor('ExitPlanMode')).toBe(3_540_000);
+    expect(p.permissionRequestTimeoutSec).toBe(3600);
+    expect(p.hookTimeoutMs).toBe(3_600_000);
   });
 
-  test('daemon or hub mode: daemon_hold_seconds, no terminal, a 3600 s registration', () => {
-    expect(permissionHoldPolicy(false, PROMPTS)).toEqual({
-      hasLocalTerminal: false,
-      holdMs: 3_540_000,
-      permissionRequestTimeoutSec: 3600,
-      hookTimeoutMs: 3_600_000,
-    });
+  test('daemon and hub hold all tools for daemon_hold_seconds', () => {
+    const p = permissionHoldPolicy(false, PROMPTS);
+    expect(p.hasLocalTerminal).toBe(false);
+    for (const tool of ['Bash', 'AskUserQuestion', 'ExitPlanMode']) {
+      expect(p.holdMsFor(tool)).toBe(3_540_000);
+    }
+    expect(p.permissionRequestTimeoutSec).toBe(3600);
+    expect(p.hookTimeoutMs).toBe(3_600_000);
   });
 
-  test('in both modes the hold ends before the registered timeout', () => {
+  test('both configured hold overrides are honored and stay below the hook timeout', () => {
     for (const local of [true, false]) {
-      const p = permissionHoldPolicy(local, { hold_seconds: 110, daemon_hold_seconds: 3540 });
-      expect(p.holdMs).toBeLessThan(p.hookTimeoutMs);
+      const p = permissionHoldPolicy(local, { hold_seconds: 17, daemon_hold_seconds: 123 });
+      expect(p.holdMsFor('Bash')).toBe(local ? 17_000 : 123_000);
+      for (const tool of ['AskUserQuestion', 'ExitPlanMode']) {
+        expect(p.holdMsFor(tool)).toBe(123_000);
+        expect(p.holdMsFor(tool)).toBeLessThan(p.hookTimeoutMs);
+      }
     }
   });
 });
@@ -54,12 +60,12 @@ describe('cli.ts and harness/claude-session.ts take every per-mode value from th
     expect(claudeSession).toContain(
       'const holdPolicy = permissionHoldPolicy(passThrough, deps.prompts());',
     );
-    expect(claudeSession).toContain('holdMs: holdPolicy.holdMs,');
+    expect(claudeSession).toContain('holdMs: holdPolicy.holdMsFor,');
     expect(claudeSession).toContain('hookTimeoutMs: holdPolicy.hookTimeoutMs,');
     expect(claudeSession).toContain('hasLocalTerminal: holdPolicy.hasLocalTerminal,');
   });
 
-  test('the hook registration: 3600 s for the daemon branch, 600 s for the wrapper branch', () => {
+  test('the hook registration: 3600 s for both branches', () => {
     const wrapperStart = cli.indexOf('// Wrapper mode: spawn Claude immediately');
     expect(wrapperStart).toBeGreaterThan(0);
     const daemonPart = cli.slice(0, wrapperStart);

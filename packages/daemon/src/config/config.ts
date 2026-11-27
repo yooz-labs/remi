@@ -137,18 +137,18 @@ export interface NotificationsConfig {
  */
 export interface PromptsConfig {
   /**
-   * Seconds remi holds a permission hook for a phone answer before letting
+   * Seconds remi holds a wrapper permission hook for a phone answer before letting
    * go (an empty response, so Claude's dialog simply stays and the card says
    * "answer at the terminal"). 5 to 110: below the 2:00 auto-deny of Claude's
    * auto-mode fallback prompts, which counts during a hold, and below the
-   * hook's registered 600 s timeout.
+   * hook's registered 3600 s timeout (#1837).
    */
   readonly hold_seconds: number;
   /**
-   * The same hold for a daemon or hub session (#1126 lead decision), which
-   * has no terminal of its own: after the deadline only `remi attach` could
-   * answer, so the phone keeps the prompt much longer. 5 to 3540, below the
-   * 3600 s PermissionRequest registration such sessions use. An auto-mode
+   * The hold for structured questions in wrapper sessions (#1837) and all
+   * prompts in daemon or hub sessions (#1126), which have no terminal of their
+   * own: after the deadline only `remi attach` can answer. 5 to 3540, below
+   * the 3600 s PermissionRequest registration used by all sessions. An auto-mode
    * fallback prompt still auto-denies at 2:00 on Claude's side; that arrives
    * as a `PermissionDenied` hook (measured), which dismisses the card.
    */
@@ -929,8 +929,9 @@ subagent_alert = [${DEFAULT_CONFIG.notifications.subagent_alert.map((p) => `"${p
 # whichever answer comes first wins. After this many seconds the phone card
 # says "answer at the terminal" and the terminal dialog stays up. 5 to 110.
 hold_seconds = ${DEFAULT_CONFIG.prompts.hold_seconds}
-# The same for a daemon or hub session, which has no terminal of its own
-# (after the deadline only remi attach reaches the prompt). 5 to 3540.
+# Also the safety cap for AskUserQuestion and ExitPlanMode in wrapper mode
+# (#1837), and the hold for daemon or hub sessions, which have no terminal
+# of their own (after the deadline use remi attach). 5 to 3540.
 daemon_hold_seconds = ${DEFAULT_CONFIG.prompts.daemon_hold_seconds}
 `;
 }

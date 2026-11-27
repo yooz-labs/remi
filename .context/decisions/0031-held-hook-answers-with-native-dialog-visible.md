@@ -131,3 +131,18 @@ Findings from the review of the combined epic (PR #1152); the decisions are the 
 
 - "A background subagent's dialog does not render while its hook is held" (F2) was measured for **background** subagents only. A synchronous (foreground) Task subagent's prompt in daemon or hub mode is held the same way, and whether its dialog renders during the hold is unmeasured. If it does render, the phone's answer still resolves the hook, but the render is not covered by the bounds above: a subagent hold counts neither in `hasOpenHookPrompt` nor in the live-question check, so a redraw could be read as a hook-less orphan (a second, typed card behind the #1134 exact-label check), and it does not count in `promptUp` beyond what the screen parse sees. Measuring it (a foreground Task subagent asking for an unallowed call in a daemon session) decides whether a foreground subagent hold should count as on screen.
 - A `terminal` entry counts for the session's hold length from when it is marked (the deadline release, the early hand-back, or the subagent dialog's render), not from the prompt's start: in wrapper mode up to 90 s after a deadline release (about twice the hold from the start), in daemon or hub mode up to about 59 minutes. A No answered at the terminal fires no hook, so within that window the entry can outlive its dialog: Stop force-closes instead of typing `/exit` and chat is refused, until an answer a hook sees, a bare Esc sent through remi (main-agent entries), or `remi unstick`. An Esc typed at a wrapper session's own terminal is not seen. In the opposite direction, once an entry ages out a dialog still on screen whose parse a text status cleared is no longer guarded (chat would be typed into it, Stop would type `/exit`).
+
+## Amendment (#1837): wrapper structured-question hold
+
+**Date:** 2026-11-27
+
+The owner superseded the wrapper deadline above for AskUserQuestion and ExitPlanMode: both
+now use `daemon_hold_seconds` (default 3540 s) as a safety cap, and wrapper
+PermissionRequest hooks register for 3600 s. Wrapper permission prompts retain
+`hold_seconds` because auto-mode fallback permissions can auto-deny at 2:00. Daemon and hub
+holds are unchanged. Terminal-presence suppression uses each tool's hold length. A real
+wrapper session answering an AskUserQuestion after several minutes remains the owner's
+acceptance check; the 3600 s registration was previously measured with a 650 s held
+permission, not this scenario. Existing explicit unstick and ambiguous-match handbacks still
+release a live hold to the terminal, and the screen tracker does not independently prove a
+held dialog is gone.

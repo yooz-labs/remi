@@ -344,7 +344,7 @@ export type PushFn = typeof sendPushTrigger;
  * The outcome of attempting to deliver a question's notification (epic #603
  * Phase 1), returned by `maybePush`. Before #1125 the permission gate raced it
  * to decide whether a held hook kept blocking Claude. A hold since #1126 has
- * a fixed deadline instead (`[prompts] hold_seconds`) and never waits on
+ * a fixed per-tool deadline instead (#1837) and never waits on
  * delivery, so this is diagnostic only:
  *   - `in_app`     a client is attached and no registered recipient has an enabled
  *                  push channel; the question remains reachable in-app.
@@ -697,7 +697,7 @@ export class NotificationDispatcher {
    * Alert push telling the user a prompt must be answered in the terminal
    * (#1126), never a card: no category, no options, nothing to answer from
    * the lock screen, and nothing registered in-app. Its reasons:
-   *   - `hold_deadline`: a held prompt waited `[prompts] hold_seconds` with no
+   *   - `hold_deadline`: a held prompt reached its configured per-tool deadline with no
    *     answer (or reached Claude's hook timeout), so remi released its hold;
    *     Claude's dialog is still up (the #733 handoff, restored for held
    *     hooks).

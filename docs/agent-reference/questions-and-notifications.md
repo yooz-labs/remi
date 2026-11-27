@@ -60,25 +60,23 @@ the card at once by id (`holdForAnswer` -> `onHeldEscalate` ->
   (an abort at Claude's own hook timeout is handled like the deadline, see
   below). No hook fires for it, so a new
   `UserPromptSubmit` also closes main prompts left open.
-- **Deadline:** in wrapper mode at `[prompts] hold_seconds` (default 90, 5
-  to 110: under the 2:00 auto-deny of auto-mode fallback prompts, which
-  counts during a hold, and the 600 s registered hook timeout) remi releases
-  its own hold with an empty response, the dialog stays, the card is
-  dismissed and an "answer at the terminal" notice is pushed (#733). A daemon
-  or hub session has no terminal of its own, so it holds for
-  `[prompts] daemon_hold_seconds` (default 3540, 5 to 3540) and registers
-  the hook with a 3600 s timeout (`DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT`;
-  Claude honors it, measured: a 650 s hold answered at 653.6 s ran the
-  tool); its notice says `remi attach`, the only way left to answer. An
-  abort within 5 s of the registered timeout (`hookTimeoutMs`) is Claude's
-  timeout, not a terminal No: released to the terminal with the notice,
-  like the deadline (which normally comes first). An auto-mode
-  fallback prompt still auto-denies at 2:00 there; Claude fires
-  `PermissionDenied` for it (measured), which dismisses the card and pushes
-  a `harness_denied` notice. The notice never claims the
-  prompt is still waiting (a terminal Yes may already have answered it); it
-  is dismissed when the prompt resolves, and a late phone answer does not
-  resolve it.
+- **Deadline:** wrapper permission prompts use `[prompts] hold_seconds` (default
+  90, 5 to 110), below the 2:00 auto-deny of auto-mode fallback prompts.
+  AskUserQuestion and ExitPlanMode in wrapper sessions use `[prompts]
+  daemon_hold_seconds` (default 3540, 5 to 3540) as a safety cap (#1837).
+  Daemon and hub sessions use that longer hold for every tool. All sessions
+  register the PermissionRequest hook at 3600 s, above the maximum hold. Claude
+  Code 2.1.287 honored a 3600 s registration in a measured 650 s hold, answered
+  at 653.6 s; a several-minute wrapper AskUserQuestion remains the owner's
+  real-session check. At the deadline remi releases the hook empty, dismisses
+  the card and pushes an answer-at-the-terminal notice (#733); the dialog
+  stays. A daemon or hub notice says `remi attach`. An abort within 5 s of the
+  registered timeout is handled as a timeout with the same notice; a terminal
+  No in that interval is indistinguishable. An auto-mode fallback prompt can
+  still auto-deny at 2:00; Claude fires `PermissionDenied` (measured),
+  dismissing the card and pushing a `harness_denied` notice. The terminal
+  notice does not claim the prompt is still waiting, since a terminal Yes may
+  already have answered it.
 
 An empty response never decides anything; it is what every non-answer path
 sends.
@@ -121,8 +119,8 @@ resolves the hook with a structured `updatedInput` built in
   the gate matches a paired id whatever the input. If the request was not
   paired, a finished call of that tool that matches nothing releases the
   one open hold of that tool and agent to the terminal (notice pushed);
-  with two or more, nothing is released. Deadlines, abort,
-  subagent routing and the chat guard are the binary prompt's.
+  with two or more, nothing is released. Abort, subagent routing and the chat
+  guard follow the binary prompt path; deadlines use the per-tool policy above.
 
 A **multi-choice string-label permission**, or a question-shaped tool that is
 not AskUserQuestion, is still answered `passthrough` and pushed by id at once
@@ -149,7 +147,7 @@ and a second unstick clears it.
 dialog by design: they are a person at the terminal). While a
 MAIN-agent hook is held, or a prompt waits in the terminal (`terminalPrompts`:
 a hold released at its deadline or early, or a rendered wrapper-mode subagent
-dialog) for less than the session's hold length, the tracker treats a PTY
+dialog) for less than the tool's hold length, the tracker treats a PTY
 render as that dialog (`setHookPromptProbe` -> `hasOpenHookPrompt`), never as
 an orphan, so no typed card is rebuilt from it; for a wrapper-mode subagent
 prompt the phone keeps exactly one artifact, its notice. The probe is bounded
@@ -295,11 +293,12 @@ no-tracker branch is effectively dead in production: `cli.ts` builds a tracker
 for every session, hook server or not. It exists for a caller that does not
 wire `promptUp` (tests, a future entry point) and it fails open (types the
 text), the opposite of the answer guards above. (5) A `terminal` entry counts
-for the session's hold length from when it is MARKED (the deadline release,
+for the tool's hold length from when it is MARKED (the deadline release,
 the early hand-back, or the subagent dialog's render), not from the prompt's
-start: in wrapper mode up to `hold_seconds` (90 s) after a deadline release,
-about twice the hold from the start; in daemon or hub mode up to
-`daemon_hold_seconds` (about 59 minutes). A No answered at the terminal fires
+start: in wrapper mode `hold_seconds` (90 s) for permissions and
+`daemon_hold_seconds` (about 59 minutes) for the two structured tools; in
+daemon or hub mode `daemon_hold_seconds` for every tool (#1837). A No
+answered at the terminal fires
 no hook, so the entry can outlive its dialog; in that window Stop
 force-closes instead of typing `/exit` (kept by lead decision: a forced close
 is always safe) and chat is refused. Ways out: an answer a hook sees (the tool
@@ -307,8 +306,9 @@ runs, `Stop`, a new prompt; a subagent's next tool call or `SubagentStop`), a
 bare Esc sent through remi (web Esc button, Telegram `/interrupt`, an attach
 Esc key), which clears the MAIN agent's entries (`noteTerminalEscape`,
 #1155), and `remi unstick`. An Esc typed at a wrapper session's own terminal
-does not pass through remi and is not seen. The opposite direction: once an
-entry ages out, a dialog still on screen whose parse a text status cleared is
+does not pass through remi and cannot clear a terminal entry directly; for a live held request Claude closes the request, which the gate
+handles as an abort (measured on Claude Code 2.1.287). The opposite direction:
+once an entry ages out, a dialog still on screen whose parse a text status cleared is
 no longer guarded (chat would be typed into it, Stop would type `/exit`).
 
 The parser joins a label's wrapped rows (and an AskUserQuestion description
