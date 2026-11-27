@@ -8,32 +8,46 @@ export type SessionOwner =
   | { owner: 'profile'; id: string; configured: boolean }
   | { owner: 'hidden' };
 
-export type ProfileSidecar =
+export type ProfileSidecarResult =
   | { ok: true; entries: Readonly<Record<string, SessionProfileEntry>> }
   | { ok: false };
 
-export function readProfileSidecar(file: Pick<SessionProfilesFile, 'snapshot'>): ProfileSidecar {
-  let cached: ProfileSidecar | undefined;
-  const read = (): ProfileSidecar => {
-    if (cached) return cached;
+export type ProfileSidecar = ProfileSidecarResult | { read(): ProfileSidecarResult };
+
+/** Lazily take one consistent snapshot. No-table bare records never read the sidecar. */
+export class ProfileSidecarSnapshot {
+  private cached: ProfileSidecarResult | undefined;
+
+  constructor(private readonly file: Pick<SessionProfilesFile, 'snapshot'>) {}
+
+  read(): ProfileSidecarResult {
+    if (this.cached) return this.cached;
     try {
-      cached = { ok: true, entries: file.snapshot() };
+      this.cached = { ok: true, entries: this.file.snapshot() };
     } catch {
-      cached = { ok: false };
+      this.cached = { ok: false };
     }
-    return cached;
-  };
-  // The no-table, profile-free record rule returns before touching either getter.
-  // Other readers share the same snapshot for the lifetime of this request.
+    return this.cached;
+  }
+}
+
+export function readProfileSidecar(file: Pick<SessionProfilesFile, 'snapshot'>): ProfileSidecar {
+  return new ProfileSidecarSnapshot(file);
+}
+
+function snapshotResult(sidecar: ProfileSidecar): ProfileSidecarResult {
+  return 'read' in sidecar ? sidecar.read() : sidecar;
+}
+
+/** Adapt the request's snapshot to the launch-time ownership validator. */
+export function sidecarGetter(sidecar: ProfileSidecar): Pick<SessionProfilesFile, 'get'> {
   return {
-    get ok() {
-      return read().ok;
+    get(id) {
+      const result = snapshotResult(sidecar);
+      if (!result.ok) throw new Error('Session profile snapshot unavailable');
+      return result.entries[id];
     },
-    get entries() {
-      const result = read();
-      return result.ok ? result.entries : {};
-    },
-  } as ProfileSidecar;
+  };
 }
 
 /** Resolve remote ownership without trusting fields an older writer could strip. */
@@ -49,8 +63,9 @@ export function sessionProfileOwner(
     const bare = !input.profile && !input.profileSnapshot;
     if (bare && 'entries' in profiles && Object.keys(profiles.entries).length === 0)
       return { owner: 'default' };
-    if (!sidecar.ok) return { owner: 'hidden' };
-    const entry = sidecar.entries[input.remiSessionId];
+    const snapshot = snapshotResult(sidecar);
+    if (!snapshot.ok) return { owner: 'hidden' };
+    const entry = snapshot.entries[input.remiSessionId];
     if (entry && input.profile && entry.profile !== input.profile) return { owner: 'hidden' };
     if (!entry && (input.profile || input.profileSnapshot)) return { owner: 'hidden' };
     id = entry?.profile ?? 'default';

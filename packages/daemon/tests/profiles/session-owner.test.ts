@@ -1,6 +1,10 @@
 import { expect, test } from 'bun:test';
 import { parseProfiles } from '../../src/profiles/profile-config.ts';
-import { readProfileSidecar, sessionProfileOwner } from '../../src/profiles/session-owner.ts';
+import {
+  readProfileSidecar,
+  sessionProfileOwner,
+  sidecarGetter,
+} from '../../src/profiles/session-owner.ts';
 import type { StoredSession } from '../../src/session/session-store.ts';
 
 test('remote owner requires consistent sidecar evidence', () => {
@@ -36,6 +40,7 @@ test('remote owner requires consistent sidecar evidence', () => {
   expect(reads).toBe(0);
   expect(sessionProfileOwner(record, lazy, profiles)).toEqual({ owner: 'hidden' });
   expect(sessionProfileOwner(record, lazy, profiles)).toEqual({ owner: 'hidden' });
+  expect(() => sidecarGetter(lazy).get(record.remiSessionId)).toThrow();
   expect(reads).toBe(1);
   expect(sessionProfileOwner(record, bad, empty)).toEqual({ owner: 'default' });
   expect(sessionProfileOwner(record, sidecar('secret'), empty)).toEqual({ owner: 'default' });

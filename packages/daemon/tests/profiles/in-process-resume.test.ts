@@ -155,9 +155,7 @@ test('in-process resume returns the ownership refusal and the ambiguity message 
       other: { label: 'Other', claude: { expects: 'subscription' } },
     });
     if ('error' in removed) throw new Error(removed.error);
-    expect(refusal(removed)).toBe(
-      'This session was started in profile work, which no longer exists. Start a new session.',
-    );
+    expect(refusal(removed)).toBe('That session was not found on this machine.');
 
     write([row(), row({ remiSessionId: crypto.randomUUID() })], {
       [remiSessionId]: { profile: 'work', revision },
