@@ -73,7 +73,8 @@ export async function runTerminalReservationChild(args: readonly string[]): Prom
     }
     await delay(2);
   }
-  fs.writeFileSync(`${prefix}.ready`, JSON.stringify({ pid: process.pid, ids }));
+  fs.writeFileSync(`${prefix}.ready.tmp`, JSON.stringify({ pid: process.pid, ids }));
+  fs.renameSync(`${prefix}.ready.tmp`, `${prefix}.ready`);
   await until(() => fs.existsSync(`${prefix}.go`));
   // Intentional process exit without release: the parent must prove death before reclaiming RAM charge.
 }
