@@ -280,6 +280,24 @@ test('status reports the possible legacy path and the reserved port is refused',
   expect(fs.existsSync(path.join(f.home, '.remi', 'daemon.pid'))).toBe(false);
 }, 15_000);
 
+test.each([
+  ['--port', 'BASE'],
+  ['codex', '--worktree'],
+])(
+  'refused local launch %s %s does not start a hub',
+  async (...args) => {
+    const f = await setup();
+    const result = Bun.spawnSync(
+      [process.execPath, CLI_TS, ...args.map((arg) => (arg === 'BASE' ? String(f.port) : arg))],
+      { cwd: f.work, env: f.env, timeout: 8000, stdout: 'pipe', stderr: 'pipe' },
+    );
+    expect(result.exitCode).not.toBe(0);
+    expect(fs.existsSync(path.join(f.home, '.remi', 'daemon.pid'))).toBe(false);
+    expect(fs.existsSync(path.join(f.home, '.remi', 'daemon-status.json'))).toBe(false);
+  },
+  20_000,
+);
+
 test('a REMI_HOME override does not auto-start', async () => {
   const f = await setup();
   const override = path.join(f.home, 'scratch-state');

@@ -4,7 +4,7 @@ All notable changes to Remi are documented here.
 
 ## Unreleased
 
-- Local interactive session launches start a detached hub when needed by default; `[daemon] hub_auto_start = false` disables it. Sessions reserve port 18765 for the hub, and missing-hub warnings reflect the secure-push activation latch. Immediate release of a held question without a client or push path remains open (#1823).
+- Local interactive session launches start a detached hub when needed by default; `[daemon] hub_auto_start = false` disables it. Sessions reserve the configured hub base port (18765 by default); an explicit session `--port` or `REMI_PORT` equal to that base is refused. Missing-hub warnings reflect legacy-push eligibility. Immediate release of a held question without a client or push path remains open (#1823).
 
 ## [0.9.0] - 2026-11-14
 

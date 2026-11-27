@@ -1278,25 +1278,6 @@ if (isSessionLaunch(parsedArgs) && !serveMode) {
   }
 }
 
-// Only a local interactive session starts a hub. REMI_HOME is the existing
-// scratch-state override, and tests opt out through their preload.
-if (isSessionLaunch(parsedArgs) && !serveMode && !cliHost) {
-  const legacyPolicy = {
-    legacyEnabled: remiConfig.notifications.legacy_push_enabled,
-    pushSecret: cliPushSecret,
-  };
-  if (cliDaemonMode) {
-    const { noHubWarning, readLiveHub } = await import('./cli/daemon-manager.ts');
-    if (!readLiveHub()) console.error(noHubWarning(legacyPolicy));
-  } else {
-    const { ensureHubForSession } = await import('./cli/hub-autostart.ts');
-    await ensureHubForSession(
-      remiConfig.daemon.hub_auto_start && !isRemiHomeOverridden(),
-      legacyPolicy,
-    );
-  }
-}
-
 // #1025: `gitInfo` above was computed from process.cwd() at module load,
 // before args were parsed — a hub-spawned child inherits the hub's cwd, so
 // that snapshot named the hub's repo/branch. The --resume/--recent/--dir
@@ -2683,6 +2664,25 @@ if (codexHarness) {
   }
   codexLaunchArgs = preflight.args;
   console.error(olderRemiNotice());
+}
+
+// Only a local interactive session starts a hub. REMI_HOME is the existing
+// scratch-state override, and tests opt out through their preload.
+if (isSessionLaunch(parsedArgs) && !serveMode && !cliHost) {
+  const legacyPolicy = {
+    legacyEnabled: remiConfig.notifications.legacy_push_enabled,
+    pushSecret: cliPushSecret,
+  };
+  if (cliDaemonMode) {
+    const { noHubWarning, readLiveHub } = await import('./cli/daemon-manager.ts');
+    if (!readLiveHub()) console.error(noHubWarning(legacyPolicy));
+  } else {
+    const { ensureHubForSession } = await import('./cli/hub-autostart.ts');
+    await ensureHubForSession(
+      remiConfig.daemon.hub_auto_start && !isRemiHomeOverridden(),
+      legacyPolicy,
+    );
+  }
 }
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({
