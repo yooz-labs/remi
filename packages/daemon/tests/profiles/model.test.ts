@@ -165,7 +165,7 @@ describe('profile configuration', () => {
   );
   test('reserved keys and future expects load', () => {
     const result = parseProfiles({
-      work: { label: 'Work', remote_visible: true, claude: { expects: 'future_kind' } },
+      work: { label: 'Work', warn_percent: 80, claude: { expects: 'future_kind' } },
     });
     expect('entries' in result && result.entries['work']?.claude?.expects).toBe('future_kind');
     expect('notices' in result && result.notices).toHaveLength(1);

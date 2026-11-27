@@ -10,10 +10,27 @@
 import { createSessionListResponse, errorToString, generateId } from '@remi/shared';
 import type { DiscoverableSession, MachineDescriptor, ProtocolMessage, UUID } from '@remi/shared';
 import type { Harness } from '../../harness/types.ts';
+import type { Profiles } from '../../profiles/profile-config.ts';
+import {
+  type ProfileSidecar,
+  logPolicyDrop,
+  sessionProfileOwner,
+} from '../../profiles/session-owner.ts';
+import { sessionProfileRef } from '../../profiles/session-profile-ref.ts';
+import { profilesInUse } from '../../profiles/visibility.ts';
 import type { SessionBindingStore, SessionRegistry } from '../../session/index.ts';
+import type { StoredSession } from '../../session/session-store.ts';
 import { logError } from '../logger.ts';
 
 export interface SessionListDeps {
+  /**
+   * Remote profile policy (#1749): the strict configuration, the sidecar and a session's record.
+   * Required with no default, so a caller that forgets one fails to compile instead of listing
+   * every session.
+   */
+  readonly profiles: () => Profiles;
+  readonly sidecar: () => ProfileSidecar;
+  readonly profileOfSession: (id: UUID) => StoredSession | null;
   readonly withholdTranscriptPaths: boolean;
   readonly sessionRegistry: Pick<SessionRegistry, 'listSessions' | 'getActiveSessionIds'>;
   readonly bindingStore: Pick<SessionBindingStore, 'getIdentity' | 'get'>;
@@ -23,6 +40,7 @@ export interface SessionListDeps {
    */
   readonly transcriptDiscovery: {
     discoverSessions(excludeSessionIds: Set<string>): DiscoverableSession[];
+    profileOfTranscript?(id: string): string | undefined;
   };
   /** How a listed Claude session's transcript path is derived. */
   readonly harness: Pick<Harness, 'transcriptPath'>;
@@ -68,6 +86,8 @@ export function broadcastWorkspaceChange(
 /** The daemon's list: its own sessions, and the external transcripts when `includeExternal`. */
 export function buildSessionList(deps: SessionListDeps, includeExternal: boolean): SessionList {
   const { sessionRegistry, bindingStore, transcriptDiscovery, harness } = deps;
+  const profiles = deps.profiles();
+  const sidecar = deps.sidecar();
   // Decorate daemon-sourced sessions with their harness identity (#1179) and,
   // for a Claude session, its pre-assigned binding (#429): `harness` always,
   // `harnessSessionId` once known (for Claude it equals `claudeSessionId`).
@@ -79,27 +99,42 @@ export function buildSessionList(deps: SessionListDeps, includeExternal: boolean
   // the sibling ports with it. Fall back to the undecorated entry on per-entry
   // failure; the cost on a broadcast is that a Codex entry reads as Claude
   // until the store answers again, which the log line records.
-  const own = sessionRegistry.listSessions().map((s) => {
+  const own = sessionRegistry.listSessions().flatMap((s) => {
+    let record: StoredSession | null = null;
+    try {
+      record = deps.profileOfSession(s.sessionId as UUID);
+    } catch {
+      logPolicyDrop('session list', s.sessionId);
+      return [];
+    }
+    const owner = sessionProfileOwner(
+      record ?? { transcriptProfile: undefined },
+      sidecar,
+      profiles,
+    );
+    if (owner.owner === 'hidden') return [];
+    const ref = sessionProfileRef(owner, record?.profileSnapshot, profiles);
+    const decorated = ref ? { ...s, profile: ref } : s;
     try {
       // Null: no record, or a harness this build does not know. Neither is guessed at.
       const identity = bindingStore.getIdentity(s.sessionId as UUID);
-      if (!identity) return s;
+      if (!identity) return [decorated];
       const { harness: harnessName, harnessSessionId } = identity;
       const named = {
-        ...s,
+        ...decorated,
         harness: harnessName,
         ...(harnessSessionId !== null && { harnessSessionId }),
       };
-      if (harnessName !== 'claude' || harnessSessionId === null) return named;
+      if (harnessName !== 'claude' || harnessSessionId === null) return [named];
       const transcriptPath = harness.transcriptPath(s.projectPath, harnessSessionId);
       // No file to name (a harness without a transcript): decorate the id only.
-      if (transcriptPath === null) return { ...named, claudeSessionId: harnessSessionId };
-      return { ...named, claudeSessionId: harnessSessionId, transcriptPath };
+      if (transcriptPath === null) return [{ ...named, claudeSessionId: harnessSessionId }];
+      return [{ ...named, claudeSessionId: harnessSessionId, transcriptPath }];
     } catch (err) {
       logError(
         `[SessionList] Failed to decorate session ${s.sessionId.slice(0, 8)}; serving raw entry: ${errorToString(err)}`,
       );
-      return s;
+      return [decorated];
     }
   });
   const stripPath = (session: DiscoverableSession): DiscoverableSession => {
@@ -123,9 +158,62 @@ export function buildSessionList(deps: SessionListDeps, includeExternal: boolean
       );
     }
   }
-  const external = transcriptDiscovery.discoverSessions(managedIds);
+  const external = transcriptDiscovery.discoverSessions(managedIds).flatMap((entry) => {
+    const id = transcriptDiscovery.profileOfTranscript?.(entry.sessionId);
+    const owner = sessionProfileOwner({ transcriptProfile: id }, sidecar, profiles);
+    if (owner.owner === 'hidden') return [];
+    const configured =
+      owner.owner === 'profile' && 'entries' in profiles ? profiles.entries[owner.id] : undefined;
+    const profile = sessionProfileRef(
+      owner,
+      configured ? { revision: configured.revision } : undefined,
+      profiles,
+    );
+    return [
+      {
+        ...entry,
+        ...(profile && { profile }),
+      },
+    ];
+  });
   return {
     own: visibleOwn,
     external: deps.withholdTranscriptPaths ? external.map(stripPath) : external,
   };
+}
+
+/**
+ * The live ports a device may be told about (design item 7): every live session's port, minus
+ * those whose record resolves to a hidden owner. A record lookup that throws drops the port
+ * (fail closed). While at least one profile is configured, or the configuration is in error, a
+ * live entry with no record yet is dropped too: a child registers live before it writes its
+ * record, so its owner is not known yet (PR 1828 round 1, L3). With no `[profiles]` table such an
+ * entry is listed, as before. Reads the policy once for the whole census.
+ */
+export function visibleLivePorts(deps: {
+  readonly listLive: () => readonly { readonly sessionId: string; readonly wsPort: number }[];
+  readonly profileOfSession: (id: UUID) => StoredSession | null;
+  readonly profiles: () => Profiles;
+  readonly sidecar: () => ProfileSidecar;
+}): number[] {
+  const profiles = deps.profiles();
+  const sidecar = deps.sidecar();
+  const ownerUnknownHides = profilesInUse(profiles);
+  return [
+    ...new Set(
+      deps
+        .listLive()
+        .filter((entry) => {
+          try {
+            const record = deps.profileOfSession(entry.sessionId as UUID);
+            if (record === null) return !ownerUnknownHides;
+            return sessionProfileOwner(record, sidecar, profiles).owner !== 'hidden';
+          } catch {
+            logPolicyDrop('live ports', entry.sessionId);
+            return false;
+          }
+        })
+        .map((entry) => entry.wsPort),
+    ),
+  ];
 }

@@ -30,17 +30,23 @@ test('hub discovers and loads both profile transcripts without exposing profile 
     );
   }
   const remiId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-  new SessionStore(path.join(remi, 'sessions.json')).save({
-    remiSessionId: remiId,
-    claudeSessionId: ids[0] as string,
-    projectPath: dirs.work,
-    profile: 'work',
-    port: 0,
-    pid: null,
-    startedAt: new Date().toISOString(),
-    exitedAt: new Date().toISOString(),
-    exitCode: 0,
-  });
+  // As a real profile launch writes it: the record with its snapshot, and the ownership entry in
+  // session-profiles.json. A record that names a profile without that entry is hidden (J9).
+  new SessionStore(path.join(remi, 'sessions.json')).save(
+    {
+      remiSessionId: remiId,
+      claudeSessionId: ids[0] as string,
+      projectPath: dirs.work,
+      profile: 'work',
+      profileSnapshot: { revision: 'fixture' },
+      port: 0,
+      pid: null,
+      startedAt: new Date().toISOString(),
+      exitedAt: new Date().toISOString(),
+      exitCode: 0,
+    },
+    { profile: 'work', revision: 'fixture' },
+  );
   const hub = await spawnHub(dirs, { PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin` });
   const { ws, received, raw } = await connectAndHelloRaw(hub.port);
   try {

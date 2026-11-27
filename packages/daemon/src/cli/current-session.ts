@@ -8,12 +8,16 @@
  * TranscriptBinder keeps current — so it follows /clear rotations.
  */
 
-import type { HarnessId, SessionIdentity, UUID } from '@remi/shared';
+import type { HarnessId, SessionIdentity, SessionProfileRef, UUID } from '@remi/shared';
 import type { Harness } from '../harness/types.ts';
+import type { Profiles } from '../profiles/profile-config.ts';
+import { type ProfileSidecar, sessionProfileOwner } from '../profiles/session-owner.ts';
+import { sessionProfileRef } from '../profiles/session-profile-ref.ts';
 import { type SessionStore, identityOfRecord } from '../session/session-store.ts';
 
 /** The daemon's current owned session, resolved on demand. */
 export interface CurrentOwnedSession {
+  readonly profile?: SessionProfileRef | undefined;
   /** The primary Remi session id (stable across /clear). */
   readonly sessionId: UUID;
   /** The current Claude session id (rotates on /clear); null if unbound. */
@@ -31,6 +35,9 @@ export interface CurrentOwnedSession {
 }
 
 export interface CurrentSessionResolverDeps {
+  /** Remote profile policy (#1749), required with no default: the ack's profile and path. */
+  profiles: () => Profiles;
+  sidecar: () => ProfileSidecar;
   /** Reads the primary Remi session id (the per-process global). */
   getPrimarySessionId: () => UUID | null;
   sessionStore: Pick<SessionStore, 'findByRemiSessionId'>;
@@ -59,19 +66,26 @@ export function makeCurrentSessionResolver(
       const sessionId = getPrimarySessionId();
       if (!sessionId) return null;
       const stored = sessionStore.findByRemiSessionId(sessionId);
+      const profiles = deps.profiles();
+      const owner = sessionProfileOwner(
+        stored ?? { transcriptProfile: undefined },
+        deps.sidecar(),
+        profiles,
+      );
       const claudeSessionId = (stored?.claudeSessionId ?? null) as UUID | null;
       const projectPath = stored?.projectPath ?? null;
       // `harness.transcriptPath` may itself be null (a harness with no file),
       // which reads as "no file", the same as an unknown id or project.
       const transcriptPath =
-        !deps.withholdTranscriptPath && claudeSessionId && projectPath
+        owner.owner !== 'hidden' && !deps.withholdTranscriptPath && claudeSessionId && projectPath
           ? harness.transcriptPath(projectPath, claudeSessionId)
           : null;
       const identity = (stored ? identityOfRecord(stored) : null) ?? {
         harness: harnessId,
         harnessSessionId: null,
       };
-      return { sessionId, claudeSessionId, transcriptPath, identity };
+      const profile = sessionProfileRef(owner, stored?.profileSnapshot, profiles);
+      return { sessionId, claudeSessionId, transcriptPath, identity, ...(profile && { profile }) };
     } catch {
       return null;
     }

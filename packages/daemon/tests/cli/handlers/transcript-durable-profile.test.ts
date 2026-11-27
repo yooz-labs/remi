@@ -10,6 +10,7 @@ import { SessionBindingStore } from '../../../src/session/session-binding-store.
 import { SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptIndex } from '../../../src/session/transcript-index.ts';
 import { TranscriptDiscovery } from '../../../src/transcript/transcript-discovery.ts';
+import { noHiddenOwner } from '../../helpers/no-profiles-policy.ts';
 
 test('durable index finds a profile transcript after the session record is gone', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'durable-profile-'));
@@ -32,6 +33,7 @@ test('durable index finds a profile transcript after the session record is gone'
     const store = new SessionStore(path.join(root, 'sessions.json'));
     const frames: ProtocolMessage[] = [];
     const handlers = createTranscriptHandlers({
+      isHiddenOwner: noHiddenOwner,
       transcriptDiscovery: discovery,
       harness: new ClaudeHarness(discovery),
       transcriptWatchers: new Map(),

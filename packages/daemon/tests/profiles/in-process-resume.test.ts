@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { inProcessResumeRefusal } from '../../src/profiles/in-process-resume.ts';
 import { parseProfiles } from '../../src/profiles/profile-config.ts';
 import { resumeProfile } from '../../src/profiles/resume-profile.ts';
+import { readProfileSidecar } from '../../src/profiles/session-owner.ts';
 import { SessionProfilesFile } from '../../src/session/session-profiles-file.ts';
 import { SessionStore, type StoredSession } from '../../src/session/session-store.ts';
 
@@ -12,8 +13,8 @@ test('in-process resume checks real ownership records and conceals read errors',
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-profile-'));
   try {
     const profiles = parseProfiles({
-      work: { label: 'Work', claude: { expects: 'subscription' } },
-      other: { label: 'Other', claude: { expects: 'subscription' } },
+      work: { label: 'Work', remote_selectable: true, claude: { expects: 'subscription' } },
+      other: { label: 'Other', remote_selectable: true, claude: { expects: 'subscription' } },
     });
     if ('error' in profiles) throw new Error(profiles.error);
     const revision = profiles.entries['work']?.revision as string;
@@ -34,8 +35,14 @@ test('in-process resume checks real ownership records and conceals read errors',
     store.save(record, { profile: 'work', revision });
     const logs: string[] = [];
     const check = (own: string, key = id) =>
-      inProcessResumeRefusal(store, new SessionProfilesFile(root), profiles, own, key, (line) =>
-        logs.push(line),
+      inProcessResumeRefusal(
+        store,
+        readProfileSidecar(new SessionProfilesFile(root)),
+        profiles,
+        profiles,
+        own,
+        key,
+        (line) => logs.push(line),
       );
     expect(check('work')).toBeNull();
     expect(check('other')).toContain('belongs to profile work');
@@ -87,7 +94,9 @@ test('in-process resume returns the ownership refusal and the ambiguity message 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-refusal-'));
   try {
     const config = (args: string[]) =>
-      parseProfiles({ work: { label: 'Work', args, claude: { expects: 'subscription' } } });
+      parseProfiles({
+        work: { label: 'Work', args, remote_selectable: true, claude: { expects: 'subscription' } },
+      });
     const profiles = config([]);
     if ('error' in profiles) throw new Error(profiles.error);
     const revision = profiles.entries['work']?.revision as string;
@@ -118,7 +127,8 @@ test('in-process resume returns the ownership refusal and the ambiguity message 
     const refusal = (parsed = profiles) =>
       inProcessResumeRefusal(
         new SessionStore(path.join(root, 'sessions.json')),
-        new SessionProfilesFile(root),
+        readProfileSidecar(new SessionProfilesFile(root)),
+        parsed,
         parsed,
         'work',
         claudeId,
@@ -128,8 +138,7 @@ test('in-process resume returns the ownership refusal and the ambiguity message 
     write([row()], { [remiSessionId]: { profile: 'work', revision } });
     expect(refusal()).toBeNull();
 
-    const changed =
-      "This session's profile information was changed by another remi process. Start a new session.";
+    const changed = 'That session was not found on this machine.';
     write([row()], {});
     expect(refusal()).toBe(changed);
     write([row()], { [remiSessionId]: { profile: 'other', revision } });
@@ -147,9 +156,7 @@ test('in-process resume returns the ownership refusal and the ambiguity message 
       other: { label: 'Other', claude: { expects: 'subscription' } },
     });
     if ('error' in removed) throw new Error(removed.error);
-    expect(refusal(removed)).toBe(
-      'This session was started in profile work, which no longer exists. Start a new session.',
-    );
+    expect(refusal(removed)).toBe('That session was not found on this machine.');
 
     write([row(), row({ remiSessionId: crypto.randomUUID() })], {
       [remiSessionId]: { profile: 'work', revision },

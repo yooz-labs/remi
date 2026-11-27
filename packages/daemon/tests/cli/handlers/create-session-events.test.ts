@@ -12,6 +12,7 @@ import { DEFAULT_CONFIG } from '../../../src/config/config.ts';
 import { HarnessRegistry } from '../../../src/harness/registry.ts';
 import { findAvailableTcpPort as actualPortProbe } from '../../../src/session/port-utils.ts';
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
+import { emptySidecar, noProfiles, noResumeOwner } from '../../helpers/no-profiles-policy.ts';
 import { occupyPort, reserveRange } from '../../session/port-test-helpers.ts';
 
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
@@ -42,6 +43,9 @@ describe('createCreateSessionHandlers', () => {
     findAvailableTcpPort?: PortFinder,
   ) {
     return createCreateSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      resumeOwner: noResumeOwner,
       harnesses,
       liveSessionsRegistry,
       spawningPorts,
@@ -94,6 +98,9 @@ describe('createCreateSessionHandlers', () => {
 
   test('responds with failure when no free port is available', async () => {
     const handlers = createCreateSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      resumeOwner: noResumeOwner,
       harnesses,
       liveSessionsRegistry,
       spawningPorts,
@@ -125,6 +132,9 @@ describe('createCreateSessionHandlers', () => {
       extraArgs: string[];
     }> = [];
     const handlers = createCreateSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      resumeOwner: noResumeOwner,
       harnesses,
       liveSessionsRegistry,
       spawningPorts,
@@ -171,6 +181,9 @@ describe('createCreateSessionHandlers', () => {
   test('maps a missing directory to the home directory, not the hub cwd (#1025)', async () => {
     const spawnHistory: Array<string | undefined> = [];
     const handlers = createCreateSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      resumeOwner: noResumeOwner,
       harnesses,
       liveSessionsRegistry,
       spawningPorts,
@@ -196,6 +209,9 @@ describe('createCreateSessionHandlers', () => {
   test('reserves the port during spawn then releases it', async () => {
     let sawReservedDuringSpawn = false;
     const handlers = createCreateSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      resumeOwner: noResumeOwner,
       harnesses,
       liveSessionsRegistry,
       spawningPorts,
@@ -220,6 +236,9 @@ describe('createCreateSessionHandlers', () => {
 
   test('releases the reservation even if spawn throws, responds with failure', async () => {
     const handlers = createCreateSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      resumeOwner: noResumeOwner,
       harnesses,
       liveSessionsRegistry,
       spawningPorts,
@@ -264,6 +283,9 @@ describe('createCreateSessionHandlers', () => {
 
     let usedPortsSeen: number[] = [];
     const handlers = createCreateSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      resumeOwner: noResumeOwner,
       harnesses,
       liveSessionsRegistry,
       spawningPorts,

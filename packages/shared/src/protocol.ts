@@ -112,6 +112,7 @@ import type {
   Question,
   RemiStatus,
   Session,
+  SessionProfileRef,
   StructuredMessage,
   Timestamp,
   UUID,
@@ -234,6 +235,8 @@ export interface ProtocolMessageMap {
   session_list_response: SessionListResponseMessage;
   recent_repositories_request: RecentRepositoriesRequestMessage;
   recent_repositories_response: RecentRepositoriesResponseMessage;
+  session_profiles_request: SessionProfilesRequestMessage;
+  session_profiles_response: SessionProfilesResponseMessage;
   transcript_content: TranscriptContentMessage;
   transcript_load_request: TranscriptLoadRequestMessage;
   transcript_load_complete: TranscriptLoadCompleteMessage;
@@ -399,6 +402,8 @@ export const MESSAGE_DIRECTION = {
   session_list_response: 'd2c',
   recent_repositories_request: 'c2d',
   recent_repositories_response: 'd2c',
+  session_profiles_request: 'c2d',
+  session_profiles_response: 'd2c',
   transcript_content: 'd2c',
   transcript_load_request: 'c2d',
   transcript_load_complete: 'd2c',
@@ -485,6 +490,8 @@ export interface HelloMessage {
 
 /** Server hello ack - confirms connection */
 export interface HelloAckMessage {
+  /** Visible configured profile of the attached session, if any. */
+  readonly profile?: SessionProfileRef | undefined;
   readonly type: 'hello_ack';
   readonly id: UUID;
   readonly timestamp: Timestamp;
@@ -1077,6 +1084,34 @@ export interface RecentRepositoriesResponseMessage {
 }
 
 /**
+ * Which profiles a device may start a session in (#1749, capability `session_profiles`).
+ * `directory` is checked as a create checks it; absent means the home directory.
+ */
+export interface SessionProfilesRequestMessage {
+  readonly type: 'session_profiles_request';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  readonly directory?: string | undefined;
+}
+
+/** The answer to a {@link SessionProfilesRequestMessage} (#1749). */
+export interface SessionProfilesResponseMessage {
+  readonly type: 'session_profiles_response';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  readonly requestId: UUID;
+  /** The built-in default first, then every selectable profile in configuration order. */
+  readonly profiles: readonly { id: string; label: string; harnesses: readonly HarnessId[] }[];
+  /**
+   * The profile a create in the directory gets, and why; absent when that profile is not
+   * selectable (a hidden one is never named), so the client asks the person to choose.
+   */
+  readonly default?: { id: string; source: 'folder' | 'machine_default' | 'built_in' } | undefined;
+  /** Set, with an empty `profiles`, for a directory a create refuses or a configuration error. */
+  readonly refused?: 'directory_invalid' | 'profiles_invalid' | undefined;
+}
+
+/**
  * One atomic rotation event (#438): the PTY's bound Claude session rotated —
  * the user ran `/clear` or `/resume` inside the PTY, starting a NEW transcript
  * under a new Claude session id. (`/compact` does NOT rotate — it keeps the
@@ -1246,6 +1281,8 @@ export interface SessionWorkspace {
 
 /** Request to create a new session (Claude Code unless `harness` says otherwise) */
 export interface CreateSessionRequestMessage {
+  /** Explicit profile choice; requires the session_profiles capability. */
+  readonly profile?: string | undefined;
   readonly type: 'create_session_request';
   readonly id: UUID;
   readonly timestamp: Timestamp;
@@ -1275,6 +1312,8 @@ export interface CreateSessionRequestMessage {
 
 /** Response after creating a new session */
 export interface CreateSessionResponseMessage {
+  /** Visible configured profile of the created session, if any. */
+  readonly profile?: SessionProfileRef | undefined;
   readonly type: 'create_session_response';
   readonly id: UUID;
   readonly timestamp: Timestamp;
@@ -1889,6 +1928,8 @@ export function createHello(
  *  new optionals never requires threading `undefined` through positional
  *  callsites (same rationale as {@link CreateHelloOptions}). */
 export interface CreateHelloAckOptions {
+  /** The connection's session's visible profile (#1749); omitted for the default or a hidden one. */
+  profile?: SessionProfileRef | undefined;
   /** One snapshot also supplies daemonVersion, harnesses and capabilities (#1234). */
   machine?: MachineDescriptor | undefined;
   resumeInfo?: { isResume: boolean; replayCount: number; nextBulletId: number } | undefined;
@@ -1958,6 +1999,7 @@ export function createHelloAck(
     ...(harnesses !== undefined && { harnesses }),
     capabilities: capabilities ?? [],
     ...(machine !== undefined && { machine }),
+    ...(options.profile !== undefined && { profile: options.profile }),
   };
 }
 
@@ -2388,6 +2430,32 @@ export function createRecentRepositoriesRequest(limit?: number): RecentRepositor
   };
 }
 
+export function createSessionProfilesRequest(directory?: string): SessionProfilesRequestMessage {
+  return {
+    type: 'session_profiles_request',
+    id: generateId(),
+    timestamp: now(),
+    ...(directory !== undefined && { directory }),
+  };
+}
+
+export function createSessionProfilesResponse(
+  requestId: UUID,
+  profiles: SessionProfilesResponseMessage['profiles'],
+  defaultProfile?: SessionProfilesResponseMessage['default'],
+  refused?: SessionProfilesResponseMessage['refused'],
+): SessionProfilesResponseMessage {
+  return {
+    type: 'session_profiles_response',
+    id: generateId(),
+    timestamp: now(),
+    requestId,
+    profiles,
+    ...(defaultProfile !== undefined && { default: defaultProfile }),
+    ...(refused !== undefined && { refused }),
+  };
+}
+
 /** Create the answer to a recent-repositories request (#1236 phase C). */
 export function createRecentRepositoriesResponse(
   repositories: readonly RecentRepository[],
@@ -2501,9 +2569,10 @@ export function createCreateSessionRequest(
     harness?: HarnessId | undefined;
     args?: readonly string[] | undefined;
     workspace?: WorkspaceRequest | undefined;
+    profile?: string | undefined;
   } = {},
 ): CreateSessionRequestMessage {
-  const { harness, args, workspace } = options;
+  const { harness, args, workspace, profile } = options;
   return {
     type: 'create_session_request',
     id: generateId(),
@@ -2512,6 +2581,7 @@ export function createCreateSessionRequest(
     ...(harness !== undefined && { harness }),
     ...(args !== undefined && { args }),
     ...(workspace !== undefined && { workspace }),
+    ...(profile !== undefined && { profile }),
   };
 }
 
@@ -2526,6 +2596,7 @@ export function createCreateSessionResponse(
   port?: number,
   notice?: string,
   workspace?: SessionWorkspace,
+  profile?: SessionProfileRef,
 ): CreateSessionResponseMessage {
   return {
     type: 'create_session_response',
@@ -2538,6 +2609,7 @@ export function createCreateSessionResponse(
     ...(port !== undefined && { port }),
     ...(notice !== undefined && { notice }),
     ...(workspace !== undefined && { workspace }),
+    ...(profile !== undefined && { profile }),
   };
 }
 

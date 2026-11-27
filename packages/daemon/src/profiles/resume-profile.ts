@@ -6,7 +6,7 @@ import type { Profiles } from './profile-config.ts';
 export function resumeProfile(
   record: StoredSession,
   profiles: Profiles,
-  sidecarFile: SessionProfilesFile,
+  sidecarFile: Pick<SessionProfilesFile, 'get'>,
 ): { id: string } | { error: string } {
   const changed =
     "This session's profile information was changed by another remi process. Start a new session.";

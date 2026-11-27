@@ -1,0 +1,13 @@
+{
+  "type": "session_profiles_response",
+  "id": "0a591d66-e9bf-4980-86d8-cb54d04dd7f3",
+  "timestamp": "2026-11-27T01:57:39.317Z",
+  "requestId": "fixture-request-id",
+  "profiles": [
+    {
+      "id": "default",
+      "label": "Default sign-in",
+      "harnesses": ["claude", "codex"]
+    }
+  ]
+}

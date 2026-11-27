@@ -459,6 +459,14 @@ export class Connection {
         bullet_expand_request: (m) => this.handleBulletExpandRequest(m),
         session_list_request: (m) => this.handleSessionListRequest(m),
         recent_repositories_request: (m) => this.handleRecentRepositoriesRequest(m),
+        session_profiles_request: (m) => {
+          if (!this.events.onSessionProfilesRequest) {
+            this.sendError('UNKNOWN_MESSAGE', `Unknown message type: ${m.type}`);
+            return;
+          }
+          this.sendAck(m.id, 'delivered');
+          this.events.onSessionProfilesRequest(m.id, m.directory);
+        },
         transcript_load_request: (m) => this.handleTranscriptLoadRequest(m),
         create_session_request: (m) => this.handleCreateSessionRequest(m),
         terminal_resize: (m) => this.handleTerminalResize(m),

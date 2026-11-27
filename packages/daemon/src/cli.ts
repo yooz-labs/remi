@@ -187,7 +187,12 @@ import {
   createResumeSessionHandlers,
 } from './cli/handlers/resume-session-events.ts';
 import { type SessionHandlers, createSessionHandlers } from './cli/handlers/session-events.ts';
-import { broadcastWorkspaceChange, buildSessionList } from './cli/handlers/session-list-entries.ts';
+import {
+  broadcastWorkspaceChange,
+  buildSessionList,
+  visibleLivePorts as filterVisibleLivePorts,
+} from './cli/handlers/session-list-entries.ts';
+import { createSessionProfilesHandlers } from './cli/handlers/session-profiles-events.ts';
 import { StructuredChatService } from './cli/handlers/structured-chat-events.ts';
 import {
   type TranscriptHandlers,
@@ -216,7 +221,6 @@ import { defaultMachineName, machineIdForKey } from './cli/machine.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
 import { causeOfSessionClose, createQuestionResolver } from './cli/question-resolution.ts';
-import { makeResumeProfileOf } from './cli/resume-profile-of.ts';
 import { disposeAndDismiss } from './cli/session-close.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
 import { StatusBar, childRows } from './cli/status-bar.ts';
@@ -992,12 +996,6 @@ if (cliResume !== undefined) {
 
 // remi new --host (and `remi codex --host`): create session on remote daemon, then auto-attach
 if (isSessionLaunch(parsedArgs) && cliHost) {
-  if (parsedArgs.remiProfile && parsedArgs.remiProfile !== 'default') {
-    console.error(
-      "Choosing a profile for a session on another machine is not supported yet. That machine's folder mapping or default profile applies; run the command without --remi-profile.",
-    );
-    process.exit(2);
-  }
   if (remiProfileEnv && remiProfileEnv !== 'default')
     console.error(
       'REMI_PROFILE applies to this machine only; the remote machine chooses by its own folder mapping or default.',
@@ -1045,7 +1043,7 @@ if (isSessionLaunch(parsedArgs) && cliHost) {
   }
 
   // Create session on remote daemon and auto-attach
-  const { runRemoteNew } = await import('./cli/remote-new-client.ts');
+  const { runRemoteNew, RemoteProfileUnsupported } = await import('./cli/remote-new-client.ts');
   try {
     const result = await runRemoteNew({
       host: effectiveHost,
@@ -1055,11 +1053,12 @@ if (isSessionLaunch(parsedArgs) && cliHost) {
       // omitted field. The remote daemon still validates the arguments after `--`.
       harness: remoteHarness,
       args: parsedArgs.explicitArgs,
+      profile: parsedArgs.remiProfile,
     });
     process.exit(result.exitCode);
   } catch (err) {
     console.error(errorToString(err));
-    process.exit(1);
+    process.exit(err instanceof RemoteProfileUnsupported ? 2 : 1);
   }
 }
 
@@ -1103,7 +1102,7 @@ if (isSessionLaunch(parsedArgs) && cliDir && !cliHost) {
 }
 
 import { configWarnings } from './profiles/config-warnings.ts';
-import { currentProfiles } from './profiles/current-profiles.ts';
+import { currentProfiles, currentProfilesStrict } from './profiles/current-profiles.ts';
 import { inProcessResumeRefusal } from './profiles/in-process-resume.ts';
 import { checkLogin } from './profiles/login-check.ts';
 import type { Profile } from './profiles/profile-config.ts';
@@ -1112,6 +1111,15 @@ import { profileLaunchEnvironment } from './profiles/profile-env.ts';
 // before constructing the harness or transcript discovery.
 import { resolveProfile } from './profiles/resolve-profile.ts';
 import { resumeProfile as validateResumeProfile } from './profiles/resume-profile.ts';
+import {
+  RemotePolicyScope,
+  makeIsHiddenSessionOwner,
+  makeResumeOwner,
+  readProfileSidecar,
+  sessionProfileOwner,
+} from './profiles/session-owner.ts';
+import { sessionProfileRef } from './profiles/session-profile-ref.ts';
+import { visibleProfileRoots } from './profiles/visibility.ts';
 import { SessionProfilesFile } from './session/session-profiles-file.ts';
 
 let selectedProfile: Profile | undefined;
@@ -1260,6 +1268,7 @@ if (isSessionLaunch(parsedArgs) && !serveMode) {
       profile: resolution.id,
       profileSnapshot: {
         revision: selectedProfile.revision,
+        label: selectedProfile.label,
         ...(selectedProfile.claude && {
           claudeDir: selectedProfile.claude.dir,
           claudeExpects: selectedProfile.claude.expects,
@@ -1379,6 +1388,9 @@ if (cliDaemonMode) {
 // Core components
 // ---------------------------------------------------------------------------
 const _ptyManager = new PTYManager();
+// One strict configuration read and one sidecar snapshot per remote-policy request (#1749 F2):
+// every policy reader below reads through this scope, and sharedEvents runs each such request in it.
+const remotePolicy = new RemotePolicyScope(currentProfilesStrict, remoteProfileSidecar);
 // Session daemons scan their selected profile; the hub refreshes all profile roots.
 const transcriptDiscovery = new TranscriptDiscovery({
   ...(selectedProfile?.claude && {
@@ -1387,12 +1399,8 @@ const transcriptDiscovery = new TranscriptDiscovery({
   }),
   ...(serveMode && {
     profileRoots: () => {
-      const profiles = currentProfiles();
-      return 'error' in profiles
-        ? []
-        : Object.entries(profiles.entries).flatMap(([profile, entry]) =>
-            entry.claude ? [{ profile, projectsDir: path.join(entry.claude.dir, 'projects') }] : [],
-          );
+      // Roots from the last good configuration (P2A), filtered by the request's strict policy.
+      return visibleProfileRoots(currentProfiles(), remotePolicy.profiles());
     },
   }),
 });
@@ -1576,19 +1584,24 @@ const pendingQuestionCreatedAt = new PendingQuestionCreatedAtTracker();
 const workspaceCache = new WorkspaceCache({
   log: (line) => log(`[Workspace] ${line}`),
   onChange: (directory) =>
-    broadcastWorkspaceChange(
-      {
-        sessionRegistry,
-        bindingStore,
-        transcriptDiscovery,
-        harness,
-        withholdTranscriptPaths: selectedProfile !== undefined,
-        currentPort: () => PORT,
-        getLivePorts: () => liveSessionsRegistry.getLivePorts(),
-        machine: machineDescriptor,
-        broadcast: (message) => registry.broadcast(message),
-      },
-      directory,
+    remotePolicy.run(() =>
+      broadcastWorkspaceChange(
+        {
+          sessionRegistry,
+          bindingStore,
+          transcriptDiscovery,
+          harness,
+          profiles: remotePolicy.profiles,
+          sidecar: remotePolicy.sidecar,
+          profileOfSession: (id) => sessionStore.findByRemiSessionId(id),
+          withholdTranscriptPaths: selectedProfile !== undefined,
+          currentPort: () => PORT,
+          getLivePorts: visibleLivePorts,
+          machine: machineDescriptor,
+          broadcast: (message) => registry.broadcast(message),
+        },
+        directory,
+      ),
     ),
 });
 
@@ -2048,7 +2061,11 @@ let liveSessionsWatcherCloser: (() => void) | null = null;
  * entries come from `buildSessionList`, the request path's builder (#1274).
  */
 function collectLiveSessionsUpdate(): LiveSessionsCollectResult | null {
-  const newPorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== PORT);
+  return remotePolicy.run(collectLiveSessionsUpdateInScope);
+}
+
+function collectLiveSessionsUpdateInScope(): LiveSessionsCollectResult | null {
+  const newPorts = visibleLivePorts().filter((p) => p !== PORT);
   if (newPorts.length === 0) return null;
   // The same entries a session_list_request gets, harness identity included (#1274).
   const { own, external } = buildSessionList(
@@ -2057,11 +2074,27 @@ function collectLiveSessionsUpdate(): LiveSessionsCollectResult | null {
       bindingStore,
       transcriptDiscovery,
       harness,
+      profiles: remotePolicy.profiles,
+      sidecar: remotePolicy.sidecar,
+      profileOfSession: (id) => sessionStore.findByRemiSessionId(id),
       withholdTranscriptPaths: selectedProfile !== undefined,
     },
     true,
   );
   return { sessions: [...own, ...external], newPorts, machine: machineDescriptor() };
+}
+
+function visibleLivePorts(): number[] {
+  return filterVisibleLivePorts({
+    listLive: () => liveSessionsRegistry.listLive(),
+    profileOfSession: (id) => sessionStore.findByRemiSessionId(id),
+    profiles: remotePolicy.profiles,
+    sidecar: remotePolicy.sidecar,
+  });
+}
+
+function remoteProfileSidecar() {
+  return readProfileSidecar(new SessionProfilesFile(REMI_DIR));
 }
 
 // Reserved-row status bar (#565). Assigned in wrapper mode; stays null in
@@ -2395,6 +2428,8 @@ const ptyMessageFanout = createPtyMessageFanout({
 });
 
 const trivialHandlers: TrivialHandlers = createTrivialHandlers({
+  profiles: remotePolicy.profiles,
+  sidecar: remotePolicy.sidecar,
   // #603 Phase 6: registration goes through the store (rotation prune + persist).
   // The phone's preferences are stored with the token (#1258: they were dropped
   // here, so a muted push class kept arriving).
@@ -2685,6 +2720,10 @@ if (codexHarness) {
 }
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({
+  profiles: remotePolicy.profiles,
+  sidecar: remotePolicy.sidecar,
+  profileOfSession: (id) => sessionStore.findByRemiSessionId(id),
+  visibleLivePorts,
   withholdTranscriptPaths: selectedProfile !== undefined,
   machine: machineDescriptor,
   sessionRegistry,
@@ -2709,6 +2748,8 @@ resolveStopOnClose = sessionHandlers.resolveStopOnClose;
 // The single authoritative "current owned session" accessor (#499), shared by
 // the transcript-request redirect and the hello_ack binding so they never diverge.
 const currentOwnedSession = makeCurrentSessionResolver({
+  profiles: remotePolicy.profiles,
+  sidecar: remotePolicy.sidecar,
   withholdTranscriptPath: selectedProfile !== undefined,
   getPrimarySessionId,
   sessionStore,
@@ -2717,6 +2758,10 @@ const currentOwnedSession = makeCurrentSessionResolver({
 });
 
 const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
+  isHiddenOwner: makeIsHiddenSessionOwner({ sessionStore, discovery: transcriptDiscovery }, () => ({
+    profiles: remotePolicy.profiles(),
+    sidecar: remotePolicy.sidecar(),
+  })),
   transcriptDiscovery,
   harness,
   transcriptWatchers,
@@ -2738,7 +2783,14 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
   basePort: remiConfig.daemon.base_port,
   portRange: remiConfig.daemon.port_range,
   bindHost,
-  resumeProfileOf: makeResumeProfileOf({ sessionStore, discovery: transcriptDiscovery }),
+  profiles: remotePolicy.profiles,
+  sidecar: remotePolicy.sidecar,
+  remiProfileEnv,
+  resumeOwner: makeResumeOwner({
+    sessionStore,
+    discovery: transcriptDiscovery,
+    within: (fn, snapshot) => remotePolicy.run(fn, snapshot),
+  }),
   inheritedArgs: () => {
     const args: string[] = [];
     if (cliAuth === true) args.push('--auth');
@@ -2763,6 +2815,22 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
 });
 
 const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers({
+  // The ack after a resume is its own read phase: creating the session wrote a new record.
+  profileForSession: (id) =>
+    remotePolicy.run(() => {
+      const record = sessionStore.findByRemiSessionId(id);
+      const profiles = remotePolicy.profiles();
+      const owner = sessionProfileOwner(
+        record ?? { transcriptProfile: undefined },
+        remotePolicy.sidecar(),
+        profiles,
+      );
+      return sessionProfileRef(owner, record?.profileSnapshot, profiles);
+    }),
+  readSidecar: remotePolicy.sidecar,
+  readProfiles: remotePolicy.profiles,
+  isHiddenResumeOwner: (input, sidecar, profiles) =>
+    sessionProfileOwner(input, sidecar, profiles).owner === 'hidden',
   machine: machineDescriptor,
   currentOwnedSession,
   capabilitiesForConnection,
@@ -2770,7 +2838,7 @@ const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers
   // session daemon with `--resume` through the create-session path (#1129). Every other process
   // resumes in its own.
   childSessions: serveMode
-    ? (directory, extra) => createSessionHandlers_.startSession(directory, extra)
+    ? (directory, extra, policy) => createSessionHandlers_.startSession(directory, extra, policy)
     : null,
   harnessId,
   harnesses: () => harnessRegistry.available(),
@@ -2779,11 +2847,12 @@ const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers
   bindingStore,
   transcriptDiscovery,
   harness,
-  checkResumeProfile: (claudeSessionId) =>
+  checkResumeProfile: (claudeSessionId, sidecar, profiles) =>
     inProcessResumeRefusal(
       sessionStore,
-      new SessionProfilesFile(REMI_DIR),
+      sidecar,
       remiConfig.profiles,
+      profiles,
       profileMetadata?.profile ?? 'default',
       claudeSessionId,
       log,
@@ -2967,10 +3036,22 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
 
 // The repositories of the machine's recent sessions (#1236 phase C), for a new-session sheet.
 const recentRepositoriesHandlers = createRecentRepositoriesHandlers({
+  profiles: remotePolicy.profiles,
+  sidecar: remotePolicy.sidecar,
+  remiProfileEnv,
   sessionStore,
   repositoryStore: recentRepositoryStore,
   send: sendToConnection,
 });
+const sessionProfilesHandlers = createSessionProfilesHandlers({
+  profiles: remotePolicy.profiles,
+  remiProfileEnv,
+  send: sendToConnection,
+});
+
+function inPolicyScope<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
+  return (...args) => remotePolicy.run(() => fn(...args));
+}
 
 let sharedEvents = {
   onTerminalView: (id: string, ingress: TerminalIngress) =>
@@ -3054,6 +3135,7 @@ let sharedEvents = {
     });
   },
   ...recentRepositoriesHandlers,
+  ...sessionProfilesHandlers,
   ...trivialHandlers,
   ...inputHandlers,
   onNativeAnswer: (_connectionId: UUID, message: import('@remi/shared').NativeAnswerMessage) =>
@@ -3079,8 +3161,18 @@ let sharedEvents = {
   ...sessionHandlers,
   ...connectionHandlers,
   ...transcriptHandlers,
-  onCreateSessionRequest: createSessionHandlers_.onCreateSessionRequest,
   ...resumeSessionHandlers,
+  // Each remote-policy request reads the configuration and the sidecar once, including the
+  // transcript scans it triggers (#1749 F2). Listed after the spreads, so these win.
+  onSessionListRequest: inPolicyScope(sessionHandlers.onSessionListRequest),
+  onTranscriptLoadRequest: inPolicyScope(transcriptHandlers.onTranscriptLoadRequest),
+  onRecentRepositoriesRequest: inPolicyScope(
+    recentRepositoriesHandlers.onRecentRepositoriesRequest,
+  ),
+  onSessionHistoryRequest: inPolicyScope(trivialHandlers.onSessionHistoryRequest),
+  onSessionProfilesRequest: inPolicyScope(sessionProfilesHandlers.onSessionProfilesRequest),
+  onCreateSessionRequest: inPolicyScope(createSessionHandlers_.onCreateSessionRequest),
+  onResumeSessionRequest: inPolicyScope(resumeSessionHandlers.onResumeSessionRequest),
   // Expose the shared answer core under the adapter's relay event name (#575,
   // P4a). The HTTP /answer endpoint routes through the SAME logic as the
   // WebSocket onAnswer, just reporting a structured outcome instead of an
@@ -3830,6 +3922,14 @@ if (cliDaemonMode) {
           trust: relayTrust,
           dir: REMI_DIR,
           registry: liveSessionsRegistry,
+          remotePolicy: {
+            sessionStore,
+            snapshot: () => ({
+              profiles: currentProfilesStrict(),
+              sidecar: remoteProfileSidecar(),
+            }),
+            run: (fn, snapshot) => remotePolicy.run(fn, snapshot),
+          },
           // A subscription is acknowledged only while a secure push service exists (#1200, B5).
           securePushSender: () => securePushService !== undefined,
           pushLeaseMs,

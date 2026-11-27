@@ -63,6 +63,7 @@ export interface RecentRepositoriesOptions {
   timeoutMs?: number;
   now?: () => number;
   remembered?: readonly RememberedRepository[];
+  excludeRepository?: (repository: string) => boolean;
 }
 
 const TIMED_OUT = Symbol('timed out');
@@ -177,6 +178,7 @@ export async function recentRepositoriesReport(
       continue;
     }
     const { repository } = lookup;
+    if (options.excludeRepository?.(repository)) continue;
     if (seenRepositories.has(repository)) continue;
     if (!plain(repository)) {
       skipped.unsafe += 1;

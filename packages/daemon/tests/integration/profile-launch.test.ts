@@ -14,6 +14,7 @@ import {
   PROFILE_CREDENTIAL_ENV,
   PROFILE_CREDENTIAL_ENV_PREFIXES,
 } from '../../src/profiles/profile-env.ts';
+import { SessionStore } from '../../src/session/session-store.ts';
 import { FakeAppServer } from '../helpers/fake-app-server.ts';
 import { reserveRange } from '../session/port-test-helpers.ts';
 import {
@@ -72,7 +73,7 @@ while [ ! -e "$FAKE_OUTPUT/release" ] && [ "$i" -lt 600 ]; do sleep 0.1; i=$((i 
   fs.writeFileSync(path.join(bin, 'sh-path'), '#!/bin/sh\necho "$PATH"\n', { mode: 0o700 });
   fs.writeFileSync(
     path.join(remi, 'config.toml'),
-    `[profiles.work]\nlabel="Work"\nfolders=[${JSON.stringify(dirs.work)}]\n[profiles.work.claude]\ndir=${JSON.stringify(profile)}\nexpects="subscription"\n`,
+    `[profiles.work]\nlabel="Work"\nremote_selectable=true\nfolders=[${JSON.stringify(dirs.work)}]\n[profiles.work.claude]\ndir=${JSON.stringify(profile)}\nexpects="subscription"\n`,
   );
   const env = {
     ...Object.fromEntries(PROFILE_CREDENTIAL_ENV.map((name) => [name, 'planted-value'])),
@@ -361,37 +362,46 @@ test('duplicate profile directories refuse launch while a distinct symlink stays
   expect(await started.exited).toBe(0);
 }, 30000);
 
-test('remote explicit profile is refused before a connection', async () => {
+test('remote explicit profile starts through a capable hub', async () => {
   const f = fixture();
-  const port = await reserveRange(1, 50, DEFAULT_CONFIG.daemon.bind);
-  let connections = 0;
-  const listener = Bun.listen({
-    hostname: '127.0.0.1',
+  fs.symlinkSync(process.execPath, path.join(f.home, 'bin', 'bun'));
+  const port = await reserveRange(20, 50, DEFAULT_CONFIG.daemon.bind);
+  const hub = await spawnHub(
+    { home: f.home, work: f.work },
+    { ...f.env, REMI_PORT: String(port) },
+    CLI_TS,
     port,
-    socket: {
-      open(socket) {
-        connections++;
-        socket.end();
-      },
-      data() {},
-      error() {},
-    },
-  });
+  );
+  running.push(hub as (typeof running)[number]);
   try {
     const proc = await spawnWrapper(f, [
       'new',
       '--host',
-      `127.0.0.1:${port}`,
+      '127.0.0.1',
+      '--port',
+      String(port),
       '--remi-profile',
       'work',
     ]);
-    expect(await proc.exited).toBe(2);
-    expect(await new Response(proc.stderr).text()).toContain(
-      "Choosing a profile for a session on another machine is not supported yet. That machine's folder mapping or default profile applies; run the command without --remi-profile.",
+    await pollUntil(
+      () => fs.existsSync(path.join(f.output, 'argv')) || proc.exitCode !== null,
+      15000,
+      'remote profile child',
     );
-    expect(connections).toBe(0);
+    if (proc.exitCode !== null) throw new Error(await new Response(proc.stderr).text());
+    expect(fs.readFileSync(path.join(f.output, 'dir'), 'utf8')).toBe(f.profile);
+    fs.writeFileSync(path.join(f.output, 'release'), '');
+    await pollUntil(
+      () => {
+        const records = JSON.parse(fs.readFileSync(path.join(f.remi, 'sessions.json'), 'utf8'))
+          .sessions as Array<{ exitedAt: string | null }>;
+        return records.length > 0 && records.every((record) => record.exitedAt !== null);
+      },
+      15000,
+      'remote profile child exit',
+    );
   } finally {
-    listener.stop(true);
+    fs.writeFileSync(path.join(f.output, 'release'), '');
   }
 }, 30000);
 
@@ -637,7 +647,7 @@ test('hub resumes the recorded profile and reports a refused child', async () =>
   for (const dir of [codexOnlyWork, bothWork, bothClaude]) fs.mkdirSync(dir);
   fs.appendFileSync(
     path.join(f.remi, 'config.toml'),
-    `[profiles.other]\nlabel="Other"\nfolders=[${JSON.stringify(otherWork)}]\n[profiles.other.claude]\ndir=${JSON.stringify(other)}\nexpects="subscription"\n[profiles.codeonly]\nlabel="Code"\nharness="codex"\nfolders=[${JSON.stringify(codexOnlyWork)}]\n[profiles.codeonly.codex]\ndir=${JSON.stringify(path.join(f.home, 'code-only-home'))}\nexpects="subscription"\n[profiles.both]\nlabel="Both"\nharness="codex"\nfolders=[${JSON.stringify(bothWork)}]\n[profiles.both.claude]\ndir=${JSON.stringify(bothClaude)}\nexpects="subscription"\n[profiles.both.codex]\ndir=${JSON.stringify(path.join(f.home, 'both-codex'))}\nexpects="subscription"\n`,
+    `[profiles.other]\nlabel="Other"\nremote_selectable=true\nfolders=[${JSON.stringify(otherWork)}]\n[profiles.other.claude]\ndir=${JSON.stringify(other)}\nexpects="subscription"\n[profiles.codeonly]\nlabel="Code"\nremote_selectable=true\nharness="codex"\nfolders=[${JSON.stringify(codexOnlyWork)}]\n[profiles.codeonly.codex]\ndir=${JSON.stringify(path.join(f.home, 'code-only-home'))}\nexpects="subscription"\n[profiles.both]\nlabel="Both"\nremote_selectable=true\nharness="codex"\nfolders=[${JSON.stringify(bothWork)}]\n[profiles.both.claude]\ndir=${JSON.stringify(bothClaude)}\nexpects="subscription"\n[profiles.both.codex]\ndir=${JSON.stringify(path.join(f.home, 'both-codex'))}\nexpects="subscription"\n`,
   );
   fs.symlinkSync(process.execPath, path.join(f.home, 'bin', 'bun'));
   let port = await reserveRange(20, 50, DEFAULT_CONFIG.daemon.bind);
@@ -848,10 +858,12 @@ test('hub resumes the recorded profile and reports a refused child', async () =>
     expect(fs.existsSync(path.join(f.output, 'argv'))).toBe(false);
     const expectedRefusal =
       "The session's profile could not start. Run remi profile ls on the machine.";
+    // A session whose profile is no longer configured is hidden from devices (PR 1828 round 1,
+    // L1): the hub answers as for an unknown id, before any text that would name the profile.
     expect([codexOnly.error, refused.error, removed.error]).toEqual([
+      'This profile does not configure that harness.',
       expectedRefusal,
-      expectedRefusal,
-      expectedRefusal,
+      `Session ${first.sessionId} not found. No Claude session ID available for resume.`,
     ]);
   } finally {
     fs.writeFileSync(path.join(f.output, 'release'), '');
@@ -1162,10 +1174,25 @@ for (const configured of [true, false]) {
       ).toBe(true);
       // A sibling daemon registering is what the live-sessions census pushes a list for.
       const siblingPort = 49321;
+      const siblingId = crypto.randomUUID();
+      // With profiles configured, a live sibling is listed only once its record names its owner
+      // (PR 1828 round 1, L3); a real child writes it right after registering, and rewrites its
+      // live entry when its agent starts. Without a [profiles] table no record is needed.
+      if (configured)
+        new SessionStore(path.join(f.home, '.remi', 'sessions.json')).save({
+          remiSessionId: siblingId,
+          claudeSessionId: null,
+          projectPath: f.work,
+          port: siblingPort,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          exitedAt: null,
+          exitCode: null,
+        });
       fs.writeFileSync(
         path.join(f.home, '.remi', 'live-sessions', 'sibling.json'),
         JSON.stringify({
-          sessionId: crypto.randomUUID(),
+          sessionId: siblingId,
           pid: process.pid,
           wsPort: siblingPort,
           hookPort: siblingPort + 1,

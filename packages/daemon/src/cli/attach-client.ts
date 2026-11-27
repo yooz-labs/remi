@@ -458,6 +458,8 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       session_list_response: 'ignore',
       recent_repositories_request: 'ignore',
       recent_repositories_response: 'ignore',
+      session_profiles_request: 'ignore',
+      session_profiles_response: 'ignore',
       transcript_load_request: 'ignore',
       transcript_load_complete: 'ignore',
       create_session_request: 'ignore',

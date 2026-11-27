@@ -33,6 +33,7 @@ describe('every hello_ack names its protocol version and capabilities (#1237)', 
       'browser_links',
       'file_download',
       'notifications',
+      'session_profiles',
     ]);
     expect(PROTOCOL_CAPABILITIES['image_insertion']).toBe(
       'add an image to the attached Claude draft',
@@ -44,6 +45,16 @@ describe('every hello_ack names its protocol version and capabilities (#1237)', 
     expect(PROTOCOL_CAPABILITIES['image_staging']).toBe(
       'upload an image to the attached Claude session',
     );
+  });
+
+  test('session profile selection requires its capability', () => {
+    expect(
+      hubSupport({ protocolVersion: 1, capabilities: ['session_profiles'] }, ['session_profiles'])
+        .supported,
+    ).toBe(true);
+    expect(
+      hubSupport({ protocolVersion: 1, capabilities: [] }, ['session_profiles']),
+    ).toMatchObject({ supported: false, missing: ['session_profiles'] });
   });
 });
 

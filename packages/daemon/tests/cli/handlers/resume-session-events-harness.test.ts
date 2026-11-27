@@ -72,6 +72,9 @@ describe('createResumeSessionHandlers launch arguments, driven by the harness (#
     const sent: ProtocolMessage[] = [];
     await createResumeSessionHandlers({
       checkResumeProfile: () => null,
+      readSidecar: () => ({ ok: true, entries: {} }),
+      readProfiles: () => ({ entries: {}, notices: [] }),
+      isHiddenResumeOwner: () => false,
       childSessions: null,
       harnessId: 'claude',
       harnesses: () => ['claude'],

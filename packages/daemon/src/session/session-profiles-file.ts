@@ -53,6 +53,11 @@ export class SessionProfilesFile {
     return withInterprocessFileLock(this.file, () => this.readUnlocked()[id]);
   }
 
+  /** Take one consistent ownership snapshot for a remote policy decision. */
+  snapshot(): Record<string, SessionProfileEntry> {
+    return withInterprocessFileLock(this.file, () => this.readUnlocked());
+  }
+
   /** Fail before a profile record is committed when ownership evidence is unreadable. */
   assertReadable(): void {
     withInterprocessFileLock(this.file, () => {

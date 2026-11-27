@@ -376,7 +376,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
     const ack = received.find((m): m is HelloAckMessage => m.type === 'hello_ack');
     expect(ack?.sessionId).toBeNull();
     expect(ack?.protocolVersion).toBe(1);
-    expect(ack?.capabilities).toEqual(['workspaces']);
+    expect(ack?.capabilities).toEqual(['workspaces', 'session_profiles']);
   }, 60000);
 
   test('concurrent create requests reserve distinct child ports (#1213)', async () => {
@@ -488,7 +488,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
       directory: repo,
       workspace: { repository: repo, worktree: { branch: 'feature/one' } },
     });
-    expect(ack.capabilities).toEqual(['workspaces']);
+    expect(ack.capabilities).toEqual(['workspaces', 'session_profiles']);
     expect(response.success, why(r, response)).toBe(true);
     const dir = path.join(path.dirname(repo), 'remi-worktrees', 'project-feature-one');
     expect(response.workspace).toEqual({

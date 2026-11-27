@@ -37,6 +37,12 @@ import { SessionStore } from '../../src/session/session-store.ts';
 import { TranscriptIndex } from '../../src/session/transcript-index.ts';
 import { TranscriptDiscovery } from '../../src/transcript/transcript-discovery.ts';
 import type { TranscriptWatcher } from '../../src/transcript/transcript-watcher.ts';
+import {
+  emptySidecar,
+  noHiddenOwner,
+  noProfiles,
+  noRecord,
+} from '../helpers/no-profiles-policy.ts';
 
 const PROJECT = '/Users/x/my.proj';
 const ENCODED_PROJECT_DIR = '-Users-x-my.proj';
@@ -96,6 +102,8 @@ describe('Claude transcript path golden (#1163)', () => {
     saveBinding(REMI_ID);
 
     const current = makeCurrentSessionResolver({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
       withholdTranscriptPath: false,
       getPrimarySessionId: () => REMI_ID,
       sessionStore,
@@ -120,6 +128,10 @@ describe('Claude transcript path golden (#1163)', () => {
 
     const sent: ProtocolMessage[] = [];
     createSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      profileOfSession: noRecord,
+      visibleLivePorts: () => new SessionRegistryFile(tmpDir).getLivePorts(),
       withholdTranscriptPaths: false,
       sessionRegistry,
       bindingStore,
@@ -166,6 +178,7 @@ describe('Claude transcript path golden (#1163)', () => {
 
     const sent: ProtocolMessage[] = [];
     createTranscriptHandlers({
+      isHiddenOwner: noHiddenOwner,
       transcriptDiscovery: discovery,
       harness: new ClaudeHarness(discovery),
       transcriptWatchers: new Map<UUID, TranscriptWatcher>(),

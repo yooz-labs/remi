@@ -82,6 +82,9 @@ describe('resume acks name the harnesses, and a non-Claude daemon refuses resume
   ) {
     return createResumeSessionHandlers({
       checkResumeProfile: () => null,
+      readSidecar: () => ({ ok: true, entries: {} }),
+      readProfiles: () => ({ entries: {}, notices: [] }),
+      isHiddenResumeOwner: () => false,
       childSessions: null,
       harnessId,
       harnesses,

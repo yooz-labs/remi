@@ -14,6 +14,7 @@ import {
   createHello,
   deserialize,
   generateId,
+  hubSupport,
   serialize,
 } from '@remi/shared';
 import { errorToString, escapeUnsafeText } from '@remi/shared';
@@ -23,6 +24,7 @@ import { performAuthHandshake } from './auth-helper.ts';
 import { resolveDaemonWsTarget } from './daemon-target.ts';
 
 export interface RemoteNewOptions {
+  readonly profile?: string | undefined;
   readonly host: string;
   readonly port: number;
   readonly directory?: string | undefined;
@@ -59,6 +61,8 @@ function text(value: unknown, fallback: string): string {
 
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+export class RemoteProfileUnsupported extends Error {}
+
 /**
  * Whether a success the daemon sent can be used: a session id that is a UUID and a port that is an
  * integer from 1 to 65535 (or none). Both are printed and the port is attached to, and the wire
@@ -80,6 +84,7 @@ export async function createRemoteSession(
   timeout = 30000,
   harness?: HarnessId,
   args: readonly string[] = [],
+  profile?: string,
 ): Promise<RemoteSessionResult> {
   return new Promise<RemoteSessionResult>((resolve, reject) => {
     let settled = false;
@@ -120,6 +125,13 @@ export async function createRemoteSession(
 
     function handleMessage(msg: ProtocolMessage): void {
       if (msg.type === 'hello_ack') {
+        if (profile !== undefined) {
+          const support = hubSupport(msg, ['session_profiles']);
+          if (!support.supported) {
+            done(undefined, new RemoteProfileUnsupported(support.message));
+            return;
+          }
+        }
         // Arguments without a harness are Claude's. Either one asks for something an older daemon
         // would silently drop, starting a plain Claude session, so it is sent only to a daemon
         // that says it offers the harness.
@@ -140,6 +152,7 @@ export async function createRemoteSession(
             createCreateSessionRequest(directory, {
               harness,
               args: args.length > 0 ? args : undefined,
+              profile,
             }),
           ),
         );
@@ -226,12 +239,12 @@ export async function runRemoteNew(
   opts: RemoteNewOptions,
   deps: RemoteNewDeps = {},
 ): Promise<{ exitCode: number }> {
-  const { host, port, directory, timeout, harness, args } = opts;
+  const { host, port, directory, timeout, harness, args, profile } = opts;
   const attach = deps.attach ?? runAttachClient;
   const err = deps.err ?? ((line: string) => console.error(line));
 
   err(`Creating session on ${host}:${port}...`);
-  const result = await createRemoteSession(host, port, directory, timeout, harness, args);
+  const result = await createRemoteSession(host, port, directory, timeout, harness, args, profile);
 
   if (result.port !== port) {
     err(`New daemon spawned on port ${result.port}`);
