@@ -58,7 +58,7 @@ export async function ensureHubForSession(enabled: boolean): Promise<void> {
       });
       const hub = runningHub();
       if (hub) {
-        if (attempted) console.log(`Started the remi hub on port ${hub.port}.`);
+        if (attempted) console.error(`Started the remi hub on port ${hub.port}.`);
         return;
       }
       // A failed start does not prevent the session from starting.

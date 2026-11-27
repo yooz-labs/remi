@@ -79,10 +79,16 @@ function launch(f: Awaited<ReturnType<typeof setup>>, args: string[] = []) {
     timeout: 25_000,
   });
   processes.push(proc);
-  const output = { text: '' };
-  collect(proc.stdout, output);
-  collect(proc.stderr, output);
-  return { proc, output };
+  const stdout = { text: '' };
+  const stderr = { text: '' };
+  collect(proc.stdout, stdout);
+  collect(proc.stderr, stderr);
+  const output = {
+    get text() {
+      return stdout.text + stderr.text;
+    },
+  };
+  return { proc, output, stdout, stderr };
 }
 
 test('config defaults on and rejects non-boolean', () => {
@@ -106,6 +112,8 @@ test('local session starts one detached hub before its agent', async () => {
   ) as { wsPort: number };
   expect(status.wsPort).toBe(f.port);
   expect(run.output.text).toContain(`Started the remi hub on port ${f.port}.`);
+  expect(run.stderr.text).toContain(`Started the remi hub on port ${f.port}.`);
+  expect(run.stdout.text).not.toContain('Started the remi hub');
   const entries = fs.readdirSync(path.join(f.home, '.remi', 'live-sessions'));
   expect(entries.length).toBeGreaterThan(0);
   const entry = entries[0];
