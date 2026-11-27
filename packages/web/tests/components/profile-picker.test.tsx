@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { NewSessionModal } from '../../src/components/session/NewSessionModal';
 import { ProfilePicker } from '../../src/components/session/ProfilePicker';
 import { createInitialProfileSheetState } from '../../src/lib/profile-sheet-state';
-import type { ProfileLookupState } from '../../src/lib/profile-sheet-state';
+import type { ProfileLookupState, ProfileSheetState } from '../../src/lib/profile-sheet-state';
 
 function profilesResponse(
   overrides: Partial<SessionProfilesResponseMessage> = {},
@@ -75,6 +75,73 @@ describe('profile picker', () => {
     );
     expect(markup).not.toContain('Profile');
     expect(markup).toContain('Start session in project');
+  });
+
+  test('directory choices and path controls are disabled while a create is pending', () => {
+    const directory: RecentDirectory = {
+      directory: '/tmp/project',
+      lastUsed: now(),
+      sessionCount: 1,
+      displayName: 'project',
+    };
+    const profileState: ProfileSheetState = {
+      ...createInitialProfileSheetState(true),
+      selectedDirectory: '/tmp/project',
+      selectedProfile: 'work',
+      lookup: readyLookup(profilesResponse()),
+      create: {
+        status: 'pending',
+        requestId: generateId(),
+        directory: '/tmp/project',
+        profileId: 'work',
+        connectionId: 'host:19200',
+      },
+    };
+    const markup = renderToStaticMarkup(
+      <NewSessionModal
+        open
+        directories={[directory]}
+        onClose={() => {}}
+        onStartSession={() => {}}
+        profilesEnabled
+        profileState={profileState}
+      />,
+    );
+    const recentChoice = markup.match(
+      /<button\b(?=[^>]*aria-label="Start session in project")[^>]*>/,
+    )?.[0];
+    const pathInput = markup.match(/<input\b(?=[^>]*placeholder="Custom path\.\.\.")[^>]*>/)?.[0];
+    const startButtons = [...markup.matchAll(/<button\b[^>]*>Start<\/button>/g)].map(
+      ([button]) => button,
+    );
+    const profileStart = [...markup.matchAll(/<button\b[^>]*>Starting…<\/button>/g)].map(
+      ([button]) => button,
+    );
+
+    expect(recentChoice).toContain('disabled=""');
+    expect(pathInput).toContain('disabled=""');
+    expect(startButtons).toHaveLength(1);
+    expect(startButtons.every((button) => button.includes('disabled=""'))).toBe(true);
+    expect(profileStart).toHaveLength(1);
+    expect(profileStart[0]).toContain('disabled=""');
+  });
+
+  test('a profile start precondition error is visible before a directory is selected', () => {
+    const markup = renderToStaticMarkup(
+      <NewSessionModal
+        open
+        directories={[]}
+        onClose={() => {}}
+        onStartSession={() => {}}
+        profilesEnabled
+        profileState={{
+          ...createInitialProfileSheetState(true),
+          createError: 'Choose a profile first.',
+        }}
+      />,
+    );
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain('Choose a profile first.');
   });
 
   test('offers only Claude profiles and preselects the mapped profile with its reason', () => {

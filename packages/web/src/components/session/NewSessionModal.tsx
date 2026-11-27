@@ -43,7 +43,12 @@ export function NewSessionModal({
 }: NewSessionModalProps) {
   if (!open) return null;
 
+  const creating = profileState.create.status === 'pending';
+  const lookup = profileState.lookup;
+  const selectedDirectory = profileState.selectedDirectory;
+
   const chooseDirectory = (directory: string) => {
+    if (creating) return;
     if (!profilesEnabled) {
       onStartSession(directory);
       return;
@@ -51,9 +56,6 @@ export function NewSessionModal({
     onProfileAction({ type: 'directory-selected', directory });
     onRequestProfiles?.(directory);
   };
-
-  const lookup = profileState.lookup;
-  const selectedDirectory = profileState.selectedDirectory;
 
   return (
     <div
@@ -103,15 +105,22 @@ export function NewSessionModal({
           directories={directories}
           onStartSession={chooseDirectory}
           profilesEnabled={profilesEnabled}
+          disabled={creating}
           onPathEdit={() => onProfileAction({ type: 'path-edited' })}
         />
+
+        {profileState.createError && selectedDirectory === null && (
+          <p role="alert" className="px-5 py-2 text-xs text-[var(--color-error)]">
+            {profileState.createError}
+          </p>
+        )}
 
         {profilesEnabled && selectedDirectory !== null && (
           <ProfilePicker
             directory={selectedDirectory}
             lookup={lookup}
             selectedProfile={profileState.selectedProfile}
-            creating={profileState.create.status === 'pending'}
+            creating={creating}
             error={profileState.createError}
             onSelectProfile={(profileId) =>
               onProfileAction({ type: 'profile-selected', profileId })

@@ -75,6 +75,7 @@ import { dedupSessions } from '@/lib/session-dedup';
 import {
   EMPTY_PROFILE_SHARING_SOURCES,
   deriveProfileDisplay,
+  removeProfileConnectionState,
   updateProfileSharingSources,
 } from '@/lib/profile-sharing';
 import {
@@ -82,6 +83,7 @@ import {
   PROFILE_LOOKUP_FAILURE,
   createInitialProfileSheetState,
   profileSheetReducer,
+  runProfileCreateIfAllowed,
 } from '@/lib/profile-sheet-state';
 import type { ProfileSharingSources } from '@/lib/profile-sharing';
 import { type ReplyContext, formatReplyMessage } from '@/lib/reply-format';
@@ -2647,8 +2649,27 @@ function App() {
     : false;
 
   useEffect(() => {
+    const currentConnectionIds = new Set(connections.map((connection) => connection.connectionId));
+    const profileConnectionIds = new Set<ConnectionId>([
+      ...profileCapabilitiesRef.current.keys(),
+      ...profileSharingRef.current.keys(),
+      ...profileAckCarriesRef.current.keys(),
+    ]);
+    for (const connectionId of profileConnectionIds) {
+      if (!currentConnectionIds.has(connectionId)) {
+        removeProfileConnectionState(
+          connectionId,
+          profileCapabilitiesRef.current,
+          profileSharingRef.current,
+          profileAckCarriesRef.current,
+        );
+      }
+    }
+  }, [connections]);
+
+  useEffect(() => {
     const pendingConnectionId =
-      profileSheetState.lookup.status === 'loading'
+      profileSheetState.lookup.status === 'loading' || profileSheetState.lookup.status === 'ready'
         ? profileSheetState.lookup.connectionId
         : profileSheetState.create.status === 'pending'
           ? profileSheetState.create.connectionId
@@ -3446,35 +3467,49 @@ function App() {
   // Close the sheet only when the request was actually sent.
   const handleStartSessionInDir = useCallback(
     (directory: string, profileId?: string) => {
-      const profileLookupConnectionId =
-        profileSheetState.lookup.status === 'ready'
-          ? profileSheetState.lookup.connectionId
-          : null;
-      const conn = profileId !== undefined && profileLookupConnectionId !== null
-        ? connections.find(
-            (connection) =>
-              connection.connectionId === profileLookupConnectionId && connection.status === 'connected',
-          )
-        : connections.find((connection) => connection.status === 'connected');
-      if (!conn) {
-        if (
-          profileId !== undefined &&
-          profileSheetState.lookup.status === 'ready' &&
-          profileSheetState.lookup.directory === directory
-        ) {
-          dispatchProfileSheet({
-            type: 'lookup-failed',
-            directory,
-            message: PROFILE_CONNECTION_CLOSED,
-          });
+      let conn: ConnectionState | null = null;
+      let requestId: UUID | null = null;
+      if (profileId !== undefined) {
+        const profileStart = runProfileCreateIfAllowed(
+          profileSheetState,
+          directory,
+          profileId,
+          () => {
+            const profileLookupConnectionId =
+              profileSheetState.lookup.status === 'ready'
+                ? profileSheetState.lookup.connectionId
+                : null;
+            conn = profileLookupConnectionId
+              ? connections.find(
+                  (connection) =>
+                    connection.connectionId === profileLookupConnectionId &&
+                    connection.status === 'connected',
+                ) ?? null
+              : null;
+            if (!conn) {
+              dispatchProfileSheet({
+                type: 'lookup-failed',
+                directory,
+                message: PROFILE_CONNECTION_CLOSED,
+              });
+              return null;
+            }
+            return requestNewSession(conn.connectionId, directory.trim() || undefined, {
+              profile: profileId,
+            });
+          },
+        );
+        if (!profileStart.allowed) {
+          dispatchProfileSheet({ type: 'create-start-rejected' });
+          return;
         }
-        return;
+        requestId = profileStart.result;
+      } else {
+        conn = connections.find((connection) => connection.status === 'connected') ?? null;
+        if (!conn) return;
+        requestId = requestNewSession(conn.connectionId, directory.trim() || undefined);
       }
-      const requestId = requestNewSession(
-        conn.connectionId,
-        directory.trim() || undefined,
-        profileId !== undefined ? { profile: profileId } : undefined,
-      );
+      if (!conn) return;
       if (!requestId) return;
       if (profileId !== undefined) {
         dispatchProfileSheet({
@@ -3488,7 +3523,7 @@ function App() {
         dispatchProfileSheet({ type: 'close' });
       }
     },
-    [connections, profileSheetState.lookup, requestNewSession],
+    [connections, profileSheetState, requestNewSession],
   );
 
   // Surface a system message in a specific session's thread.

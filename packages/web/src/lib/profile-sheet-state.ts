@@ -58,6 +58,7 @@ export type ProfileSheetAction =
       readonly requestId: UUID;
       readonly connectionId: string;
     }
+  | { readonly type: 'create-start-rejected' }
   | {
       readonly type: 'create-response';
       readonly requestId: UUID;
@@ -69,6 +70,7 @@ export type ProfileSheetAction =
 export const PROFILE_LOOKUP_FAILURE = 'Unable to load profiles from this machine.';
 export const PROFILE_CONNECTION_CLOSED = 'The connection to this machine closed. Try again.';
 export const PROFILE_CREATE_FAILURE = 'The machine refused this request.';
+export const PROFILE_CHOOSE_REQUIRED = 'Choose a profile first.';
 
 export function createInitialProfileSheetState(open = false): ProfileSheetState {
   return {
@@ -99,6 +101,30 @@ export function offeredDefaultProfileId(response: SessionProfilesResponseMessage
   return id !== undefined && selectableProfileIds(response).includes(id) ? id : null;
 }
 
+export function canStartCreate(
+  state: ProfileSheetState,
+  directory: string,
+  profileId: string,
+): boolean {
+  return (
+    state.create.status !== 'pending' &&
+    state.lookup.status === 'ready' &&
+    state.selectedDirectory === directory &&
+    state.selectedProfile === profileId &&
+    selectableProfileIds(state.lookup.response).includes(profileId)
+  );
+}
+
+export function runProfileCreateIfAllowed<T>(
+  state: ProfileSheetState,
+  directory: string,
+  profileId: string,
+  request: () => T,
+): { readonly allowed: false } | { readonly allowed: true; readonly result: T } {
+  if (!canStartCreate(state, directory, profileId)) return { allowed: false };
+  return { allowed: true, result: request() };
+}
+
 export function profileSheetReducer(
   state: ProfileSheetState,
   action: ProfileSheetAction,
@@ -109,6 +135,7 @@ export function profileSheetReducer(
     case 'close':
       return createInitialProfileSheetState();
     case 'directory-selected':
+      if (state.create.status === 'pending') return state;
       return {
         ...state,
         selectedDirectory: action.directory,
@@ -118,6 +145,7 @@ export function profileSheetReducer(
         createError: null,
       };
     case 'path-edited':
+      if (state.create.status === 'pending') return state;
       return {
         ...state,
         selectedDirectory: null,
@@ -173,14 +201,7 @@ export function profileSheetReducer(
       }
       return { ...state, selectedProfile: action.profileId || null, createError: null };
     case 'create-started':
-      if (
-        state.lookup.status !== 'ready' ||
-        state.selectedDirectory !== action.directory ||
-        state.selectedProfile !== action.profileId ||
-        !selectableProfileIds(state.lookup.response).includes(action.profileId)
-      ) {
-        return state;
-      }
+      if (!canStartCreate(state, action.directory, action.profileId)) return state;
       return {
         ...state,
         create: {
@@ -192,6 +213,9 @@ export function profileSheetReducer(
         },
         createError: null,
       };
+    case 'create-start-rejected':
+      if (state.create.status === 'pending') return state;
+      return { ...state, createError: PROFILE_CHOOSE_REQUIRED };
     case 'create-response':
       if (state.create.status !== 'pending' || state.create.requestId !== action.requestId)
         return state;
@@ -202,20 +226,34 @@ export function profileSheetReducer(
         createError: action.error || PROFILE_CREATE_FAILURE,
       };
     case 'connection-lost': {
-      const lookupConnectionId =
-        state.lookup.status === 'loading' ? state.lookup.connectionId : null;
-      const createConnectionId =
-        state.create.status === 'pending' ? state.create.connectionId : null;
-      if (lookupConnectionId !== action.connectionId && createConnectionId !== action.connectionId)
-        return state;
-      const directory = state.selectedDirectory;
-      if (directory === null) return state;
+      const lookupTracksConnection =
+        state.lookup.status === 'loading' || state.lookup.status === 'ready';
+      const lookupConnectionId = lookupTracksConnection ? state.lookup.connectionId : null;
+      const createTracksConnection = state.create.status === 'pending';
+      const createConnectionId = createTracksConnection ? state.create.connectionId : null;
+      const lookupLost = lookupConnectionId === action.connectionId;
+      const createLost = createConnectionId === action.connectionId;
+      if (!lookupLost && !createLost) return state;
+      const lookupDirectory = lookupTracksConnection ? state.lookup.directory : null;
+      const createDirectory = createTracksConnection ? state.create.directory : null;
+      const directory = state.selectedDirectory ?? createDirectory ?? lookupDirectory;
+      const createError = createLost && state.selectedDirectory === null
+        ? PROFILE_CONNECTION_CLOSED
+        : null;
+      if (directory === null) {
+        return {
+          ...state,
+          selectedProfile: null,
+          create: createLost ? { status: 'idle' } : state.create,
+          createError,
+        };
+      }
       return {
         ...state,
         selectedProfile: null,
         lookup: { status: 'failed', directory, message: PROFILE_CONNECTION_CLOSED },
-        create: { status: 'idle' },
-        createError: null,
+        create: createLost ? { status: 'idle' } : state.create,
+        createError,
       };
     }
   }

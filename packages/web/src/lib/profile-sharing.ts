@@ -50,3 +50,14 @@ export function deriveProfileDisplay(
   if (!sessionProfilesEnabled) return 'hidden';
   return hasSharedProfiles(sources) ? 'card' : 'header';
 }
+
+export function removeProfileConnectionState<TConnectionId extends string>(
+  connectionId: TConnectionId,
+  capabilities: Map<TConnectionId, boolean>,
+  sharing: Map<TConnectionId, ProfileSharingSources>,
+  ackCarries: Map<TConnectionId, boolean>,
+): void {
+  capabilities.delete(connectionId);
+  sharing.delete(connectionId);
+  ackCarries.delete(connectionId);
+}

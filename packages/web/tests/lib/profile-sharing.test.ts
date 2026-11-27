@@ -5,6 +5,7 @@ import {
   EMPTY_PROFILE_SHARING_SOURCES,
   deriveProfileDisplay,
   hasSharedProfiles,
+  removeProfileConnectionState,
   updateProfileSharingSources,
 } from '../../src/lib/profile-sharing';
 
@@ -86,5 +87,29 @@ describe('profile sharing signals', () => {
     expect(deriveProfileDisplay(false, { sharedBySessions: true, sharedByLookup: true })).toBe(
       'hidden',
     );
+  });
+
+  test('removing a connection deletes all of its profile state and preserves other connections', () => {
+    const capabilities = new Map([
+      ['removed', true],
+      ['kept', false],
+    ]);
+    const sharing = new Map([
+      ['removed', { sharedBySessions: true, sharedByLookup: false }],
+      ['kept', { sharedBySessions: false, sharedByLookup: true }],
+    ]);
+    const ackCarries = new Map([
+      ['removed', true],
+      ['kept', false],
+    ]);
+
+    removeProfileConnectionState('removed', capabilities, sharing, ackCarries);
+
+    expect(capabilities.has('removed')).toBe(false);
+    expect(sharing.has('removed')).toBe(false);
+    expect(ackCarries.has('removed')).toBe(false);
+    expect(capabilities.get('kept')).toBe(false);
+    expect(sharing.get('kept')).toEqual({ sharedBySessions: false, sharedByLookup: true });
+    expect(ackCarries.get('kept')).toBe(false);
   });
 });

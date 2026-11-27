@@ -13,6 +13,7 @@ interface RecentProjectsProps {
   readonly directories: readonly RecentDirectory[];
   readonly onStartSession: (directory: string) => void;
   readonly profilesEnabled?: boolean;
+  readonly disabled?: boolean;
   readonly onPathEdit?: () => void;
 }
 
@@ -32,6 +33,7 @@ export function RecentProjects({
   directories,
   onStartSession,
   profilesEnabled = false,
+  disabled = false,
   onPathEdit,
 }: RecentProjectsProps) {
   const [customPath, setCustomPath] = useState('');
@@ -54,7 +56,10 @@ export function RecentProjects({
           <button
             key={dir.directory}
             type="button"
-            onClick={() => onStartSession(dir.directory)}
+            onClick={() => {
+              if (!disabled) onStartSession(dir.directory);
+            }}
+            disabled={disabled}
             className="group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-[var(--color-surface-light)] active:bg-[var(--color-surface-light)]"
             aria-label={`Start session in ${dir.displayName}`}
           >
@@ -88,12 +93,13 @@ export function RecentProjects({
         <input
           type="text"
           value={customPath}
+          disabled={disabled}
           onChange={(e) => {
             onPathEdit?.();
             setCustomPath(e.target.value);
           }}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && customPath.trim()) {
+            if (!disabled && e.key === 'Enter' && customPath.trim()) {
               onStartSession(customPath.trim());
               if (!profilesEnabled) setCustomPath('');
             }
@@ -104,12 +110,12 @@ export function RecentProjects({
         <button
           type="button"
           onClick={() => {
-            if (customPath.trim()) {
+            if (!disabled && customPath.trim()) {
               onStartSession(customPath.trim());
               if (!profilesEnabled) setCustomPath('');
             }
           }}
-          disabled={!customPath.trim()}
+          disabled={disabled || !customPath.trim()}
           className="rounded bg-[var(--color-primary)] px-2 py-1 text-xs text-[var(--color-accent-ink)] disabled:opacity-50"
         >
           Start

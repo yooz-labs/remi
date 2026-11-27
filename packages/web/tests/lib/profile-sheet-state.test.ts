@@ -3,6 +3,8 @@ import { generateId, now } from '@remi/shared';
 import type { SessionProfilesResponseMessage } from '@remi/shared/protocol.ts';
 import {
   PROFILE_CONNECTION_CLOSED,
+  PROFILE_CHOOSE_REQUIRED,
+  canStartCreate,
   createInitialProfileSheetState,
   profileSheetReducer,
 } from '../../src/lib/profile-sheet-state';
@@ -164,6 +166,62 @@ describe('profile sheet state', () => {
     expect(createPending).toEqual(createInitialProfileSheetState());
   });
 
+  test('path edits and directory changes are ignored during a pending create', () => {
+    const pending = creatingState();
+
+    expect(profileSheetReducer(pending, { type: 'path-edited' })).toBe(pending);
+    expect(
+      profileSheetReducer(pending, {
+        type: 'directory-selected',
+        directory: '/tmp/other-project',
+      }),
+    ).toBe(pending);
+  });
+
+  test('a create response still resolves after a directory choice during the request', () => {
+    const pending = creatingState();
+    if (pending.create.status !== 'pending') throw new Error('expected create pending');
+    const unchanged = profileSheetReducer(pending, {
+      type: 'directory-selected',
+      directory: '/tmp/other-project',
+    });
+
+    const completed = profileSheetReducer(unchanged, {
+      type: 'create-response',
+      requestId: pending.create.requestId,
+      success: true,
+    });
+    expect(completed).toEqual(createInitialProfileSheetState());
+
+    const refusedPending = creatingState();
+    if (refusedPending.create.status !== 'pending') throw new Error('expected create pending');
+    const refusedUnchanged = profileSheetReducer(refusedPending, {
+      type: 'directory-selected',
+      directory: '/tmp/other-project',
+    });
+    const refused = profileSheetReducer(refusedUnchanged, {
+      type: 'create-response',
+      requestId: refusedPending.create.requestId,
+      success: false,
+      error: 'Profile Work was refused.',
+    });
+    expect(refused.selectedDirectory).toBe('/tmp/project');
+    expect(refused.selectedProfile).toBe('work');
+    expect(refused.createError).toBe('Profile Work was refused.');
+  });
+
+  test('profile create preconditions require an offered selected profile and no pending create', () => {
+    const ready = readyState();
+    expect(canStartCreate(ready, '/tmp/project', 'work')).toBe(true);
+    expect(canStartCreate(ready, '/tmp/project', 'codex-only')).toBe(false);
+    expect(canStartCreate(ready, '/tmp/other-project', 'work')).toBe(false);
+    expect(canStartCreate(ready, '/tmp/project', '')).toBe(false);
+    expect(canStartCreate(creatingState(), '/tmp/project', 'work')).toBe(false);
+
+    const rejected = profileSheetReducer(ready, { type: 'create-start-rejected' });
+    expect(rejected.createError).toBe(PROFILE_CHOOSE_REQUIRED);
+  });
+
   test('editing the typed path clears the selected directory, profile, and lookup', () => {
     const edited = profileSheetReducer(loadingState('/tmp/project'), { type: 'path-edited' });
     expect(edited.selectedDirectory).toBeNull();
@@ -206,5 +264,29 @@ describe('profile sheet state', () => {
     });
     expect(disconnected.create).toEqual({ status: 'idle' });
     expect(disconnected.selectedProfile).toBeNull();
+  });
+
+  test('losing a ready lookup connection requires a fresh lookup', () => {
+    const ready = readyState();
+    const disconnected = profileSheetReducer(ready, {
+      type: 'connection-lost',
+      connectionId: 'machine:19200',
+    });
+    expect(disconnected.lookup).toEqual({
+      status: 'failed',
+      directory: '/tmp/project',
+      message: PROFILE_CONNECTION_CLOSED,
+    });
+    expect(disconnected.selectedProfile).toBeNull();
+  });
+
+  test('connection loss clears a pending create even when the selected directory is null', () => {
+    const pending = { ...creatingState(), selectedDirectory: null };
+    const disconnected = profileSheetReducer(pending, {
+      type: 'connection-lost',
+      connectionId: 'machine:19200',
+    });
+    expect(disconnected.create).toEqual({ status: 'idle' });
+    expect(disconnected.createError).toBe(PROFILE_CONNECTION_CLOSED);
   });
 });
