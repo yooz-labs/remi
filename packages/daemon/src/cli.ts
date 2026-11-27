@@ -2696,25 +2696,6 @@ if (codexHarness) {
   console.error(olderRemiNotice());
 }
 
-// Only a local interactive session starts a hub. REMI_HOME is the existing
-// scratch-state override, and tests opt out through their preload.
-if (isSessionLaunch(parsedArgs) && !serveMode && !cliHost) {
-  const legacyPolicy = {
-    legacyEnabled: remiConfig.notifications.legacy_push_enabled,
-    pushSecret: cliPushSecret,
-  };
-  if (cliDaemonMode) {
-    const { noHubWarning, readLiveHub } = await import('./cli/daemon-manager.ts');
-    if (!readLiveHub()) console.error(noHubWarning(legacyPolicy));
-  } else {
-    const { ensureHubForSession } = await import('./cli/hub-autostart.ts');
-    await ensureHubForSession(
-      remiConfig.daemon.hub_auto_start && !isRemiHomeOverridden(),
-      legacyPolicy,
-    );
-  }
-}
-
 const sessionHandlers: SessionHandlers = createSessionHandlers({
   withholdTranscriptPaths: selectedProfile !== undefined,
   machine: machineDescriptor,
@@ -3290,6 +3271,25 @@ if (authEnabled) {
   } else {
     console.error(
       'WARNING: authentication disabled. Any local process able to reach this port can approve permission prompts and type into your session. Use --auth to require proof of identity.',
+    );
+  }
+}
+
+// Only a local interactive session starts a hub. REMI_HOME is the existing
+// scratch-state override, and tests opt out through their preload.
+if (isSessionLaunch(parsedArgs) && !serveMode && !cliHost) {
+  const legacyPolicy = {
+    legacyEnabled: remiConfig.notifications.legacy_push_enabled,
+    pushSecret: cliPushSecret,
+  };
+  if (cliDaemonMode) {
+    const { noHubWarning, readLiveHub } = await import('./cli/daemon-manager.ts');
+    if (!readLiveHub()) console.error(noHubWarning(legacyPolicy));
+  } else {
+    const { ensureHubForSession } = await import('./cli/hub-autostart.ts');
+    await ensureHubForSession(
+      remiConfig.daemon.hub_auto_start && !isRemiHomeOverridden(),
+      legacyPolicy,
     );
   }
 }

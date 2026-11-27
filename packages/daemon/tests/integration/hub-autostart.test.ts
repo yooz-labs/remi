@@ -2,6 +2,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { IdentityStore } from '../../src/auth/identity-store.ts';
 import {
   DEFAULT_CONFIG,
   formatConfig,
@@ -106,6 +107,19 @@ test('config defaults on and rejects non-boolean', () => {
     'daemon.hub_auto_start',
   );
 });
+
+test('wrong identity passphrase refuses the session without starting a hub', async () => {
+  const f = await setup();
+  await new IdentityStore(path.join(f.home, '.remi')).generate('correct-passphrase');
+  f.env['REMI_PASSPHRASE'] = 'incorrect-passphrase';
+  const run = launch(f);
+  expect(await run.proc.exited).not.toBe(0);
+  await pollUntil(() => run.stderr.text.includes('Wrong passphrase?'), 3000, 'unlock refusal');
+  expect(fs.existsSync(path.join(f.home, '.remi', 'daemon.pid'))).toBe(false);
+  expect(fs.existsSync(path.join(f.home, '.remi', 'daemon-status.json'))).toBe(false);
+  expect(fs.existsSync(path.join(f.home, '.remi', 'daemon.log'))).toBe(false);
+  expect(fs.existsSync(path.join(f.agents.claudeDir, 'argv'))).toBe(false);
+}, 15_000);
 
 test('local session starts one detached hub before its agent', async () => {
   const f = await setup();
