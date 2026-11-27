@@ -8,8 +8,13 @@ import * as path from 'node:path';
 import { withInterprocessFileLock } from '../../packages/daemon/src/storage/interprocess-file-lock';
 import jpeg from '../tunnel-decoder-proof/fixture.jpg' with { type: 'file' };
 import png from '../tunnel-decoder-proof/fixture.png' with { type: 'file' };
-import type { JournalRead } from './journal-settlement';
-import { SETTLEMENT_STAGES, beginJournal, settleJournal } from './journal-settlement';
+import {
+  JOURNAL_READ_MAX_BYTES,
+  type JournalRead,
+  SETTLEMENT_STAGES,
+  beginJournal,
+  settleJournal,
+} from './journal-settlement';
 import { RecoveryIntent, type RecoveryOps } from './recovery';
 import { recoveryNative } from './recovery-native';
 import { CLEANUP_BLOCKING_DEBT, Reservations } from './reservations';
@@ -178,7 +183,6 @@ export async function journalStagingProbe() {
             for (const [offset, length] of [
               [-1, 1],
               [0, 0],
-              [0, 32769],
               [bytes.length, 1],
               [0.5, 1],
               [0, 1.5],
@@ -191,6 +195,20 @@ export async function journalStagingProbe() {
           refused(() => reader.referencePath(), 'closed reference view refuses');
           assert.equal(f.settle(), 'settled');
         }
+        // Both lengths fit inside this artifact, so the read cap alone decides the boundary.
+        const boundaryBytes = Buffer.alloc(JOURNAL_READ_MAX_BYTES + 1, 0x5a);
+        const boundaryWriter = start(f, native.ops, boundaryBytes);
+        const boundaryReader = boundaryWriter.openRead();
+        try {
+          assert.deepEqual(
+            boundaryReader.read(0, JOURNAL_READ_MAX_BYTES),
+            boundaryBytes.subarray(0, JOURNAL_READ_MAX_BYTES),
+          );
+          refused(() => boundaryReader.read(0, JOURNAL_READ_MAX_BYTES + 1), 'bounded managed read');
+        } finally {
+          boundaryReader.close();
+        }
+        assert.equal(f.settle(), 'settled');
       },
     );
     for (const extension of ['png', 'jpg'] as const) {

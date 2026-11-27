@@ -781,9 +781,11 @@ or capability is added here. Keep #1170 open.
 ## Internal staged journal read ownership
 
 A successfully closed managed journal now opens one internal `JournalRead` view.
-It reacquires and holds the journal's intent lock and an owned read descriptor,
-exposes only bounded reads of at most 32 KiB, and requires the exact declared file
-length. Cleanup may win between writer close and read open; that open then refuses.
+It reacquires and holds the journal's intent lock and an owned read descriptor
+and requires the exact declared file length. Reads are bounded to 1 MiB for
+download verification (#1844). Image verification and download pulls request at
+most 32 KiB per read. Cleanup may win between writer close and read open; that
+open then refuses.
 Current roots, private ownership, marker witnesses, inode, size and modification
 metadata are checked around reads and staged retention. Missing artifacts refuse;
 cleanup's zero-allocation observation never supplies a readable file. Failed closes

@@ -1,7 +1,7 @@
 /** Owned managed-copy preparation; no wire dispatch or client authority is created here (#1170). */
 import { createHash } from 'node:crypto';
 import type { AdmittedFile, DirectoryRoot } from './admission';
-import { ADMITTED_READ_CHUNK_SIZE, AdmittedRead } from './admitted-read';
+import { AdmittedRead } from './admitted-read';
 import {
   JournalAdmissionBusy,
   type JournalRead,
@@ -11,6 +11,9 @@ import {
 } from './journal-settlement';
 import type { RecoveryOps } from './recovery';
 import type { Reservations } from './reservations';
+
+// Amortize locked ledger accounting over 1 MiB of private journal I/O (#1844).
+const DOWNLOAD_JOURNAL_BATCH_BYTES = 1024 * 1024;
 
 export class DownloadPreparationError extends Error {
   constructor(
@@ -103,55 +106,67 @@ export async function prepareDownloadCopy(
     });
     const admitted = captured.cursor;
     const ownedWriter = captured.writer;
+    const assertSourceCurrent = () => {
+      if (!admitted.isCurrent()) throw new DownloadPreparationError('unavailable', true);
+    };
+    const batch = Buffer.alloc(Math.min(admitted.byteLength, DOWNLOAD_JOURNAL_BATCH_BYTES));
+    let pendingBytes = 0;
+    const writeBatch = () => {
+      context.effect(assertSourceCurrent);
+      // The write touches only the private journal. Keep its I/O outside the grant lock.
+      ownedWriter.write(batch.subarray(0, pendingBytes));
+      pendingBytes = 0;
+    };
     while (admitted.bytesRead < admitted.byteLength) {
-      context.effect(() => {
-        if (!admitted.isCurrent()) throw new DownloadPreparationError('unavailable', true);
-      });
-      // These bytes remain in the private journal. Do not hold the shared grant lock across
-      // filesystem I/O; confirm the captured authority again before yielding or publishing.
-      ownedWriter.write(admitted.readNext());
-      context.effect(() => {
-        if (!admitted.isCurrent()) throw new DownloadPreparationError('unavailable', true);
-      });
+      context.effect(assertSourceCurrent);
+      // The cursor reuses its 32 KiB buffer. Copy these bytes before reading the next chunk.
+      const chunk = admitted.readNext();
+      const copied = chunk.copy(batch, pendingBytes);
+      pendingBytes += copied;
+      if (pendingBytes === batch.length) {
+        writeBatch();
+        // A prior short read can leave this chunk straddling a batch boundary.
+        pendingBytes = chunk.copy(batch, 0, copied);
+      }
+      if (admitted.bytesRead === admitted.byteLength && pendingBytes > 0) writeBatch();
+      context.effect(assertSourceCurrent);
       await context.yield();
     }
     const expected = context.effect(() => admitted.finish());
-    context.effect(() => {
-      if (!admitted.isCurrent()) throw new DownloadPreparationError('unavailable', true);
-    });
+    context.effect(assertSourceCurrent);
     // Flushing the already-private journal can be slow. It publishes neither a path nor bytes;
     // reopen only after a fresh locked check so revocation during this fsync cannot be accepted.
     writerCloseAttempted = true;
     ownedWriter.close();
     writerClosed = true;
     const privateReader = context.effect(() => {
-      if (!admitted.isCurrent()) throw new DownloadPreparationError('unavailable', true);
+      assertSourceCurrent();
       reader = ownedWriter.openRead();
       return reader;
     });
     if (privateReader.byteLength !== expected.byteLength)
       throw new DownloadPreparationError('unavailable', true);
     const hash = createHash('sha256');
-    for (let position = 0; position < expected.byteLength; position += ADMITTED_READ_CHUNK_SIZE) {
-      context.effect(() => {
-        if (!admitted.isCurrent()) throw new DownloadPreparationError('unavailable', true);
-      });
+    for (
+      let position = 0;
+      position < expected.byteLength;
+      position += DOWNLOAD_JOURNAL_BATCH_BYTES
+    ) {
+      context.effect(assertSourceCurrent);
       hash.update(
         privateReader.read(
           position,
-          Math.min(ADMITTED_READ_CHUNK_SIZE, expected.byteLength - position),
+          Math.min(DOWNLOAD_JOURNAL_BATCH_BYTES, expected.byteLength - position),
         ),
       );
-      context.effect(() => {
-        if (!admitted.isCurrent()) throw new DownloadPreparationError('unavailable', true);
-      });
+      context.effect(assertSourceCurrent);
       await context.yield();
     }
     if (hash.digest('hex') !== expected.sha256)
       throw new DownloadPreparationError('unavailable', true);
     context.effect(() => {
       // Verification yields: preserve the source's final publication check as well.
-      if (!admitted.isCurrent()) throw new DownloadPreparationError('unavailable', true);
+      assertSourceCurrent();
       // Validate the private descriptor/name/metadata after the final verification yield.
       privateReader.read(0, 1);
       closeSource();
