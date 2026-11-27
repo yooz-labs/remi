@@ -121,7 +121,7 @@ struct LocalQuestionNotificationTests {
 
     @Test @MainActor func unavailableLiveStoreRefusesAnAction() async throws {
         let message = try fixture()
-        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: closedLoopbackPort)
         let store = MachineStore(endpoints: [endpoint], identity: ClientIdentity(), clientVersion: "test", clientId: "test")
         let plan = try #require(LocalQuestionNotificationPlan(machineID: endpoint.id, message: message, generation: UUID()))
         #expect(store.localQuestionNotification(for: plan.destination) == nil)
