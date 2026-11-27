@@ -417,10 +417,10 @@ export async function createClaudeSession(
           // its pushed card on every client.
           broadcastQuestionResolved: onQuestionResolved,
           // #1126: how long a binary prompt's hook waits for the phone, and
-          // the registered hook timeout an abort is compared with; a wrapper
-          // session hands an unanswered prompt to its terminal, a daemon or
-          // hub session keeps it for the phone (see hold-policy.ts).
-          holdMs: holdPolicy.holdMs,
+          // the registered hook timeout an abort is compared with; wrapper
+          // structured questions use the long safety cap (#1837). See hold-policy.ts.
+          holdMs: holdPolicy.holdMsFor,
+          terminalPromptMs: holdPolicy.terminalPromptMs,
           hookTimeoutMs: holdPolicy.hookTimeoutMs,
           pushTerminalNotice: (sid, question, reason) =>
             sessionNotifiers.get(sid)?.pushTerminalNotice(sid, question, reason),

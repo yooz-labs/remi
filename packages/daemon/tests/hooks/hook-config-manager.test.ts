@@ -16,7 +16,7 @@ describe('HookConfigManager', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-hook-config-'));
-    manager = new HookConfigManager(tmpDir, hookUrl);
+    manager = new HookConfigManager(tmpDir, hookUrl, { permissionRequestTimeout: 1234 });
   });
 
   afterEach(() => {
@@ -86,12 +86,12 @@ describe('HookConfigManager', () => {
       expect(hooks?.length).toBe(1);
       expect(hooks?.[0]?.type).toBe('http');
       expect(hooks?.[0]?.url).toBe(hookUrl);
-      // PermissionRequest keeps the 600s baseline (#537), above a wrapper
-      // session's hold deadline (#1126); UserPromptSubmit gets an even SHORTER budget than the default (#893) —
+      // PermissionRequest uses the required caller-supplied value;
+      // UserPromptSubmit gets an even SHORTER budget than the default (#893) —
       // its listener is a single array push, so it never needs 5s to fail fast;
       // every other hook keeps the plain fail-fast timeout (#203).
       const expectedTimeout =
-        event === 'PermissionRequest' ? 600 : event === 'UserPromptSubmit' ? 1 : 5;
+        event === 'PermissionRequest' ? 1234 : event === 'UserPromptSubmit' ? 1 : 5;
       expect(hooks?.[0]?.timeout).toBe(expectedTimeout);
     }
   });
@@ -104,7 +104,7 @@ describe('HookConfigManager', () => {
     const permHook = settings.hooks['PermissionRequest']
       ?.find((m) => m.hooks.some((h) => h.url === hookUrl))
       ?.hooks.find((h) => h.url === hookUrl);
-    expect(permHook?.timeout).toBe(600);
+    expect(permHook?.timeout).toBe(1234);
     // A representative non-permission hook keeps the short timeout.
     const stopHook = settings.hooks['Stop']
       ?.find((m) => m.hooks.some((h) => h.url === hookUrl))
@@ -162,7 +162,7 @@ describe('HookConfigManager', () => {
     const permMatchers = settings.hooks['PermissionRequest'];
     const remiHooks = permMatchers?.flatMap((m) => m.hooks.filter((h) => h.url === hookUrl)) ?? [];
     expect(remiHooks.length).toBe(1); // reconciled in place, not duplicated
-    expect(remiHooks[0]?.timeout).toBe(600);
+    expect(remiHooks[0]?.timeout).toBe(1234);
     expect(manager.isInstalled()).toBe(true);
   });
 

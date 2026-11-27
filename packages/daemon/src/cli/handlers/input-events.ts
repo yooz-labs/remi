@@ -96,7 +96,7 @@ export interface InputHandlerDeps {
    * an attach client's Esc key. It dismissed the dialog on screen without a
    * hook, so the session's gate resolves the main agent's prompts waiting in
    * the terminal (`SessionGateHandle.noteTerminalEscape`), which otherwise
-   * keep refusing chat for the rest of the hold length. Wired by
+   * keep refusing chat for the rest of the `hold_seconds` window. Wired by
    * `gateAnswerDeps`. Called only after the write succeeded. Absent => no-op.
    */
   onTerminalEscape?: (sessionId: UUID) => void;
@@ -1414,7 +1414,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         // #1155: a bare Escape dismissed the dialog on screen, and Claude
         // fires no hook for that. Tell the gate, so a main prompt it handed
         // to the terminal stops refusing chat now, not at the end of the
-        // hold length. A longer sequence (an arrow key) is not a dismissal.
+        // `hold_seconds` window. A longer sequence (an arrow key) is not a dismissal.
         if (content === ESC) {
           try {
             onTerminalEscape?.(session.sessionId);

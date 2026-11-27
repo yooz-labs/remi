@@ -137,6 +137,7 @@ for (const scenario of [
         isInSubagentContext: () => bridge.isInSubagentContext(),
         hasLocalTerminal: true,
         holdMs: 60000,
+        terminalPromptMs: 60000,
         escalate: (input) => bridge.handlePermissionRequest(input),
         onHeldEscalate: (id, answerPath) => tracker.pushHeldHook(id, answerPath),
       },

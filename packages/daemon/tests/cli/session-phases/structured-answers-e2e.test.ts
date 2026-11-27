@@ -187,6 +187,7 @@ describe('AskUserQuestion and ExitPlanMode through held hooks, end to end (#1127
         currentPort: () => 0,
         transcriptDiscovery: new TranscriptDiscovery(),
         holdMs: opts.holdMs ?? 60_000,
+        terminalPromptMs: opts.holdMs ?? 60_000,
         hookTimeoutMs: hasLocalTerminal ? 600_000 : 3_600_000,
         pushTerminalNotice: (_sid, question, reason) =>
           notices.push({ questionId: question.id, reason }),

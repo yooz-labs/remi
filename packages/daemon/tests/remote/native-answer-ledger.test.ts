@@ -124,6 +124,7 @@ async function fixture(
       onHeldEscalate: (id, answerPath) => tracker.pushHeldHook(id, answerPath),
       hasLocalTerminal: true,
       holdMs: 60_000,
+      terminalPromptMs: 60_000,
       hookTimeoutMs: 600_000,
     },
     sessionId,

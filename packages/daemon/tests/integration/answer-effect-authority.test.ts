@@ -145,6 +145,7 @@ async function claude(f: Awaited<ReturnType<typeof fixture>>) {
       sessionRegistry: f.registry,
       isInSubagentContext: () => false,
       holdMs: 60000,
+      terminalPromptMs: 60000,
       hasLocalTerminal: true,
       escalate: () => {
         qid = generateId() as UUID;

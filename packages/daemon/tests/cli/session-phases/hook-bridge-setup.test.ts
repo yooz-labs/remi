@@ -414,6 +414,7 @@ describe('setupHookBridge', () => {
         currentPort: () => 8765,
         transcriptDiscovery: new TranscriptDiscovery(),
         holdMs: opts.holdMs ?? 60_000,
+        terminalPromptMs: opts.holdMs ?? 60_000,
         hookTimeoutMs: (opts.hasLocalTerminal ?? true) ? 600_000 : 3_600_000,
         ...(opts.onHarnessDenied ? { onHarnessDenied: opts.onHarnessDenied } : {}),
         ...(opts.pushTurnFailed ? { pushTurnFailed: opts.pushTurnFailed } : {}),
@@ -1905,6 +1906,7 @@ describe('setupHookBridge', () => {
         currentPort: () => 8765,
         transcriptDiscovery: new TranscriptDiscovery(),
         holdMs: 60_000,
+        terminalPromptMs: 60_000,
         hookTimeoutMs: 600_000,
       },
       {
@@ -2007,6 +2009,7 @@ describe('setupHookBridge', () => {
           currentPort: () => 8765,
           transcriptDiscovery: new TranscriptDiscovery(),
           holdMs: 60_000,
+          terminalPromptMs: 60_000,
           hookTimeoutMs: 600_000,
         },
         {

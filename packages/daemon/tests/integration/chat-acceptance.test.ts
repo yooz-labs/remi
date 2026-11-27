@@ -132,6 +132,7 @@ describe('chat acceptance through the hook bridge (#1818)', () => {
         currentPort: () => 8765,
         transcriptDiscovery: new TranscriptDiscovery(),
         holdMs: 60_000,
+        terminalPromptMs: 60_000,
         hookTimeoutMs: 600_000,
         chatAcceptance,
       },

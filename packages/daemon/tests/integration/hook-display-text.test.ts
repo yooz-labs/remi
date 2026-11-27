@@ -297,6 +297,7 @@ describe('Claude hook display escaping (#1189, #1211)', () => {
         isInSubagentContext: () => bridge.isInSubagentContext(),
         hasLocalTerminal: true,
         holdMs: 60_000,
+        terminalPromptMs: 60_000,
         escalate: (input) => bridge.handlePermissionRequest(input),
         onHeldEscalate: (questionId, answerPath) => {
           tracker.pushHeldHook(questionId, answerPath);
