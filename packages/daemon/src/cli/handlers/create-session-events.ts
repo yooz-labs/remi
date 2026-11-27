@@ -25,6 +25,7 @@ import type { HarnessId, SessionProfileRef, SessionWorkspace, UUID } from '@remi
 
 import type { HarnessRegistry, StartedSession } from '../../harness/registry.ts';
 import type { Profiles } from '../../profiles/profile-config.ts';
+import type { ProfilePolicySnapshot, ProfileSidecar } from '../../profiles/session-owner.ts';
 import { deviceDefault, isProfileHidden, isProfileSelectable } from '../../profiles/visibility.ts';
 import type { CreateSessionExtra } from '../../server/client-message-events.ts';
 import type { SessionRegistryFile } from '../../session/index.ts';
@@ -68,6 +69,7 @@ export type StartSessionOutcome =
 export type StartChildSession = (
   directory: string | undefined,
   extra?: CreateSessionExtra,
+  policy?: ProfilePolicySnapshot,
 ) => Promise<StartSessionOutcome>;
 
 /** What a requester is told when the child could not be started: the cause is in the host's log (G8). */
@@ -227,10 +229,13 @@ export interface CreateSessionHandlerDeps {
    */
   inheritedArgs: () => readonly string[];
   profiles?: () => Profiles;
+  sidecar?: () => ProfileSidecar;
   remiProfileEnv?: string | undefined;
   resumeOwner?: (
     harness: HarnessId,
     resumeId: string,
+    sidecar: ProfileSidecar,
+    profiles: Profiles,
   ) => { record: boolean; profile?: string | undefined; hidden?: boolean } | null;
   send: SendToConnection;
   /** Best-effort history, installed only in hub mode (#1284); successful spawns only. */
@@ -291,7 +296,7 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
    * resume through a hub, #1129). Never throws: a failure is a refusal with the generic text, and
    * the host's log has the cause.
    */
-  const startSession: StartChildSession = async (directory, extra) => {
+  const startSession: StartChildSession = async (directory, extra, policy) => {
     // A worktree made for this request, so a failed spawn can say where it was left.
     let made: SessionWorkspace | undefined;
     try {
@@ -315,13 +320,16 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
         );
         return { ok: false, error: request.error };
       }
-      const profiles = deps.profiles?.() ?? { entries: {}, notices: [] };
+      const profiles = policy?.profiles ?? deps.profiles?.() ?? { entries: {}, notices: [] };
+      const sidecar = policy?.sidecar ?? deps.sidecar?.() ?? { ok: false as const };
       const owner =
         request.resumeId === null
           ? null
           : (deps.resumeOwner?.(
               isHarnessId(extra?.harness) ? extra.harness : 'claude',
               request.resumeId,
+              sidecar,
+              profiles,
             ) ?? null);
       if ('error' in profiles && owner === null)
         return {

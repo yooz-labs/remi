@@ -355,9 +355,11 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
       error: CHILD_START_FAILED_TEXT,
     };
     try {
-      outcome = await startChild(target.workingDirectory, {
-        args: harness.resumeArgs(target.claudeSessionId),
-      });
+      outcome = await startChild(
+        target.workingDirectory,
+        { args: harness.resumeArgs(target.claudeSessionId) },
+        { sidecar, profiles },
+      );
     } catch (error) {
       // `startSession` does not throw; a caller that does is answered the way it would have been.
       logError(

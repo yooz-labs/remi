@@ -2790,8 +2790,9 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
   portRange: remiConfig.daemon.port_range,
   bindHost,
   profiles: currentProfilesStrict,
+  sidecar: remoteProfileSidecar,
   remiProfileEnv,
-  resumeOwner: (harness, id) => {
+  resumeOwner: (harness, id, sidecar, profiles) => {
     const record =
       harness === 'claude'
         ? sessionStore.findResumableByClaudeSessionId(id)
@@ -2806,7 +2807,7 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
         ? { transcriptProfile: transcriptDiscovery.profileOfTranscript(id) }
         : null);
     if (input) {
-      const owner = sessionProfileOwner(input, remoteProfileSidecar(), currentProfilesStrict());
+      const owner = sessionProfileOwner(input, sidecar, profiles);
       return {
         record: !!record,
         ...(owner.owner === 'hidden'
@@ -2863,7 +2864,7 @@ const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers
   // session daemon with `--resume` through the create-session path (#1129). Every other process
   // resumes in its own.
   childSessions: serveMode
-    ? (directory, extra) => createSessionHandlers_.startSession(directory, extra)
+    ? (directory, extra, policy) => createSessionHandlers_.startSession(directory, extra, policy)
     : null,
   harnessId,
   harnesses: () => harnessRegistry.available(),

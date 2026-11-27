@@ -14,6 +14,12 @@ export type ProfileSidecarResult =
 
 export type ProfileSidecar = ProfileSidecarResult | { read(): ProfileSidecarResult };
 
+/** One request's view of remote profile policy and ownership evidence. */
+export interface ProfilePolicySnapshot {
+  readonly profiles: Profiles;
+  readonly sidecar: ProfileSidecar;
+}
+
 /** Lazily take one consistent snapshot. No-table bare records never read the sidecar. */
 export class ProfileSidecarSnapshot {
   private cached: ProfileSidecarResult | undefined;
