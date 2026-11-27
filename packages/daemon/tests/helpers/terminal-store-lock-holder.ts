@@ -2,12 +2,12 @@
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import { withInterprocessFileLockNonblocking } from '../../src/storage/interprocess-file-lock.ts';
+import { publishReadyFile } from './publish-ready-file.ts';
 export function runTerminalStoreLockHolder(args: readonly string[]) {
   const [file, prefix] = args;
   assert(file && prefix);
   withInterprocessFileLockNonblocking(file, () => {
-    fs.writeFileSync(`${prefix}.ready.tmp`, JSON.stringify({ pid: process.pid }), { mode: 0o600 });
-    fs.renameSync(`${prefix}.ready.tmp`, `${prefix}.ready`);
+    publishReadyFile(`${prefix}.ready`, { pid: process.pid });
     const end = performance.now() + 10000;
     while (!fs.existsSync(`${prefix}.go`)) {
       assert(performance.now() < end, 'owned actual store lock release deadline');
