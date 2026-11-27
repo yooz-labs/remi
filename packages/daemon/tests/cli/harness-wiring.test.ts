@@ -43,8 +43,9 @@ describe('cli.ts passes the harness to its handlers (#1179)', () => {
     const start = cli.indexOf('let sharedEvents = {');
     expect(start, 'the shared event object exists').toBeGreaterThan(-1);
     const block = cli.slice(start, cli.indexOf('\n};', start));
+    // #1749: the handler runs inside the per-request remote-policy scope (RemotePolicyScope).
     expect(block).toContain(
-      'onCreateSessionRequest: createSessionHandlers_.onCreateSessionRequest,',
+      'onCreateSessionRequest: inPolicyScope(createSessionHandlers_.onCreateSessionRequest),',
     );
     expect(block).not.toContain('...createSessionHandlers_');
   });
