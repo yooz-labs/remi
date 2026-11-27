@@ -176,6 +176,9 @@ struct MacSessionDetail: View {
                         onFollow: { scrollToLatest(using: proxy) }))
                     // Do not let the saved top row compete with a jump to the tail (#1824).
                     .scrollPosition(id: followsLatest ? .constant(nil) : $visibleEntryID, anchor: .top)
+                    .onChange(of: followsLatest, initial: true) { _, following in
+                        if following { visibleEntryID = nil }
+                    }
                     .onAppear {
                         focusQuestion(using: proxy)
                         scrollToLatest(using: proxy)

@@ -256,6 +256,9 @@ struct SessionScreen: View {
                         onFollow: { scrollToLatest(using: proxy) }))
                     // Do not let the saved top row compete with a jump to the tail (#1824).
                     .scrollPosition(id: followsLatest ? .constant(nil) : $visibleEntryID, anchor: .top)
+                    .onChange(of: followsLatest, initial: true) { _, following in
+                        if following { visibleEntryID = nil }
+                    }
                     // A tap on the transcript puts the composer's keyboard away; the draft stays.
                     // It asks the composer to let go, so a tap that lands on another text field
                     // (a question's free-text answer) does not fight that field for focus.
