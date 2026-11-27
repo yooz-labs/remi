@@ -33,7 +33,8 @@ export async function runLegacyTerminalReservationChild(args: readonly string[])
   const old = LegacyReservations.open(home);
   const model = old.reserveModel(randomUUID());
   old.reserveView(model, randomBytes(32).toString('hex'), randomUUID());
-  fs.writeFileSync(`${prefix}.ready`, JSON.stringify({ pid: process.pid }), { mode: 0o600 });
+  fs.writeFileSync(`${prefix}.ready.tmp`, JSON.stringify({ pid: process.pid }), { mode: 0o600 });
+  fs.renameSync(`${prefix}.ready.tmp`, `${prefix}.ready`);
   await until(() => fs.existsSync(`${prefix}.go`));
   // Deliberately exit without release: only proved process death permits the migration.
 }
