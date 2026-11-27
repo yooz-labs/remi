@@ -6,6 +6,7 @@ import { IdentityStore } from '../../packages/daemon/src/auth/identity-store.ts'
 import { HubRelay } from '../../packages/daemon/src/remote/hub-relay.ts';
 import { RelayDeviceStore } from '../../packages/daemon/src/remote/relay-device-store.ts';
 import { SessionRegistryFile } from '../../packages/daemon/src/session/session-registry-file.ts';
+import { noProfilesRelayPolicy } from '../../packages/daemon/tests/helpers/no-profiles-policy.ts';
 import { createIdentity, unlockIdentity } from '../../packages/shared/src/index.ts';
 import { startWorker } from '../../packages/signaling/tests/e2e/harness.ts';
 async function until(check: () => boolean) {
@@ -75,6 +76,7 @@ test('completed edge revoke is not undone by startup enrollment snapshot', async
       trust,
       dir,
       registry: new SessionRegistryFile(join(dir, 'live')),
+      remotePolicy: noProfilesRelayPolicy(dir),
     });
     const notices: { t: string; success?: boolean; edgeAcknowledged?: boolean }[] = [];
     relay.open('owned', (text) => notices.push(JSON.parse(text)));

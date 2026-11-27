@@ -13,6 +13,7 @@ import { IdentityStore } from '../../../../daemon/src/auth/identity-store';
 import { HubRelay } from '../../../../daemon/src/remote/hub-relay';
 import { RelayDeviceStore } from '../../../../daemon/src/remote/relay-device-store';
 import { SessionRegistryFile } from '../../../../daemon/src/session/session-registry-file';
+import { noProfilesRelayPolicy } from '../../../../daemon/tests/helpers/no-profiles-policy';
 import { decodeHello } from '../../../../shared/src/relay/envelope';
 import { startWorker } from '../../../../signaling/tests/e2e/harness';
 
@@ -38,6 +39,7 @@ const relay = new HubRelay(
     trust,
     dir: directory,
     registry: new SessionRegistryFile(join(directory, 'live')),
+    remotePolicy: noProfilesRelayPolicy(directory),
     log: (message) => {
       if (message === 'Relay control admitted') admissions++;
     },

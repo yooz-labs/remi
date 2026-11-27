@@ -98,6 +98,9 @@ const { Socket, admit, clientUrl } = await import(
   '../../packages/signaling/tests/e2e/endpoints.ts'
 );
 const { HubRelay } = await import('../../packages/daemon/src/remote/hub-relay.ts');
+const { noProfilesRelayPolicy } = await import(
+  '../../packages/daemon/tests/helpers/no-profiles-policy.ts'
+);
 const { SessionRegistryFile } = await import(
   '../../packages/daemon/src/session/session-registry-file.ts'
 );
@@ -306,6 +309,7 @@ try {
     trust,
     dir: state,
     registry: new SessionRegistryFile(path.join(state, 'live-sessions')),
+    remotePolicy: noProfilesRelayPolicy(state),
     log: (message) => {
       if (message === 'Relay control admitted') admitted = true;
     },
