@@ -6,6 +6,9 @@
  * not (an older client, or an older hub's proxy, which carries nothing) gets nothing.
  */
 import { expect, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   CHAT_ACCEPTANCE_CAPABILITY,
   createHello,
@@ -15,6 +18,9 @@ import {
   unlockIdentity,
 } from '@remi/shared';
 import { ChatAcceptanceTracker } from '../../src/cli/handlers/chat-acceptance.ts';
+import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
+import { ChildProxy, childHello } from '../../src/remote/child-proxy.ts';
+import { SessionRegistryFile } from '../../src/session/session-registry-file.ts';
 import { relayBrowserFixture } from '../helpers/browser-link-service-fixture.ts';
 
 test('only the relay peer whose hello lists chat_acceptance gets a result, through the child proxy', async () => {
@@ -67,6 +73,8 @@ test('only the relay peer whose hello lists chat_acceptance gets a result, throu
 }, 30000);
 
 test('a verified child frame of an unregistered type is dropped; a malformed registered frame still closes the child', async () => {
+  const lines: string[] = [];
+  configureLogger({ writeLog: (line) => lines.push(line) });
   const f = await relayBrowserFixture();
   try {
     const peer = await f.connect();
@@ -83,15 +91,27 @@ test('a verified child frame of an unregistered type is dropped; a malformed reg
       return true;
     };
 
-    // A future message type from a newer child: one line in the log, the channel stays up.
+    // A future message type from a newer child: the channel stays up and the log gets one line
+    // per (child, type), however often it repeats.
     expect(
       send({ type: 'a_future_message', id: generateId(), timestamp: new Date().toISOString() }),
     ).toBe(true);
+    const future = (type: string) => ({
+      type,
+      id: generateId(),
+      timestamp: new Date().toISOString(),
+    });
+    for (let n = 0; n < 5; n++) send(future('a_future_message'));
+    send(future('another_future_message'));
     const result = createUserInputResult(f.sessionId, generateId());
     expect(send(result)).toBe(true);
     expect(await peer.next()).toMatchObject({ type: 'user_input_result', id: result.id });
     expect(peer.socket.isClosed).toBe(false);
     expect(f.relay.connectionCount).toBe(1);
+    const dropped = lines.filter((line) => line.includes('dropped child frames of unknown type'));
+    expect(dropped).toHaveLength(2);
+    expect(dropped.some((line) => line.includes('a_future_message'))).toBe(true);
+    expect(dropped.some((line) => line.includes('another_future_message'))).toBe(true);
 
     // A registered family frame the strict codec refuses is not dropped: the child is closed.
     send({
@@ -103,6 +123,37 @@ test('a verified child frame of an unregistered type is dropped; a malformed reg
     const closed = await peer.next();
     expect(closed).toMatchObject({ type: 'error', code: 'SESSION_NOT_FOUND' });
   } finally {
+    __resetLoggerForTests();
     await f.close();
   }
 }, 30000);
+
+test('the hub bounds the client capabilities it forwards to a child (#1818)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'remi-child-proxy-caps-'));
+  try {
+    const proxy = new ChildProxy(
+      new SessionRegistryFile(join(dir, 'live')),
+      'device',
+      () => {},
+      () => {},
+      () => true,
+    );
+    const messy = [...Array.from({ length: 20 }, (_, n) => `cap_${n}`), 7, null, 'x'.repeat(65)];
+    const hello = {
+      ...createHello('owned', 'T4', { resumeSessionId: 'session-1' }),
+      clientCapabilities: messy as never,
+    };
+    // No live child exists, so the send is refused; what the proxy kept for its children is the point.
+    await proxy.send('session-1', hello).catch(() => undefined);
+    // Exactly 16 strings, none long, none non-string: the first 16 names, in order.
+    expect(proxy.forwardedClientCapabilities).toEqual(
+      Array.from({ length: 16 }, (_, n) => `cap_${n}`),
+    );
+    const built = childHello('device', 'session-1', proxy.forwardedClientCapabilities);
+    expect(built.clientCapabilities).toHaveLength(16);
+    // A client that asked for nothing leaves the field out, as an older hub's hello does.
+    expect('clientCapabilities' in childHello('device', 'session-1', [])).toBe(false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

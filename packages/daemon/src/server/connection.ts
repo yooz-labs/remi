@@ -37,6 +37,7 @@ import {
   isStructuredChatCandidate,
   isTerminalViewCandidate,
   now,
+  sanitizeClientCapabilities,
   serialize,
 } from '@remi/shared';
 import type {
@@ -894,11 +895,7 @@ export class Connection {
     this.resumeSessionId = message.resumeSessionId ?? null;
     this._mode = message.mode === 'query' ? 'query' : undefined;
     this.deviceId = message.deviceId ?? null;
-    this.clientCapabilities = Array.isArray(message.clientCapabilities)
-      ? message.clientCapabilities
-          .filter((name): name is string => typeof name === 'string' && name.length <= 64)
-          .slice(0, 16)
-      : [];
+    this.clientCapabilities = sanitizeClientCapabilities(message.clientCapabilities);
     this.state = 'connected';
 
     // Send hello ack (unless skipHelloAck is set, which lets daemon handle it)

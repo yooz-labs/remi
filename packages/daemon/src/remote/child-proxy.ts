@@ -13,6 +13,7 @@ import {
   deserialize,
   hasUniqueRootType,
   relayV2,
+  sanitizeClientCapabilities,
   serialize,
 } from '@remi/shared';
 import {
@@ -23,6 +24,26 @@ import { resolveDaemonWsTarget } from '../cli/daemon-target.ts';
 import { log } from '../cli/logger.ts';
 import type { SecurePushAuthority } from '../notifications/secure-push-store';
 import type { SessionRegistryFile } from '../session/session-registry-file.ts';
+
+/** At most this many distinct (child, type) pairs are ever logged per proxy. */
+const MAX_LOGGED_UNKNOWN_TYPES = 32;
+
+/**
+ * The hello this proxy makes for a child: its own device identity and the session to resume, and
+ * the end client's `clientCapabilities` (already bounded) when it asked for any (#1818). The
+ * child's hello is made here, never forwarded, so this is the only place the list can travel.
+ */
+export function childHello(
+  deviceId: string,
+  sessionId: string,
+  clientCapabilities: readonly string[],
+) {
+  return createHello(deviceId, '2.0.0', {
+    resumeSessionId: sessionId,
+    deviceId,
+    ...(clientCapabilities.length > 0 && { clientCapabilities }),
+  });
+}
 
 /** The root `type` of a frame this build does not register, or null (registered, malformed or not an object). */
 function unregisteredType(data: string): string | null {
@@ -57,7 +78,13 @@ export class ChildProxy {
    * here, not forwarded, so the list is carried explicitly; an older hub does not, so its children
    * never send the opt-in messages it cannot decode.
    */
-  private clientCapabilities: readonly string[] | undefined;
+  private clientCapabilities: readonly string[] = [];
+  /** What this proxy will put in the hello of every child it opens for its end client (#1818). */
+  get forwardedClientCapabilities(): readonly string[] {
+    return this.clientCapabilities;
+  }
+  /** `child:type` pairs already logged as dropped, so one noisy child cannot flood the log. */
+  private readonly loggedUnknownTypes = new Set<string>();
   /** A consumed child sequence must never move to a replacement socket on this channel. */
   private retireStateOwner(sessionId: string, ws?: WebSocket): boolean {
     const child = this.children.get(sessionId);
@@ -193,7 +220,9 @@ export class ChildProxy {
     private readonly localHome?: string,
   ) {}
   async send(sessionId: string, message: ProtocolMessage): Promise<void> {
-    if (message.type === 'hello') this.clientCapabilities = message.clientCapabilities;
+    // The peer's own list is untrusted input: bound it before it is stored, as the child will.
+    if (message.type === 'hello')
+      this.clientCapabilities = sanitizeClientCapabilities(message.clientCapabilities);
     return this.sendToChild(sessionId, { kind: 'message', message });
   }
   /** Original units only; the strict child service owns syntax and all transfer effects. */
@@ -257,15 +286,7 @@ export class ChildProxy {
             ws.close();
             return;
           }
-          ws.send(
-            serialize(
-              createHello(this.deviceId, '2.0.0', {
-                resumeSessionId: sessionId,
-                deviceId: this.deviceId,
-                ...(this.clientCapabilities && { clientCapabilities: this.clientCapabilities }),
-              }),
-            ),
-          );
+          ws.send(serialize(childHello(this.deviceId, sessionId, this.clientCapabilities)));
         };
         ws.onmessage = (event) => {
           if (
@@ -288,7 +309,16 @@ export class ChildProxy {
           if (!incoming && verified && typeof event.data === 'string') {
             const unknownType = unregisteredType(event.data);
             if (unknownType !== null) {
-              log(`[ChildProxy] dropped a child frame of unknown type ${unknownType.slice(0, 64)}`);
+              const logKey = `${sessionId}:${unknownType.slice(0, 64)}`;
+              if (
+                !this.loggedUnknownTypes.has(logKey) &&
+                this.loggedUnknownTypes.size < MAX_LOGGED_UNKNOWN_TYPES
+              ) {
+                this.loggedUnknownTypes.add(logKey);
+                log(
+                  `[ChildProxy] dropped child frames of unknown type ${unknownType.slice(0, 64)} (logged once)`,
+                );
+              }
               return;
             }
           }

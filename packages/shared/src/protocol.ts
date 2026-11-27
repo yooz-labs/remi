@@ -1821,6 +1821,26 @@ export function isValidMessage(value: unknown): value is ProtocolMessage {
   return VALID_TYPES.has(obj['type']);
 }
 
+/** The most `clientCapabilities` a hello may carry, and the longest name (#1818). */
+export const MAX_CLIENT_CAPABILITIES = 16;
+export const MAX_CLIENT_CAPABILITY_LENGTH = 64;
+
+/**
+ * The part of a hello's `clientCapabilities` a daemon or hub may act on: strings of at most
+ * {@link MAX_CLIENT_CAPABILITY_LENGTH} characters, the first {@link MAX_CLIENT_CAPABILITIES} of
+ * them. Anything else (not an array, non-strings, long names, the surplus) is dropped. One
+ * implementation, so the hub that forwards the list and the daemon that reads it agree.
+ */
+export function sanitizeClientCapabilities(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(
+      (name): name is string =>
+        typeof name === 'string' && name.length <= MAX_CLIENT_CAPABILITY_LENGTH,
+    )
+    .slice(0, MAX_CLIENT_CAPABILITIES);
+}
+
 /** Optional fields for {@link createHello}. */
 export interface CreateHelloOptions {
   /** Working directory for the Claude Code session. */

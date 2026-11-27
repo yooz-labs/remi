@@ -673,6 +673,28 @@ describe('WebSocketServer', () => {
       await server.stop();
     });
 
+    test('a hello with more than 16 clientCapabilities keeps exactly the first 16 strings (#1818)', async () => {
+      const receivedPromise = new Promise<readonly string[]>((resolve) => {
+        server = new WebSocketServer(
+          { port: testPort + 24 },
+          { onClientConnect: (connection) => resolve(connection.connectionClientCapabilities) },
+        );
+      });
+      await server.start();
+      const ws = new WebSocket(`ws://localhost:${testPort + 24}/ws`);
+      ws.onopen = () => {
+        const names = Array.from({ length: 20 }, (_, n) => `cap_${n}`);
+        // A non-string entry among them is dropped, not counted.
+        const hello = createHello('test-client' as UUID, '1.0.0', {
+          clientCapabilities: [names[0] as string, null as never, ...names.slice(1)],
+        });
+        ws.send(serialize(hello));
+      };
+      expect(await receivedPromise).toEqual(Array.from({ length: 16 }, (_, n) => `cap_${n}`));
+      ws.close();
+      await server.stop();
+    });
+
     test('an older hello without clientCapabilities lists none (#1818)', async () => {
       const receivedPromise = new Promise<readonly string[]>((resolve) => {
         server = new WebSocketServer(
