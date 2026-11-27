@@ -179,7 +179,10 @@ export function buildSessionList(deps: SessionListDeps, includeExternal: boolean
 /**
  * The live ports a device may be told about (design item 7): every live session's port, minus
  * those whose record resolves to a hidden owner. A record lookup that throws drops the port
- * (fail closed). Reads the policy once for the whole census.
+ * (fail closed). While at least one profile is configured, or the configuration is in error, a
+ * live entry with no record yet is dropped too: a child registers live before it writes its
+ * record, so its owner is not known yet (PR 1828 round 1, L3). With no `[profiles]` table such an
+ * entry is listed, as before. Reads the policy once for the whole census.
  */
 export function visibleLivePorts(deps: {
   readonly listLive: () => readonly { readonly sessionId: string; readonly wsPort: number }[];
@@ -189,6 +192,7 @@ export function visibleLivePorts(deps: {
 }): number[] {
   const profiles = deps.profiles();
   const sidecar = deps.sidecar();
+  const ownerUnknownHides = profilesInUse(profiles);
   return [
     ...new Set(
       deps
@@ -196,10 +200,8 @@ export function visibleLivePorts(deps: {
         .filter((entry) => {
           try {
             const record = deps.profileOfSession(entry.sessionId as UUID);
-            return (
-              sessionProfileOwner(record ?? { transcriptProfile: undefined }, sidecar, profiles)
-                .owner !== 'hidden'
-            );
+            if (record === null) return !ownerUnknownHides;
+            return sessionProfileOwner(record, sidecar, profiles).owner !== 'hidden';
           } catch {
             return false;
           }
@@ -207,4 +209,9 @@ export function visibleLivePorts(deps: {
         .map((entry) => entry.wsPort),
     ),
   ];
+}
+
+/** At least one configured profile, or a configuration in error: remote policy is in force. */
+export function profilesInUse(profiles: Profiles): boolean {
+  return 'error' in profiles || Object.keys(profiles.entries).length > 0;
 }

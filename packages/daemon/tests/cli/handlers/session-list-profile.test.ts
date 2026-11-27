@@ -4,7 +4,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { SessionProfileRef } from '@remi/shared';
 import type { MessageAPI } from '../../../src/api/message-api.ts';
-import { buildSessionList } from '../../../src/cli/handlers/session-list-entries.ts';
+import {
+  buildSessionList,
+  visibleLivePorts,
+} from '../../../src/cli/handlers/session-list-entries.ts';
 import { ClaudeHarness } from '../../../src/harness/index.ts';
 import { type Profiles, parseProfiles } from '../../../src/profiles/profile-config.ts';
 import { readProfileSidecar } from '../../../src/profiles/session-owner.ts';
@@ -12,6 +15,7 @@ import { visibleProfileRoots } from '../../../src/profiles/visibility.ts';
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionBindingStore } from '../../../src/session/session-binding-store.ts';
 import { SessionProfilesFile } from '../../../src/session/session-profiles-file.ts';
+import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../../src/transcript/transcript-discovery.ts';
@@ -155,6 +159,63 @@ test('hidden transcript roots are excluded before the discovery cap', async () =
       expect(entry.profile).toEqual({ id: 'work', label: 'Work', state: 'current' });
   } finally {
     await registry.shutdown();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a live session with no record yet is left out of the ports while profiles are in use', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'p2b-live-ports-'));
+  try {
+    const profiles = parseProfiles({
+      work: { label: 'Work', remote_selectable: true, claude: { expects: 'subscription' } },
+    });
+    if ('error' in profiles) throw new Error(profiles.error);
+    const revision = profiles.entries['work']?.revision ?? '';
+    const store = new SessionStore(path.join(root, 'sessions.json'));
+    const live = new SessionRegistryFile(path.join(root, 'live'));
+    const register = (sessionId: string, wsPort: number) =>
+      live.register({
+        sessionId,
+        pid: process.pid,
+        wsPort,
+        hookPort: wsPort + 1,
+        projectPath: root,
+        name: `s${wsPort}`,
+        startedAt: new Date().toISOString(),
+      });
+    // A child that registered live and has not written its record yet.
+    register(crypto.randomUUID(), 19410);
+    // A visible session with its record: the positive control.
+    const recorded = crypto.randomUUID();
+    register(recorded, 19420);
+    store.save(
+      {
+        remiSessionId: recorded,
+        claudeSessionId: null,
+        projectPath: root,
+        port: 19420,
+        pid: null,
+        startedAt: new Date().toISOString(),
+        exitedAt: null,
+        exitCode: null,
+        profile: 'work',
+        profileSnapshot: { revision },
+      },
+      { profile: 'work', revision },
+    );
+    const ports = (policy: Profiles) =>
+      visibleLivePorts({
+        listLive: () => live.listLive(),
+        profileOfSession: (id) => store.findByRemiSessionId(id),
+        profiles: () => policy,
+        sidecar: () => readProfileSidecar(new SessionProfilesFile(root)),
+      }).sort();
+    expect(ports(profiles)).toEqual([19420]);
+    expect(ports({ error: 'Could not read or parse configuration' })).toEqual([]);
+    // No [profiles] table: the record-less entry is listed, as before profiles (and the work
+    // record, whose profile is no longer configured, is hidden: L1).
+    expect(ports({ entries: {}, notices: [] })).toEqual([19410]);
+  } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
