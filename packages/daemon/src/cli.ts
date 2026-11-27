@@ -217,6 +217,7 @@ import { causeOfSessionClose, createQuestionResolver } from './cli/question-reso
 import { makeResumeProfileOf } from './cli/resume-profile-of.ts';
 import { disposeAndDismiss } from './cli/session-close.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
+import { probeDaemonSessionPort, probeWrapperSessionPort } from './cli/session-port-probes.ts';
 import { StatusBar, childRows } from './cli/status-bar.ts';
 import { installStatusLineForLaunch } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
@@ -311,7 +312,6 @@ import {
   storedHarness,
 } from './session/index.ts';
 import { findLegacyWriters, readStatusFiles } from './session/legacy-writers.ts';
-import { findAvailableTcpPort } from './session/port-utils.ts';
 import { traceQuestionEvent } from './session/question-trace.ts';
 import { InterprocessFileLockError } from './storage/interprocess-file-lock.ts';
 import { TerminalCaptureHost } from './terminal/capture-host.ts';
@@ -3689,8 +3689,14 @@ if (cliDaemonMode) {
   // Phase 2: Probe for available WebSocket port, then start
   if (!portExplicitlySet) {
     const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
-    if (!serveMode) liveUsed.add(remiConfig.daemon.base_port);
-    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed, bindHost);
+    const probed = await probeDaemonSessionPort(
+      PORT,
+      DEFAULT_PORT_RANGE,
+      liveUsed,
+      bindHost,
+      remiConfig.daemon.base_port,
+      serveMode,
+    );
     if (probed === null) {
       console.error(
         `All remi ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
@@ -4051,8 +4057,13 @@ if (cliDaemonMode) {
   let wsProbeSucceeded = true;
   if (!portExplicitlySet) {
     const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
-    liveUsed.add(remiConfig.daemon.base_port);
-    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed, bindHost);
+    const probed = await probeWrapperSessionPort(
+      PORT,
+      DEFAULT_PORT_RANGE,
+      liveUsed,
+      bindHost,
+      remiConfig.daemon.base_port,
+    );
     if (probed !== null && probed !== PORT) {
       const occupiedPort = PORT;
       try {

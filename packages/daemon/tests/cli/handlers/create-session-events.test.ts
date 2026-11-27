@@ -289,7 +289,7 @@ describe('createCreateSessionHandlers', () => {
 
   test('concurrent starts reserve distinct ports after real probes (#1213 controlled schedule)', async () => {
     const bindHost = DEFAULT_CONFIG.daemon.bind;
-    const basePort = await reserveRange(2, 50, bindHost);
+    const basePort = await reserveRange(3, 50, bindHost);
     const firstProbeFinished = deferred();
     let probeCalls = 0;
     const delayedRealProbe: PortFinder = async (base, range, used, host) => {
@@ -306,7 +306,7 @@ describe('createCreateSessionHandlers', () => {
       return actualPortProbe(base, range, used, host);
     };
     const reservedPorts: number[] = [];
-    const handlers = makeHandler(basePort, 2, recordingStarter(reservedPorts), delayedRealProbe);
+    const handlers = makeHandler(basePort, 3, recordingStarter(reservedPorts), delayedRealProbe);
 
     const outcomes = await Promise.all([
       handlers.startSession(tmpDir),
@@ -314,9 +314,17 @@ describe('createCreateSessionHandlers', () => {
     ]);
 
     expect(outcomes.map((outcome) => outcome.ok)).toEqual([true, true]);
-    // Without the selector queue, both live-port snapshots can choose basePort after this delay.
-    expect(reservedPorts).toEqual([basePort, basePort + 1]);
+    // The configured base belongs to the hub, and the queue keeps the two children distinct.
+    expect(reservedPorts).toEqual([basePort + 1, basePort + 2]);
     expect(spawningPorts.size).toBe(0);
+  });
+
+  test('child allocation reserves the configured hub base', async () => {
+    const base = await reserveRange(3, 50, DEFAULT_CONFIG.daemon.bind);
+    const ports: number[] = [];
+    const handlers = makeHandler(base, 3, recordingStarter(ports));
+    expect((await handlers.startSession(tmpDir)).ok).toBe(true);
+    expect(ports).toEqual([base + 1]);
   });
 
   test('null and thrown real probes release the selector (#1213)', async () => {
@@ -354,16 +362,16 @@ describe('createCreateSessionHandlers', () => {
       }),
     ]);
     expect(outcome.ok).toBe(true);
-    expect(reservedPorts).toEqual([basePort]);
+    expect(reservedPorts).toEqual([basePort + 1]);
   });
 
   test('port selection releases before a slow child start (#1213)', async () => {
-    const basePort = await reserveRange(2, 50, DEFAULT_CONFIG.daemon.bind);
+    const basePort = await reserveRange(3, 50, DEFAULT_CONFIG.daemon.bind);
     const firstEntered = deferred();
     const secondEntered = deferred();
     const firstSpawnGate = deferred();
     const reservedPorts: number[] = [];
-    const handlers = makeHandler(basePort, 2, async (port) => {
+    const handlers = makeHandler(basePort, 3, async (port) => {
       reservedPorts.push(port);
       if (reservedPorts.length === 1) {
         firstEntered.resolve();
@@ -398,6 +406,6 @@ describe('createCreateSessionHandlers', () => {
     expect(
       await Promise.all(starts).then((outcomes) => outcomes.map((outcome) => outcome.ok)),
     ).toEqual([true, true]);
-    expect(reservedPorts).toEqual([basePort, basePort + 1]);
+    expect(reservedPorts).toEqual([basePort + 1, basePort + 2]);
   });
 });

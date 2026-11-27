@@ -330,6 +330,23 @@ test('port probing skips a reserved candidate without changing the range', async
   );
 }, 10_000);
 
+test('initial session probe reserves the configured hub base', async () => {
+  const f = await setup('off');
+  const run = launch(f);
+  await pollUntil(
+    () => {
+      if (run.proc.exitCode !== null)
+        throw new Error(`Session exited before agent: ${run.output.text}`);
+      return fs.existsSync(path.join(f.agents.claudeDir, 'argv'));
+    },
+    15_000,
+    'session agent',
+  );
+  const registry = new SessionRegistryFile(path.join(f.home, '.remi', 'live-sessions'));
+  expect(registry.listLive().map((entry) => entry.wsPort)).toEqual([f.port + 1]);
+  expect(run.output.text).not.toContain('is reserved for the remi hub');
+}, 20_000);
+
 test('an existing hub is reused by the next local session', async () => {
   const f = await setup();
   const first = launch(f);
