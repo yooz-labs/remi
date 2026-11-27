@@ -254,7 +254,8 @@ struct SessionScreen: View {
                     .modifier(RemiTranscriptScrollBehavior(followsLatest: $followsLatest, atLatest: $atLatest,
                         isReviewing: isSearchPresented || focusedQuestionID != nil,
                         onFollow: { scrollToLatest(using: proxy) }))
-                    .scrollPosition(id: $visibleEntryID, anchor: .top)
+                    // Do not let the saved top row compete with a jump to the tail (#1824).
+                    .scrollPosition(id: followsLatest ? .constant(nil) : $visibleEntryID, anchor: .top)
                     // A tap on the transcript puts the composer's keyboard away; the draft stays.
                     // It asks the composer to let go, so a tap that lands on another text field
                     // (a question's free-text answer) does not fight that field for focus.
