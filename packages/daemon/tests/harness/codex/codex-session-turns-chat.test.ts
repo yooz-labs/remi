@@ -45,6 +45,7 @@ import {
   userMessageItem,
 } from '../../helpers/codex-threads.ts';
 import { FakeAppServer } from '../../helpers/fake-app-server.ts';
+import { noHiddenOwner } from '../../helpers/no-profiles-policy.ts';
 
 /** A fake `codex` that just waits to be released (it types nothing and reads nothing here). */
 const FAKE_CODEX = `#!/bin/sh
@@ -609,6 +610,7 @@ describe('a Codex session: turn events and chat', () => {
       const transcriptIndex = new TranscriptIndex(path.join(tmpDir, 'handler-index.json'));
       const discovery = new TranscriptDiscovery({ projectsDir: path.join(tmpDir, 'projects') });
       const handlers = createTranscriptHandlers({
+        isHiddenOwner: noHiddenOwner,
         transcriptDiscovery: discovery,
         harness: new ClaudeHarness(discovery),
         transcriptWatchers: new Map(),

@@ -20,6 +20,7 @@ import { validateClaudeRemoteArgs } from '../../../src/harness/claude-args.ts';
 import { HarnessRegistry } from '../../../src/harness/registry.ts';
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
 import { RecentRepositoryStore } from '../../../src/workspace/recent-store.ts';
+import { emptySidecar, noProfiles, noResumeOwner } from '../../helpers/no-profiles-policy.ts';
 
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
@@ -83,6 +84,9 @@ describe('create requests with a workspace (#1236)', () => {
 
   const handlers = () =>
     createCreateSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      resumeOwner: noResumeOwner,
       harnesses: new HarnessRegistry({
         claude: { command: 'claude', validateRemoteArgs: validateClaudeRemoteArgs },
       }),

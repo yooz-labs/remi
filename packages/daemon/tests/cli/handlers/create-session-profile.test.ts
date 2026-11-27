@@ -7,6 +7,7 @@ import { validateClaudeRemoteArgs } from '../../../src/harness/claude-args.ts';
 import { HarnessRegistry } from '../../../src/harness/registry.ts';
 import { parseProfiles } from '../../../src/profiles/profile-config.ts';
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
+import { emptySidecar, noResumeOwner } from '../../helpers/no-profiles-policy.ts';
 
 test('invalid profile configuration refuses creates before reservation or spawn', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'p2b-create-'));
@@ -17,6 +18,8 @@ test('invalid profile configuration refuses creates before reservation or spawn'
   const profiles = parseProfiles({ work: { folders: [mapped], remote_selectable: 'invalid' } });
   expect(profiles).toHaveProperty('error');
   const handler = createCreateSessionHandlers({
+    sidecar: emptySidecar,
+    resumeOwner: noResumeOwner,
     harnesses: new HarnessRegistry({}),
     liveSessionsRegistry: new SessionRegistryFile(root),
     spawningPorts: new Set(),
@@ -56,6 +59,8 @@ test('no profiles table preserves the existing child arguments', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'p2b-plain-'));
   let spawned: string[] = [];
   const handler = createCreateSessionHandlers({
+    sidecar: emptySidecar,
+    resumeOwner: noResumeOwner,
     harnesses: new HarnessRegistry({}),
     liveSessionsRegistry: new SessionRegistryFile(root),
     spawningPorts: new Set(),
@@ -111,6 +116,7 @@ test('create and resume enforce selection before reserving a port', async () => 
     '44444444-4444-4444-8444-444444444444': { record: false, profile: 'work' },
   };
   const handler = createCreateSessionHandlers({
+    sidecar: emptySidecar,
     harnesses: new HarnessRegistry({
       claude: { command: '/bin/sh', validateRemoteArgs: validateClaudeRemoteArgs },
     }),

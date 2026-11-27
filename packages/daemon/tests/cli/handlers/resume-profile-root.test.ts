@@ -14,6 +14,7 @@ import { SessionRegistryFile } from '../../../src/session/session-registry-file.
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../../src/transcript/transcript-discovery.ts';
+import { emptySidecar } from '../../helpers/no-profiles-policy.ts';
 
 test('create and resume routes carry only recordless profile ownership', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-profile-'));
@@ -75,6 +76,7 @@ test('create and resume routes carry only recordless profile ownership', async (
     work: { label: 'Work', remote_selectable: true, claude: { expects: 'subscription' } },
   });
   const handlers = createCreateSessionHandlers({
+    sidecar: emptySidecar,
     harnesses: new HarnessRegistry({
       claude: { command: '/bin/sh', validateRemoteArgs: validateClaudeRemoteArgs },
     }),

@@ -228,10 +228,15 @@ export interface CreateSessionHandlerDeps {
    * Getter so the caller can populate the array after handler construction.
    */
   inheritedArgs: () => readonly string[];
-  profiles?: () => Profiles;
-  sidecar?: () => ProfileSidecar;
+  /**
+   * Remote profile policy (#1749): the strict configuration and the sidecar, read once per request,
+   * and the owner of a resumed id. Required with no default, so a composition root that forgets
+   * one fails to compile instead of failing open.
+   */
+  profiles: () => Profiles;
+  sidecar: () => ProfileSidecar;
   remiProfileEnv?: string | undefined;
-  resumeOwner?: (
+  resumeOwner: (
     harness: HarnessId,
     resumeId: string,
     sidecar: ProfileSidecar,
@@ -320,17 +325,17 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
         );
         return { ok: false, error: request.error };
       }
-      const profiles = policy?.profiles ?? deps.profiles?.() ?? { entries: {}, notices: [] };
-      const sidecar = policy?.sidecar ?? deps.sidecar?.() ?? { ok: false as const };
+      const profiles = policy?.profiles ?? deps.profiles();
+      const sidecar = policy?.sidecar ?? deps.sidecar();
       const owner =
         request.resumeId === null
           ? null
-          : (deps.resumeOwner?.(
+          : deps.resumeOwner(
               isHarnessId(extra?.harness) ? extra.harness : 'claude',
               request.resumeId,
               sidecar,
               profiles,
-            ) ?? null);
+            );
       if ('error' in profiles && owner === null)
         return {
           ok: false,

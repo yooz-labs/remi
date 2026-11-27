@@ -27,6 +27,7 @@ import { validateClaudeRemoteArgs } from '../../../src/harness/claude-args.ts';
 import { validateCodexRemoteArgs } from '../../../src/harness/codex/codex-args.ts';
 import { HarnessRegistry } from '../../../src/harness/registry.ts';
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
+import { emptySidecar, noProfiles, noResumeOwner } from '../../helpers/no-profiles-policy.ts';
 
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
@@ -276,6 +277,9 @@ describe('create requests naming a harness (#1179)', () => {
   describe('the handler', () => {
     function handlers(over: Partial<Parameters<typeof createCreateSessionHandlers>[0]> = {}) {
       return createCreateSessionHandlers({
+        profiles: noProfiles,
+        sidecar: emptySidecar,
+        resumeOwner: noResumeOwner,
         harnesses: registry(),
         liveSessionsRegistry: new SessionRegistryFile(path.join(dir, 'live')),
         spawningPorts: new Set(),
@@ -455,6 +459,9 @@ describe('create requests naming a harness (#1179)', () => {
 
     test('a spawn that fails answers with a short text only, and the log has the failure (G8)', async () => {
       const failing = createCreateSessionHandlers({
+        profiles: noProfiles,
+        sidecar: emptySidecar,
+        resumeOwner: noResumeOwner,
         harnesses: registry(),
         liveSessionsRegistry: new SessionRegistryFile(path.join(dir, 'live')),
         spawningPorts: new Set(),

@@ -14,6 +14,7 @@ import { SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptIndex } from '../../../src/session/transcript-index.ts';
 import { TranscriptDiscovery } from '../../../src/transcript/transcript-discovery.ts';
 import { TranscriptWatcher } from '../../../src/transcript/transcript-watcher.ts';
+import { noHiddenOwner } from '../../helpers/no-profiles-policy.ts';
 
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
@@ -81,6 +82,7 @@ describe('createTranscriptHandlers', () => {
     subagentViews: SubagentViewRegistry = new SubagentViewRegistry(),
   ) {
     return createTranscriptHandlers({
+      isHiddenOwner: noHiddenOwner,
       transcriptDiscovery,
       harness: new ClaudeHarness(transcriptDiscovery),
       transcriptWatchers,

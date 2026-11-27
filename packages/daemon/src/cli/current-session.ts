@@ -35,8 +35,9 @@ export interface CurrentOwnedSession {
 }
 
 export interface CurrentSessionResolverDeps {
-  profiles?: () => Profiles;
-  sidecar?: () => ProfileSidecar;
+  /** Remote profile policy (#1749), required with no default: the ack's profile and path. */
+  profiles: () => Profiles;
+  sidecar: () => ProfileSidecar;
   /** Reads the primary Remi session id (the per-process global). */
   getPrimarySessionId: () => UUID | null;
   sessionStore: Pick<SessionStore, 'findByRemiSessionId'>;
@@ -65,10 +66,10 @@ export function makeCurrentSessionResolver(
       const sessionId = getPrimarySessionId();
       if (!sessionId) return null;
       const stored = sessionStore.findByRemiSessionId(sessionId);
-      const profiles = deps.profiles?.() ?? { entries: {}, notices: [] };
+      const profiles = deps.profiles();
       const owner = sessionProfileOwner(
         stored ?? { transcriptProfile: undefined },
-        deps.sidecar?.() ?? { ok: false },
+        deps.sidecar(),
         profiles,
       );
       const claudeSessionId = (stored?.claudeSessionId ?? null) as UUID | null;

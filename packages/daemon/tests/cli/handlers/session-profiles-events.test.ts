@@ -9,6 +9,7 @@ import { HarnessRegistry } from '../../../src/harness/registry.ts';
 import { currentProfilesStrict } from '../../../src/profiles/current-profiles.ts';
 import { parseProfiles } from '../../../src/profiles/profile-config.ts';
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
+import { emptySidecar, noResumeOwner } from '../../helpers/no-profiles-policy.ts';
 
 test('profile picker lists selectable profiles and fails closed', () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'p2b-picker-')));
@@ -96,6 +97,8 @@ test('a relative directory has the same default in the picker and create path', 
     expect(answer?.default).toEqual({ id: 'work', source: 'folder' });
     let spawned: string[] = [];
     const create = createCreateSessionHandlers({
+      sidecar: emptySidecar,
+      resumeOwner: noResumeOwner,
       harnesses: new HarnessRegistry({}),
       liveSessionsRegistry: new SessionRegistryFile(root),
       spawningPorts: new Set(),

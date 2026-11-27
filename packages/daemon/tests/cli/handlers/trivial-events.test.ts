@@ -10,6 +10,7 @@ import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.
 import type { PTYSession } from '../../../src/pty/pty-session.ts';
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
+import { emptySidecar } from '../../helpers/no-profiles-policy.ts';
 
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
@@ -55,6 +56,7 @@ describe('createTrivialHandlers', () => {
     const calls: Array<{ token: string; platform: string; connectionId: UUID }> = [];
     const { send } = makeSend();
     const handlers = createTrivialHandlers({
+      sidecar: emptySidecar,
       profiles: () => ({ entries: {}, notices: [] }),
       registerDeviceToken: (token, platform, connectionId) =>
         calls.push({ token, platform, connectionId }),
@@ -77,6 +79,7 @@ describe('createTrivialHandlers', () => {
     const calls: Array<{ token: string; prefs: unknown }> = [];
     const { send } = makeSend();
     const handlers = createTrivialHandlers({
+      sidecar: emptySidecar,
       profiles: () => ({ entries: {}, notices: [] }),
       registerDeviceToken: (token, _platform, _connectionId, pushPrefs) =>
         calls.push({ token, prefs: pushPrefs }),
@@ -116,6 +119,7 @@ describe('createTrivialHandlers', () => {
     const calls: Array<{ token: string; prefs: unknown }> = [];
     const { send } = makeSend();
     const handlers = createTrivialHandlers({
+      sidecar: emptySidecar,
       profiles: () => ({ entries: {}, notices: [] }),
       registerDeviceToken: (token, _platform, _connectionId, pushPrefs) =>
         calls.push({ token, prefs: pushPrefs }),
@@ -147,6 +151,7 @@ describe('createTrivialHandlers', () => {
     const calls: string[] = [];
     const { send } = makeSend();
     const handlers = createTrivialHandlers({
+      sidecar: emptySidecar,
       profiles: () => ({ entries: {}, notices: [] }),
       registerDeviceToken: () => {},
       unregisterDeviceToken: (token) => calls.push(token),
@@ -165,6 +170,7 @@ describe('createTrivialHandlers', () => {
     const logs: string[] = [];
     const { send } = makeSend();
     const handlers = createTrivialHandlers({
+      sidecar: emptySidecar,
       profiles: () => ({ entries: {}, notices: [] }),
       registerDeviceToken: () => {},
       unregisterDeviceToken: () => {},
@@ -199,6 +205,7 @@ describe('createTrivialHandlers', () => {
 
     const { send } = makeSend();
     const handlers = createTrivialHandlers({
+      sidecar: emptySidecar,
       profiles: () => ({ entries: {}, notices: [] }),
       registerDeviceToken: () => {},
       unregisterDeviceToken: () => {},
@@ -225,6 +232,7 @@ describe('createTrivialHandlers', () => {
     const logs: string[] = [];
     const { send } = makeSend();
     const handlers = createTrivialHandlers({
+      sidecar: emptySidecar,
       profiles: () => ({ entries: {}, notices: [] }),
       registerDeviceToken: () => {},
       unregisterDeviceToken: () => {},
@@ -242,6 +250,7 @@ describe('createTrivialHandlers', () => {
   test('onSessionHistoryRequest sends session_history_response with real SessionStore', () => {
     const { send, captured } = makeSend();
     const handlers = createTrivialHandlers({
+      sidecar: emptySidecar,
       profiles: () => ({ entries: {}, notices: [] }),
       registerDeviceToken: () => {},
       unregisterDeviceToken: () => {},
@@ -261,6 +270,7 @@ describe('createTrivialHandlers', () => {
   test('onSessionHistoryRequest clamps limit to a minimum of 1', () => {
     const { send, captured } = makeSend();
     const handlers = createTrivialHandlers({
+      sidecar: emptySidecar,
       profiles: () => ({ entries: {}, notices: [] }),
       registerDeviceToken: () => {},
       unregisterDeviceToken: () => {},

@@ -18,9 +18,14 @@ import type { StoredSession } from '../../session/session-store.ts';
 import { logError } from '../logger.ts';
 
 export interface SessionListDeps {
-  readonly profiles?: () => Profiles;
-  readonly sidecar?: () => ProfileSidecar;
-  readonly profileOfSession?: (id: UUID) => StoredSession | null;
+  /**
+   * Remote profile policy (#1749): the strict configuration, the sidecar and a session's record.
+   * Required with no default, so a caller that forgets one fails to compile instead of listing
+   * every session.
+   */
+  readonly profiles: () => Profiles;
+  readonly sidecar: () => ProfileSidecar;
+  readonly profileOfSession: (id: UUID) => StoredSession | null;
   readonly withholdTranscriptPaths: boolean;
   readonly sessionRegistry: Pick<SessionRegistry, 'listSessions' | 'getActiveSessionIds'>;
   readonly bindingStore: Pick<SessionBindingStore, 'getIdentity' | 'get'>;
@@ -76,8 +81,8 @@ export function broadcastWorkspaceChange(
 /** The daemon's list: its own sessions, and the external transcripts when `includeExternal`. */
 export function buildSessionList(deps: SessionListDeps, includeExternal: boolean): SessionList {
   const { sessionRegistry, bindingStore, transcriptDiscovery, harness } = deps;
-  const profiles = deps.profiles?.() ?? { entries: {}, notices: [] };
-  const sidecar = deps.sidecar?.() ?? { ok: false as const };
+  const profiles = deps.profiles();
+  const sidecar = deps.sidecar();
   // Decorate daemon-sourced sessions with their harness identity (#1179) and,
   // for a Claude session, its pre-assigned binding (#429): `harness` always,
   // `harnessSessionId` once known (for Claude it equals `claudeSessionId`).
@@ -90,9 +95,9 @@ export function buildSessionList(deps: SessionListDeps, includeExternal: boolean
   // failure; the cost on a broadcast is that a Codex entry reads as Claude
   // until the store answers again, which the log line records.
   const own = sessionRegistry.listSessions().flatMap((s) => {
-    let record: ReturnType<NonNullable<SessionListDeps['profileOfSession']>> = null;
+    let record: StoredSession | null = null;
     try {
-      record = deps.profileOfSession?.(s.sessionId as UUID) ?? null;
+      record = deps.profileOfSession(s.sessionId as UUID);
     } catch {
       return [];
     }

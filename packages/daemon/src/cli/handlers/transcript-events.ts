@@ -34,7 +34,11 @@ import { log, logError } from '../logger.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface TranscriptHandlerDeps {
-  isHiddenOwner?: (sessionId: string) => boolean;
+  /**
+   * Whether a session's owner is hidden from devices (#1749 design item 8); a hidden one takes
+   * the not-found path. Required with no default, so a caller that forgets it fails to compile.
+   */
+  isHiddenOwner: (sessionId: string) => boolean;
   transcriptDiscovery: TranscriptDiscovery;
   /** Rebuilds a transcript path from the durable index's project path and id. */
   harness: Pick<Harness, 'transcriptPath'>;
@@ -135,7 +139,7 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
   return {
     onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID): void => {
       log(`Transcript load request from ${connectionId} for session ${sessionId}`);
-      if (deps.isHiddenOwner?.(sessionId)) {
+      if (deps.isHiddenOwner(sessionId)) {
         notFound(connectionId, sessionId);
         return;
       }
@@ -197,7 +201,7 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
         try {
           const indexed = transcriptIndex.get(sessionId as UUID);
           if (indexed) {
-            if (deps.isHiddenOwner?.(indexed.claudeSessionId)) {
+            if (deps.isHiddenOwner(indexed.claudeSessionId)) {
               notFound(connectionId, sessionId);
               return;
             }

@@ -28,7 +28,7 @@ import type { SendToConnection } from './trivial-events.ts';
 
 export interface RecentRepositoriesHandlerDeps {
   readonly profiles: () => Profiles;
-  readonly sidecar?: () => ProfileSidecar;
+  readonly sidecar: () => ProfileSidecar;
   readonly remiProfileEnv?: string | undefined;
   readonly sessionStore: Pick<SessionStore, 'list'>;
   readonly send: SendToConnection;
@@ -51,7 +51,7 @@ export function createRecentRepositoriesHandlers(deps: RecentRepositoriesHandler
         );
       }
       const profiles = deps.profiles();
-      const sidecar = deps.sidecar?.() ?? { ok: false as const };
+      const sidecar = deps.sidecar();
       const canonicalPaths = new Map<string, string>();
       const canonicalize = (dir: string): string => {
         let resolved = canonicalPaths.get(dir);

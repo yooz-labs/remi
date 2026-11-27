@@ -45,7 +45,7 @@ export type SendToConnection = (connectionId: UUID, message: ProtocolMessage) =>
 
 export interface TrivialHandlerDeps {
   profiles: () => Profiles;
-  sidecar?: () => ProfileSidecar;
+  sidecar: () => ProfileSidecar;
   /**
    * Register a device token (epic #603 Phase 6). The `DeviceTokenStore` owns the
    * map: it does the #585 rotation prune (a re-registration from the same
@@ -103,7 +103,7 @@ export function createTrivialHandlers(deps: TrivialHandlerDeps) {
       try {
         const clampedLimit = Math.max(1, limit ?? 20);
         const profiles = deps.profiles();
-        const sidecar = deps.sidecar?.() ?? { ok: false as const };
+        const sidecar = deps.sidecar();
         const hiddenDirectory = hiddenDirectoryPredicate(profiles);
         const directories = getRecentDirectories(
           sessionStore,
