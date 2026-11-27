@@ -296,8 +296,9 @@ test.each([
   ['codex', '--worktree'],
 ])(
   'refused local launch %s %s does not start a hub',
-  async (...args) => {
+  async (first, second) => {
     const f = await setup();
+    const args = [first, second];
     const result = Bun.spawnSync(
       [process.execPath, CLI_TS, ...args.map((arg) => (arg === 'BASE' ? String(f.port) : arg))],
       { cwd: f.work, env: f.env, timeout: 8000, stdout: 'pipe', stderr: 'pipe' },
