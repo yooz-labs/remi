@@ -420,6 +420,7 @@ export async function createClaudeSession(
           // the registered hook timeout an abort is compared with; wrapper
           // structured questions use the long safety cap (#1837). See hold-policy.ts.
           holdMs: holdPolicy.holdMsFor,
+          terminalPromptMs: holdPolicy.terminalPromptMs,
           hookTimeoutMs: holdPolicy.hookTimeoutMs,
           pushTerminalNotice: (sid, question, reason) =>
             sessionNotifiers.get(sid)?.pushTerminalNotice(sid, question, reason),

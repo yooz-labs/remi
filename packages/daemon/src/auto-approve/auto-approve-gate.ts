@@ -297,6 +297,8 @@ export interface AutoApproveGateDeps {
    * safety cap. At the deadline the empty response leaves the dialog up.
    */
   holdMs: number | ((toolName: string) => number);
+  /** Short post-handback guard window, independent of the live tool hold. */
+  terminalPromptMs: number;
   /**
    * The PermissionRequest hook timeout registered with Claude, in ms (3600 s
    * in all session modes, #1837). Claude closes a
@@ -378,10 +380,11 @@ export class AutoApproveGate {
    * answer belongs to the terminal (#1126), each with the time it got there:
    * a hold released at its deadline, a hold released early by an ambiguous
    * signal (`releaseToTerminal`), and a wrapper-mode subagent prompt once
-   * its dialog rendered. A subset of `openQuestionSignatures`' keys, closed
+   * its dialog rendered. Normally a subset of `openQuestionSignatures`' keys, closed
    * only by a hook signal (its tool run, Stop, a new prompt, the agent's
    * next tool call or SubagentStop, teardown), never by a late phone answer
-   * (`retireQuestion`). An entry younger than its tool-specific hold length is what `hasOpenHookPrompt` reports besides a live main hold.
+   * (`retireQuestion`). An entry younger than the short terminal-prompt window counts in
+   * `hasOpenHookPrompt` besides a live main hold.
    */
   private readonly terminalPrompts = new Map<UUID, number>();
 
@@ -509,7 +512,7 @@ export class AutoApproveGate {
    * True while a hook-backed dialog this gate knows about is (or may be) on
    * screen (#1126): a live main hold (its dialog renders during the hold),
    * or any prompt in `terminalPrompts` (main or subagent) younger than the
-   * prompt's tool-specific hold length (#1837). The presence tracker asks
+   * short `hold_seconds` window (#1837). The presence tracker asks
    * this before treating a PTY render as an orphan: such a render is that dialog or a
    * redraw of it, and must not be rebuilt into a card the phone would answer
    * by typing; for a wrapper-mode subagent prompt the phone keeps exactly one
@@ -521,7 +524,7 @@ export class AutoApproveGate {
    * is excluded:
    *   - subagent HOLDS never count: their dialog does not render while held;
    *   - a `terminalPrompts` entry stops counting once it is older than
-   *     its tool-specific hold (a No answered in the terminal fires no hook); a
+   *     `hold_seconds` (a No answered in the terminal fires no hook); a
    *     subagent's entry is also cleared by that agent's next tool call
    *     (`noteAgentToolCall`), `SubagentStop` or `SessionEnd`. A redraw past
    *     that takes the guarded hook-less path (#1134: typed only on an exact
@@ -532,9 +535,11 @@ export class AutoApproveGate {
    */
   hasOpenHookPrompt(): boolean {
     if (this.hasMainHold()) return true;
-    for (const [qid, at] of this.terminalPrompts) {
-      const toolName = this.openQuestionSignatures.get(qid)?.toolName;
-      if (toolName !== undefined && at > Date.now() - this.holdMsFor(toolName)) return true;
+    // Handback ends the tool-specific hold. Even without a recorded signature,
+    // bound stale terminal entries by the same short window.
+    const cutoff = Date.now() - this.deps.terminalPromptMs;
+    for (const at of this.terminalPrompts.values()) {
+      if (at > cutoff) return true;
     }
     return false;
   }

@@ -23,6 +23,7 @@ describe('permissionHoldPolicy (#1837)', () => {
     expect(p.holdMsFor('ExitPlanMode')).toBe(3_540_000);
     expect(p.permissionRequestTimeoutSec).toBe(3600);
     expect(p.hookTimeoutMs).toBe(3_600_000);
+    expect(p.terminalPromptMs).toBe(90_000);
   });
 
   test('daemon and hub hold all tools for daemon_hold_seconds', () => {
@@ -33,12 +34,14 @@ describe('permissionHoldPolicy (#1837)', () => {
     }
     expect(p.permissionRequestTimeoutSec).toBe(3600);
     expect(p.hookTimeoutMs).toBe(3_600_000);
+    expect(p.terminalPromptMs).toBe(90_000);
   });
 
   test('both configured hold overrides are honored and stay below the hook timeout', () => {
     for (const local of [true, false]) {
       const p = permissionHoldPolicy(local, { hold_seconds: 17, daemon_hold_seconds: 123 });
       expect(p.holdMsFor('Bash')).toBe(local ? 17_000 : 123_000);
+      expect(p.terminalPromptMs).toBe(17_000);
       for (const tool of ['AskUserQuestion', 'ExitPlanMode']) {
         expect(p.holdMsFor(tool)).toBe(123_000);
         expect(p.holdMsFor(tool)).toBeLessThan(p.hookTimeoutMs);
@@ -62,7 +65,19 @@ describe('cli.ts and harness/claude-session.ts take every per-mode value from th
     );
     expect(claudeSession).toContain('holdMs: holdPolicy.holdMsFor,');
     expect(claudeSession).toContain('hookTimeoutMs: holdPolicy.hookTimeoutMs,');
+    expect(claudeSession).toContain('terminalPromptMs: holdPolicy.terminalPromptMs,');
     expect(claudeSession).toContain('hasLocalTerminal: holdPolicy.hasLocalTerminal,');
+  });
+
+  test('hook registration requires the policy timeout', () => {
+    const manager = stripComments(
+      fs.readFileSync(
+        path.resolve(import.meta.dir, '../../src/hooks/hook-config-manager.ts'),
+        'utf8',
+      ),
+    );
+    expect(manager).toContain('opts: { permissionRequestTimeout: number },');
+    expect(manager).toContain('this.permissionRequestTimeout = opts.permissionRequestTimeout;');
   });
 
   test('the hook registration: 3600 s for both branches', () => {
@@ -74,5 +89,10 @@ describe('cli.ts and harness/claude-session.ts take every per-mode value from th
     expect(daemonPart).not.toContain('permissionHoldPolicy(true, remiConfig.prompts)');
     expect(wrapperPart).toContain('permissionHoldPolicy(true, remiConfig.prompts)');
     expect(wrapperPart).not.toContain('permissionHoldPolicy(false, remiConfig.prompts)');
+    for (const part of [daemonPart, wrapperPart]) {
+      expect(stripComments(part)).toMatch(
+        /permissionRequestTimeout:\s*permissionHoldPolicy\((?:true|false), remiConfig\.prompts\)\s*\.permissionRequestTimeoutSec/,
+      );
+    }
   });
 });

@@ -184,6 +184,7 @@ async function buildFixture(
       currentPort: () => port,
       transcriptDiscovery: new TranscriptDiscovery(),
       holdMs: 5_000,
+      terminalPromptMs: 5_000,
       hookTimeoutMs: 10_000,
     },
     {

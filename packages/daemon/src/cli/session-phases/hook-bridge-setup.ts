@@ -210,6 +210,8 @@ export interface HookBridgeDeps {
    * see `AutoApproveGateDeps.holdMs`.
    */
   holdMs: number | ((toolName: string) => number);
+  /** Short post-handback terminal-prompt window. */
+  terminalPromptMs: number;
   /** The registered PermissionRequest hook timeout, in ms (#1126). See
    *  `AutoApproveGateDeps.hookTimeoutMs`. Required, so no session silently
    *  treats Claude's own timeout as a terminal No. */
@@ -662,6 +664,7 @@ export function setupHookBridge(
       // suppressed for hooked sessions.
       onHeldEscalate: (questionId, answerPath) => tracker.pushHeldHook(questionId, answerPath),
       holdMs: deps.holdMs,
+      terminalPromptMs: deps.terminalPromptMs,
       hookTimeoutMs: deps.hookTimeoutMs,
       // #1126: a held prompt was released to the terminal without an answer
       // (its deadline, Claude's hook timeout, an ambiguous signal, `remi

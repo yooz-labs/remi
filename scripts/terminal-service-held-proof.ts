@@ -632,6 +632,7 @@ async function runHeldScenario(scenario: string): Promise<void> {
         sessionRegistry: root.registry,
         isInSubagentContext: () => false,
         holdMs: 60000,
+        terminalPromptMs: 60000,
         hasLocalTerminal: true,
         escalate: () => {
           questionId = crypto.randomUUID();

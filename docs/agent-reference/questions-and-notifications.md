@@ -76,7 +76,11 @@ the card at once by id (`holdForAnswer` -> `onHeldEscalate` ->
   still auto-deny at 2:00; Claude fires `PermissionDenied` (measured),
   dismissing the card and pushing a `harness_denied` notice. The terminal
   notice does not claim the prompt is still waiting, since a terminal Yes may
-  already have answered it.
+  already have answered it. Explicit `remi unstick` and ambiguous-match
+  handbacks can also withdraw a live card while its dialog may remain. The
+  independent `[awake] question_hold_minutes` cap (default 30 minutes) can
+  release the idle-sleep assertion while a question remains held, absent another
+  active reason; it does not change the question hold.
 
 An empty response never decides anything; it is what every non-answer path
 sends.
@@ -147,7 +151,7 @@ and a second unstick clears it.
 dialog by design: they are a person at the terminal). While a
 MAIN-agent hook is held, or a prompt waits in the terminal (`terminalPrompts`:
 a hold released at its deadline or early, or a rendered wrapper-mode subagent
-dialog) for less than the tool's hold length, the tracker treats a PTY
+dialog) for less than `hold_seconds` after handback, the tracker treats a PTY
 render as that dialog (`setHookPromptProbe` -> `hasOpenHookPrompt`), never as
 an orphan, so no typed card is rebuilt from it; for a wrapper-mode subagent
 prompt the phone keeps exactly one artifact, its notice. The probe is bounded
@@ -158,7 +162,7 @@ since its dialog does not render while held, neither in this probe nor in the
 tracker's other suppression input, the live-question check
 (`hasLiveQuestionOnScreen`, which skips a held subagent card; every other
 registered card still counts). A `terminalPrompts` entry stops
-counting after the hold length, and a subagent's entry is also cleared by
+counting after `hold_seconds`, and a subagent's entry is also cleared by
 that agent's next `PreToolUse` (`noteAgentToolCall`), `SubagentStop` or
 `SessionEnd`; past that a redraw takes the guarded hook-less path (#1134,
 fail closed). `handleAnswer` asks
@@ -228,8 +232,8 @@ that wiring), which says a prompt is up when any of three sources does:
   the hold);
 - `terminal`: a hook-backed prompt waits in the terminal (`hasOpenHookPrompt`
   beyond a main hold: a hold released at its deadline or handed back early,
-  or a rendered wrapper-mode subagent dialog, each for at most the session's
-  hold length);
+  or a rendered wrapper-mode subagent dialog, each for at most `[prompts]
+  hold_seconds` (default 90 s; 5 to 110 s) after handback in every mode);
 - `menu`: the tracker observes a numbered selection box
   (`observedPromptOptions`; `isNumberedMenu`: every option value is numeric),
   which covers hook-less prompts.
@@ -293,11 +297,10 @@ no-tracker branch is effectively dead in production: `cli.ts` builds a tracker
 for every session, hook server or not. It exists for a caller that does not
 wire `promptUp` (tests, a future entry point) and it fails open (types the
 text), the opposite of the answer guards above. (5) A `terminal` entry counts
-for the tool's hold length from when it is MARKED (the deadline release,
-the early hand-back, or the subagent dialog's render), not from the prompt's
-start: in wrapper mode `hold_seconds` (90 s) for permissions and
-`daemon_hold_seconds` (about 59 minutes) for the two structured tools; in
-daemon or hub mode `daemon_hold_seconds` for every tool (#1837). A No
+for `[prompts] hold_seconds` (default 90 s, 5 to 110 s) from when it is
+MARKED (the deadline release, early hand-back, or subagent dialog's render),
+for every tool and session mode. A live main hold counts throughout its
+per-tool hold (#1837). A No
 answered at the terminal fires
 no hook, so the entry can outlive its dialog; in that window Stop
 force-closes instead of typing `/exit` (kept by lead decision: a forced close

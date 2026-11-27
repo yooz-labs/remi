@@ -11,6 +11,7 @@ import { DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT } from '../hooks/index.ts';
 
 export interface PermissionHoldPolicy {
   readonly hasLocalTerminal: boolean;
+  readonly terminalPromptMs: number;
   readonly holdMsFor: (toolName: string) => number;
   readonly permissionRequestTimeoutSec: number;
   readonly hookTimeoutMs: number;
@@ -23,6 +24,7 @@ export function permissionHoldPolicy(
   const permissionRequestTimeoutSec = DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT;
   return {
     hasLocalTerminal,
+    terminalPromptMs: prompts.hold_seconds * 1000,
     holdMsFor: (toolName) =>
       (!hasLocalTerminal || ALWAYS_ESCALATE_TOOLS.has(toolName)
         ? prompts.daemon_hold_seconds

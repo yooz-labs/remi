@@ -26,13 +26,6 @@ interface HookMatcher {
   hooks: HookEntry[];
 }
 
-/** Default PermissionRequest registration for callers without a policy override.
- * Historically wrapper sessions used 600 s (#496/#537). Since #1837 both
- * session modes override this with 3600 s to outlast structured question holds.
- * Claude Code 2.1.287 honored a 3600 s registration with a 650 s hold
- * (#1126 review); other hooks retain their short fail-fast timeout.
- */
-export const PERMISSION_REQUEST_HOOK_TIMEOUT = 600;
 /** Registration used by wrapper, daemon and hub sessions (#1837). The
  * maximum configured hold is 3540 s, below this 3600 s timeout. */
 export const DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT = 3600;
@@ -55,24 +48,20 @@ export class HookConfigManager {
   private readonly permissionRequestTimeout: number;
   private hasWritten = false;
 
-  /** `opts.permissionRequestTimeout` (seconds) overrides the 600 s
-   *  PermissionRequest registration; all session modes pass
-   *  `DAEMON_PERMISSION_REQUEST_HOOK_TIMEOUT` (#1837). */
+  /** The caller supplies the policy registration in seconds (#1837). */
   constructor(
     projectDir: string,
     hookServerUrl: string,
-    opts: { permissionRequestTimeout?: number } = {},
+    opts: { permissionRequestTimeout: number },
   ) {
     this.settingsPath = path.join(projectDir, '.claude', 'settings.local.json');
     this.hookUrl = hookServerUrl;
-    this.permissionRequestTimeout =
-      opts.permissionRequestTimeout ?? PERMISSION_REQUEST_HOOK_TIMEOUT;
+    this.permissionRequestTimeout = opts.permissionRequestTimeout;
   }
 
   /**
    * Seconds Claude Code waits for this hook's HTTP response. PermissionRequest
-   * uses the configured registration (600 s by default, 3600 s in sessions,
-   * #1837); events in
+   * uses the required policy registration (3600 s in sessions, #1837); events in
    * `SHORT_HOOK_TIMEOUTS` get an even shorter budget than the default
    * fail-fast timeout (#893); everything else keeps the plain fail-fast
    * timeout (#203).
