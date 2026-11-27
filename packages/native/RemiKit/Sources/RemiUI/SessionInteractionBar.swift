@@ -98,6 +98,8 @@ public struct RemiSessionInteractionBar: View {
     private let state: RemiSessionInteractionState
     private let onSend: (String) async -> Bool
     private let onInterrupt: (() -> Void)?
+    private let atLatest: Bool
+    private let onJumpToLatest: (() -> Void)?
     @State private var isSending = false
     @State private var sendFailed = false
     /// Counts failures, so a second one restarts the notice's timer.
@@ -110,11 +112,15 @@ public struct RemiSessionInteractionBar: View {
     public init(
         draft: Binding<String>,
         state: RemiSessionInteractionState,
+        atLatest: Bool = true,
+        onJumpToLatest: (() -> Void)? = nil,
         onSend: @escaping (String) async -> Bool,
         onInterrupt: (() -> Void)?
     ) {
         _draft = draft
         self.state = state
+        self.atLatest = atLatest
+        self.onJumpToLatest = onJumpToLatest
         self.onSend = onSend
         self.onInterrupt = onInterrupt
     }
@@ -130,6 +136,8 @@ public struct RemiSessionInteractionBar: View {
                         text: $draft,
                         promptWaiting: promptWaiting,
                         isSending: isSending,
+                        atLatest: atLatest,
+                        onJumpToLatest: onJumpToLatest,
                         onSend: sendDraft,
                         onInterrupt: onInterrupt
                     ) {
@@ -231,6 +239,8 @@ public extension View {
     func remiSessionInteractionBar(
         draft: Binding<String>,
         state: RemiSessionInteractionState,
+        atLatest: Bool = true,
+        onJumpToLatest: (() -> Void)? = nil,
         onSend: @escaping (String) async -> Bool,
         onInterrupt: (() -> Void)?
     ) -> some View {
@@ -239,6 +249,8 @@ public extension View {
                 RemiSessionInteractionBar(
                     draft: draft,
                     state: state,
+                    atLatest: atLatest,
+                    onJumpToLatest: onJumpToLatest,
                     onSend: onSend,
                     onInterrupt: onInterrupt
                 )

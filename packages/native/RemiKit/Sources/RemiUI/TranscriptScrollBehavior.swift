@@ -4,16 +4,60 @@ public enum RemiTranscriptScrollTarget: Hashable {
     case latest
 }
 
+struct RemiTranscriptFollowPolicy {
+    static func isAtLatest(remaining: CGFloat) -> Bool { remaining <= 1 }
+
+    static func shouldFollow(followsLatest: Bool, isReviewing: Bool) -> Bool {
+        followsLatest && !isReviewing
+    }
+
+    static func afterUserScroll(followsLatest: Bool, previousOffset: CGFloat, offset: CGFloat, remaining: CGFloat) -> Bool {
+        if isAtLatest(remaining: remaining) { return true }
+        if offset < previousOffset { return false }
+        return followsLatest
+    }
+    static func afterNoninteractiveScroll(followsLatest: Bool, followingLayout: Bool, sizesChanged: Bool,
+        previousOffset: CGFloat, offset: CGFloat, remaining: CGFloat) -> Bool {
+        if !followingLayout && !sizesChanged && offset < previousOffset && remaining > 1 { return false }
+        return followsLatest
+    }
+
+}
+
+/// Shared choice for the scroll position and its lifecycle across both native clients.
+public enum RemiScrollPositionPolicy {
+    public static func effectiveBinding<Value>(followsLatest: Bool, following: Value, review: Value) -> Value {
+        followsLatest ? following : review
+    }
+
+    public static func saveReview(
+        in memory: inout RemiConversationReviewMemory, for conversationID: String,
+        reviewState: RemiTranscriptReviewState, visibleEntryID: String?,
+        followsLatest: Bool, isSearchPresented: Bool
+    ) {
+        memory.save(RemiConversationReviewSnapshot(
+            reviewState: reviewState, visibleEntryID: followsLatest ? nil : visibleEntryID,
+            isSearchPresented: isSearchPresented
+        ), for: conversationID)
+    }
+
+    public static func positionAfterFollowChange(followsLatest: Bool, visibleEntryID: String?, lastVisibleEntryID: String? = nil) -> String? {
+        followsLatest ? nil : (lastVisibleEntryID ?? visibleEntryID)
+    }
+}
+
 /// Follow content growth only while the reader remains near the latest activity.
 public struct RemiTranscriptScrollBehavior: ViewModifier {
     @Binding private var followsLatest: Bool
+    @Binding private var atLatest: Bool
     private let isReviewing: Bool
     private let onFollow: () -> Void
     @State private var followingLayout = false
     @State private var isInteracting = false
 
-    public init(followsLatest: Binding<Bool>, isReviewing: Bool, onFollow: @escaping () -> Void) {
+    public init(followsLatest: Binding<Bool>, atLatest: Binding<Bool>, isReviewing: Bool, onFollow: @escaping () -> Void) {
         _followsLatest = followsLatest
+        _atLatest = atLatest
         self.isReviewing = isReviewing
         self.onFollow = onFollow
     }
@@ -21,17 +65,21 @@ public struct RemiTranscriptScrollBehavior: ViewModifier {
     public func body(content: Content) -> some View {
         content
             .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .defaultScrollAnchor(followsLatest && !isReviewing && !isInteracting ? .bottom : nil, for: .sizeChanges)
+            .defaultScrollAnchor(RemiTranscriptFollowPolicy.shouldFollow(followsLatest: followsLatest, isReviewing: isReviewing || isInteracting) ? .bottom : nil, for: .sizeChanges)
             .defaultScrollAnchor(.topLeading, for: .alignment)
             .onScrollGeometryChange(for: Viewport.self) { geometry in
                 Viewport(offset: geometry.contentOffset.y,
                     remaining: geometry.contentSize.height - geometry.visibleRect.maxY,
                     contentSize: geometry.contentSize, containerSize: geometry.containerSize)
             } action: { previous, current in
+                let latest = RemiTranscriptFollowPolicy.isAtLatest(remaining: current.remaining)
+                if atLatest != latest { atLatest = latest }
                 guard !isReviewing else { followingLayout = false; return }
                 if isInteracting {
                     followingLayout = false
-                    followsLatest = current.remaining < 100
+                    let next = RemiTranscriptFollowPolicy.afterUserScroll(followsLatest: followsLatest,
+                        previousOffset: previous.offset, offset: current.offset, remaining: current.remaining)
+                    if followsLatest != next { followsLatest = next }
                     return
                 }
                 // Reflow can move the viewport before its final size is known.
@@ -42,9 +90,12 @@ public struct RemiTranscriptScrollBehavior: ViewModifier {
                     if followingLayout { onFollow() }
                     return
                 }
+                let next = RemiTranscriptFollowPolicy.afterNoninteractiveScroll(followsLatest: followsLatest,
+                    followingLayout: followingLayout,
+                    sizesChanged: previous.contentSize != current.contentSize || previous.containerSize != current.containerSize,
+                    previousOffset: previous.offset, offset: current.offset, remaining: current.remaining)
+                if followsLatest != next { followsLatest = next }
                 if current.remaining <= 1 { followingLayout = false }
-                guard !followingLayout, previous.offset != current.offset else { return }
-                followsLatest = current.remaining < 100
             }
             .onScrollPhaseChange { _, phase in
                 isInteracting = phase == .tracking || phase == .interacting || phase == .decelerating
