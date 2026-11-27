@@ -30,6 +30,7 @@ struct MacSessionDetail: View {
     @State private var reviewState = RemiTranscriptReviewState()
     @State private var reviewMemory = RemiConversationReviewMemory()
     @State private var visibleEntryID: String?
+    @State private var lastVisibleEntryID: String?
     @State private var expandedEntryIDs: Set<String> = []
     @State private var transcriptRows: [RemiTranscriptRow] = []
     @State private var followsLatest = true
@@ -171,15 +172,26 @@ struct MacSessionDetail: View {
                         .frame(maxWidth: .infinity)
                         .scrollTargetLayout()
                     }
-                    .modifier(RemiTranscriptScrollBehavior(followsLatest: $followsLatest, atLatest: $atLatest,
+                    .modifier(RemiTranscriptScrollBehavior(followsLatest: followBinding, atLatest: $atLatest,
                         isReviewing: isSearchPresented || focusedQuestionID != nil,
                         onFollow: { scrollToLatest(using: proxy) }))
                     // Do not let the saved top row compete with a jump to the tail (#1824).
                     .scrollPosition(id: RemiScrollPositionPolicy.effectiveBinding(
-                        followsLatest: followsLatest, following: .constant(nil), review: $visibleEntryID), anchor: .top)
+                        followsLatest: followsLatest, following: trackingPositionBinding, review: $visibleEntryID), anchor: .top)
+                    .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.001) { ids in
+                        let visible = Set(ids)
+                        if let row = orderedScrollTargetIDs.first(where: { visible.contains($0) }) {
+                            lastVisibleEntryID = row
+                        }
+                    }
+                    .onChange(of: visibleEntryID) { _, row in
+                        if let row { lastVisibleEntryID = row }
+                    }
                     .onChange(of: followsLatest, initial: true) { _, following in
-                        visibleEntryID = RemiScrollPositionPolicy.positionAfterFollowChange(
-                            followsLatest: following, visibleEntryID: visibleEntryID)
+                        if following {
+                            visibleEntryID = RemiScrollPositionPolicy.positionAfterFollowChange(
+                                followsLatest: true, visibleEntryID: visibleEntryID, lastVisibleEntryID: lastVisibleEntryID)
+                        }
                     }
                     .onAppear {
                         focusQuestion(using: proxy)
@@ -235,6 +247,7 @@ struct MacSessionDetail: View {
             reviewMemory.reset()
             resetReview()
             visibleEntryID = nil
+            lastVisibleEntryID = nil
             followsLatest = true
             latestScrollRequest += 1
             if selectedViewID.isEmpty {
@@ -330,7 +343,7 @@ struct MacSessionDetail: View {
 
     /// Also the Find in Conversation menu command; its shortcut lives there, not on the button.
     private func openSearch() {
-        followsLatest = false
+        stopFollowing()
         isSearchPresented = true
         searchFocusRequest += 1
     }
@@ -345,7 +358,7 @@ struct MacSessionDetail: View {
 
     private func jumpToFirstActivity() {
         guard let firstActivityID else { return }
-        followsLatest = false
+        stopFollowing()
         withAnimation(.easeInOut(duration: 0.2)) {
             visibleEntryID = displayRowID(firstActivityID)
         }
@@ -430,7 +443,7 @@ struct MacSessionDetail: View {
         guard let focusedQuestionID,
               questions.contains(where: { $0.questionID == focusedQuestionID })
         else { return }
-        followsLatest = false
+        stopFollowing()
         withAnimation(.easeInOut(duration: 0.25)) {
             proxy.scrollTo(focusedQuestionID, anchor: .center)
         }
@@ -439,7 +452,7 @@ struct MacSessionDetail: View {
 
     private func scrollToSearchResult(_ entryID: String?, using proxy: ScrollViewProxy) {
         guard let entryID else { return }
-        followsLatest = false
+        stopFollowing()
         withAnimation(.easeInOut(duration: 0.2)) {
             proxy.scrollTo(displayRowID(entryID), anchor: .center)
         }
@@ -451,7 +464,7 @@ struct MacSessionDetail: View {
     }
 
     private func closeSearch() {
-        followsLatest = false
+        stopFollowing()
         isSearchPresented = false
         reviewState.reset()
     }
@@ -465,16 +478,37 @@ struct MacSessionDetail: View {
         viewID.isEmpty ? session.id : viewID
     }
 
+    // While following, SwiftUI may report the visible target but must not receive a
+    // position to restore: that would compete with scrolling to the tail.
+    private var trackingPositionBinding: Binding<String?> {
+        Binding(get: { nil }, set: { row in
+            if let row { lastVisibleEntryID = row }
+        })
+    }
+
+    private var followBinding: Binding<Bool> {
+        Binding(get: { followsLatest }, set: { following in
+            if following { followsLatest = true } else { stopFollowing() }
+        })
+    }
+
+    private func stopFollowing() {
+        guard followsLatest else { return }
+        visibleEntryID = RemiScrollPositionPolicy.positionAfterFollowChange(
+            followsLatest: false, visibleEntryID: visibleEntryID, lastVisibleEntryID: lastVisibleEntryID)
+        followsLatest = false
+    }
+
+    private var orderedScrollTargetIDs: [String] {
+        focusedQuestions.map(\.questionID)
+            + RemiTranscriptGrouping.displayRows(for: transcriptRows, expanded: expandedEntryIDs).map(\.id)
+            + remainingQuestions.map(\.questionID)
+    }
+
     private func preserveReview(for conversationID: String) {
-        guard RemiScrollPositionPolicy.shouldSaveReview(followsLatest: followsLatest, visibleEntryID: visibleEntryID) else { return }
-        reviewMemory.save(
-            RemiConversationReviewSnapshot(
-                reviewState: reviewState,
-                visibleEntryID: visibleEntryID,
-                isSearchPresented: isSearchPresented
-            ),
-            for: conversationID
-        )
+        RemiScrollPositionPolicy.saveReview(in: &reviewMemory, for: conversationID,
+            reviewState: reviewState, visibleEntryID: visibleEntryID,
+            followsLatest: followsLatest, isSearchPresented: isSearchPresented)
     }
 
     private func restoreReview(for conversationID: String) {
@@ -489,6 +523,7 @@ struct MacSessionDetail: View {
         visibleEntryID = snapshot.visibleEntryID.map {
             RemiTranscriptGrouping.rowID(for: $0, in: restoredRows, expanded: expandedEntryIDs) ?? $0
         }
+        lastVisibleEntryID = visibleEntryID
         isSearchPresented = snapshot.isSearchPresented
         followsLatest = snapshot.visibleEntryID == nil && !snapshot.isSearchPresented
         if followsLatest { latestScrollRequest += 1 }

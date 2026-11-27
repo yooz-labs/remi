@@ -30,12 +30,19 @@ public enum RemiScrollPositionPolicy {
         followsLatest ? following : review
     }
 
-    public static func shouldSaveReview(followsLatest: Bool, visibleEntryID: String?) -> Bool {
-        followsLatest || visibleEntryID != nil
+    public static func saveReview(
+        in memory: inout RemiConversationReviewMemory, for conversationID: String,
+        reviewState: RemiTranscriptReviewState, visibleEntryID: String?,
+        followsLatest: Bool, isSearchPresented: Bool
+    ) {
+        memory.save(RemiConversationReviewSnapshot(
+            reviewState: reviewState, visibleEntryID: followsLatest ? nil : visibleEntryID,
+            isSearchPresented: isSearchPresented
+        ), for: conversationID)
     }
 
-    public static func positionAfterFollowChange(followsLatest: Bool, visibleEntryID: String?) -> String? {
-        followsLatest ? nil : visibleEntryID
+    public static func positionAfterFollowChange(followsLatest: Bool, visibleEntryID: String?, lastVisibleEntryID: String? = nil) -> String? {
+        followsLatest ? nil : (lastVisibleEntryID ?? visibleEntryID)
     }
 }
 

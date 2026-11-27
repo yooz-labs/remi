@@ -52,10 +52,26 @@ import Testing
         #expect(RemiScrollPositionPolicy.positionAfterFollowChange(followsLatest: false, visibleEntryID: "saved") == "saved")
     }
 
-    @Test func doNotOverwriteReviewBeforePositionArrives() {
-        #expect(!RemiScrollPositionPolicy.shouldSaveReview(followsLatest: false, visibleEntryID: nil))
-        #expect(RemiScrollPositionPolicy.shouldSaveReview(followsLatest: false, visibleEntryID: "row"))
-        #expect(RemiScrollPositionPolicy.shouldSaveReview(followsLatest: true, visibleEntryID: nil))
+    @Test func stoppingFollowSeedsAndSavesCurrentRow() {
+        let row = RemiScrollPositionPolicy.positionAfterFollowChange(
+            followsLatest: false, visibleEntryID: nil, lastVisibleEntryID: "current")
+        #expect(row == "current")
+        #expect(RemiScrollPositionPolicy.positionAfterFollowChange(
+            followsLatest: false, visibleEntryID: "stale", lastVisibleEntryID: "current") == "current")
+        var memory = RemiConversationReviewMemory()
+        memory.save(RemiConversationReviewSnapshot(visibleEntryID: "older"), for: "session")
+        var review = RemiTranscriptReviewState()
+        review.update(query: "needle", entries: [])
+        RemiScrollPositionPolicy.saveReview(in: &memory, for: "session", reviewState: review,
+            visibleEntryID: row, followsLatest: false, isSearchPresented: true)
+        let saved = memory.snapshot(for: "session")
+        #expect(saved.visibleEntryID == "current")
+        #expect(saved.reviewState == review)
+        #expect(saved.isSearchPresented)
+        RemiScrollPositionPolicy.saveReview(in: &memory, for: "session", reviewState: review,
+            visibleEntryID: nil, followsLatest: false, isSearchPresented: true)
+        #expect(memory.snapshot(for: "session").visibleEntryID == nil)
+        #expect(memory.snapshot(for: "session").isSearchPresented)
     }
 
     @Test func followThresholdAndComposerAvailability() {
