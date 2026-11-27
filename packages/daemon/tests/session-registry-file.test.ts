@@ -13,7 +13,7 @@ import { TEST_BIND_HOST, occupyEphemeral, reserveRange } from './session/port-te
 
 /** Spawn a trivial process and await its exit to obtain a really-dead pid. */
 async function deadChildPid(): Promise<number> {
-  const proc = Bun.spawn(['true'], { stdout: 'ignore', stderr: 'ignore' });
+  const proc = Bun.spawn(['true'], { stdout: 'ignore', stderr: 'ignore', timeout: 5000 });
   await proc.exited;
   return proc.pid;
 }

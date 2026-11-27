@@ -323,9 +323,10 @@ export function withInterprocessFileLock<T>(filePath: string, operation: () => T
 export async function withInterprocessFileLockAsync<T>(
   filePath: string,
   operation: () => T,
+  waitTimeoutMs = LOCK_WAIT_TIMEOUT_MS,
 ): Promise<T> {
   const lock = prepareLock(filePath);
-  const deadline = performance.now() + LOCK_WAIT_TIMEOUT_MS;
+  const deadline = performance.now() + waitTimeoutMs;
   while (performance.now() < deadline) {
     if (publishLock(lock)) return withOwnedLock(lock, operation);
     const snapshot = readLockSnapshot(lock.lockPath);
@@ -333,9 +334,11 @@ export async function withInterprocessFileLockAsync<T>(
       reclaimStaleLock(lock.lockPath, snapshot.owner);
       continue;
     }
-    await Bun.sleep(LOCK_RETRY_DELAY_MS);
+    await Bun.sleep(Math.min(LOCK_RETRY_DELAY_MS, Math.max(0, deadline - performance.now())));
   }
-  throw new InterprocessFileLockError(lock.lockPath, 'timed out waiting for owner');
+  throw new InterprocessFileLockError(lock.lockPath, 'timed out waiting for owner', {
+    retryable: true,
+  });
 }
 
 /**
