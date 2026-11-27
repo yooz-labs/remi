@@ -60,11 +60,6 @@ public struct RemiTranscriptScrollBehavior: ViewModifier {
                     return
                 }
                 if current.remaining <= 1 { followingLayout = false }
-                // AppKit can report a scrollbar or wheel movement without an interactive phase.
-                // A move toward older content with a stable layout also ends following.
-                if !followingLayout && current.offset < previous.offset {
-                    followsLatest = false
-                }
             }
             .onScrollPhaseChange { _, phase in
                 isInteracting = phase == .tracking || phase == .interacting || phase == .decelerating
