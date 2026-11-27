@@ -53,6 +53,8 @@ import type {
 } from '@remi/shared';
 
 import type { Harness } from '../../harness/types.ts';
+import type { Profiles } from '../../profiles/profile-config.ts';
+import type { ProfileSidecar } from '../../profiles/session-owner.ts';
 import { AmbiguousSessionIdentityError, isClaudeRecord } from '../../session/index.ts';
 import type { SessionBindingStore, SessionRegistry, SessionStore } from '../../session/index.ts';
 import type { StoredSession } from '../../session/session-store.ts';
@@ -133,8 +135,12 @@ export interface ResumeSessionHandlerDeps {
    * forgets it fails to compile instead of failing open into running Claude in a hub.
    */
   childSessions: StartChildSession | null;
-  isHiddenResumeOwner: () => (
+  readSidecar: () => ProfileSidecar;
+  readProfiles: () => Profiles;
+  isHiddenResumeOwner: (
     input: StoredSession | { transcriptProfile: string | undefined },
+    sidecar: ProfileSidecar,
+    profiles: Profiles,
   ) => boolean;
   /**
    * The harness this daemon hosts. Anything but Claude refuses resume (#1179). Required with no
@@ -166,7 +172,11 @@ export interface ResumeSessionHandlerDeps {
   now?: () => number;
   /** Builds the launch arguments that resume a stored session (`resumeArgs`). */
   harness: Pick<Harness, 'resumeArgs'>;
-  checkResumeProfile: (claudeSessionId: string) => string | null;
+  checkResumeProfile: (
+    claudeSessionId: string,
+    sidecar: ProfileSidecar,
+    profiles: Profiles,
+  ) => string | null;
   createNewSession: CreateNewSessionFn;
   send: SendToConnection;
 }
@@ -195,8 +205,14 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
    * then a transcript on disk. A record of another harness has no Claude session id, so it is never
    * resumed with Claude's flag.
    */
-  function resolveResumeTarget(targetSessionId: string): ResumeTarget {
-    const isHiddenResumeOwner = deps.isHiddenResumeOwner();
+  function resolveResumeTarget(
+    targetSessionId: string,
+    sidecar: ProfileSidecar,
+    profiles: Profiles,
+  ): ResumeTarget {
+    const isHiddenResumeOwner = (
+      input: StoredSession | { transcriptProfile: string | undefined },
+    ) => deps.isHiddenResumeOwner(input, sidecar, profiles);
     let claudeSessionId: string | null = null;
     let projectPath: string | null = null;
     const shown = shownId(targetSessionId);
@@ -293,8 +309,10 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
     targetSessionId: string,
     requestId: UUID,
     startChild: StartChildSession,
+    sidecar: ProfileSidecar,
+    profiles: Profiles,
   ): Promise<void> {
-    const target = resolveResumeTarget(targetSessionId);
+    const target = resolveResumeTarget(targetSessionId, sidecar, profiles);
     if (!target.ok) {
       send(connectionId, createResumeSessionResponse(false, requestId, undefined, target.error));
       return;
@@ -405,9 +423,19 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
         return;
       }
 
+      const sidecar = deps.readSidecar();
+      const profiles = deps.readProfiles();
+
       // The hub never runs Claude (#1124): it starts a child session daemon that does (#1129).
       if (childSessions !== null) {
-        await resumeThroughHub(connectionId, targetSessionId, requestId, childSessions);
+        await resumeThroughHub(
+          connectionId,
+          targetSessionId,
+          requestId,
+          childSessions,
+          sidecar,
+          profiles,
+        );
         return;
       }
 
@@ -484,14 +512,14 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
       }
 
       // Path 2: transcript-based resume. Resolve a Claude session id + project path.
-      const target = resolveResumeTarget(targetSessionId);
+      const target = resolveResumeTarget(targetSessionId, sidecar, profiles);
       if (!target.ok) {
         send(connectionId, createResumeSessionResponse(false, requestId, undefined, target.error));
         return;
       }
       const { claudeSessionId, workingDirectory } = target;
 
-      const profileRefusal = deps.checkResumeProfile(claudeSessionId);
+      const profileRefusal = deps.checkResumeProfile(claudeSessionId, sidecar, profiles);
       if (profileRefusal) {
         send(
           connectionId,
@@ -535,6 +563,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
           send(
             connectionId,
             createHelloAck('1.0.0', newSessionId, {
+              // Creation writes a new record, so its ack is a separate read phase.
               profile: deps.profileForSession?.(newSessionId),
               resumeInfo: { isResume: false, replayCount: 0, nextBulletId: 1 },
               harnesses: machine?.harnesses ?? harnesses(),

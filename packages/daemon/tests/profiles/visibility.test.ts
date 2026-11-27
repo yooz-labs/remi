@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { inProcessResumeRefusal } from '../../src/profiles/in-process-resume.ts';
 import { parseProfiles } from '../../src/profiles/profile-config.ts';
+import { readProfileSidecar } from '../../src/profiles/session-owner.ts';
 import { sessionProfileRef } from '../../src/profiles/session-profile-ref.ts';
 import {
   deviceDefault,
@@ -45,7 +46,7 @@ test('in-process selection uses current visibility before ownership validation',
     const check = (current: ReturnType<typeof parseProfiles>) =>
       inProcessResumeRefusal(
         store,
-        new SessionProfilesFile(root),
+        readProfileSidecar(new SessionProfilesFile(root)),
         original,
         current,
         'work',

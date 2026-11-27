@@ -101,7 +101,9 @@ test('create and resume routes carry only recordless profile ownership', async (
   try {
     expect((await handlers.startSession(project, { args: ['--resume', profileId] })).ok).toBe(true);
     const resume = createResumeSessionHandlers({
-      isHiddenResumeOwner: () => () => false,
+      readSidecar: () => ({ ok: true, entries: {} }),
+      readProfiles: () => ({ entries: {}, notices: [] }),
+      isHiddenResumeOwner: () => false,
       childSessions: handlers.startSession,
       harnessId: 'claude',
       harnesses: () => ['claude'],

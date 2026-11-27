@@ -121,7 +121,9 @@ for (const visible of [true, false]) {
       };
       assertAck();
       const handler = createResumeSessionHandlers({
-        isHiddenResumeOwner: () => () => false,
+        readSidecar: () => ({ ok: true, entries: {} }),
+        readProfiles: () => ({ entries: {}, notices: [] }),
+        isHiddenResumeOwner: () => false,
         childSessions: null,
         harnessId: 'claude',
         harnesses: () => ['claude'],
@@ -143,7 +145,9 @@ for (const visible of [true, false]) {
       const freshRegistry = new SessionRegistry({ orphanTimeoutMs: 1000 });
       try {
         const handler2 = createResumeSessionHandlers({
-          isHiddenResumeOwner: () => () => false,
+          readSidecar: () => ({ ok: true, entries: {} }),
+          readProfiles: () => ({ entries: {}, notices: [] }),
+          isHiddenResumeOwner: () => false,
           childSessions: null,
           harnessId: 'claude',
           harnesses: () => ['claude'],

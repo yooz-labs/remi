@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { inProcessResumeRefusal } from '../../src/profiles/in-process-resume.ts';
 import { parseProfiles } from '../../src/profiles/profile-config.ts';
 import { resumeProfile } from '../../src/profiles/resume-profile.ts';
+import { readProfileSidecar } from '../../src/profiles/session-owner.ts';
 import { SessionProfilesFile } from '../../src/session/session-profiles-file.ts';
 import { SessionStore, type StoredSession } from '../../src/session/session-store.ts';
 
@@ -36,7 +37,7 @@ test('in-process resume checks real ownership records and conceals read errors',
     const check = (own: string, key = id) =>
       inProcessResumeRefusal(
         store,
-        new SessionProfilesFile(root),
+        readProfileSidecar(new SessionProfilesFile(root)),
         profiles,
         profiles,
         own,
@@ -126,7 +127,7 @@ test('in-process resume returns the ownership refusal and the ambiguity message 
     const refusal = (parsed = profiles) =>
       inProcessResumeRefusal(
         new SessionStore(path.join(root, 'sessions.json')),
-        new SessionProfilesFile(root),
+        readProfileSidecar(new SessionProfilesFile(root)),
         parsed,
         parsed,
         'work',

@@ -84,7 +84,9 @@ describe('createResumeSessionHandlers', () => {
   ) {
     return createResumeSessionHandlers({
       checkResumeProfile: () => null,
-      isHiddenResumeOwner: () => () => false,
+      readSidecar: () => ({ ok: true, entries: {} }),
+      readProfiles: () => ({ entries: {}, notices: [] }),
+      isHiddenResumeOwner: () => false,
       childSessions: null,
       harnessId: 'claude',
       harnesses: () => ['claude'],
@@ -175,7 +177,9 @@ describe('createResumeSessionHandlers', () => {
     } as unknown as SessionStore;
     const handlers = createResumeSessionHandlers({
       checkResumeProfile: () => null,
-      isHiddenResumeOwner: () => () => false,
+      readSidecar: () => ({ ok: true, entries: {} }),
+      readProfiles: () => ({ entries: {}, notices: [] }),
+      isHiddenResumeOwner: () => false,
       childSessions: null,
       harnessId: 'claude',
       harnesses: () => ['claude'],
@@ -213,7 +217,9 @@ describe('createResumeSessionHandlers', () => {
     } as unknown as TranscriptDiscovery;
     const handlers = createResumeSessionHandlers({
       checkResumeProfile: () => null,
-      isHiddenResumeOwner: () => () => false,
+      readSidecar: () => ({ ok: true, entries: {} }),
+      readProfiles: () => ({ entries: {}, notices: [] }),
+      isHiddenResumeOwner: () => false,
       childSessions: null,
       harnessId: 'claude',
       harnesses: () => ['claude'],
@@ -413,7 +419,9 @@ describe('createResumeSessionHandlers', () => {
     function hubHandlers() {
       return createResumeSessionHandlers({
         checkResumeProfile: () => null,
-        isHiddenResumeOwner: () => () => false,
+        readSidecar: () => ({ ok: true, entries: {} }),
+        readProfiles: () => ({ entries: {}, notices: [] }),
+        isHiddenResumeOwner: () => false,
         childSessions: async (directory, extra) => {
           asked.push({ directory, extra });
           await gate;
@@ -567,7 +575,9 @@ describe('createResumeSessionHandlers', () => {
       } as unknown as SessionStore;
       const handlers = createResumeSessionHandlers({
         checkResumeProfile: () => null,
-        isHiddenResumeOwner: () => () => false,
+        readSidecar: () => ({ ok: true, entries: {} }),
+        readProfiles: () => ({ entries: {}, notices: [] }),
+        isHiddenResumeOwner: () => false,
         childSessions: async (directory, extra) => {
           asked.push({ directory, extra });
           return { ok: true, sessionId: CHILD, port: 19931 };
@@ -649,7 +659,9 @@ describe('createResumeSessionHandlers', () => {
       } as unknown as SessionStore;
       const handlers = createResumeSessionHandlers({
         checkResumeProfile: () => null,
-        isHiddenResumeOwner: () => () => false,
+        readSidecar: () => ({ ok: true, entries: {} }),
+        readProfiles: () => ({ entries: {}, notices: [] }),
+        isHiddenResumeOwner: () => false,
         childSessions: async () => ({ ok: true, sessionId: CHILD, port: 19931 }),
         harnessId: 'claude',
         harnesses: () => ['claude'],

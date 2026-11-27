@@ -83,9 +83,10 @@ test('hidden records are concealed before resume resolution errors on both route
     for (const hub of [false, true]) {
       const messages: ProtocolMessage[] = [];
       const handler = createResumeSessionHandlers({
-        isHiddenResumeOwner: () => (input) =>
-          sessionProfileOwner(input, readProfileSidecar(new SessionProfilesFile(root)), profiles)
-            .owner === 'hidden',
+        readSidecar: () => readProfileSidecar(new SessionProfilesFile(root)),
+        readProfiles: () => profiles,
+        isHiddenResumeOwner: (input, snapshot, policy) =>
+          sessionProfileOwner(input, snapshot, policy).owner === 'hidden',
         childSessions: hub
           ? async () => {
               throw new Error('unexpected child');
@@ -150,8 +151,10 @@ test('in-process resume enforces selectability and hides removed profiles', asyn
     let own = 'quiet';
     let creates = 0;
     const handler = createResumeSessionHandlers({
-      isHiddenResumeOwner: () => (input) =>
-        sessionProfileOwner(input, readProfileSidecar(sidecar), current).owner === 'hidden',
+      readSidecar: () => readProfileSidecar(sidecar),
+      readProfiles: () => current,
+      isHiddenResumeOwner: (input, snapshot, policy) =>
+        sessionProfileOwner(input, snapshot, policy).owner === 'hidden',
       childSessions: null,
       harnessId: 'claude',
       harnesses: () => ['claude'],
@@ -160,8 +163,8 @@ test('in-process resume enforces selectability and hides removed profiles', asyn
       bindingStore: new SessionBindingStore(store),
       transcriptDiscovery: discovery,
       harness: new ClaudeHarness(discovery),
-      checkResumeProfile: (id) =>
-        inProcessResumeRefusal(store, sidecar, original, current, own, id, () => {}),
+      checkResumeProfile: (id, snapshot, policy) =>
+        inProcessResumeRefusal(store, snapshot, original, policy, own, id, () => {}),
       createNewSession: async () => {
         creates++;
       },

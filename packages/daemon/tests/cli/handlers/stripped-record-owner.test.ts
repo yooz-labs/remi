@@ -51,8 +51,10 @@ test('stripped hidden ownership stays concealed with intact and damaged sidecars
       for (const hub of [false, true]) {
         const messages: unknown[] = [];
         const handler = createResumeSessionHandlers({
-          isHiddenResumeOwner: () => (input) =>
-            sessionProfileOwner(input, readProfileSidecar(sidecar), profiles).owner === 'hidden',
+          readSidecar: () => readProfileSidecar(sidecar),
+          readProfiles: () => profiles,
+          isHiddenResumeOwner: (input, snapshot, policy) =>
+            sessionProfileOwner(input, snapshot, policy).owner === 'hidden',
           childSessions: hub
             ? async () => {
                 throw new Error('unexpected child');
@@ -113,8 +115,10 @@ test('a profile-free record resumes without a profiles table even if the sidecar
     const discovery = new TranscriptDiscovery({ projectsDir: path.join(root, 'projects') });
     let created = 0;
     const handler = createResumeSessionHandlers({
-      isHiddenResumeOwner: () => (input) =>
-        sessionProfileOwner(input, readProfileSidecar(sidecar), profiles).owner === 'hidden',
+      readSidecar: () => readProfileSidecar(sidecar),
+      readProfiles: () => profiles,
+      isHiddenResumeOwner: (input, snapshot, policy) =>
+        sessionProfileOwner(input, snapshot, policy).owner === 'hidden',
       childSessions: null,
       harnessId: 'claude',
       harnesses: () => ['claude'],
@@ -123,8 +127,8 @@ test('a profile-free record resumes without a profiles table even if the sidecar
       bindingStore: new SessionBindingStore(store),
       transcriptDiscovery: discovery,
       harness: new ClaudeHarness(discovery),
-      checkResumeProfile: (id) =>
-        inProcessResumeRefusal(store, sidecar, profiles, profiles, 'default', id, () => {}),
+      checkResumeProfile: (id, snapshot, policy) =>
+        inProcessResumeRefusal(store, snapshot, profiles, policy, 'default', id, () => {}),
       createNewSession: async () => {
         created++;
       },

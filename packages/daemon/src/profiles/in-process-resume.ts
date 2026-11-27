@@ -1,14 +1,13 @@
-import type { SessionProfilesFile } from '../session/session-profiles-file.ts';
 import { AmbiguousSessionIdentityError, type SessionStore } from '../session/session-store.ts';
 import type { Profiles } from './profile-config.ts';
 import { resumeProfile } from './resume-profile.ts';
-import { readProfileSidecar, sessionProfileOwner } from './session-owner.ts';
+import { type ProfileSidecar, sessionProfileOwner, sidecarGetter } from './session-owner.ts';
 import { isProfileSelectable } from './visibility.ts';
 
 /** Check that an in-process resume cannot cross profile boundaries. */
 export function inProcessResumeRefusal(
   store: Pick<SessionStore, 'findResumableByClaudeSessionId'>,
-  sidecar: SessionProfilesFile,
+  sidecar: ProfileSidecar,
   profiles: Profiles,
   currentProfiles: Profiles,
   ownProfile: string,
@@ -21,7 +20,7 @@ export function inProcessResumeRefusal(
       return ownProfile === 'default'
         ? null
         : 'This session has no remi record, so its profile cannot be confirmed. Resume it through the hub or with remi --resume on the machine.';
-    const owner = sessionProfileOwner(record, readProfileSidecar(sidecar), currentProfiles);
+    const owner = sessionProfileOwner(record, sidecar, currentProfiles);
     if (owner.owner === 'hidden') return 'That session was not found on this machine.';
     const id = owner.owner === 'profile' ? owner.id : 'default';
     if (
@@ -34,7 +33,7 @@ export function inProcessResumeRefusal(
     // Revision validation uses the configuration this process launched with;
     // current visibility and selectability were checked above.
     const validationProfiles = profiles;
-    const checked = resumeProfile(record, validationProfiles, sidecar);
+    const checked = resumeProfile(record, validationProfiles, sidecarGetter(sidecar));
     if ('error' in checked) return checked.error;
     return checked.id === ownProfile
       ? null

@@ -2852,11 +2852,10 @@ const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers
     );
     return sessionProfileRef(owner, record?.profileSnapshot, profiles);
   },
-  isHiddenResumeOwner: () => {
-    const sidecar = remoteProfileSidecar();
-    const profiles = currentProfilesStrict();
-    return (input) => sessionProfileOwner(input, sidecar, profiles).owner === 'hidden';
-  },
+  readSidecar: remoteProfileSidecar,
+  readProfiles: currentProfilesStrict,
+  isHiddenResumeOwner: (input, sidecar, profiles) =>
+    sessionProfileOwner(input, sidecar, profiles).owner === 'hidden',
   machine: machineDescriptor,
   currentOwnedSession,
   capabilitiesForConnection,
@@ -2873,12 +2872,12 @@ const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers
   bindingStore,
   transcriptDiscovery,
   harness,
-  checkResumeProfile: (claudeSessionId) =>
+  checkResumeProfile: (claudeSessionId, sidecar, profiles) =>
     inProcessResumeRefusal(
       sessionStore,
-      new SessionProfilesFile(REMI_DIR),
+      sidecar,
       remiConfig.profiles,
-      currentProfilesStrict(),
+      profiles,
       profileMetadata?.profile ?? 'default',
       claudeSessionId,
       log,
