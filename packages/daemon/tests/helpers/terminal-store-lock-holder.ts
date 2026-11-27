@@ -6,7 +6,8 @@ export function runTerminalStoreLockHolder(args: readonly string[]) {
   const [file, prefix] = args;
   assert(file && prefix);
   withInterprocessFileLockNonblocking(file, () => {
-    fs.writeFileSync(`${prefix}.ready`, JSON.stringify({ pid: process.pid }), { mode: 0o600 });
+    fs.writeFileSync(`${prefix}.ready.tmp`, JSON.stringify({ pid: process.pid }), { mode: 0o600 });
+    fs.renameSync(`${prefix}.ready.tmp`, `${prefix}.ready`);
     const end = performance.now() + 10000;
     while (!fs.existsSync(`${prefix}.go`)) {
       assert(performance.now() < end, 'owned actual store lock release deadline');
