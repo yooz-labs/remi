@@ -120,52 +120,81 @@ for (const visible of [true, false]) {
         messages.length = 0;
       };
       assertAck();
-      const handler = createResumeSessionHandlers({
-        readSidecar: () => ({ ok: true, entries: {} }),
-        readProfiles: () => ({ entries: {}, notices: [] }),
-        isHiddenResumeOwner: () => false,
-        childSessions: null,
-        harnessId: 'claude',
-        harnesses: () => ['claude'],
-        sessionRegistry: registry,
+      // The real resume dependencies, as cli.ts wires them.
+      const resumeDeps = {
+        readSidecar: sidecar,
+        readProfiles: () => profiles,
+        isHiddenResumeOwner: (
+          input: Parameters<typeof sessionProfileOwner>[0],
+          snapshot: Parameters<typeof sessionProfileOwner>[1],
+          policy: Parameters<typeof sessionProfileOwner>[2],
+        ) => sessionProfileOwner(input, snapshot, policy).owner === 'hidden',
+        harnessId: 'claude' as const,
+        harnesses: () => ['claude' as const],
         sessionStore: store,
         bindingStore: binding,
         transcriptDiscovery: discovery,
         harness,
         checkResumeProfile: () => null,
         profileForSession,
+        send,
+      };
+      // Reattaching a live session (J23 (a)): the ack at :407.
+      const handler = createResumeSessionHandlers({
+        ...resumeDeps,
+        childSessions: null,
+        sessionRegistry: registry,
         createNewSession: async () => {
           throw new Error('unexpected create');
         },
-        send,
       });
       await handler.onResumeSessionRequest(generateId(), id, generateId());
       assertAck();
       await registry.shutdown();
       const freshRegistry = new SessionRegistry({ orphanTimeoutMs: 1000 });
       try {
+        let created = 0;
+        const createNewSession = async (newId: string) => {
+          created++;
+          save(newId, generateId());
+          freshRegistry.registerSession(newId, root, pty(), api());
+        };
+        // A new session from the record: the ack at :515.
         const handler2 = createResumeSessionHandlers({
-          readSidecar: () => ({ ok: true, entries: {} }),
-          readProfiles: () => ({ entries: {}, notices: [] }),
-          isHiddenResumeOwner: () => false,
+          ...resumeDeps,
           childSessions: null,
-          harnessId: 'claude',
-          harnesses: () => ['claude'],
           sessionRegistry: freshRegistry,
-          sessionStore: store,
-          bindingStore: binding,
-          transcriptDiscovery: discovery,
-          harness,
-          checkResumeProfile: () => null,
-          profileForSession,
-          createNewSession: async (newId) => {
-            save(newId, generateId());
-            freshRegistry.registerSession(newId, root, pty(), api());
-          },
-          send,
+          createNewSession,
         });
         await handler2.onResumeSessionRequest(generateId(), id, generateId());
-        assertAck();
+        if (visible) {
+          assertAck();
+          expect(created).toBe(1);
+        } else {
+          // The real handler never gets that far for a hidden owner: the unknown-id answer.
+          expect(messages).toMatchObject([
+            {
+              type: 'resume_session_response',
+              success: false,
+              error: `Session ${id} not found. No Claude session ID available for resume.`,
+            },
+          ]);
+          expect(created).toBe(0);
+          messages.length = 0;
+          // The ack's own omission is a backstop for a session that becomes hidden after the
+          // request's check (the ack reads the policy again, after the new record is written).
+          // Only a handler whose check passes reaches it, hence this check stubbed open.
+          const handler3 = createResumeSessionHandlers({
+            ...resumeDeps,
+            isHiddenResumeOwner: () => false,
+            childSessions: null,
+            sessionRegistry: freshRegistry,
+            createNewSession,
+          });
+          await handler3.onResumeSessionRequest(generateId(), id, generateId());
+          assertAck();
+          expect(created).toBe(1);
+        }
       } finally {
         await freshRegistry.shutdown();
       }

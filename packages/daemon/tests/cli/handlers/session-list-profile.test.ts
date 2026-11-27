@@ -53,8 +53,19 @@ test('session lists use sidecar ownership for profile labels and hidden entries'
       exitCode: null,
       ...(profile && { profile, profileSnapshot: { revision, label: 'Snapshot' } }),
     });
-    const discovery = new TranscriptDiscovery({ projectsDir: path.join(root, 'projects') });
-    const build = (policy: Profiles = profiles) =>
+    // Positive control: a visible profile's external transcript, listed while hidden ones drop.
+    const workProjects = path.join(root, 'work-projects');
+    const visibleId = crypto.randomUUID();
+    fs.mkdirSync(path.join(workProjects, '-project'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workProjects, '-project', `${visibleId}.jsonl`),
+      `${JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { role: 'user', content: 'hello' } })}\n`,
+    );
+    const discovery = new TranscriptDiscovery({
+      projectsDir: path.join(root, 'projects'),
+      profileRoots: () => [{ profile: 'work', projectsDir: workProjects }],
+    });
+    const list = (policy: Profiles = profiles) =>
       buildSessionList(
         {
           profiles: () => policy,
@@ -67,7 +78,8 @@ test('session lists use sidecar ownership for profile labels and hidden entries'
           harness: new ClaudeHarness(discovery),
         },
         true,
-      ).own;
+      );
+    const build = (policy: Profiles = profiles) => list(policy).own;
     const check = (profile: string, revision: string, expected: SessionProfileRef | undefined) => {
       store.save(record(profile, revision), { profile, revision });
       new SessionProfilesFile(root).reconcile([id], { id, profile, revision });
@@ -85,6 +97,10 @@ test('session lists use sidecar ownership for profile labels and hidden entries'
     expect(build({ error: 'invalid' })).toEqual([]);
     check('secret', 'old', undefined);
     expect(build()).toEqual([]);
+    expect(list().external).toMatchObject([
+      { sessionId: visibleId, profile: { id: 'work', label: 'Work', state: 'current' } },
+    ]);
+    expect(list({ error: 'invalid' }).external).toEqual([]);
     store.save(record());
     expect(build()).toEqual([]);
     fs.writeFileSync(path.join(root, 'session-profiles.json'), '{');

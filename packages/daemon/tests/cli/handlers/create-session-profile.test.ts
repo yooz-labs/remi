@@ -6,7 +6,16 @@ import { createCreateSessionHandlers } from '../../../src/cli/handlers/create-se
 import { validateClaudeRemoteArgs } from '../../../src/harness/claude-args.ts';
 import { HarnessRegistry } from '../../../src/harness/registry.ts';
 import { parseProfiles } from '../../../src/profiles/profile-config.ts';
+import {
+  RemotePolicyScope,
+  makeResumeOwner,
+  readProfileSidecar,
+} from '../../../src/profiles/session-owner.ts';
+import { visibleProfileRoots } from '../../../src/profiles/visibility.ts';
+import { SessionProfilesFile } from '../../../src/session/session-profiles-file.ts';
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
+import { SessionStore } from '../../../src/session/session-store.ts';
+import { TranscriptDiscovery } from '../../../src/transcript/transcript-discovery.ts';
 import { emptySidecar, noResumeOwner } from '../../helpers/no-profiles-policy.ts';
 
 test('invalid profile configuration refuses creates before reservation or spawn', async () => {
@@ -201,6 +210,102 @@ test('create and resume enforce selection before reserving a port', async () => 
     expect(spawned[1]?.slice(0, 4)).toEqual(['--remi-profile', 'work', '--harness', 'claude']);
     expect(spawned[2]).not.toContain('--remi-profile');
     expect(spawned[3]?.slice(0, 4)).toEqual(['--remi-profile', 'work', '--harness', 'claude']);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the real resume owner resolver pins a record-less transcript to its root', async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'p2b-resume-owner-')));
+  try {
+    const workDir = path.join(root, 'work-config');
+    const secretDir = path.join(root, 'P2B-MARKER-HIDDEN');
+    const profiles = parseProfiles({
+      work: {
+        label: 'Work',
+        remote_selectable: true,
+        claude: { expects: 'subscription', dir: workDir },
+      },
+      secret: {
+        label: 'Secret label',
+        remote_visible: false,
+        claude: { expects: 'subscription', dir: secretDir },
+      },
+    });
+    if ('error' in profiles) throw new Error(profiles.error);
+    const transcript = (dir: string) => {
+      const id = crypto.randomUUID();
+      const project = path.join(dir, 'projects', '-project');
+      fs.mkdirSync(project, { recursive: true });
+      fs.writeFileSync(
+        path.join(project, `${id}.jsonl`),
+        `${JSON.stringify({ type: 'user', uuid: 'u1', sessionId: id, cwd: root, timestamp: new Date().toISOString(), message: { role: 'user', content: 'x' } })}\n`,
+      );
+      return id;
+    };
+    const workTranscript = transcript(workDir);
+    // The hub lists only visible roots, so a hidden root's transcript is not found at all.
+    const secretTranscript = transcript(secretDir);
+    const store = new SessionStore(path.join(root, 'sessions.json'));
+    const revision = profiles.entries['work']?.revision ?? '';
+    const recordClaudeId = crypto.randomUUID();
+    store.save(
+      {
+        remiSessionId: crypto.randomUUID(),
+        claudeSessionId: recordClaudeId,
+        projectPath: root,
+        port: 19200,
+        pid: null,
+        startedAt: new Date().toISOString(),
+        exitedAt: new Date().toISOString(),
+        exitCode: 0,
+        profile: 'work',
+        profileSnapshot: { revision },
+      },
+      { profile: 'work', revision },
+    );
+    const scope = new RemotePolicyScope(
+      () => profiles,
+      () => readProfileSidecar(new SessionProfilesFile(root)),
+    );
+    const discovery = new TranscriptDiscovery({
+      projectsDir: path.join(root, 'default'),
+      profileRoots: () => visibleProfileRoots(profiles, scope.profiles()),
+    });
+    const spawned: string[][] = [];
+    const handler = createCreateSessionHandlers({
+      profiles: scope.profiles,
+      sidecar: scope.sidecar,
+      resumeOwner: makeResumeOwner({
+        sessionStore: store,
+        discovery,
+        within: (fn, snapshot) => scope.run(fn, snapshot),
+      }),
+      harnesses: new HarnessRegistry({
+        claude: { command: '/bin/sh', validateRemoteArgs: validateClaudeRemoteArgs },
+      }),
+      liveSessionsRegistry: new SessionRegistryFile(path.join(root, 'live')),
+      spawningPorts: new Set(),
+      basePort: 19200,
+      portRange: 1,
+      bindHost: '127.0.0.1',
+      inheritedArgs: () => [],
+      findAvailableTcpPort: async () => 19200,
+      spawnDaemon: async (_port, _directory, args) => {
+        spawned.push(args);
+        return { sessionId: crypto.randomUUID(), port: 19200, pid: 1 };
+      },
+      send: () => true,
+    });
+    const resume = (id: string) =>
+      scope.run(() => handler.startSession(root, { args: ['--resume', id] }));
+    expect((await resume(workTranscript)).ok).toBe(true);
+    expect(spawned[0]?.slice(0, 4)).toEqual(['--remi-profile', 'work', '--harness', 'claude']);
+    expect((await resume(recordClaudeId)).ok).toBe(true);
+    expect(spawned[1]).not.toContain('--remi-profile');
+    // Not found by the hub's discovery: an unknown id is a create in the folder's default.
+    expect((await resume(secretTranscript)).ok).toBe(true);
+    expect(spawned[2]?.slice(0, 4)).toEqual(['--remi-profile', 'default', '--harness', 'claude']);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

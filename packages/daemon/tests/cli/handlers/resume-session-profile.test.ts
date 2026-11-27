@@ -30,6 +30,8 @@ test('hidden records are concealed before resume resolution errors on both route
         claude: { expects: 'subscription', dir: path.join(root, 'hidden') },
       },
     });
+    // A table the loader refused would make every owner hidden and pass for the wrong reason.
+    if ('error' in profiles) throw new Error(profiles.error);
     store.save(
       {
         remiSessionId: target,
@@ -144,6 +146,7 @@ test('in-process resume enforces selectability and hides removed profiles', asyn
       work: { label: 'Work', remote_selectable: true, claude: { expects: 'subscription' } },
       quiet: { label: 'Quiet', claude: { expects: 'subscription' } },
     });
+    if ('error' in current) throw new Error(current.error);
     const store = new SessionStore(path.join(root, 'sessions.json'));
     const sidecar = new SessionProfilesFile(root);
     const discovery = new TranscriptDiscovery({ projectsDir: path.join(root, 'projects') });
@@ -213,6 +216,7 @@ test('in-process resume enforces selectability and hides removed profiles', asyn
       error: `Session ${removed} not found. No Claude session ID available for resume.`,
     });
     current = parseProfiles(undefined);
+    if ('error' in current) throw new Error(current.error);
     await handler.onResumeSessionRequest(generateId(), removed, generateId());
     expect(messages.at(-1)).toMatchObject({
       success: false,
