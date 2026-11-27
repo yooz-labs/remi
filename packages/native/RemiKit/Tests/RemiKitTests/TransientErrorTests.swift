@@ -6,7 +6,7 @@ import Testing
 @Suite struct TransientErrorTests {
     @MainActor private func makeStore() -> MachineStore {
         MachineStore(
-            endpoints: [MachineEndpoint(host: "127.0.0.1", port: 18765)],
+            endpoints: [MachineEndpoint(host: "127.0.0.1", port: closedLoopbackPort)],
             identity: ClientIdentity(), clientVersion: "test", clientId: "test-client")
     }
 
