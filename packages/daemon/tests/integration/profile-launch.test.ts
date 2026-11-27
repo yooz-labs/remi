@@ -14,6 +14,7 @@ import {
   PROFILE_CREDENTIAL_ENV,
   PROFILE_CREDENTIAL_ENV_PREFIXES,
 } from '../../src/profiles/profile-env.ts';
+import { SessionStore } from '../../src/session/session-store.ts';
 import { FakeAppServer } from '../helpers/fake-app-server.ts';
 import { reserveRange } from '../session/port-test-helpers.ts';
 import {
@@ -857,10 +858,12 @@ test('hub resumes the recorded profile and reports a refused child', async () =>
     expect(fs.existsSync(path.join(f.output, 'argv'))).toBe(false);
     const expectedRefusal =
       "The session's profile could not start. Run remi profile ls on the machine.";
+    // A session whose profile is no longer configured is hidden from devices (PR 1828 round 1,
+    // L1): the hub answers as for an unknown id, before any text that would name the profile.
     expect([codexOnly.error, refused.error, removed.error]).toEqual([
       'This profile does not configure that harness.',
       expectedRefusal,
-      expectedRefusal,
+      `Session ${first.sessionId} not found. No Claude session ID available for resume.`,
     ]);
   } finally {
     fs.writeFileSync(path.join(f.output, 'release'), '');
@@ -1171,10 +1174,25 @@ for (const configured of [true, false]) {
       ).toBe(true);
       // A sibling daemon registering is what the live-sessions census pushes a list for.
       const siblingPort = 49321;
+      const siblingId = crypto.randomUUID();
+      // With profiles configured, a live sibling is listed only once its record names its owner
+      // (PR 1828 round 1, L3); a real child writes it right after registering, and rewrites its
+      // live entry when its agent starts. Without a [profiles] table no record is needed.
+      if (configured)
+        new SessionStore(path.join(f.home, '.remi', 'sessions.json')).save({
+          remiSessionId: siblingId,
+          claudeSessionId: null,
+          projectPath: f.work,
+          port: siblingPort,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          exitedAt: null,
+          exitCode: null,
+        });
       fs.writeFileSync(
         path.join(f.home, '.remi', 'live-sessions', 'sibling.json'),
         JSON.stringify({
-          sessionId: crypto.randomUUID(),
+          sessionId: siblingId,
           pid: process.pid,
           wsPort: siblingPort,
           hookPort: siblingPort + 1,
