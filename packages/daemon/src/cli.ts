@@ -2471,9 +2471,8 @@ const promptUpWiring = promptUpDeps(
   (sessionId) => harnessSessions.get(sessionId)?.decisions.screen,
 );
 
-// #1818: Claude's `UserPromptSubmit` hook confirms a typed chat message to the connection that
-// sent it, and only to one that listed `chat_acceptance` in its `hello_ack`. The tracker is
-// shared by the input handler (records) and the hook bridge (resolves).
+// #1818/#1838: a Claude hook or queued transcript attachment confirms a typed chat message
+// only to its originating capable connection. Input, hook and watcher share this tracker.
 const chatAcceptance = new ChatAcceptanceTracker({
   send: sendToConnection,
   // Both sides must agree: this daemon lists the capability for the connection, and the client's

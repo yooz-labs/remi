@@ -102,6 +102,37 @@ describe('createTranscriptHandlers', () => {
     return filePath;
   }
 
+  test('history load includes the queued human prompt', async () => {
+    const claudeSessionId = '11111111-1111-1111-1111-111111111111';
+    writeTranscript(claudeSessionId, [
+      { type: 'queue-operation', operation: 'enqueue' },
+      {
+        type: 'attachment',
+        uuid: 'queued',
+        sessionId: claudeSessionId,
+        timestamp: '2026-11-27T12:00:00.000Z',
+        attachment: {
+          type: 'queued_command',
+          prompt: 'continue',
+          commandMode: 'prompt',
+          origin: { kind: 'human' },
+          timestamp: '2026-11-27T12:00:00.000Z',
+        },
+      },
+      { type: 'queue-operation', operation: 'remove' },
+      { type: 'summary', summary: 'end', leafUuid: 'end' },
+    ]);
+    makeHandlers().onTranscriptLoadRequest(CID, claudeSessionId, REQ);
+    await waitForMessages(sendCalls, (calls) =>
+      calls.some((c) => c.message.type === 'transcript_load_complete'),
+    );
+    const entries = sendCalls
+      .map((c) => c.message)
+      .filter((message) => message.type === 'transcript_content');
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ entryUuid: 'queued', role: 'user', content: 'continue' });
+  });
+
   test('sends NOT_FOUND when the session id has no transcript and no active watcher', async () => {
     makeHandlers().onTranscriptLoadRequest(CID, 'bogus0-0000-0000-0000-000000000000', REQ);
 

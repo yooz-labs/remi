@@ -7,7 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type ProtocolMessage, type UUID, generateId } from '@remi/shared';
@@ -53,6 +53,7 @@ describe('chat acceptance through the hook bridge (#1818)', () => {
   let server: HookServer;
   let handle: HookBridgeHandle;
   let sent: Sent[];
+  let liveEntries: ProtocolMessage[];
   let clock: number;
   let sessionId: UUID;
   let claudeId: string;
@@ -68,6 +69,7 @@ describe('chat acceptance through the hook bridge (#1818)', () => {
     home = mkdtempSync(join(tmpdir(), 'remi-chat-acceptance-'));
     ptyOutput = '';
     sent = [];
+    liveEntries = [];
     clock = 1_000_000;
     promptUp = null;
     afterTextBeforeEnter = () => {};
@@ -140,7 +142,9 @@ describe('chat acceptance through the hook bridge (#1818)', () => {
         sessionId,
         workingDirectory: home,
         messageApi,
-        sendAndRecord: () => {},
+        sendAndRecord: (message) => {
+          liveEntries.push(message);
+        },
         tracker: new QuestionPresenceTracker((q) => messageApi.handleQuestion(q)),
         hasLocalTerminal: true,
       },
@@ -194,6 +198,134 @@ describe('chat acceptance through the hook bridge (#1818)', () => {
     await handlers.onUserInput(connection, sessionId, text, false, undefined, messageId);
     return messageId;
   };
+
+  function queued(prompt: string, time: number, uuid: string): string {
+    return `${JSON.stringify({ type: 'attachment', uuid, sessionId: claudeId, timestamp: new Date(time).toISOString(), attachment: { type: 'queued_command', prompt, source_uuid: `source-${uuid}`, delivery_id: `delivery-${uuid}`, commandMode: 'prompt', origin: { kind: 'human' }, timestamp: new Date(time).toISOString(), humanTurn: true } })}\n`;
+  }
+
+  async function startTail(contents = ''): Promise<string> {
+    const file = join(home, `${claudeId}.jsonl`);
+    writeFileSync(file, contents);
+    await until(() => watchers.get(sessionId)?.isTailing === true, 'live transcript tail');
+    return file;
+  }
+
+  test('replay never accepts and live attachments must follow the send time', async () => {
+    const messageId = await send(CONN_A, 'continue');
+    const file = await startTail(
+      queued('continue', clock - 1000, 'old') + queued('continue', clock + 1000, 'future-replay'),
+    );
+    await until(
+      () =>
+        liveEntries.some(
+          (entry) => entry.type === 'transcript_content' && entry.entryUuid === 'old',
+        ),
+      'old replay',
+    );
+    expect(results()).toEqual([]);
+    expect(
+      liveEntries.some(
+        (entry) => entry.type === 'transcript_content' && entry.entryUuid === 'future-replay',
+      ),
+    ).toBe(true);
+    appendFileSync(file, queued('continue', clock - 1, 'early-live'));
+    appendFileSync(file, queued('different', clock + 1000, 'different'));
+    await until(
+      () =>
+        liveEntries.some(
+          (entry) => entry.type === 'transcript_content' && entry.entryUuid === 'different',
+        ),
+      'early live entries',
+    );
+    expect(results()).toEqual([]);
+    appendFileSync(file, queued('continue', clock + 1000, 'new'));
+    await until(() => results().length === 1, 'queued acceptance');
+    expect(results()[0]).toMatchObject({
+      connectionId: CONN_A,
+      message: { sessionId, messageId, outcome: 'accepted' },
+    });
+    await until(
+      () =>
+        liveEntries.some(
+          (entry) => entry.type === 'transcript_content' && entry.entryUuid === 'new',
+        ),
+      'live queued entry',
+    );
+    await submitted('continue');
+    expect(results()).toHaveLength(1);
+    appendFileSync(file, queued('continue', clock + 1000, 'new'));
+    await watchers.get(sessionId)?.forceRead();
+    expect(results()).toHaveLength(1);
+  });
+
+  test('attachment and admitted hook together leave a second identical message pending', async () => {
+    const first = await send(CONN_A, 'again');
+    await send(CONN_B, 'again');
+    const file = await startTail();
+    appendFileSync(file, queued('again', clock + 1000, 'once'));
+    await until(() => results().length === 1, 'first queued acceptance');
+    await submitted('again');
+    expect(results().map((result) => result.message.messageId)).toEqual([first]);
+  });
+
+  test('two live attachments confirm two identical submissions in FIFO order', async () => {
+    const first = await send(CONN_A, 'again');
+    const second = await send(CONN_B, 'again');
+    const file = await startTail();
+    appendFileSync(
+      file,
+      queued('again', clock + 1000, 'first') + queued('again', clock + 1000, 'second'),
+    );
+    await until(() => results().length === 2, 'both queued acceptances');
+    expect(results().map((result) => [result.connectionId, result.message.messageId])).toEqual([
+      [CONN_A, first],
+      [CONN_B, second],
+    ]);
+  });
+
+  test('send time is captured before the PTY writes, not after its Enter', async () => {
+    const beforeWrite = clock;
+    afterTextBeforeEnter = () => {
+      clock += 2000;
+    };
+    const messageId = await send(CONN_A, 'timing');
+    const file = await startTail();
+    appendFileSync(file, queued('timing', beforeWrite + 1000, 'timing'));
+    await until(() => results().length === 1, 'queued acceptance after send time');
+    expect(results()[0]?.message.messageId).toBe(messageId);
+  });
+
+  test('hook before attachment does not confirm the next identical message', async () => {
+    const first = await send(CONN_A, 'again');
+    await send(CONN_B, 'again');
+    const file = await startTail();
+    await submitted('again');
+    appendFileSync(file, queued('again', clock + 1000, 'later'));
+    await until(
+      () =>
+        liveEntries.some(
+          (entry) => entry.type === 'transcript_content' && entry.entryUuid === 'later',
+        ),
+      'later queued entry',
+    );
+    expect(results().map((result) => result.message.messageId)).toEqual([first]);
+  });
+
+  test('sidechain attachments do not confirm main-agent chat', async () => {
+    await send(CONN_A, 'continue');
+    const line = JSON.parse(queued('continue', clock + 1000, 'sidechain'));
+    line.isSidechain = true;
+    const file = await startTail();
+    appendFileSync(file, `${JSON.stringify(line)}\n`);
+    await until(
+      () =>
+        liveEntries.some(
+          (entry) => entry.type === 'transcript_content' && entry.entryUuid === 'sidechain',
+        ),
+      'sidechain entry',
+    );
+    expect(results()).toEqual([]);
+  });
 
   test('Claude reporting the typed text confirms that message to its sender only', async () => {
     const messageId = await send(CONN_A, 'please run the tests');

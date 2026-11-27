@@ -76,6 +76,9 @@ interface TranscriptEntryBase {
 /** A user message entry */
 export interface UserEntry extends TranscriptEntryBase {
   readonly type: 'user';
+  /** Present only for a converted human queued command; used for replay-safe acceptance. */
+  readonly queuedCommandTimestamp?: unknown;
+  readonly queuedCommandMainAgent?: boolean;
   readonly message: {
     readonly role: 'user';
     readonly content: string | readonly ContentBlock[];
@@ -118,7 +121,7 @@ export type TranscriptEntry = UserEntry | AssistantEntry | SummaryEntry | FileHi
 /** Events emitted by the transcript watcher */
 export interface TranscriptWatcherEvents {
   /** New user message entry */
-  onUserMessage?: (entry: UserEntry) => void;
+  onUserMessage?: (entry: UserEntry, liveAppend: boolean) => void;
 
   /** New assistant message entry */
   onAssistantMessage?: (entry: AssistantEntry) => void;

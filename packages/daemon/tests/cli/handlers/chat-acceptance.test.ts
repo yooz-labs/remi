@@ -59,6 +59,41 @@ describe('isTrackableChat', () => {
 });
 
 describe('ChatAcceptanceTracker', () => {
+  test('cross-kind signals do not confirm a second identical submission', () => {
+    const timestamp = new Date(1000).toISOString();
+    for (const first of ['attachment', 'hook'] as const) {
+      const { tracker, sent, advance } = setup();
+      tracker.record(SESSION, id(1), 'again', CONN_A);
+      tracker.record(SESSION, id(2), 'again', CONN_B);
+      if (first === 'attachment') {
+        expect(tracker.queuedCommand(SESSION, 'again', timestamp, 'q1')).toBe(true);
+        expect(tracker.promptSubmitted(SESSION, 'again')).toBe(false);
+        expect(tracker.queuedCommand(SESSION, 'again', timestamp, 'q1')).toBe(false);
+      } else {
+        expect(tracker.promptSubmitted(SESSION, 'again')).toBe(true);
+        expect(tracker.queuedCommand(SESSION, 'again', timestamp, 'q1')).toBe(false);
+      }
+      expect(sent).toHaveLength(1);
+      advance(10_000);
+      expect(tracker.queuedCommand(SESSION, 'again', timestamp, 'q2')).toBe(true);
+      expect(sent.map((s) => s.connectionId)).toEqual([CONN_A, CONN_B]);
+    }
+  });
+
+  test('two different attachments confirm identical texts FIFO', () => {
+    const { tracker, sent } = setup();
+    tracker.record(SESSION, id(1), 'again', CONN_A);
+    tracker.record(SESSION, id(2), 'again', CONN_B);
+    expect(tracker.queuedCommand(SESSION, 'different', new Date(1000).toISOString(), 'other')).toBe(
+      false,
+    );
+    expect(tracker.queuedCommand(SESSION, 'again', undefined, 'q0')).toBe(false);
+    expect(tracker.queuedCommand(SESSION, 'again', 'bad', 'q0')).toBe(false);
+    expect(tracker.queuedCommand(SESSION, 'again', new Date(1000).toISOString(), 'q1')).toBe(true);
+    expect(tracker.queuedCommand(SESSION, 'again', new Date(1000).toISOString(), 'q2')).toBe(true);
+    expect(sent.map((s) => s.connectionId)).toEqual([CONN_A, CONN_B]);
+  });
+
   test('an equal prompt resolves the message and tells only its connection', () => {
     const { tracker, sent } = setup();
     expect(tracker.record(SESSION, id(1), 'hello', CONN_A)).toBe(true);

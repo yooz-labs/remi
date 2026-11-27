@@ -317,12 +317,14 @@ row) onto the option above, at most two rows, never across footer rows
 at the first such row and drop every later option, "No" included.
 
 
-**A sent chat message is confirmed by Claude's own `UserPromptSubmit`** (#1818).
+**A sent chat message is confirmed by Claude's hook or queued transcript attachment** (#1818, #1838).
 A chat message typed into Claude's terminal used to be answered only by the `ack` (the daemon received it) and, on refusal, an `error` naming its `messageId`.
 Nothing said that Claude took that message, so the native apps could only call it "handed to connection".
-Claude's `UserPromptSubmit` hook is that signal, and the daemon already receives it.
-After `onUserInput` has written a message's text and its Enter (`pty.submitInput` returned without a refusal), `ChatAcceptanceTracker` (`cli/handlers/chat-acceptance.ts`) records `{messageId, text, sender connection, deadline}`.
+Claude's admitted `UserPromptSubmit` hook and a human prompt `queued_command` attachment are acceptance signals.
+Immediately before writing text, `onUserInput` captures the send time; after text and Enter are written without refusal, `ChatAcceptanceTracker` (`cli/handlers/chat-acceptance.ts`) records `{messageId, text, sender connection, send time, deadline}`.
 An admitted main-agent `UserPromptSubmit` (`binder.admits`, no `agent_id`; the listener in `hook-bridge-setup.ts`) whose `prompt` equals a recorded text exactly resolves the oldest unexpired entry with that text and sends one `user_input_result {sessionId, messageId, outcome: "accepted"}` to the connection that sent the message, and to no other.
+A human queued attachment read as a live append also confirms the oldest matching entry when its own parseable ISO timestamp is at or after the send time; missing or invalid timestamps and replayed lines confirm nothing.
+For ten seconds after either signal confirms a text, the other kind with that same text confirms nothing; signals of the same kind still match FIFO. This can leave two identical submissions made through different paths uncertain.
 The match is plain string equality with no normalization, because the writer types the text unchanged and then a CR.
 A text with a control character other than a newline (CR, Escape, Tab, DEL, C1) is not recorded: the terminal interprets it, so what Claude submits is not the text, and that message stays unconfirmed.
 Blank text is not recorded either.
@@ -342,14 +344,14 @@ The web client has no "unconfirmed" bubble state (its states are sent, delivered
 The native apps settle the message in `OutgoingMessages.receive(_ result:)` when the result names the same session, message id and authenticated socket as the send.
 The accepted message stays, drawn as an ordinary sent bubble, until the transcript shows it: a user entry with the same text that the client first received after it tracked the message (an earlier identical prompt typed at the terminal cannot retire it), stamped no earlier than the send (less 120 seconds of clock skew).
 Each entry retires at most one accepted message, the oldest first, so one entry never removes two identical rows.
-That text match only reconciles the display, since acceptance already came from the hook.
+That text match only reconciles the display, since acceptance already came from a Claude signal.
 With no transcript loaded it stays until dismissed, until the session's own connection ends or it is killed (the proven rows go; unsettled ones stay for recovery).
-A row whose text Claude stores differently (a slash-command expansion, attachments) never matches and stays until dismissed or the session ends.
+A row whose text Claude stores differently (for example, a slash-command expansion) never matches and stays until dismissed or the session ends.
 An accepted message is evicted when a retention bound would refuse a new send, but only if evicting it makes that send fit; otherwise nothing is evicted.
 While a capable daemon has not confirmed, the pending row reads "Sending to agent" (`RemiOutgoingState.awaitingAgent`); it falls back to the existing uncertain warning after `MachineStore.acceptanceWait` (45 seconds), and a late result still clears it.
 A daemon without the capability keeps the old copy.
 Limits of exact-text matching: two pending messages with identical text resolve first in, first out, so a result may be attributed to the older one; and a prompt typed at the terminal that is identical to a pending phone message confirms it.
-Both only move an acceptance between messages Claude did take with that text.
+For either the hook or a queued attachment, if Claude did not take the daemon submission, a later identical prompt typed at the terminal can confirm the pending message; the confirmed text did reach Claude, but the original submission is not identified (#1838).
 Codex chat has its own accepted result (ADR 0043) and sends none of this.
 
 **Subagent permissions follow the terminal**
