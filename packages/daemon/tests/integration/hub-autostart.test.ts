@@ -520,3 +520,27 @@ test('launcher redacts additions to the shared secret environment list', async (
   expect(log).toContain('[REDACTED]');
   expect(log).not.toContain('extra-sensitive-value');
 }, 10_000);
+
+test('failure log is private and truncates on a Unicode scalar boundary', async () => {
+  const f = await setup();
+  const line = `${'x'.repeat(299)}😀tail`;
+  fs.writeFileSync(
+    path.join(f.home, 'fake-bin', 'remi'),
+    `#!/bin/sh\nprintf '%s\\n' '${line}' >&2\nexit 1\n`,
+    { mode: 0o700 },
+  );
+  const modulePath = path.resolve(import.meta.dir, '../../src/cli/hub-autostart.ts');
+  const script = `process.umask(0); process.argv[0] = 'test-parent'; process.argv[1] = 'test-parent'; const { ensureHubForSession } = await import(${JSON.stringify(modulePath)}); await ensureHubForSession(true, { legacyEnabled: true, pushSecret: 'test-secret' });`;
+  const result = Bun.spawnSync([process.execPath, '-e', script], {
+    cwd: f.work,
+    env: f.env,
+    timeout: 5000,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  expect(result.exitCode).toBe(0);
+  const logPath = path.join(f.home, '.remi', 'daemon.log');
+  expect(fs.statSync(logPath).mode & 0o777).toBe(0o600);
+  const detail = fs.readFileSync(logPath, 'utf8').trimEnd().split(': ').pop();
+  expect(detail).toBe(`${'x'.repeat(299)}😀`);
+}, 10_000);

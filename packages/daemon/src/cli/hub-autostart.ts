@@ -60,17 +60,18 @@ function logStartupFailure(error: unknown, launcherStderr: string): void {
   const safeStderr = pattern
     ? launcherStderr.replace(new RegExp(pattern, 'g'), '[REDACTED]')
     : launcherStderr;
-  const lastLine = safeStderr
+  const rawLastLine = safeStderr
     .trimEnd()
     .split(/\r?\n/)
     .pop()
-    ?.replace(/[\x00-\x1f\x7f]/g, ' ')
-    .slice(0, 300);
+    ?.replace(/[\x00-\x1f\x7f]/g, ' ');
+  const lastLine = rawLastLine ? Array.from(rawLastLine).slice(0, 300).join('') : '';
   try {
     fs.mkdirSync(remiHome(), { recursive: true });
     fs.appendFileSync(
       path.join(remiHome(), 'daemon.log'),
       `[hub autostart] ${detail}${lastLine ? `: ${lastLine}` : ''}\n`,
+      { mode: 0o600 },
     );
   } catch {
     // Starting the session must remain possible even if logging fails.
