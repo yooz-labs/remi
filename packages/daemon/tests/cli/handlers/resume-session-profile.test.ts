@@ -129,7 +129,7 @@ test('hidden records are concealed before resume resolution errors on both route
   }
 });
 
-test('in-process resume enforces current selectability and retains removed-profile refusal', async () => {
+test('in-process resume enforces selectability and hides removed profiles', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'p2b-inprocess-'));
   const registry = new SessionRegistry({ orphanTimeoutMs: 1000 });
   try {
@@ -139,7 +139,7 @@ test('in-process resume enforces current selectability and retains removed-profi
       removed: { label: 'Removed', remote_selectable: true, claude: { expects: 'subscription' } },
     });
     if ('error' in original) throw new Error(original.error);
-    const current = parseProfiles({
+    let current = parseProfiles({
       work: { label: 'Work', remote_selectable: true, claude: { expects: 'subscription' } },
       quiet: { label: 'Quiet', claude: { expects: 'subscription' } },
     });
@@ -207,9 +207,16 @@ test('in-process resume enforces current selectability and retains removed-profi
     await handler.onResumeSessionRequest(generateId(), removed, generateId());
     expect(messages.at(-1)).toMatchObject({
       success: false,
-      error:
-        'This session was started in profile removed, which no longer exists. Start a new session.',
+      error: `Session ${removed} not found. No Claude session ID available for resume.`,
     });
+    current = parseProfiles(undefined);
+    await handler.onResumeSessionRequest(generateId(), removed, generateId());
+    expect(messages.at(-1)).toMatchObject({
+      success: false,
+      error: `Session ${removed} not found. No Claude session ID available for resume.`,
+    });
+    expect(JSON.stringify(messages.slice(-2))).not.toContain('Removed');
+    expect(creates).toBe(1);
   } finally {
     await registry.shutdown();
     fs.rmSync(root, { recursive: true, force: true });

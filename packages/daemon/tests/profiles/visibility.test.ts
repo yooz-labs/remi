@@ -60,10 +60,7 @@ test('in-process selection uses current visibility before ownership validation',
       'That session was not found on this machine.',
     );
     expect(check({ error: 'invalid' })).toBe('That session was not found on this machine.');
-    // A removed profile retains the existing ownership check rather than being called unselectable.
-    expect(check(parseProfiles(undefined))).toBe(
-      'This session was started in profile work, which no longer exists. Start a new session.',
-    );
+    expect(check(parseProfiles(undefined))).toBe('That session was not found on this machine.');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -100,7 +97,7 @@ describe('remote profile policy', () => {
       ['work', false, true],
       ['quiet', false, false],
       ['secret', true, false],
-      ['unknown', false, false],
+      ['unknown', true, false],
     ] as const) {
       expect(isProfileHidden(id, profiles)).toBe(hidden);
       expect(isProfileSelectable(id, profiles)).toBe(selectable);

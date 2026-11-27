@@ -75,7 +75,9 @@ test('session lists use sidecar ownership for profile labels and hidden entries'
       state: 'current',
     });
     check('work', 'old', { id: 'work', label: 'Work', state: 'changed' });
-    check('removed', 'old', { id: 'removed', label: 'Snapshot', state: 'removed' });
+    check('removed', 'old', undefined);
+    expect(build()).toEqual([]);
+    expect(JSON.stringify(build())).not.toContain('Snapshot');
     expect(build({ error: 'invalid' })).toEqual([]);
     check('secret', 'old', undefined);
     expect(build()).toEqual([]);

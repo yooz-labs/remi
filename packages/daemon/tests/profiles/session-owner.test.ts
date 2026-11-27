@@ -83,9 +83,7 @@ test('remote owner requires consistent sidecar evidence', () => {
     configured: true,
   });
   expect(sessionProfileOwner({ transcriptProfile: 'gone' }, bad, profiles)).toEqual({
-    owner: 'profile',
-    id: 'gone',
-    configured: false,
+    owner: 'hidden',
   });
   expect(sessionProfileOwner(record, sidecar('work'), { error: 'invalid' })).toEqual({
     owner: 'hidden',

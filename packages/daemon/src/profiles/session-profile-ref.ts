@@ -11,7 +11,7 @@ export function sessionProfileRef(
   if (owner.owner !== 'profile' || 'error' in profiles) return undefined;
   const { id } = owner;
   const profile = 'entries' in profiles ? profiles.entries[id] : undefined;
-  if (!profile) return { id, label: snapshot?.label ?? id, state: 'removed' };
+  if (!profile) return undefined;
   return {
     id,
     label: profile.label,

@@ -5,7 +5,7 @@ import { canonicalPath, resolveProfile } from './resolve-profile.ts';
 export function isProfileHidden(id: string, profiles: Profiles): boolean {
   if (id === 'default') return false;
   if ('error' in profiles) return true;
-  return profiles.entries[id]?.remoteVisible === false;
+  return profiles.entries[id]?.remoteVisible !== true;
 }
 
 export function isProfileSelectable(id: string, profiles: Profiles): boolean {
