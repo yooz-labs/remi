@@ -20,6 +20,7 @@ public enum HubCapability: String, Sendable, Equatable, CaseIterable {
     case imageStaging = "image_staging"
     case imageInsertion = "image_insertion"
     case structuredChat = "structured_chat"
+    case chatAcceptance = "chat_acceptance"
     case browserLinks = "browser_links"
     case fileDownload = "file_download"
     case notifications
@@ -38,6 +39,7 @@ public enum HubCapability: String, Sendable, Equatable, CaseIterable {
         case .imageStaging: "upload an image to the attached Claude session"
         case .imageInsertion: "add an image to the attached Claude draft"
         case .structuredChat: "send chat to the attached Codex session"
+        case .chatAcceptance: "confirm that the attached Claude session accepted a sent chat message"
         case .browserLinks: "receive browser links from the attached Claude session"
         case .fileDownload: "download a file from the attached session"
         case .notifications: "manage paired-device background notifications"
