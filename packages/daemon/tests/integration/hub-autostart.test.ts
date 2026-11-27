@@ -352,3 +352,21 @@ test('a stalled detached launcher times out and reports the warning', async () =
   expect(Date.now() - started).toBeLessThan(14_000);
   expect(Date.now() - started).toBeGreaterThanOrEqual(9000);
 }, 16_000);
+
+test('a missing launcher fails immediately with a warning and a logged cause', async () => {
+  const f = await setup();
+  f.env['PATH'] = path.join(f.home, 'missing');
+  const modulePath = path.resolve(import.meta.dir, '../../src/cli/hub-autostart.ts');
+  const script = `process.argv[0] = 'test-parent'; process.argv[1] = 'test-parent'; const { ensureHubForSession } = await import(${JSON.stringify(modulePath)}); await ensureHubForSession(true, { legacyEnabled: true, pushSecret: 'test-secret' });`;
+  const started = Date.now();
+  const result = Bun.spawnSync([process.execPath, '-e', script], {
+    cwd: f.work,
+    env: f.env,
+    timeout: 13_000,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  expect(Date.now() - started).toBeLessThan(2000);
+  expect(result.stderr.toString()).toContain('No remi hub is running');
+  expect(fs.readFileSync(path.join(f.home, '.remi', 'daemon.log'), 'utf8')).toContain('ENOENT');
+}, 15_000);
