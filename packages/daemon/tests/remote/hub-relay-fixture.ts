@@ -23,6 +23,7 @@ import { HubRelay, type HubRelayConfig } from '../../src/remote/hub-relay.ts';
 import { NotificationDeviceStore } from '../../src/remote/notification-device-store.ts';
 import { RelayDeviceStore } from '../../src/remote/relay-device-store.ts';
 import { SessionRegistryFile } from '../../src/session/session-registry-file.ts';
+import { noProfilesRelayPolicy } from '../helpers/no-profiles-policy.ts';
 
 export async function resumedHub(
   config: Partial<HubRelayConfig> = {},
@@ -68,6 +69,7 @@ export async function resumedHub(
       trust,
       dir,
       registry: new SessionRegistryFile(join(dir, 'live')),
+      remotePolicy: noProfilesRelayPolicy(dir),
       log: (message) => {
         logs.push(message);
         if (message === 'Relay control admitted') admitted();

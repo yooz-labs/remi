@@ -12,6 +12,7 @@ import {
   type RelayDeviceRevokeResponseMessage,
   type SessionListRequestMessage,
   type SessionListResponseMessage,
+  type UUID,
   type UnlockedIdentity,
   createAgentOutput,
   createAnswerResult,
@@ -41,16 +42,14 @@ import {
 import { DEFAULT_PUSH_LEASE_MS } from '../notifications/push-lease.ts';
 import { sanitizePushPreferences } from '../notifications/push-preferences.ts';
 import { type SecurePushAuthority, SecurePushStore } from '../notifications/secure-push-store.ts';
-import { currentProfilesStrict } from '../profiles/current-profiles.ts';
-import { readProfileSidecar, sessionProfileOwner } from '../profiles/session-owner.ts';
-import { isProfileHidden } from '../profiles/visibility.ts';
+import { type ProfilePolicySnapshot, sessionProfileOwner } from '../profiles/session-owner.ts';
+import { isProfileHidden, profilesInUse } from '../profiles/visibility.ts';
 import { AnswerResults } from '../server/answer-results.ts';
 import { bindConnectionId } from '../server/client-message-events.ts';
 import { Connection } from '../server/connection.ts';
 import type { RelayLocalControl } from '../server/websocket-server.ts';
-import { SessionProfilesFile } from '../session/session-profiles-file.ts';
 import type { SessionRegistryFile } from '../session/session-registry-file.ts';
-import { SessionStore } from '../session/session-store.ts';
+import type { SessionStore } from '../session/session-store.ts';
 import { InterprocessFileLockError } from '../storage/interprocess-file-lock.ts';
 import { normalizeSecureRegistration } from '../storage/secure-push-subscriptions.ts';
 import { ChildProxy } from './child-proxy.ts';
@@ -145,6 +144,16 @@ export interface HubRelayConfig {
   trust: IdentityStore;
   dir: string;
   registry: SessionRegistryFile;
+  /**
+   * Remote profile policy for the aggregate list (#1749, PR 1828 round 1 F3): the records that
+   * name each child's owner, one strict snapshot per list, and a way to run the hub's own list
+   * under that snapshot. Required with no default, so a hub that forgets it fails to compile.
+   */
+  remotePolicy: {
+    readonly sessionStore: Pick<SessionStore, 'findByRemiSessionId'>;
+    readonly snapshot: () => ProfilePolicySnapshot;
+    readonly run: <T>(fn: () => T, snapshot: ProfilePolicySnapshot) => T;
+  };
   /**
    * Whether this daemon can actually send a secure push right now (#1200, B5). A subscription
    * is acknowledged only while it can be served: enrolling a device latches legacy push off for
@@ -914,21 +923,44 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
       }, 5000);
     });
     let localResponse: SessionListResponseMessage;
+    // One strict configuration read and one sidecar snapshot for the whole aggregate (F2, F3).
+    const policy = this.cfg.remotePolicy.snapshot();
+    const { profiles, sidecar } = policy;
     try {
-      this.events.onSessionListRequest?.(peer.cid, request.id, request.includeExternal ?? false);
+      this.cfg.remotePolicy.run(
+        () =>
+          this.events.onSessionListRequest?.(
+            peer.cid,
+            request.id,
+            request.includeExternal ?? false,
+          ),
+        policy,
+      );
       localResponse = await local;
     } finally {
       if (timer) clearTimeout(timer);
       peer.hubLists.delete(request.id);
     }
     if (!this.current(peer) || !peer.proxy) return;
-    const all = this.cfg.registry.listLive();
-    const sessionStore = new SessionStore();
-    const profiles = currentProfilesStrict();
-    const sidecar = readProfileSidecar(new SessionProfilesFile());
+    let failed = localTimedOut;
+    // Hidden children, and while profiles are in use children with no record yet (L3), are left
+    // out before the 32-slot cap, so they neither take a slot nor mark the list partial.
+    const recordlessHidden = profilesInUse(profiles);
+    const all = this.cfg.registry.listLive().filter((entry) => {
+      try {
+        const record = this.cfg.remotePolicy.sessionStore.findByRemiSessionId(
+          entry.sessionId as UUID,
+        );
+        if (record === null) return !recordlessHidden;
+        return sessionProfileOwner(record, sidecar, profiles).owner !== 'hidden';
+      } catch {
+        failed = true;
+        return false;
+      }
+    });
     const live = all.slice(0, 32);
     const sessions = new Map(localResponse.sessions.map((session) => [session.sessionId, session]));
-    let failed = localTimedOut || all.length > live.length;
+    if (all.length > live.length) failed = true;
     // Eight private child handshakes at once, finite five-second list waits.
     for (let offset = 0; offset < live.length; offset += 8) {
       const batch = Promise.allSettled(
@@ -956,13 +988,6 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
           continue;
         }
         const { entry, response } = result.value;
-        try {
-          const record = sessionStore.findByRemiSessionId(entry.sessionId);
-          if (record && sessionProfileOwner(record, sidecar, profiles).owner === 'hidden') continue;
-        } catch {
-          failed = true;
-          continue;
-        }
         const current = this.cfg.registry
           .listLive()
           .find((item) => item.sessionId === entry.sessionId);

@@ -51,6 +51,7 @@ import {
   readLocalDaemonEndpoint,
   releaseLocalDaemonEndpoint,
 } from '../../src/storage/local-daemon-endpoints.ts';
+import { noProfilesRelayPolicy } from '../helpers/no-profiles-policy.ts';
 import { reserveRange } from '../session/port-test-helpers.ts';
 
 const HOST = '127.0.0.1';
@@ -778,6 +779,7 @@ describe('optional direct TLS: real daemon server/adapter and native Bun sockets
       trust: store,
       dir: home,
       registry: new SessionRegistryFile(join(home, 'live-sessions')),
+      remotePolicy: noProfilesRelayPolicy(home),
     });
     owners.push(relay);
     const server = await startServer({ localControl: { home }, relayControl: relay });

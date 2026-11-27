@@ -13,6 +13,7 @@ import type { Harness } from '../../harness/types.ts';
 import type { Profiles } from '../../profiles/profile-config.ts';
 import { type ProfileSidecar, sessionProfileOwner } from '../../profiles/session-owner.ts';
 import { sessionProfileRef } from '../../profiles/session-profile-ref.ts';
+import { profilesInUse } from '../../profiles/visibility.ts';
 import type { SessionBindingStore, SessionRegistry } from '../../session/index.ts';
 import type { StoredSession } from '../../session/session-store.ts';
 import { logError } from '../logger.ts';
@@ -209,9 +210,4 @@ export function visibleLivePorts(deps: {
         .map((entry) => entry.wsPort),
     ),
   ];
-}
-
-/** At least one configured profile, or a configuration in error: remote policy is in force. */
-export function profilesInUse(profiles: Profiles): boolean {
-  return 'error' in profiles || Object.keys(profiles.entries).length > 0;
 }

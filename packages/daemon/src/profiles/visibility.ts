@@ -9,6 +9,11 @@ export function isProfileHidden(id: string, profiles: Profiles): boolean {
   return profiles.entries[id]?.remoteVisible !== true;
 }
 
+/** At least one configured profile, or a configuration in error: remote policy is in force. */
+export function profilesInUse(profiles: Profiles): boolean {
+  return 'error' in profiles || Object.keys(profiles.entries).length > 0;
+}
+
 export function isProfileSelectable(id: string, profiles: Profiles): boolean {
   if (id === 'default') return true;
   if ('error' in profiles) return false;

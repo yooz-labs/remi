@@ -3922,6 +3922,14 @@ if (cliDaemonMode) {
           trust: relayTrust,
           dir: REMI_DIR,
           registry: liveSessionsRegistry,
+          remotePolicy: {
+            sessionStore,
+            snapshot: () => ({
+              profiles: currentProfilesStrict(),
+              sidecar: remoteProfileSidecar(),
+            }),
+            run: (fn, snapshot) => remotePolicy.run(fn, snapshot),
+          },
           // A subscription is acknowledged only while a secure push service exists (#1200, B5).
           securePushSender: () => securePushService !== undefined,
           pushLeaseMs,
