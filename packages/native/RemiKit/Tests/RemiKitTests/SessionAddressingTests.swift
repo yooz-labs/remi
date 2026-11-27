@@ -3,6 +3,7 @@ import Darwin
 import Foundation
 import Testing
 @testable import RemiKit
+@testable import RemiUI
 
 /// #1601: two machines can hold the same session id; a request names its machine.
 @MainActor
@@ -36,8 +37,18 @@ struct SessionAddressingTests {
         let sockets: [Int32]
     }
 
+    /// The legacy ack fixture, listing `capabilities` when given (a daemon that lists them also names its version).
+    func helloAck(capabilities: [String]?) throws -> HelloAckMessage {
+        guard let capabilities else { return try decode("hello_ack_legacy", as: HelloAckMessage.self) }
+        var value = try #require(try JSONSerialization.jsonObject(
+            with: FixtureConformanceTests.fixture("hello_ack_legacy")) as? [String: Any])
+        value["protocolVersion"] = 1
+        value["capabilities"] = capabilities
+        return try JSONDecoder().decode(HelloAckMessage.self, from: JSONSerialization.data(withJSONObject: value))
+    }
+
     /// Two connected machines that both hold the fixture question's session id.
-    func twoMachines() throws -> TwoMachines {
+    func twoMachines(helloCapabilities: [String]? = nil) throws -> TwoMachines {
         let first = try listener(), second = try listener()
         let keys = [Curve25519.Signing.PrivateKey().publicKey.rawRepresentation,
                     Curve25519.Signing.PrivateKey().publicKey.rawRepresentation]
@@ -47,7 +58,7 @@ struct SessionAddressingTests {
         }
         let store = MachineStore(profiles: profiles, identity: ClientIdentity(), clientVersion: "test", clientId: "test")
         store.start()
-        let hello = try decode("hello_ack_legacy", as: HelloAckMessage.self)
+        let hello = try helloAck(capabilities: helloCapabilities)
         let question = try decode("question", as: QuestionMessage.self)
         var routes: [MachineEndpoint] = []
         for (index, key) in keys.enumerated() {
@@ -63,7 +74,7 @@ struct SessionAddressingTests {
     }
 
     private func transcriptContent(
-        sessionID: String, text: String, role: String? = nil, entryUuid: String? = nil
+        sessionID: String, text: String, role: String? = nil, entryUuid: String? = nil, createdAt: Date? = nil
     ) throws -> TranscriptContentMessage {
         var payload = try #require(try JSONSerialization.jsonObject(
             with: FixtureConformanceTests.fixture("transcript_content")) as? [String: Any])
@@ -71,6 +82,12 @@ struct SessionAddressingTests {
         payload["content"] = text
         if let role { payload["role"] = role }
         if let entryUuid { payload["entryUuid"] = entryUuid }
+        if let createdAt, var message = payload["message"] as? [String: Any] {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            message["createdAt"] = formatter.string(from: createdAt)
+            payload["message"] = message
+        }
         return try JSONDecoder().decode(TranscriptContentMessage.self,
             from: JSONSerialization.data(withJSONObject: payload))
     }
@@ -464,6 +481,364 @@ struct SessionAddressingTests {
         store.trackOutgoing(key: key, id: "m1", content: "new intent", origin: replacement)
         store.receive(.error(try refusal(session: sid), chatOrigin: source.socket), from: source.endpoint, generation: source.connection)
         #expect(store.outgoingBySession[key]?.items.first?.delivery == .sending)
+    }
+
+    private func acceptance(session: String, message: String, outcome: String = "accepted") throws -> UserInputResultMessage {
+        var value = try #require(try JSONSerialization.jsonObject(
+            with: FixtureConformanceTests.fixture("user_input_result")) as? [String: Any])
+        value["sessionId"] = session
+        value["messageId"] = message
+        value["outcome"] = outcome
+        return try JSONDecoder().decode(UserInputResultMessage.self, from: JSONSerialization.data(withJSONObject: value))
+    }
+
+    /// Tracks one message on machine A's route, handed off, on a store whose daemon lists `capabilities`.
+    private func handedOff(_ fixture: TwoMachines, id: String = "m1", content: String = "hello",
+                           socket: UUID = UUID()) throws -> OutgoingOrigin {
+        let store = fixture.store
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: fixture.sessionID)
+        let source = try origin(fixture, socket: socket)
+        store.trackOutgoing(key: key, id: id, content: content, origin: source)
+        let groupID = try #require(store.outgoingBySession[key]?.items.first { $0.id == id }?.groupID)
+        _ = store.recordOutgoingSendResult(.handedOff, groupID: groupID, messageID: id, origin: source)
+        return source
+    }
+
+    @Test func aDaemonListingChatAcceptanceReadsInProgressUntilItsResultFromTheExactOriginSettlesTheMessage() throws {
+        let fixture = try twoMachines(helloCapabilities: ["chat_acceptance"])
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        let a = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let b = store.sessionKey(machineID: fixture.ids.b, sessionID: sid)
+        let source = try handedOff(fixture, id: "m1")
+        let other = try origin(fixture, index: 1)
+        store.trackOutgoing(key: a, id: "m2", content: "hello", origin: source)
+        store.trackOutgoing(key: b, id: "m1", content: "hello", origin: other)
+        let pending = try #require(store.outgoingBySession[a]?.items.first)
+        #expect(pending.awaitsAcceptance)
+        #expect(RemiOutgoingState(message: pending) == .awaitingAgent)
+
+        let result = try acceptance(session: sid, message: "m1")
+        // No authenticated origin, a different socket, or another session's id: nothing changes.
+        store.receive(.userInputResult(result), from: source.endpoint, generation: source.connection)
+        store.receive(.userInputResult(result, chatOrigin: UUID()), from: source.endpoint, generation: source.connection)
+        store.receive(.userInputResult(try acceptance(session: "other", message: "m1"), chatOrigin: source.socket),
+            from: source.endpoint, generation: source.connection)
+        #expect(store.outgoingBySession[a]?.items.map(\.delivery) == [.handedOff, .sending])
+
+        store.receive(.userInputResult(result, chatOrigin: source.socket), from: source.endpoint, generation: source.connection)
+        // Settled, and still shown, as an ordinary sent bubble, until the transcript shows it.
+        let accepted = try #require(store.outgoingBySession[a]?.items.first)
+        #expect(accepted.delivery == .accepted)
+        #expect(RemiTranscriptEntry(outgoing: accepted) == .user(id: accepted.presentationID, text: "hello"))
+        #expect(store.outgoingBySession[a]?.items.map(\.id) == ["m1", "m2"])
+        #expect(store.outgoingBySession[b]?.items.map(\.delivery) == [.sending])
+        // A repeat changes nothing; a result after dismissal finds nothing.
+        store.receive(.userInputResult(result, chatOrigin: source.socket), from: source.endpoint, generation: source.connection)
+        store.dismissOutgoing(presentationID: accepted.presentationID)
+        store.receive(.userInputResult(result, chatOrigin: source.socket), from: source.endpoint, generation: source.connection)
+        #expect(store.outgoingBySession[a]?.items.map(\.id) == ["m2"])
+    }
+
+    @Test func anAcceptedMessageLeavesOnceTheTranscriptShowsItNoEarlierThanItWasSent() throws {
+        let fixture = try twoMachines(helloCapabilities: ["chat_acceptance"])
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let source = try handedOff(fixture, id: "m1", content: "run the tests")
+        let sent = try #require(store.outgoingBySession[key]?.items.first).createdAt
+        let accept = { store.receive(.userInputResult(try self.acceptance(session: sid, message: "m1"), chatOrigin: source.socket),
+            from: source.endpoint, generation: source.connection) }
+        try accept()
+        func live(_ text: String, role: String, at: Date, uuid: String) throws {
+            store.receive(.transcript(try transcriptContent(sessionID: sid, text: text, role: role, entryUuid: uuid, createdAt: at)),
+                from: source.endpoint, generation: source.connection)
+        }
+        // None of these is that message's own entry: another text, the agent's role, an entry older
+        // than the clock skew allows.
+        try live("something else", role: "user", at: sent.addingTimeInterval(1), uuid: "e1")
+        try live("run the tests", role: "assistant", at: sent.addingTimeInterval(1), uuid: "e2")
+        try live("run the tests", role: "user", at: sent.addingTimeInterval(-3600), uuid: "e3")
+        #expect(store.outgoingBySession[key]?.items.map(\.delivery) == [.accepted])
+        // The user entry with the same text, after it was sent, settles the display.
+        try live(" run the tests\n", role: "user", at: sent.addingTimeInterval(2), uuid: "e4")
+        #expect(store.outgoingBySession[key] == nil)
+        #expect(store.outgoingHistory.isEmpty)
+    }
+
+    @Test func anAcceptanceThatArrivesAfterTheTranscriptEntryIsReconciledAtOnce() throws {
+        let fixture = try twoMachines(helloCapabilities: ["chat_acceptance"])
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let source = try handedOff(fixture, id: "m1", content: "hello")
+        let sent = try #require(store.outgoingBySession[key]?.items.first).createdAt
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "hello", role: "user", entryUuid: "early",
+            createdAt: sent.addingTimeInterval(1))), from: source.endpoint, generation: source.connection)
+        // The entry alone proves nothing about delivery.
+        #expect(store.outgoingBySession[key]?.items.map(\.delivery) == [.handedOff])
+        store.receive(.userInputResult(try acceptance(session: sid, message: "m1"), chatOrigin: source.socket),
+            from: source.endpoint, generation: source.connection)
+        #expect(store.outgoingBySession[key] == nil)
+    }
+
+    @Test func withNoTranscriptAnAcceptedMessageStaysUntilDismissed() throws {
+        let fixture = try twoMachines(helloCapabilities: ["chat_acceptance"])
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let source = try handedOff(fixture, id: "m1")
+        store.receive(.userInputResult(try acceptance(session: sid, message: "m1"), chatOrigin: source.socket),
+            from: source.endpoint, generation: source.connection)
+        #expect(store.transcriptsBySession[key] == nil)
+        #expect(store.outgoingBySession[key]?.items.map(\.delivery) == [.accepted])
+        store.dismissOutgoing(presentationID: try #require(store.outgoingBySession[key]?.items.first?.presentationID))
+        #expect(store.outgoingBySession[key] == nil)
+    }
+
+    @Test func aFullSessionGivesUpAnAcceptedMessageBeforeRefusingANewSend() throws {
+        let fixture = try twoMachines(helloCapabilities: ["chat_acceptance"])
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let source = try origin(fixture)
+        for index in 0..<OutgoingMessages.limit {
+            #expect(store.trackOutgoing(key: key, id: "m\(index)", content: "t\(index)", origin: source))
+        }
+        // Full of unsettled messages: refused, as before.
+        #expect(!store.trackOutgoing(key: key, id: "overflow", content: "x", origin: source))
+        store.receive(.userInputResult(try acceptance(session: sid, message: "m0"), chatOrigin: source.socket),
+            from: source.endpoint, generation: source.connection)
+        #expect(store.trackOutgoing(key: key, id: "next", content: "x", origin: source))
+        let ids = try #require(store.outgoingBySession[key]?.items.map(\.id))
+        #expect(!ids.contains("m0") && ids.contains("m1") && ids.last == "next")
+    }
+
+    /// Accepts message `id` of `session` on `source`, as the daemon's result does.
+    private func accept(_ fixture: TwoMachines, session: String? = nil, id: String, source: OutgoingOrigin) throws {
+        fixture.store.receive(.userInputResult(try acceptance(session: session ?? fixture.sessionID, message: id), chatOrigin: source.socket),
+            from: source.endpoint, generation: source.connection)
+    }
+
+    @Test func oneTranscriptEntryRetiresOnlyTheOldestOfTwoIdenticalAcceptedMessages() throws {
+        let fixture = try twoMachines(helloCapabilities: ["chat_acceptance"])
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let source = try handedOff(fixture, id: "m1", content: "again")
+        _ = try handedOff(fixture, id: "m2", content: "again", socket: source.socket)
+        try accept(fixture, id: "m1", source: source)
+        try accept(fixture, id: "m2", source: source)
+        let sent = try #require(store.outgoingBySession[key]?.items.first).createdAt
+        func entry(_ uuid: String) throws {
+            store.receive(.transcript(try transcriptContent(sessionID: sid, text: "again", role: "user", entryUuid: uuid,
+                createdAt: sent.addingTimeInterval(1))), from: source.endpoint, generation: source.connection)
+        }
+        try entry("first")
+        #expect(store.outgoingBySession[key]?.items.map(\.id) == ["m2"])
+        // A re-sent update of the same entry shows nothing more.
+        try entry("first")
+        #expect(store.outgoingBySession[key]?.items.map(\.id) == ["m2"])
+        try entry("second")
+        #expect(store.outgoingBySession[key] == nil)
+    }
+
+    @Test func anEntryThatArrivedBeforeTheMessageWasSentNeverRetiresIt() throws {
+        let fixture = try twoMachines(helloCapabilities: ["chat_acceptance"])
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let route = fixture.routes[0], generation = try #require(store.connectionGenerations[route])
+        // The same words typed at the terminal a moment ago, already shown by the transcript.
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "run it", role: "user", entryUuid: "terminal",
+            createdAt: Date())), from: route, generation: generation)
+        let source = try handedOff(fixture, id: "m1", content: "run it")
+        try accept(fixture, id: "m1", source: source)
+        #expect(store.outgoingBySession[key]?.items.map(\.delivery) == [.accepted])
+        // Its own entry, which arrives afterwards, does.
+        store.receive(.transcript(try transcriptContent(sessionID: sid, text: "run it", role: "user", entryUuid: "own",
+            createdAt: Date())), from: route, generation: generation)
+        #expect(store.outgoingBySession[key] == nil)
+    }
+
+    @Test func anEndedSessionConnectionDropsItsAcceptedMessagesAndKeepsTheOthers() throws {
+        let fixture = try twoMachines(helloCapabilities: ["chat_acceptance"])
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store
+        let parent = fixture.routes[0]
+        let child = MachineEndpoint(host: "127.0.0.1", port: parent.port + 1000)
+        let childGeneration = store.ownedAdoptChild(child, parent: parent)
+        store.receive(.hello(try helloAck(capabilities: ["chat_acceptance"])), from: child, generation: childGeneration)
+        let ended = store.sessionKey(machineID: fixture.ids.a, sessionID: "ended-session")
+        let other = store.sessionKey(machineID: fixture.ids.a, sessionID: "other-session")
+        store.routeBySession[ended] = child
+        store.routeBySession[other] = parent
+        let childSource = OutgoingOrigin(endpoint: child, connection: childGeneration, socket: UUID())
+        let parentSource = try origin(fixture)
+        store.trackOutgoing(key: ended, id: "a", content: "x", origin: childSource)
+        store.trackOutgoing(key: ended, id: "b", content: "y", origin: childSource)
+        store.trackOutgoing(key: other, id: "c", content: "z", origin: parentSource)
+        try accept(fixture, session: "ended-session", id: "a", source: childSource)
+        try accept(fixture, session: "other-session", id: "c", source: parentSource)
+        #expect(store.outgoingBySession[ended]?.items.map(\.delivery) == [.accepted, .sending])
+        // The session's own connection ends: the unsettled message stays for recovery; the proven one goes.
+        store.receive(.stopped, from: child, generation: childGeneration)
+        #expect(store.outgoingBySession[ended]?.items.map(\.id) == ["b"])
+        #expect(store.outgoingBySession[other]?.items.map(\.delivery) == [.accepted])
+    }
+
+    @Test func anAcceptedMessageIsEvictedOnlyWhenThatMakesTheNewSendFit() throws {
+        let fixture = try twoMachines(helloCapabilities: ["chat_acceptance"])
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store
+        let source = try origin(fixture)
+        let full = store.sessionKey(machineID: fixture.ids.a, sessionID: "full")
+        let elsewhere = store.sessionKey(machineID: fixture.ids.a, sessionID: "elsewhere")
+        for index in 0..<OutgoingMessages.limit { #expect(store.trackOutgoing(key: full, id: "f\(index)", content: "t", origin: source)) }
+        store.trackOutgoing(key: elsewhere, id: "keep", content: "k", origin: source)
+        try accept(fixture, session: "elsewhere", id: "keep", source: source)
+        // The full session holds only unsettled rows: the accepted row elsewhere would not help.
+        #expect(!store.trackOutgoing(key: full, id: "refused", content: "x", origin: source))
+        #expect(store.outgoingBySession[elsewhere]?.items.map(\.delivery) == [.accepted])
+        #expect(store.outgoingBySession[full]?.items.count == OutgoingMessages.limit)
+        // Settling one of its own makes room.
+        try accept(fixture, session: "full", id: "f0", source: source)
+        #expect(store.trackOutgoing(key: full, id: "fits", content: "x", origin: source))
+        #expect(store.outgoingBySession[full]?.items.map(\.id).contains("f0") == false)
+        #expect(store.outgoingBySession[elsewhere]?.items.map(\.delivery) == [.accepted])
+    }
+
+    @Test func theGlobalRowBoundEvictsAnAcceptedRowOnlyWhenOneExists() throws {
+        let fixture = try twoMachines(helloCapabilities: ["chat_acceptance"])
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store
+        let source = try origin(fixture)
+        func key(_ index: Int) -> MachineSessionKey { store.sessionKey(machineID: fixture.ids.a, sessionID: "s\(index)") }
+        var added = 0
+        for session in 0...10 {
+            for row in 0..<(session < 10 ? OutgoingMessages.limit : MachineStore.outgoingRowLimit - 10 * OutgoingMessages.limit) {
+                #expect(store.trackOutgoing(key: key(session), id: "m\(row)", content: "t", origin: source))
+                added += 1
+            }
+        }
+        #expect(added == MachineStore.outgoingRowLimit)
+        #expect(!store.trackOutgoing(key: key(11), id: "new", content: "x", origin: source))
+        #expect(store.outgoingCount == MachineStore.outgoingRowLimit)
+        try accept(fixture, session: "s3", id: "m7", source: source)
+        #expect(store.trackOutgoing(key: key(11), id: "new", content: "x", origin: source))
+        #expect(store.outgoingCount == MachineStore.outgoingRowLimit)
+        #expect(store.outgoingBySession[key(3)]?.items.map(\.id).contains("m7") == false)
+    }
+
+    @Test func theSessionCountBoundEvictsOnlyAnAcceptedRowThatFreesASession() throws {
+        let fixture = try twoMachines(helloCapabilities: ["chat_acceptance"])
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store
+        let source = try origin(fixture)
+        func key(_ index: Int) -> MachineSessionKey { store.sessionKey(machineID: fixture.ids.a, sessionID: "s\(index)") }
+        for session in 0..<MachineStore.outgoingSessionLimit {
+            #expect(store.trackOutgoing(key: key(session), id: "m", content: "t", origin: source))
+        }
+        // One more row in s5 makes its accepted row no longer the session's only one.
+        #expect(store.trackOutgoing(key: key(5), id: "second", content: "t", origin: source))
+        try accept(fixture, session: "s5", id: "m", source: source)
+        #expect(!store.trackOutgoing(key: key(64), id: "new", content: "x", origin: source))
+        #expect(store.outgoingBySession[key(5)]?.items.map(\.id) == ["m", "second"])
+        // A session whose only row is accepted frees its slot.
+        try accept(fixture, session: "s9", id: "m", source: source)
+        #expect(store.trackOutgoing(key: key(64), id: "new", content: "x", origin: source))
+        #expect(store.outgoingBySession[key(9)] == nil)
+        #expect(store.outgoingBySession[key(5)]?.items.map(\.id) == ["m", "second"])
+    }
+
+    @Test func aDaemonWithoutTheCapabilityKeepsTheWarningCopy() throws {
+        let fixture = try twoMachines()
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: fixture.sessionID)
+        _ = try handedOff(fixture)
+        let pending = try #require(store.outgoingBySession[key]?.items.first)
+        #expect(!pending.awaitsAcceptance)
+        #expect(RemiOutgoingState(message: pending) == .handedOff)
+    }
+
+    @Test func aSecondConnectionWhoseAckLacksTheCapabilityNeverReadsAsAwaiting() throws {
+        let fixture = try twoMachines(helloCapabilities: ["chat_acceptance"])
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let first = try handedOff(fixture, id: "m1")
+        #expect(store.outgoingBySession[key]?.items.first?.awaitsAcceptance == true)
+        // A reconnect: a new socket generation whose ack lists nothing.
+        let route = fixture.routes[0]
+        store.ownedReplaceConnectionGeneration(route)
+        let generation = try #require(store.connectionGenerations[route])
+        store.receive(.hello(try helloAck(capabilities: nil)), from: route, generation: generation)
+        let second = try handedOff(fixture, id: "m2")
+        #expect(second.connection == generation)
+        // The profile's namespace changes with an ack that names no authority, so read every retained row.
+        let items = store.outgoingHistory.flatMap(\.messages).sorted { $0.createdAt < $1.createdAt }
+        #expect(items.map(\.id) == ["m1", "m2"])
+        #expect(items.map(\.awaitsAcceptance) == [true, false])
+        #expect(items.map(\.delivery) == [.handedOff, .handedOff])
+        #expect(RemiOutgoingState(message: items[1]) == .handedOff)
+        // The old generation's result is from a connection that no longer exists.
+        store.receive(.userInputResult(try acceptance(session: sid, message: "m1"), chatOrigin: first.socket),
+            from: first.endpoint, generation: first.connection)
+        #expect(store.outgoingHistory.flatMap(\.messages).map(\.delivery) == [.handedOff, .handedOff])
+    }
+
+    @Test func theReceiptDeadlineEndsASendingMessageButNotAHandedOffOneAwaitingAcceptance() async throws {
+        let fixture = try twoMachines(helloCapabilities: ["chat_acceptance"])
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        store.outgoingUncertaintyDelay = .milliseconds(30)
+        store.outgoingAcceptanceDelay = .milliseconds(400)
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        // A fresh socket generation, so the fixture's real (failing) connection cannot mark these lost.
+        let route = fixture.routes[0]
+        store.ownedReplaceConnectionGeneration(route)
+        store.receive(.hello(try helloAck(capabilities: ["chat_acceptance"])), from: route,
+            generation: try #require(store.connectionGenerations[route]))
+        let source = try origin(fixture)
+        store.trackOutgoing(key: key, id: "never-handed-off", content: "a", origin: source)
+        store.trackOutgoing(key: key, id: "handed-off", content: "b", origin: source)
+        let groupID = try #require(store.outgoingBySession[key]?.items.first?.groupID)
+        _ = store.recordOutgoingSendResult(.handedOff, groupID: groupID, messageID: "handed-off", origin: source)
+        try await Task.sleep(for: .milliseconds(150))
+        // Past the receipt deadline: the unsent one is uncertain; the handed-off one is still in progress.
+        #expect(store.outgoingBySession[key]?.items.map(\.delivery) == [.uncertain, .handedOff])
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(store.outgoingBySession[key]?.items.map(\.delivery) == [.uncertain, .uncertain])
+    }
+
+    @Test func anUnconfirmedMessageBecomesUncertainAfterTheWaitAndALateResultStillClearsIt() async throws {
+        let fixture = try twoMachines(helloCapabilities: ["chat_acceptance"])
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        store.outgoingAcceptanceDelay = .milliseconds(20)
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let source = try handedOff(fixture, id: "m1")
+        try await Task.sleep(for: .milliseconds(80))
+        let uncertain = try #require(store.outgoingBySession[key]?.items.first)
+        #expect(uncertain.delivery == .uncertain)
+        #expect(RemiOutgoingState(message: uncertain) == .uncertain)
+        store.receive(.userInputResult(try acceptance(session: sid, message: "m1"), chatOrigin: source.socket),
+            from: source.endpoint, generation: source.connection)
+        #expect(store.outgoingBySession[key]?.items.map(\.delivery) == [.accepted])
+    }
+
+    @Test func aRefusedMessageIsNotSettledByAResult() throws {
+        let fixture = try twoMachines(helloCapabilities: ["chat_acceptance"])
+        defer { fixture.store.stop(); fixture.sockets.forEach { Darwin.close($0) } }
+        let store = fixture.store, sid = fixture.sessionID
+        let key = store.sessionKey(machineID: fixture.ids.a, sessionID: sid)
+        let source = try origin(fixture)
+        store.trackOutgoing(key: key, id: "m1", content: "hello", origin: source)
+        store.receive(.error(try refusal(session: sid), chatOrigin: source.socket), from: source.endpoint, generation: source.connection)
+        store.receive(.userInputResult(try acceptance(session: sid, message: "m1"), chatOrigin: source.socket),
+            from: source.endpoint, generation: source.connection)
+        #expect(store.outgoingBySession[key]?.items.first?.delivery == .refused)
     }
 
     @Test func matchingTranscriptTextNeverConfirmsAnIntent() throws {

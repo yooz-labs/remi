@@ -220,6 +220,7 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
 
     const handle = setupHookBridge(
       {
+        withholdTranscriptPath: false,
         sessionRegistry,
         bindingStore,
         liveSessionsRegistry,
@@ -228,6 +229,7 @@ describe('TranscriptBinder drive mode (#453 phase 3, commit 5)', () => {
         currentPort: () => PORT,
         transcriptDiscovery,
         holdMs: 60_000,
+        terminalPromptMs: 60_000,
         hookTimeoutMs: 600_000,
       },
       {

@@ -21,6 +21,7 @@ target = work / 'Sources/RemiScrollProbe'
 target.mkdir(parents=True)
 inputs = {
     'MacSessionDetail.swift': repo / 'packages/native/Mac/MacSessionDetail.swift',
+    'MacCommands.swift': repo / 'packages/native/Mac/MacCommands.swift',
     'Probe.swift': repo / 'packages/native/Tests/TranscriptScroll/Probe.swift',
 }
 hashes = {}

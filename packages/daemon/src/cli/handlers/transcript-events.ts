@@ -34,6 +34,11 @@ import { log, logError } from '../logger.ts';
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface TranscriptHandlerDeps {
+  /**
+   * Whether a session's owner is hidden from devices (#1749 design item 8); a hidden one takes
+   * the not-found path. Required with no default, so a caller that forgets it fails to compile.
+   */
+  isHiddenOwner: (sessionId: string) => boolean;
   transcriptDiscovery: TranscriptDiscovery;
   /** Rebuilds a transcript path from the durable index's project path and id. */
   harness: Pick<Harness, 'transcriptPath'>;
@@ -84,6 +89,21 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
     send,
   } = deps;
 
+  function notFound(connectionId: UUID, sessionId: string): void {
+    const current = currentOwnedSession();
+    const details: Record<string, unknown> | undefined = current
+      ? ({
+          currentSessionId: current.sessionId,
+          currentClaudeSessionId: current.claudeSessionId,
+          currentTranscriptPath: current.transcriptPath,
+        } satisfies StaleSessionErrorDetails)
+      : undefined;
+    send(
+      connectionId,
+      createError('NOT_FOUND', `Transcript for session ${sessionId} not found`, details),
+    );
+  }
+
   /**
    * Stream a harness chat's history to the requester and complete the load, or tell it the read
    * failed. What was sent before a failure stays sent. A chat that throws before it returns a
@@ -119,6 +139,10 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
   return {
     onTranscriptLoadRequest: (connectionId: UUID, sessionId: string, requestId: UUID): void => {
       log(`Transcript load request from ${connectionId} for session ${sessionId}`);
+      if (deps.isHiddenOwner(sessionId)) {
+        notFound(connectionId, sessionId);
+        return;
+      }
 
       // A harness that reads its own history answers first: its session id is a remi id, which no
       // transcript file carries, and a file that happens to bear the same name is not its chat.
@@ -169,15 +193,21 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
 
       // Durable index fallback (#577): the session was purged from sessions.json
       // (100-entry cap or 7-day TTL), so bindingStore.get returned null, but the
-      // long-TTL transcript-index still holds its claude id + project path. Rebuild
-      // the deterministic transcript path and load it from disk if it exists. This
+      // long-TTL transcript-index still holds its claude id + project path. Search
+      // every discovery root first, then fall back to the primary-root path. This
       // is what stops the recurring "Transcript for session <id> not found" for an
       // old-but-still-on-disk session.
       if (!filePath) {
         try {
           const indexed = transcriptIndex.get(sessionId as UUID);
           if (indexed) {
-            const candidate = harness.transcriptPath(indexed.projectPath, indexed.claudeSessionId);
+            if (deps.isHiddenOwner(indexed.claudeSessionId)) {
+              notFound(connectionId, sessionId);
+              return;
+            }
+            const candidate =
+              transcriptDiscovery.findTranscriptBySessionId(indexed.claudeSessionId) ??
+              harness.transcriptPath(indexed.projectPath, indexed.claudeSessionId);
             if (candidate === null) {
               // The harness names no file for this binding, so there is nothing to load.
               log(
@@ -233,18 +263,7 @@ export function createTranscriptHandlers(deps: TranscriptHandlerDeps) {
         // Don't dead-end: tell the client the daemon's current authoritative
         // session so it can re-bind + re-fetch instead of getting stuck on a
         // stale id (the "Transcript for session X not found" screenshot) (#499).
-        const current = currentOwnedSession();
-        const details: Record<string, unknown> | undefined = current
-          ? ({
-              currentSessionId: current.sessionId,
-              currentClaudeSessionId: current.claudeSessionId,
-              currentTranscriptPath: current.transcriptPath,
-            } satisfies StaleSessionErrorDetails)
-          : undefined;
-        send(
-          connectionId,
-          createError('NOT_FOUND', `Transcript for session ${sessionId} not found`, details),
-        );
+        notFound(connectionId, sessionId);
         return;
       }
 

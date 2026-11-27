@@ -6,6 +6,7 @@ import { IdentityStore } from '../../packages/daemon/src/auth/identity-store.ts'
 import { HubRelay } from '../../packages/daemon/src/remote/hub-relay.ts';
 import { RelayDeviceStore } from '../../packages/daemon/src/remote/relay-device-store.ts';
 import { SessionRegistryFile } from '../../packages/daemon/src/session/session-registry-file.ts';
+import { noProfilesRelayPolicy } from '../../packages/daemon/tests/helpers/no-profiles-policy.ts';
 import {
   createIdentity,
   createSessionUpdate,
@@ -46,6 +47,7 @@ test('removed authoritative grant cannot receive new encrypted broadcasts', asyn
       trust,
       dir,
       registry: new SessionRegistryFile(join(dir, 'live')),
+      remotePolicy: noProfilesRelayPolicy(dir),
       log: (m) => {
         if (m === 'Relay control admitted') ready();
       },

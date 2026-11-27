@@ -8,6 +8,17 @@ test('help describes configured CLI default and explicit Claude/Codex overrides'
   expect(formatCommandHelp('new')).toContain('Override [harness] default');
 });
 
+test('help distinguishes the hub port and autostart override', () => {
+  const global = formatHelp('0.0.0');
+  const ls = formatCommandHelp('ls');
+  const config = formatCommandHelp('config');
+  expect(global).toContain('default: 18765; hub base port reserved; env: REMI_PORT');
+  expect(global).toContain('REMI_HUB_AUTOSTART=0');
+  expect(ls).toContain('Daemon port (default: 18765)');
+  expect(config).toContain('REMI_HUB_AUTOSTART=0');
+  expect(config.indexOf('remi config path')).toBeLessThan(config.indexOf('Local sessions start'));
+});
+
 describe('formatHelp', () => {
   const originalEnv = process.env['NO_COLOR'];
 

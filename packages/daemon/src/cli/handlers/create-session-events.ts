@@ -21,9 +21,12 @@ import {
   escapeUnsafeText,
   isHarnessId,
 } from '@remi/shared';
-import type { SessionWorkspace, UUID } from '@remi/shared';
+import type { HarnessId, SessionProfileRef, SessionWorkspace, UUID } from '@remi/shared';
 
 import type { HarnessRegistry, StartedSession } from '../../harness/registry.ts';
+import type { Profiles } from '../../profiles/profile-config.ts';
+import type { ProfilePolicySnapshot, ProfileSidecar } from '../../profiles/session-owner.ts';
+import { deviceDefault, isProfileHidden, isProfileSelectable } from '../../profiles/visibility.ts';
 import type { CreateSessionExtra } from '../../server/client-message-events.ts';
 import type { SessionRegistryFile } from '../../session/index.ts';
 import { findAvailableTcpPort as defaultFindAvailableTcpPort } from '../../session/port-utils.ts';
@@ -32,7 +35,10 @@ import {
   parseWorkspaceRequest,
   prepareWorkspace,
 } from '../../workspace/worktree.ts';
-import { spawnRemiDaemon as defaultSpawnRemiDaemon } from '../daemon-manager.ts';
+import {
+  ProfileRefusedError,
+  spawnRemiDaemon as defaultSpawnRemiDaemon,
+} from '../daemon-manager.ts';
 import { log, logError } from '../logger.ts';
 import { normalizeProjectPath, resolveRequestedSessionDirectory } from '../path-resolver.ts';
 import type { SendToConnection } from './trivial-events.ts';
@@ -55,6 +61,7 @@ export type StartSessionOutcome =
       /** What a success does not say, one line each (see `CreateSessionResponseMessage.notice`). */
       readonly notice?: string;
       readonly workspace?: SessionWorkspace;
+      readonly profile?: SessionProfileRef;
     }
   | { readonly ok: false; readonly error: string };
 
@@ -62,6 +69,7 @@ export type StartSessionOutcome =
 export type StartChildSession = (
   directory: string | undefined,
   extra?: CreateSessionExtra,
+  policy?: ProfilePolicySnapshot,
 ) => Promise<StartSessionOutcome>;
 
 /** What a requester is told when the child could not be started: the cause is in the host's log (G8). */
@@ -147,11 +155,16 @@ export function checkHarnessRequest(
   registry: HarnessRegistry,
   extra: CreateSessionExtra | undefined,
 ):
-  | { ok: true; spawnArgs: string[]; noticeFor?: (session: StartedSession) => string }
+  | {
+      ok: true;
+      spawnArgs: string[];
+      resumeId: string | null;
+      noticeFor?: (session: StartedSession) => string;
+    }
   | { ok: false; error: string; detail?: string } {
   const { harness, args } = extra ?? {};
   if (harness === undefined && args === undefined) {
-    return { ok: true, spawnArgs: ['--harness', 'claude'] };
+    return { ok: true, spawnArgs: ['--harness', 'claude'], resumeId: null };
   }
 
   if (harness !== undefined && !isHarnessId(harness)) {
@@ -183,6 +196,7 @@ export function checkHarnessRequest(
   return {
     ok: true,
     spawnArgs: ['--harness', id, ...(checked.args.length > 0 ? ['--', ...checked.args] : [])],
+    resumeId: checked.resumeThreadId?.toLowerCase() ?? null,
     ...(spec.headlessNotice !== undefined && { noticeFor: spec.headlessNotice }),
   };
 }
@@ -214,6 +228,20 @@ export interface CreateSessionHandlerDeps {
    * Getter so the caller can populate the array after handler construction.
    */
   inheritedArgs: () => readonly string[];
+  /**
+   * Remote profile policy (#1749): the strict configuration and the sidecar, read once per request,
+   * and the owner of a resumed id. Required with no default, so a composition root that forgets
+   * one fails to compile instead of failing open.
+   */
+  profiles: () => Profiles;
+  sidecar: () => ProfileSidecar;
+  remiProfileEnv?: string | undefined;
+  resumeOwner: (
+    harness: HarnessId,
+    resumeId: string,
+    sidecar: ProfileSidecar,
+    profiles: Profiles,
+  ) => { record: boolean; profile?: string | undefined; hidden?: boolean } | null;
   send: SendToConnection;
   /** Best-effort history, installed only in hub mode (#1284); successful spawns only. */
   rememberRepository?: (directory: string, repository?: string) => Promise<void>;
@@ -258,6 +286,7 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
       const liveUsed = new Set([
         ...liveSessionsRegistry.listLive().map((entry) => entry.wsPort),
         ...spawningPorts,
+        basePort,
       ]);
       const freePort = await findAvailableTcpPort(basePort, portRange, liveUsed, bindHost);
       if (freePort !== null) spawningPorts.add(freePort);
@@ -273,7 +302,7 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
    * resume through a hub, #1129). Never throws: a failure is a refusal with the generic text, and
    * the host's log has the cause.
    */
-  const startSession: StartChildSession = async (directory, extra) => {
+  const startSession: StartChildSession = async (directory, extra, policy) => {
     // A worktree made for this request, so a failed spawn can say where it was left.
     let made: SessionWorkspace | undefined;
     try {
@@ -297,6 +326,91 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
         );
         return { ok: false, error: request.error };
       }
+      const profiles = policy?.profiles ?? deps.profiles();
+      const sidecar = policy?.sidecar ?? deps.sidecar();
+      const owner =
+        request.resumeId === null
+          ? null
+          : deps.resumeOwner(
+              isHarnessId(extra?.harness) ? extra.harness : 'claude',
+              request.resumeId,
+              sidecar,
+              profiles,
+            );
+      if ('error' in profiles && owner === null)
+        return {
+          ok: false,
+          error:
+            "This machine's profile settings have an error. Run remi profile ls on the machine.",
+        };
+      const explicit = extra?.profile;
+      let chosen: string;
+      if (owner !== null) {
+        if (owner.hidden)
+          return { ok: false, error: 'That session was not found on this machine.' };
+        chosen = owner.profile ?? 'default';
+        if (isProfileHidden(chosen, profiles))
+          return { ok: false, error: 'That session was not found on this machine.' };
+        if (
+          chosen !== 'default' &&
+          'entries' in profiles &&
+          profiles.entries[chosen] &&
+          !isProfileSelectable(chosen, profiles)
+        )
+          return {
+            ok: false,
+            error: `This session's profile ${chosen} does not accept sessions from your devices. Resume it on that machine with remi --resume, or add remote_selectable = true to [profiles.${chosen}] in config.toml there.`,
+          };
+        if (explicit !== undefined && explicit !== chosen)
+          return {
+            ok: false,
+            error: 'This session belongs to another profile; resume it without choosing a profile.',
+          };
+      } else if (explicit !== undefined) {
+        if (
+          typeof explicit !== 'string' ||
+          isProfileHidden(explicit, profiles) ||
+          (explicit !== 'default' &&
+            ('error' in profiles || !Object.hasOwn(profiles.entries, explicit)))
+        )
+          return {
+            ok: false,
+            error:
+              'This profile is not available for new sessions from your devices. Run remi profile ls on the machine.',
+          };
+        chosen = explicit;
+        if (!isProfileSelectable(chosen, profiles))
+          return {
+            ok: false,
+            error: `Profile ${chosen} does not accept sessions from your devices. To allow them, add remote_selectable = true to [profiles.${chosen}] in config.toml on that machine.`,
+          };
+      } else {
+        const directoryForProfile =
+          workspaceRequest.workspace?.repository ?? resolveRequestedSessionDirectory(directory);
+        const resolved = deviceDefault(directoryForProfile, profiles, deps.remiProfileEnv);
+        if ('error' in resolved)
+          return {
+            ok: false,
+            error:
+              "This machine's profile settings have an error. Run remi profile ls on the machine.",
+          };
+        chosen = resolved.id;
+        if (isProfileHidden(chosen, profiles))
+          return {
+            ok: false,
+            error:
+              'New sessions in this folder use a profile that does not accept sessions from your devices.',
+          };
+        if (!isProfileSelectable(chosen, profiles))
+          return {
+            ok: false,
+            error: `New sessions in this folder use profile ${chosen}, which does not accept sessions from your devices. To allow them, add remote_selectable = true to [profiles.${chosen}] in config.toml on that machine.`,
+          };
+      }
+      const configured = 'entries' in profiles ? profiles.entries[chosen] : undefined;
+      const harness = isHarnessId(extra?.harness) ? extra.harness : 'claude';
+      if (chosen !== 'default' && configured && (harness === 'opencode' || !configured[harness]))
+        return { ok: false, error: 'This profile does not configure that harness.' };
       if (workspaceRequest.workspace?.worktree !== undefined && resumes(request.spawnArgs)) {
         log('Session start refused: a resume into a new worktree; nothing spawned');
         return { ok: false, error: RESUME_INTO_WORKTREE_TEXT };
@@ -339,8 +453,16 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
         log(
           `Spawning new daemon on port ${freePort} for directory ${escapeUnsafeText(resolvedDirectory)}`,
         );
+        const profile = owner?.record
+          ? undefined
+          : owner
+            ? owner.profile
+            : 'entries' in profiles && Object.keys(profiles.entries).length > 0
+              ? chosen
+              : undefined;
         const result = await spawnDaemon(freePort, resolvedDirectory, [
           ...inheritedArgs(),
+          ...(profile === undefined ? [] : ['--remi-profile', profile]),
           ...request.spawnArgs,
         ]);
         try {
@@ -362,6 +484,9 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
           port: result.port,
           ...(notice !== undefined && { notice }),
           ...(workspace !== undefined && { workspace }),
+          ...(configured !== undefined && {
+            profile: { id: chosen, label: configured.label, state: 'current' as const },
+          }),
         };
       } finally {
         spawningPorts.delete(freePort);
@@ -376,7 +501,13 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
             : `; the worktree it was made for stays at ${escapeUnsafeText(made.directory)} (nothing deletes a worktree, #1236)`
         }`,
       );
-      return { ok: false, error: START_FAILED_TEXT };
+      return {
+        ok: false,
+        error:
+          err instanceof ProfileRefusedError
+            ? "The session's profile could not start. Run remi profile ls on the machine."
+            : START_FAILED_TEXT,
+      };
     }
   };
 
@@ -401,6 +532,7 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
               outcome.port,
               outcome.notice,
               outcome.workspace,
+              outcome.profile,
             )
           : createCreateSessionResponse(false, requestId, undefined, outcome.error),
       );

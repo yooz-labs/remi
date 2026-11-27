@@ -78,6 +78,7 @@ describe('AutoApproveGate routing (#1125: nothing is decided, everything is rela
         sessionRegistry: registry,
         isInSubagentContext: () => subagentContext,
         holdMs: 60_000,
+        terminalPromptMs: typeof over.holdMs === 'number' ? over.holdMs : 60_000,
         hasLocalTerminal: true,
         resetSubagentContext: () => {
           resets++;
@@ -309,6 +310,7 @@ describe('AutoApproveGate external resolution (#673)', () => {
         sessionRegistry: registry,
         isInSubagentContext: () => false,
         holdMs: 60_000,
+        terminalPromptMs: typeof over.holdMs === 'number' ? over.holdMs : 60_000,
         hasLocalTerminal: true,
         escalate: () => {
           const id = generateId() as UUID;
@@ -666,6 +668,7 @@ describe('AutoApproveGate held prompts (#1126)', () => {
         sessionRegistry: registry,
         isInSubagentContext: () => false,
         holdMs: 60_000,
+        terminalPromptMs: typeof over.holdMs === 'number' ? over.holdMs : 60_000,
         hasLocalTerminal: true,
         escalate: () => {
           const id = generateId() as UUID;
@@ -859,6 +862,90 @@ describe('AutoApproveGate held prompts (#1126)', () => {
     expect(g.answerHeld(generateId() as UUID, { kind: 'option', option: YES })).toBe('unknown');
     await g.resolvePermission(pr({ permission_suggestions: ['Option A', 'Option B', 'Option C'] }));
     expect(g.answerHeld(ids[0] as UUID, { kind: 'option', option: YES })).toBe('unknown');
+  });
+
+  test('each held tool uses its own deadline and short terminal cutoff (#1837)', async () => {
+    const g = gate({
+      holdMs: (tool) => (tool === 'Bash' ? 60 : 600),
+      terminalPromptMs: 60,
+    });
+    const bash = g.resolvePermission(pr());
+    const bashId = ids[0] as UUID;
+    const ask = g.resolvePermission(
+      pr({ tool_name: 'AskUserQuestion', tool_input: { questions: [] } }),
+    );
+    const askId = ids[1] as UUID;
+    const plan = g.resolvePermission(
+      pr({ tool_name: 'ExitPlanMode', tool_input: { plan: 'Plan' } }),
+    );
+    const planId = ids[2] as UUID;
+    for (const id of [askId, planId]) {
+      const validity = g.answerValidity(id);
+      expect(validity?.kind).toBe('deadline');
+      if (validity?.kind !== 'deadline') throw new Error('missing question deadline');
+      expect(validity.expiresAtMs - Date.now()).toBeGreaterThan(400);
+    }
+    expect(await bash).toBe('passthrough');
+    expect(registry.getQuestion(SID, bashId)).toBeNull();
+    for (const id of [askId, planId]) {
+      expect(g.isHeld(id)).toBe(true);
+      expect(registry.getQuestion(SID, id)).not.toBeNull();
+    }
+    expect(await ask).toBe('passthrough');
+    expect(await plan).toBe('passthrough');
+    for (const id of [askId, planId]) expect(registry.getQuestion(SID, id)).toBeNull();
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    await Bun.sleep(100);
+    expect(g.hasOpenHookPrompt()).toBe(false);
+  });
+
+  test('a terminal entry without a signature uses the short cutoff (#1837)', async () => {
+    const g = gate({ holdMs: () => 600, terminalPromptMs: 60 });
+    const hook = g.resolvePermission(
+      pr({ tool_name: 'AskUserQuestion', tool_input: { questions: [] } }),
+    );
+    const qid = ids[0] as UUID;
+    g.forceRelease('test');
+    expect(await hook).toBe('passthrough');
+    // Simulate a terminal entry whose correlation signature is unavailable.
+    (g as unknown as { openQuestionSignatures: Map<UUID, unknown> }).openQuestionSignatures.delete(
+      qid,
+    );
+    expect(g.hasOpenHookPrompt()).toBe(true);
+    await Bun.sleep(100);
+    expect(g.hasOpenHookPrompt()).toBe(false);
+  });
+
+  test('paired terminal AskUserQuestion completion clears its held card (#1837)', async () => {
+    const g = gate({ holdMs: 60_000 });
+    const input = {
+      questions: [
+        {
+          question: 'Continue?',
+          header: 'Choice',
+          options: [
+            { label: 'Yes', description: 'Go' },
+            { label: 'No', description: 'Stop' },
+          ],
+          multiSelect: false,
+        },
+      ],
+    };
+    g.notePreToolUse({ toolName: 'AskUserQuestion', toolInput: input, toolUseId: 'ask-1' });
+    const hook = g.resolvePermission(pr({ tool_name: 'AskUserQuestion', tool_input: input }));
+    const qid = ids[0] as UUID;
+    g.cancelExternallyResolved(
+      {
+        toolName: 'AskUserQuestion',
+        toolInput: { ...input, answers: { 'Continue?': 'Yes' } },
+        toolUseId: 'ask-1',
+      },
+      'PostToolUse',
+      { toolFinished: true },
+    );
+    expect(await hook).toBe('passthrough');
+    expect(registry.getQuestion(SID, qid)).toBeNull();
+    expect(deadlines).toEqual([]);
   });
 
   test('the deadline releases the hook empty, tells the phone while the card is registered, then dismisses it', async () => {
@@ -1534,6 +1621,7 @@ describe('AutoApproveGate subagent routing by local terminal (#1126)', () => {
         sessionRegistry: registry,
         isInSubagentContext: () => false,
         holdMs: 60_000,
+        terminalPromptMs: typeof over.holdMs === 'number' ? over.holdMs : 60_000,
         hasLocalTerminal,
         escalate: () => {
           const id = generateId() as UUID;
@@ -1741,6 +1829,7 @@ describe('AutoApproveGate subagent external-resolution (#799)', () => {
         sessionRegistry: registry,
         isInSubagentContext: () => false,
         holdMs: 60_000,
+        terminalPromptMs: 60_000,
         hasLocalTerminal: true,
         // Unused by these subagent-only tests (no main escalation is ever
         // driven), but AutoApproveGateDeps requires it.
@@ -1936,6 +2025,7 @@ describe('AutoApproveGate Stop resolves a still-open MAIN passthrough question (
         sessionRegistry: registry,
         isInSubagentContext: () => false,
         holdMs: 60_000,
+        terminalPromptMs: 60_000,
         hasLocalTerminal: true,
         escalate: () => {
           lastQuestionId = generateId();
@@ -2082,6 +2172,7 @@ describe('AutoApproveGate full teardown resolves ALL survivors (#948)', () => {
         sessionRegistry: registry,
         isInSubagentContext: () => false,
         holdMs: 60_000,
+        terminalPromptMs: 60_000,
         hasLocalTerminal: true,
         escalate: () => {
           lastQuestionId = generateId();
@@ -2315,6 +2406,7 @@ describe('AutoApproveGate cancelStaleForAgent (#799 part 2, subagent)', () => {
         sessionRegistry: registry,
         isInSubagentContext: () => false,
         holdMs: 60_000,
+        terminalPromptMs: 60_000,
         hasLocalTerminal: true,
         // Unused by these subagent-only tests (no main escalation is ever
         // driven), but AutoApproveGateDeps requires it.

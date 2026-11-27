@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.9.0'; // REMI_COMPILED_VERSION
+      return '0.9.1-dev.28'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.9.0'; // REMI_COMPILED_VERSION
+    return '0.9.1-dev.28'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -124,6 +124,7 @@ import type {
 } from '@remi/shared';
 import { isEncrypted, relayV2, unlockIdentity } from '@remi/shared';
 import {
+  CHAT_ACCEPTANCE_CAPABILITY,
   IMAGE_INSERTION_CAPABILITY,
   IMAGE_STAGING_CAPABILITY,
   STRUCTURED_CHAT_CAPABILITY,
@@ -160,8 +161,9 @@ import { runConfigCommand } from './cli/cmd-config.ts';
 import { runMigratePermissionsCommand } from './cli/cmd-migrate-permissions.ts';
 import { runReloadCommand } from './cli/cmd-reload.ts';
 import { runUnstickCommand } from './cli/cmd-unstick.ts';
-import { PID_FILE, readPidFileLive } from './cli/daemon-manager.ts';
+import { PID_FILE, PROFILE_REFUSED_EXIT_CODE, readPidFileLive } from './cli/daemon-manager.ts';
 import { DetachScanner } from './cli/detach-scanner.ts';
+import { ChatAcceptanceTracker } from './cli/handlers/chat-acceptance.ts';
 import {
   type ConnectionHandlers,
   createConnectionHandlers,
@@ -185,7 +187,12 @@ import {
   createResumeSessionHandlers,
 } from './cli/handlers/resume-session-events.ts';
 import { type SessionHandlers, createSessionHandlers } from './cli/handlers/session-events.ts';
-import { broadcastWorkspaceChange, buildSessionList } from './cli/handlers/session-list-entries.ts';
+import {
+  broadcastWorkspaceChange,
+  buildSessionList,
+  visibleLivePorts as filterVisibleLivePorts,
+} from './cli/handlers/session-list-entries.ts';
+import { createSessionProfilesHandlers } from './cli/handlers/session-profiles-events.ts';
 import { StructuredChatService } from './cli/handlers/structured-chat-events.ts';
 import {
   type TranscriptHandlers,
@@ -216,8 +223,10 @@ import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
 import { causeOfSessionClose, createQuestionResolver } from './cli/question-resolution.ts';
 import { disposeAndDismiss } from './cli/session-close.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
+import { probeDaemonSessionPort, probeWrapperSessionPort } from './cli/session-port-probes.ts';
+import { startSessionPort } from './cli/session-port-start.ts';
 import { StatusBar, childRows } from './cli/status-bar.ts';
-import { installStatusLine } from './cli/statusline-installer.ts';
+import { installStatusLineForLaunch } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
 import { isRemiBinaryPath, startUpdateWatcher } from './cli/update-watcher.ts';
 import { loadDaemonTls } from './config/daemon-tls.ts';
@@ -288,6 +297,7 @@ import { createTurnEventSink } from './notifications/turn-events.ts';
 import { createTurnFailedRoutes } from './notifications/turn-failed.ts';
 import { TurnTimer } from './notifications/turn-timer.ts';
 import { AwakeWiring } from './power/awake-wiring.ts';
+import { runProfileCommand } from './profiles/cmd-profile.ts';
 import { PTYManager, type PTYSession } from './pty/index.ts';
 import { HubRelay } from './remote/hub-relay.ts';
 import { NativeAnswerLedger } from './remote/native-answer-ledger.ts';
@@ -309,7 +319,6 @@ import {
   storedHarness,
 } from './session/index.ts';
 import { findLegacyWriters, readStatusFiles } from './session/legacy-writers.ts';
-import { findAvailableTcpPort } from './session/port-utils.ts';
 import { traceQuestionEvent } from './session/question-trace.ts';
 import { InterprocessFileLockError } from './storage/interprocess-file-lock.ts';
 import { TerminalCaptureHost } from './terminal/capture-host.ts';
@@ -318,10 +327,7 @@ import { TerminalViewService } from './terminal/view-service.ts';
 import { TranscriptDiscovery, type TranscriptWatcher } from './transcript/index.ts';
 import { BrowserLinkService } from './tunnel/browser-link-service.ts';
 import { BrowserLinkSessionHost } from './tunnel/browser-link-session-host.ts';
-import {
-  FileDownloadSessionHost,
-  downloadProtectionRoots,
-} from './tunnel/file-download-session-host';
+import { FileDownloadSessionHost, launchDownloadRoots } from './tunnel/file-download-session-host';
 import { ImageInsertionCoordinator } from './tunnel/image-insertion-coordinator.ts';
 import { ImageStagingService } from './tunnel/image-staging-service.ts';
 import { WorkspaceCache } from './workspace/describe.ts';
@@ -428,6 +434,20 @@ if (loadedConfig.removedRequireLocalAuth)
     'daemon.require_local_auth is retired and ignored (#873). Loopback clients must prove identity or present the local capability token when authentication is enabled.',
   );
 
+if (
+  'notices' in remiConfig.profiles &&
+  remiConfig.profiles.notices.length > 0 &&
+  process.env['REMI_SPAWNED_CHILD'] !== '1' &&
+  (parsedArgs.subcommand === undefined ||
+    parsedArgs.subcommand === 'serve' ||
+    parsedArgs.subcommand === 'config')
+)
+  process.stderr.write(`${remiConfig.profiles.notices[0]}\n`);
+
+if (parsedArgs.subcommand === 'profile') {
+  process.exit(await runProfileCommand(parsedArgs.subcommandArgs, remiConfig.profiles));
+}
+
 // Handle 'config' subcommand
 if (parsedArgs.subcommand === 'config') {
   process.exit(runConfigCommand(parsedArgs.subcommandArg, remiConfig));
@@ -518,7 +538,13 @@ const claudeArgs = [...parsedArgs.claudeArgs];
 
 // #1473: explicit CLI choice wins over the configured session default.
 // Hub/management commands keep Claude; a hub explicitly selects each child's harness.
-const { harnessId, remoteHarness } = resolveLaunchHarness(parsedArgs, remiConfig.harness.default);
+let { harnessId, remoteHarness } = resolveLaunchHarness(parsedArgs, remiConfig.harness.default);
+const remiProfileEnv = process.env['REMI_PROFILE'] || undefined;
+const hasConfiguredProfiles =
+  !('error' in remiConfig.profiles) && Object.keys(remiConfig.profiles.entries).length > 0;
+const CLAUDE_RESUME_ONLY =
+  "--resume is remi's flag for Claude sessions; resume a Codex thread with `remi codex resume <thread id>` (`remi --sessions` lists the ids).";
+let resumeRecord: StoredSession | null = null;
 {
   // `--host` sends only what follows `--`. `--resume` is remi's own flag, so `parseArgs` consumes it
   // and it is not a loose word (G2): without this a Claude `remi new --host h --resume X` looked X
@@ -535,8 +561,12 @@ const { harnessId, remoteHarness } = resolveLaunchHarness(parsedArgs, remiConfig
           ? `This build has no ${harnessId} adapter.`
           : harnessId !== 'claude' && serveMode
             ? 'The hub hosts no session of its own, so it takes no --harness.'
-            : harnessId === 'codex' && cliResume !== undefined
-              ? "--resume is remi's flag for Claude sessions; resume a Codex thread with `remi codex resume <thread id>` (`remi --sessions` lists the ids)."
+            : harnessId === 'codex' &&
+                cliResume !== undefined &&
+                (parsedArgs.harness === 'codex' ||
+                  cliSubcommand === 'codex' ||
+                  !hasConfiguredProfiles)
+              ? CLAUDE_RESUME_ONLY
               : null;
   if (refusal !== null) {
     console.error(refusal);
@@ -758,6 +788,8 @@ if (
       ...(cliPort !== undefined && { port: cliPort }),
       ...(cliBindHost !== undefined && { bindHost: cliBindHost }),
       resolvedBindHost: bindHost,
+      basePort: loadedConfig.config.daemon.base_port,
+      portRange: loadedConfig.config.daemon.port_range,
       ...(cliAuth !== undefined && { auth: cliAuth }),
       noMdns: cliNoMdns,
       noRelay: cliNoRelay,
@@ -766,6 +798,7 @@ if (
       permanentCode: cliPermanentCode,
       ...(cliSignalingUrl !== undefined && { signalingUrl: cliSignalingUrl }),
       ...(cliPushSecret !== undefined && { pushSecret: cliPushSecret }),
+      legacyPushEnabled: remiConfig.notifications.legacy_push_enabled,
       ...(cliOrphanTimeout !== undefined && { orphanTimeout: cliOrphanTimeout }),
       remiVersion: REMI_VERSION,
       all: cliStopAll,
@@ -890,7 +923,7 @@ if (cliShowSessions) {
       // `remi codex resume` takes the whole thread id, which the label above cuts, and runs in
       // the current directory, so the line changes into the session's own.
       if (s.harness === 'codex' && s.exitedAt !== null && recordedId) {
-        console.log(`      resume: ${codexResumeCommand(s.projectPath, recordedId)}`);
+        console.log(`      resume: ${codexResumeCommand(s.projectPath, recordedId, s.profile)}`);
       }
     }
     if (filter === 'running') {
@@ -935,6 +968,7 @@ if (cliResume !== undefined) {
     console.error('Run `remi --sessions` to see stored sessions.');
     process.exit(1);
   }
+  if (!cliDaemonMode) resumeRecord = session;
 
   if (!session.claudeSessionId) {
     console.error(
@@ -966,6 +1000,10 @@ if (cliResume !== undefined) {
 
 // remi new --host (and `remi codex --host`): create session on remote daemon, then auto-attach
 if (isSessionLaunch(parsedArgs) && cliHost) {
+  if (remiProfileEnv && remiProfileEnv !== 'default')
+    console.error(
+      'REMI_PROFILE applies to this machine only; the remote machine chooses by its own folder mapping or default.',
+    );
   // Only the words after `--` go to the remote session. A loose one used to be dropped without a
   // word, so the host started its own defaults (a fresh session where a resume was typed, its own
   // sandbox where `-s read-only` was): refused instead, before anything is sent (#1179 review, G2).
@@ -1009,7 +1047,7 @@ if (isSessionLaunch(parsedArgs) && cliHost) {
   }
 
   // Create session on remote daemon and auto-attach
-  const { runRemoteNew } = await import('./cli/remote-new-client.ts');
+  const { runRemoteNew, RemoteProfileUnsupported } = await import('./cli/remote-new-client.ts');
   try {
     const result = await runRemoteNew({
       host: effectiveHost,
@@ -1019,11 +1057,12 @@ if (isSessionLaunch(parsedArgs) && cliHost) {
       // omitted field. The remote daemon still validates the arguments after `--`.
       harness: remoteHarness,
       args: parsedArgs.explicitArgs,
+      profile: parsedArgs.remiProfile,
     });
     process.exit(result.exitCode);
   } catch (err) {
     console.error(errorToString(err));
-    process.exit(1);
+    process.exit(err instanceof RemoteProfileUnsupported ? 2 : 1);
   }
 }
 
@@ -1064,6 +1103,191 @@ if (isSessionLaunch(parsedArgs) && cliDir && !cliHost) {
     process.exit(1);
   }
   process.chdir(dirResult.resolved);
+}
+
+import { configWarnings } from './profiles/config-warnings.ts';
+import { currentProfiles, currentProfilesStrict } from './profiles/current-profiles.ts';
+import { inProcessResumeRefusal } from './profiles/in-process-resume.ts';
+import { checkLogin } from './profiles/login-check.ts';
+import type { Profile } from './profiles/profile-config.ts';
+import { profileLaunchEnvironment } from './profiles/profile-env.ts';
+// A session daemon selects once, after its working directory is known and
+// before constructing the harness or transcript discovery.
+import { resolveProfile } from './profiles/resolve-profile.ts';
+import { resumeProfile as validateResumeProfile } from './profiles/resume-profile.ts';
+import {
+  RemotePolicyScope,
+  makeIsHiddenSessionOwner,
+  makeResumeOwner,
+  readProfileSidecar,
+  sessionProfileOwner,
+} from './profiles/session-owner.ts';
+import { sessionProfileRef } from './profiles/session-profile-ref.ts';
+import { visibleProfileRoots } from './profiles/visibility.ts';
+import { SessionProfilesFile } from './session/session-profiles-file.ts';
+
+let selectedProfile: Profile | undefined;
+let launchEnvironment: Record<string, string | undefined> | undefined;
+let profileMetadata: Pick<StoredSession, 'profile' | 'profileSnapshot'> | undefined;
+if (isSessionLaunch(parsedArgs) && !serveMode) {
+  function refuseProfile(message: string): never {
+    console.error(message);
+    log(message);
+    process.exit(cliDaemonMode ? PROFILE_REFUSED_EXIT_CODE : 1);
+  }
+  if (!resumeRecord && harnessId === 'claude') {
+    const args = cliDaemonMode ? parsedArgs.explicitArgs : claudeArgs;
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+      const id =
+        arg === '--resume' || arg === '-r'
+          ? args[i + 1]
+          : arg?.startsWith('--resume=')
+            ? arg.slice(9)
+            : undefined;
+      if (id && uuid.test(id)) {
+        try {
+          resumeRecord = new SessionStore().findResumableByClaudeSessionId(id.toLowerCase());
+        } catch (error) {
+          if (hasConfiguredProfiles) refuseProfile(errorToString(error));
+          log(`Could not read resume records: ${errorToString(error)}`);
+        }
+        break;
+      }
+    }
+  }
+  if (!resumeRecord && harnessId === 'codex') {
+    const args = validateCodexArgs(
+      cliDaemonMode ? parsedArgs.explicitArgs : parsedArgs.passthroughArgs,
+    );
+    if (args.ok && args.resumeThreadId) {
+      try {
+        resumeRecord =
+          new SessionStore()
+            .list()
+            .find(
+              (s) =>
+                s.harness === 'codex' && s.harnessSessionId?.toLowerCase() === args.resumeThreadId,
+            ) ?? null;
+      } catch (error) {
+        if (hasConfiguredProfiles) refuseProfile(errorToString(error));
+        log(`Could not read resume records: ${errorToString(error)}`);
+      }
+    }
+  }
+  let resumeProfile: string | undefined;
+  if (resumeRecord) {
+    const checked = validateResumeProfile(
+      resumeRecord,
+      remiConfig.profiles,
+      new SessionProfilesFile(REMI_DIR),
+    );
+    if ('error' in checked) refuseProfile(checked.error);
+    resumeProfile = checked.id;
+    const recordedProfile = checked.id;
+    if (
+      (parsedArgs.remiProfile && parsedArgs.remiProfile !== recordedProfile) ||
+      (!cliDaemonMode && remiProfileEnv && remiProfileEnv !== recordedProfile)
+    )
+      refuseProfile(
+        `This session belongs to profile ${recordedProfile}. Resume it without --remi-profile, or with --remi-profile ${recordedProfile}.`,
+      );
+  }
+  const resolution = resolveProfile({
+    profiles: remiConfig.profiles,
+    cwd: process.cwd(),
+    ...(resumeRecord
+      ? { flag: resumeProfile as string }
+      : {
+          ...(parsedArgs.remiProfile !== undefined && { flag: parsedArgs.remiProfile }),
+          ...(remiProfileEnv !== undefined && { envValue: remiProfileEnv }),
+        }),
+  });
+  if ('error' in resolution) refuseProfile(resolution.error);
+  if (resolution.warning) {
+    console.error(resolution.warning);
+    log(resolution.warning);
+  }
+  if (resolution.id !== 'default') {
+    if ('error' in remiConfig.profiles) refuseProfile(remiConfig.profiles.error);
+    try {
+      new SessionProfilesFile().assertReadable();
+    } catch {
+      refuseProfile(
+        `Could not read ${path.join(REMI_DIR, 'session-profiles.json')}, which records session profiles; a profile session cannot start until it is repaired or moved aside.`,
+      );
+    }
+    selectedProfile = remiConfig.profiles.entries[resolution.id];
+    if (!selectedProfile) refuseProfile(`Unknown profile ${resolution.id}. Run remi profile ls.`);
+    const explicitHarness =
+      parsedArgs.harness ??
+      (cliSubcommand === 'codex' || cliSubcommand === 'claude' ? cliSubcommand : undefined);
+    harnessId =
+      cliResume !== undefined
+        ? 'claude'
+        : (explicitHarness ?? selectedProfile.harness ?? remiConfig.harness.default);
+    if (harnessId !== 'claude' && harnessId !== 'codex')
+      refuseProfile(`This build has no ${harnessId} adapter.`);
+    const spec = selectedProfile[harnessId];
+    if (!spec) refuseProfile(`Profile ${resolution.id} does not configure ${harnessId}.`);
+    if (spec.expects !== 'subscription' && spec.expects !== 'api_key')
+      refuseProfile(
+        `Profile ${resolution.id} expects ${spec.expects}, which this build does not support.`,
+      );
+    try {
+      launchEnvironment = profileLaunchEnvironment(process.env, resolution.id, selectedProfile);
+    } catch (error) {
+      refuseProfile(errorToString(error));
+    }
+    const status = await checkLogin({
+      harness: harnessId,
+      expects: spec.expects,
+      env: launchEnvironment,
+      cwd: process.cwd(),
+      log,
+    });
+    if (status.login === 'signed_out')
+      refuseProfile(
+        `Profile ${resolution.id} is not signed in to ${harnessId}. Run: remi profile login ${resolution.id} --harness ${harnessId}`,
+      );
+    if (status.login === 'not_own_login')
+      refuseProfile(`This profile's login is not what will be used (${status.source ?? 'other'}).`);
+    if (status.login === 'unknown')
+      refuseProfile(
+        `Could not confirm the sign-in of profile ${resolution.id} (${status.reason ?? 'error'}). Run: remi profile ls`,
+      );
+    if (selectedProfile.claude) {
+      for (const warning of configWarnings({
+        claudeDir: selectedProfile.claude.dir,
+        expects: selectedProfile.claude.expects,
+        cwd: process.cwd(),
+      })) {
+        const message = `Profile warning: ${warning.source}: ${warning.key}`;
+        console.error(message);
+        log(message);
+      }
+    }
+    profileMetadata = {
+      profile: resolution.id,
+      profileSnapshot: {
+        revision: selectedProfile.revision,
+        label: selectedProfile.label,
+        ...(selectedProfile.claude && {
+          claudeDir: selectedProfile.claude.dir,
+          claudeExpects: selectedProfile.claude.expects,
+        }),
+        ...(selectedProfile.codex && {
+          codexDir: selectedProfile.codex.dir,
+          codexExpects: selectedProfile.codex.expects,
+        }),
+      },
+    };
+    if (harnessId === 'claude') claudeArgs.unshift(...selectedProfile.args);
+  } else if (cliResume !== undefined && harnessId === 'codex') {
+    console.error(CLAUDE_RESUME_ONLY);
+    process.exit(2);
+  }
 }
 
 // #1025: `gitInfo` above was computed from process.cwd() at module load,
@@ -1107,6 +1331,9 @@ const publicWsScheme = daemonTls ? 'wss' : 'ws';
 // ---------------------------------------------------------------------------
 const portExplicitlySet = !!(cliPort || process.env['REMI_PORT']);
 let PORT = cliPort || (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 0);
+// REMI_PORT selects a session port, but its config override must not turn that
+// same value into the hub reservation. Hub startup still uses the override.
+const hubBasePort = serveMode ? remiConfig.daemon.base_port : loadedConfig.config.daemon.base_port;
 
 // Auto-select port if not explicitly set
 if (!portExplicitlySet) {
@@ -1114,6 +1341,7 @@ if (!portExplicitlySet) {
     remiConfig.daemon.base_port,
     remiConfig.daemon.port_range,
     bindHost,
+    serveMode ? [] : [hubBasePort],
   );
   if (autoPort === null) {
     const rangeEnd = remiConfig.daemon.base_port + remiConfig.daemon.port_range - 1;
@@ -1122,6 +1350,10 @@ if (!portExplicitlySet) {
     process.exit(1);
   }
   PORT = autoPort;
+}
+if (!serveMode && PORT === hubBasePort) {
+  console.error(`Port ${hubBasePort} is reserved for the remi hub.`);
+  process.exit(1);
 }
 // Update per-port status file path now that PORT is finalized
 STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
@@ -1168,7 +1400,22 @@ if (cliDaemonMode) {
 // Core components
 // ---------------------------------------------------------------------------
 const _ptyManager = new PTYManager();
-const transcriptDiscovery = new TranscriptDiscovery();
+// One strict configuration read and one sidecar snapshot per remote-policy request (#1749 F2):
+// every policy reader below reads through this scope, and sharedEvents runs each such request in it.
+const remotePolicy = new RemotePolicyScope(currentProfilesStrict, remoteProfileSidecar);
+// Session daemons scan their selected profile; the hub refreshes all profile roots.
+const transcriptDiscovery = new TranscriptDiscovery({
+  ...(selectedProfile?.claude && {
+    projectsDir: path.join(selectedProfile.claude.dir, 'projects'),
+    primaryProfile: profileMetadata?.profile,
+  }),
+  ...(serveMode && {
+    profileRoots: () => {
+      // Roots from the last good configuration (P2A), filtered by the request's strict policy.
+      return visibleProfileRoots(currentProfiles(), remotePolicy.profiles());
+    },
+  }),
+});
 const transcriptWatchers: Map<UUID, TranscriptWatcher> = new Map();
 const transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>> = new Map();
 // Per-session harness sessions, keyed by sessionId (#1164): the answer, chat
@@ -1216,6 +1463,9 @@ const capabilitiesForConnection = (id: UUID): readonly string[] => [
     ? [IMAGE_STAGING_CAPABILITY, ...(imageInsertionCoordinator ? [IMAGE_INSERTION_CAPABILITY] : [])]
     : []),
   ...(structuredChatService?.isAvailable(id) ? [STRUCTURED_CHAT_CAPABILITY] : []),
+  // #1818: a Claude session with a running hook server reports Claude's own acceptance of each
+  // chat message typed into it (`user_input_result`); a hub, Codex and a failed hook server do not.
+  ...(harnessId === 'claude' && hookServer !== null ? [CHAT_ACCEPTANCE_CAPABILITY] : []),
   ...(notificationHostService?.isAvailable(id) ? ['notifications'] : []),
 ];
 function securePushForSession(sessionId: UUID): SecureSessionPush | undefined {
@@ -1346,18 +1596,24 @@ const pendingQuestionCreatedAt = new PendingQuestionCreatedAtTracker();
 const workspaceCache = new WorkspaceCache({
   log: (line) => log(`[Workspace] ${line}`),
   onChange: (directory) =>
-    broadcastWorkspaceChange(
-      {
-        sessionRegistry,
-        bindingStore,
-        transcriptDiscovery,
-        harness,
-        currentPort: () => PORT,
-        getLivePorts: () => liveSessionsRegistry.getLivePorts(),
-        machine: machineDescriptor,
-        broadcast: (message) => registry.broadcast(message),
-      },
-      directory,
+    remotePolicy.run(() =>
+      broadcastWorkspaceChange(
+        {
+          sessionRegistry,
+          bindingStore,
+          transcriptDiscovery,
+          harness,
+          profiles: remotePolicy.profiles,
+          sidecar: remotePolicy.sidecar,
+          profileOfSession: (id) => sessionStore.findByRemiSessionId(id),
+          withholdTranscriptPaths: selectedProfile !== undefined,
+          currentPort: () => PORT,
+          getLivePorts: visibleLivePorts,
+          machine: machineDescriptor,
+          broadcast: (message) => registry.broadcast(message),
+        },
+        directory,
+      ),
     ),
 });
 
@@ -1529,15 +1785,14 @@ if (
       const adapter = registry.getAdapter('websocket');
       return adapter instanceof WebSocketAdapter ? adapter : undefined;
     },
-    rootsFor: (workingDirectory) =>
-      downloadProtectionRoots({
-        home: REMI_DIR,
-        userHome: os.homedir(),
-        workingDirectory,
-        harness: harnessId,
-        claudeConfigDirectory: process.env['CLAUDE_CONFIG_DIR'],
-        codexHome: process.env['CODEX_HOME'],
-      }),
+    rootsFor: launchDownloadRoots({
+      home: REMI_DIR,
+      userHome: os.homedir(),
+      harness: harnessId,
+      profile: selectedProfile,
+      env: process.env,
+      configuredProfiles: currentProfiles,
+    }),
     onReady: (id) => publishDownloadReadiness(id),
   });
 }
@@ -1818,14 +2073,40 @@ let liveSessionsWatcherCloser: (() => void) | null = null;
  * entries come from `buildSessionList`, the request path's builder (#1274).
  */
 function collectLiveSessionsUpdate(): LiveSessionsCollectResult | null {
-  const newPorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== PORT);
+  return remotePolicy.run(collectLiveSessionsUpdateInScope);
+}
+
+function collectLiveSessionsUpdateInScope(): LiveSessionsCollectResult | null {
+  const newPorts = visibleLivePorts().filter((p) => p !== PORT);
   if (newPorts.length === 0) return null;
   // The same entries a session_list_request gets, harness identity included (#1274).
   const { own, external } = buildSessionList(
-    { sessionRegistry, bindingStore, transcriptDiscovery, harness },
+    {
+      sessionRegistry,
+      bindingStore,
+      transcriptDiscovery,
+      harness,
+      profiles: remotePolicy.profiles,
+      sidecar: remotePolicy.sidecar,
+      profileOfSession: (id) => sessionStore.findByRemiSessionId(id),
+      withholdTranscriptPaths: selectedProfile !== undefined,
+    },
     true,
   );
   return { sessions: [...own, ...external], newPorts, machine: machineDescriptor() };
+}
+
+function visibleLivePorts(): number[] {
+  return filterVisibleLivePorts({
+    listLive: () => liveSessionsRegistry.listLive(),
+    profileOfSession: (id) => sessionStore.findByRemiSessionId(id),
+    profiles: remotePolicy.profiles,
+    sidecar: remotePolicy.sidecar,
+  });
+}
+
+function remoteProfileSidecar() {
+  return readProfileSidecar(new SessionProfilesFile(REMI_DIR));
 }
 
 // Reserved-row status bar (#565). Assigned in wrapper mode; stays null in
@@ -2159,6 +2440,8 @@ const ptyMessageFanout = createPtyMessageFanout({
 });
 
 const trivialHandlers: TrivialHandlers = createTrivialHandlers({
+  profiles: remotePolicy.profiles,
+  sidecar: remotePolicy.sidecar,
   // #603 Phase 6: registration goes through the store (rotation prune + persist).
   // The phone's preferences are stored with the token (#1258: they were dropped
   // here, so a muted push class kept arriving).
@@ -2188,10 +2471,29 @@ const promptUpWiring = promptUpDeps(
   (sessionId) => harnessSessions.get(sessionId)?.decisions.screen,
 );
 
+// #1818/#1838: a Claude hook or queued transcript attachment confirms a typed chat message
+// only to its originating capable connection. Input, hook and watcher share this tracker.
+const chatAcceptance = new ChatAcceptanceTracker({
+  send: sendToConnection,
+  // Both sides must agree: this daemon lists the capability for the connection, and the client's
+  // own hello asked for it. A hub's older child proxy sends no such list, so it never gets one.
+  canReceive: (id) => {
+    if (!capabilitiesForConnection(id).includes(CHAT_ACCEPTANCE_CAPABILITY)) return false;
+    const adapter = registry.getAdapter('websocket');
+    if (!(adapter instanceof WebSocketAdapter)) return false;
+    return (
+      adapter
+        .getDirectConnection(id)
+        ?.connectionClientCapabilities.includes(CHAT_ACCEPTANCE_CAPABILITY) === true
+    );
+  },
+});
+
 const inputHandlers: InputHandlers = createInputHandlers({
   sessionRegistry,
   bindingStore,
   send: sendToConnection,
+  chatAcceptance,
   // #573/#1126: the RIGHT session's decisions (`harnessSessions`, filled per
   // session by createNewSession from `harness.createSession`) retire an
   // answered question and answer a held
@@ -2230,6 +2532,8 @@ const inputHandlers: InputHandlers = createInputHandlers({
 // session launches, not when the harness is built, so they are passed as
 // getters.
 const claudeHarness = new ClaudeHarness(transcriptDiscovery, {
+  ...(profileMetadata && { profileMetadata }),
+  ...(launchEnvironment && { profileEnv: launchEnvironment }),
   sessionRegistry,
   sessionStore,
   bindingStore,
@@ -2244,6 +2548,7 @@ const claudeHarness = new ClaudeHarness(transcriptDiscovery, {
   onHarnessDenied,
   pushTurnFailed: turnFailedRoutes.push,
   dismissTurnFailed: turnFailedRoutes.dismiss,
+  chatAcceptance,
   prompts: () => remiConfig.prompts,
   hookServer: () => hookServer,
   currentPort: () => PORT,
@@ -2299,12 +2604,15 @@ const codexHarness =
         currentPort: () => PORT,
         wsPort: () => remiStatus.wsPort,
         cleanup,
-        env: () => process.env,
+        // A finished turn is reported to the same sink Claude's Stop hook ends in (#1180).
+        // Kept ahead of the conditional spreads: notifications/turn-events.test.ts pins this text.
+        turnEvents,
+        env: () => launchEnvironment ?? process.env,
+        ...(launchEnvironment && { completeEnv: true }),
+        ...(profileMetadata && { profileMetadata }),
         onQuestionResolved,
         legacyWriters,
         remiVersion: REMI_VERSION,
-        // A finished turn is reported to the same sink Claude's Stop hook ends in (#1180).
-        turnEvents,
         log,
       })
     : undefined;
@@ -2408,7 +2716,10 @@ if (codexHarness) {
     process.exit(2);
   }
   const preflight = codexHarness.preflight(
-    cliDaemonMode ? parsedArgs.explicitArgs : parsedArgs.passthroughArgs,
+    [
+      ...(selectedProfile?.args ?? []),
+      ...(cliDaemonMode ? parsedArgs.explicitArgs : parsedArgs.passthroughArgs),
+    ],
     process.cwd(),
   );
   if (!preflight.ok) {
@@ -2420,6 +2731,11 @@ if (codexHarness) {
 }
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({
+  profiles: remotePolicy.profiles,
+  sidecar: remotePolicy.sidecar,
+  profileOfSession: (id) => sessionStore.findByRemiSessionId(id),
+  visibleLivePorts,
+  withholdTranscriptPaths: selectedProfile !== undefined,
   machine: machineDescriptor,
   sessionRegistry,
   bindingStore,
@@ -2443,6 +2759,9 @@ resolveStopOnClose = sessionHandlers.resolveStopOnClose;
 // The single authoritative "current owned session" accessor (#499), shared by
 // the transcript-request redirect and the hello_ack binding so they never diverge.
 const currentOwnedSession = makeCurrentSessionResolver({
+  profiles: remotePolicy.profiles,
+  sidecar: remotePolicy.sidecar,
+  withholdTranscriptPath: selectedProfile !== undefined,
   getPrimarySessionId,
   sessionStore,
   harness,
@@ -2450,6 +2769,10 @@ const currentOwnedSession = makeCurrentSessionResolver({
 });
 
 const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
+  isHiddenOwner: makeIsHiddenSessionOwner({ sessionStore, discovery: transcriptDiscovery }, () => ({
+    profiles: remotePolicy.profiles(),
+    sidecar: remotePolicy.sidecar(),
+  })),
   transcriptDiscovery,
   harness,
   transcriptWatchers,
@@ -2471,6 +2794,14 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
   basePort: remiConfig.daemon.base_port,
   portRange: remiConfig.daemon.port_range,
   bindHost,
+  profiles: remotePolicy.profiles,
+  sidecar: remotePolicy.sidecar,
+  remiProfileEnv,
+  resumeOwner: makeResumeOwner({
+    sessionStore,
+    discovery: transcriptDiscovery,
+    within: (fn, snapshot) => remotePolicy.run(fn, snapshot),
+  }),
   inheritedArgs: () => {
     const args: string[] = [];
     if (cliAuth === true) args.push('--auth');
@@ -2495,6 +2826,22 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
 });
 
 const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers({
+  // The ack after a resume is its own read phase: creating the session wrote a new record.
+  profileForSession: (id) =>
+    remotePolicy.run(() => {
+      const record = sessionStore.findByRemiSessionId(id);
+      const profiles = remotePolicy.profiles();
+      const owner = sessionProfileOwner(
+        record ?? { transcriptProfile: undefined },
+        remotePolicy.sidecar(),
+        profiles,
+      );
+      return sessionProfileRef(owner, record?.profileSnapshot, profiles);
+    }),
+  readSidecar: remotePolicy.sidecar,
+  readProfiles: remotePolicy.profiles,
+  isHiddenResumeOwner: (input, sidecar, profiles) =>
+    sessionProfileOwner(input, sidecar, profiles).owner === 'hidden',
   machine: machineDescriptor,
   currentOwnedSession,
   capabilitiesForConnection,
@@ -2502,7 +2849,7 @@ const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers
   // session daemon with `--resume` through the create-session path (#1129). Every other process
   // resumes in its own.
   childSessions: serveMode
-    ? (directory, extra) => createSessionHandlers_.startSession(directory, extra)
+    ? (directory, extra, policy) => createSessionHandlers_.startSession(directory, extra, policy)
     : null,
   harnessId,
   harnesses: () => harnessRegistry.available(),
@@ -2511,6 +2858,16 @@ const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers
   bindingStore,
   transcriptDiscovery,
   harness,
+  checkResumeProfile: (claudeSessionId, sidecar, profiles) =>
+    inProcessResumeRefusal(
+      sessionStore,
+      sidecar,
+      remiConfig.profiles,
+      profiles,
+      profileMetadata?.profile ?? 'default',
+      claudeSessionId,
+      log,
+    ),
   createNewSession,
   send: sendToConnection,
 });
@@ -2690,10 +3047,22 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
 
 // The repositories of the machine's recent sessions (#1236 phase C), for a new-session sheet.
 const recentRepositoriesHandlers = createRecentRepositoriesHandlers({
+  profiles: remotePolicy.profiles,
+  sidecar: remotePolicy.sidecar,
+  remiProfileEnv,
   sessionStore,
   repositoryStore: recentRepositoryStore,
   send: sendToConnection,
 });
+const sessionProfilesHandlers = createSessionProfilesHandlers({
+  profiles: remotePolicy.profiles,
+  remiProfileEnv,
+  send: sendToConnection,
+});
+
+function inPolicyScope<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
+  return (...args) => remotePolicy.run(() => fn(...args));
+}
 
 let sharedEvents = {
   onTerminalView: (id: string, ingress: TerminalIngress) =>
@@ -2777,6 +3146,7 @@ let sharedEvents = {
     });
   },
   ...recentRepositoriesHandlers,
+  ...sessionProfilesHandlers,
   ...trivialHandlers,
   ...inputHandlers,
   onNativeAnswer: (_connectionId: UUID, message: import('@remi/shared').NativeAnswerMessage) =>
@@ -2802,8 +3172,18 @@ let sharedEvents = {
   ...sessionHandlers,
   ...connectionHandlers,
   ...transcriptHandlers,
-  onCreateSessionRequest: createSessionHandlers_.onCreateSessionRequest,
   ...resumeSessionHandlers,
+  // Each remote-policy request reads the configuration and the sidecar once, including the
+  // transcript scans it triggers (#1749 F2). Listed after the spreads, so these win.
+  onSessionListRequest: inPolicyScope(sessionHandlers.onSessionListRequest),
+  onTranscriptLoadRequest: inPolicyScope(transcriptHandlers.onTranscriptLoadRequest),
+  onRecentRepositoriesRequest: inPolicyScope(
+    recentRepositoriesHandlers.onRecentRepositoriesRequest,
+  ),
+  onSessionHistoryRequest: inPolicyScope(trivialHandlers.onSessionHistoryRequest),
+  onSessionProfilesRequest: inPolicyScope(sessionProfilesHandlers.onSessionProfilesRequest),
+  onCreateSessionRequest: inPolicyScope(createSessionHandlers_.onCreateSessionRequest),
+  onResumeSessionRequest: inPolicyScope(resumeSessionHandlers.onResumeSessionRequest),
   // Expose the shared answer core under the adapter's relay event name (#575,
   // P4a). The HTTP /answer endpoint routes through the SAME logic as the
   // WebSocket onAnswer, just reporting a structured outcome instead of an
@@ -2982,6 +3362,25 @@ if (authEnabled) {
   } else {
     console.error(
       'WARNING: authentication disabled. Any local process able to reach this port can approve permission prompts and type into your session. Use --auth to require proof of identity.',
+    );
+  }
+}
+
+// Only a local interactive session starts a hub. REMI_HOME is the existing
+// scratch-state override, and tests opt out through their preload.
+if (isSessionLaunch(parsedArgs) && !serveMode && !cliHost) {
+  const legacyPolicy = {
+    legacyEnabled: remiConfig.notifications.legacy_push_enabled,
+    pushSecret: cliPushSecret,
+  };
+  if (cliDaemonMode) {
+    const { noHubWarning, readLiveHub } = await import('./cli/daemon-manager.ts');
+    if (!readLiveHub()) console.error(noHubWarning(legacyPolicy));
+  } else {
+    const { ensureHubForSession } = await import('./cli/hub-autostart.ts');
+    await ensureHubForSession(
+      remiConfig.daemon.hub_auto_start && !isRemiHomeOverridden(),
+      legacyPolicy,
     );
   }
 }
@@ -3411,10 +3810,17 @@ if (cliDaemonMode) {
   // Phase 2: Probe for available WebSocket port, then start
   if (!portExplicitlySet) {
     const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
-    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed, bindHost);
+    const probed = await probeDaemonSessionPort(
+      PORT,
+      DEFAULT_PORT_RANGE,
+      liveUsed,
+      bindHost,
+      hubBasePort,
+      serveMode,
+    );
     if (probed === null) {
       console.error(
-        `All remi ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
+        `All remi ports in range ${remiConfig.daemon.base_port}-${remiConfig.daemon.base_port + DEFAULT_PORT_RANGE - 1} are in use.`,
       );
       console.error('Use --port to specify a different port, or stop existing sessions.');
       await registry.stopAll();
@@ -3431,7 +3837,27 @@ if (cliDaemonMode) {
   }
 
   try {
-    await registry.startAdapter('websocket');
+    if (!serveMode && !portExplicitlySet) {
+      await startSessionPort(
+        PORT,
+        DEFAULT_PORT_RANGE,
+        hubBasePort,
+        bindHost,
+        () => new Set(liveSessionsRegistry.listLive().map((entry) => entry.wsPort)),
+        async (port) => {
+          if (port !== PORT) {
+            await registry.unregister('websocket');
+            console.log(`Port ${PORT} in use, using ${port}`);
+            PORT = port;
+            STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
+            registry.register(new WebSocketAdapter(websocketConfigFor(PORT), sharedEvents));
+          }
+          await registry.startAdapter('websocket');
+        },
+      );
+    } else {
+      await registry.startAdapter('websocket');
+    }
   } catch (err) {
     if (daemonTls) await fatalTlsStartup();
     const msg = errorToString(err);
@@ -3464,12 +3890,9 @@ if (cliDaemonMode) {
     onDirChange: hubClientTracker ? () => hubClientTracker.refresh() : undefined,
   });
 
-  // Statusline install mutates the GLOBAL ~/.claude/settings.json; a
-  // session-less hub never runs Claude, so it has no business touching it
-  // (the first session child installs it anyway). Session daemons keep the
-  // existing behavior.
+  // The session-less hub never runs Claude; only session daemons install the status line.
   if (!serveMode && harnessId === 'claude') {
-    installStatusLine(REMI_DIR, undefined, !isRemiHomeOverridden());
+    installStatusLineForLaunch(selectedProfile, REMI_DIR, isRemiHomeOverridden());
   }
 
   if (serveMode) {
@@ -3556,6 +3979,14 @@ if (cliDaemonMode) {
           trust: relayTrust,
           dir: REMI_DIR,
           registry: liveSessionsRegistry,
+          remotePolicy: {
+            sessionStore,
+            snapshot: () => ({
+              profiles: currentProfilesStrict(),
+              sidecar: remoteProfileSidecar(),
+            }),
+            run: (fn, snapshot) => remotePolicy.run(fn, snapshot),
+          },
           // A subscription is acknowledged only while a secure push service exists (#1200, B5).
           securePushSender: () => securePushService !== undefined,
           pushLeaseMs,
@@ -3655,7 +4086,9 @@ if (cliDaemonMode) {
         sessionId,
         workingDirectory,
         ptyMessageFanout,
-        harnessId === 'codex' ? codexLaunchArgs : [...parsedArgs.explicitArgs],
+        harnessId === 'codex'
+          ? codexLaunchArgs
+          : [...(selectedProfile?.args ?? []), ...parsedArgs.explicitArgs],
       );
     } catch (err) {
       const msg = errorToString(err);
@@ -3750,9 +4183,10 @@ if (cliDaemonMode) {
   // Close log fd as the very last thing on process exit
   process.on('exit', endLogFileSession);
 
-  // Install status line script (<state dir>/statusline.sh) and auto-configure
-  // Claude Code settings, except under a REMI_HOME override (see installStatusLine).
-  if (harnessId === 'claude') installStatusLine(REMI_DIR, undefined, !isRemiHomeOverridden());
+  // Install the script and register it in the selected profile where permitted.
+  if (harnessId === 'claude') {
+    installStatusLineForLaunch(selectedProfile, REMI_DIR, isRemiHomeOverridden());
+  }
   const workingDirectory = process.cwd();
   const sessionId = sessionRegistry.createSessionId();
   setPrimarySessionId(sessionId);
@@ -3772,7 +4206,13 @@ if (cliDaemonMode) {
   let wsProbeSucceeded = true;
   if (!portExplicitlySet) {
     const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
-    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed, bindHost);
+    const probed = await probeWrapperSessionPort(
+      PORT,
+      DEFAULT_PORT_RANGE,
+      liveUsed,
+      bindHost,
+      hubBasePort,
+    );
     if (probed !== null && probed !== PORT) {
       const occupiedPort = PORT;
       try {
@@ -3802,7 +4242,29 @@ if (cliDaemonMode) {
 
   if (wsProbeSucceeded) {
     try {
-      await registry.startAdapter('websocket');
+      if (!portExplicitlySet) {
+        await startSessionPort(
+          PORT,
+          DEFAULT_PORT_RANGE,
+          hubBasePort,
+          bindHost,
+          () => new Set(liveSessionsRegistry.listLive().map((entry) => entry.wsPort)),
+          async (port) => {
+            if (port !== PORT) {
+              await registry.unregister('websocket');
+              const occupied = PORT;
+              PORT = port;
+              STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
+              registry.register(new WebSocketAdapter(websocketConfigFor(PORT), sharedEvents));
+              setLogFileContext({ port: PORT, sessionId });
+              log(`Port ${occupied} in use, using ${PORT}`);
+            }
+            await registry.startAdapter('websocket');
+          },
+        );
+      } else {
+        await registry.startAdapter('websocket');
+      }
       log(`WebSocket server listening on ${publicWsScheme}://${bindHost}:${PORT}/ws`);
       mdnsPublisher = await startMdnsIfNeeded(log);
       wsStarted = true;

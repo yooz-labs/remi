@@ -102,7 +102,7 @@ function seedSession(r: Running, options: { live?: boolean } = {}): string {
   const remiSessionId = crypto.randomUUID();
   let pid: number | null = null;
   if (options.live === true) {
-    const holder = Bun.spawn(['sleep', '60']);
+    const holder = Bun.spawn(['sleep', '60'], { timeout: 65_000 });
     sleepers.push(holder);
     pid = holder.pid;
   }
@@ -153,7 +153,7 @@ function ancestorsOf(pid: number): number[] {
   const chain: number[] = [];
   let current = pid;
   for (let i = 0; i < 8; i++) {
-    const out = Bun.spawnSync(['ps', '-o', 'ppid=', '-p', String(current)])
+    const out = Bun.spawnSync(['ps', '-o', 'ppid=', '-p', String(current)], { timeout: 5000 })
       .stdout.toString()
       .trim();
     const parent = Number(out);
@@ -170,7 +170,9 @@ const why = (r: Running, response: object): string =>
 describe('remi serve resume (integration, #1129)', () => {
   test("a resume starts a child session daemon whose Claude receives --resume, and answers with the child's port", async () => {
     const r = await startHub();
-    expect(spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: r.project }).status).toBe(0);
+    expect(
+      spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: r.project, timeout: 10_000 }).status,
+    ).toBe(0);
     const remiSessionId = seedSession(r);
 
     const { response, received } = await ask(r, remiSessionId);

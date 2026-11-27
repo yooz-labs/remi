@@ -37,6 +37,7 @@ import {
   isStructuredChatCandidate,
   isTerminalViewCandidate,
   now,
+  sanitizeClientCapabilities,
   serialize,
 } from '@remi/shared';
 import type {
@@ -179,6 +180,7 @@ export class Connection {
   private resumeSessionId: UUID | null = null;
   private _mode: 'query' | undefined = undefined;
   private deviceId: string | null = null;
+  private clientCapabilities: readonly string[] = [];
   private readonly _peerAddress: string | null;
   private readonly relayChatAuthority: SecurePushAuthority | null;
   /** Authenticated client fingerprint from the Ed25519 challenge-response
@@ -283,6 +285,15 @@ export class Connection {
   /** Stable per-device identifier from the client's hello, if sent (#662). */
   get connectionDeviceId(): string | null {
     return this.deviceId;
+  }
+
+  /**
+   * The optional pushed features this client's hello asked for (#1818), such as
+   * `chat_acceptance`. Empty for a client that sent none (an older one). Bounded and
+   * string-only: it is a request for messages, never an authority.
+   */
+  get connectionClientCapabilities(): readonly string[] {
+    return this.clientCapabilities;
   }
 
   /** Authenticated client fingerprint, if this connection completed the
@@ -448,6 +459,14 @@ export class Connection {
         bullet_expand_request: (m) => this.handleBulletExpandRequest(m),
         session_list_request: (m) => this.handleSessionListRequest(m),
         recent_repositories_request: (m) => this.handleRecentRepositoriesRequest(m),
+        session_profiles_request: (m) => {
+          if (!this.events.onSessionProfilesRequest) {
+            this.sendError('UNKNOWN_MESSAGE', `Unknown message type: ${m.type}`);
+            return;
+          }
+          this.sendAck(m.id, 'delivered');
+          this.events.onSessionProfilesRequest(m.id, m.directory);
+        },
         transcript_load_request: (m) => this.handleTranscriptLoadRequest(m),
         create_session_request: (m) => this.handleCreateSessionRequest(m),
         terminal_resize: (m) => this.handleTerminalResize(m),
@@ -884,6 +903,7 @@ export class Connection {
     this.resumeSessionId = message.resumeSessionId ?? null;
     this._mode = message.mode === 'query' ? 'query' : undefined;
     this.deviceId = message.deviceId ?? null;
+    this.clientCapabilities = sanitizeClientCapabilities(message.clientCapabilities);
     this.state = 'connected';
 
     // Send hello ack (unless skipHelloAck is set, which lets daemon handle it)

@@ -1,0 +1,308 @@
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { validateProfileLabel } from '@remi/shared';
+import { remiHome } from '../config/remi-home.ts';
+import { REMI_SECRET_ENV } from '../pty/child-env.ts';
+import { codexProviderCredentialNames, isProfileCredentialEnvName } from './profile-env.ts';
+
+export interface ProfileHarness {
+  readonly dir: string;
+  readonly expects: string;
+}
+export interface Profile {
+  readonly label: string;
+  readonly remoteVisible: boolean;
+  readonly remoteSelectable: boolean;
+  readonly harness?: 'claude' | 'codex';
+  readonly args: readonly string[];
+  readonly folders: readonly string[];
+  readonly env: Readonly<Record<string, string>>;
+  readonly claude?: ProfileHarness;
+  readonly codex?: ProfileHarness;
+  readonly revision: string;
+}
+export type Profiles =
+  | {
+      readonly error: string;
+      readonly rawSelection?: {
+        readonly machineDefault?: string;
+        readonly folders: readonly string[];
+      };
+    }
+  | {
+      readonly entries: Readonly<Record<string, Profile>>;
+      readonly default?: string;
+      readonly notices: readonly string[];
+    };
+
+const LATER = new Set(['warn_percent', 'offer_percent', 'continuation_target']);
+const PROFILE_KEYS = new Set([
+  'label',
+  'remote_visible',
+  'remote_selectable',
+  'harness',
+  'args',
+  'folders',
+  'env',
+  'claude',
+  'codex',
+  ...LATER,
+]);
+const CREDENTIAL_NAME = /(API_KEY|TOKEN|SECRET|PASSWORD|PASSPHRASE|CREDENTIAL|PRIVATE_KEY)/i;
+export function isCredentialName(name: string): boolean {
+  return CREDENTIAL_NAME.test(name);
+}
+
+function table(value: unknown, key: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value) || value instanceof Date)
+    throw new Error(`${key}: expected a table`);
+  return value as Record<string, unknown>;
+}
+function keys(value: Record<string, unknown>, allowed: ReadonlySet<string>, key: string): void {
+  for (const k of Object.keys(value)) if (!allowed.has(k)) throw new Error(`${key}: unknown key`);
+}
+function strings(value: unknown, key: string): string[] {
+  if (!Array.isArray(value) || value.some((x) => typeof x !== 'string'))
+    throw new Error(`${key}: expected an array of strings`);
+  return value as string[];
+}
+function absolute(value: unknown, key: string): string {
+  if (typeof value !== 'string') throw new Error(`${key}: expected an absolute or ~/ path`);
+  const expanded = value.startsWith('~/') ? path.join(os.homedir(), value.slice(2)) : value;
+  if (!path.isAbsolute(expanded)) throw new Error(`${key}: expected an absolute or ~/ path`);
+  return path.resolve(expanded);
+}
+
+/** Resolve symlink aliases even when the final components do not exist yet. */
+function comparisonPath(dir: string): string {
+  let current = path.resolve(dir);
+  let links = 0;
+  for (;;) {
+    const parts = current.split(path.sep).filter(Boolean);
+    let ancestor = path.parse(current).root;
+    let redirected = false;
+    for (let i = 0; i < parts.length; i++) {
+      const candidate = path.join(ancestor, parts[i] as string);
+      try {
+        const stat = fs.lstatSync(candidate);
+        if (stat.isSymbolicLink()) {
+          if (++links > 40) throw new Error('Too many symbolic links');
+          const target = fs.readlinkSync(candidate);
+          current = path.resolve(ancestor, target, ...parts.slice(i + 1));
+          redirected = true;
+          break;
+        }
+        ancestor = fs.realpathSync.native(candidate);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        return path.join(ancestor, ...parts.slice(i));
+      }
+    }
+    if (!redirected) return ancestor;
+  }
+}
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  if (typeof value === 'object' && value !== null) {
+    const obj = value as Record<string, unknown>;
+    return `{${Object.keys(obj)
+      .sort()
+      .filter((k) => obj[k] !== undefined)
+      .map((k) => `${JSON.stringify(k)}:${canonical(obj[k])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+export function profileRevision(profile: Omit<Profile, 'revision'>): string {
+  return createHash('sha256')
+    .update(
+      canonical({
+        harness: profile.harness,
+        args: profile.args,
+        env: profile.env,
+        claude: profile.claude,
+        codex: profile.codex,
+      }),
+    )
+    .digest('hex');
+}
+
+export function parseProfiles(raw: unknown): Profiles {
+  try {
+    if (raw === undefined) return { entries: {}, notices: [] };
+    const root = table(raw, 'profiles');
+    if (root['default'] !== undefined && typeof root['default'] !== 'string')
+      throw new Error('profiles.default: reserved for the built-in profile and machine default');
+    const ids = Object.keys(root).filter((key) => key !== 'default');
+    if (ids.length > 32) throw new Error('profiles: at most 32 profiles');
+    const entries: Record<string, Profile> = Object.create(null);
+    const folders = new Set<string>();
+    const harnessDirs = new Map<string, string>();
+    const notices: string[] = [];
+    for (const id of ids) {
+      if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(id)) throw new Error('profiles: invalid profile id');
+      if (!/[a-z]/.test(id))
+        throw new Error('profiles: invalid profile id: a profile id must contain a letter');
+      const prefix = `profiles.${id}`;
+      const p = table(root[id], prefix);
+      keys(p, PROFILE_KEYS, prefix);
+      for (const key of LATER)
+        if (
+          key in p &&
+          !notices.includes('profiles: later settings are not used by this remi version')
+        )
+          notices.push('profiles: later settings are not used by this remi version');
+      for (const key of ['remote_visible', 'remote_selectable'])
+        if (p[key] !== undefined && typeof p[key] !== 'boolean')
+          throw new Error(`${prefix}.${key}: expected a boolean`);
+      const remoteVisible = (p['remote_visible'] as boolean | undefined) ?? true;
+      const remoteSelectable = (p['remote_selectable'] as boolean | undefined) ?? false;
+      if (!remoteVisible && remoteSelectable)
+        notices.push(`${prefix}: remote_selectable has no effect while remote_visible is false`);
+      const labelError = validateProfileLabel(p['label']);
+      if (labelError) throw new Error(`${prefix}.label: ${labelError}`);
+      const harness = p['harness'];
+      if (harness !== undefined && harness !== 'claude' && harness !== 'codex')
+        throw new Error(`${prefix}.harness: expected claude or codex`);
+      const args = p['args'] === undefined ? [] : strings(p['args'], `${prefix}.args`);
+      if (args.includes('--'))
+        throw new Error(
+          `${prefix}.args: "--" is not allowed; the session's own arguments follow the profile's`,
+        );
+      const dirs =
+        p['folders'] === undefined
+          ? []
+          : strings(p['folders'], `${prefix}.folders`).map((dir) =>
+              absolute(dir, `${prefix}.folders`),
+            );
+      for (const dir of dirs) {
+        if (folders.has(dir))
+          throw new Error(`${prefix}.folders: folder appears in more than one profile`);
+        folders.add(dir);
+      }
+      const envRaw = p['env'] === undefined ? {} : table(p['env'], `${prefix}.env`);
+      const env: Record<string, string> = Object.create(null);
+      for (const [name, value] of Object.entries(envRaw)) {
+        const key = `${prefix}.env.${name}`;
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`${prefix}.env: invalid name`);
+        if (['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'HOME', 'XDG_CONFIG_HOME'].includes(name))
+          throw new Error(`${key}: set the profile's directory with \`dir\`, not \`env\``);
+        if (REMI_SECRET_ENV.includes(name))
+          throw new Error(`${key}: remi does not store credentials; use the harness's own sign-in`);
+        if (isProfileCredentialEnvName(name))
+          throw new Error(`${key}: not supported in this build`);
+        if (isCredentialName(name)) {
+          const codex = p['codex'];
+          if (codex && typeof codex === 'object' && !Array.isArray(codex)) {
+            const rawDir = (codex as Record<string, unknown>)['dir'];
+            const dir =
+              rawDir === undefined
+                ? path.resolve(remiHome(), 'p', id, 'codex')
+                : absolute(rawDir, `${prefix}.codex.dir`);
+            let dynamic = false;
+            try {
+              dynamic = codexProviderCredentialNames(id, dir).has(name);
+            } catch {
+              // A launch reports an unreadable Codex config. A credential-named
+              // profile value remains refused even if its config is unreadable.
+            }
+            if (dynamic)
+              throw new Error(
+                `Profile ${id} sets ${name}, which its Codex configuration reads as a credential; remi does not store credentials.`,
+              );
+          }
+          throw new Error(`${key}: remi does not store credentials; use the harness's own sign-in`);
+        }
+        if (typeof value !== 'string') throw new Error(`${key}: expected a string`);
+        env[name] = value;
+      }
+      const readHarness = (name: 'claude' | 'codex'): ProfileHarness | undefined => {
+        if (p[name] === undefined) return undefined;
+        const h = table(p[name], `${prefix}.${name}`);
+        keys(h, new Set(['dir', 'expects']), `${prefix}.${name}`);
+        if (typeof h['expects'] !== 'string' || !/^[a-z][a-z0-9_]{0,31}$/.test(h['expects']))
+          throw new Error(`${prefix}.${name}.expects: expected a safe token`);
+        const dir =
+          h['dir'] === undefined
+            ? path.resolve(remiHome(), 'p', id, name)
+            : absolute(h['dir'], `${prefix}.${name}.dir`);
+        const key = `${prefix}.${name}.dir`;
+        const compared = comparisonPath(dir);
+        if (
+          compared ===
+          comparisonPath(path.resolve(os.homedir(), name === 'claude' ? '.claude' : '.codex'))
+        )
+          throw new Error(
+            `${key}: This is the built-in default's directory; use the built-in default instead`,
+          );
+        const prior = harnessDirs.get(compared);
+        if (prior) throw new Error(`${key} uses the same directory as ${prior}`);
+        harnessDirs.set(compared, key);
+        return {
+          dir,
+          expects: h['expects'],
+        };
+      };
+      const claude = readHarness('claude');
+      const codex = readHarness('codex');
+      if (!claude && !codex) throw new Error(`${prefix}: configure claude or codex`);
+      if (
+        claude &&
+        args.some((arg) => /^--(?:settings|managed-settings|setting-sources)(?:=|$)/.test(arg))
+      )
+        throw new Error(
+          `${prefix}.args: these change which settings, and so which credential, Claude Code uses`,
+        );
+      if (
+        codex &&
+        args.some((arg) => /^-(?:p|c)/.test(arg) || /^--(?:profile|config)(?:=|$)/.test(arg))
+      )
+        throw new Error(`${prefix}.args: Codex profile and config flags are not supported`);
+      const withoutRevision: Omit<Profile, 'revision'> = {
+        label: p['label'] as string,
+        remoteVisible,
+        remoteSelectable,
+        ...(harness ? { harness } : {}),
+        args,
+        folders: dirs,
+        env,
+        ...(claude ? { claude } : {}),
+        ...(codex ? { codex } : {}),
+      };
+      entries[id] = { ...withoutRevision, revision: profileRevision(withoutRevision) };
+    }
+    if (
+      root['default'] !== undefined &&
+      (typeof root['default'] !== 'string' || !Object.hasOwn(entries, root['default']))
+    )
+      throw new Error('profiles.default: must name a configured profile');
+    return {
+      entries,
+      ...(typeof root['default'] === 'string' ? { default: root['default'] } : {}),
+      notices,
+    };
+  } catch (err) {
+    const result: Extract<Profiles, { error: string }> = {
+      error: err instanceof Error ? err.message : 'profiles: invalid configuration',
+    };
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      const root = raw as Record<string, unknown>;
+      const folders = Object.values(root).flatMap((value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+        const candidate = (value as Record<string, unknown>)['folders'];
+        return Array.isArray(candidate)
+          ? candidate.filter((v): v is string => typeof v === 'string')
+          : [];
+      });
+      Object.defineProperty(result, 'rawSelection', {
+        value: {
+          machineDefault: typeof root['default'] === 'string' ? root['default'] : undefined,
+          folders,
+        },
+      });
+    }
+    return result;
+  }
+}

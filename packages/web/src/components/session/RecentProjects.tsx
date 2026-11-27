@@ -12,6 +12,9 @@ import { useState } from 'react';
 interface RecentProjectsProps {
   readonly directories: readonly RecentDirectory[];
   readonly onStartSession: (directory: string) => void;
+  readonly profilesEnabled?: boolean;
+  readonly disabled?: boolean;
+  readonly onPathEdit?: () => void;
 }
 
 function formatAge(timestamp: string): string {
@@ -26,7 +29,13 @@ function formatAge(timestamp: string): string {
   return `${days}d ago`;
 }
 
-export function RecentProjects({ directories, onStartSession }: RecentProjectsProps) {
+export function RecentProjects({
+  directories,
+  onStartSession,
+  profilesEnabled = false,
+  disabled = false,
+  onPathEdit,
+}: RecentProjectsProps) {
   const [customPath, setCustomPath] = useState('');
   const [expanded, setExpanded] = useState(false);
 
@@ -47,7 +56,10 @@ export function RecentProjects({ directories, onStartSession }: RecentProjectsPr
           <button
             key={dir.directory}
             type="button"
-            onClick={() => onStartSession(dir.directory)}
+            onClick={() => {
+              if (!disabled) onStartSession(dir.directory);
+            }}
+            disabled={disabled}
             className="group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-[var(--color-surface-light)] active:bg-[var(--color-surface-light)]"
             aria-label={`Start session in ${dir.displayName}`}
           >
@@ -68,6 +80,7 @@ export function RecentProjects({ directories, onStartSession }: RecentProjectsPr
 
       {directories.length > 5 && (
         <button
+          type="button"
           onClick={() => setExpanded(!expanded)}
           className="mt-1 w-full text-center text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
         >
@@ -80,24 +93,29 @@ export function RecentProjects({ directories, onStartSession }: RecentProjectsPr
         <input
           type="text"
           value={customPath}
-          onChange={(e) => setCustomPath(e.target.value)}
+          disabled={disabled}
+          onChange={(e) => {
+            onPathEdit?.();
+            setCustomPath(e.target.value);
+          }}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && customPath.trim()) {
+            if (!disabled && e.key === 'Enter' && customPath.trim()) {
               onStartSession(customPath.trim());
-              setCustomPath('');
+              if (!profilesEnabled) setCustomPath('');
             }
           }}
           placeholder="Custom path..."
           className="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-xs text-[var(--color-text)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] focus:outline-none"
         />
         <button
+          type="button"
           onClick={() => {
-            if (customPath.trim()) {
+            if (!disabled && customPath.trim()) {
               onStartSession(customPath.trim());
-              setCustomPath('');
+              if (!profilesEnabled) setCustomPath('');
             }
           }}
-          disabled={!customPath.trim()}
+          disabled={disabled || !customPath.trim()}
           className="rounded bg-[var(--color-primary)] px-2 py-1 text-xs text-[var(--color-accent-ink)] disabled:opacity-50"
         >
           Start

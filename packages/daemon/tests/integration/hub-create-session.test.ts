@@ -36,6 +36,7 @@ import {
   serialize,
 } from '@remi/shared/protocol.ts';
 import { DEFAULT_CONFIG } from '../../src/config/config.ts';
+import { PROFILE_CREDENTIAL_ENV } from '../../src/profiles/profile-env.ts';
 import { SessionStore } from '../../src/session/session-store.ts';
 import {
   type FakeAgents,
@@ -96,6 +97,7 @@ function fakeCliIsAlive(pid: number, agents: FakeAgents): boolean {
   const command = Bun.spawnSync(['/bin/ps', '-p', String(pid), '-o', 'command='], {
     stdout: 'pipe',
     stderr: 'ignore',
+    timeout: 5000,
   });
   return new TextDecoder()
     .decode(command.stdout)
@@ -128,11 +130,29 @@ afterEach(async () => {
         try {
           await pollUntil(() => !fakeCliIsAlive(fake.pid, r.agents), 3000, 'fake CLI exit');
         } catch {
-          if (fakeCliIsAlive(fake.pid, r.agents)) {
-            try {
+          // A denied ps must not skip hub cleanup or signal an unverified PID.
+          try {
+            if (fakeCliIsAlive(fake.pid, r.agents)) {
               process.kill(fake.pid, 'SIGKILL');
+            }
+          } catch {
+            // Leave the marker in place until the released process exits. A
+            // liveness check does not signal a PID that ps could not verify.
+            try {
+              await pollUntil(
+                () => {
+                  try {
+                    process.kill(fake.pid, 0);
+                    return false;
+                  } catch {
+                    return true;
+                  }
+                },
+                3000,
+                'released fake CLI exit',
+              );
             } catch {
-              // The per-process fake may exit between the identity check and signal.
+              // The fake also has a bounded lifetime if liveness is unavailable.
             }
           }
         }
@@ -150,6 +170,7 @@ test('the per-process fake exits without a release marker', async () => {
   const claudeDir = path.join(root, 'claude');
   const child = Bun.spawn(['/bin/sh', '-c', INERT_CONCURRENT_CLAUDE], {
     env: { ...process.env, FAKE_CLAUDE_DIR: claudeDir, FAKE_CONCURRENT_CLAUDE_WAIT_TICKS: '3' },
+    timeout: 3000,
     stdout: 'ignore',
     stderr: 'ignore',
   });
@@ -170,12 +191,19 @@ test('the per-process fake exits without a release marker', async () => {
 async function startHub(
   which: { codex?: boolean; claude?: boolean },
   cliPath?: string,
+  pinEnvironment = false,
 ): Promise<Running> {
   const dirs = makeIsolatedDirs();
   let server: FakeAppServer | undefined;
   try {
     const agents = installFakeAgents(dirs.home, which);
     server = FakeAppServer.start();
+    if (pinEnvironment) {
+      const fake = path.join(dirs.home, 'fake-bin', 'codex');
+      const original = fs.readFileSync(fake, 'utf8');
+      const record = `d="$FAKE_CODEX_DIR"\nprintf '%s' "$CLAUDE_CONFIG_DIR" > "$d/claude_config_dir"\nprintf '%s' "$CODEX_HOME" > "$d/codex_home"\nenv | cut -d= -f1 | sort > "$d/env_names"\n`;
+      fs.writeFileSync(fake, original.replace('#!/bin/sh\n', `#!/bin/sh\n${record}`));
+    }
     // A random probed port, not the lowest free one from 19200 that every test process is given (P11).
     // The hub's children probe from `base_port` (which `REMI_PORT` sets) over the next 20 ports, and
     // the default base, 18765, is shared by every hub on the machine and by real sessions: so the
@@ -183,7 +211,15 @@ async function startHub(
     const port = await reserveRange(20, 50, DEFAULT_CONFIG.daemon.bind);
     const hub = await spawnHub(
       dirs,
-      { ...agents.env, CODEX_HOME: server.codexHome, REMI_PORT: String(port) },
+      {
+        ...agents.env,
+        ...(pinEnvironment
+          ? Object.fromEntries(PROFILE_CREDENTIAL_ENV.map((name) => [name, 'planted']))
+          : {}),
+        ...(pinEnvironment ? { CLAUDE_CONFIG_DIR: path.join(dirs.home, 'inherited-claude') } : {}),
+        CODEX_HOME: server.codexHome,
+        REMI_PORT: String(port),
+      },
       cliPath,
       port,
     );
@@ -360,7 +396,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
     const ack = received.find((m): m is HelloAckMessage => m.type === 'hello_ack');
     expect(ack?.sessionId).toBeNull();
     expect(ack?.protocolVersion).toBe(1);
-    expect(ack?.capabilities).toEqual(['workspaces']);
+    expect(ack?.capabilities).toEqual(['workspaces', 'session_profiles']);
   }, 60000);
 
   test('concurrent create requests reserve distinct child ports (#1213)', async () => {
@@ -455,7 +491,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
       const result = spawnSync(
         'git',
         ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', ...args],
-        { cwd, encoding: 'utf-8' },
+        { cwd, encoding: 'utf-8', timeout: 10_000 },
       );
       if (result.status !== 0) throw new Error(`git ${args.join(' ')}: ${result.stderr}`);
       return result.stdout.trim();
@@ -472,7 +508,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
       directory: repo,
       workspace: { repository: repo, worktree: { branch: 'feature/one' } },
     });
-    expect(ack.capabilities).toEqual(['workspaces']);
+    expect(ack.capabilities).toEqual(['workspaces', 'session_profiles']);
     expect(response.success, why(r, response)).toBe(true);
     const dir = path.join(path.dirname(repo), 'remi-worktrees', 'project-feature-one');
     expect(response.workspace).toEqual({
@@ -531,7 +567,9 @@ describe('a hub creating a session for a harness (#1179)', () => {
   test('repository history survives the session store pruning an eight-day-old session (#1284)', async () => {
     const r = await startHub({ claude: true });
     const repo = fs.realpathSync(r.hub.work);
-    expect(spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: repo }).status).toBe(0);
+    expect(
+      spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, timeout: 10_000 }).status,
+    ).toBe(0);
     const lastUsedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
     const home = path.join(r.hub.home, '.remi');
     new SessionStore(path.join(home, 'sessions.json')).save({
@@ -568,7 +606,9 @@ describe('a hub creating a session for a harness (#1179)', () => {
   test("a hub start without workspace remembers the directory's main repository (#1284)", async () => {
     const r = await startHub({ claude: true });
     const repo = fs.realpathSync(r.hub.work);
-    expect(spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: repo }).status).toBe(0);
+    expect(
+      spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, timeout: 10_000 }).status,
+    ).toBe(0);
     const nested = path.join(repo, 'src');
     fs.mkdirSync(nested);
     const { response } = await ask(r, { directory: nested });
@@ -589,7 +629,10 @@ describe('a hub creating a session for a harness (#1179)', () => {
       ['init', '-q', '-b', 'main'],
       ['commit', '-q', '--allow-empty', '-m', 'first'],
     ]) {
-      spawnSync('git', ['-c', 'user.email=t@e.com', '-c', 'user.name=T', ...args], { cwd: repo });
+      spawnSync('git', ['-c', 'user.email=t@e.com', '-c', 'user.name=T', ...args], {
+        cwd: repo,
+        timeout: 10_000,
+      });
     }
     // Relative to now: the store drops a session seven days after it exited.
     const exitedAt = new Date(Date.now() - 60_000).toISOString();
@@ -617,6 +660,23 @@ describe('a hub creating a session for a harness (#1179)', () => {
       ws.close();
     }
   }, 60000);
+
+  test('an unconfigured hub Codex launch preserves the inherited environment', async () => {
+    const r = await startHub({ codex: true }, undefined, true);
+    const { response } = await ask(r, { harness: 'codex', args: ['-m', 'fixture-model'] });
+    expect(response.success, why(r, response)).toBe(true);
+    expect(await waitForArgv(r.agents.codexDir)).toEqual([
+      '--no-alt-screen',
+      '-m',
+      'fixture-model',
+    ]);
+    const readPin = (name: string) =>
+      fs.readFileSync(path.join(r.agents.codexDir, name), 'utf8').trim();
+    expect(readPin('claude_config_dir')).toBe(path.join(r.hub.home, 'inherited-claude'));
+    expect(readPin('codex_home')).toBe(r.server.codexHome);
+    const names = readPin('env_names').split('\n');
+    for (const name of PROFILE_CREDENTIAL_ENV) expect(names).toContain(name);
+  }, 40000);
 
   test('a Codex request starts a Codex session with the validated arguments, headless', async () => {
     const r = await startHub({ codex: true });
@@ -757,7 +817,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
   test('a live remi older than the identity shim refuses a Codex request, with its text, and still serves Claude', async () => {
     const r = await startHub({ claude: true, codex: true });
     // A live process whose live-sessions entry says it is a remi from before the shim.
-    const sleeper = Bun.spawn(['sleep', '60']);
+    const sleeper = Bun.spawn(['sleep', '60'], { timeout: 65_000 });
     sleepers.push(sleeper);
     const liveDir = path.join(r.hub.home, '.remi', 'live-sessions');
     fs.mkdirSync(liveDir, { recursive: true });
@@ -801,7 +861,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
   test('a resume of a thread a live session holds is refused before anything is spawned, with a generic client text (H2, P4)', async () => {
     const r = await startHub({ claude: true, codex: true });
     const THREAD = '01950000-0000-7000-8000-0000000000aa';
-    const holder = Bun.spawn(['sleep', '60']);
+    const holder = Bun.spawn(['sleep', '60'], { timeout: 65_000 });
     sleepers.push(holder);
     const remiSessionId = crypto.randomUUID();
     new SessionStore(path.join(r.hub.home, '.remi', 'sessions.json')).save({
@@ -843,7 +903,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
     // `list()` refuses to choose between them. Written as raw JSON: `save()` would not allow it.
     const THREAD = '01950000-0000-7000-8000-0000000000aa';
     function writeAmbiguousStore(r: Running) {
-      const holder = Bun.spawn(['sleep', '60']);
+      const holder = Bun.spawn(['sleep', '60'], { timeout: 65_000 });
       sleepers.push(holder);
       const record = () => ({
         remiSessionId: crypto.randomUUID(),
@@ -901,7 +961,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
     const GENERIC = 'That Claude session is already open in a live remi session on the host.';
 
     async function holdClaudeSession(r: Running, over: { exited?: boolean } = {}) {
-      const holder = Bun.spawn(['sleep', '60']);
+      const holder = Bun.spawn(['sleep', '60'], { timeout: 65_000 });
       sleepers.push(holder);
       const remiSessionId = crypto.randomUUID();
       new SessionStore(path.join(r.hub.home, '.remi', 'sessions.json')).save({
@@ -941,7 +1001,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
 
     test('a Claude request that resumes nothing is not held up by a live session that has no id yet', async () => {
       const r = await startHub({ claude: true, codex: true });
-      const holder = Bun.spawn(['sleep', '60']);
+      const holder = Bun.spawn(['sleep', '60'], { timeout: 65_000 });
       sleepers.push(holder);
       // A session that has only just started: Claude's id is not learned yet.
       new SessionStore(path.join(r.hub.home, '.remi', 'sessions.json')).save({
@@ -1032,7 +1092,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
 
     test('a live remi of ANOTHER unparsable build is still an older remi', async () => {
       const r = await stampedHub();
-      const sleeper = Bun.spawn(['sleep', '60']);
+      const sleeper = Bun.spawn(['sleep', '60'], { timeout: 65_000 });
       sleepers.push(sleeper);
       const liveDir = path.join(r.hub.home, '.remi', 'live-sessions');
       fs.mkdirSync(liveDir, { recursive: true });
@@ -1061,6 +1121,7 @@ describe('a hub creating a session for a harness (#1179)', () => {
 function runCli(r: Running, args: readonly string[]) {
   const proc = Bun.spawn([process.execPath, CLI_TS, ...args], {
     cwd: r.hub.work,
+    timeout: 120_000,
     env: isolatedEnv(r.hub.home, { ...r.agents.env, CODEX_HOME: r.server.codexHome }),
     stdin: 'ignore',
     stdout: 'pipe',
@@ -1080,7 +1141,10 @@ function runCli(r: Running, args: readonly string[]) {
 describe('the CLI creating a session on a hub (#1179)', () => {
   test('a CLI that exits before the agent starts ends the wait at once, and the error says what it and the hub printed', async () => {
     const r = await startHub({ codex: true });
-    const proc = Bun.spawn(['sh', '-c', 'echo refused by the hub; exit 3'], { stdout: 'pipe' });
+    const proc = Bun.spawn(['sh', '-c', 'echo refused by the hub; exit 3'], {
+      stdout: 'pipe',
+      timeout: 5000,
+    });
     sleepers.push(proc);
     const output = { text: '' };
     collect(proc.stdout, output);

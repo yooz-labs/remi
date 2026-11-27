@@ -19,6 +19,7 @@ import { SessionBindingStore } from '../../../src/session/session-binding-store.
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../../src/transcript/transcript-discovery.ts';
+import { emptySidecar, noProfiles, noRecord } from '../../helpers/no-profiles-policy.ts';
 
 const CLAUDE_ID = '66666666-6666-4666-8666-666666666666';
 const EXTERNAL_ID = '77777777-7777-4777-8777-777777777777';
@@ -92,6 +93,10 @@ describe('buildSessionList (#1274)', () => {
       claude,
       list: buildSessionList(
         {
+          profiles: noProfiles,
+          sidecar: emptySidecar,
+          profileOfSession: noRecord,
+          withholdTranscriptPaths: false,
           sessionRegistry,
           bindingStore: new SessionBindingStore(sessionStore),
           transcriptDiscovery: discovery,

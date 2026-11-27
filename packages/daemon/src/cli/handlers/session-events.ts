@@ -36,7 +36,14 @@ import { type SessionListDeps, buildSessionList } from './session-list-entries.t
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface SessionHandlerDeps {
+  /** Remote profile policy (#1749), required with no default (see `SessionListDeps`). */
+  profiles: SessionListDeps['profiles'];
+  sidecar: SessionListDeps['sidecar'];
+  profileOfSession: SessionListDeps['profileOfSession'];
+  /** The live ports a device may be told about (`visibleLivePorts` in `session-list-entries.ts`). */
+  visibleLivePorts: () => readonly number[];
   machine?: () => MachineDescriptor | undefined;
+  withholdTranscriptPaths?: boolean;
   sessionRegistry: SessionRegistry;
   bindingStore: SessionBindingStore;
   /** Typed by shape (`buildSessionList`'s), so this module imports nothing from `transcript/`. */
@@ -46,6 +53,10 @@ export interface SessionHandlerDeps {
    * how each listed session's transcript path is derived (`transcriptPath`).
    */
   harness: Pick<Harness, 'gracefulExitInput' | 'transcriptPath'>;
+  /**
+   * The live-sessions census. The list's ports come from `visibleLivePorts` (#1749), which
+   * `cli.ts` builds over this registry; kept so every caller names the census it lists.
+   */
   liveSessionsRegistry: SessionRegistryFile;
   /** PORT is reassigned during daemon-mode port probing; read lazily. */
   currentPort: () => number;
@@ -85,7 +96,6 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
     bindingStore,
     transcriptDiscovery,
     harness,
-    liveSessionsRegistry,
     currentPort,
     untrackConnection,
     onConnectionRemoved,
@@ -137,7 +147,16 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
     onSessionListRequest: (connectionId: UUID, requestId: UUID, includeExternal: boolean): void => {
       // One builder for the requested list and the live-sessions broadcast (#1274).
       const { own: daemonSessions, external } = buildSessionList(
-        { sessionRegistry, bindingStore, transcriptDiscovery, harness },
+        {
+          sessionRegistry,
+          bindingStore,
+          transcriptDiscovery,
+          harness,
+          profiles: deps.profiles,
+          sidecar: deps.sidecar,
+          profileOfSession: deps.profileOfSession,
+          withholdTranscriptPaths: deps.withholdTranscriptPaths === true,
+        },
         includeExternal,
       );
       const allSessions = [...daemonSessions, ...external];
@@ -148,7 +167,7 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
       );
       // Include other daemon ports on this machine so the app can auto-connect.
       const port = currentPort();
-      const livePorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== port);
+      const livePorts = deps.visibleLivePorts().filter((p) => p !== port);
       send(
         connectionId,
         createSessionListResponse(allSessions, requestId, livePorts, deps.machine?.()),

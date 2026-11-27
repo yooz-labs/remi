@@ -13,6 +13,7 @@ import { createRecentRepositoriesHandlers } from '../../../src/cli/handlers/rece
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
 import { RecentRepositoryStore } from '../../../src/workspace/recent-store.ts';
+import { emptySidecar } from '../../helpers/no-profiles-policy.ts';
 
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
@@ -63,6 +64,8 @@ describe('recent_repositories_request (#1236 phase C)', () => {
 
   const handlers = () =>
     createRecentRepositoriesHandlers({
+      sidecar: emptySidecar,
+      profiles: () => ({ entries: {}, notices: [] }),
       sessionStore: store,
       repositoryStore: history,
       send: (connectionId, message) => {
@@ -136,6 +139,8 @@ describe('recent_repositories_request (#1236 phase C)', () => {
     record(repo('a'), '2026-10-07T10:00:00.000Z', '11111111-1111-4111-8111-111111111111');
     let reads = 0;
     const counted = createRecentRepositoriesHandlers({
+      sidecar: emptySidecar,
+      profiles: () => ({ entries: {}, notices: [] }),
       sessionStore: {
         list: () => {
           reads += 1;

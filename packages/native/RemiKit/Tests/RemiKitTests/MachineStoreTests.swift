@@ -93,13 +93,13 @@ struct MachineStoreTests {
     }
 
     @Test func endpointIdentityAndURLAreStable() throws {
-        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
-        #expect(endpoint.id == "127.0.0.1:18765")
-        #expect(endpoint.webSocketURL?.absoluteString == "ws://127.0.0.1:18765/ws")
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: closedLoopbackPort)
+        #expect(endpoint.id == "127.0.0.1:\(closedLoopbackPort)")
+        #expect(endpoint.webSocketURL?.absoluteString == "ws://127.0.0.1:\(closedLoopbackPort)/ws")
     }
 
     @Test func machineStateUsesVerifiedDescriptorAndLegacyEndpointFallback() {
-        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: closedLoopbackPort)
         var state = MachineState(endpoint: endpoint, displayName: endpoint.displayAddress)
         #expect(state.id == endpoint.id)
         #expect(state.machineID == endpoint.id)
@@ -117,7 +117,7 @@ struct MachineStoreTests {
 
     @Test @MainActor func storeStartsWithEveryConfiguredMachine() {
         let endpoints = [
-            MachineEndpoint(host: "127.0.0.1", port: 18765),
+            MachineEndpoint(host: "127.0.0.1", port: closedLoopbackPort),
             MachineEndpoint(host: "100.64.0.2", port: 18765),
         ]
         let store = MachineStore(
@@ -132,7 +132,7 @@ struct MachineStoreTests {
 
     #if DEBUG
     @Test @MainActor func approvalPollingKeepsOnePollerPerMachine() {
-        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: closedLoopbackPort)
         let store = MachineStore(
             endpoints: [endpoint], identity: ClientIdentity(), clientVersion: "test", clientId: "test"
         )
@@ -145,7 +145,7 @@ struct MachineStoreTests {
     }
 
     @Test @MainActor func removingAMachineCancelsItsApprovalPoller() {
-        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: closedLoopbackPort)
         let store = MachineStore(
             endpoints: [endpoint], identity: ClientIdentity(), clientVersion: "test", clientId: "test"
         )
@@ -157,7 +157,7 @@ struct MachineStoreTests {
     }
 
     @Test @MainActor func aPollerEndsWhenItsMachineIsNotWaitingForApproval() async throws {
-        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: closedLoopbackPort)
         let store = MachineStore(
             endpoints: [endpoint], identity: ClientIdentity(), clientVersion: "test", clientId: "test"
         )
@@ -171,7 +171,7 @@ struct MachineStoreTests {
     #endif
 
     @Test @MainActor func removingMachineRemovesItsConfiguration() {
-        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: closedLoopbackPort)
         let store = MachineStore(
             endpoints: [endpoint],
             identity: ClientIdentity(),
@@ -218,10 +218,10 @@ struct MachineStoreTests {
     }
 
     @Test @MainActor func rescanningPairingCodeReplacesStableEndpointIdentity() {
-        let original = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        let original = MachineEndpoint(host: "127.0.0.1", port: closedLoopbackPort)
         let replacement = MachineEndpoint(
             host: "127.0.0.1",
-            port: 18765,
+            port: closedLoopbackPort,
             expectedFingerprint: "ae216c2ef5247a37",
             expectedPublicKey: "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
             pairingNonce: "oKGio6SlpqeoqaqrrK2urw",

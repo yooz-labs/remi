@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { UUID } from '@remi/shared';
+import { __resetLoggerForTests, configureLogger } from '../src/cli/logger.ts';
 import { normalizeProjectPath } from '../src/cli/path-resolver.ts';
 import { SessionBindingStore } from '../src/session/session-binding-store.ts';
 import {
@@ -755,3 +756,36 @@ describe('SessionStore', () => {
     });
   });
 });
+
+test.each(['not json', '{"version":2,"sessions":{}}'])(
+  'damaged sidecar preserves profile-free writes and rejects additions: %s',
+  (bytes) => {
+    const file = makeTmpPath();
+    const sidecar = path.join(path.dirname(file), 'session-profiles.json');
+    const warnings: string[] = [];
+    configureLogger({ writeLog: (line) => warnings.push(line) });
+    try {
+      fs.writeFileSync(sidecar, bytes);
+      const store = new SessionStore(file);
+      store.save(makeSession());
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain(sidecar);
+      expect(warnings[0]).toContain(bytes === 'not json' ? 'invalid JSON' : 'invalid shape');
+      expect(warnings[0]).not.toContain(bytes);
+      expect(store.list()).toHaveLength(1);
+      expect(fs.readFileSync(sidecar, 'utf8')).toBe(bytes);
+      const before = fs.readFileSync(file, 'utf8');
+      expect(() =>
+        store.save(makeSession({ profile: 'work', profileSnapshot: { revision: 'revision' } }), {
+          profile: 'work',
+          revision: 'revision',
+        }),
+      ).toThrow();
+      expect(fs.readFileSync(file, 'utf8')).toBe(before);
+      expect(fs.readFileSync(sidecar, 'utf8')).toBe(bytes);
+    } finally {
+      __resetLoggerForTests();
+      fs.rmSync(path.dirname(file), { recursive: true, force: true });
+    }
+  },
+);

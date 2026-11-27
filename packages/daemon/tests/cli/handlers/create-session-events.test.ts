@@ -12,6 +12,7 @@ import { DEFAULT_CONFIG } from '../../../src/config/config.ts';
 import { HarnessRegistry } from '../../../src/harness/registry.ts';
 import { findAvailableTcpPort as actualPortProbe } from '../../../src/session/port-utils.ts';
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
+import { emptySidecar, noProfiles, noResumeOwner } from '../../helpers/no-profiles-policy.ts';
 import { occupyPort, reserveRange } from '../../session/port-test-helpers.ts';
 
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
@@ -42,6 +43,9 @@ describe('createCreateSessionHandlers', () => {
     findAvailableTcpPort?: PortFinder,
   ) {
     return createCreateSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      resumeOwner: noResumeOwner,
       harnesses,
       liveSessionsRegistry,
       spawningPorts,
@@ -94,6 +98,9 @@ describe('createCreateSessionHandlers', () => {
 
   test('responds with failure when no free port is available', async () => {
     const handlers = createCreateSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      resumeOwner: noResumeOwner,
       harnesses,
       liveSessionsRegistry,
       spawningPorts,
@@ -125,6 +132,9 @@ describe('createCreateSessionHandlers', () => {
       extraArgs: string[];
     }> = [];
     const handlers = createCreateSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      resumeOwner: noResumeOwner,
       harnesses,
       liveSessionsRegistry,
       spawningPorts,
@@ -171,6 +181,9 @@ describe('createCreateSessionHandlers', () => {
   test('maps a missing directory to the home directory, not the hub cwd (#1025)', async () => {
     const spawnHistory: Array<string | undefined> = [];
     const handlers = createCreateSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      resumeOwner: noResumeOwner,
       harnesses,
       liveSessionsRegistry,
       spawningPorts,
@@ -196,6 +209,9 @@ describe('createCreateSessionHandlers', () => {
   test('reserves the port during spawn then releases it', async () => {
     let sawReservedDuringSpawn = false;
     const handlers = createCreateSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      resumeOwner: noResumeOwner,
       harnesses,
       liveSessionsRegistry,
       spawningPorts,
@@ -220,6 +236,9 @@ describe('createCreateSessionHandlers', () => {
 
   test('releases the reservation even if spawn throws, responds with failure', async () => {
     const handlers = createCreateSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      resumeOwner: noResumeOwner,
       harnesses,
       liveSessionsRegistry,
       spawningPorts,
@@ -264,6 +283,9 @@ describe('createCreateSessionHandlers', () => {
 
     let usedPortsSeen: number[] = [];
     const handlers = createCreateSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      resumeOwner: noResumeOwner,
       harnesses,
       liveSessionsRegistry,
       spawningPorts,
@@ -289,7 +311,7 @@ describe('createCreateSessionHandlers', () => {
 
   test('concurrent starts reserve distinct ports after real probes (#1213 controlled schedule)', async () => {
     const bindHost = DEFAULT_CONFIG.daemon.bind;
-    const basePort = await reserveRange(2, 50, bindHost);
+    const basePort = await reserveRange(3, 50, bindHost);
     const firstProbeFinished = deferred();
     let probeCalls = 0;
     const delayedRealProbe: PortFinder = async (base, range, used, host) => {
@@ -306,7 +328,7 @@ describe('createCreateSessionHandlers', () => {
       return actualPortProbe(base, range, used, host);
     };
     const reservedPorts: number[] = [];
-    const handlers = makeHandler(basePort, 2, recordingStarter(reservedPorts), delayedRealProbe);
+    const handlers = makeHandler(basePort, 3, recordingStarter(reservedPorts), delayedRealProbe);
 
     const outcomes = await Promise.all([
       handlers.startSession(tmpDir),
@@ -314,9 +336,17 @@ describe('createCreateSessionHandlers', () => {
     ]);
 
     expect(outcomes.map((outcome) => outcome.ok)).toEqual([true, true]);
-    // Without the selector queue, both live-port snapshots can choose basePort after this delay.
-    expect(reservedPorts).toEqual([basePort, basePort + 1]);
+    // The configured base belongs to the hub, and the queue keeps the two children distinct.
+    expect(reservedPorts).toEqual([basePort + 1, basePort + 2]);
     expect(spawningPorts.size).toBe(0);
+  });
+
+  test('child allocation reserves the configured hub base', async () => {
+    const base = await reserveRange(3, 50, DEFAULT_CONFIG.daemon.bind);
+    const ports: number[] = [];
+    const handlers = makeHandler(base, 3, recordingStarter(ports));
+    expect((await handlers.startSession(tmpDir)).ok).toBe(true);
+    expect(ports).toEqual([base + 1]);
   });
 
   test('null and thrown real probes release the selector (#1213)', async () => {
@@ -354,16 +384,16 @@ describe('createCreateSessionHandlers', () => {
       }),
     ]);
     expect(outcome.ok).toBe(true);
-    expect(reservedPorts).toEqual([basePort]);
+    expect(reservedPorts).toEqual([basePort + 1]);
   });
 
   test('port selection releases before a slow child start (#1213)', async () => {
-    const basePort = await reserveRange(2, 50, DEFAULT_CONFIG.daemon.bind);
+    const basePort = await reserveRange(3, 50, DEFAULT_CONFIG.daemon.bind);
     const firstEntered = deferred();
     const secondEntered = deferred();
     const firstSpawnGate = deferred();
     const reservedPorts: number[] = [];
-    const handlers = makeHandler(basePort, 2, async (port) => {
+    const handlers = makeHandler(basePort, 3, async (port) => {
       reservedPorts.push(port);
       if (reservedPorts.length === 1) {
         firstEntered.resolve();
@@ -398,6 +428,6 @@ describe('createCreateSessionHandlers', () => {
     expect(
       await Promise.all(starts).then((outcomes) => outcomes.map((outcome) => outcome.ok)),
     ).toEqual([true, true]);
-    expect(reservedPorts).toEqual([basePort, basePort + 1]);
+    expect(reservedPorts).toEqual([basePort + 1, basePort + 2]);
   });
 });

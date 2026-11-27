@@ -35,6 +35,12 @@ import { SessionStore } from '../../src/session/session-store.ts';
 import { TranscriptIndex } from '../../src/session/transcript-index.ts';
 import { TranscriptDiscovery } from '../../src/transcript/transcript-discovery.ts';
 import type { TranscriptWatcher } from '../../src/transcript/transcript-watcher.ts';
+import {
+  emptySidecar,
+  noHiddenOwner,
+  noProfiles,
+  noRecord,
+} from '../helpers/no-profiles-policy.ts';
 
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
@@ -81,6 +87,9 @@ describe('Harness.transcriptPath returning null is "no file"', () => {
   test('the current-session resolver reports the id and a null transcript path', () => {
     saveBound();
     const current = makeCurrentSessionResolver({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      withholdTranscriptPath: false,
       getPrimarySessionId: () => REMI_ID,
       sessionStore,
       harness: noFile,
@@ -109,6 +118,12 @@ describe('Harness.transcriptPath returning null is "no file"', () => {
       const sent: ProtocolMessage[] = [];
       const harness: SessionHandlerDeps['harness'] = { gracefulExitInput: null, ...noFile };
       createSessionHandlers({
+        profiles: noProfiles,
+        sidecar: emptySidecar,
+        profileOfSession: noRecord,
+        visibleLivePorts: () =>
+          new SessionRegistryFile(path.join(tmpDir, 'live-sessions')).getLivePorts(),
+        withholdTranscriptPaths: false,
         sessionRegistry,
         bindingStore: new SessionBindingStore(sessionStore),
         transcriptDiscovery: new TranscriptDiscovery({ projectsDir: path.join(tmpDir, 'p') }),
@@ -145,6 +160,7 @@ describe('Harness.transcriptPath returning null is "no file"', () => {
     const harness: TranscriptHandlerDeps['harness'] = noFile;
 
     createTranscriptHandlers({
+      isHiddenOwner: noHiddenOwner,
       transcriptDiscovery: new TranscriptDiscovery({ projectsDir }),
       harness,
       transcriptWatchers: new Map<UUID, TranscriptWatcher>(),

@@ -17,6 +17,7 @@ import { HubRelay } from '../../../daemon/src/remote/hub-relay';
 import { RelayDeviceStore } from '../../../daemon/src/remote/relay-device-store';
 import type { SessionRegistry } from '../../../daemon/src/session/session-registry';
 import type { SessionRegistryFile } from '../../../daemon/src/session/session-registry-file';
+import { noProfilesRelayPolicy } from '../../../daemon/tests/helpers/no-profiles-policy';
 import { pollUntil } from '../../../daemon/tests/integration/hub-test-utils';
 import { startWorker } from '../../../signaling/tests/e2e/harness';
 import { RelayMachineChannel } from '../../src/lib/relay-machine-channel';
@@ -77,6 +78,7 @@ export async function runRelayChatControl(f: Fixture): Promise<string[]> {
       trust: f.trust,
       dir: f.directory,
       registry: f.liveSessions,
+      remotePolicy: noProfilesRelayPolicy(f.directory),
       log: (text) => {
         if (text === 'Relay control admitted') admitted.resolve();
       },

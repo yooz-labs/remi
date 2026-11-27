@@ -57,6 +57,7 @@ import type { TerminalIngress } from '../terminal/ingress.ts';
  * The handler checks both fields (`isHarnessId`, the harness's remote allowlist) before it spawns.
  */
 export interface CreateSessionExtra {
+  readonly profile?: unknown;
   readonly harness?: unknown;
   readonly args?: unknown;
   /** The workspace (#1236), as the peer sent it; the create handler parses it. */
@@ -69,15 +70,20 @@ export interface CreateSessionExtra {
  * (direct and HubRelay virtual `Connection`), so they cannot drift on which fields they forward.
  */
 export function createSessionExtra(
-  message: Pick<CreateSessionRequestMessage, 'harness' | 'args' | 'workspace'>,
+  message: Pick<CreateSessionRequestMessage, 'harness' | 'args' | 'workspace' | 'profile'>,
 ): CreateSessionExtra | undefined {
-  if (message.harness === undefined && message.args === undefined) {
+  if (
+    message.harness === undefined &&
+    message.args === undefined &&
+    message.profile === undefined
+  ) {
     return message.workspace === undefined ? undefined : { workspace: message.workspace };
   }
   return {
     harness: message.harness,
     args: message.args,
     ...(message.workspace !== undefined && { workspace: message.workspace }),
+    ...(message.profile !== undefined && { profile: message.profile }),
   };
 }
 
@@ -126,6 +132,7 @@ export interface ClientMessageEventArgs {
   onSessionListRequest: [requestId: UUID, includeExternal: boolean];
   /** The repositories of the machine's recent sessions (#1236 phase C). */
   onRecentRepositoriesRequest: [requestId: UUID, limit: number | undefined];
+  onSessionProfilesRequest: [requestId: UUID, directory: string | undefined];
 
   /** Transcript load request received. */
   onTranscriptLoadRequest: [sessionId: string, requestId: UUID];
@@ -187,6 +194,7 @@ export const CLIENT_MESSAGE_EVENT_KEYS = [
   'onBulletExpandRequest',
   'onSessionListRequest',
   'onRecentRepositoriesRequest',
+  'onSessionProfilesRequest',
   'onTranscriptLoadRequest',
   'onCreateSessionRequest',
   'onTerminalResize',

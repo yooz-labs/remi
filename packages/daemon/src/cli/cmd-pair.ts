@@ -51,7 +51,11 @@ export interface PairFlowDeps {
   readonly name: string;
   readonly host: string;
   readonly port: number;
-  /** The v1 default remains until the compatible native app is distributed. */
+  /**
+   * Absent, the code is version 2, and falls back to version 1 (with one line saying why) when a
+   * version 2 code cannot carry the addresses. An explicit 1 or 2 is exactly that version: an
+   * explicit 2 never falls back (#1794, ADR 0037 amendment).
+   */
   readonly qrVersion?: 1 | 2;
   /** Candidate inventory for v2; one explicit `--host` passes a one-item list. */
   readonly hosts?: readonly string[];
@@ -122,6 +126,46 @@ function renderQr(link: string): string {
     .join('\n');
 }
 
+/**
+ * The version 2 form of the flow's addresses: at most four candidates, Local before Tailscale. When
+ * it cannot be built, `message` is what an explicit version 2 says and `reason` completes the line
+ * the default prints before it uses a version 1 code.
+ */
+function prepareV2(
+  deps: PairFlowDeps,
+): { ok: true; deps: PairFlowDeps } | { ok: false; message: string; reason: string } {
+  const availableHosts = deps.hosts ?? [deps.host, ...(deps.others ?? [])];
+  if (availableHosts.some((host) => !isPairingCandidateHost(host))) {
+    return {
+      ok: false,
+      message: 'A candidate address cannot go in a version 2 pairing code.',
+      reason: 'an address cannot go in a version 2 pairing code',
+    };
+  }
+  const selectedHosts = selectPairingCandidates(availableHosts);
+  if (selectedHosts.length === 0) {
+    return {
+      ok: false,
+      message: 'Choose a phone-reachable address with remi pair --host <address>.',
+      reason: 'no phone-reachable address for a version 2 pairing code was found',
+    };
+  }
+  const selectedIdentities = new Set(selectedHosts.map(normalizePairingHost));
+  const remainingAddresses = deps.others?.filter(
+    (host) => !selectedIdentities.has(normalizePairingHost(host)),
+  );
+  return {
+    ok: true,
+    deps: {
+      ...deps,
+      host: selectedHosts[0] as string,
+      hosts: selectedHosts,
+      qrVersion: 2,
+      ...(remainingAddresses !== undefined && { others: remainingAddresses }),
+    },
+  };
+}
+
 /** The exit code an abort asked for: its numeric reason, or 130 (Ctrl-C). */
 function abortCode(signal: AbortSignal | undefined): number {
   return typeof signal?.reason === 'number' ? signal.reason : 130;
@@ -137,42 +181,30 @@ export async function pairFlow(deps: PairFlowDeps): Promise<number> {
   const { store, write } = deps;
   const now = deps.now ?? Date.now;
   const pollMs = deps.pollMs ?? 300;
-  const qrVersion = deps.qrVersion ?? 1;
+  const explicitVersion = deps.qrVersion;
 
   // Checked before a record exists, so a code that cannot be shown leaves nothing open.
-  if (qrVersion !== 1 && qrVersion !== 2) {
+  if (explicitVersion !== undefined && explicitVersion !== 1 && explicitVersion !== 2) {
     write('Choose pairing QR version 1 or 2.\n');
     return 1;
   }
-  if (qrVersion === 1 && !isPairingHost(deps.host)) {
+  let flowDeps: PairFlowDeps = { ...deps, qrVersion: 1 };
+  if (explicitVersion !== 1) {
+    const v2 = prepareV2(deps);
+    if (v2.ok) {
+      flowDeps = v2.deps;
+    } else if (explicitVersion === 2) {
+      write(`${v2.message}\n`);
+      return 1;
+    } else if (isPairingHost(deps.host)) {
+      write(`Using a version 1 pairing code: ${v2.reason}.\n`);
+    }
+  }
+  if (flowDeps.qrVersion === 1 && !isPairingHost(deps.host)) {
     write(
       `${escapeUnsafeText(deps.host)} cannot go in a pairing code. Choose an address with remi pair --host <address>.\n`,
     );
     return 1;
-  }
-  let flowDeps = deps;
-  if (qrVersion === 2) {
-    const availableHosts = deps.hosts ?? [deps.host, ...(deps.others ?? [])];
-    if (availableHosts.some((host) => !isPairingCandidateHost(host))) {
-      write('A candidate address cannot go in a version 2 pairing code.\n');
-      return 1;
-    }
-    const selectedHosts = selectPairingCandidates(availableHosts);
-    if (selectedHosts.length === 0) {
-      write('Choose a phone-reachable address with remi pair --host <address>.\n');
-      return 1;
-    }
-    const selectedIdentities = new Set(selectedHosts.map(normalizePairingHost));
-    const remainingAddresses = deps.others?.filter(
-      (host) => !selectedIdentities.has(normalizePairingHost(host)),
-    );
-    flowDeps = {
-      ...deps,
-      host: selectedHosts[0] as string,
-      hosts: selectedHosts,
-      qrVersion,
-      ...(remainingAddresses !== undefined && { others: remainingAddresses }),
-    };
   }
   if (!isPlainPairingText(deps.name, PAIRING_NAME_MAX_CODE_POINTS)) {
     write('The machine name cannot go in a pairing code.\n');
@@ -364,6 +396,7 @@ const VIRTUAL_INTERFACE = /^(bridge|docker|br-|vmnet|vboxnet|veth|virbr|lxc|lxd|
 export function pairingHosts(
   bind: string,
   interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]>,
+  options: { readonly skipVirtual?: boolean } = {},
 ): string[] {
   if (bind !== '' && !isUnspecifiedHost(bind)) return [bind];
   const rank = (name: string, address: string): number => {
@@ -395,7 +428,22 @@ export function pairingHosts(
       found.push({ address: info.address, rank: rank(name, info.address), order: found.length });
     }
   }
-  return found.sort((a, b) => a.rank - b.rank || a.order - b.order).map((entry) => entry.address);
+  const sorted = found.sort((a, b) => a.rank - b.rank || a.order - b.order);
+  // Virtual-machine and container addresses are a last resort: dropped when any other exists.
+  const usable = options.skipVirtual ? sorted.filter((entry) => entry.rank !== 3) : sorted;
+  return (usable.length > 0 ? usable : sorted).map((entry) => entry.address);
+}
+
+/**
+ * The addresses a version 2 code may carry for a hub bound to `bind`: {@link pairingHosts} without
+ * the virtual-interface addresses (bridges, containers) that a phone cannot reach, unless nothing
+ * else exists. Those stay in the "Other addresses" hint, which is not limited to this list.
+ */
+export function pairingV2Hosts(
+  bind: string,
+  interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]>,
+): string[] {
+  return pairingHosts(bind, interfaces, { skipVirtual: true }).filter(isPairingCandidateHost);
 }
 
 /**
@@ -577,10 +625,11 @@ export async function runPairCommand(flags: { host?: string; qrVersion?: 1 | 2 }
       name: defaultMachineName(),
       host: checked.host,
       port: checked.port,
-      qrVersion: flags.qrVersion ?? 1,
-      ...(flags.qrVersion === 2 && {
-        hosts: flags.host === undefined ? [checked.host, ...checked.others] : [checked.host],
-      }),
+      ...(flags.qrVersion !== undefined && { qrVersion: flags.qrVersion }),
+      hosts:
+        flags.host === undefined
+          ? pairingV2Hosts(hub?.bind ?? '', os.networkInterfaces())
+          : [checked.host],
       others: checked.others,
       write: (text) => process.stdout.write(text),
       ask,

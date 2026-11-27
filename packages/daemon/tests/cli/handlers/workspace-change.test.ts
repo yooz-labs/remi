@@ -22,6 +22,7 @@ import { SessionRegistry } from '../../../src/session/session-registry';
 import { SessionStore } from '../../../src/session/session-store';
 import { TranscriptDiscovery } from '../../../src/transcript/transcript-discovery';
 import { WorkspaceCache } from '../../../src/workspace/describe';
+import { emptySidecar, noProfiles, noRecord } from '../../helpers/no-profiles-policy.ts';
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -72,6 +73,10 @@ async function fixture(harnessKind: 'claude' | 'codex' = 'claude') {
     fs.rmSync(root, { recursive: true, force: true });
   });
   const deps = {
+    profiles: noProfiles,
+    sidecar: emptySidecar,
+    profileOfSession: noRecord,
+    withholdTranscriptPaths: false,
     sessionRegistry: registry,
     bindingStore: binding,
     transcriptDiscovery: discovery,

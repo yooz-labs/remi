@@ -68,10 +68,24 @@ import {
 } from '@/lib/question-collection';
 import { dismissDeliveredNotification } from '@/lib/notifications';
 import { mapQuestionToUIQuestion } from '@/lib/question-mapping';
-import { bindingRotated } from '@/lib/session-binding';
+import { applySessionRotation, bindingRotated } from '@/lib/session-binding';
 import { shouldEvictCachedSession } from '@/lib/session-eviction';
 import { autoSelectIfNone, evictIfActive, evictManyIfActive } from '@/lib/session-selection';
 import { dedupSessions } from '@/lib/session-dedup';
+import {
+  EMPTY_PROFILE_SHARING_SOURCES,
+  deriveProfileDisplay,
+  removeProfileConnectionState,
+  updateProfileSharingSources,
+} from '@/lib/profile-sharing';
+import {
+  PROFILE_CONNECTION_CLOSED,
+  PROFILE_LOOKUP_FAILURE,
+  createInitialProfileSheetState,
+  profileSheetReducer,
+  runProfileCreateIfAllowed,
+} from '@/lib/profile-sheet-state';
+import type { ProfileSharingSources } from '@/lib/profile-sharing';
 import { type ReplyContext, formatReplyMessage } from '@/lib/reply-format';
 import { parseThemeSetting, resolveEffectiveTheme } from '@/lib/theme';
 import type {
@@ -88,8 +102,12 @@ import { LocalNotifications } from '@capacitor/local-notifications';
 import type { ClientSigningIdentity, NativeSigningIdentity } from '@/lib/client-signer';
 import { NativeIdentityPanel } from '@/components/settings/NativeIdentityPanel';
 import { currentNativeIdentity, inspectNativeIdentity, unlockNativeIdentity, usesNativeIdentity } from '@/lib/native-identity';
-import { assertNever, isValidMessage } from '@remi/shared';
-import type { ProtocolMessage, PushPreferences, RecentDirectory } from '@remi/shared/protocol.ts';
+import { assertNever, hubSupport, isValidMessage } from '@remi/shared';
+import type {
+  ProtocolMessage,
+  PushPreferences,
+  RecentDirectory,
+} from '@remi/shared/protocol.ts';
 import {
   createAnswer,
   createDetachSession,
@@ -99,7 +117,7 @@ import {
   generateId,
 } from '@remi/shared/protocol.ts';
 import type { Bullet, DiscoverableSession, UUID } from '@remi/shared/types.ts';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 
 const LOCALSTORAGE_CONNECTIONS_KEY = 'remi-connections';
 const LOCALSTORAGE_SESSION_KEY = 'remi-last-session';
@@ -286,7 +304,11 @@ function App() {
     setShowConnectModal(true);
   }, []);
   // New-session sheet (#638): recent project directories from the daemon.
-  const [showNewSessionModal, setShowNewSessionModal] = useState(false);
+  const [profileSheetState, dispatchProfileSheet] = useReducer(
+    profileSheetReducer,
+    undefined,
+    () => createInitialProfileSheetState(),
+  );
   const [recentDirectories, setRecentDirectories] = useState<readonly RecentDirectory[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [resumingSession, setResumingSession] = useState<string | null>(null);
@@ -326,6 +348,9 @@ function App() {
   // re-create handleSend and bust InputArea memoization.
   const replyContextsRef = useRef<Map<UUID, ReplyContext>>(replyContexts);
   const requestSessionListRef = useRef<typeof requestSessionList | null>(null);
+  const profileCapabilitiesRef = useRef<Map<ConnectionId, boolean>>(new Map());
+  const profileSharingRef = useRef<Map<ConnectionId, ProfileSharingSources>>(new Map());
+  const profileAckCarriesRef = useRef<Map<ConnectionId, boolean>>(new Map());
   const connectionModeRef = useRef<((id: ConnectionId) => 'direct' | 'relay' | null) | null>(null);
   const directConnectionUrlRef = useRef<((id: ConnectionId) => string | null) | null>(null);
   const connectionsRef = useRef<readonly ConnectionState[]>([]);
@@ -546,6 +571,20 @@ function App() {
     switch (message.type) {
       case 'hello_ack': {
         const relayConnection = connectionModeRef.current?.(connectionId) === 'relay';
+        const sessionProfilesEnabled = hubSupport(message, ['session_profiles']).supported;
+        profileCapabilitiesRef.current.set(connectionId, sessionProfilesEnabled);
+        profileAckCarriesRef.current.set(connectionId, message.profile !== undefined);
+        const profileSources = updateProfileSharingSources(EMPTY_PROFILE_SHARING_SOURCES, {
+          type: 'reconnect',
+          profile: message.profile,
+        });
+        profileSharingRef.current.set(connectionId, profileSources);
+        const profileDisplay = deriveProfileDisplay(sessionProfilesEnabled, profileSources);
+        setSessions((prev) =>
+          prev.map((session) =>
+            session.connectionId === connectionId ? { ...session, profileDisplay } : session,
+          ),
+        );
         // The attached session from this daemon. Additional sessions may arrive via session_list_response.
         if (!message.sessionId) {
           // Normal for a session-less hub (#542): its ack carries null and
@@ -606,6 +645,8 @@ function App() {
                     ...(ackTranscriptPath !== undefined && { transcriptPath: ackTranscriptPath }),
                     ...(message.harness !== undefined && { harness: message.harness }),
                     ...(message.harnessSessionId !== undefined && { harnessSessionId: message.harnessSessionId }),
+                    profile: message.profile,
+                    profileDisplay,
                     // #662/#663: refresh on EVERY hello_ack, not just the
                     // first -- this also fires when a queued connection is
                     // promoted (fresh hello_ack with attachState: 'attached'),
@@ -632,6 +673,8 @@ function App() {
               ...(ackTranscriptPath !== undefined && { transcriptPath: ackTranscriptPath }),
               ...(message.harness !== undefined && { harness: message.harness }),
                     ...(message.harnessSessionId !== undefined && { harnessSessionId: message.harnessSessionId }),
+              profile: message.profile,
+              profileDisplay,
               ...(message.attachState !== undefined && { attachState: message.attachState }),
             } satisfies UISession,
           ];
@@ -881,11 +924,7 @@ function App() {
         setSessions((prev) =>
           prev.map((s) =>
             s.id === rotatedId && s.connectionId === connectionId
-              ? {
-                  ...s,
-                  claudeSessionId: message.newClaudeSessionId as string,
-                  transcriptPath: message.newTranscriptPath,
-                }
+              ? applySessionRotation(s, message)
               : s,
           ),
         );
@@ -1030,6 +1069,18 @@ function App() {
       case 'session_list_response': {
         // Look up the hello_ack session ID directly from the mutable connection state
         const helloAckSessionId = getSessionIdRef.current?.(connectionId) ?? null;
+        const profileSources = updateProfileSharingSources(
+          profileSharingRef.current.get(connectionId) ?? EMPTY_PROFILE_SHARING_SOURCES,
+          {
+            type: 'session-list',
+            carriesProfile:
+              profileAckCarriesRef.current.get(connectionId) === true ||
+              message.sessions.some((session) => session.profile !== undefined),
+          },
+        );
+        profileSharingRef.current.set(connectionId, profileSources);
+        const sessionProfilesEnabled = profileCapabilitiesRef.current.get(connectionId) ?? false;
+        const profileDisplay = deriveProfileDisplay(sessionProfilesEnabled, profileSources);
         // Map, filter, and sort DiscoverableSession[] to UISession[]
         const discovered: UISession[] = message.sessions
           .filter((ds: DiscoverableSession) => {
@@ -1068,6 +1119,8 @@ function App() {
               preview: cleanedPreview.slice(0, 100),
               source: ds.source,
               canResume: showResume,
+              profile: ds.profile,
+              profileDisplay,
               ...(ds.claudeSessionId !== undefined && { claudeSessionId: ds.claudeSessionId }),
               ...(ds.transcriptPath !== undefined && { transcriptPath: ds.transcriptPath }),
               ...(ds.harness !== undefined && { harness: ds.harness }),
@@ -1287,6 +1340,12 @@ function App() {
       }
 
       case 'create_session_response': {
+        dispatchProfileSheet({
+          type: 'create-response',
+          requestId: message.requestId,
+          success: message.success,
+          error: message.error,
+        });
         if (message.success && message.sessionId) {
           // New session created; it will appear via hello_ack. Refresh session list.
           const reqList = requestSessionListRef.current;
@@ -1920,6 +1979,14 @@ function App() {
       case 'relay_device_revoke_response':
         break;
 
+      // #1818: a Claude session's confirmation that it submitted a sent chat message. The web
+      // bubble has no "agent acceptance unconfirmed" state to clear (its states are sent,
+      // delivered on the daemon's ack, and failed on a refusal), so there is nothing to update;
+      // the native apps consume it. The web client does not require the `chat_acceptance`
+      // capability.
+      case 'user_input_result':
+        break;
+
       // Keep-alive, both directions. lib/websocket-client.ts's own
       // `handleMessage` already auto-replies pong to an inbound ping before
       // forwarding it up, and both ping and pong double as proof-of-life for
@@ -1962,6 +2029,28 @@ function App() {
       case 'recent_repositories_request':
       case 'recent_repositories_response':
         break;
+
+      case 'session_profiles_request':
+        break;
+
+      case 'session_profiles_response': {
+        const profileSources = updateProfileSharingSources(
+          profileSharingRef.current.get(connectionId) ?? EMPTY_PROFILE_SHARING_SOURCES,
+          { type: 'lookup', response: message },
+        );
+        profileSharingRef.current.set(connectionId, profileSources);
+        const sessionProfilesEnabled = profileCapabilitiesRef.current.get(connectionId) ?? false;
+        const profileDisplay = deriveProfileDisplay(sessionProfilesEnabled, profileSources);
+        setSessions((prev) =>
+          prev.map((session) =>
+            session.connectionId === connectionId
+              ? { ...session, profileDisplay }
+              : session,
+          ),
+        );
+        dispatchProfileSheet({ type: 'lookup-response', response: message });
+        break;
+      }
 
       // #1679: paired native clients bootstrap notification-only enrollment.
       // Web secure subscriptions continue to use their existing encrypted path.
@@ -2043,6 +2132,7 @@ function App() {
     requestTranscriptLoad,
     requestResumeSession,
     requestNewSession,
+    requestSessionProfiles,
     requestSessionHistory,
     needsPassphrase,
     passphraseConnectionId,
@@ -2553,6 +2643,48 @@ function App() {
     securePushRef.current?.sync(targets, securePushPrefs);
   }, [connections, nativeIdentityKey, securePushPrefs]);
   const hasRelayMachine = connections.some((connection) => connection.mode === 'relay');
+  const newSessionConnection = connections.find((connection) => connection.status === 'connected');
+  const newSessionProfilesEnabled = newSessionConnection
+    ? hubSupport(newSessionConnection, ['session_profiles']).supported
+    : false;
+
+  useEffect(() => {
+    const currentConnectionIds = new Set(connections.map((connection) => connection.connectionId));
+    const profileConnectionIds = new Set<ConnectionId>([
+      ...profileCapabilitiesRef.current.keys(),
+      ...profileSharingRef.current.keys(),
+      ...profileAckCarriesRef.current.keys(),
+    ]);
+    for (const connectionId of profileConnectionIds) {
+      if (!currentConnectionIds.has(connectionId)) {
+        removeProfileConnectionState(
+          connectionId,
+          profileCapabilitiesRef.current,
+          profileSharingRef.current,
+          profileAckCarriesRef.current,
+        );
+      }
+    }
+  }, [connections]);
+
+  useEffect(() => {
+    const pendingConnectionId =
+      profileSheetState.lookup.status === 'loading' || profileSheetState.lookup.status === 'ready'
+        ? profileSheetState.lookup.connectionId
+        : profileSheetState.create.status === 'pending'
+          ? profileSheetState.create.connectionId
+          : null;
+    if (pendingConnectionId === null) return;
+    if (
+      connections.some(
+        (connection) =>
+          connection.connectionId === pendingConnectionId && connection.status === 'connected',
+      )
+    ) {
+      return;
+    }
+    dispatchProfileSheet({ type: 'connection-lost', connectionId: pendingConnectionId });
+  }, [connections, profileSheetState.create, profileSheetState.lookup]);
 
   // Get active session. Derive connectionStatus from live connection state
   // at render time to avoid stale status from session_list_response merge timing.
@@ -3285,6 +3417,7 @@ function App() {
   const handleOpenNewSession = useCallback(() => {
     const conn = connections.find((c) => c.status === 'connected');
     if (!conn) return;
+    dispatchProfileSheet({ type: 'open' });
     setRecentDirectories([]);
     if (historyTimeoutRef.current) clearTimeout(historyTimeoutRef.current);
     const sent = requestSessionHistory(conn.connectionId);
@@ -3297,20 +3430,100 @@ function App() {
     } else {
       setHistoryLoading(false);
     }
-    setShowNewSessionModal(true);
   }, [connections, requestSessionHistory]);
+
+  const handleRequestSessionProfiles = useCallback(
+    (directory: string) => {
+      const conn = connections.find((c) => c.status === 'connected');
+      if (!conn) {
+        dispatchProfileSheet({
+          type: 'lookup-failed',
+          directory,
+          message: PROFILE_CONNECTION_CLOSED,
+        });
+        return;
+      }
+      const requestId = requestSessionProfiles(conn.connectionId, directory.trim() || undefined);
+      if (!requestId) {
+        dispatchProfileSheet({
+          type: 'lookup-failed',
+          directory,
+          message: PROFILE_LOOKUP_FAILURE,
+        });
+        return;
+      }
+      dispatchProfileSheet({
+        type: 'lookup-started',
+        directory,
+        requestId,
+        connectionId: conn.connectionId,
+      });
+    },
+    [connections, requestSessionProfiles],
+  );
 
   // Start a session in the chosen directory. RecentProjects passes '' for the
   // home/cwd default; map that to undefined so the daemon uses its own default.
   // Close the sheet only when the request was actually sent.
   const handleStartSessionInDir = useCallback(
-    (directory: string) => {
-      const conn = connections.find((c) => c.status === 'connected');
+    (directory: string, profileId?: string) => {
+      let conn: ConnectionState | null = null;
+      let requestId: UUID | null = null;
+      if (profileId !== undefined) {
+        const profileStart = runProfileCreateIfAllowed(
+          profileSheetState,
+          directory,
+          profileId,
+          () => {
+            const profileLookupConnectionId =
+              profileSheetState.lookup.status === 'ready'
+                ? profileSheetState.lookup.connectionId
+                : null;
+            conn = profileLookupConnectionId
+              ? connections.find(
+                  (connection) =>
+                    connection.connectionId === profileLookupConnectionId &&
+                    connection.status === 'connected',
+                ) ?? null
+              : null;
+            if (!conn) {
+              dispatchProfileSheet({
+                type: 'lookup-failed',
+                directory,
+                message: PROFILE_CONNECTION_CLOSED,
+              });
+              return null;
+            }
+            return requestNewSession(conn.connectionId, directory.trim() || undefined, {
+              profile: profileId,
+            });
+          },
+        );
+        if (!profileStart.allowed) {
+          dispatchProfileSheet({ type: 'create-start-rejected' });
+          return;
+        }
+        requestId = profileStart.result;
+      } else {
+        conn = connections.find((connection) => connection.status === 'connected') ?? null;
+        if (!conn) return;
+        requestId = requestNewSession(conn.connectionId, directory.trim() || undefined);
+      }
       if (!conn) return;
-      const sent = requestNewSession(conn.connectionId, directory.trim() || undefined);
-      if (sent) setShowNewSessionModal(false);
+      if (!requestId) return;
+      if (profileId !== undefined) {
+        dispatchProfileSheet({
+          type: 'create-started',
+          directory,
+          profileId,
+          requestId,
+          connectionId: conn.connectionId,
+        });
+      } else {
+        dispatchProfileSheet({ type: 'close' });
+      }
     },
-    [connections, requestNewSession],
+    [connections, profileSheetState, requestNewSession],
   );
 
   // Surface a system message in a specific session's thread.
@@ -3617,10 +3830,14 @@ function App() {
       />
 
       <NewSessionModal
-        open={showNewSessionModal}
+        open={profileSheetState.open}
         loading={historyLoading}
-        onClose={() => setShowNewSessionModal(false)}
+        onClose={() => dispatchProfileSheet({ type: 'close' })}
         directories={recentDirectories}
+        profilesEnabled={newSessionProfilesEnabled}
+        profileState={profileSheetState}
+        onProfileAction={dispatchProfileSheet}
+        onRequestProfiles={handleRequestSessionProfiles}
         onStartSession={handleStartSessionInDir}
       />
     </>

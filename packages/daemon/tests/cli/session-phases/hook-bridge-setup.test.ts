@@ -54,6 +54,7 @@ import { SessionRegistryFile } from '../../../src/session/session-registry-file.
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../../src/transcript/index.ts';
+import { emptySidecar, noProfiles, noRecord } from '../../helpers/no-profiles-policy.ts';
 import {
   WRAPPED_DIRECTORY,
   WRAPPED_DIRECTORY_DIALOG,
@@ -401,6 +402,7 @@ describe('setupHookBridge', () => {
 
     const handle = setupHookBridge(
       {
+        withholdTranscriptPath: false,
         sessionRegistry,
         bindingStore,
         liveSessionsRegistry,
@@ -412,6 +414,7 @@ describe('setupHookBridge', () => {
         currentPort: () => 8765,
         transcriptDiscovery: new TranscriptDiscovery(),
         holdMs: opts.holdMs ?? 60_000,
+        terminalPromptMs: opts.holdMs ?? 60_000,
         hookTimeoutMs: (opts.hasLocalTerminal ?? true) ? 600_000 : 3_600_000,
         ...(opts.onHarnessDenied ? { onHarnessDenied: opts.onHarnessDenied } : {}),
         ...(opts.pushTurnFailed ? { pushTurnFailed: opts.pushTurnFailed } : {}),
@@ -1891,6 +1894,7 @@ describe('setupHookBridge', () => {
 
     const handle = setupHookBridge(
       {
+        withholdTranscriptPath: false,
         sessionRegistry,
         bindingStore,
         liveSessionsRegistry,
@@ -1902,6 +1906,7 @@ describe('setupHookBridge', () => {
         currentPort: () => 8765,
         transcriptDiscovery: new TranscriptDiscovery(),
         holdMs: 60_000,
+        terminalPromptMs: 60_000,
         hookTimeoutMs: 600_000,
       },
       {
@@ -1992,6 +1997,7 @@ describe('setupHookBridge', () => {
     bridgeHandles.push(
       setupHookBridge(
         {
+          withholdTranscriptPath: false,
           sessionRegistry,
           bindingStore,
           liveSessionsRegistry,
@@ -2003,6 +2009,7 @@ describe('setupHookBridge', () => {
           currentPort: () => 8765,
           transcriptDiscovery: new TranscriptDiscovery(),
           holdMs: 60_000,
+          terminalPromptMs: 60_000,
           hookTimeoutMs: 600_000,
         },
         {
@@ -4999,6 +5006,11 @@ describe('setupHookBridge', () => {
         ...promptUpWiring,
       });
       const session = createSessionHandlers({
+        profiles: noProfiles,
+        sidecar: emptySidecar,
+        profileOfSession: noRecord,
+        visibleLivePorts: () => liveSessionsRegistry.getLivePorts(),
+        withholdTranscriptPaths: false,
         sessionRegistry,
         bindingStore,
         transcriptDiscovery: new TranscriptDiscovery({

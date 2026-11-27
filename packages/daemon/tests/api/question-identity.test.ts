@@ -142,6 +142,7 @@ function buildPipeline(submits: string[] = []): {
       sessionRegistry: registry,
       isInSubagentContext: () => false,
       holdMs: 60_000,
+      terminalPromptMs: 60_000,
       hasLocalTerminal: true,
       escalate: (i) => hookBridge.handlePermissionRequest(i),
       parkForPTY: (i) => {

@@ -39,6 +39,8 @@ import {
 } from '../../src/tunnel/browser-link-producer.ts';
 import { BrowserLinkService } from '../../src/tunnel/browser-link-service.ts';
 import { directTlsFixture } from './direct-tls-fixture.ts';
+import { emptySidecar, noProfiles, noRecord } from './no-profiles-policy.ts';
+import { noProfilesRelayPolicy } from './no-profiles-policy.ts';
 
 export async function until(check: () => boolean, label: string, timeout = 3000): Promise<void> {
   const end = performance.now() + timeout;
@@ -210,6 +212,10 @@ export async function browserFixture(
           onSessionListRequest(id: string, requestId: string, includeExternal: boolean) {
             const { own, external } = buildSessionList(
               {
+                profiles: noProfiles,
+                sidecar: emptySidecar,
+                profileOfSession: noRecord,
+                withholdTranscriptPaths: false,
                 sessionRegistry: registry,
                 bindingStore: bindings,
                 transcriptDiscovery,
@@ -534,6 +540,7 @@ export async function relayMachineFixture<T extends OwnedRelayChild>(
         trust: f.trust,
         dir: f.files.home,
         registry,
+        remotePolicy: noProfilesRelayPolicy(f.files.home),
         log: (message) => {
           logs.push(message);
           if (message.includes('InterprocessFileLockError') && authorityFaults.length < 4)

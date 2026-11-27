@@ -53,7 +53,7 @@ import { resolveClaudeBinding } from '../cli/claude-binding.ts';
 import { permissionHoldPolicy } from '../cli/hold-policy.ts';
 import { log, logError } from '../cli/logger.ts';
 import { setupHookBridge } from '../cli/session-phases/hook-bridge-setup.ts';
-import type { SessionGateHandle } from '../cli/session-phases/hook-bridge-setup.ts';
+import type { HookBridgeDeps, SessionGateHandle } from '../cli/session-phases/hook-bridge-setup.ts';
 import {
   buildClaudeChildEnv,
   createPtySessionForSession,
@@ -73,6 +73,7 @@ import type {
   SessionRegistry,
   SessionRegistryFile,
   SessionStore,
+  StoredSession,
 } from '../session/index.ts';
 import type { TranscriptDiscovery, TranscriptWatcher } from '../transcript/index.ts';
 import type { BrowserLinkLaunch } from '../tunnel/browser-link-session-host.ts';
@@ -92,6 +93,8 @@ import type {
  * terminal-notice closures of the hook bridge.
  */
 export interface ClaudeLaunchDeps {
+  profileMetadata?: Pick<StoredSession, 'profile' | 'profileSnapshot'>;
+  profileEnv?: Readonly<Record<string, string | undefined>>;
   sessionRegistry: SessionRegistry;
   sessionStore: SessionStore;
   bindingStore: SessionBindingStore;
@@ -112,6 +115,8 @@ export interface ClaudeLaunchDeps {
   onHarnessDenied: (input: PermissionDeniedHookInput) => void;
   pushTurnFailed: (sessionId: UUID, input: StopFailureHookInput) => void;
   dismissTurnFailed: (sessionId: UUID) => void;
+  /** Confirms a sent chat message when Claude reports the prompt it typed (#1818). */
+  chatAcceptance?: HookBridgeDeps['chatAcceptance'];
   /** `[prompts]` config, which picks the permission hold policy; read at each launch. */
   prompts: () => Pick<PromptsConfig, 'hold_seconds' | 'daemon_hold_seconds'>;
   /** The daemon's hook server, or null: read at launch and again at every PTY event. */
@@ -236,6 +241,7 @@ export async function createClaudeSession(
     onHarnessDenied,
     pushTurnFailed,
     dismissTurnFailed,
+    chatAcceptance,
     cleanup,
     observeLocalPtyOutput,
     sessionNotifiers,
@@ -383,6 +389,7 @@ export async function createClaudeSession(
       startedAt: new Date().toISOString(),
       exitedAt: null,
       exitCode: null,
+      ...deps.profileMetadata,
     });
 
     browserLaunch = await deps.prepareBrowser?.(sessionId, binding.claudeSessionId);
@@ -393,6 +400,7 @@ export async function createClaudeSession(
       const holdPolicy = permissionHoldPolicy(passThrough, deps.prompts());
       const hookBridgeHandle = setupHookBridge(
         {
+          withholdTranscriptPath: deps.profileMetadata !== undefined,
           sessionRegistry,
           bindingStore,
           liveSessionsRegistry,
@@ -409,10 +417,10 @@ export async function createClaudeSession(
           // its pushed card on every client.
           broadcastQuestionResolved: onQuestionResolved,
           // #1126: how long a binary prompt's hook waits for the phone, and
-          // the registered hook timeout an abort is compared with; a wrapper
-          // session hands an unanswered prompt to its terminal, a daemon or
-          // hub session keeps it for the phone (see hold-policy.ts).
-          holdMs: holdPolicy.holdMs,
+          // the registered hook timeout an abort is compared with; wrapper
+          // structured questions use the long safety cap (#1837). See hold-policy.ts.
+          holdMs: holdPolicy.holdMsFor,
+          terminalPromptMs: holdPolicy.terminalPromptMs,
           hookTimeoutMs: holdPolicy.hookTimeoutMs,
           pushTerminalNotice: (sid, question, reason) =>
             sessionNotifiers.get(sid)?.pushTerminalNotice(sid, question, reason),
@@ -424,6 +432,7 @@ export async function createClaudeSession(
           // reason until a later main Stop clears it (`turn-failed.ts`, #1226).
           pushTurnFailed,
           dismissTurnFailed,
+          ...(chatAcceptance && { chatAcceptance }),
         },
         {
           hookServer: launchHookServer,
@@ -481,13 +490,15 @@ export async function createClaudeSession(
         extraArgs: binding.args,
         passThrough,
         reservedRows,
-        ...(browserLaunch && {
+        ...((browserLaunch || deps.profileEnv) && {
           launch: {
             command: 'claude',
             childEnv: {
-              ...buildClaudeChildEnv(deps.wsPort(), reservedRows),
-              BROWSER: browserLaunch.browserPath,
+              ...deps.profileEnv,
+              ...buildClaudeChildEnv(deps.wsPort(), reservedRows, deps.profileEnv ?? process.env),
+              ...(browserLaunch && { BROWSER: browserLaunch.browserPath }),
             },
+            completeEnv: deps.profileEnv !== undefined,
           },
         }),
       },

@@ -12,6 +12,8 @@ import {
 import { RecoveryError, RecoveryIntent, type RecoveryOps } from './recovery';
 import { ReservationError, type Reservations } from './reservations';
 
+export const JOURNAL_READ_MAX_BYTES = 1024 * 1024;
+
 /** Only a refused reserveJournal call before any lease/content allocation may produce this type. */
 export class JournalAdmissionBusy extends ReservationError {
   constructor() {
@@ -123,7 +125,7 @@ function openJournalRead(
           position < 0 ||
           !Number.isSafeInteger(length) ||
           length < 1 ||
-          length > 32 * 1024 ||
+          length > JOURNAL_READ_MAX_BYTES ||
           position + length > byteLength
         )
           throw new RecoveryError('unavailable');

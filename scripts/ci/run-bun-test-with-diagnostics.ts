@@ -60,6 +60,10 @@ type RunOptions = {
   diagnosticAfterMs?: number;
   diagnosticEveryMs?: number;
   procSampler?: ProcSampler;
+  /** Test harness only: coordinate a real group with its snapshot. */
+  groupSnapshot?: typeof snapshotOwnedGroup;
+  /** Test harness only: control the post-exit group observation. */
+  groupProbe?: typeof groupAlive;
   timeoutMs?: number;
   cwd?: string;
   env?: Record<string, string | undefined>;
@@ -709,6 +713,212 @@ function groupAlive(pid: number): boolean {
   }
 }
 
+export type OwnedGroupMember = {
+  pid: number;
+  ppid: number;
+  state: string;
+  elapsedSeconds: number | null;
+  args: string;
+};
+export type OwnedGroupSnapshot = {
+  pgid: number;
+  members: OwnedGroupMember[];
+  /** Members beyond the cap that are not listed. */
+  omitted: number;
+  /** Why no listing exists (ps missing, failing, timing out or malformed); null when parsed. */
+  unavailable: string | null;
+};
+
+const SNAPSHOT_MAX_MEMBERS = 20;
+const SNAPSHOT_MAX_ARGS_CHARS = 200;
+const SNAPSHOT_MAX_FAILURE_CHARS = 200;
+/** One budget for the whole snapshot, all ps commands together. */
+const SNAPSHOT_BUDGET_MS = 2_000;
+// `-ww` (procps and BSD ps both accept it) keeps long command lines from being cut at the
+// terminal width. procps (Linux) has `etimes` (seconds); BSD ps (macOS) has only `etime`
+// ([[dd-]hh:]mm:ss), so a first form that fails fast falls through to the second.
+export const SNAPSHOT_PS_COMMANDS: string[][] = [
+  ['ps', '-ww', '-eo', 'pid=,ppid=,pgid=,stat=,etimes=,args='],
+  ['ps', '-ww', '-eo', 'pid=,ppid=,pgid=,stat=,etime=,args='],
+];
+
+function parseElapsedSeconds(token: string): number | null {
+  if (/^\d+$/.test(token)) return Number(token);
+  const match = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(token);
+  if (!match) return null;
+  const [, days, hours, minutes, seconds] = match;
+  return (
+    Number(days ?? 0) * 86_400 + Number(hours ?? 0) * 3_600 + Number(minutes) * 60 + Number(seconds)
+  );
+}
+
+function sanitizeArgs(args: string): string {
+  // `ps -o args` prints the command line, never the environment, but a command
+  // line can still carry secrets: drop URL credentials, Authorization headers, the value of
+  // a secret-looking flag (`--token x` and `--token=x`) and every NAME=value value.
+  const quoted = '"[^"]*(?:"|$)|\'[^\']*(?:\'|$)|\\S+';
+  const clean = args
+    .replace(/(:\/\/)[^\s/@:]+(?::[^\s/@]*)?@/g, '$1<redacted>@')
+    .replace(/\b(Authorization:\s*)(?:(?:Bearer|Basic|Token)\s+)?\S+/gi, '$1<redacted>')
+    .replace(
+      new RegExp(
+        `(--?[\\w-]*(?:token|secret|pass(?:word|phrase)?|key|auth|cookie)[\\w-]*)([= ]+)(?:${quoted})`,
+        'gi',
+      ),
+      '$1$2<redacted>',
+    )
+    .replace(new RegExp(`\\b([A-Za-z_][A-Za-z0-9_]*)=(?:${quoted})`, 'g'), '$1=<redacted>')
+    .replace(/[\u0000-\u001f\u007f]/g, '?');
+  return clean.length > SNAPSHOT_MAX_ARGS_CHARS
+    ? `${clean.slice(0, SNAPSHOT_MAX_ARGS_CHARS)}...`
+    : clean;
+}
+
+/** Pure parser for `ps -eo pid=,ppid=,pgid=,stat=,etime[s]=,args=` output, keeping one group. */
+export function parseGroupMembers(output: string, pgid: number): OwnedGroupMember[] {
+  const members: OwnedGroupMember[] = [];
+  for (const line of output.split('\n')) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s*(.*)$/.exec(line);
+    if (!line.trim()) continue;
+    if (!match) throw new Error(`unparsable ps output: ${sanitizeArgs(line).slice(0, 120)}`);
+    if (Number(match[3]) !== pgid) continue;
+    members.push({
+      pid: Number(match[1]),
+      ppid: Number(match[2]),
+      state: match[4] ?? '',
+      elapsedSeconds: parseElapsedSeconds(match[5] ?? ''),
+      args: sanitizeArgs(match[6] ?? ''),
+    });
+  }
+  return members;
+}
+
+function describeFailure(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > SNAPSHOT_MAX_FAILURE_CHARS
+    ? `${flat.slice(0, SNAPSHOT_MAX_FAILURE_CHARS)}...`
+    : flat;
+}
+
+type PsOutcome =
+  | { kind: 'ok'; stdout: string }
+  | { kind: 'failed'; text: string }
+  | { kind: 'timeout' };
+
+async function runPs(command: string[], budgetMs: number): Promise<PsOutcome> {
+  let proc: ReturnType<typeof Bun.spawn> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    proc = Bun.spawn(command, { stdout: 'pipe', stderr: 'pipe', stdin: 'ignore' });
+    const spawned = proc;
+    const work = (async (): Promise<PsOutcome> => {
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(spawned.stdout as ReadableStream).text(),
+        new Response(spawned.stderr as ReadableStream).text(),
+        spawned.exited,
+      ]);
+      if (code === 0) return { kind: 'ok', stdout };
+      const detail = describeFailure(stderr);
+      return {
+        kind: 'failed',
+        text: `${command.join(' ')} exited ${code ?? 'by signal'}${detail ? `: ${detail}` : ''}`,
+      };
+    })();
+    work.catch(() => undefined);
+    const expired = new Promise<PsOutcome>((resolve) => {
+      timer = setTimeout(() => resolve({ kind: 'timeout' }), Math.max(1, budgetMs));
+    });
+    const outcome = await Promise.race([work, expired]);
+    // A hung ps is killed and abandoned; its pipes are never awaited again.
+    if (outcome.kind === 'timeout') proc.kill('SIGKILL');
+    return outcome;
+  } catch (error) {
+    return {
+      kind: 'failed',
+      text: `${command.join(' ')} failed: ${describeFailure(error instanceof Error ? error.message : String(error))}`,
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Read-only, never throwing and bounded by 2 seconds in total (every ps command shares one
+ * budget; a timeout ends the snapshot instead of trying the next form): lists what is still
+ * in the process group the wrapper owns, so a "left an owned descendant" failure names the
+ * survivor. `psCommands` exists so a test can exercise the failure paths.
+ */
+export async function snapshotOwnedGroup(
+  pgid: number,
+  psCommands: string[][] = SNAPSHOT_PS_COMMANDS,
+): Promise<OwnedGroupSnapshot> {
+  const failures: string[] = [];
+  const deadline = Date.now() + SNAPSHOT_BUDGET_MS;
+  const unavailable = (reason: string): OwnedGroupSnapshot => ({
+    pgid,
+    members: [],
+    omitted: 0,
+    unavailable: reason,
+  });
+  for (const command of psCommands) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      failures.push(`timed out after ${SNAPSHOT_BUDGET_MS} ms`);
+      return unavailable(failures.join('; '));
+    }
+    const outcome = await runPs(command, remaining);
+    if (outcome.kind === 'timeout') {
+      failures.push(`${command.join(' ')} timed out after ${SNAPSHOT_BUDGET_MS} ms in total`);
+      return unavailable(failures.join('; '));
+    }
+    if (outcome.kind === 'failed') {
+      failures.push(outcome.text);
+      continue;
+    }
+    let members: OwnedGroupMember[];
+    try {
+      members = parseGroupMembers(outcome.stdout, pgid);
+    } catch (error) {
+      return unavailable(error instanceof Error ? error.message : String(error));
+    }
+    return {
+      pgid,
+      members: members.slice(0, SNAPSHOT_MAX_MEMBERS),
+      omitted: Math.max(0, members.length - SNAPSHOT_MAX_MEMBERS),
+      unavailable: null,
+    };
+  }
+  return unavailable(failures.join('; ') || 'no ps command');
+}
+
+export function formatGroupSnapshot(snapshot: OwnedGroupSnapshot): string {
+  if (snapshot.unavailable !== null)
+    return `Owned process group ${snapshot.pgid} snapshot unavailable: ${snapshot.unavailable}`;
+  const lines = [
+    `Owned process group ${snapshot.pgid} at failure time: ${snapshot.members.length + snapshot.omitted} process(es)`,
+  ];
+  if (snapshot.members.length === 0 && snapshot.omitted === 0)
+    lines.push('  (no members listed; the group was still alive on re-check)');
+  for (const member of snapshot.members)
+    lines.push(
+      `  pid=${member.pid} ppid=${member.ppid} state=${member.state} elapsed=${member.elapsedSeconds ?? '?'}s cmd=${member.args}`,
+    );
+  if (snapshot.omitted > 0) lines.push(`  ... ${snapshot.omitted} more not listed`);
+  return lines.join('\n');
+}
+
+/** The first message line stays the stable text a matcher can rely on. */
+export const OWNED_DESCENDANT_MESSAGE = 'Child left an owned descendant after exit';
+
+export class OwnedDescendantError extends Error {
+  readonly snapshot: OwnedGroupSnapshot;
+  constructor(snapshot: OwnedGroupSnapshot) {
+    super(`${OWNED_DESCENDANT_MESSAGE}\n${formatGroupSnapshot(snapshot)}`);
+    this.name = 'OwnedDescendantError';
+    this.snapshot = snapshot;
+  }
+}
+
 function diagnosticLine(
   pid: number,
   elapsedMs: number,
@@ -1042,12 +1252,35 @@ export async function runChild(command: string[], options: RunOptions = {}): Pro
     if (cleanupPromise) await cleanupPromise;
     await finishLoggingStageChannel();
     if (diagnosticWriteError) throw diagnosticWriteError;
-    if (options.timeoutMs !== undefined && groupAlive(child.pid)) {
-      await startCleanup('SIGTERM');
-      throw new Error('Child left an owned descendant after exit');
+    const probeOwnedGroup = options.groupProbe ?? groupAlive;
+    if (options.timeoutMs !== undefined && probeOwnedGroup(child.pid)) {
+      // Look before cleanup kills survivors. An empty, available snapshot only clears
+      // the failure if a fresh group probe confirms that the group has ended.
+      const snapshot = await (options.groupSnapshot ?? snapshotOwnedGroup)(child.pid).catch(
+        (error: unknown) => ({
+          pgid: child.pid,
+          members: [],
+          omitted: 0,
+          unavailable: `snapshot failed: ${error instanceof Error ? error.message : String(error)}`,
+        }),
+      );
+      if (
+        snapshot.unavailable === null &&
+        snapshot.members.length === 0 &&
+        snapshot.omitted === 0 &&
+        !probeOwnedGroup(child.pid)
+      ) {
+        stderr.write(
+          `[ci-test-diagnostic] Owned process group ${child.pid} ended during the check (confirmed by re-check)\n`,
+        );
+      } else {
+        await startCleanup('SIGTERM');
+        throw new OwnedDescendantError(snapshot);
+      }
     }
     return {
       pid: child.pid,
+      // Cleanup verification deliberately uses the real groupAlive, not the test seam.
       cleanupVerified: options.timeoutMs !== undefined && !groupAlive(child.pid),
       exitCode: interruptedBy ? 128 + (interruptedBy === 'SIGINT' ? 2 : 15) : (exitCode ?? 1),
       lastTestFile: headerState.last,

@@ -437,6 +437,31 @@ describe('sendRaw routing', () => {
 });
 
 describe('sendRaw render cases with a bound session', () => {
+  test('hello_ack profile is retained for /status', async () => {
+    const { adapter, connectionId, sendMessage } = withBoundSession();
+    const ack: HelloAckMessage = {
+      type: 'hello_ack',
+      id: generateId(),
+      timestamp: now(),
+      sessionId: generateId(),
+      serverVersion: '1.0',
+      profile: { id: 'work', label: 'Work' },
+    };
+    expect(adapter.sendRaw(connectionId, ack)).toBe(true);
+
+    const reply = mock(async (_text: string) => undefined);
+    const internal = adapter as unknown as {
+      handleStatus: (ctx: unknown) => Promise<void>;
+    };
+    await internal.handleStatus({
+      chat: { id: 100 },
+      message: { message_thread_id: 200 },
+      reply,
+    });
+    expect(String(reply.mock.calls[0]?.[0])).toContain('Profile: Work');
+    expect(sendMessage.mock.calls).toHaveLength(0);
+  });
+
   test('kill_session_response (success) sends a "Session stopped" line', () => {
     const { adapter, connectionId, sendMessage } = withBoundSession();
     const msg: KillSessionResponseMessage = {

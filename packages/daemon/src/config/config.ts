@@ -10,6 +10,8 @@ import * as path from 'node:path';
 import { DAEMON_BASE_PORT, DAEMON_PORT_RANGE, errorToString } from '@remi/shared';
 import { parse as parseToml } from 'smol-toml';
 import { DEFAULT_PUSH_LEASE_HOURS } from '../notifications/push-lease.ts';
+import { parseProfiles } from '../profiles/profile-config.ts';
+import type { Profiles } from '../profiles/profile-config.ts';
 import { remiHome } from './remi-home.ts';
 
 const REMI_DIR = remiHome();
@@ -24,6 +26,7 @@ export interface DaemonTlsConfig {
 /** Daemon settings (restart required to apply changes) */
 export interface DaemonConfig {
   readonly tls: DaemonTlsConfig | null;
+  readonly hub_auto_start: boolean;
   readonly base_port: number;
   readonly port_range: number;
   readonly bind: string;
@@ -134,18 +137,18 @@ export interface NotificationsConfig {
  */
 export interface PromptsConfig {
   /**
-   * Seconds remi holds a permission hook for a phone answer before letting
+   * Seconds remi holds a wrapper permission hook for a phone answer before letting
    * go (an empty response, so Claude's dialog simply stays and the card says
    * "answer at the terminal"). 5 to 110: below the 2:00 auto-deny of Claude's
    * auto-mode fallback prompts, which counts during a hold, and below the
-   * hook's registered 600 s timeout.
+   * hook's registered 3600 s timeout (#1837).
    */
   readonly hold_seconds: number;
   /**
-   * The same hold for a daemon or hub session (#1126 lead decision), which
-   * has no terminal of its own: after the deadline only `remi attach` could
-   * answer, so the phone keeps the prompt much longer. 5 to 3540, below the
-   * 3600 s PermissionRequest registration such sessions use. An auto-mode
+   * The hold for structured questions in wrapper sessions (#1837) and all
+   * prompts in daemon or hub sessions (#1126), which have no terminal of their
+   * own: after the deadline only `remi attach` can answer. 5 to 3540, below
+   * the 3600 s PermissionRequest registration used by all sessions. An auto-mode
    * fallback prompt still auto-denies at 2:00 on Claude's side; that arrives
    * as a `PermissionDenied` hook (measured), which dismisses the card.
    */
@@ -209,6 +212,7 @@ export interface HarnessConfig {
 
 /** Complete Remi configuration */
 export interface RemiConfig {
+  readonly profiles: Profiles;
   readonly harness: HarnessConfig;
   readonly daemon: DaemonConfig;
   readonly awake: AwakeConfig;
@@ -224,6 +228,7 @@ export interface RemiConfig {
 
 /** Built-in defaults used when no config file or CLI flags are provided */
 export const DEFAULT_CONFIG: RemiConfig = {
+  profiles: { entries: {}, notices: [] },
   harness: { default: 'claude' },
   awake: {
     level1: true,
@@ -234,6 +239,7 @@ export const DEFAULT_CONFIG: RemiConfig = {
   },
   daemon: {
     tls: null,
+    hub_auto_start: true,
     base_port: DAEMON_BASE_PORT,
     port_range: DAEMON_PORT_RANGE,
     // #880/#873: remote binding remains opt-in; auth defaults on for every bind.
@@ -336,6 +342,7 @@ function deepMerge(base: RemiConfig, partial: Record<string, unknown>): RemiConf
   }
 
   return {
+    profiles: parseProfiles(partial['profiles']),
     harness: mergeSection(base.harness, partial['harness'] as Record<string, unknown> | undefined),
     daemon: mergeSection(base.daemon, partial['daemon'] as Record<string, unknown> | undefined),
     awake: mergeSection(base.awake, partial['awake'] as Record<string, unknown> | undefined),
@@ -408,6 +415,11 @@ export function loadConfigWithNotices(configPath: string = CONFIG_PATH): LoadedC
     );
   }
 
+  return parseConfigText(raw, configPath);
+}
+
+/** Validate configuration text through the same path as a file load. */
+export function parseConfigText(raw: string, configPath: string = CONFIG_PATH): LoadedConfig {
   try {
     let parsed: Record<string, unknown>;
     try {
@@ -566,6 +578,11 @@ function legacyAutoApprove(parsed: Record<string, unknown>): {
  * would then substring-match origins against it, which is not what anyone meant.
  */
 function validateDaemon(cfg: DaemonConfig, configPath: string): void {
+  if (typeof cfg.hub_auto_start !== 'boolean') {
+    throw new Error(
+      `Invalid daemon.hub_auto_start in ${configPath}: must be a boolean (true/false).`,
+    );
+  }
   assertDaemonTlsConfig(cfg.tls);
   const v: unknown = cfg.allowed_origins;
   if (!Array.isArray(v) || !v.every((s) => typeof s === 'string')) {
@@ -807,6 +824,11 @@ export function generateDefaultConfig(): string {
 # Priority: CLI flags > environment variables > this file > built-in defaults
 # Run 'remi reload' to validate changes. Restart the daemon to apply.
 
+# [profiles.work]
+# label = "Work"
+# [profiles.work.claude]
+# expects = "subscription"
+
 [harness]
 # CLI session launches only; remi claude/remi codex and --harness override this.
 default = "${DEFAULT_CONFIG.harness.default}"
@@ -829,6 +851,8 @@ stuck_busy_minutes = ${DEFAULT_CONFIG.awake.stuck_busy_minutes}
 ttl_minutes = ${DEFAULT_CONFIG.awake.ttl_minutes}
 
 [daemon]
+# Start a hub before local interactive sessions when none is running.
+hub_auto_start = ${DEFAULT_CONFIG.daemon.hub_auto_start}
 base_port = ${DEFAULT_CONFIG.daemon.base_port}
 port_range = ${DEFAULT_CONFIG.daemon.port_range}
 bind = "${DEFAULT_CONFIG.daemon.bind}"
@@ -905,8 +929,9 @@ subagent_alert = [${DEFAULT_CONFIG.notifications.subagent_alert.map((p) => `"${p
 # whichever answer comes first wins. After this many seconds the phone card
 # says "answer at the terminal" and the terminal dialog stays up. 5 to 110.
 hold_seconds = ${DEFAULT_CONFIG.prompts.hold_seconds}
-# The same for a daemon or hub session, which has no terminal of its own
-# (after the deadline only remi attach reaches the prompt). 5 to 3540.
+# Also the safety cap for AskUserQuestion and ExitPlanMode in wrapper mode
+# (#1837), and the hold for daemon or hub sessions, which have no terminal
+# of their own (after the deadline use remi attach). 5 to 3540.
 daemon_hold_seconds = ${DEFAULT_CONFIG.prompts.daemon_hold_seconds}
 `;
 }
@@ -941,6 +966,12 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
 
   lines.push(`Config file: ${configPath} (${fileExists ? 'loaded' : 'not found, using defaults'})`);
   lines.push('');
+  lines.push('[profiles]');
+  if ('error' in config.profiles) lines.push(`  ${config.profiles.error}`);
+  else
+    for (const [id, profile] of Object.entries(config.profiles.entries))
+      lines.push(`  ${id}  ${profile.label}`);
+  lines.push('');
   lines.push('[harness]');
   lines.push(`  default = "${config.harness.default}"`);
   lines.push('');
@@ -952,6 +983,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  ttl_minutes = ${config.awake.ttl_minutes}`);
   lines.push('');
   lines.push('[daemon]');
+  lines.push(`  hub_auto_start = ${config.daemon.hub_auto_start}`);
   lines.push(`  base_port = ${config.daemon.base_port}`);
   lines.push(`  port_range = ${config.daemon.port_range}`);
   lines.push(`  bind = "${config.daemon.bind}"`);

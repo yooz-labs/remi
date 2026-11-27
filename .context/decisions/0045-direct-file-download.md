@@ -164,8 +164,10 @@ Total lifetime is five monotonic minutes from begin admission, including private
 copy preparation. The accepted `expiresAt` reflects that original deadline;
 there is no new deadline at acceptance/retry. After acceptance, 30 seconds without
 valid progress retires the copy; only advancing read or valid completion counts.
-Each source/private read or write is bounded to 32 KiB with an event-loop yield
-between copy chunks. Preserve the existing 1,000 ms held-answer gate.
+Source reads and wire pulls are bounded to 32 KiB. Preparation yields after each
+source chunk. It groups private journal writes and verification reads into
+batches of up to 1 MiB to reduce locked ledger transactions (#1844), and yields
+after each verification batch. Preserve the existing 1,000 ms held-answer gate.
 
 Success, cancellation, expiry, authority loss and session/process exit retire the
 host copy through existing journal settlement/recovery. No 24-hour download

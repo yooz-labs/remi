@@ -304,6 +304,7 @@ function buildReplayRig(): ReplayRig {
 
   const handle = setupHookBridge(
     {
+      withholdTranscriptPath: false,
       sessionRegistry,
       bindingStore,
       liveSessionsRegistry,
@@ -315,6 +316,7 @@ function buildReplayRig(): ReplayRig {
       currentPort: () => 8765,
       transcriptDiscovery: new TranscriptDiscovery(),
       holdMs: 60_000,
+      terminalPromptMs: 60_000,
       hookTimeoutMs: 600_000,
     },
     {

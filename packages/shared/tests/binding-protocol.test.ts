@@ -126,3 +126,9 @@ describe('binding fields on the wire (#429)', () => {
     expect(round.reason).toBe('clear');
   });
 });
+
+test('rotation without a transcript path omits it across serialization', () => {
+  const message = createSessionRotated(RID, CID, undefined);
+  expect(Object.hasOwn(message, 'newTranscriptPath')).toBe(false);
+  expect(Object.hasOwn(deserialize(serialize(message)) as object, 'newTranscriptPath')).toBe(false);
+});

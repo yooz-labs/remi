@@ -138,6 +138,7 @@ export function terminalNoticeReason(
 const SLOW_TOOL_MS = 5_000;
 
 export interface HookBridgeDeps {
+  withholdTranscriptPath: boolean;
   sessionRegistry: SessionRegistry;
   bindingStore: SessionBindingStore;
   liveSessionsRegistry: SessionRegistryFile;
@@ -205,10 +206,12 @@ export interface HookBridgeDeps {
    */
   subagentAlerts?: SubagentAlertSink;
   /**
-   * How long a binary prompt's hook is held for a phone answer, in ms
-   * (`[prompts] hold_seconds`, #1126). Required: see `AutoApproveGateDeps.holdMs`.
+   * Hold duration in ms or the per-tool selector used in production (#1837);
+   * see `AutoApproveGateDeps.holdMs`.
    */
-  holdMs: number;
+  holdMs: number | ((toolName: string) => number);
+  /** Short post-handback terminal-prompt window. */
+  terminalPromptMs: number;
   /** The registered PermissionRequest hook timeout, in ms (#1126). See
    *  `AutoApproveGateDeps.hookTimeoutMs`. Required, so no session silently
    *  treats Claude's own timeout as a terminal No. */
@@ -240,6 +243,16 @@ export interface HookBridgeDeps {
    * Throw-safe here.
    */
   pushTurnFailed?: (sessionId: UUID, input: StopFailureHookInput) => void;
+  /**
+   * Confirms a sent chat message to its sender once Claude reports the prompt it typed (#1818).
+   * Called from the `UserPromptSubmit` listener for an admitted main-agent prompt only, so it
+   * must stay cheap. Absent (tests, callers without chat) confirms nothing.
+   */
+  chatAcceptance?: {
+    promptSubmitted(sessionId: UUID, prompt: string): boolean;
+    queuedCommand?(sessionId: UUID, prompt: string, timestamp: unknown, uuid: string): boolean;
+    forget(sessionId: UUID): void;
+  };
   /**
    * Clear the `turn_failed` notice this session may have pushed (#1153): the
    * quiet dismissal sharing its collapse key, fired on the next main-agent
@@ -298,8 +311,8 @@ export interface SessionGateHandle {
    *  Forwards to `AutoApproveGate.hasMainHold`. */
   hasMainHold: () => boolean;
   /** Is a hook-backed dialog this gate knows about (or may be) on screen:
-   *  a live main hold, or a prompt waiting in the terminal younger than the
-   *  session's hold length (#1126)? Forwards to
+   *  a live main hold, or a prompt handed to the terminal less than
+   *  `[prompts] hold_seconds` ago (#1837)? Forwards to
    *  `AutoApproveGate.hasOpenHookPrompt`; read by `promptUpDeps` (#1155). */
   hasOpenHookPrompt: () => boolean;
   /** A bare Escape reached the terminal through remi (#1155): resolve the
@@ -652,6 +665,7 @@ export function setupHookBridge(
       // suppressed for hooked sessions.
       onHeldEscalate: (questionId, answerPath) => tracker.pushHeldHook(questionId, answerPath),
       holdMs: deps.holdMs,
+      terminalPromptMs: deps.terminalPromptMs,
       hookTimeoutMs: deps.hookTimeoutMs,
       // #1126: a held prompt was released to the terminal without an answer
       // (its deadline, Claude's hook timeout, an ambiguous signal, `remi
@@ -746,6 +760,10 @@ export function setupHookBridge(
       transcriptWatchers,
       transcriptFallbackTimers,
       transcriptDiscovery,
+      onQueuedCommand: (id, prompt, timestamp, uuid) => {
+        deps.chatAcceptance?.queuedCommand?.(id, prompt, timestamp, uuid);
+      },
+      withholdTranscriptPath: deps.withholdTranscriptPath,
       messageApi,
       sendAndRecord,
       currentPort,
@@ -1290,6 +1308,15 @@ export function setupHookBridge(
     // answered No in the terminal after its hold was released (that fires
     // no hook at all), so its open entry cannot outlive the turn.
     autoApproveGate.cancelStale('UserPromptSubmit', { mainOnly: true });
+    // #1818: Claude's own report that it submitted this prompt confirms the chat message the
+    // daemon typed with exactly this text, if one is waiting. A terminal-typed prompt matches
+    // nothing. A failure here must never reach the hook response.
+    try {
+      if (typeof input.prompt === 'string')
+        deps.chatAcceptance?.promptSubmitted(sessionId, input.prompt);
+    } catch (err) {
+      logError(`[Hooks] chat acceptance failed: ${errorToString(err)}`);
+    }
     // A new prompt does NOT clear a "Claude stopped" notice (#1226): at a
     // usage limit every prompt fails too, and clearing here re-alerted the
     // phone on each retry. The next main-agent tool call or `Stop` clears it.
@@ -1314,6 +1341,7 @@ export function setupHookBridge(
     admits: (input: HookInput) => binder.admits(input),
     closeBinder: () => {
       binder.close();
+      deps.chatAcceptance?.forget(sessionId);
       // Drop the per-session PermissionRequest resolver (#496) so a stale
       // closure (over this session's gate/tracker) can't fire after teardown.
       hookServer.setPermissionResolver(null);

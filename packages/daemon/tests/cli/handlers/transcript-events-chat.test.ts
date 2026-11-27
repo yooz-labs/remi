@@ -30,6 +30,7 @@ import { SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptIndex } from '../../../src/session/transcript-index.ts';
 import { TranscriptDiscovery } from '../../../src/transcript/transcript-discovery.ts';
 import type { TranscriptWatcher } from '../../../src/transcript/transcript-watcher.ts';
+import { noHiddenOwner } from '../../helpers/no-profiles-policy.ts';
 import { stripComments } from '../../helpers/strip-comments.ts';
 
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
@@ -86,6 +87,7 @@ describe('transcript load through a harness chat (chatFor)', () => {
     const sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
     const transcriptIndex = new TranscriptIndex(path.join(tmpDir, 'transcript-index.json'));
     return createTranscriptHandlers({
+      isHiddenOwner: noHiddenOwner,
       transcriptDiscovery: discovery,
       harness: new ClaudeHarness(discovery),
       transcriptWatchers: new Map<UUID, TranscriptWatcher>(),

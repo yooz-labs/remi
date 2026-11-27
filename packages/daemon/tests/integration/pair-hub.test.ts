@@ -46,7 +46,12 @@ async function wait(check: () => boolean, what: string, ms = 15000) {
   }
 }
 
-test('scan, claim, approve at the terminal, then hello_ack and the session list', async () => {
+/**
+ * The hub is bound to loopback and the phone dials it there. `hosts` is what the code carries: none
+ * means the host is 127.0.0.1, which a v2 code refuses, so the default falls back to v1 (#1794; that
+ * fallback is reachable only through pairFlow, since `remi pair` itself refuses a loopback bind).
+ */
+async function pairThroughHub(hosts?: readonly string[]) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remi-pair-hub-'));
   dirs.push(dir);
   const remiHome = path.join(dir, '.remi');
@@ -110,6 +115,7 @@ test('scan, claim, approve at the terminal, then hello_ack and the session list'
       return phoneIdentity.fingerprint.slice(0, 4);
     },
     pollMs: 50,
+    ...(hosts !== undefined && { hosts }),
   });
   await wait(() => out.join('').includes('remi://pair#'), 'the link');
   const line =
@@ -119,12 +125,23 @@ test('scan, claim, approve at the terminal, then hello_ack and the session list'
       .find((l) => l.includes('remi://pair#')) ?? '';
   const decoded = decodePairingLink(line.slice(line.indexOf('remi://pair#')).trim());
   if (!decoded.ok) throw new Error(`the link was refused: ${decoded.error}`);
-  if (decoded.code.v !== 1)
-    throw new Error(`expected default v1 pairing link, found v${decoded.code.v}`);
+  if (hosts === undefined) {
+    if (decoded.code.v !== 1)
+      throw new Error(`expected the v1 fallback pairing link, found v${decoded.code.v}`);
+    expect(out.join('')).toContain(
+      'Using a version 1 pairing code: an address cannot go in a version 2 pairing code.',
+    );
+  } else {
+    if (decoded.code.v !== 2)
+      throw new Error(`expected the default v2 pairing link, found v${decoded.code.v}`);
+    expect(decoded.code.hosts).toEqual([...hosts]);
+    expect(out.join('')).not.toContain('Using a version 1');
+  }
 
   // The phone.
   const phone = await unlockIdentity(phoneIdentity);
-  const ws = new WebSocket(`ws://${decoded.code.host}:${decoded.code.port}/ws`);
+  const dial = decoded.code.v === 1 ? decoded.code.host : '127.0.0.1';
+  const ws = new WebSocket(`ws://${dial}:${decoded.code.port}/ws`);
   sockets.push(ws);
   const messages: ProtocolMessage[] = [];
   let keyMatched: boolean | null = null;
@@ -167,4 +184,12 @@ test('scan, claim, approve at the terminal, then hello_ack and the session list'
   expect(new IdentityStore(remiHome).listAuthorizedKeys().map((k) => k.label)).toContain(
     'Integration phone',
   );
+}
+
+test('scan, claim, approve at the terminal, then hello_ack: the default falls back to v1 for a loopback host', async () => {
+  await pairThroughHub();
+}, 60000);
+
+test('the same pairing over a default v2 code against the real hub (#1794)', async () => {
+  await pairThroughHub(['192.0.2.10']);
 }, 60000);

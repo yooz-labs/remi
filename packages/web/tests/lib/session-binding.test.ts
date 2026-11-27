@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { bindingRotated } from '../../src/lib/session-binding';
+import { applySessionRotation, bindingRotated } from '../../src/lib/session-binding';
 
 describe('bindingRotated', () => {
   test('true when a prior binding existed and the ack differs (rotated while away)', () => {
@@ -25,4 +25,10 @@ describe('bindingRotated', () => {
   test('false when neither side has a binding', () => {
     expect(bindingRotated(undefined, undefined)).toBe(false);
   });
+});
+
+test('rotation replaces or removes the old transcript path', () => {
+  const session = { claudeSessionId: 'old', transcriptPath: '/old' };
+  expect(applySessionRotation(session, { newClaudeSessionId: 'new' })).toEqual({ claudeSessionId: 'new' });
+  expect(applySessionRotation(session, { newClaudeSessionId: 'new', newTranscriptPath: '/new' })).toEqual({ claudeSessionId: 'new', transcriptPath: '/new' });
 });

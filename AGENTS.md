@@ -156,6 +156,7 @@ It binds the well-known port (18765 preferred, 20-port probe), runs the shared s
 It never spawns Claude, never installs Claude hook config in its cwd, and never registers itself in live-sessions.
 `remi serve` is the foreground hub (the LaunchAgent entrypoint); `remi start` is the detached launcher; `remi stop` and `remi status` manage it.
 `daemon-status.json` belongs to the hub alone; every session daemon writes `status-<PORT>.json`.
+Local interactive session launches start a detached hub first when none is running by default; `[daemon] hub_auto_start = false` or `REMI_HUB_AUTOSTART=0` disables it. Launches under a `REMI_HOME` override do not auto-start a hub. Startup uses a lock with a 30-second stale-lock window, waits up to 10 seconds and lets the session continue if startup fails. A missing hub produces a warning based on legacy-push eligibility. Session ports exclude the configured hub base port (18765 by default), including explicit `--port` and `REMI_PORT`; the hub may use it.
 A `resume_session_request` that reaches the hub starts a child session daemon with `--resume` through the same `startSession` path as a create request (#1129), so the remote-argument allowlist and the held-session refusal apply.
 A daemon that hosts Codex refuses `resume_session_request` with `UNSUPPORTED`.
 
@@ -243,6 +244,7 @@ Short form; the detail and the live-verification evidence are in the reference f
 
 Read before changing the area:
 
+- [docs/agent-reference/profiles.md](docs/agent-reference/profiles.md): profile configuration, checks and commands.
 - [docs/agent-reference/protocol-and-workspaces.md](docs/agent-reference/protocol-and-workspaces.md): version and capabilities, the decision object, workspaces.
 - [docs/agent-reference/harnesses-and-codex.md](docs/agent-reference/harnesses-and-codex.md): harness identity and `create_session_request`, Codex approvals, Codex turn events and chat, LV-1 to LV-5 evidence.
 - [docs/agent-reference/keep-awake.md](docs/agent-reference/keep-awake.md): the shipped macOS level-1 idle-sleep assertion (session daemons and wrapper sessions, no battery floor yet) and its limits.

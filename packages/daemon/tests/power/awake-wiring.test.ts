@@ -175,6 +175,7 @@ async function buildFixture(
   registry.registerSession(sessionId, directory, new PTYSession({ cwd: directory }), messageApi);
   const bridge = setupHookBridge(
     {
+      withholdTranscriptPath: false,
       sessionRegistry: registry,
       bindingStore,
       liveSessionsRegistry: liveSessions,
@@ -183,6 +184,7 @@ async function buildFixture(
       currentPort: () => port,
       transcriptDiscovery: new TranscriptDiscovery(),
       holdMs: 5_000,
+      terminalPromptMs: 5_000,
       hookTimeoutMs: 10_000,
     },
     {

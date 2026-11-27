@@ -17,6 +17,7 @@ import { SessionRegistryFile } from '../../../src/session/session-registry-file.
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../../src/transcript/index.ts';
+import { emptySidecar, noProfiles, noRecord } from '../../helpers/no-profiles-policy.ts';
 import { WRAPPED_DIRECTORY_DIALOG } from '../../parser/fixtures/claude-dialogs.ts';
 
 /** Minimal fakes matching the pattern established in input-events.test.ts. */
@@ -88,6 +89,11 @@ describe('createSessionHandlers', () => {
 
   function makeHandlers(opts: { exitFallbackMs?: number; screen?: PromptUpDeps } = {}) {
     const handlers = createSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      profileOfSession: noRecord,
+      visibleLivePorts: () => liveSessionsRegistry.getLivePorts(),
+      withholdTranscriptPaths: false,
       sessionRegistry,
       bindingStore,
       transcriptDiscovery,

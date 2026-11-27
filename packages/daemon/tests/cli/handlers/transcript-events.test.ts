@@ -14,6 +14,7 @@ import { SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptIndex } from '../../../src/session/transcript-index.ts';
 import { TranscriptDiscovery } from '../../../src/transcript/transcript-discovery.ts';
 import { TranscriptWatcher } from '../../../src/transcript/transcript-watcher.ts';
+import { noHiddenOwner } from '../../helpers/no-profiles-policy.ts';
 
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
@@ -81,6 +82,7 @@ describe('createTranscriptHandlers', () => {
     subagentViews: SubagentViewRegistry = new SubagentViewRegistry(),
   ) {
     return createTranscriptHandlers({
+      isHiddenOwner: noHiddenOwner,
       transcriptDiscovery,
       harness: new ClaudeHarness(transcriptDiscovery),
       transcriptWatchers,
@@ -99,6 +101,61 @@ describe('createTranscriptHandlers', () => {
     fs.writeFileSync(filePath, entries.map((e) => JSON.stringify(e)).join('\n'));
     return filePath;
   }
+
+  test('history load includes the queued human prompt', async () => {
+    const claudeSessionId = '11111111-1111-1111-1111-111111111111';
+    writeTranscript(claudeSessionId, [
+      { type: 'queue-operation', operation: 'enqueue' },
+      {
+        type: 'attachment',
+        uuid: 'queued',
+        sessionId: claudeSessionId,
+        timestamp: '2026-11-27T12:00:00.000Z',
+        attachment: {
+          type: 'queued_command',
+          prompt: 'continue',
+          commandMode: 'prompt',
+          origin: { kind: 'human' },
+          timestamp: '2026-11-27T12:00:00.000Z',
+        },
+      },
+      { type: 'queue-operation', operation: 'remove' },
+      { type: 'summary', summary: 'end', leafUuid: 'end' },
+    ]);
+    makeHandlers().onTranscriptLoadRequest(CID, claudeSessionId, REQ);
+    await waitForMessages(sendCalls, (calls) =>
+      calls.some((c) => c.message.type === 'transcript_load_complete'),
+    );
+    const entries = sendCalls
+      .map((c) => c.message)
+      .filter((message) => message.type === 'transcript_content');
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ entryUuid: 'queued', role: 'user', content: 'continue' });
+  });
+
+  test('history load excludes queued prompts carrying agentId', async () => {
+    const claudeSessionId = '11111111-1111-1111-1111-111111111111';
+    const attachment = {
+      type: 'queued_command',
+      prompt: 'continue',
+      commandMode: 'prompt',
+      origin: { kind: 'human' },
+      timestamp: '2026-11-27T12:00:00.000Z',
+    };
+    writeTranscript(claudeSessionId, [
+      { type: 'attachment', uuid: 'agent', agentId: 'subagent', attachment },
+      { type: 'attachment', uuid: 'agent-snake', agent_id: 'subagent', attachment },
+      { type: 'attachment', uuid: 'main', attachment },
+      { type: 'summary', summary: 'end', leafUuid: 'end' },
+    ]);
+    makeHandlers().onTranscriptLoadRequest(CID, claudeSessionId, REQ);
+    await waitForMessages(sendCalls, (calls) =>
+      calls.some((c) => c.message.type === 'transcript_load_complete'),
+    );
+    expect(
+      sendCalls.map((c) => c.message).filter((m) => m.type === 'transcript_content'),
+    ).toMatchObject([{ entryUuid: 'main', content: 'continue' }]);
+  });
 
   test('sends NOT_FOUND when the session id has no transcript and no active watcher', async () => {
     makeHandlers().onTranscriptLoadRequest(CID, 'bogus0-0000-0000-0000-000000000000', REQ);

@@ -16,6 +16,7 @@ const SUBCOMMAND_LIST = [
   'code',
   'pair',
   'devices',
+  'profile',
   'config',
   'keygen',
   'export-key',
@@ -63,6 +64,7 @@ const SUBCOMMANDS_WITH_POSITIONAL_ARG: ReadonlySet<Subcommand> = new Set<Subcomm
 const SUBCOMMANDS_WITH_ARG_LIST: ReadonlySet<Subcommand> = new Set<Subcommand>([
   'model',
   'devices',
+  'profile',
 ]);
 
 /** Auto-approve switches removed in #1125 (ADR 0030). Accepted and ignored. */
@@ -104,7 +106,7 @@ export interface ParsedArgs {
   readonly signalingUrl: string | undefined;
   readonly noRelay: boolean;
   readonly relay: boolean;
-  /** Explicit direct pairing QR version; absent keeps the shipped v1 default. */
+  /** Explicit direct pairing QR version; absent means v2, with a v1 fallback (#1794). */
   readonly qrVersion: 1 | 2 | undefined;
   readonly resume: string | true | undefined;
   readonly showSessions: 'running' | 'all' | 'exited' | false;
@@ -162,6 +164,7 @@ export interface ParsedArgs {
    * of `new` lists it.
    */
   readonly harness: HarnessId | undefined;
+  readonly remiProfile: string | undefined;
   readonly showVersion: boolean;
   readonly showHelp: boolean;
   /** Callers MUST check this before using any other field. */
@@ -224,6 +227,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   const passthroughArgs: string[] = [];
   const explicitArgs: string[] = [];
   let harness: HarnessId | undefined;
+  let remiProfile: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -412,6 +416,13 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
         host = nextArg;
         i++;
       }
+    } else if (arg === '--remi-profile') {
+      if (!nextArg || nextArg.startsWith('-')) {
+        error = 'Error: --remi-profile requires a value.';
+      } else {
+        remiProfile = nextArg;
+        i++;
+      }
     } else if (arg === '--harness') {
       if (!nextArg || nextArg.startsWith('-')) {
         error = 'Error: --harness requires a value.';
@@ -451,7 +462,9 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
         const OWN_FLAGS: ReadonlySet<string> = new Set(['--all']);
         while (
           args[i + 1] &&
-          (!(args[i + 1] as string).startsWith('-') || OWN_FLAGS.has(args[i + 1] as string))
+          (subcommand === 'profile'
+            ? !['--help', '-h', '--version', '-v'].includes(args[i + 1] as string)
+            : !(args[i + 1] as string).startsWith('-') || OWN_FLAGS.has(args[i + 1] as string))
         ) {
           subcommandArgs.push(args[i + 1] as string);
           i++;
@@ -511,6 +524,7 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
   }
 
   return {
+    remiProfile,
     port,
     noTelegram,
     maxBulletLength,

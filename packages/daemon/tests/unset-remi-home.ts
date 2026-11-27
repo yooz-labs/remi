@@ -1,7 +1,7 @@
 /**
  * `bunfig.toml`'s `[test].preload` loads this file before any test file runs
- * (#1155). It removes `REMI_HOME` from the test process's environment and does
- * nothing else.
+ * (#1155). It removes `REMI_HOME` and disables automatic hub startup in the
+ * test process's environment.
  *
  * The README recommends exporting `REMI_HOME` (a scratch state directory) to
  * run remi from source. A developer who does that and then runs `bun test`
@@ -18,3 +18,7 @@
  * gives.
  */
 Reflect.deleteProperty(process.env, 'REMI_HOME');
+
+// Spawned CLI processes inherit this opt-out; tests that exercise autostart
+// explicitly remove it in their isolated child environment.
+process.env['REMI_HUB_AUTOSTART'] = '0';

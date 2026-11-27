@@ -257,6 +257,7 @@ for (const scenario of process.argv.includes('--scenario')
         sessionRegistry: registry,
         isInSubagentContext: () => false,
         holdMs: 60000,
+        terminalPromptMs: 60000,
         hasLocalTerminal: true,
         escalate: () => {
           questionId = crypto.randomUUID();

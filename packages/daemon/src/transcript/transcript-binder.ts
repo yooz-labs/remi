@@ -105,10 +105,12 @@ export interface BinderDecision {
 export type BinderMode = 'shadow' | 'drive';
 
 export interface TranscriptBinderDeps {
+  withholdTranscriptPath: boolean;
   sessionRegistry: SessionRegistry;
   bindingStore: SessionBindingStore;
   liveSessionsRegistry: SessionRegistryFile;
   transcriptWatchers: Map<UUID, TranscriptWatcher>;
+  onQueuedCommand?: (sessionId: UUID, prompt: string, timestamp: unknown, uuid: string) => void;
   transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>>;
   transcriptDiscovery: TranscriptDiscovery;
   messageApi: MessageAPI;
@@ -644,7 +646,10 @@ export class TranscriptBinder {
     );
     this.lastTranscriptPath = transcriptPath;
     startTranscriptWatcher(
-      { transcriptWatchers: this.deps.transcriptWatchers },
+      {
+        transcriptWatchers: this.deps.transcriptWatchers,
+        ...(this.deps.onQueuedCommand && { onQueuedCommand: this.deps.onQueuedCommand }),
+      },
       this.sessionId,
       transcriptPath,
       this.deps.messageApi,
@@ -675,7 +680,10 @@ export class TranscriptBinder {
     ) {
       this.lastTranscriptPath = transcriptPath;
       startTranscriptWatcher(
-        { transcriptWatchers: this.deps.transcriptWatchers },
+        {
+          transcriptWatchers: this.deps.transcriptWatchers,
+          ...(this.deps.onQueuedCommand && { onQueuedCommand: this.deps.onQueuedCommand }),
+        },
         this.sessionId,
         transcriptPath,
         this.deps.messageApi,
@@ -762,7 +770,7 @@ export class TranscriptBinder {
         createSessionRotated(
           this.sessionId,
           newId as UUID,
-          transcriptPath,
+          this.deps.withholdTranscriptPath ? undefined : transcriptPath,
           'restart',
           (prev ?? undefined) as UUID | undefined,
         ),
@@ -954,6 +962,7 @@ export class TranscriptBinder {
         transcriptDiscovery: this.deps.transcriptDiscovery,
         transcriptWatchers: this.deps.transcriptWatchers,
         transcriptFallbackTimers: this.deps.transcriptFallbackTimers,
+        ...(this.deps.onQueuedCommand && { onQueuedCommand: this.deps.onQueuedCommand }),
       },
       this.sessionId,
       this.workingDirectory,

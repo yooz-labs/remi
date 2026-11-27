@@ -11,6 +11,7 @@ import {
   createAuthResponse,
   createIdentity,
   decodePairingLink,
+  encodePairingLink,
   fromBase64,
   sign,
   unlockIdentity,
@@ -21,6 +22,7 @@ import {
   pairFlow,
   pairPreconditions,
   pairingHosts,
+  pairingV2Hosts,
   selectPairingCandidates,
   storeErrorMessage,
 } from '../../src/cli/cmd-pair.ts';
@@ -94,10 +96,14 @@ describe('pairFlow (#1275)', () => {
     const env = await setup();
     let asked = '';
     const flow = pairFlow(
-      deps(env, async (question) => {
-        asked = question;
-        return env.phone.fingerprint.slice(0, 4);
-      }),
+      deps(
+        env,
+        async (question) => {
+          asked = question;
+          return env.phone.fingerprint.slice(0, 4);
+        },
+        { qrVersion: 1 },
+      ),
     );
     while (env.linkOf() === '') await Bun.sleep(10);
     const decoded = decodePairingLink(env.linkOf());
@@ -166,6 +172,118 @@ describe('pairFlow (#1275)', () => {
     );
     expect(result).toBe(1);
     expect(env.out.join('')).toContain('candidate address');
+    expect(fs.existsSync(path.join(env.dir, 'pairings.json'))).toBe(false);
+  });
+
+  test('an explicit --qr-version 1 shows exactly the v1 code, with no candidates line (#1794)', async () => {
+    const env = await setup();
+    const controller = new AbortController();
+    const flow = pairFlow(
+      deps(env, async () => 'n', {
+        qrVersion: 1,
+        hosts: ['192.168.1.23', '100.101.102.103'],
+        signal: controller.signal,
+      }),
+    );
+    while (env.linkOf() === '') await Bun.sleep(10);
+    controller.abort();
+    await flow;
+    const decoded = decodePairingLink(env.linkOf());
+    if (!decoded.ok || decoded.code.v !== 1) throw new Error('expected a v1 pairing link');
+    expect(env.linkOf()).toBe(encodePairingLink(decoded.code));
+    expect(Object.keys(decoded.code)).toEqual([
+      'v',
+      'name',
+      'host',
+      'port',
+      'key',
+      'nonce',
+      'exp',
+      'proto',
+    ]);
+    expect(decoded.code.host).toBe('192.168.1.23');
+    expect(env.out.join('')).not.toContain('Candidates');
+    expect(env.out.join('')).not.toContain('Using a version 1');
+  });
+
+  test('with no version the code is v2, Local before Tailscale, with no fallback line (#1794)', async () => {
+    for (const extra of [
+      { hosts: ['100.101.102.103', '192.168.1.23'] },
+      { host: '100.101.102.103', others: ['192.168.1.23'] },
+    ]) {
+      const env = await setup();
+      const controller = new AbortController();
+      const flow = pairFlow(deps(env, async () => 'n', { ...extra, signal: controller.signal }));
+      while (env.linkOf() === '') await Bun.sleep(10);
+      controller.abort();
+      await flow;
+      const decoded = decodePairingLink(env.linkOf());
+      if (!decoded.ok || decoded.code.v !== 2) throw new Error('expected a v2 pairing link');
+      expect(decoded.code.hosts, JSON.stringify(extra)).toEqual([
+        '192.168.1.23',
+        '100.101.102.103',
+      ]);
+      expect(env.out.join('')).toContain('Candidates');
+      expect(env.out.join('')).not.toContain('Using a version 1');
+    }
+  });
+
+  test('a default run whose address a v2 code refuses says so and shows the v1 code (#1794)', async () => {
+    for (const [extra, reason] of [
+      [{ host: '127.0.0.1' }, 'an address cannot go in a version 2 pairing code'],
+      [
+        { hosts: [] as string[] },
+        'no phone-reachable address for a version 2 pairing code was found',
+      ],
+    ] as const) {
+      const env = await setup();
+      const controller = new AbortController();
+      const flow = pairFlow(deps(env, async () => 'n', { ...extra, signal: controller.signal }));
+      while (env.linkOf() === '') await Bun.sleep(10);
+      const shown = decodePairingLink(env.linkOf());
+      if (!shown.ok) throw new Error(`link refused: ${shown.error}`);
+      const open = env.store.peekPairing(shown.code.nonce);
+      expect(open?.state).toBe('open');
+      // The code carries whole seconds.
+      expect(Math.floor(Date.parse(open?.expiresAt ?? '') / 1000)).toBe(shown.code.exp);
+      controller.abort();
+      await flow;
+      expect(env.store.peekPairing(shown.code.nonce)?.state).toBe('cancelled');
+      const text = env.out.join('');
+      expect(text.split('\n').filter((l) => l.startsWith('Using a version 1'))).toEqual([
+        `Using a version 1 pairing code: ${reason}.`,
+      ]);
+      expect(text.indexOf('Using a version 1')).toBeLessThan(text.indexOf('remi://pair#'));
+      const decoded = decodePairingLink(env.linkOf());
+      if (!decoded.ok || decoded.code.v !== 1) throw new Error('expected the v1 fallback link');
+      expect(decoded.code.host).toBe(extra.host ?? '192.168.1.23');
+      expect(text).not.toContain('Candidates');
+    }
+  });
+
+  test('an explicit --qr-version 2 never falls back: it fails, shows no code and leaves no record (#1794)', async () => {
+    for (const [extra, message] of [
+      [{ host: '127.0.0.1' }, 'A candidate address cannot go in a version 2 pairing code.'],
+      [
+        { hosts: [] as string[] },
+        'Choose a phone-reachable address with remi pair --host <address>.',
+      ],
+    ] as const) {
+      const env = await setup();
+      expect(await pairFlow(deps(env, async () => 'unused', { ...extra, qrVersion: 2 }))).toBe(1);
+      const text = env.out.join('');
+      expect(text).toBe(`${message}\n`);
+      expect(env.linkOf()).toBe('');
+      expect(fs.existsSync(path.join(env.dir, 'pairings.json'))).toBe(false);
+    }
+  });
+
+  test('a default run whose host no code can carry is refused without a fallback line (#1794)', async () => {
+    const env = await setup();
+    expect(await pairFlow(deps(env, async () => 'unused', { host: 'my_host' }))).toBe(1);
+    expect(env.out.join('')).not.toContain('Using a version 1');
+    expect(env.out.join('')).toContain('cannot go in a pairing code');
+    expect(env.linkOf()).toBe('');
     expect(fs.existsSync(path.join(env.dir, 'pairings.json'))).toBe(false);
   });
 
@@ -436,6 +554,36 @@ describe('pairingHosts and pairPreconditions (#1275)', () => {
         '100.101.102.104',
       ]),
     ).toEqual(['192.168.1.23', '203.0.113.9', '192.168.64.1', '100.101.102.103']);
+  });
+
+  test('a v2 code carries no virtual-interface address while a real one exists (#1794)', () => {
+    const wildcard = {
+      en0: [{ address: '192.168.1.23', family: 'IPv4', internal: false }],
+      utun4: [{ address: '100.101.102.103', family: 'IPv4', internal: false }],
+      bridge100: [{ address: '192.168.64.1', family: 'IPv4', internal: false }],
+      docker0: [{ address: '172.17.0.1', family: 'IPv4', internal: false }],
+      vmnet8: [{ address: '172.16.5.1', family: 'IPv4', internal: false }],
+    } as never;
+    // Every address is still offered as a --host choice; only the code's candidates skip the bridges.
+    expect(pairingHosts('0.0.0.0', wildcard)).toEqual([
+      '192.168.1.23',
+      '100.101.102.103',
+      '192.168.64.1',
+      '172.17.0.1',
+      '172.16.5.1',
+    ]);
+    expect(pairingV2Hosts('0.0.0.0', wildcard)).toEqual(['192.168.1.23', '100.101.102.103']);
+    expect(selectPairingCandidates(pairingV2Hosts('0.0.0.0', wildcard))).toEqual([
+      '192.168.1.23',
+      '100.101.102.103',
+    ]);
+    // Without a real address the bridges are the last resort, as for v1.
+    const onlyVirtual = {
+      bridge100: [{ address: '192.168.64.1', family: 'IPv4', internal: false }],
+      docker0: [{ address: '172.17.0.1', family: 'IPv4', internal: false }],
+    } as never;
+    expect(pairingV2Hosts('0.0.0.0', onlyVirtual)).toEqual(['192.168.64.1', '172.17.0.1']);
+    expect(pairingV2Hosts('192.168.1.23', wildcard)).toEqual(['192.168.1.23']);
   });
 
   test('a specific bind offers that address alone', () => {

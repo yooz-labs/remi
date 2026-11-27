@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Observation
 import RemiKit
 import RemiUI
@@ -78,7 +79,9 @@ struct ScrollRoot: View {
         await settle(window)
         records.append(record("preserve-history-review", scroll,
             passed: abs(scroll.documentVisibleRect.minY - readingY) < 2 && !atBottom(scroll)))
-        let latestPressed = selectLatest(in: window)
+        let latestPressed = selectLatest()
+        await settle(window)
+        await settle(window)
         await settle(window)
         var latestRecord = record("latest-control-jumps-from-history", scroll,
             passed: latestPressed && atBottom(scroll))
@@ -137,16 +140,26 @@ struct ScrollRoot: View {
         return candidates.max { $0.frame.height < $1.frame.height }
     }
 
-    @MainActor static func selectLatest(in window: NSWindow) -> Bool {
-        // Exercise the rendered Latest control through its advertised Command-Down
-        // shortcut, in this owned window only. No action closure is reproduced.
-        guard let item = window.toolbar?.items.first(where: { $0.label == "Jump to latest activity" }),
-              item.isEnabled,
-              let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
-                  timestamp: 0, windowNumber: window.windowNumber, context: nil,
-                  characters: "\u{F701}", charactersIgnoringModifiers: "\u{F701}",
-                  isARepeat: false, keyCode: 125) else { return false }
-        return window.performKeyEquivalent(with: event)
+    @MainActor static func selectLatest() -> Bool {
+        // Query this process's rendered accessibility tree; no global input is sent.
+        func attribute(_ element: AXUIElement, _ name: CFString) -> CFTypeRef? {
+            var value: CFTypeRef?
+            return AXUIElementCopyAttributeValue(element, name, &value) == .success ? value : nil
+        }
+        func press(_ element: AXUIElement, depth: Int) -> Bool {
+            guard depth < 40 else { return false }
+            let label = attribute(element, kAXDescriptionAttribute as CFString) as? String
+            let title = attribute(element, kAXTitleAttribute as CFString) as? String
+            if (label == "Jump to latest" || title == "Jump to latest"),
+               (attribute(element, kAXEnabledAttribute as CFString) as? Bool) == true {
+                return AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+            }
+            for child in attribute(element, kAXChildrenAttribute as CFString) as? [AXUIElement] ?? [] {
+                if press(child, depth: depth + 1) { return true }
+            }
+            return false
+        }
+        return press(AXUIElementCreateApplication(getpid()), depth: 0)
     }
 
     @MainActor static func bottomGap(_ scroll: NSScrollView) -> CGFloat {

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import { createConnection } from 'node:net';
+import { publishReadyFile } from './publish-ready-file.ts';
 import { createNativeTerminalPair } from './terminal-native-pair.ts';
 export { createNativeTerminalPair } from './terminal-native-pair.ts';
 import { tmpdir } from 'node:os';
@@ -274,7 +275,7 @@ export async function runRemoteTerminalViews(
     f.context.reserveView(sharedDevice, randomUUID()),
   ];
   try {
-    fs.writeFileSync(`${prefix}.ready`, String(process.pid));
+    publishReadyFile(`${prefix}.ready`, process.pid);
     await until(() => fs.existsSync(`${prefix}.go`), 'owned remote view release');
   } finally {
     for (const view of views) view.retire();
@@ -285,7 +286,7 @@ export async function runRemoteTerminalViews(
 
 export function holdTerminalViewLock(home: string, prefix: string): void {
   withInterprocessFileLockNonblocking(join(home, 'terminal-view/reservations.json'), () => {
-    fs.writeFileSync(`${prefix}.ready`, String(process.pid));
+    publishReadyFile(`${prefix}.ready`, process.pid);
     const deadline = performance.now() + 20000;
     while (!fs.existsSync(`${prefix}.go`)) {
       assert(performance.now() < deadline, 'owned view lock release deadline');

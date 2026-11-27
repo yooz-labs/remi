@@ -202,7 +202,8 @@ describe('a Claude daemon on the wire (#1179)', () => {
     try {
       const ack = received.find((m): m is HelloAckMessage => m.type === 'hello_ack');
       expect(ack?.protocolVersion).toBe(1);
-      expect(ack?.capabilities).toEqual(['workspaces']);
+      // A Claude daemon with its hook server also lists chat_acceptance (#1818).
+      expect(ack?.capabilities).toEqual(['workspaces', 'session_profiles', 'chat_acceptance']);
     } finally {
       ws.close();
     }

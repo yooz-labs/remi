@@ -32,6 +32,7 @@ import { SessionRegistryFile } from '../../../src/session/session-registry-file.
 import { SessionRegistry } from '../../../src/session/session-registry.ts';
 import { SessionStore } from '../../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../../src/transcript/transcript-discovery.ts';
+import { emptySidecar, noProfiles, noRecord } from '../../helpers/no-profiles-policy.ts';
 
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
@@ -99,6 +100,11 @@ describe('createSessionHandlers, driven by the harness (#1163)', () => {
 
     const sessionStore = new SessionStore(path.join(tmpDir, 'sessions.json'));
     const handlers = createSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      profileOfSession: noRecord,
+      visibleLivePorts: () => new SessionRegistryFile(tmpDir).getLivePorts(),
+      withholdTranscriptPaths: false,
       sessionRegistry,
       bindingStore: new SessionBindingStore(sessionStore),
       transcriptDiscovery: new TranscriptDiscovery({
@@ -175,6 +181,11 @@ describe('createSessionHandlers, driven by the harness (#1163)', () => {
     });
 
     createSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      profileOfSession: noRecord,
+      visibleLivePorts: () => new SessionRegistryFile(tmpDir).getLivePorts(),
+      withholdTranscriptPaths: false,
       sessionRegistry,
       bindingStore: new SessionBindingStore(sessionStore),
       transcriptDiscovery: new TranscriptDiscovery({

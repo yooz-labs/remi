@@ -361,9 +361,10 @@ export class SessionRegistryFile {
     basePort: number,
     range: number,
     bindHost: string,
+    reservedPorts: readonly number[] = [],
   ): Promise<number | null> {
     const live = this.listLive();
-    const usedPorts = new Set(live.map((e) => e.wsPort));
+    const usedPorts = new Set([...live.map((e) => e.wsPort), ...reservedPorts]);
     return findAvailableTcpPort(basePort, range, usedPorts, bindHost);
   }
 

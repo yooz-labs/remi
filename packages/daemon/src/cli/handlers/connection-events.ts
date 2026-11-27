@@ -136,11 +136,15 @@ export function createConnectionHandlers(deps: ConnectionHandlerDeps) {
    * (#539, #1179, #1237); `createHelloAck` adds the protocol version.
    */
   const ack = (connectionId: UUID, sessionId: UUID | null, options: CreateHelloAckOptions = {}) => {
+    const current = currentOwnedSession();
     return createConnectionHello(
       { ...deps, capabilities, harnesses, remiVersion },
       connectionId,
       sessionId,
-      options,
+      {
+        ...options,
+        ...(current?.sessionId === sessionId && current.profile && { profile: current.profile }),
+      },
     );
   };
 

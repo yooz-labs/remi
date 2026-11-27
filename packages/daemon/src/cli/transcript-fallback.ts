@@ -40,6 +40,7 @@ export interface TranscriptFallbackDeps {
   sessionRegistry: SessionRegistry;
   transcriptDiscovery: TranscriptDiscovery;
   transcriptWatchers: Map<UUID, TranscriptWatcher>;
+  onQueuedCommand?: (sessionId: UUID, prompt: string, timestamp: unknown, uuid: string) => void;
   transcriptFallbackTimers: Map<UUID, ReturnType<typeof setInterval>>;
   /** Override for tests. Defaults to 2000ms. */
   pollIntervalMs?: number;
@@ -132,7 +133,10 @@ export function startTranscriptFallback(
           `[Fallback] Bound transcript appeared: ${expectedPath} (claude=${claudeSessionId.slice(0, 8)})`,
         );
         startTranscriptWatcher(
-          { transcriptWatchers },
+          {
+            transcriptWatchers,
+            ...(deps.onQueuedCommand && { onQueuedCommand: deps.onQueuedCommand }),
+          },
           sessionId,
           expectedPath,
           messageApi,

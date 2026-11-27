@@ -19,6 +19,8 @@ import { MESSAGE_DIRECTION } from '../src/protocol.ts';
 
 /** The Independent golden types: original #895 list plus explicit R3/R5/R6 additions. */
 const GOLDEN_TYPES = [
+  'session_profiles_request',
+  'session_profiles_response',
   'session_terminal_open',
   'session_terminal_opened',
   'session_terminal_read',
@@ -114,15 +116,16 @@ const GOLDEN_TYPES = [
   'relay_device_revoke_response',
   'recent_repositories_request', // #1236 phase C
   'recent_repositories_response', // #1236 phase C
+  'user_input_result', // #1818
 ] as const;
 
 describe('protocol registry golden equality (#895)', () => {
-  test('GOLDEN_TYPES has exactly 93 entries with no duplicates', () => {
-    expect(GOLDEN_TYPES.length).toBe(93);
-    expect(new Set(GOLDEN_TYPES).size).toBe(93);
+  test('GOLDEN_TYPES has exactly 96 entries with no duplicates', () => {
+    expect(GOLDEN_TYPES.length).toBe(96);
+    expect(new Set(GOLDEN_TYPES).size).toBe(96);
   });
 
-  test('MESSAGE_DIRECTION keys are exactly the golden 93 types, no more, no fewer', () => {
+  test('MESSAGE_DIRECTION keys are exactly the golden 96 types, no more, no fewer', () => {
     const registryTypes = Object.keys(MESSAGE_DIRECTION).sort();
     const golden = [...GOLDEN_TYPES].sort();
     expect(registryTypes).toEqual(golden);
@@ -152,6 +155,7 @@ describe('protocol registry golden equality (#895)', () => {
    * UNKNOWN_MESSAGE.
    */
   const INBOUND_ROUTED = [
+    'session_profiles_request',
     // Registered syntax, deliberately unavailable until runtime adoption (#1612).
     'session_terminal_open',
     'session_terminal_read',

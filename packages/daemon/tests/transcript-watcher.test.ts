@@ -67,6 +67,117 @@ afterEach(() => {
 });
 
 describe('TranscriptWatcher', () => {
+  test('a force read while waiting for a file cannot turn replay into a live append', async () => {
+    const filePath = path.join(TEMP_DIR, 'waiting-replay.jsonl');
+    const arrivals: boolean[] = [];
+    const watcher = new TranscriptWatcher(
+      { filePath, readExisting: true, pollIntervalMs: 50 },
+      {
+        onUserMessage: (_entry, liveAppend) => arrivals.push(liveAppend),
+      },
+    );
+    await watcher.start();
+    fs.writeFileSync(filePath, `${JSON.stringify(makeUserEntry('earlier', 'waiting'))}\n`);
+    await watcher.forceRead();
+    expect(arrivals).toEqual([]);
+    for (let i = 0; i < 100 && !watcher.isTailing; i++) await Bun.sleep(10);
+    expect(watcher.isTailing).toBe(true);
+    expect(arrivals).toEqual([false]);
+    watcher.stop();
+  });
+
+  test('a replayed partial line remains replay when completed during the live tail', async () => {
+    const filePath = createTempFile('partial-replay.jsonl');
+    const line = JSON.stringify(makeUserEntry('earlier', 'partial'));
+    fs.writeFileSync(filePath, line.slice(0, -1));
+    const arrivals: boolean[] = [];
+    const watcher = new TranscriptWatcher(
+      { filePath, readExisting: true },
+      {
+        onUserMessage: (_entry, liveAppend) => arrivals.push(liveAppend),
+      },
+    );
+    await watcher.start();
+    fs.appendFileSync(filePath, `${line.slice(-1)}\n`);
+    await watcher.forceRead();
+    appendLine(filePath, makeUserEntry('later', 'live'));
+    await watcher.forceRead();
+    expect(arrivals).toEqual([false, true]);
+    watcher.stop();
+  });
+
+  test('human queued prompts appear once in transcript order', async () => {
+    const filePath = createTempFile('queued.jsonl');
+    const attachment = {
+      type: 'queued_command',
+      prompt: 'continue',
+      source_uuid: 'source',
+      delivery_id: 'delivery',
+      commandMode: 'prompt',
+      origin: { kind: 'human' },
+      timestamp: '2026-11-27T12:00:00.000Z',
+      humanTurn: true,
+    };
+    appendLine(filePath, makeUserEntry('before', 'before'));
+    appendLine(filePath, {
+      type: 'queue-operation',
+      operation: 'enqueue',
+      timestamp: '2026-11-27T12:00:00.000Z',
+    });
+    appendLine(filePath, {
+      type: 'attachment',
+      uuid: 'queued',
+      sessionId: 'test-session',
+      timestamp: '2026-11-27T12:00:01.000Z',
+      attachment,
+    });
+    appendLine(filePath, {
+      type: 'queue-operation',
+      operation: 'remove',
+      reason: 'absorbed_mid_turn',
+      commandUuid: 'source',
+      deliveryId: 'delivery',
+    });
+    for (const variant of [
+      { ...attachment, origin: { kind: 'agent' } },
+      { ...attachment, commandMode: 'bash' },
+      { ...attachment, prompt: '' },
+      { ...attachment, prompt: 42 },
+      { ...attachment, type: 'other' },
+    ])
+      appendLine(filePath, { type: 'attachment', uuid: crypto.randomUUID(), attachment: variant });
+    appendLine(filePath, makeUserEntry('after', 'after'));
+    const watcher = new TranscriptWatcher({ filePath, readExisting: true });
+    await watcher.start();
+    expect(watcher.getUserMessages().map((entry) => [entry.uuid, entry.message.content])).toEqual([
+      ['before', 'before'],
+      ['queued', 'continue'],
+      ['after', 'after'],
+    ]);
+    expect(watcher.getUserMessages()[1]?.timestamp).toBe('2026-11-27T12:00:01.000Z');
+    watcher.stop();
+  });
+
+  test('queued prompts require a UUID and fall back to the attachment timestamp', async () => {
+    const filePath = createTempFile('queued-identity.jsonl');
+    const attachment = {
+      type: 'queued_command',
+      commandMode: 'prompt',
+      origin: { kind: 'human' },
+      prompt: 'continue',
+      timestamp: '2026-11-27T12:00:00.000Z',
+    };
+    appendLine(filePath, { type: 'attachment', attachment });
+    appendLine(filePath, { type: 'attachment', uuid: 123, attachment });
+    appendLine(filePath, { type: 'attachment', uuid: 'with-id', attachment });
+    const watcher = new TranscriptWatcher({ filePath, readExisting: true });
+    await watcher.start();
+    expect(watcher.getUserMessages().map((entry) => [entry.uuid, entry.timestamp])).toEqual([
+      ['with-id', '2026-11-27T12:00:00.000Z'],
+    ]);
+    watcher.stop();
+  });
+
   test('reads existing entries on start', async () => {
     const filePath = createTempFile('existing.jsonl');
     appendLine(filePath, makeUserEntry('hello'));

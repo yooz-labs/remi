@@ -12,11 +12,13 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ProtocolMessage, UUID } from '@remi/shared';
+import { ProfileRefusedError } from '../../../src/cli/daemon-manager.ts';
 import { createCreateSessionHandlers } from '../../../src/cli/handlers/create-session-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../../src/cli/logger.ts';
 import { validateClaudeRemoteArgs } from '../../../src/harness/claude-args.ts';
 import { HarnessRegistry } from '../../../src/harness/registry.ts';
 import { SessionRegistryFile } from '../../../src/session/session-registry-file.ts';
+import { emptySidecar, noProfiles, noResumeOwner } from '../../helpers/no-profiles-policy.ts';
 
 const CID = 'conn0000-0000-0000-0000-000000000000' as UUID;
 const REQ = 'req00000-0000-0000-0000-000000000000' as UUID;
@@ -52,6 +54,9 @@ describe('startSession (#1129)', () => {
 
   const handlers = (options: { port?: number | null } = {}) =>
     createCreateSessionHandlers({
+      profiles: noProfiles,
+      sidecar: emptySidecar,
+      resumeOwner: noResumeOwner,
       harnesses: new HarnessRegistry({
         claude: {
           command: 'claude',
@@ -148,6 +153,17 @@ describe('startSession (#1129)', () => {
       ok: false,
       error: "The session could not be started on the host; the host's remi log has the reason.",
     });
+  });
+
+  test('a profile refusal has a safe profile-specific error', async () => {
+    spawnError = new ProfileRefusedError();
+    await handlers().onCreateSessionRequest(CID, dir, REQ);
+    expect(sent[0]).toMatchObject({
+      type: 'create_session_response',
+      success: false,
+      error: "The session's profile could not start. Run remi profile ls on the machine.",
+    });
+    expect(sent[0]).not.toHaveProperty('errorCode');
   });
 
   test('a create request answers with the same outcome', async () => {

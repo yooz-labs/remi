@@ -7,6 +7,7 @@ import { makeCurrentSessionResolver } from '../../src/cli/current-session.ts';
 import { ClaudeHarness } from '../../src/harness/index.ts';
 import { SessionStore } from '../../src/session/session-store.ts';
 import { TranscriptDiscovery } from '../../src/transcript/transcript-discovery.ts';
+import { emptySidecar, noProfiles } from '../helpers/no-profiles-policy.ts';
 
 let tmpDir: string;
 let projectsDir: string;
@@ -31,6 +32,9 @@ afterEach(() => {
 
 function resolver(primary: UUID | null) {
   return makeCurrentSessionResolver({
+    profiles: noProfiles,
+    sidecar: emptySidecar,
+    withholdTranscriptPath: false,
     getPrimarySessionId: () => primary,
     sessionStore,
     harness: new ClaudeHarness(transcriptDiscovery),
@@ -93,6 +97,9 @@ test('claude id present but no stored record -> null binding (sessionId still re
 // understands, otherwise the daemon's own harness with no session id, never a guess at Claude.
 function resolverFor(harnessId: 'claude' | 'codex') {
   return makeCurrentSessionResolver({
+    profiles: noProfiles,
+    sidecar: emptySidecar,
+    withholdTranscriptPath: false,
     getPrimarySessionId: () => REMI,
     sessionStore,
     harness: new ClaudeHarness(transcriptDiscovery),

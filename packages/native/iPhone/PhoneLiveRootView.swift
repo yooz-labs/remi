@@ -776,13 +776,7 @@ struct PhoneLiveRootView: View {
 
     private func pendingEntries(machineID: String, sessionID: String) -> [RemiTranscriptEntry] {
         store.outgoingMessages(machineID: machineID, sessionID: sessionID).map {
-            let state: RemiOutgoingState = switch $0.delivery {
-            case .sending: .sending
-            case .handedOff: .handedOff
-            case .refused: .refused
-            case .uncertain: .uncertain
-            }
-            return RemiTranscriptEntry.pending(id: $0.presentationID, text: $0.content, state: state)
+            RemiTranscriptEntry(outgoing: $0)
         }
     }
 

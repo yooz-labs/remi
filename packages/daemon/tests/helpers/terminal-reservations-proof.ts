@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { withInterprocessFileLockNonblocking } from '../../src/storage/interprocess-file-lock.ts';
 import { TerminalReservationError, TerminalReservations } from '../../src/terminal/reservations.ts';
+import { publishReadyFile } from './publish-ready-file.ts';
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(condition: () => boolean): Promise<void> {
@@ -73,7 +74,7 @@ export async function runTerminalReservationChild(args: readonly string[]): Prom
     }
     await delay(2);
   }
-  fs.writeFileSync(`${prefix}.ready`, JSON.stringify({ pid: process.pid, ids }));
+  publishReadyFile(`${prefix}.ready`, { pid: process.pid, ids });
   await until(() => fs.existsSync(`${prefix}.go`));
   // Intentional process exit without release: the parent must prove death before reclaiming RAM charge.
 }

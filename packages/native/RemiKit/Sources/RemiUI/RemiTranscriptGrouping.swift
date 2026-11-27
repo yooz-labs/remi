@@ -49,6 +49,20 @@ public enum RemiTranscriptRow: Identifiable, Equatable, Sendable {
     }
 }
 
+/// A single visible item in the transcript's lazy stack.
+public enum RemiTranscriptDisplayRow: Identifiable, Equatable, Sendable {
+    case entry(RemiTranscriptEntry)
+    case groupHeader(RemiToolGroup, isExpanded: Bool)
+    case groupMember(RemiTranscriptEntry)
+
+    public var id: String {
+        switch self {
+        case .entry(let entry), .groupMember(let entry): entry.id
+        case .groupHeader(let group, _): group.id
+        }
+    }
+}
+
 /// What `RemiTranscriptGrouping.rows` depends on, so a screen regroups only when it changes.
 public struct RemiTranscriptGroupingInput: Equatable, Sendable {
     public let entries: [RemiTranscriptEntry]
@@ -69,6 +83,23 @@ public enum RemiTranscriptGrouping {
     public static let minimumRun = 3
     /// The most tool names the subtitle lists before "+N more".
     public static let maximumNamedTools = 3
+
+    /// Flattens expanded groups so every lazy-stack element produces one view.
+    public static func displayRows(
+        for rows: [RemiTranscriptRow],
+        expanded expandedEntryIDs: Set<String>
+    ) -> [RemiTranscriptDisplayRow] {
+        rows.flatMap { row -> [RemiTranscriptDisplayRow] in
+            switch row {
+            case .entry(let entry):
+                return [.entry(entry)]
+            case .toolGroup(let group):
+                let open = isExpanded(group, in: expandedEntryIDs)
+                return [.groupHeader(group, isExpanded: open)]
+                    + (open ? group.entries.map(RemiTranscriptDisplayRow.groupMember) : [])
+            }
+        }
+    }
 
     /// Groups each run of `minimumRun` or more consecutive tool entries.
     ///

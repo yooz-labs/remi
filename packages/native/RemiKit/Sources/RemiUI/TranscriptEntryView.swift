@@ -344,21 +344,18 @@ public struct RemiTranscriptRowsView<EntryContent: View>: View {
     }
 
     public var body: some View {
-        ForEach(rows) { row in
-            switch row {
-            case .entry(let transcriptEntry):
-                entry(transcriptEntry)
-            case .toolGroup(let group):
-                let isExpanded = RemiTranscriptGrouping.isExpanded(group, in: expandedEntryIDs)
-                RemiToolGroupHeader(group: group, isExpanded: isExpanded) {
-                    let toggle = { expandedEntryIDs = RemiTranscriptGrouping.toggled(group, in: expandedEntryIDs) }
-                    if reduceMotion { toggle() } else { withAnimation(RemiTheme.Motion.standard, toggle) }
-                }
-                .id(group.id)
-                if isExpanded {
-                    ForEach(group.entries) { grouped in
-                        entry(grouped).padding(.leading, RemiTheme.Spacing.m)
+        ForEach(RemiTranscriptGrouping.displayRows(for: rows, expanded: expandedEntryIDs)) { row in
+            VStack(alignment: .leading, spacing: 0) {
+                switch row {
+                case .entry(let transcriptEntry):
+                    entry(transcriptEntry)
+                case .groupHeader(let group, let isExpanded):
+                    RemiToolGroupHeader(group: group, isExpanded: isExpanded) {
+                        let toggle = { expandedEntryIDs = RemiTranscriptGrouping.toggled(group, in: expandedEntryIDs) }
+                        if reduceMotion { toggle() } else { withAnimation(RemiTheme.Motion.standard, toggle) }
                     }
+                case .groupMember(let grouped):
+                    entry(grouped).padding(.leading, RemiTheme.Spacing.m)
                 }
             }
         }

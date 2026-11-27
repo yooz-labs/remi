@@ -47,8 +47,25 @@ import type { Subcommand } from './arg-parser.ts';
 
 /** `~/.remi/config.toml`, or the real path under `REMI_HOME` (#1126). */
 const CONFIG_HINT = configPathForDisplay();
+export const PROFILE_USAGE = 'Usage: remi profile ls | add <id> | show <id> | login <id>';
 
 const commandHelp: Record<Subcommand, string[]> = {
+  profile: [
+    'Manage account profiles.',
+    '',
+    bold('Usage:'),
+    entry('remi profile ls', 'List profiles and sign-in states'),
+    entry('remi profile add <id> --label <text>', 'Add a profile'),
+    entry('remi profile show <id>', 'Show a profile and warnings'),
+    entry('remi profile login <id>', 'Sign in interactively'),
+    '',
+    bold('Options:'),
+    entry('--claude, --codex', 'Select harnesses to add'),
+    entry('--expects subscription|api_key', 'Expected sign-in type'),
+    entry('--claude-dir PATH', 'Adopt an existing Claude directory'),
+    entry('--codex-dir PATH', 'Adopt an existing Codex directory'),
+    entry('--harness claude|codex', 'Choose the harness for login'),
+  ],
   devices: [
     'Usage: remi devices [revoke <exact fingerprint>]',
     'List relay devices or revoke authorization and request acknowledged Worker removal.',
@@ -114,6 +131,7 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('--host HOST', 'Create session on remote daemon'),
     entry('--port PORT', 'Remote daemon port'),
     entry('--harness ID', 'Override [harness] default: claude or codex'),
+    entry('--remi-profile ID', 'Select a local account profile'),
     '',
     dim('  With --host only the words after `--` are sent, and a loose word is refused (exit 2).'),
     dim('  A remi that lists the harness applies them after checking them against its own list'),
@@ -223,6 +241,8 @@ const commandHelp: Record<Subcommand, string[]> = {
     entry('remi config init', 'Create default config file'),
     entry('remi config path', 'Show config file path'),
     '',
+    dim('  Local sessions start the hub by default; set daemon.hub_auto_start = false to disable.'),
+    dim('  REMI_HUB_AUTOSTART=0 also disables automatic hub startup.'),
     dim('  Config file provides defaults. CLI flags and env vars take precedence.'),
   ],
   code: [
@@ -283,7 +303,7 @@ const commandHelp: Record<Subcommand, string[]> = {
     dim('  in the app. Create sessions from the app or with `remi new`.'),
     '',
     bold('Usage:'),
-    entry('remi start', 'Start hub (prefers port 18765)'),
+    entry('remi start', 'Start hub (default port range: 18765–18784)'),
     entry('remi start --port 9000', 'Start on specific port'),
     '',
     bold('Options:'),
@@ -362,7 +382,14 @@ const commandHelp: Record<Subcommand, string[]> = {
     bold('Usage:'),
     entry('remi pair', 'Show a pairing QR for the running hub, then approve or reject the phone'),
     entry('remi pair --host <address>', 'Show this address in the code (a LAN or VPN address)'),
-    entry('remi pair --qr-version 2', 'Opt in to a QR with up to four direct address candidates'),
+    entry(
+      'remi pair --qr-version 1',
+      'Use a one-address code; the default is version 2, with up to four candidates',
+    ),
+    entry(
+      'remi pair --qr-version 2',
+      'Require version 2; fail instead of falling back to version 1',
+    ),
     entry(
       'remi pair --relay',
       'Pair a relay device through an authenticated hub started with --relay',
@@ -374,7 +401,9 @@ const commandHelp: Record<Subcommand, string[]> = {
     'fingerprint. Without a terminal, use remi keys and remi authorize.',
     'Relay pairing needs a local terminal and an authenticated hub started with --relay;',
     'it does not require a phone-reachable daemon.bind.',
-    'Version 1 remains the default; version 2 is opt-in and cannot be combined with --relay.',
+    'The code is version 2 by default. If a version 2 code cannot carry the address, remi pair says so',
+    'and shows a version 1 code; an explicit --qr-version 2 does not fall back. --qr-version cannot',
+    'be combined with --relay.',
     'No released app scans the code yet (#1283).',
   ],
   keys: [
@@ -461,6 +490,7 @@ export function formatHelp(version: string): string {
     entry('remi --sessions exited', 'List exited sessions only'),
     '',
     bold('Configuration:'),
+    entry('remi profile ls|add|show|login', 'Manage account profiles'),
     entry('remi config', 'Show effective configuration'),
     entry('remi config init', 'Create default config file'),
     entry('remi reload', 'Hot-reload config on running daemons'),
@@ -484,9 +514,10 @@ export function formatHelp(version: string): string {
     entry('remi import-key [file]', 'Import identity from file or stdin'),
     '',
     bold('Options:'),
-    entry('--port PORT', 'WebSocket port (default: 18765, env: REMI_PORT)'),
+    entry('--port PORT', 'WebSocket port (default: 18765; hub base port reserved; env: REMI_PORT)'),
     entry('--host HOST', 'Remote daemon host (default: localhost)'),
     entry('--harness ID', 'Override session default: claude or codex'),
+    entry('--remi-profile ID', 'Select a local account profile'),
     entry('--bind HOST', 'Bind address (default: 127.0.0.1, loopback only)'),
     entry('--local', 'Localhost-only mode'),
     entry('--auth / --no-auth', 'Authentication control'),
@@ -503,6 +534,7 @@ export function formatHelp(version: string): string {
     entry('--help, -h', 'Show this help'),
     '',
     dim('  Environment: REMI_PORT, REMI_PASSPHRASE, REMI_PUSH_SECRET, REMI_MAX_BULLET_LENGTH'),
+    dim('  REMI_HUB_AUTOSTART=0 disables automatic hub startup.'),
     dim('  Set [harness] default = "codex" in config to use Codex for plain remi/new.'),
     dim('  Unrecognized flags are passed through to the selected harness.'),
     dim("  remi codex: the words after -- are Codex's first prompt, not flags."),

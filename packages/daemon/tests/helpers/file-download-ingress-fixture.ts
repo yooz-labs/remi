@@ -33,6 +33,7 @@ import { FileDownloadService } from '../../src/tunnel/file-download-service.ts';
 import { Reservations } from '../../src/tunnel/reservations.ts';
 import { relayMachineFixture, until } from './browser-link-service-fixture.ts';
 import { directTlsFixture } from './direct-tls-fixture.ts';
+import { emptySidecar, noProfiles, noRecord } from './no-profiles-policy.ts';
 export { until };
 export interface FileDownloadIngressResources {
   readonly files: ReturnType<typeof directTlsFixture>;
@@ -179,6 +180,10 @@ export async function makeFileDownloadIngressFixture(
           onSessionListRequest(id: string, requestId: string, includeExternal: boolean) {
             const { own, external } = buildSessionList(
               {
+                profiles: noProfiles,
+                sidecar: emptySidecar,
+                profileOfSession: noRecord,
+                withholdTranscriptPaths: false,
                 sessionRegistry: registry,
                 bindingStore: bindings,
                 transcriptDiscovery,

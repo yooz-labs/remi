@@ -38,9 +38,11 @@ struct SessionScreen: View {
     @State private var reviewState = RemiTranscriptReviewState()
     @State private var reviewMemory = RemiConversationReviewMemory()
     @State private var visibleEntryID: String?
+    @State private var lastVisibleEntryID: String?
     @State private var expandedEntryIDs: Set<String> = []
     @State private var transcriptRows: [RemiTranscriptRow] = []
     @State private var followsLatest: Bool
+    @State private var atLatest = true
     @State private var latestScrollRequest = 0
     @State private var reviewSessionID: String
     @AccessibilityFocusState private var accessibilityQuestionID: String?
@@ -242,22 +244,44 @@ struct SessionScreen: View {
                             ForEach(remainingQuestions) { question in
                                 questionCard(question)
                             }
+                            Color.clear.frame(height: 1)
+                                .padding(.bottom, RemiTheme.Spacing.m)
+                                .id(RemiTranscriptScrollTarget.latest)
                         }
-                        .padding(RemiTheme.Spacing.m)
+                        .padding([.horizontal, .top], RemiTheme.Spacing.m)
                         .scrollTargetLayout()
                         .remiReadableScrollColumn()
-                        .id(RemiTranscriptScrollTarget.latest)
                     }
-                    .modifier(RemiTranscriptScrollBehavior(followsLatest: $followsLatest,
+                    .modifier(RemiTranscriptScrollBehavior(followsLatest: followBinding, atLatest: $atLatest,
                         isReviewing: isSearchPresented || focusedQuestionID != nil,
                         onFollow: { scrollToLatest(using: proxy) }))
-                    .scrollPosition(id: $visibleEntryID, anchor: .top)
+                    // Do not let the saved top row compete with a jump to the tail (#1824).
+                    .scrollPosition(id: RemiScrollPositionPolicy.effectiveBinding(
+                        followsLatest: followsLatest, following: trackingPositionBinding, review: $visibleEntryID), anchor: .top)
+                    .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.001) { ids in
+                        let visible = Set(ids)
+                        if let row = orderedScrollTargetIDs.first(where: { visible.contains($0) }) {
+                            lastVisibleEntryID = row
+                        }
+                    }
+                    .onChange(of: visibleEntryID) { _, row in
+                        if let row { lastVisibleEntryID = row }
+                    }
+                    .onChange(of: followsLatest, initial: true) { _, following in
+                        if following {
+                            visibleEntryID = RemiScrollPositionPolicy.positionAfterFollowChange(
+                                followsLatest: true, visibleEntryID: visibleEntryID, lastVisibleEntryID: lastVisibleEntryID)
+                        }
+                    }
                     // A tap on the transcript puts the composer's keyboard away; the draft stays.
                     // It asks the composer to let go, so a tap that lands on another text field
                     // (a question's free-text answer) does not fight that field for focus.
                     .simultaneousGesture(TapGesture().onEnded { composerDismissRequest += 1 })
                     .modifier(SessionNavigationBarBehavior())
-                    .onAppear { focusQuestion(using: proxy) }
+                    .onAppear {
+                        focusQuestion(using: proxy)
+                        scrollToLatest(using: proxy)
+                    }
                     .onChange(of: questions.map(\.questionID)) { _, questionIDs in
                         focusState.questionsChanged(questionIDs)
                         if focusedQuestionID != nil {
@@ -281,9 +305,10 @@ struct SessionScreen: View {
                         reviewState.refresh(entries: entries)
                         if previous.last?.id != entries.last?.id { scrollToLatest(using: proxy) }
                     }
-                    .onChange(of: latestScrollRequest) { _, _ in scrollToLatest(using: proxy) }
+                    .onChange(of: latestScrollRequest) { _, _ in scheduleScrollToLatest(using: proxy) }
                     .onChange(of: groupingInput, initial: true) { _, input in
                         transcriptRows = input.rows
+                        scheduleScrollToLatest(using: proxy)
                     }
                 }
             }
@@ -292,6 +317,8 @@ struct SessionScreen: View {
         .remiSessionInteractionBar(
             draft: $draft,
             state: interactionState,
+            atLatest: atLatest,
+            onJumpToLatest: jumpToLatestActivity,
             onSend: onSend,
             onInterrupt: nil
         )
@@ -366,6 +393,7 @@ struct SessionScreen: View {
             reviewMemory.reset()
             resetReview()
             visibleEntryID = nil
+            lastVisibleEntryID = nil
             followsLatest = true
             latestScrollRequest += 1
             if selectedViewID.isEmpty {
@@ -407,7 +435,7 @@ struct SessionScreen: View {
 
     private var searchButton: some View {
         Button("Search conversation", systemImage: "magnifyingglass") {
-            followsLatest = false
+            stopFollowing()
             isSearchPresented = true
             searchFocusRequest += 1
         }
@@ -444,14 +472,16 @@ struct SessionScreen: View {
     }
 
     private var latestActivityButton: some View {
-        Button("Jump to latest activity", systemImage: "arrow.down.to.line") {
-            focusState.clear()
-            accessibilityQuestionID = nil
-            resetReview()
-            followsLatest = true
-            latestScrollRequest += 1
-        }
-        .disabled(latestActivityID == nil || followsLatest)
+        Button("Jump to latest activity", systemImage: "arrow.down.to.line", action: jumpToLatestActivity)
+            .disabled(latestActivityID == nil || atLatest)
+    }
+
+    private func jumpToLatestActivity() {
+        focusState.clear()
+        accessibilityQuestionID = nil
+        resetReview()
+        followsLatest = true
+        latestScrollRequest += 1
     }
 
     /// The entries the transcript groups and the ones it must keep visible (search matches).
@@ -521,7 +551,7 @@ struct SessionScreen: View {
         guard let focusedQuestionID,
               questions.contains(where: { $0.questionID == focusedQuestionID })
         else { return }
-        followsLatest = false
+        stopFollowing()
         withAnimation(.easeInOut(duration: 0.25)) {
             proxy.scrollTo(focusedQuestionID, anchor: .center)
         }
@@ -530,14 +560,14 @@ struct SessionScreen: View {
 
     private func scrollToSearchResult(_ entryID: String?, using proxy: ScrollViewProxy) {
         guard let entryID else { return }
-        followsLatest = false
+        stopFollowing()
         withAnimation(.easeInOut(duration: 0.2)) {
             proxy.scrollTo(displayRowID(entryID), anchor: .center)
         }
     }
 
     private func closeSearch() {
-        followsLatest = false
+        stopFollowing()
         isSearchPresented = false
         reviewState.reset()
     }
@@ -551,15 +581,37 @@ struct SessionScreen: View {
         viewID.isEmpty ? session.id : viewID
     }
 
+    // While following, SwiftUI may report the visible target but must not receive a
+    // position to restore: that would compete with scrolling to the tail.
+    private var trackingPositionBinding: Binding<String?> {
+        Binding(get: { nil }, set: { row in
+            if let row { lastVisibleEntryID = row }
+        })
+    }
+
+    private var followBinding: Binding<Bool> {
+        Binding(get: { followsLatest }, set: { following in
+            if following { followsLatest = true } else { stopFollowing() }
+        })
+    }
+
+    private func stopFollowing() {
+        guard followsLatest else { return }
+        visibleEntryID = RemiScrollPositionPolicy.positionAfterFollowChange(
+            followsLatest: false, visibleEntryID: visibleEntryID, lastVisibleEntryID: lastVisibleEntryID)
+        followsLatest = false
+    }
+
+    private var orderedScrollTargetIDs: [String] {
+        focusedQuestions.map(\.questionID)
+            + RemiTranscriptGrouping.displayRows(for: transcriptRows, expanded: expandedEntryIDs).map(\.id)
+            + remainingQuestions.map(\.questionID)
+    }
+
     private func preserveReview(for conversationID: String) {
-        reviewMemory.save(
-            RemiConversationReviewSnapshot(
-                reviewState: reviewState,
-                visibleEntryID: visibleEntryID,
-                isSearchPresented: isSearchPresented
-            ),
-            for: conversationID
-        )
+        RemiScrollPositionPolicy.saveReview(in: &reviewMemory, for: conversationID,
+            reviewState: reviewState, visibleEntryID: visibleEntryID,
+            followsLatest: followsLatest, isSearchPresented: isSearchPresented)
     }
 
     private func restoreReview(for conversationID: String) {
@@ -574,9 +626,17 @@ struct SessionScreen: View {
         visibleEntryID = snapshot.visibleEntryID.map {
             RemiTranscriptGrouping.rowID(for: $0, in: restoredRows, expanded: expandedEntryIDs) ?? $0
         }
+        lastVisibleEntryID = visibleEntryID
         isSearchPresented = snapshot.isSearchPresented
         followsLatest = snapshot.visibleEntryID == nil && !snapshot.isSearchPresented
         if followsLatest { latestScrollRequest += 1 }
+    }
+
+    private func scheduleScrollToLatest(using proxy: ScrollViewProxy) {
+        Task { @MainActor in
+            await Task.yield()
+            scrollToLatest(using: proxy)
+        }
     }
 
     private func scrollToLatest(using proxy: ScrollViewProxy) {

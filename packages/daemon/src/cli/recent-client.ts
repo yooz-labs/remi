@@ -26,11 +26,16 @@ import { formatAge } from './ls-client.ts';
  * Collect the N most-recent project directories from the SessionStore,
  * with session counts and display names derived from the path basename.
  */
-export function getRecentDirectories(store: SessionStore, limit: number): RecentDirectory[] {
+export function getRecentDirectories(
+  store: SessionStore,
+  limit: number,
+  include: (session: ReturnType<SessionStore['list']>[number]) => boolean = () => true,
+): RecentDirectory[] {
   const sessions = store.list();
   const dirMap = new Map<string, { count: number; lastUsed: string }>();
 
   for (const s of sessions) {
+    if (!include(s)) continue;
     const dir = s.projectPath;
     const existing = dirMap.get(dir);
     if (existing) {
