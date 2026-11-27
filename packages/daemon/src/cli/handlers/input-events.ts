@@ -39,6 +39,7 @@ import {
 import type { ManagedSession, SessionBindingStore, SessionRegistry } from '../../session/index.ts';
 import { traceQuestionEvent } from '../../session/question-trace.ts';
 import { log, logError } from '../logger.ts';
+import type { ChatAcceptanceTracker } from './chat-acceptance.ts';
 import type { PromptUp } from './prompt-up.ts';
 import { ResolvedAnswerCache, answerCacheKey } from './resolved-answer-cache.ts';
 import type { SendToConnection } from './trivial-events.ts';
@@ -116,6 +117,12 @@ export interface InputHandlerDeps {
    * before.
    */
   acceptsTypedChat?: (sessionId: UUID) => boolean | undefined;
+  /**
+   * Remembers a chat message once its text and Enter are typed, so Claude's own
+   * `UserPromptSubmit` hook can confirm it to the sender (#1818). Absent (no hook
+   * server, another harness, tests) means no confirmation is ever sent.
+   */
+  chatAcceptance?: Pick<ChatAcceptanceTracker, 'record'>;
   /**
    * Cross-client question dismissal (#585, P7). Called after a question is
    * answered here so the daemon broadcasts `question_resolved` to every client and
@@ -596,6 +603,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
     onTerminalEscape,
     promptUp,
     acceptsTypedChat,
+    chatAcceptance,
     onQuestionResolved,
     isPromptCurrent,
     isPromptObservedOnPTY,
@@ -1491,7 +1499,9 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       }
       const pty = session.pty;
       let inputMayBePartial = false;
+      let refused = false;
       const refuse = (code: string, reason: string, bound?: string): false => {
+        refused = true;
         send(
           connectionId,
           createError(
@@ -1549,6 +1559,17 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           inputMayBePartial = true;
           return true;
         });
+        // The text and its Enter were written (a refused guard writes nothing more and has
+        // already told the sender). Claude's UserPromptSubmit hook can only arrive after this
+        // point: it needs the Enter just written, and an I/O event cannot run before this
+        // microtask continues (#1818).
+        if (!refused && messageId !== undefined) {
+          try {
+            chatAcceptance?.record(session.sessionId, messageId, content, connectionId);
+          } catch (err) {
+            logError(`[Input] chat acceptance bookkeeping failed: ${errorToString(err)}`);
+          }
+        }
       } catch (err) {
         log(`[PTY] structured write failed: ${errorToString(err)}`);
         refuse('INPUT_NOT_DELIVERED', 'Input was not submitted because the terminal write failed.');

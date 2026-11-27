@@ -1,0 +1,8 @@
+{
+  "type": "hello",
+  "id": "f6bcb9b5-ebb6-4349-a14d-1ec399b50131",
+  "timestamp": "2026-11-26T21:44:50.306Z",
+  "clientVersion": "1.0.0",
+  "clientId": "fixture-client-id",
+  "clientCapabilities": ["chat_acceptance"]
+}

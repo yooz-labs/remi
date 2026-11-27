@@ -18,6 +18,20 @@ public struct AnswerResultMessage: Decodable, Sendable, Equatable {
     public let outcome: String
 }
 
+/// Claude Code's own report that it submitted the prompt a `user_input` typed (#1818). Positive
+/// only: its absence means unconfirmed, never refused. `messageId` is the `user_input`'s `id`.
+public struct UserInputResultMessage: Decodable, Sendable, Equatable {
+    public let type: String
+    public let id: String
+    public let timestamp: String
+    public let sessionId: String
+    public let messageId: String
+    public let outcome: String
+
+    /// The only outcome the daemon sends today.
+    static let accepted = "accepted"
+}
+
 public struct PingMessage: Decodable, Sendable, Equatable {
     public let type: String
     public let id: String
@@ -50,6 +64,9 @@ public struct HelloMessage: Codable, Sendable, Equatable {
     public let lastReceivedIndex: Int?
     public let mode: String?
     public let deviceId: String?
+    /// Optional pushed features this client understands (#1818). A daemon sends such a message only
+    /// to a connection that listed its capability, so an older hub or daemon never gets one it cannot decode.
+    public let clientCapabilities: [String]?
 
     public init(
         id: String,
@@ -60,7 +77,8 @@ public struct HelloMessage: Codable, Sendable, Equatable {
         resumeSessionId: String? = nil,
         lastReceivedIndex: Int? = nil,
         mode: String? = nil,
-        deviceId: String? = nil
+        deviceId: String? = nil,
+        clientCapabilities: [String]? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -71,6 +89,7 @@ public struct HelloMessage: Codable, Sendable, Equatable {
         self.lastReceivedIndex = lastReceivedIndex
         self.mode = mode
         self.deviceId = deviceId
+        self.clientCapabilities = clientCapabilities
     }
 }
 

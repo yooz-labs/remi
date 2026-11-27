@@ -52,6 +52,27 @@ struct FixtureConformanceTests {
         #expect(message.question.answerPath != nil)
     }
 
+    @Test func userInputResultFixtureDecodes() throws {
+        let message = try JSONDecoder().decode(UserInputResultMessage.self, from: Self.fixture("user_input_result"))
+        #expect(message.type == "user_input_result")
+        #expect(message.sessionId == "fixture-session-id")
+        #expect(message.messageId == "fixture-message-id")
+        #expect(message.outcome == UserInputResultMessage.accepted)
+    }
+
+    @Test func helloAsksForChatAcceptanceInTheFixtureShape() throws {
+        let hello = HelloMessage(id: "i", timestamp: "t", clientVersion: "v", clientId: "c",
+                                 clientCapabilities: [HubCapability.chatAcceptance.rawValue])
+        let sent = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(hello)) as? [String: Any])
+        let golden = try #require(try JSONSerialization.jsonObject(with: Self.fixture("hello_client_capabilities")) as? [String: Any])
+        #expect(sent["clientCapabilities"] as? [String] == golden["clientCapabilities"] as? [String])
+        #expect(sent["clientCapabilities"] as? [String] == ["chat_acceptance"])
+        // A hello that asks for nothing omits the field, as every older client's does.
+        let plain = try #require(try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(HelloMessage(id: "i", timestamp: "t", clientVersion: "v", clientId: "c"))) as? [String: Any])
+        #expect(plain["clientCapabilities"] == nil)
+    }
+
     @Test func resolvedByFixtureDecodes() throws {
         let message = try JSONDecoder().decode(
             QuestionResolvedMessage.self,
