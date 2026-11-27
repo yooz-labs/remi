@@ -1337,7 +1337,7 @@ if (!portExplicitlySet) {
     remiConfig.daemon.base_port,
     remiConfig.daemon.port_range,
     bindHost,
-    serveMode ? [] : [DEFAULT_BASE_PORT],
+    serveMode ? [] : [remiConfig.daemon.base_port],
   );
   if (autoPort === null) {
     const rangeEnd = remiConfig.daemon.base_port + remiConfig.daemon.port_range - 1;
@@ -1347,8 +1347,8 @@ if (!portExplicitlySet) {
   }
   PORT = autoPort;
 }
-if (!serveMode && PORT === DEFAULT_BASE_PORT) {
-  console.error(`Port ${DEFAULT_BASE_PORT} is reserved for the remi hub.`);
+if (!serveMode && PORT === remiConfig.daemon.base_port) {
+  console.error(`Port ${remiConfig.daemon.base_port} is reserved for the remi hub.`);
   process.exit(1);
 }
 // Update per-port status file path now that PORT is finalized
@@ -3681,7 +3681,7 @@ if (cliDaemonMode) {
   // Phase 2: Probe for available WebSocket port, then start
   if (!portExplicitlySet) {
     const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
-    if (!serveMode) liveUsed.add(DEFAULT_BASE_PORT);
+    if (!serveMode) liveUsed.add(remiConfig.daemon.base_port);
     const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed, bindHost);
     if (probed === null) {
       console.error(
@@ -4043,7 +4043,7 @@ if (cliDaemonMode) {
   let wsProbeSucceeded = true;
   if (!portExplicitlySet) {
     const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
-    liveUsed.add(DEFAULT_BASE_PORT);
+    liveUsed.add(remiConfig.daemon.base_port);
     const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed, bindHost);
     if (probed !== null && probed !== PORT) {
       const occupiedPort = PORT;

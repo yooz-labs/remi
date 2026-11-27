@@ -26,6 +26,17 @@ afterEach(async () => {
     if (proc.exitCode === null) proc.kill('SIGKILL');
   }
   for (const home of homes.splice(0)) {
+    const pidFile = path.join(home, '.remi', 'daemon.pid');
+    if (fs.existsSync(pidFile)) {
+      const pid = Number(fs.readFileSync(pidFile, 'utf8').trim());
+      if (Number.isInteger(pid) && pid > 1) {
+        try {
+          process.kill(pid, 'SIGTERM');
+        } catch {
+          /* already exited */
+        }
+      }
+    }
     const status = path.join(home, '.remi', 'daemon-status.json');
     if (fs.existsSync(status)) {
       const hub = JSON.parse(fs.readFileSync(status, 'utf8')) as { pid: number; mode: string };
@@ -65,6 +76,7 @@ function launch(f: Awaited<ReturnType<typeof setup>>, args: string[] = []) {
     stdout: 'pipe',
     stderr: 'pipe',
     stdin: 'ignore',
+    timeout: 25_000,
   });
   processes.push(proc);
   const output = { text: '' };
@@ -101,7 +113,7 @@ test('local session starts one detached hub before its agent', async () => {
   const session = JSON.parse(
     fs.readFileSync(path.join(f.home, '.remi', 'live-sessions', entry), 'utf8'),
   ) as { wsPort: number };
-  expect(session.wsPort).not.toBe(18765);
+  expect(session.wsPort).not.toBe(f.port);
   expect(session.wsPort).not.toBe(status.wsPort);
 }, 25_000);
 
@@ -128,7 +140,11 @@ test('activated secure push changes the session and status warning', async () =>
   const warning =
     'No remi hub is running, so your phone will not get notifications for this session and sees it only by connecting to its port directly. Start the hub with: remi start';
   expect(run.output.text).toContain(warning);
-  const status = Bun.spawnSync([process.execPath, CLI_TS, 'status'], { cwd: f.work, env: f.env });
+  const status = Bun.spawnSync([process.execPath, CLI_TS, 'status'], {
+    cwd: f.work,
+    env: f.env,
+    timeout: 5000,
+  });
   expect(status.stdout.toString()).toContain(warning);
 }, 25_000);
 
@@ -190,16 +206,21 @@ test('management, remote and daemon commands never auto-start a hub', async () =
 
 test('status reports the possible legacy path and the reserved port is refused', async () => {
   const f = await setup('off');
-  const status = Bun.spawnSync([process.execPath, CLI_TS, 'status'], { cwd: f.work, env: f.env });
+  const status = Bun.spawnSync([process.execPath, CLI_TS, 'status'], {
+    cwd: f.work,
+    env: f.env,
+    timeout: 5000,
+  });
   expect(status.stdout.toString()).toContain(
     "No remi hub is running, so your phone may not see this session's questions or get its notifications. Start the hub with: remi start",
   );
-  const reserved = Bun.spawnSync([process.execPath, CLI_TS, '--port', '18765'], {
+  const reserved = Bun.spawnSync([process.execPath, CLI_TS, '--port', String(f.port)], {
     cwd: f.work,
     env: f.env,
+    timeout: 5000,
   });
   expect(reserved.exitCode).not.toBe(0);
-  expect(reserved.stderr.toString()).toContain('Port 18765 is reserved for the remi hub.');
+  expect(reserved.stderr.toString()).toContain(`Port ${f.port} is reserved for the remi hub.`);
   expect(fs.existsSync(path.join(f.home, '.remi', 'daemon.pid'))).toBe(false);
 }, 15_000);
 
@@ -259,6 +280,7 @@ test('a stalled detached launcher times out and reports the warning', async () =
     env: f.env,
     stdout: 'pipe',
     stderr: 'pipe',
+    timeout: 14_000,
   });
   processes.push(proc);
   const [exitCode, stdout, stderr] = await Promise.all([
