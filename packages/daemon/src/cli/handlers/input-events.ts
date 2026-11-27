@@ -119,8 +119,9 @@ export interface InputHandlerDeps {
   acceptsTypedChat?: (sessionId: UUID) => boolean | undefined;
   /**
    * Remembers a chat message once its text and Enter are typed, so Claude's own
-   * hook or queued transcript attachment can confirm it to the sender (#1818, #1838). Absent (no acceptance tracker
-   * server, another harness, tests) means no confirmation is ever sent.
+   * hook or queued transcript attachment can confirm it to the sender (#1818,
+   * #1838). Absent (no acceptance tracker server, another harness, tests) means
+   * no confirmation is ever sent.
    */
   chatAcceptance?: Pick<ChatAcceptanceTracker, 'record' | 'sentTime'>;
   /**
@@ -1565,7 +1566,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         // already told the sender). Claude's acceptance signal can only arrive after this
         // point: it needs the Enter just written, and an I/O event cannot run before this
         // microtask continues (#1818).
-        if (!refused && messageId !== undefined) {
+        if (!refused && messageId !== undefined && sentAt !== undefined) {
           try {
             chatAcceptance?.record(session.sessionId, messageId, content, connectionId, sentAt);
           } catch (err) {

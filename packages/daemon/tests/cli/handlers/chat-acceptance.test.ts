@@ -59,12 +59,40 @@ describe('isTrackableChat', () => {
 });
 
 describe('ChatAcceptanceTracker', () => {
+  test.each([
+    ['UTC Z', '2026-11-27T12:00:01.000Z', true],
+    ['offset', '2026-11-27T14:00:01.000+02:00', true],
+    ['equal to sentAt', '2026-11-27T12:00:00.000Z', true],
+    ['one millisecond before', '2026-11-27T11:59:59.999Z', false],
+    ['no zone', '2026-11-27T12:00:01.000', false],
+    ['non-string', 123, false],
+    ['invalid date', 'not-a-date', false],
+  ])('attachment timestamp %s', (_label, timestamp, expected) => {
+    const { tracker, sent } = setup();
+    tracker.record(SESSION, id(1), 'continue', CONN_A, Date.parse('2026-11-27T12:00:00.000Z'));
+    expect(tracker.queuedCommand(SESSION, 'continue', timestamp, 'timestamp-test')).toBe(expected);
+    expect(sent).toHaveLength(expected ? 1 : 0);
+  });
+
+  test('a second identical message within the window stays pending until its own signal', () => {
+    const { tracker, sent } = setup();
+    tracker.record(SESSION, id(1), 'again', CONN_A, tracker.sentTime());
+    expect(tracker.promptSubmitted(SESSION, 'again')).toBe(true);
+    tracker.record(SESSION, id(2), 'again', CONN_B, tracker.sentTime());
+    expect(tracker.queuedCommand(SESSION, 'again', new Date(1000).toISOString(), 'second')).toBe(
+      false,
+    );
+    expect(sent).toHaveLength(1);
+    expect(tracker.promptSubmitted(SESSION, 'again')).toBe(true);
+    expect(sent.map((item) => item.connectionId)).toEqual([CONN_A, CONN_B]);
+  });
+
   test('cross-kind signals do not confirm a second identical submission', () => {
     const timestamp = new Date(1000).toISOString();
     for (const first of ['attachment', 'hook'] as const) {
       const { tracker, sent, advance } = setup();
-      tracker.record(SESSION, id(1), 'again', CONN_A);
-      tracker.record(SESSION, id(2), 'again', CONN_B);
+      tracker.record(SESSION, id(1), 'again', CONN_A, tracker.sentTime());
+      tracker.record(SESSION, id(2), 'again', CONN_B, tracker.sentTime());
       if (first === 'attachment') {
         expect(tracker.queuedCommand(SESSION, 'again', timestamp, 'q1')).toBe(true);
         expect(tracker.promptSubmitted(SESSION, 'again')).toBe(false);
@@ -82,8 +110,8 @@ describe('ChatAcceptanceTracker', () => {
 
   test('two different attachments confirm identical texts FIFO', () => {
     const { tracker, sent } = setup();
-    tracker.record(SESSION, id(1), 'again', CONN_A);
-    tracker.record(SESSION, id(2), 'again', CONN_B);
+    tracker.record(SESSION, id(1), 'again', CONN_A, tracker.sentTime());
+    tracker.record(SESSION, id(2), 'again', CONN_B, tracker.sentTime());
     expect(tracker.queuedCommand(SESSION, 'different', new Date(1000).toISOString(), 'other')).toBe(
       false,
     );
@@ -96,7 +124,7 @@ describe('ChatAcceptanceTracker', () => {
 
   test('an equal prompt resolves the message and tells only its connection', () => {
     const { tracker, sent } = setup();
-    expect(tracker.record(SESSION, id(1), 'hello', CONN_A)).toBe(true);
+    expect(tracker.record(SESSION, id(1), 'hello', CONN_A, tracker.sentTime())).toBe(true);
     expect(tracker.promptSubmitted(SESSION, 'hello')).toBe(true);
     expect(sent).toHaveLength(1);
     expect(sent[0]?.connectionId).toBe(CONN_A);
@@ -118,7 +146,7 @@ describe('ChatAcceptanceTracker', () => {
     ['an empty prompt', ''],
   ])('%s does not match and nothing is sent', (_name, prompt) => {
     const { tracker, sent } = setup();
-    tracker.record(SESSION, id(1), 'hello', CONN_A);
+    tracker.record(SESSION, id(1), 'hello', CONN_A, tracker.sentTime());
     expect(tracker.promptSubmitted(SESSION, prompt)).toBe(false);
     expect(sent).toEqual([]);
     // The entry is still waiting for its real prompt.
@@ -127,7 +155,7 @@ describe('ChatAcceptanceTracker', () => {
 
   test('a multi-line message matches its exact text', () => {
     const { tracker, sent } = setup();
-    tracker.record(SESSION, id(1), 'first line\nsecond line', CONN_A);
+    tracker.record(SESSION, id(1), 'first line\nsecond line', CONN_A, tracker.sentTime());
     expect(tracker.promptSubmitted(SESSION, 'first line second line')).toBe(false);
     expect(tracker.promptSubmitted(SESSION, 'first line\nsecond line')).toBe(true);
     expect(sent).toHaveLength(1);
@@ -135,9 +163,9 @@ describe('ChatAcceptanceTracker', () => {
 
   test('identical texts resolve first in, first out, each once', () => {
     const { tracker, sent } = setup();
-    tracker.record(SESSION, id(1), 'again', CONN_A);
-    tracker.record(SESSION, id(2), 'again', CONN_B);
-    tracker.record(SESSION, id(3), 'again', CONN_A);
+    tracker.record(SESSION, id(1), 'again', CONN_A, tracker.sentTime());
+    tracker.record(SESSION, id(2), 'again', CONN_B, tracker.sentTime());
+    tracker.record(SESSION, id(3), 'again', CONN_A, tracker.sentTime());
 
     expect(tracker.promptSubmitted(SESSION, 'again')).toBe(true);
     expect(tracker.promptSubmitted(SESSION, 'again')).toBe(true);
@@ -154,8 +182,8 @@ describe('ChatAcceptanceTracker', () => {
 
   test('a different text does not consume an older entry of another text', () => {
     const { tracker, sent } = setup();
-    tracker.record(SESSION, id(1), 'one', CONN_A);
-    tracker.record(SESSION, id(2), 'two', CONN_A);
+    tracker.record(SESSION, id(1), 'one', CONN_A, tracker.sentTime());
+    tracker.record(SESSION, id(2), 'two', CONN_A, tracker.sentTime());
     expect(tracker.promptSubmitted(SESSION, 'two')).toBe(true);
     expect((sent[0]?.message as { messageId: UUID }).messageId).toBe(id(2));
     expect(tracker.promptSubmitted(SESSION, 'one')).toBe(true);
@@ -164,10 +192,10 @@ describe('ChatAcceptanceTracker', () => {
 
   test('an entry expires silently and then matches nothing', () => {
     const { tracker, sent, advance } = setup();
-    tracker.record(SESSION, id(1), 'late', CONN_A);
+    tracker.record(SESSION, id(1), 'late', CONN_A, tracker.sentTime());
     advance(CHAT_ACCEPTANCE_TTL_MS - 1);
     // Still waiting just before the deadline.
-    tracker.record(SESSION, id(2), 'other', CONN_A);
+    tracker.record(SESSION, id(2), 'other', CONN_A, tracker.sentTime());
     advance(1);
     expect(tracker.promptSubmitted(SESSION, 'late')).toBe(false);
     expect(sent).toEqual([]);
@@ -177,9 +205,9 @@ describe('ChatAcceptanceTracker', () => {
 
   test('an expired entry does not shadow a later identical message', () => {
     const { tracker, sent, advance } = setup();
-    tracker.record(SESSION, id(1), 'same', CONN_A);
+    tracker.record(SESSION, id(1), 'same', CONN_A, tracker.sentTime());
     advance(CHAT_ACCEPTANCE_TTL_MS);
-    tracker.record(SESSION, id(2), 'same', CONN_B);
+    tracker.record(SESSION, id(2), 'same', CONN_B, tracker.sentTime());
     expect(tracker.promptSubmitted(SESSION, 'same')).toBe(true);
     expect(sent[0]?.connectionId).toBe(CONN_B);
     expect((sent[0]?.message as { messageId: UUID }).messageId).toBe(id(2));
@@ -188,7 +216,7 @@ describe('ChatAcceptanceTracker', () => {
   test('the list per session is bounded and drops the oldest without a word', () => {
     const { tracker, sent } = setup();
     for (let n = 0; n < CHAT_ACCEPTANCE_MAX_PENDING + 1; n++) {
-      tracker.record(SESSION, id(n), `text ${n}`, CONN_A);
+      tracker.record(SESSION, id(n), `text ${n}`, CONN_A, tracker.sentTime());
     }
     expect(tracker.promptSubmitted(SESSION, 'text 0')).toBe(false);
     expect(tracker.promptSubmitted(SESSION, 'text 1')).toBe(true);
@@ -197,7 +225,7 @@ describe('ChatAcceptanceTracker', () => {
 
   test('sessions are separate', () => {
     const { tracker, sent } = setup();
-    tracker.record(SESSION, id(1), 'mine', CONN_A);
+    tracker.record(SESSION, id(1), 'mine', CONN_A, tracker.sentTime());
     expect(tracker.promptSubmitted(OTHER_SESSION, 'mine')).toBe(false);
     expect(sent).toEqual([]);
     tracker.forget(SESSION);
@@ -206,8 +234,8 @@ describe('ChatAcceptanceTracker', () => {
 
   test('an untrackable text is not recorded, so a prompt with it matches nothing', () => {
     const { tracker, sent } = setup();
-    expect(tracker.record(SESSION, id(1), 'a\rb', CONN_A)).toBe(false);
-    expect(tracker.record(SESSION, id(2), '   ', CONN_A)).toBe(false);
+    expect(tracker.record(SESSION, id(1), 'a\rb', CONN_A, tracker.sentTime())).toBe(false);
+    expect(tracker.record(SESSION, id(2), '   ', CONN_A, tracker.sentTime())).toBe(false);
     expect(tracker.promptSubmitted(SESSION, 'a\rb')).toBe(false);
     expect(tracker.promptSubmitted(SESSION, '   ')).toBe(false);
     expect(sent).toEqual([]);
@@ -215,8 +243,8 @@ describe('ChatAcceptanceTracker', () => {
 
   test('a connection that did not list the capability is never told', () => {
     const { tracker, sent } = setup({ canReceive: (connection) => connection !== CONN_A });
-    expect(tracker.record(SESSION, id(1), 'hi', CONN_A)).toBe(false);
-    expect(tracker.record(SESSION, id(2), 'hi', CONN_B)).toBe(true);
+    expect(tracker.record(SESSION, id(1), 'hi', CONN_A, tracker.sentTime())).toBe(false);
+    expect(tracker.record(SESSION, id(2), 'hi', CONN_B, tracker.sentTime())).toBe(true);
     expect(tracker.promptSubmitted(SESSION, 'hi')).toBe(true);
     expect(sent.map((s) => s.connectionId)).toEqual([CONN_B]);
   });
@@ -227,7 +255,7 @@ describe('ChatAcceptanceTracker', () => {
         throw new Error('socket closing');
       },
     });
-    tracker.record(SESSION, id(1), 'hi', CONN_A);
+    tracker.record(SESSION, id(1), 'hi', CONN_A, tracker.sentTime());
     expect(tracker.promptSubmitted(SESSION, 'hi')).toBe(true);
     expect(tracker.promptSubmitted(SESSION, 'hi')).toBe(false);
   });

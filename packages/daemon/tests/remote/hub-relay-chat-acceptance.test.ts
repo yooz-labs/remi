@@ -53,9 +53,13 @@ test('only the relay peer whose hello lists chat_acceptance gets a result, throu
       canReceive: (id) => listed(id).includes(CHAT_ACCEPTANCE_CAPABILITY),
     });
     const messageId = generateId();
-    expect(tracker.record(f.sessionId, messageId, 'hello', askingId)).toBe(true);
+    expect(tracker.record(f.sessionId, messageId, 'hello', askingId, tracker.sentTime())).toBe(
+      true,
+    );
     for (const id of silentIds) {
-      expect(tracker.record(f.sessionId, generateId(), 'hello', id)).toBe(false);
+      expect(tracker.record(f.sessionId, generateId(), 'hello', id, tracker.sentTime())).toBe(
+        false,
+      );
     }
     expect(tracker.promptSubmitted(f.sessionId, 'hello')).toBe(true);
 

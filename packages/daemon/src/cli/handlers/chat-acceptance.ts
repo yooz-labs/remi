@@ -99,22 +99,21 @@ export class ChatAcceptanceTracker {
     this.now = options.now ?? Date.now;
   }
 
-  /**
-   * Remember a message the daemon has typed into the session's terminal, Enter
-   * included, so a later hook or queued attachment can confirm it. Returns whether it is
-   * tracked (it is not when the text cannot be matched exactly or the sender could
-   * not receive the result).
-   */
   sentTime(): number {
     return this.now();
   }
 
+  /**
+   * Remember a message after its text and Enter were typed. `sentAt` is taken
+   * immediately before the text write, so a later signal can confirm it.
+   * Returns whether it is tracked.
+   */
   record(
     sessionId: UUID,
     messageId: UUID,
     content: string,
     connectionId: UUID,
-    sentAt = this.now(),
+    sentAt: number,
   ): boolean {
     if (!isTrackableChat(content) || !this.canReceive(connectionId)) return false;
     const now = this.now();
