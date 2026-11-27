@@ -52,6 +52,12 @@ import Testing
         #expect(RemiScrollPositionPolicy.positionAfterFollowChange(followsLatest: false, visibleEntryID: "saved") == "saved")
     }
 
+    @Test func doNotOverwriteReviewBeforePositionArrives() {
+        #expect(!RemiScrollPositionPolicy.shouldSaveReview(followsLatest: false, visibleEntryID: nil))
+        #expect(RemiScrollPositionPolicy.shouldSaveReview(followsLatest: false, visibleEntryID: "row"))
+        #expect(RemiScrollPositionPolicy.shouldSaveReview(followsLatest: true, visibleEntryID: nil))
+    }
+
     @Test func savedPositionAndReviewWinOverInitialFollow() {
         #expect(!RemiTranscriptFollowPolicy.shouldFollow(followsLatest: false, isReviewing: false))
         #expect(RemiTranscriptFollowPolicy.shouldFollow(followsLatest: true, isReviewing: false))

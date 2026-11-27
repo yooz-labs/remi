@@ -28,6 +28,10 @@ public enum RemiScrollPositionPolicy {
         followsLatest ? following : review
     }
 
+    public static func shouldSaveReview(followsLatest: Bool, visibleEntryID: String?) -> Bool {
+        followsLatest || visibleEntryID != nil
+    }
+
     public static func positionAfterFollowChange(followsLatest: Bool, visibleEntryID: String?) -> String? {
         followsLatest ? nil : visibleEntryID
     }

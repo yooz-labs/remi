@@ -466,6 +466,7 @@ struct MacSessionDetail: View {
     }
 
     private func preserveReview(for conversationID: String) {
+        guard RemiScrollPositionPolicy.shouldSaveReview(followsLatest: followsLatest, visibleEntryID: visibleEntryID) else { return }
         reviewMemory.save(
             RemiConversationReviewSnapshot(
                 reviewState: reviewState,
