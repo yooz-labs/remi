@@ -20,6 +20,7 @@ import {
   unlockIdentity,
 } from '@remi/shared';
 import type { directTlsFixture } from './direct-tls-fixture.ts';
+import { publishReadyFile } from './publish-ready-file.ts';
 import { terminalPacketPeer } from './terminal-packet-peer.ts';
 
 export function ownedTerminalResourceFiles(
@@ -67,10 +68,7 @@ export function ownedTerminalResourceFiles(
   };
 }
 
-export function publishResourceReceipt(path: string, value: unknown): void {
-  fs.writeFileSync(`${path}.next`, JSON.stringify(value), { mode: 0o600 });
-  fs.renameSync(`${path}.next`, path);
-}
+export const publishResourceReceipt = publishReadyFile;
 
 export function resourceSocketTuples(port: number, side: 'server' | 'client') {
   const darwin = process.platform === 'darwin';
