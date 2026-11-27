@@ -26,7 +26,7 @@ struct PendingQuestionPresentationTests {
         ]
 
         var alpha = MachineState(
-            endpoint: MachineEndpoint(host: "127.0.0.1", port: 18765),
+            endpoint: MachineEndpoint(host: "127.0.0.1", port: closedLoopbackPort),
             displayName: "alpha"
         )
         alpha.questions = [try question(id: "question-local", sessionID: "session-a")]

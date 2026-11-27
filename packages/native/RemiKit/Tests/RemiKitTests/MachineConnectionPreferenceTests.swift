@@ -53,7 +53,7 @@ struct MachineConnectionPreferenceTests {
     }
 
     @Test func olderProfileDefaultsToAutomatic() throws {
-        let data = Data(#"{"routes":[{"host":"127.0.0.1","port":18765}]}"#.utf8)
+        let data = Data(#"{"routes":[{"host":"127.0.0.1","port":\#(closedLoopbackPort)}]}"#.utf8)
         #expect(try JSONDecoder().decode(MachineRouteProfile.self, from: data).connectionPreference == .automatic)
     }
 

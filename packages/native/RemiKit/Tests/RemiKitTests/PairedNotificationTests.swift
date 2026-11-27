@@ -70,7 +70,7 @@ struct PairedNotificationTests {
         _ = try context.store.loadOrCreate()
         let suite = "live.yooz.remi.tests.notifications.\(UUID().uuidString)"
         defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
-        let endpoint = MachineEndpoint(host: "127.0.0.1", port: 18765)
+        let endpoint = MachineEndpoint(host: "127.0.0.1", port: closedLoopbackPort)
         let first = try NativeRelayNotifications(ownedPushStore: context.push, ownedIdentityStore: context.store,
             defaultsSuite: suite, ownedForegroundEndpoints: [endpoint])
         first.revoke(on: endpoint)
