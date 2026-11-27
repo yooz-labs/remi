@@ -170,3 +170,36 @@ export function buildSessionList(deps: SessionListDeps, includeExternal: boolean
     external: deps.withholdTranscriptPaths ? external.map(stripPath) : external,
   };
 }
+
+/**
+ * The live ports a device may be told about (design item 7): every live session's port, minus
+ * those whose record resolves to a hidden owner. A record lookup that throws drops the port
+ * (fail closed). Reads the policy once for the whole census.
+ */
+export function visibleLivePorts(deps: {
+  readonly listLive: () => readonly { readonly sessionId: string; readonly wsPort: number }[];
+  readonly profileOfSession: (id: UUID) => StoredSession | null;
+  readonly profiles: () => Profiles;
+  readonly sidecar: () => ProfileSidecar;
+}): number[] {
+  const profiles = deps.profiles();
+  const sidecar = deps.sidecar();
+  return [
+    ...new Set(
+      deps
+        .listLive()
+        .filter((entry) => {
+          try {
+            const record = deps.profileOfSession(entry.sessionId as UUID);
+            return (
+              sessionProfileOwner(record ?? { transcriptProfile: undefined }, sidecar, profiles)
+                .owner !== 'hidden'
+            );
+          } catch {
+            return false;
+          }
+        })
+        .map((entry) => entry.wsPort),
+    ),
+  ];
+}

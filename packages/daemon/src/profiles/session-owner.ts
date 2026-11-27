@@ -1,5 +1,5 @@
 import type { SessionProfileEntry, SessionProfilesFile } from '../session/session-profiles-file.ts';
-import type { StoredSession } from '../session/session-store.ts';
+import type { SessionStore, StoredSession } from '../session/session-store.ts';
 import type { Profiles } from './profile-config.ts';
 import { isProfileHidden } from './visibility.ts';
 
@@ -79,4 +79,126 @@ export function sessionProfileOwner(
   if (id === 'default') return { owner: 'default' };
   if (isProfileHidden(id, profiles)) return { owner: 'hidden' };
   return { owner: 'profile', id, configured: 'entries' in profiles && !!profiles.entries[id] };
+}
+
+/**
+ * One strict configuration read and one sidecar snapshot per request (#1749, PR 1828 round 1
+ * F2). `cli.ts` runs each remote-policy request inside `run`, and every policy reader it wires
+ * (the handlers' getters, the live ports, the hub discovery's `profileRoots`) reads through
+ * `profiles` and `sidecar`, so a request and the transcript scans it triggers share one read.
+ * The scope covers the synchronous part of `run` only: code that continues after an `await`
+ * with a snapshot it was handed re-enters it with `run(fn, snapshot)`. Outside a scope each call
+ * reads afresh.
+ */
+export class RemotePolicyScope {
+  private active: { profiles?: Profiles; sidecar?: ProfileSidecar } | null = null;
+
+  constructor(
+    private readonly readProfiles: () => Profiles,
+    private readonly readSidecar: () => ProfileSidecar,
+  ) {}
+
+  run<T>(fn: () => T, snapshot?: ProfilePolicySnapshot): T {
+    if (this.active && !snapshot) return fn();
+    const prior = this.active;
+    this.active = snapshot ? { profiles: snapshot.profiles, sidecar: snapshot.sidecar } : {};
+    try {
+      return fn();
+    } finally {
+      this.active = prior;
+    }
+  }
+
+  readonly profiles = (): Profiles => {
+    if (!this.active) return this.readProfiles();
+    this.active.profiles ??= this.readProfiles();
+    return this.active.profiles;
+  };
+
+  readonly sidecar = (): ProfileSidecar => {
+    if (!this.active) return this.readSidecar();
+    this.active.sidecar ??= this.readSidecar();
+    return this.active.sidecar;
+  };
+}
+
+/** What the owner lookups below need from the stores and the transcript discovery. */
+export interface SessionOwnerSources {
+  readonly sessionStore: Pick<
+    SessionStore,
+    'findByRemiSessionId' | 'findResumableByClaudeSessionId' | 'list'
+  >;
+  readonly discovery: {
+    findTranscriptBySessionId(id: string): string | null;
+    profileOfTranscript(id: string): string | undefined;
+  };
+  /** Runs discovery under the request's snapshot (`RemotePolicyScope.run`). */
+  readonly within: <T>(fn: () => T, snapshot: ProfilePolicySnapshot) => T;
+}
+
+/**
+ * `startSession`'s `resumeOwner` (design item 6), as `cli.ts` wires it: a record (Claude by its
+ * Claude id, Codex by its thread id) or a record-less Claude transcript, through the resolver.
+ */
+export function makeResumeOwner(sources: SessionOwnerSources) {
+  return (
+    harness: string,
+    id: string,
+    sidecar: ProfileSidecar,
+    profiles: Profiles,
+  ): { record: boolean; profile?: string; hidden?: boolean } | null =>
+    sources.within(
+      () => {
+        const record =
+          harness === 'claude'
+            ? sources.sessionStore.findResumableByClaudeSessionId(id)
+            : sources.sessionStore
+                .list()
+                .find(
+                  (entry) =>
+                    entry.harness === 'codex' && entry.harnessSessionId?.toLowerCase() === id,
+                );
+        const input =
+          record ??
+          (harness === 'claude' && sources.discovery.findTranscriptBySessionId(id)
+            ? { transcriptProfile: sources.discovery.profileOfTranscript(id) }
+            : null);
+        if (!input) return null;
+        const owner = sessionProfileOwner(input, sidecar, profiles);
+        return {
+          record: !!record,
+          ...(owner.owner === 'hidden'
+            ? { hidden: true }
+            : owner.owner === 'profile'
+              ? { profile: owner.id }
+              : {}),
+        };
+      },
+      { profiles, sidecar },
+    );
+}
+
+/**
+ * The transcript-load handler's `isHiddenOwner` (design item 8): the record by remi id or Claude
+ * id, else the transcript's root, through the resolver. A lookup that throws fails closed and
+ * logs once (F4).
+ */
+export function makeIsHiddenSessionOwner(
+  sources: Omit<SessionOwnerSources, 'within'>,
+  policy: () => ProfilePolicySnapshot,
+): (id: string) => boolean {
+  return (id) => {
+    try {
+      const { profiles, sidecar } = policy();
+      const record =
+        sources.sessionStore.findByRemiSessionId(id as StoredSession['remiSessionId']) ??
+        sources.sessionStore.findResumableByClaudeSessionId(id);
+      const input = record ?? {
+        transcriptProfile: sources.discovery.profileOfTranscript(id),
+      };
+      return sessionProfileOwner(input, sidecar, profiles).owner === 'hidden';
+    } catch {
+      return true;
+    }
+  };
 }
