@@ -537,17 +537,19 @@ export interface MachineDescriptor {
   readonly capabilities: readonly string[];
 }
 
-/**
- * A session visible through the discovery mechanism.
- * Combines daemon-managed sessions and externally-discovered transcript files.
- */
+/** The visible profile associated with a session; absent means the built-in default. */
 export interface SessionProfileRef {
   readonly id: string;
   readonly label: string;
   readonly state?: 'current' | 'changed' | 'removed';
 }
 
+/**
+ * A session visible through the discovery mechanism.
+ * Combines daemon-managed sessions and externally-discovered transcript files.
+ */
 export interface DiscoverableSession {
+  /** The session's visible configured profile, when it has one. */
   readonly profile?: SessionProfileRef;
   /** Session ID (daemon UUID or Claude Code session ID from transcript path) */
   readonly sessionId: string;

@@ -11,6 +11,8 @@ It lists `workspaces` (#1236) and `session_profiles` (#1749) on every process, a
 Clients decide with `hubSupport(ack, needs)`, never by comparing `daemonVersion`; an ack without a version counts as version 1, and the versions must match exactly. The remote CLI checks `session_profiles` before sending an explicit profile; native clients also use capability checks.
 `serverVersion` is a constant (`'1.0.0'` on the daemon's acks, `'0.1.0'` from a bare `Connection`), kept because the WebView Mac app's decoder requires it.
 
+`session_profiles_request` accepts an optional `directory`. The response has `requestId`, `profiles` (id, label and harnesses), optional `default` (id and source), and optional `refused` (`directory_invalid` or `profiles_invalid`). `create_session_request.profile` chooses a profile. A visible configured session can carry `{id, label, state?}` as `profile` on `hello_ack`, `create_session_response`, and session list entries; those additive fields are sent without a capability check. An absent profile denotes the built-in default or an older daemon; clients check the capability to distinguish them. The `removed` state remains reserved but this build does not emit it.
+
 ## The decision object (#1235, ADR 0038)
 
 A "the agent needs you" moment is the `question` message's `Question` (`Decision` in `@remi/shared` is an alias), frozen for the native apps.

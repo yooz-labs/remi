@@ -44,11 +44,18 @@ import {
   errorToString,
   escapeUnsafeText,
 } from '@remi/shared';
-import type { HarnessId, MachineDescriptor, ProtocolMessage, UUID } from '@remi/shared';
+import type {
+  HarnessId,
+  MachineDescriptor,
+  ProtocolMessage,
+  SessionProfileRef,
+  UUID,
+} from '@remi/shared';
 
 import type { Harness } from '../../harness/types.ts';
 import { AmbiguousSessionIdentityError, isClaudeRecord } from '../../session/index.ts';
 import type { SessionBindingStore, SessionRegistry, SessionStore } from '../../session/index.ts';
+import type { StoredSession } from '../../session/session-store.ts';
 import type { TranscriptDiscovery } from '../../transcript/index.ts';
 import { DAEMON_CAPABILITIES } from '../capabilities.ts';
 import type { CurrentOwnedSession } from '../current-session.ts';
@@ -127,9 +134,7 @@ export interface ResumeSessionHandlerDeps {
    */
   childSessions: StartChildSession | null;
   isHiddenResumeOwner: () => (
-    input:
-      | import('../../session/session-store.ts').StoredSession
-      | { transcriptProfile: string | undefined },
+    input: StoredSession | { transcriptProfile: string | undefined },
   ) => boolean;
   /**
    * The harness this daemon hosts. Anything but Claude refuses resume (#1179). Required with no
@@ -149,7 +154,7 @@ export interface ResumeSessionHandlerDeps {
   capabilities?: readonly string[];
   capabilitiesForConnection?: (id: UUID) => readonly string[];
   currentOwnedSession?: () => CurrentOwnedSession | null;
-  profileForSession?: (id: UUID) => import('@remi/shared').SessionProfileRef | undefined;
+  profileForSession?: (id: UUID) => SessionProfileRef | undefined;
   sessionRegistry: SessionRegistry;
   /** Full-record reads that also need projectPath (resume seed by remi id). */
   sessionStore: SessionStore;

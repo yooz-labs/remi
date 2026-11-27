@@ -490,6 +490,7 @@ export interface HelloMessage {
 
 /** Server hello ack - confirms connection */
 export interface HelloAckMessage {
+  /** Visible configured profile of the attached session, if any. */
   readonly profile?: SessionProfileRef | undefined;
   readonly type: 'hello_ack';
   readonly id: UUID;
@@ -1269,6 +1270,7 @@ export interface SessionWorkspace {
 
 /** Request to create a new session (Claude Code unless `harness` says otherwise) */
 export interface CreateSessionRequestMessage {
+  /** Explicit profile choice; requires the session_profiles capability. */
   readonly profile?: string | undefined;
   readonly type: 'create_session_request';
   readonly id: UUID;
@@ -1299,6 +1301,7 @@ export interface CreateSessionRequestMessage {
 
 /** Response after creating a new session */
 export interface CreateSessionResponseMessage {
+  /** Visible configured profile of the created session, if any. */
   readonly profile?: SessionProfileRef | undefined;
   readonly type: 'create_session_response';
   readonly id: UUID;

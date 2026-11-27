@@ -14,5 +14,8 @@
  *   in a new worktree the daemon creates (`cli/handlers/create-session-events.ts`),
  *   and `recent_repositories_request`, the repositories of recent sessions to offer
  *   for one (`cli/handlers/recent-repositories-events.ts`).
+ * - `session_profiles` (#1749): `session_profiles_request` lists selectable profiles
+ *   (`cli/handlers/session-profiles-events.ts`); `create_session_request.profile`
+ *   chooses one (`cli/handlers/create-session-events.ts`).
  */
 export const DAEMON_CAPABILITIES: readonly string[] = ['workspaces', 'session_profiles'];

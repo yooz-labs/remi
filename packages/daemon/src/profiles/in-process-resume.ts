@@ -31,10 +31,9 @@ export function inProcessResumeRefusal(
       !isProfileSelectable(id, currentProfiles)
     )
       return `This session's profile ${id} does not accept sessions from your devices. Resume it on that machine with remi --resume, or add remote_selectable = true to [profiles.${id}] in config.toml there.`;
-    const validationProfiles =
-      id !== 'default' && 'entries' in currentProfiles && !currentProfiles.entries[id]
-        ? currentProfiles
-        : profiles;
+    // Revision validation uses the configuration this process launched with;
+    // current visibility and selectability were checked above.
+    const validationProfiles = profiles;
     const checked = resumeProfile(record, validationProfiles, sidecar);
     if ('error' in checked) return checked.error;
     return checked.id === ownProfile
