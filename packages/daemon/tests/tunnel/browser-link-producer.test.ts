@@ -105,7 +105,8 @@ describe('dormant browser producer: real Unix framing, owned launcher and actual
           fs.appendFileSync(owner+'/offers.jsonl',JSON.stringify({url,sameRuntime:c.runtime===context.runtime})+'\\n',{mode:0o600}); return true;
         }});
         await runtime.start();
-        fs.writeFileSync(owner+'/ready.json',JSON.stringify({browserPath:runtime.browserPath}),{mode:0o600});
+        fs.writeFileSync(owner+'/ready.json.next',JSON.stringify({browserPath:runtime.browserPath}),{mode:0o600});
+        fs.renameSync(owner+'/ready.json.next',owner+'/ready.json');
         await Bun.stdin.text();
         await runtime.close();
       }
