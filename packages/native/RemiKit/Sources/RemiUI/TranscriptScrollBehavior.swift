@@ -63,12 +63,14 @@ public struct RemiTranscriptScrollBehavior: ViewModifier {
                     remaining: geometry.contentSize.height - geometry.visibleRect.maxY,
                     contentSize: geometry.contentSize, containerSize: geometry.containerSize)
             } action: { previous, current in
-                atLatest = current.remaining <= 1
+                let latest = current.remaining <= 1
+                if atLatest != latest { atLatest = latest }
                 guard !isReviewing else { followingLayout = false; return }
                 if isInteracting {
                     followingLayout = false
-                    followsLatest = RemiTranscriptFollowPolicy.afterUserScroll(followsLatest: followsLatest,
+                    let next = RemiTranscriptFollowPolicy.afterUserScroll(followsLatest: followsLatest,
                         previousOffset: previous.offset, offset: current.offset, remaining: current.remaining)
+                    if followsLatest != next { followsLatest = next }
                     return
                 }
                 // Reflow can move the viewport before its final size is known.
@@ -79,10 +81,11 @@ public struct RemiTranscriptScrollBehavior: ViewModifier {
                     if followingLayout { onFollow() }
                     return
                 }
-                followsLatest = RemiTranscriptFollowPolicy.afterNoninteractiveScroll(followsLatest: followsLatest,
+                let next = RemiTranscriptFollowPolicy.afterNoninteractiveScroll(followsLatest: followsLatest,
                     followingLayout: followingLayout,
                     sizesChanged: previous.contentSize != current.contentSize || previous.containerSize != current.containerSize,
                     previousOffset: previous.offset, offset: current.offset, remaining: current.remaining)
+                if followsLatest != next { followsLatest = next }
                 if current.remaining <= 1 { followingLayout = false }
             }
             .onScrollPhaseChange { _, phase in
