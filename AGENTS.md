@@ -156,6 +156,7 @@ It binds the well-known port (18765 preferred, 20-port probe), runs the shared s
 It never spawns Claude, never installs Claude hook config in its cwd, and never registers itself in live-sessions.
 `remi serve` is the foreground hub (the LaunchAgent entrypoint); `remi start` is the detached launcher; `remi stop` and `remi status` manage it.
 `daemon-status.json` belongs to the hub alone; every session daemon writes `status-<PORT>.json`.
+Local interactive session launches start a detached hub first when none is running by default; `[daemon] hub_auto_start = false` disables it. Launches under a `REMI_HOME` override do not auto-start a hub. A missing hub produces a warning based on the secure-push activation latch. Session ports exclude 18765, including explicit `--port` and `REMI_PORT`; the hub may use it.
 A `resume_session_request` that reaches the hub starts a child session daemon with `--resume` through the same `startSession` path as a create request (#1129), so the remote-argument allowlist and the held-session refusal apply.
 A daemon that hosts Codex refuses `resume_session_request` with `UNSUPPORTED`.
 

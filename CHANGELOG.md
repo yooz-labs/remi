@@ -2,6 +2,10 @@
 
 All notable changes to Remi are documented here.
 
+## Unreleased
+
+- Local interactive session launches start a detached hub when needed by default; `[daemon] hub_auto_start = false` disables it. Sessions reserve port 18765 for the hub, and missing-hub warnings reflect the secure-push activation latch. Immediate release of a held question without a client or push path remains open (#1823).
+
 ## [0.9.0] - 2026-11-14
 
 - On macOS, a session daemon or plain `remi` wrapper session now holds a no-privilege `caffeinate -i` idle-sleep assertion while its session has real work (an open turn, a busy status or a pending question), so the Mac does not idle-sleep under a running agent. The display can still sleep, the hub never holds, and other platforms do nothing. The `[awake]` keys `level1`, `question_hold_minutes`, `idle_grace_seconds`, `stuck_busy_minutes` and `ttl_minutes` default to on, 30, 120, 15 and 20, and `level1 = false` turns it off. There is no lid-closed mode and no battery floor yet, and `level1_battery_floor_percent` is rejected by config validation. Not verified on battery, with the lid closed or across a real system sleep (issue #1773, #1782, ADR 0050; see `docs/agent-reference/keep-awake.md`).

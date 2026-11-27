@@ -18,3 +18,7 @@
  * gives.
  */
 Reflect.deleteProperty(process.env, 'REMI_HOME');
+
+// Spawned CLI processes inherit this opt-out; tests that exercise autostart
+// explicitly remove it in their isolated child environment.
+process.env['REMI_HUB_AUTOSTART'] = '0';

@@ -32,6 +32,15 @@ function readActivation(directory: string): boolean {
   return true;
 }
 
+/** True only when the durable activation file confirms the latch. */
+export function securePushActivated(directory: string): boolean {
+  try {
+    return readActivation(directory);
+  } catch {
+    return false;
+  }
+}
+
 /** Call inside the authorization lock, BEFORE any new enrollment becomes durable. */
 export function activateSecurePushLocked(directory: string): void {
   if (readActivation(directory)) return;

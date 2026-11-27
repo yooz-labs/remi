@@ -16,6 +16,7 @@
  */
 
 import {
+  DAEMON_BASE_PORT,
   createCreateSessionResponse,
   errorToString,
   escapeUnsafeText,
@@ -268,6 +269,7 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
       const liveUsed = new Set([
         ...liveSessionsRegistry.listLive().map((entry) => entry.wsPort),
         ...spawningPorts,
+        DAEMON_BASE_PORT,
       ]);
       const freePort = await findAvailableTcpPort(basePort, portRange, liveUsed, bindHost);
       if (freePort !== null) spawningPorts.add(freePort);

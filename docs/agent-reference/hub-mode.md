@@ -14,6 +14,8 @@ registers itself in live-sessions.
 
 - `remi serve` = foreground hub (the LaunchAgent/systemd entrypoint).
 - `remi start` = detached hub launcher; `remi stop`/`status` manage it.
+- A local interactive session starts the detached hub first if none is running. Set `[daemon] hub_auto_start = false` to disable this; an explicit `REMI_HOME` override also disables automatic hub startup. Hub children, remote launches and management commands do not auto-start it. The test preload sets `REMI_HUB_AUTOSTART=0` to prevent accidental starts.
+- Session daemons and wrappers reserve port 18765 for the hub, including when a port is specified explicitly. Auto-selection otherwise probes the configured range; `remi start` uses that range too, which defaults to 18765–18784. Without a hub, the session and `remi status` warn according to the secure-push activation latch. A direct connection to a session port remains possible.
   `remi start` no longer creates a Claude session in the cwd.
 - The hub self-writes `~/.remi/daemon.pid`; `remi status`/`stop` fall back to
   `daemon-status.json` (`mode: "hub"`) when the PID file is missing.

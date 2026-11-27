@@ -781,6 +781,8 @@ if (
       ...(cliPort !== undefined && { port: cliPort }),
       ...(cliBindHost !== undefined && { bindHost: cliBindHost }),
       resolvedBindHost: bindHost,
+      basePort: loadedConfig.config.daemon.base_port,
+      portRange: loadedConfig.config.daemon.port_range,
       ...(cliAuth !== undefined && { auth: cliAuth }),
       noMdns: cliNoMdns,
       noRelay: cliNoRelay,
@@ -1275,6 +1277,18 @@ if (isSessionLaunch(parsedArgs) && !serveMode) {
   }
 }
 
+// Only a local interactive session starts a hub. REMI_HOME is the existing
+// scratch-state override, and tests opt out through their preload.
+if (isSessionLaunch(parsedArgs) && !serveMode && !cliHost) {
+  if (cliDaemonMode) {
+    const { noHubWarning, readLiveHub } = await import('./cli/daemon-manager.ts');
+    if (!readLiveHub()) console.error(noHubWarning());
+  } else {
+    const { ensureHubForSession } = await import('./cli/hub-autostart.ts');
+    await ensureHubForSession(remiConfig.daemon.hub_auto_start && !isRemiHomeOverridden());
+  }
+}
+
 // #1025: `gitInfo` above was computed from process.cwd() at module load,
 // before args were parsed — a hub-spawned child inherits the hub's cwd, so
 // that snapshot named the hub's repo/branch. The --resume/--recent/--dir
@@ -1323,6 +1337,7 @@ if (!portExplicitlySet) {
     remiConfig.daemon.base_port,
     remiConfig.daemon.port_range,
     bindHost,
+    serveMode ? [] : [DEFAULT_BASE_PORT],
   );
   if (autoPort === null) {
     const rangeEnd = remiConfig.daemon.base_port + remiConfig.daemon.port_range - 1;
@@ -1331,6 +1346,10 @@ if (!portExplicitlySet) {
     process.exit(1);
   }
   PORT = autoPort;
+}
+if (!serveMode && PORT === DEFAULT_BASE_PORT) {
+  console.error(`Port ${DEFAULT_BASE_PORT} is reserved for the remi hub.`);
+  process.exit(1);
 }
 // Update per-port status file path now that PORT is finalized
 STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
@@ -3662,6 +3681,7 @@ if (cliDaemonMode) {
   // Phase 2: Probe for available WebSocket port, then start
   if (!portExplicitlySet) {
     const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
+    if (!serveMode) liveUsed.add(DEFAULT_BASE_PORT);
     const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed, bindHost);
     if (probed === null) {
       console.error(
@@ -4023,6 +4043,7 @@ if (cliDaemonMode) {
   let wsProbeSucceeded = true;
   if (!portExplicitlySet) {
     const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
+    liveUsed.add(DEFAULT_BASE_PORT);
     const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed, bindHost);
     if (probed !== null && probed !== PORT) {
       const occupiedPort = PORT;

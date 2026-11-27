@@ -26,6 +26,7 @@ export interface DaemonTlsConfig {
 /** Daemon settings (restart required to apply changes) */
 export interface DaemonConfig {
   readonly tls: DaemonTlsConfig | null;
+  readonly hub_auto_start: boolean;
   readonly base_port: number;
   readonly port_range: number;
   readonly bind: string;
@@ -238,6 +239,7 @@ export const DEFAULT_CONFIG: RemiConfig = {
   },
   daemon: {
     tls: null,
+    hub_auto_start: true,
     base_port: DAEMON_BASE_PORT,
     port_range: DAEMON_PORT_RANGE,
     // #880/#873: remote binding remains opt-in; auth defaults on for every bind.
@@ -576,6 +578,11 @@ function legacyAutoApprove(parsed: Record<string, unknown>): {
  * would then substring-match origins against it, which is not what anyone meant.
  */
 function validateDaemon(cfg: DaemonConfig, configPath: string): void {
+  if (typeof cfg.hub_auto_start !== 'boolean') {
+    throw new Error(
+      `Invalid daemon.hub_auto_start in ${configPath}: must be a boolean (true/false).`,
+    );
+  }
   assertDaemonTlsConfig(cfg.tls);
   const v: unknown = cfg.allowed_origins;
   if (!Array.isArray(v) || !v.every((s) => typeof s === 'string')) {
@@ -844,6 +851,8 @@ stuck_busy_minutes = ${DEFAULT_CONFIG.awake.stuck_busy_minutes}
 ttl_minutes = ${DEFAULT_CONFIG.awake.ttl_minutes}
 
 [daemon]
+# Start a hub before local interactive sessions when none is running.
+hub_auto_start = ${DEFAULT_CONFIG.daemon.hub_auto_start}
 base_port = ${DEFAULT_CONFIG.daemon.base_port}
 port_range = ${DEFAULT_CONFIG.daemon.port_range}
 bind = "${DEFAULT_CONFIG.daemon.bind}"
@@ -973,6 +982,7 @@ export function formatConfig(config: RemiConfig, configPath: string = CONFIG_PAT
   lines.push(`  ttl_minutes = ${config.awake.ttl_minutes}`);
   lines.push('');
   lines.push('[daemon]');
+  lines.push(`  hub_auto_start = ${config.daemon.hub_auto_start}`);
   lines.push(`  base_port = ${config.daemon.base_port}`);
   lines.push(`  port_range = ${config.daemon.port_range}`);
   lines.push(`  bind = "${config.daemon.bind}"`);

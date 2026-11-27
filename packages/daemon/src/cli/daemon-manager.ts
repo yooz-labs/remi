@@ -14,7 +14,10 @@ import { errorToString } from '@remi/shared';
 import { remiHome } from '../config/remi-home.ts';
 import { SessionRegistryFile } from '../session/session-registry-file.ts';
 import { readLocalDaemonEndpoint } from '../storage/local-daemon-endpoints.ts';
-import { withLegacyPushEligibility } from '../storage/secure-push-activation.ts';
+import {
+  securePushActivated,
+  withLegacyPushEligibility,
+} from '../storage/secure-push-activation.ts';
 import { rotateIfNeeded } from './log-rotation.ts';
 import { resolveExistingDirectory } from './path-resolver.ts';
 import { formatVersionDrift } from './version-drift.ts';
@@ -113,15 +116,11 @@ function readStatus(): Record<string, unknown> | null {
   }
 }
 
-/**
- * The running hub's port, bind and whether it authenticates, for `remi pair` (#1275): null when no
- * hub is running. `bind` and `auth` are absent from a hub older than `remi pair`.
- */
-export function readHubStatus(): {
+/** A hub status whose PID is live and agrees with the status file. */
+export function readLiveHub(): {
+  pid: number;
   port: number;
-  bind?: string;
-  auth?: boolean;
-  directTls?: true;
+  status: Record<string, unknown>;
 } | null {
   const pid = readPidFileLive() ?? readStatusFilePidIfAlive();
   if (pid === null) return null;
@@ -129,6 +128,19 @@ export function readHubStatus(): {
   if (status === null || status['pid'] !== pid || status['mode'] !== 'hub') return null;
   const port = status['wsPort'];
   if (typeof port !== 'number' || !Number.isInteger(port) || port <= 0) return null;
+  return { pid, port, status };
+}
+
+/** Hub endpoint for `remi pair`; older hubs may not report bind or auth (#1275). */
+export function readHubStatus(): {
+  port: number;
+  bind?: string;
+  auth?: boolean;
+  directTls?: true;
+} | null {
+  const hub = readLiveHub();
+  if (!hub) return null;
+  const { pid, port, status } = hub;
   const bind = status['bind'];
   const auth = status['auth'];
   const local = readLocalDaemonEndpoint(port, { home: REMI_DIR, expectedPid: pid });
@@ -189,6 +201,8 @@ export interface StartOptions {
    * or it reports "free" for a port the child then fails on (#880).
    */
   bindHost: string;
+  basePort?: number | undefined;
+  portRange?: number | undefined;
 }
 
 import { findAvailableTcpPort } from '../session/port-utils.ts';
@@ -215,14 +229,14 @@ export async function startDaemon(opts: StartOptions): Promise<number> {
   let daemonPort = opts?.port;
   if (!daemonPort) {
     const freePort = await findAvailableTcpPort(
-      DEFAULT_BASE_PORT,
-      DEFAULT_PORT_RANGE,
+      opts.basePort ?? DEFAULT_BASE_PORT,
+      opts.portRange ?? DEFAULT_PORT_RANGE,
       new Set(),
       opts.bindHost,
     );
     if (freePort === null) {
       console.error(
-        `All remi ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
+        `All remi ports in range ${opts.basePort ?? DEFAULT_BASE_PORT}-${(opts.basePort ?? DEFAULT_BASE_PORT) + (opts.portRange ?? DEFAULT_PORT_RANGE) - 1} are in use.`,
       );
       console.error('Use --port to specify a different port, or stop an existing remi session.');
       process.exit(1);
@@ -524,10 +538,20 @@ function finishSessionDaemons(sessions: readonly SessionDaemon[], all: boolean):
   return 0;
 }
 
+export function noHubWarning(): string {
+  // Use the sender's own eligibility path, including migration of existing enrollments.
+  withLegacyPushEligibility(REMI_DIR, () => true);
+  if (securePushActivated(REMI_DIR)) {
+    return 'No remi hub is running, so your phone will not get notifications for this session and sees it only by connecting to its port directly. Start the hub with: remi start';
+  }
+  return "No remi hub is running, so your phone may not see this session's questions or get its notifications. Start the hub with: remi start";
+}
+
 export function showDaemonStatus(installedVersion?: string): void {
   const pid = readPidFileLive() ?? readStatusFilePidIfAlive();
   const sessions = listSessionDaemons();
   if (!pid) {
+    console.log(noHubWarning());
     // Saying "Daemon is not running" while `remi ls` lists one is how a user
     // ends up reaching for `pkill` (#859). Both statements were about
     // different things; only one of them said so.

@@ -21,6 +21,8 @@ export interface StartDaemonOptions {
    * fails to bind (#880). Only `start` uses it.
    */
   readonly resolvedBindHost: string;
+  readonly basePort?: number;
+  readonly portRange?: number;
   readonly auth?: boolean;
   readonly noMdns?: boolean;
   readonly noRelay?: boolean;
@@ -81,6 +83,8 @@ export async function runDaemonLifecycleCommand(
       port: opts.port,
       extraArgs: buildStartDaemonArgs(opts),
       bindHost: opts.resolvedBindHost,
+      basePort: opts.basePort,
+      portRange: opts.portRange,
     });
     return 0;
   }
