@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test';
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
@@ -79,6 +80,28 @@ test('hub lists selectable profiles, starts work and conceals a hidden session',
       startedAt: new Date().toISOString(),
     }),
   );
+  // Positive controls: a visible profile's transcript, and a default session in a git repository,
+  // which the lists below must show while the hidden ones stay out.
+  const visibleClaudeId = generateId();
+  const visibleTranscriptDir = path.join(workConfig, 'projects', '-visible');
+  fs.mkdirSync(visibleTranscriptDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(visibleTranscriptDir, `${visibleClaudeId}.jsonl`),
+    `${JSON.stringify({ type: 'user', uuid: generateId(), sessionId: visibleClaudeId, cwd: dirs.work, timestamp: new Date().toISOString(), message: { role: 'user', content: 'test' } })}\n`,
+  );
+  const plainRepo = path.join(dirs.home, 'plain-repo');
+  fs.mkdirSync(plainRepo);
+  expect(spawnSync('/usr/bin/git', ['init', '-q', plainRepo]).status).toBe(0);
+  store.save({
+    remiSessionId: generateId(),
+    claudeSessionId: null,
+    projectPath: fs.realpathSync(plainRepo),
+    port: 19201,
+    pid: null,
+    startedAt: new Date().toISOString(),
+    exitedAt: new Date().toISOString(),
+    exitCode: 0,
+  });
   const transcriptDir = path.join(hidden, 'projects', '-synthetic');
   fs.mkdirSync(transcriptDir, { recursive: true });
   fs.writeFileSync(
@@ -149,6 +172,14 @@ test('hub lists selectable profiles, starts work and conceals a hidden session',
     });
     child.ws.close();
     const countBeforeRefusals = store.list().length;
+    // Each hub child is a `--daemon` invocation of the entrypoint.
+    const childStarts = () =>
+      fs
+        .readFileSync(argumentsLog, 'utf8')
+        .trim()
+        .split('\n')
+        .filter((line) => (JSON.parse(line) as string[]).includes('--daemon')).length;
+    const startsBeforeRefusals = childStarts();
     expect(
       await ask(
         createCreateSessionRequest(dirs.work, { profile: 'quiet' }),
@@ -163,6 +194,7 @@ test('hub lists selectable profiles, starts work and conceals a hidden session',
       await ask(createCreateSessionRequest(quietFolder), 'create_session_response'),
     ).toMatchObject({ success: false, error: expect.stringContaining('remote_selectable = true') });
     expect(store.list()).toHaveLength(countBeforeRefusals);
+    expect(childStarts()).toBe(startsBeforeRefusals);
     fs.writeFileSync(`${output}.release`, '');
     await pollUntil(
       () =>
@@ -202,6 +234,12 @@ test('hub lists selectable profiles, starts work and conceals a hidden session',
         (session) => session.sessionId === secretId || session.claudeSessionId === claudeId,
       ),
     ).toBe(false);
+    expect(list.sessions.find((session) => session.sessionId === visibleClaudeId)).toMatchObject({
+      profile: { id: 'work', label: 'Work', state: 'current' },
+    });
+    expect(
+      await ask(createRecentRepositoriesRequest(), 'recent_repositories_response'),
+    ).toMatchObject({ repositories: [{ repository: fs.realpathSync(plainRepo) }] });
     const unknown = generateId();
     const hiddenLoad = await ask(createTranscriptLoadRequest(secretId), 'error');
     const unknownLoad = await ask(createTranscriptLoadRequest(unknown), 'error');
@@ -232,6 +270,32 @@ test('hub lists selectable profiles, starts work and conceals a hidden session',
       throw new Error('missing resume response');
     expect('code' in hiddenResume).toBe(false);
     expect('code' in unknownResume).toBe(false);
+    // F7 (b): the composition root reads the strict configuration. A malformed file fails every
+    // remote decision closed, though the last good read still has work.
+    const goodConfig = fs.readFileSync(path.join(remi, 'config.toml'), 'utf8');
+    fs.writeFileSync(path.join(remi, 'config.toml'), '[[invalid');
+    expect(
+      await ask(createSessionProfilesRequest(dirs.work), 'session_profiles_response'),
+    ).toMatchObject({ profiles: [], refused: 'profiles_invalid' });
+    const startsBeforeBroken = childStarts();
+    expect(
+      await ask(createCreateSessionRequest(dirs.work), 'create_session_response'),
+    ).toMatchObject({
+      success: false,
+      error: "This machine's profile settings have an error. Run remi profile ls on the machine.",
+    });
+    expect(childStarts()).toBe(startsBeforeBroken);
+    expect(
+      await ask(createRecentRepositoriesRequest(), 'recent_repositories_response'),
+    ).toMatchObject({ repositories: [] });
+    expect(
+      await ask(createResumeSessionRequest(started.sessionId as string), 'resume_session_response'),
+    ).toMatchObject({
+      success: false,
+      error: `Session ${started.sessionId} not found. No Claude session ID available for resume.`,
+    });
+    expect(childStarts()).toBe(startsBeforeBroken);
+    fs.writeFileSync(path.join(remi, 'config.toml'), goodConfig);
     fs.rmSync(hidden, { recursive: true, force: true });
     expect(
       await ask(createResumeSessionRequest(secretId), 'resume_session_response'),
