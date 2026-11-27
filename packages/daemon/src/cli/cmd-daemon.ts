@@ -31,6 +31,7 @@ export interface StartDaemonOptions {
   readonly permanentCode?: boolean;
   readonly signalingUrl?: string;
   readonly pushSecret?: string;
+  readonly legacyPushEnabled?: boolean;
   readonly orphanTimeout?: number;
   /** This binary's remi version, for the `status` drift warning (#539). */
   readonly remiVersion?: string;
@@ -92,7 +93,10 @@ export async function runDaemonLifecycleCommand(
     return dm.stopDaemon({ all: opts.all === true });
   }
   if (sub === 'status') {
-    dm.showDaemonStatus(opts.remiVersion);
+    dm.showDaemonStatus(opts.remiVersion, {
+      legacyEnabled: opts.legacyPushEnabled,
+      pushSecret: opts.pushSecret,
+    });
     return 0;
   }
   if (sub === 'logs') {

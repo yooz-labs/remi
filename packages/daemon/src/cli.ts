@@ -791,6 +791,7 @@ if (
       permanentCode: cliPermanentCode,
       ...(cliSignalingUrl !== undefined && { signalingUrl: cliSignalingUrl }),
       ...(cliPushSecret !== undefined && { pushSecret: cliPushSecret }),
+      legacyPushEnabled: remiConfig.notifications.legacy_push_enabled,
       ...(cliOrphanTimeout !== undefined && { orphanTimeout: cliOrphanTimeout }),
       remiVersion: REMI_VERSION,
       all: cliStopAll,
@@ -1280,12 +1281,19 @@ if (isSessionLaunch(parsedArgs) && !serveMode) {
 // Only a local interactive session starts a hub. REMI_HOME is the existing
 // scratch-state override, and tests opt out through their preload.
 if (isSessionLaunch(parsedArgs) && !serveMode && !cliHost) {
+  const legacyPolicy = {
+    legacyEnabled: remiConfig.notifications.legacy_push_enabled,
+    pushSecret: cliPushSecret,
+  };
   if (cliDaemonMode) {
     const { noHubWarning, readLiveHub } = await import('./cli/daemon-manager.ts');
-    if (!readLiveHub()) console.error(noHubWarning());
+    if (!readLiveHub()) console.error(noHubWarning(legacyPolicy));
   } else {
     const { ensureHubForSession } = await import('./cli/hub-autostart.ts');
-    await ensureHubForSession(remiConfig.daemon.hub_auto_start && !isRemiHomeOverridden());
+    await ensureHubForSession(
+      remiConfig.daemon.hub_auto_start && !isRemiHomeOverridden(),
+      legacyPolicy,
+    );
   }
 }
 

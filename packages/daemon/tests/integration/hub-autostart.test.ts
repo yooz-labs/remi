@@ -65,7 +65,11 @@ async function setup(extra = '') {
     path.join(dirs.home, '.remi', 'config.toml'),
     `[daemon]\nbase_port = ${port}\nhub_auto_start = ${extra === 'off' ? 'false' : 'true'}\n[network]\nmdns = false\n${extra === 'fail' ? 'relay = true\nsignaling_url = "wss://remi-signaling.yooz.workers.dev/connect"\n' : ''}`,
   );
-  const env = isolatedEnv(dirs.home, { ...agents.env, REMI_HUB_AUTOSTART: '1' });
+  const env = isolatedEnv(dirs.home, {
+    ...agents.env,
+    REMI_HUB_AUTOSTART: '1',
+    REMI_PUSH_SECRET: 'test-secret',
+  });
   return { ...dirs, agents, port, env };
 }
 
@@ -171,6 +175,34 @@ test('activated secure push changes the session and status warning', async () =>
   });
   expect(status.stdout.toString()).toContain(warning);
 }, 25_000);
+
+test('unavailable legacy push warns definitively without writing activation', async () => {
+  for (const mode of ['corrupt', 'disabled', 'no-secret']) {
+    const f = await setup('off');
+    const activation = path.join(f.home, '.remi', 'secure_push_activation.json');
+    if (mode === 'corrupt') fs.writeFileSync(activation, 'invalid');
+    if (mode === 'disabled')
+      fs.appendFileSync(
+        path.join(f.home, '.remi', 'config.toml'),
+        '\n[notifications]\nlegacy_push_enabled = false\n',
+      );
+    if (mode === 'no-secret') f.env['REMI_PUSH_SECRET'] = undefined;
+    const before = fs.existsSync(activation) ? fs.readFileSync(activation, 'utf8') : null;
+    const run = launch(f);
+    await pollUntil(() => fs.existsSync(path.join(f.agents.claudeDir, 'argv')), 20_000, 'agent');
+    const warning =
+      'No remi hub is running, so your phone will not get notifications for this session';
+    expect(run.output.text).toContain(warning);
+    const status = Bun.spawnSync([process.execPath, CLI_TS, 'status'], {
+      cwd: f.work,
+      env: f.env,
+      timeout: 5000,
+    });
+    expect(status.stdout.toString()).toContain(warning);
+    expect(fs.existsSync(activation) ? fs.readFileSync(activation, 'utf8') : null).toBe(before);
+    expect(fs.existsSync(path.join(f.home, '.remi', 'authorized_keys.json.lock'))).toBe(false);
+  }
+}, 75_000);
 
 test('concurrent launches share a hub', async () => {
   const f = await setup();
@@ -297,7 +329,7 @@ test('a stalled detached launcher times out and reports the warning', async () =
   const fakeRemi = path.join(f.home, 'fake-bin', 'remi');
   fs.writeFileSync(fakeRemi, '#!/bin/sh\nexec /bin/sleep 30\n', { mode: 0o700 });
   const modulePath = path.resolve(import.meta.dir, '../../src/cli/hub-autostart.ts');
-  const script = `process.argv[0] = 'test-parent'; process.argv[1] = 'test-parent'; const { ensureHubForSession } = await import(${JSON.stringify(modulePath)}); await ensureHubForSession(true); console.log('continued');`;
+  const script = `process.argv[0] = 'test-parent'; process.argv[1] = 'test-parent'; const { ensureHubForSession } = await import(${JSON.stringify(modulePath)}); await ensureHubForSession(true, { legacyEnabled: true, pushSecret: 'test-secret' }); console.log('continued');`;
   const started = Date.now();
   const proc = Bun.spawn([process.execPath, '-e', script], {
     cwd: f.work,

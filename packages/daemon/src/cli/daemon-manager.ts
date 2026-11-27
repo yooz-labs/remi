@@ -12,10 +12,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { errorToString } from '@remi/shared';
 import { remiHome } from '../config/remi-home.ts';
+import { type LegacyPushPolicy, legacyChannelOpen } from '../notifications/legacy-push-policy.ts';
 import { SessionRegistryFile } from '../session/session-registry-file.ts';
 import { readLocalDaemonEndpoint } from '../storage/local-daemon-endpoints.ts';
 import {
-  securePushActivated,
+  legacyPushEligibleReadOnly,
   withLegacyPushEligibility,
 } from '../storage/secure-push-activation.ts';
 import { rotateIfNeeded } from './log-rotation.ts';
@@ -538,20 +539,18 @@ function finishSessionDaemons(sessions: readonly SessionDaemon[], all: boolean):
   return 0;
 }
 
-export function noHubWarning(): string {
-  // Use the sender's own eligibility path, including migration of existing enrollments.
-  withLegacyPushEligibility(REMI_DIR, () => true);
-  if (securePushActivated(REMI_DIR)) {
+export function noHubWarning(policy: LegacyPushPolicy): string {
+  if (!legacyChannelOpen(policy) || !legacyPushEligibleReadOnly(REMI_DIR)) {
     return 'No remi hub is running, so your phone will not get notifications for this session and sees it only by connecting to its port directly. Start the hub with: remi start';
   }
   return "No remi hub is running, so your phone may not see this session's questions or get its notifications. Start the hub with: remi start";
 }
 
-export function showDaemonStatus(installedVersion?: string): void {
+export function showDaemonStatus(installedVersion?: string, policy: LegacyPushPolicy = {}): void {
   const pid = readPidFileLive() ?? readStatusFilePidIfAlive();
   const sessions = listSessionDaemons();
   if (!pid) {
-    console.log(noHubWarning());
+    console.log(noHubWarning(policy));
     // Saying "Daemon is not running" while `remi ls` lists one is how a user
     // ends up reaching for `pkill` (#859). Both statements were about
     // different things; only one of them said so.

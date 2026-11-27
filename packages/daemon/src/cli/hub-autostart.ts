@@ -1,6 +1,7 @@
 /** Start the same detached hub as `remi start` before a local session (#1823). */
 import * as path from 'node:path';
 import { remiHome } from '../config/remi-home.ts';
+import type { LegacyPushPolicy } from '../notifications/legacy-push-policy.ts';
 import { withInterprocessFileLockAsync } from '../storage/interprocess-file-lock.ts';
 import {
   noHubWarning,
@@ -21,10 +22,13 @@ function runningHub(): ReturnType<typeof readLiveHub> {
   }
 }
 
-export async function ensureHubForSession(enabled: boolean): Promise<void> {
+export async function ensureHubForSession(
+  enabled: boolean,
+  policy: LegacyPushPolicy,
+): Promise<void> {
   if (runningHub()) return;
   if (!enabled || process.env['REMI_HUB_AUTOSTART'] === '0') {
-    console.error(noHubWarning());
+    console.error(noHubWarning(policy));
     return;
   }
 
@@ -68,5 +72,5 @@ export async function ensureHubForSession(enabled: boolean): Promise<void> {
       await Bun.sleep(HUB_START_POLL_MS);
     }
   }
-  if (!runningHub()) console.error(noHubWarning());
+  if (!runningHub()) console.error(noHubWarning(policy));
 }
