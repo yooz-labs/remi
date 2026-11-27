@@ -527,3 +527,25 @@ test('rejects a dangling symlink to another profile directory', () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('profile IDs contain letters and preserve configured root order', () => {
+  const harness = { expects: 'subscription' };
+  expect(parseProfiles({ '1': { label: 'One', claude: harness } })).toMatchObject({
+    error: 'profiles: invalid profile id: a profile id must contain a letter',
+  });
+  const loaded = config(
+    ['b', '2work', 'a', 'work2']
+      .map(
+        (id) =>
+          `[profiles.${id}]\nlabel="Work"\n[profiles.${id}.claude]\nexpects="subscription"\ndir="/tmp/${id}"\n`,
+      )
+      .join(''),
+  ).profiles;
+  if (!('entries' in loaded)) throw new Error('valid profiles rejected');
+  expect(Object.entries(loaded.entries).map(([id, profile]) => [id, profile.claude?.dir])).toEqual([
+    ['b', '/tmp/b'],
+    ['2work', '/tmp/2work'],
+    ['a', '/tmp/a'],
+    ['work2', '/tmp/work2'],
+  ]);
+});
