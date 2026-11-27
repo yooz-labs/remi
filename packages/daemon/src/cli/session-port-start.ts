@@ -1,4 +1,5 @@
 import { findAvailableTcpPort } from '../session/port-utils.ts';
+import { sessionPortWindowEnd } from './session-port-probes.ts';
 
 /** Retry only a public port collision between the probe and the listener bind. */
 export async function startSessionPort(
@@ -9,7 +10,7 @@ export async function startSessionPort(
   usedPorts: () => Set<number>,
   start: (port: number) => Promise<void>,
 ): Promise<number> {
-  const end = initialPort + range;
+  const end = sessionPortWindowEnd(initialPort, range, reservedBase);
   let port = initialPort;
   while (true) {
     try {
