@@ -418,8 +418,11 @@ export function formatSessionList(sessions: readonly DiscoverableSession[]): str
             ? '🔴'
             : '✅';
     const project = path.basename(session.projectPath);
+    const profileLabel = session.profile
+      ? `${session.profile.label}${session.profile.state === 'removed' ? ' (removed)' : ''}`
+      : '';
     lines.push(
-      `${statusIcon} ${project} [${session.status}]`,
+      `${statusIcon} ${project} [${session.status}]${profileLabel ? ` · ${profileLabel}` : ''}`,
       `   ID: ${session.sessionId}`,
       `   Messages: ${session.messageCount}`,
       '',

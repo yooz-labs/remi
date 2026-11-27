@@ -8,8 +8,17 @@
  */
 
 import type { RecentDirectory } from '@remi/shared/protocol.ts';
+import type { SessionProfilesResponseMessage } from '@remi/shared/protocol.ts';
 import { X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { ProfilePicker } from './ProfilePicker';
 import { RecentProjects } from './RecentProjects';
+
+interface ProfileLookup {
+  readonly directory: string;
+  readonly loading: boolean;
+  readonly response?: SessionProfilesResponseMessage | null;
+}
 
 interface NewSessionModalProps {
   readonly open: boolean;
@@ -17,9 +26,14 @@ interface NewSessionModalProps {
   readonly loading?: boolean;
   readonly onClose: () => void;
   readonly directories: readonly RecentDirectory[];
+  readonly profilesEnabled?: boolean;
+  readonly profileLookup?: ProfileLookup | null;
+  readonly profileCreating?: boolean;
+  readonly profileCreateError?: string | null;
+  readonly onRequestProfiles?: (directory: string) => void;
   /** Start a session in the given directory (empty string = home/cwd). The
    *  parent closes the sheet once the request is actually sent. */
-  readonly onStartSession: (directory: string) => void;
+  readonly onStartSession: (directory: string, profileId?: string) => void;
 }
 
 export function NewSessionModal({
@@ -27,9 +41,38 @@ export function NewSessionModal({
   loading = false,
   onClose,
   directories,
+  profilesEnabled = false,
+  profileLookup = null,
+  profileCreating = false,
+  profileCreateError = null,
+  onRequestProfiles,
   onStartSession,
 }: NewSessionModalProps) {
+  const [selectedDirectory, setSelectedDirectory] = useState<string | null>(null);
+  const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setSelectedDirectory(null);
+    setSelectedProfile(null);
+  }, [open]);
+
   if (!open) return null;
+
+  const chooseDirectory = (directory: string) => {
+    if (!profilesEnabled) {
+      onStartSession(directory);
+      return;
+    }
+    setSelectedDirectory(directory);
+    setSelectedProfile(null);
+    onRequestProfiles?.(directory);
+  };
+
+  const currentLookup =
+    selectedDirectory !== null && profileLookup?.directory === selectedDirectory
+      ? profileLookup
+      : null;
 
   return (
     <div
@@ -73,7 +116,23 @@ export function NewSessionModal({
           )
         )}
 
-        <RecentProjects directories={directories} onStartSession={onStartSession} />
+        <RecentProjects
+          directories={directories}
+          onStartSession={chooseDirectory}
+          profilesEnabled={profilesEnabled}
+        />
+
+        {profilesEnabled && selectedDirectory !== null && (
+          <ProfilePicker
+            loading={currentLookup?.loading ?? true}
+            response={currentLookup?.response}
+            selectedProfile={selectedProfile}
+            creating={profileCreating}
+            error={profileCreateError}
+            onSelectProfile={setSelectedProfile}
+            onStart={(profileId) => onStartSession(selectedDirectory, profileId)}
+          />
+        )}
       </div>
     </div>
   );

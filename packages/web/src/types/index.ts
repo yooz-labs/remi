@@ -5,7 +5,7 @@
  */
 
 import type { ImageUploadState } from '@/components/chat/ImageUpload';
-import type { HarnessId } from '@remi/shared';
+import type { HarnessId, SessionProfileRef } from '@remi/shared';
 import type { QuestionResolvedMessage } from '@remi/shared/protocol.ts';
 import type { AgentStatus, MessageState, Timestamp, UUID } from '@remi/shared/types.ts';
 
@@ -205,6 +205,12 @@ export interface UISession {
    * only a harness other than Claude is labeled (`harnessLabel`).
    */
   readonly harness?: HarnessId;
+  /** Visible configured profile associated with this session, when present. */
+  readonly profile?: SessionProfileRef;
+  /** Whether this connection advertises the session profile capability. */
+  readonly sessionProfilesEnabled?: boolean;
+  /** Whether this connection shares any profile other than the built-in default. */
+  readonly sharesProfiles?: boolean;
   /** Current harness thread, kept separate from the Claude-specific identity. */
   readonly harnessSessionId?: string | null;
   /**

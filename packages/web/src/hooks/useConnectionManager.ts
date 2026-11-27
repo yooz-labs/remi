@@ -53,6 +53,7 @@ import {
 } from './connection-manager-helpers';
 import { childDaemonUrl, parseConnectionId } from '@/lib/connection-id';
 import { resolveDaemonPort } from '@/lib/port-discovery';
+import { sendNewSessionRequest, sendSessionProfilesRequest } from '@/lib/profile-requests';
 export { parseConnectionId } from '@/lib/connection-id';
 import { createAuthResponse, fingerprint, fromBase64, importPublicKey, isEncrypted, isSmallOrderPublicKey, toBase64, verify } from '@remi/shared';
 import type { AnswerSelection, ProtocolMessage } from '@remi/shared/protocol.ts';
@@ -61,7 +62,6 @@ import {
   createAuqAnswer,
   createBulletExpandRequest,
   createCancelQuestion,
-  createCreateSessionRequest,
   createHello,
   createResumeSessionRequest,
   createSessionHistoryRequest,
@@ -286,7 +286,12 @@ export interface UseConnectionManagerReturn {
   /** Request transcript load via a specific connection */
   requestTranscriptLoad: (connectionId: ConnectionId, sessionId: string) => boolean;
   /** Request new session via a specific connection */
-  requestNewSession: (connectionId: ConnectionId, directory?: string) => boolean;
+  requestNewSession: (
+    connectionId: ConnectionId,
+    directory?: string,
+    options?: { readonly profile?: string | undefined },
+  ) => UUID | null;
+  requestSessionProfiles: (connectionId: ConnectionId, directory?: string) => UUID | null;
   /** Request resume session via a specific connection */
   requestResumeSession: (connectionId: ConnectionId, sessionId: string) => boolean;
   /** Request session history via a specific connection */
@@ -1665,8 +1670,32 @@ export function useConnectionManager(
   );
 
   const requestNewSession = useCallback(
-    (connectionId: ConnectionId, directory?: string): boolean => {
-      return sendToConnection(connectionId, createCreateSessionRequest(directory));
+    (
+      connectionId: ConnectionId,
+      directory?: string,
+      options?: { readonly profile?: string | undefined },
+    ): UUID | null => {
+      const mc = connectionsMapRef.current.get(connectionId);
+      if (!mc) return null;
+      return sendNewSessionRequest(
+        mc,
+        (message) => sendToConnection(connectionId, message),
+        directory,
+        options,
+      );
+    },
+    [sendToConnection],
+  );
+
+  const requestSessionProfiles = useCallback(
+    (connectionId: ConnectionId, directory?: string): UUID | null => {
+      const mc = connectionsMapRef.current.get(connectionId);
+      if (!mc) return null;
+      return sendSessionProfilesRequest(
+        mc,
+        (message) => sendToConnection(connectionId, message),
+        directory,
+      );
     },
     [sendToConnection],
   );
@@ -1991,6 +2020,7 @@ export function useConnectionManager(
     requestSessionList,
     requestTranscriptLoad,
     requestNewSession,
+    requestSessionProfiles,
     requestResumeSession,
     requestSessionHistory,
     provideIdentity,

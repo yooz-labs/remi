@@ -7,6 +7,7 @@
  */
 
 import { StatusPill } from '@/components/StatusPill';
+import { ProfileBadge } from '@/components/session/ProfileBadge';
 import { formatRelativeTime } from '@/lib/format-time';
 import { harnessLabel, sessionPillState, splitSessionName } from '@/lib/session-display';
 import type { ConnectionId, UISession } from '@/types';
@@ -87,6 +88,9 @@ export function SessionCard({
             <span className="shrink-0 rounded border border-[var(--color-border)] px-1.5 py-px font-mono text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">
               {harness}
             </span>
+          )}
+          {session.sessionProfilesEnabled && session.sharesProfiles && (
+            <ProfileBadge profile={session.profile} />
           )}
         </div>
 

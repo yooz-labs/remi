@@ -12,6 +12,7 @@ import { useState } from 'react';
 interface RecentProjectsProps {
   readonly directories: readonly RecentDirectory[];
   readonly onStartSession: (directory: string) => void;
+  readonly profilesEnabled?: boolean;
 }
 
 function formatAge(timestamp: string): string {
@@ -26,7 +27,7 @@ function formatAge(timestamp: string): string {
   return `${days}d ago`;
 }
 
-export function RecentProjects({ directories, onStartSession }: RecentProjectsProps) {
+export function RecentProjects({ directories, onStartSession, profilesEnabled = false }: RecentProjectsProps) {
   const [customPath, setCustomPath] = useState('');
   const [expanded, setExpanded] = useState(false);
 
@@ -84,7 +85,7 @@ export function RecentProjects({ directories, onStartSession }: RecentProjectsPr
           onKeyDown={(e) => {
             if (e.key === 'Enter' && customPath.trim()) {
               onStartSession(customPath.trim());
-              setCustomPath('');
+              if (!profilesEnabled) setCustomPath('');
             }
           }}
           placeholder="Custom path..."
@@ -94,7 +95,7 @@ export function RecentProjects({ directories, onStartSession }: RecentProjectsPr
           onClick={() => {
             if (customPath.trim()) {
               onStartSession(customPath.trim());
-              setCustomPath('');
+              if (!profilesEnabled) setCustomPath('');
             }
           }}
           disabled={!customPath.trim()}
