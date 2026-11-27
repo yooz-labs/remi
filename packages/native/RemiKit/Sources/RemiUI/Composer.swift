@@ -4,17 +4,19 @@ import AppKit
 #endif
 
 struct RemiComposerAction {
-    enum Role { case send, hideKeyboard, jumpToLatest }
+    enum Role { case send, hideKeyboard, jumpToLatest, interrupt }
     let role: Role
     let label: String
     let isEnabled: Bool
 
-    static func resolve(draft: String, keyboardUp: Bool, atLatest: Bool) -> Self {
+    static func resolve(draft: String, keyboardUp: Bool, atLatest: Bool,
+        promptWaiting: Bool = false, isSending: Bool = false, hasJumpHandler: Bool = true) -> Self {
+        if promptWaiting { return Self(role: .interrupt, label: "Interrupt agent", isEnabled: true) }
         if RemiComposerSubmission.content(from: draft) != nil {
-            return Self(role: .send, label: "Send message", isEnabled: true)
+            return Self(role: .send, label: "Send message", isEnabled: !isSending)
         }
-        if keyboardUp { return Self(role: .hideKeyboard, label: "Hide keyboard", isEnabled: true) }
-        return Self(role: .jumpToLatest, label: "Jump to latest", isEnabled: !atLatest)
+        if keyboardUp { return Self(role: .hideKeyboard, label: "Hide keyboard", isEnabled: !isSending) }
+        return Self(role: .jumpToLatest, label: "Jump to latest", isEnabled: !atLatest && hasJumpHandler && !isSending)
     }
 }
 
@@ -171,18 +173,19 @@ public struct RemiComposer<LeadingAccessory: View>: View {
         #else
         let keyboardUp = false
         #endif
-        return .resolve(draft: text, keyboardUp: keyboardUp, atLatest: atLatest || onJumpToLatest == nil)
+        return .resolve(draft: text, keyboardUp: keyboardUp, atLatest: atLatest,
+            promptWaiting: promptWaiting, isSending: isSending, hasJumpHandler: onJumpToLatest != nil)
     }
 
     private var actionButton: some View {
         let selection = composerAction
-        let isActive = promptWaiting || (selection.isEnabled && !isSending)
+        let isActive = selection.isEnabled
         return Button {
-            if promptWaiting { interrupt(); return }
             switch selection.role {
             case .send: onSend()
             case .hideKeyboard: isFocused = false
             case .jumpToLatest: onJumpToLatest?()
+            case .interrupt: interrupt()
             }
         } label: {
             Group {
@@ -207,7 +210,7 @@ public struct RemiComposer<LeadingAccessory: View>: View {
         .disabled(!isActive)
         .animation(RemiTheme.Motion.quick, value: isActive)
         .animation(RemiTheme.Motion.quick, value: selection.role)
-        .accessibilityLabel(promptWaiting ? "Interrupt agent" : selection.label)
+        .accessibilityLabel(selection.label)
         .accessibilityValue(isSending ? "Sending" : "")
     }
 

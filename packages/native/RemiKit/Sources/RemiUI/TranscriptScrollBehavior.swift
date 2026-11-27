@@ -5,12 +5,14 @@ public enum RemiTranscriptScrollTarget: Hashable {
 }
 
 struct RemiTranscriptFollowPolicy {
+    static func isAtLatest(remaining: CGFloat) -> Bool { remaining <= 1 }
+
     static func shouldFollow(followsLatest: Bool, isReviewing: Bool) -> Bool {
         followsLatest && !isReviewing
     }
 
     static func afterUserScroll(followsLatest: Bool, previousOffset: CGFloat, offset: CGFloat, remaining: CGFloat) -> Bool {
-        if remaining <= 1 { return true }
+        if isAtLatest(remaining: remaining) { return true }
         if offset < previousOffset { return false }
         return followsLatest
     }
@@ -63,7 +65,7 @@ public struct RemiTranscriptScrollBehavior: ViewModifier {
                     remaining: geometry.contentSize.height - geometry.visibleRect.maxY,
                     contentSize: geometry.contentSize, containerSize: geometry.containerSize)
             } action: { previous, current in
-                let latest = current.remaining <= 1
+                let latest = RemiTranscriptFollowPolicy.isAtLatest(remaining: current.remaining)
                 if atLatest != latest { atLatest = latest }
                 guard !isReviewing else { followingLayout = false; return }
                 if isInteracting {

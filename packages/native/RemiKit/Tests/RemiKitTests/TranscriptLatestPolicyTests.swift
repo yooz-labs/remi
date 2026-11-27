@@ -58,6 +58,19 @@ import Testing
         #expect(RemiScrollPositionPolicy.shouldSaveReview(followsLatest: true, visibleEntryID: nil))
     }
 
+    @Test func followThresholdAndComposerAvailability() {
+        #expect(!RemiTranscriptFollowPolicy.afterUserScroll(followsLatest: false, previousOffset: 100, offset: 120, remaining: 50))
+        #expect(RemiTranscriptFollowPolicy.afterUserScroll(followsLatest: false, previousOffset: 120, offset: 150, remaining: 1))
+        #expect(!RemiTranscriptFollowPolicy.isAtLatest(remaining: 1.01))
+        #expect(RemiTranscriptFollowPolicy.isAtLatest(remaining: 1))
+        let mac = RemiComposerAction.resolve(draft: "", keyboardUp: false, atLatest: false)
+        #expect(mac.role == .jumpToLatest && mac.isEnabled)
+        let prompt = RemiComposerAction.resolve(draft: "text", keyboardUp: false, atLatest: false, promptWaiting: true)
+        #expect(prompt.role == .interrupt && prompt.label == "Interrupt agent" && prompt.isEnabled)
+        #expect(!RemiComposerAction.resolve(draft: "text", keyboardUp: false, atLatest: false, isSending: true).isEnabled)
+        #expect(!RemiComposerAction.resolve(draft: "", keyboardUp: false, atLatest: false, hasJumpHandler: false).isEnabled)
+    }
+
     @Test func savedPositionAndReviewWinOverInitialFollow() {
         #expect(!RemiTranscriptFollowPolicy.shouldFollow(followsLatest: false, isReviewing: false))
         #expect(RemiTranscriptFollowPolicy.shouldFollow(followsLatest: true, isReviewing: false))
