@@ -390,6 +390,15 @@ test('remote explicit profile starts through a capable hub', async () => {
     if (proc.exitCode !== null) throw new Error(await new Response(proc.stderr).text());
     expect(fs.readFileSync(path.join(f.output, 'dir'), 'utf8')).toBe(f.profile);
     fs.writeFileSync(path.join(f.output, 'release'), '');
+    await pollUntil(
+      () => {
+        const records = JSON.parse(fs.readFileSync(path.join(f.remi, 'sessions.json'), 'utf8'))
+          .sessions as Array<{ exitedAt: string | null }>;
+        return records.length > 0 && records.every((record) => record.exitedAt !== null);
+      },
+      15000,
+      'remote profile child exit',
+    );
   } finally {
     fs.writeFileSync(path.join(f.output, 'release'), '');
   }
