@@ -780,7 +780,7 @@ export function parseGroupMembers(output: string, pgid: number): OwnedGroupMembe
   for (const line of output.split('\n')) {
     const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s*(.*)$/.exec(line);
     if (!line.trim()) continue;
-    if (!match) throw new Error('unparsable ps output');
+    if (!match) throw new Error(`unparsable ps output: ${sanitizeArgs(line).slice(0, 120)}`);
     if (Number(match[3]) !== pgid) continue;
     members.push({
       pid: Number(match[1]),
@@ -878,8 +878,8 @@ export async function snapshotOwnedGroup(
     let members: OwnedGroupMember[];
     try {
       members = parseGroupMembers(outcome.stdout, pgid);
-    } catch {
-      return unavailable('unparsable ps output');
+    } catch (error) {
+      return unavailable(error instanceof Error ? error.message : String(error));
     }
     return {
       pgid,
@@ -897,7 +897,7 @@ export function formatGroupSnapshot(snapshot: OwnedGroupSnapshot): string {
   const lines = [
     `Owned process group ${snapshot.pgid} at failure time: ${snapshot.members.length + snapshot.omitted} process(es)`,
   ];
-  if (snapshot.members.length === 0)
+  if (snapshot.members.length === 0 && snapshot.omitted === 0)
     lines.push('  (no members listed; the group was still alive on re-check)');
   for (const member of snapshot.members)
     lines.push(
@@ -1256,12 +1256,14 @@ export async function runChild(command: string[], options: RunOptions = {}): Pro
     if (options.timeoutMs !== undefined && probeOwnedGroup(child.pid)) {
       // Look before cleanup kills survivors. An empty, available snapshot only clears
       // the failure if a fresh group probe confirms that the group has ended.
-      const snapshot = await (options.groupSnapshot ?? snapshotOwnedGroup)(child.pid).catch(() => ({
-        pgid: child.pid,
-        members: [],
-        omitted: 0,
-        unavailable: 'snapshot failed',
-      }));
+      const snapshot = await (options.groupSnapshot ?? snapshotOwnedGroup)(child.pid).catch(
+        (error: unknown) => ({
+          pgid: child.pid,
+          members: [],
+          omitted: 0,
+          unavailable: `snapshot failed: ${error instanceof Error ? error.message : String(error)}`,
+        }),
+      );
       if (
         snapshot.unavailable === null &&
         snapshot.members.length === 0 &&
@@ -1278,6 +1280,7 @@ export async function runChild(command: string[], options: RunOptions = {}): Pro
     }
     return {
       pid: child.pid,
+      // Cleanup verification deliberately uses the real groupAlive, not the test seam.
       cleanupVerified: options.timeoutMs !== undefined && !groupAlive(child.pid),
       exitCode: interruptedBy ? 128 + (interruptedBy === 'SIGINT' ? 2 : 15) : (exitCode ?? 1),
       lastTestFile: headerState.last,
