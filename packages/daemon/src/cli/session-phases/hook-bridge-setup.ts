@@ -242,6 +242,15 @@ export interface HookBridgeDeps {
    */
   pushTurnFailed?: (sessionId: UUID, input: StopFailureHookInput) => void;
   /**
+   * Confirms a sent chat message to its sender once Claude reports the prompt it typed (#1818).
+   * Called from the `UserPromptSubmit` listener for an admitted main-agent prompt only, so it
+   * must stay cheap. Absent (tests, callers without chat) confirms nothing.
+   */
+  chatAcceptance?: {
+    promptSubmitted(sessionId: UUID, prompt: string): boolean;
+    forget(sessionId: UUID): void;
+  };
+  /**
    * Clear the `turn_failed` notice this session may have pushed (#1153): the
    * quiet dismissal sharing its collapse key, fired on the next main-agent
    * `Stop` that is not a stop-hook re-entry or the next main-agent tool call,
@@ -1292,6 +1301,15 @@ export function setupHookBridge(
     // answered No in the terminal after its hold was released (that fires
     // no hook at all), so its open entry cannot outlive the turn.
     autoApproveGate.cancelStale('UserPromptSubmit', { mainOnly: true });
+    // #1818: Claude's own report that it submitted this prompt confirms the chat message the
+    // daemon typed with exactly this text, if one is waiting. A terminal-typed prompt matches
+    // nothing. A failure here must never reach the hook response.
+    try {
+      if (typeof input.prompt === 'string')
+        deps.chatAcceptance?.promptSubmitted(sessionId, input.prompt);
+    } catch (err) {
+      logError(`[Hooks] chat acceptance failed: ${errorToString(err)}`);
+    }
     // A new prompt does NOT clear a "Claude stopped" notice (#1226): at a
     // usage limit every prompt fails too, and clearing here re-alerted the
     // phone on each retry. The next main-agent tool call or `Stop` clears it.
@@ -1316,6 +1334,7 @@ export function setupHookBridge(
     admits: (input: HookInput) => binder.admits(input),
     closeBinder: () => {
       binder.close();
+      deps.chatAcceptance?.forget(sessionId);
       // Drop the per-session PermissionRequest resolver (#496) so a stale
       // closure (over this session's gate/tracker) can't fire after teardown.
       hookServer.setPermissionResolver(null);

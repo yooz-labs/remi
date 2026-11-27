@@ -170,6 +170,8 @@ public enum RemiInboundEvent: Sendable, Equatable {
     case error(ErrorMessage, chatOrigin: UUID? = nil)
     case relayReady
     case answerResult(AnswerResultMessage)
+    /// `chatOrigin` is the authenticated socket that received it, the same rule as `error` (#1818).
+    case userInputResult(UserInputResultMessage, chatOrigin: UUID? = nil)
     case pushRegistration(RelayPushResponse)
     case relayStreamEnded(clean: Bool)
     /// A strictly decoded `session_terminal_*` answer (ADR 0047). Nothing sends the family until a
@@ -899,6 +901,15 @@ public actor RemiConnection {
             }
             guard applicationAdmitted else { throw RemiConnectionError.malformedMessage }
             eventHandler(.error(message, chatOrigin: chatSocketAuthenticated ? chatSocketID : nil))
+        case "user_input_result":
+            let result = try decoder.decode(UserInputResultMessage.self, from: data)
+            guard applicationAdmitted else { throw RemiConnectionError.malformedMessage }
+            // An outcome this app does not know is never read as acceptance.
+            if result.outcome == UserInputResultMessage.accepted {
+                eventHandler(.userInputResult(result, chatOrigin: chatSocketAuthenticated ? chatSocketID : nil))
+            } else {
+                eventHandler(.unsupported(type: envelope.type))
+            }
         case "answer_result":
             let result = try decoder.decode(AnswerResultMessage.self, from: data)
             guard AnswerResultWireOutcome(rawValue: result.outcome) != nil else { throw RelayFailure.malformed }
@@ -946,7 +957,9 @@ public actor RemiConnection {
             timestamp: Date().ISO8601Format(),
             clientVersion: configuration.clientVersion,
             clientId: configuration.clientId,
-            deviceId: configuration.deviceId
+            deviceId: configuration.deviceId,
+            // The app consumes user_input_result (#1818); a daemon pushes it only on this request.
+            clientCapabilities: [HubCapability.chatAcceptance.rawValue]
         )
         if configuration.relayPin != nil { try await send(message) }
         else { try await task.send(.data(encoder.encode(message))) }
