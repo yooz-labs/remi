@@ -70,6 +70,10 @@ test('create and resume routes carry only recordless profile ownership', async (
   expect(resumeProfileOf('claude', profileId)).toBe('work');
   const registry = new SessionRegistry({});
   const args: string[][] = [];
+  // One configuration for the create path and the resume request, which hands its snapshot on.
+  const profiles = parseProfiles({
+    work: { label: 'Work', remote_selectable: true, claude: { expects: 'subscription' } },
+  });
   const handlers = createCreateSessionHandlers({
     harnesses: new HarnessRegistry({
       claude: { command: '/bin/sh', validateRemoteArgs: validateClaudeRemoteArgs },
@@ -80,10 +84,7 @@ test('create and resume routes carry only recordless profile ownership', async (
     portRange: 1,
     bindHost: '127.0.0.1',
     inheritedArgs: () => ['--no-auth'],
-    profiles: () =>
-      parseProfiles({
-        work: { label: 'Work', remote_selectable: true, claude: { expects: 'subscription' } },
-      }),
+    profiles: () => profiles,
     resumeOwner: (harness, id) => {
       const record = harness === 'claude' ? store.findResumableByClaudeSessionId(id) : undefined;
       if (record) return { record: true, profile: record.profile };
@@ -102,7 +103,7 @@ test('create and resume routes carry only recordless profile ownership', async (
     expect((await handlers.startSession(project, { args: ['--resume', profileId] })).ok).toBe(true);
     const resume = createResumeSessionHandlers({
       readSidecar: () => ({ ok: true, entries: {} }),
-      readProfiles: () => ({ entries: {}, notices: [] }),
+      readProfiles: () => profiles,
       isHiddenResumeOwner: () => false,
       childSessions: handlers.startSession,
       harnessId: 'claude',
