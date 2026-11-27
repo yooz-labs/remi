@@ -89,9 +89,7 @@ export function SessionCard({
               {harness}
             </span>
           )}
-          {session.sessionProfilesEnabled && session.sharesProfiles && (
-            <ProfileBadge profile={session.profile} />
-          )}
+          {session.profileDisplay === 'card' && <ProfileBadge profile={session.profile} />}
         </div>
 
         {/* preview (two lines) */}

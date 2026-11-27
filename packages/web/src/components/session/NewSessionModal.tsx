@@ -7,18 +7,12 @@
  * Mirrors ConnectModal's sheet styling.
  */
 
+import { createInitialProfileSheetState } from '@/lib/profile-sheet-state';
+import type { ProfileSheetAction, ProfileSheetState } from '@/lib/profile-sheet-state';
 import type { RecentDirectory } from '@remi/shared/protocol.ts';
-import type { SessionProfilesResponseMessage } from '@remi/shared/protocol.ts';
 import { X } from 'lucide-react';
-import { useEffect, useState } from 'react';
 import { ProfilePicker } from './ProfilePicker';
 import { RecentProjects } from './RecentProjects';
-
-interface ProfileLookup {
-  readonly directory: string;
-  readonly loading: boolean;
-  readonly response?: SessionProfilesResponseMessage | null;
-}
 
 interface NewSessionModalProps {
   readonly open: boolean;
@@ -27,14 +21,14 @@ interface NewSessionModalProps {
   readonly onClose: () => void;
   readonly directories: readonly RecentDirectory[];
   readonly profilesEnabled?: boolean;
-  readonly profileLookup?: ProfileLookup | null;
-  readonly profileCreating?: boolean;
-  readonly profileCreateError?: string | null;
+  readonly profileState?: ProfileSheetState;
+  readonly onProfileAction?: (action: ProfileSheetAction) => void;
   readonly onRequestProfiles?: (directory: string) => void;
-  /** Start a session in the given directory (empty string = home/cwd). The
-   *  parent closes the sheet once the request is actually sent. */
+  /** Start a session in the given directory (empty string = home/cwd). */
   readonly onStartSession: (directory: string, profileId?: string) => void;
 }
+
+const NOOP_PROFILE_ACTION = (_action: ProfileSheetAction) => {};
 
 export function NewSessionModal({
   open,
@@ -42,21 +36,11 @@ export function NewSessionModal({
   onClose,
   directories,
   profilesEnabled = false,
-  profileLookup = null,
-  profileCreating = false,
-  profileCreateError = null,
+  profileState = createInitialProfileSheetState(),
+  onProfileAction = NOOP_PROFILE_ACTION,
   onRequestProfiles,
   onStartSession,
 }: NewSessionModalProps) {
-  const [selectedDirectory, setSelectedDirectory] = useState<string | null>(null);
-  const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    setSelectedDirectory(null);
-    setSelectedProfile(null);
-  }, [open]);
-
   if (!open) return null;
 
   const chooseDirectory = (directory: string) => {
@@ -64,26 +48,25 @@ export function NewSessionModal({
       onStartSession(directory);
       return;
     }
-    setSelectedDirectory(directory);
-    setSelectedProfile(null);
+    onProfileAction({ type: 'directory-selected', directory });
     onRequestProfiles?.(directory);
   };
 
-  const currentLookup =
-    selectedDirectory !== null && profileLookup?.directory === selectedDirectory
-      ? profileLookup
-      : null;
+  const lookup = profileState.lookup;
+  const selectedDirectory = profileState.selectedDirectory;
 
   return (
     <div
       data-testid="new-session-modal-backdrop"
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/60"
-      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-end justify-center"
     >
-      <div
-        className="max-h-[88vh] w-full max-w-md overflow-y-auto rounded-t-[28px] border border-[var(--color-border)] bg-[var(--color-surface)] pb-[max(env(safe-area-inset-bottom),12px)] shadow-2xl animate-[sheet-up_260ms_cubic-bezier(.2,.8,.2,1)]"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <button
+        type="button"
+        aria-label="Close new session sheet"
+        onClick={onClose}
+        className="absolute inset-0 cursor-default border-0 bg-black/60 p-0"
+      />
+      <div className="relative z-10 max-h-[88vh] w-full max-w-md overflow-y-auto rounded-t-[28px] border border-[var(--color-border)] bg-[var(--color-surface)] pb-[max(env(safe-area-inset-bottom),12px)] shadow-2xl animate-[sheet-up_260ms_cubic-bezier(.2,.8,1)]">
         <div className="mx-auto mb-1 mt-3 h-1 w-9 rounded-full bg-[var(--color-border)]" />
         {/* Header */}
         <div className="flex items-center justify-between px-5 pb-2 pt-1">
@@ -120,16 +103,19 @@ export function NewSessionModal({
           directories={directories}
           onStartSession={chooseDirectory}
           profilesEnabled={profilesEnabled}
+          onPathEdit={() => onProfileAction({ type: 'path-edited' })}
         />
 
         {profilesEnabled && selectedDirectory !== null && (
           <ProfilePicker
-            loading={currentLookup?.loading ?? true}
-            response={currentLookup?.response}
-            selectedProfile={selectedProfile}
-            creating={profileCreating}
-            error={profileCreateError}
-            onSelectProfile={setSelectedProfile}
+            directory={selectedDirectory}
+            lookup={lookup}
+            selectedProfile={profileState.selectedProfile}
+            creating={profileState.create.status === 'pending'}
+            error={profileState.createError}
+            onSelectProfile={(profileId) =>
+              onProfileAction({ type: 'profile-selected', profileId })
+            }
             onStart={(profileId) => onStartSession(selectedDirectory, profileId)}
           />
         )}

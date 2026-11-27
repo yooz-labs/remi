@@ -141,7 +141,7 @@ export function ChatHeader({
               {harness}
             </span>
           )}
-          {session.sessionProfilesEnabled && (
+          {(session.profileDisplay === 'header' || session.profileDisplay === 'card') && (
             <ProfileBadge profile={session.profile} showChangedTitle />
           )}
         </div>

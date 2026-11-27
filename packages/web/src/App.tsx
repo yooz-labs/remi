@@ -72,6 +72,18 @@ import { applySessionRotation, bindingRotated } from '@/lib/session-binding';
 import { shouldEvictCachedSession } from '@/lib/session-eviction';
 import { autoSelectIfNone, evictIfActive, evictManyIfActive } from '@/lib/session-selection';
 import { dedupSessions } from '@/lib/session-dedup';
+import {
+  EMPTY_PROFILE_SHARING_SOURCES,
+  deriveProfileDisplay,
+  updateProfileSharingSources,
+} from '@/lib/profile-sharing';
+import {
+  PROFILE_CONNECTION_CLOSED,
+  PROFILE_LOOKUP_FAILURE,
+  createInitialProfileSheetState,
+  profileSheetReducer,
+} from '@/lib/profile-sheet-state';
+import type { ProfileSharingSources } from '@/lib/profile-sharing';
 import { type ReplyContext, formatReplyMessage } from '@/lib/reply-format';
 import { parseThemeSetting, resolveEffectiveTheme } from '@/lib/theme';
 import type {
@@ -93,7 +105,6 @@ import type {
   ProtocolMessage,
   PushPreferences,
   RecentDirectory,
-  SessionProfilesResponseMessage,
 } from '@remi/shared/protocol.ts';
 import {
   createAnswer,
@@ -104,7 +115,7 @@ import {
   generateId,
 } from '@remi/shared/protocol.ts';
 import type { Bullet, DiscoverableSession, UUID } from '@remi/shared/types.ts';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 
 const LOCALSTORAGE_CONNECTIONS_KEY = 'remi-connections';
 const LOCALSTORAGE_SESSION_KEY = 'remi-last-session';
@@ -291,14 +302,11 @@ function App() {
     setShowConnectModal(true);
   }, []);
   // New-session sheet (#638): recent project directories from the daemon.
-  const [showNewSessionModal, setShowNewSessionModal] = useState(false);
-  const [profileLookup, setProfileLookup] = useState<{
-    readonly directory: string;
-    readonly loading: boolean;
-    readonly response?: SessionProfilesResponseMessage | null;
-  } | null>(null);
-  const [profileCreatePending, setProfileCreatePending] = useState(false);
-  const [profileCreateError, setProfileCreateError] = useState<string | null>(null);
+  const [profileSheetState, dispatchProfileSheet] = useReducer(
+    profileSheetReducer,
+    undefined,
+    () => createInitialProfileSheetState(),
+  );
   const [recentDirectories, setRecentDirectories] = useState<readonly RecentDirectory[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [resumingSession, setResumingSession] = useState<string | null>(null);
@@ -339,9 +347,8 @@ function App() {
   const replyContextsRef = useRef<Map<UUID, ReplyContext>>(replyContexts);
   const requestSessionListRef = useRef<typeof requestSessionList | null>(null);
   const profileCapabilitiesRef = useRef<Map<ConnectionId, boolean>>(new Map());
-  const profileSharesRef = useRef<Map<ConnectionId, boolean>>(new Map());
-  const pendingProfileLookupRef = useRef<{ requestId: UUID; directory: string } | null>(null);
-  const pendingProfileCreateRef = useRef<UUID | null>(null);
+  const profileSharingRef = useRef<Map<ConnectionId, ProfileSharingSources>>(new Map());
+  const profileAckCarriesRef = useRef<Map<ConnectionId, boolean>>(new Map());
   const connectionModeRef = useRef<((id: ConnectionId) => 'direct' | 'relay' | null) | null>(null);
   const directConnectionUrlRef = useRef<((id: ConnectionId) => string | null) | null>(null);
   const connectionsRef = useRef<readonly ConnectionState[]>([]);
@@ -564,9 +571,18 @@ function App() {
         const relayConnection = connectionModeRef.current?.(connectionId) === 'relay';
         const sessionProfilesEnabled = hubSupport(message, ['session_profiles']).supported;
         profileCapabilitiesRef.current.set(connectionId, sessionProfilesEnabled);
-        if (message.profile && message.profile.id !== 'default') {
-          profileSharesRef.current.set(connectionId, true);
-        }
+        profileAckCarriesRef.current.set(connectionId, message.profile !== undefined);
+        const profileSources = updateProfileSharingSources(EMPTY_PROFILE_SHARING_SOURCES, {
+          type: 'reconnect',
+          profile: message.profile,
+        });
+        profileSharingRef.current.set(connectionId, profileSources);
+        const profileDisplay = deriveProfileDisplay(sessionProfilesEnabled, profileSources);
+        setSessions((prev) =>
+          prev.map((session) =>
+            session.connectionId === connectionId ? { ...session, profileDisplay } : session,
+          ),
+        );
         // The attached session from this daemon. Additional sessions may arrive via session_list_response.
         if (!message.sessionId) {
           // Normal for a session-less hub (#542): its ack carries null and
@@ -628,10 +644,7 @@ function App() {
                     ...(message.harness !== undefined && { harness: message.harness }),
                     ...(message.harnessSessionId !== undefined && { harnessSessionId: message.harnessSessionId }),
                     profile: message.profile,
-                    sessionProfilesEnabled,
-                    sharesProfiles:
-                      profileSharesRef.current.get(connectionId) ??
-                      Boolean(message.profile && message.profile.id !== 'default'),
+                    profileDisplay,
                     // #662/#663: refresh on EVERY hello_ack, not just the
                     // first -- this also fires when a queued connection is
                     // promoted (fresh hello_ack with attachState: 'attached'),
@@ -659,10 +672,7 @@ function App() {
               ...(message.harness !== undefined && { harness: message.harness }),
                     ...(message.harnessSessionId !== undefined && { harnessSessionId: message.harnessSessionId }),
               profile: message.profile,
-              sessionProfilesEnabled,
-              sharesProfiles:
-                profileSharesRef.current.get(connectionId) ??
-                Boolean(message.profile && message.profile.id !== 'default'),
+              profileDisplay,
               ...(message.attachState !== undefined && { attachState: message.attachState }),
             } satisfies UISession,
           ];
@@ -1057,11 +1067,18 @@ function App() {
       case 'session_list_response': {
         // Look up the hello_ack session ID directly from the mutable connection state
         const helloAckSessionId = getSessionIdRef.current?.(connectionId) ?? null;
-        const sharesProfiles = message.sessions.some(
-          (session) => session.profile !== undefined && session.profile.id !== 'default',
+        const profileSources = updateProfileSharingSources(
+          profileSharingRef.current.get(connectionId) ?? EMPTY_PROFILE_SHARING_SOURCES,
+          {
+            type: 'session-list',
+            carriesProfile:
+              profileAckCarriesRef.current.get(connectionId) === true ||
+              message.sessions.some((session) => session.profile !== undefined),
+          },
         );
-        profileSharesRef.current.set(connectionId, sharesProfiles);
+        profileSharingRef.current.set(connectionId, profileSources);
         const sessionProfilesEnabled = profileCapabilitiesRef.current.get(connectionId) ?? false;
+        const profileDisplay = deriveProfileDisplay(sessionProfilesEnabled, profileSources);
         // Map, filter, and sort DiscoverableSession[] to UISession[]
         const discovered: UISession[] = message.sessions
           .filter((ds: DiscoverableSession) => {
@@ -1101,8 +1118,7 @@ function App() {
               source: ds.source,
               canResume: showResume,
               profile: ds.profile,
-              sessionProfilesEnabled,
-              sharesProfiles,
+              profileDisplay,
               ...(ds.claudeSessionId !== undefined && { claudeSessionId: ds.claudeSessionId }),
               ...(ds.transcriptPath !== undefined && { transcriptPath: ds.transcriptPath }),
               ...(ds.harness !== undefined && { harness: ds.harness }),
@@ -1322,16 +1338,12 @@ function App() {
       }
 
       case 'create_session_response': {
-        if (pendingProfileCreateRef.current === message.requestId) {
-          pendingProfileCreateRef.current = null;
-          setProfileCreatePending(false);
-          if (message.success) {
-            setProfileCreateError(null);
-            setShowNewSessionModal(false);
-          } else {
-            setProfileCreateError(message.error || 'The machine refused this request.');
-          }
-        }
+        dispatchProfileSheet({
+          type: 'create-response',
+          requestId: message.requestId,
+          success: message.success,
+          error: message.error,
+        });
         if (message.success && message.sessionId) {
           // New session created; it will appear via hello_ack. Refresh session list.
           const reqList = requestSessionListRef.current;
@@ -2020,22 +2032,21 @@ function App() {
         break;
 
       case 'session_profiles_response': {
-        const sharesProfiles = message.profiles.some((profile) => profile.id !== 'default');
-        profileSharesRef.current.set(connectionId, sharesProfiles);
+        const profileSources = updateProfileSharingSources(
+          profileSharingRef.current.get(connectionId) ?? EMPTY_PROFILE_SHARING_SOURCES,
+          { type: 'lookup', response: message },
+        );
+        profileSharingRef.current.set(connectionId, profileSources);
         const sessionProfilesEnabled = profileCapabilitiesRef.current.get(connectionId) ?? false;
+        const profileDisplay = deriveProfileDisplay(sessionProfilesEnabled, profileSources);
         setSessions((prev) =>
           prev.map((session) =>
             session.connectionId === connectionId
-              ? { ...session, sessionProfilesEnabled, sharesProfiles }
+              ? { ...session, profileDisplay }
               : session,
           ),
         );
-
-        const pending = pendingProfileLookupRef.current;
-        if (pending?.requestId === message.requestId) {
-          pendingProfileLookupRef.current = null;
-          setProfileLookup({ directory: pending.directory, loading: false, response: message });
-        }
+        dispatchProfileSheet({ type: 'lookup-response', response: message });
         break;
       }
 
@@ -2634,6 +2645,25 @@ function App() {
   const newSessionProfilesEnabled = newSessionConnection
     ? hubSupport(newSessionConnection, ['session_profiles']).supported
     : false;
+
+  useEffect(() => {
+    const pendingConnectionId =
+      profileSheetState.lookup.status === 'loading'
+        ? profileSheetState.lookup.connectionId
+        : profileSheetState.create.status === 'pending'
+          ? profileSheetState.create.connectionId
+          : null;
+    if (pendingConnectionId === null) return;
+    if (
+      connections.some(
+        (connection) =>
+          connection.connectionId === pendingConnectionId && connection.status === 'connected',
+      )
+    ) {
+      return;
+    }
+    dispatchProfileSheet({ type: 'connection-lost', connectionId: pendingConnectionId });
+  }, [connections, profileSheetState.create, profileSheetState.lookup]);
 
   // Get active session. Derive connectionStatus from live connection state
   // at render time to avoid stale status from session_list_response merge timing.
@@ -3366,11 +3396,7 @@ function App() {
   const handleOpenNewSession = useCallback(() => {
     const conn = connections.find((c) => c.status === 'connected');
     if (!conn) return;
-    pendingProfileLookupRef.current = null;
-    pendingProfileCreateRef.current = null;
-    setProfileLookup(null);
-    setProfileCreatePending(false);
-    setProfileCreateError(null);
+    dispatchProfileSheet({ type: 'open' });
     setRecentDirectories([]);
     if (historyTimeoutRef.current) clearTimeout(historyTimeoutRef.current);
     const sent = requestSessionHistory(conn.connectionId);
@@ -3383,25 +3409,34 @@ function App() {
     } else {
       setHistoryLoading(false);
     }
-    setShowNewSessionModal(true);
   }, [connections, requestSessionHistory]);
 
   const handleRequestSessionProfiles = useCallback(
     (directory: string) => {
       const conn = connections.find((c) => c.status === 'connected');
       if (!conn) {
-        setProfileLookup({ directory, loading: false, response: null });
+        dispatchProfileSheet({
+          type: 'lookup-failed',
+          directory,
+          message: PROFILE_CONNECTION_CLOSED,
+        });
         return;
       }
       const requestId = requestSessionProfiles(conn.connectionId, directory.trim() || undefined);
       if (!requestId) {
-        pendingProfileLookupRef.current = null;
-        setProfileLookup({ directory, loading: false, response: null });
+        dispatchProfileSheet({
+          type: 'lookup-failed',
+          directory,
+          message: PROFILE_LOOKUP_FAILURE,
+        });
         return;
       }
-      pendingProfileLookupRef.current = { requestId, directory };
-      setProfileLookup({ directory, loading: true, response: null });
-      setProfileCreateError(null);
+      dispatchProfileSheet({
+        type: 'lookup-started',
+        directory,
+        requestId,
+        connectionId: conn.connectionId,
+      });
     },
     [connections, requestSessionProfiles],
   );
@@ -3411,8 +3446,30 @@ function App() {
   // Close the sheet only when the request was actually sent.
   const handleStartSessionInDir = useCallback(
     (directory: string, profileId?: string) => {
-      const conn = connections.find((c) => c.status === 'connected');
-      if (!conn) return;
+      const profileLookupConnectionId =
+        profileSheetState.lookup.status === 'ready'
+          ? profileSheetState.lookup.connectionId
+          : null;
+      const conn = profileId !== undefined && profileLookupConnectionId !== null
+        ? connections.find(
+            (connection) =>
+              connection.connectionId === profileLookupConnectionId && connection.status === 'connected',
+          )
+        : connections.find((connection) => connection.status === 'connected');
+      if (!conn) {
+        if (
+          profileId !== undefined &&
+          profileSheetState.lookup.status === 'ready' &&
+          profileSheetState.lookup.directory === directory
+        ) {
+          dispatchProfileSheet({
+            type: 'lookup-failed',
+            directory,
+            message: PROFILE_CONNECTION_CLOSED,
+          });
+        }
+        return;
+      }
       const requestId = requestNewSession(
         conn.connectionId,
         directory.trim() || undefined,
@@ -3420,14 +3477,18 @@ function App() {
       );
       if (!requestId) return;
       if (profileId !== undefined) {
-        pendingProfileCreateRef.current = requestId;
-        setProfileCreatePending(true);
-        setProfileCreateError(null);
+        dispatchProfileSheet({
+          type: 'create-started',
+          directory,
+          profileId,
+          requestId,
+          connectionId: conn.connectionId,
+        });
       } else {
-        setShowNewSessionModal(false);
+        dispatchProfileSheet({ type: 'close' });
       }
     },
-    [connections, requestNewSession],
+    [connections, profileSheetState.lookup, requestNewSession],
   );
 
   // Surface a system message in a specific session's thread.
@@ -3734,17 +3795,13 @@ function App() {
       />
 
       <NewSessionModal
-        open={showNewSessionModal}
+        open={profileSheetState.open}
         loading={historyLoading}
-        onClose={() => {
-          pendingProfileLookupRef.current = null;
-          setShowNewSessionModal(false);
-        }}
+        onClose={() => dispatchProfileSheet({ type: 'close' })}
         directories={recentDirectories}
         profilesEnabled={newSessionProfilesEnabled}
-        profileLookup={profileLookup}
-        profileCreating={profileCreatePending}
-        profileCreateError={profileCreateError}
+        profileState={profileSheetState}
+        onProfileAction={dispatchProfileSheet}
         onRequestProfiles={handleRequestSessionProfiles}
         onStartSession={handleStartSessionInDir}
       />

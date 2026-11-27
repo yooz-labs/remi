@@ -82,8 +82,10 @@ export interface ConnectionState {
   /** Ephemeral browser receiver owned by this concrete connection. */
   readonly browserLinks?: import('@/lib/browser-links').BrowserLinksState;
   /** Independently owned child browser receivers on the encrypted machine channel. */
-  readonly relayBrowserLinks?: readonly { readonly sessionId: string;
-    readonly state: import('@/lib/browser-links').BrowserLinksState }[];
+  readonly relayBrowserLinks?: readonly {
+    readonly sessionId: string;
+    readonly state: import('@/lib/browser-links').BrowserLinksState;
+  }[];
   /** Private local download state; available only from this connection's scoped hello. */
   readonly fileDownloadState?: import('@/lib/file-download').FileDownloadState;
   readonly fileDownloadSessionId?: UUID | null;
@@ -138,7 +140,10 @@ export interface UIMessage {
   /** Text may be in the terminal but Enter was withheld; never retry blindly (#1488). */
   readonly inputMayBePartial?: boolean;
   /** Structured submission is distinct from a transport receipt or model completion. */
-  readonly chatSubmission?: { readonly outcome: 'pending' | 'accepted' | 'refused' | 'uncertain'; readonly label: string };
+  readonly chatSubmission?: {
+    readonly outcome: 'pending' | 'accepted' | 'refused' | 'uncertain';
+    readonly label: string;
+  };
   readonly isEditing: boolean;
   readonly editedAt?: Timestamp;
   readonly tool?: string;
@@ -207,10 +212,8 @@ export interface UISession {
   readonly harness?: HarnessId;
   /** Visible configured profile associated with this session, when present. */
   readonly profile?: SessionProfileRef;
-  /** Whether this connection advertises the session profile capability. */
-  readonly sessionProfilesEnabled?: boolean;
-  /** Whether this connection shares any profile other than the built-in default. */
-  readonly sharesProfiles?: boolean;
+  /** Whether the profile identity belongs on the card, header, or neither. */
+  readonly profileDisplay?: 'hidden' | 'header' | 'card';
   /** Current harness thread, kept separate from the Claude-specific identity. */
   readonly harnessSessionId?: string | null;
   /**

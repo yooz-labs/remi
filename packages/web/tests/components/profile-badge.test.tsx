@@ -21,24 +21,31 @@ const card = (session: UISession) =>
 const header = (session: UISession) => renderToStaticMarkup(<ChatHeader session={session} />);
 
 describe('profile badge', () => {
-  test('a profile ref does not change either component without the capability', () => {
-    const withoutProfile = baseSession();
-    const withProfile = baseSession({ profile: { id: 'work', label: 'Work' } });
-    expect(card(withProfile)).toBe(card(withoutProfile));
-    expect(header(withProfile)).toBe(header(withoutProfile));
+  test('without the capability, markup matches the pre-profile prop set exactly', () => {
+    const preProfileProps = baseSession();
+    const hiddenProfile = baseSession({
+      profile: { id: 'work', label: 'Work' },
+      profileDisplay: 'hidden',
+    });
+    for (const markup of [card(hiddenProfile), header(hiddenProfile)]) {
+      expect(markup).not.toContain('Default sign-in');
+      expect(markup).not.toContain('aria-label="Profile');
+    }
+    expect(card(hiddenProfile)).toBe(card(preProfileProps));
+    expect(header(hiddenProfile)).toBe(header(preProfileProps));
   });
 
   test('the card stays quiet for a default-only machine while the chat header names the default', () => {
-    const session = baseSession({ sessionProfilesEnabled: true, sharesProfiles: false });
+    const session = baseSession({ profileDisplay: 'header' });
     expect(card(session)).not.toContain('Default sign-in');
     expect(header(session)).toContain('Default sign-in');
+    expect(header(session)).toContain('aria-label="Profile Default sign-in"');
   });
 
   test('a shared profile is labeled on the card and chat header with an accessible name', () => {
     const session = baseSession({
       profile: { id: 'work', label: 'Work' },
-      sessionProfilesEnabled: true,
-      sharesProfiles: true,
+      profileDisplay: 'card',
     });
     for (const markup of [card(session), header(session)]) {
       expect(markup).toContain('>Work</span>');
@@ -47,7 +54,7 @@ describe('profile badge', () => {
   });
 
   test('a shared default session says Default sign-in on the card', () => {
-    const session = baseSession({ sessionProfilesEnabled: true, sharesProfiles: true });
+    const session = baseSession({ profileDisplay: 'card' });
     expect(card(session)).toContain('>Default sign-in</span>');
     expect(card(session)).toContain('aria-label="Profile Default sign-in"');
   });
@@ -55,8 +62,7 @@ describe('profile badge', () => {
   test('a removed profile has a removed label and accessible name', () => {
     const session = baseSession({
       profile: { id: 'work', label: 'Work', state: 'removed' },
-      sessionProfilesEnabled: true,
-      sharesProfiles: true,
+      profileDisplay: 'card',
     });
     for (const markup of [card(session), header(session)]) {
       expect(markup).toContain('>Work (removed)</span>');
@@ -67,19 +73,17 @@ describe('profile badge', () => {
   test('changed settings are explained in the chat header', () => {
     const session = baseSession({
       profile: { id: 'work', label: 'Work', state: 'changed' },
-      sessionProfilesEnabled: true,
-      sharesProfiles: true,
+      profileDisplay: 'card',
     });
     expect(header(session)).toContain(
-      "This profile&#x27;s settings changed after the session started; the session keeps the settings it started with",
+      'This profile&#x27;s settings changed after the session started; the session keeps the settings it started with',
     );
   });
 
   test('an unknown profile state keeps its label and adds no note', () => {
     const session = baseSession({
       profile: { id: 'work', label: 'Work', state: 'future' as 'current' },
-      sessionProfilesEnabled: true,
-      sharesProfiles: true,
+      profileDisplay: 'card',
     });
     expect(header(session)).toContain('>Work</span>');
     expect(header(session)).not.toContain('settings changed');
