@@ -250,6 +250,7 @@ export interface HookBridgeDeps {
    */
   chatAcceptance?: {
     promptSubmitted(sessionId: UUID, prompt: string): boolean;
+    queuedCommand?(sessionId: UUID, prompt: string, timestamp: unknown, uuid: string): boolean;
     forget(sessionId: UUID): void;
   };
   /**
@@ -759,6 +760,9 @@ export function setupHookBridge(
       transcriptWatchers,
       transcriptFallbackTimers,
       transcriptDiscovery,
+      onQueuedCommand: (id, prompt, timestamp, uuid) => {
+        deps.chatAcceptance?.queuedCommand?.(id, prompt, timestamp, uuid);
+      },
       withholdTranscriptPath: deps.withholdTranscriptPath,
       messageApi,
       sendAndRecord,

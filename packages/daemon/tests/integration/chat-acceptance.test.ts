@@ -7,7 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type ProtocolMessage, type UUID, generateId } from '@remi/shared';
@@ -16,6 +16,7 @@ import { QuestionPresenceTracker } from '../../src/api/question-presence-tracker
 import { ChatAcceptanceTracker } from '../../src/cli/handlers/chat-acceptance.ts';
 import { createInputHandlers } from '../../src/cli/handlers/input-events.ts';
 import type { PromptUp } from '../../src/cli/handlers/prompt-up.ts';
+import { createTranscriptHandlers } from '../../src/cli/handlers/transcript-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
 import {
   type HookBridgeHandle,
@@ -27,6 +28,7 @@ import { SessionBindingStore } from '../../src/session/session-binding-store.ts'
 import { SessionRegistryFile } from '../../src/session/session-registry-file.ts';
 import { SessionRegistry } from '../../src/session/session-registry.ts';
 import { SessionStore } from '../../src/session/session-store.ts';
+import { TranscriptIndex } from '../../src/session/transcript-index.ts';
 import { TranscriptDiscovery } from '../../src/transcript/index.ts';
 
 const CONN_A = generateId() as UUID;
@@ -53,6 +55,7 @@ describe('chat acceptance through the hook bridge (#1818)', () => {
   let server: HookServer;
   let handle: HookBridgeHandle;
   let sent: Sent[];
+  let liveEntries: ProtocolMessage[];
   let clock: number;
   let sessionId: UUID;
   let claudeId: string;
@@ -60,6 +63,7 @@ describe('chat acceptance through the hook bridge (#1818)', () => {
   /** Runs between the typed text and its Enter: the window a late refusal happens in. */
   let afterTextBeforeEnter: () => void;
   let handlers: ReturnType<typeof createInputHandlers>;
+  let history: ReturnType<typeof createTranscriptHandlers>;
   const watchers = new Map();
   const timers = new Map<UUID, ReturnType<typeof setInterval>>();
 
@@ -68,6 +72,7 @@ describe('chat acceptance through the hook bridge (#1818)', () => {
     home = mkdtempSync(join(tmpdir(), 'remi-chat-acceptance-'));
     ptyOutput = '';
     sent = [];
+    liveEntries = [];
     clock = 1_000_000;
     promptUp = null;
     afterTextBeforeEnter = () => {};
@@ -101,6 +106,21 @@ describe('chat acceptance through the hook bridge (#1818)', () => {
     registry.attachConnection(sessionId, CONN_B);
     const bindingStore = new SessionBindingStore(new SessionStore(join(home, 'sessions.json')));
     const liveSessionsRegistry = new SessionRegistryFile(join(home, 'live-sessions'));
+
+    history = createTranscriptHandlers({
+      isHiddenOwner: () => false,
+      transcriptDiscovery: new TranscriptDiscovery(),
+      harness: { transcriptPath: () => null },
+      transcriptWatchers: watchers,
+      bindingStore,
+      transcriptIndex: new TranscriptIndex(join(home, 'transcript-index.json')),
+      currentOwnedSession: () => null,
+      subagentViews: { resolvePath: () => null },
+      send: (connectionId, message) => {
+        sent.push({ connectionId, message });
+        return true;
+      },
+    });
 
     const chatAcceptance = new ChatAcceptanceTracker({
       send: (connectionId, message) => {
@@ -141,7 +161,9 @@ describe('chat acceptance through the hook bridge (#1818)', () => {
         sessionId,
         workingDirectory: home,
         messageApi,
-        sendAndRecord: () => {},
+        sendAndRecord: (message) => {
+          liveEntries.push(message);
+        },
         tracker: new QuestionPresenceTracker((q) => messageApi.handleQuestion(q)),
         hasLocalTerminal: true,
       },
@@ -195,6 +217,151 @@ describe('chat acceptance through the hook bridge (#1818)', () => {
     await handlers.onUserInput(connection, sessionId, text, false, undefined, messageId);
     return messageId;
   };
+
+  function queued(prompt: string, time: number, uuid: string): string {
+    return `${JSON.stringify({ type: 'attachment', uuid, sessionId: claudeId, timestamp: new Date(time).toISOString(), attachment: { type: 'queued_command', prompt, source_uuid: `source-${uuid}`, delivery_id: `delivery-${uuid}`, commandMode: 'prompt', origin: { kind: 'human' }, timestamp: new Date(time).toISOString(), humanTurn: true } })}\n`;
+  }
+
+  async function startTail(contents = ''): Promise<string> {
+    const file = join(home, `${claudeId}.jsonl`);
+    writeFileSync(file, contents);
+    await until(() => watchers.get(sessionId)?.isTailing === true, 'live transcript tail');
+    return file;
+  }
+
+  test('replay never accepts and live attachments must follow the send time', async () => {
+    const messageId = await send(CONN_A, 'continue');
+    const file = await startTail(
+      queued('continue', clock - 1000, 'old') + queued('continue', clock + 1000, 'future-replay'),
+    );
+    await until(
+      () =>
+        liveEntries.some(
+          (entry) => entry.type === 'transcript_content' && entry.entryUuid === 'old',
+        ),
+      'old replay',
+    );
+    expect(results()).toEqual([]);
+    expect(
+      liveEntries.some(
+        (entry) => entry.type === 'transcript_content' && entry.entryUuid === 'future-replay',
+      ),
+    ).toBe(true);
+    appendFileSync(file, queued('continue', clock - 1, 'early-live'));
+    appendFileSync(file, queued('different', clock + 1000, 'different'));
+    await until(
+      () =>
+        liveEntries.some(
+          (entry) => entry.type === 'transcript_content' && entry.entryUuid === 'different',
+        ),
+      'early live entries',
+    );
+    expect(results()).toEqual([]);
+    appendFileSync(file, queued('continue', clock + 1000, 'new'));
+    await until(() => results().length === 1, 'queued acceptance');
+    expect(results()[0]).toMatchObject({
+      connectionId: CONN_A,
+      message: { sessionId, messageId, outcome: 'accepted' },
+    });
+    await until(
+      () =>
+        liveEntries.some(
+          (entry) => entry.type === 'transcript_content' && entry.entryUuid === 'new',
+        ),
+      'live queued entry',
+    );
+    await submitted('continue');
+    expect(results()).toHaveLength(1);
+    appendFileSync(file, queued('continue', clock + 1000, 'new'));
+    await watchers.get(sessionId)?.forceRead();
+    expect(results()).toHaveLength(1);
+  });
+
+  test('attachment and admitted hook together leave a second identical message pending', async () => {
+    const first = await send(CONN_A, 'again');
+    await send(CONN_B, 'again');
+    const file = await startTail();
+    appendFileSync(file, queued('again', clock + 1000, 'once'));
+    await until(() => results().length === 1, 'first queued acceptance');
+    await submitted('again');
+    expect(results().map((result) => result.message.messageId)).toEqual([first]);
+  });
+
+  test('two live attachments confirm two identical submissions in FIFO order', async () => {
+    const first = await send(CONN_A, 'again');
+    const second = await send(CONN_B, 'again');
+    const file = await startTail();
+    appendFileSync(
+      file,
+      queued('again', clock + 1000, 'first') + queued('again', clock + 1000, 'second'),
+    );
+    await until(() => results().length === 2, 'both queued acceptances');
+    expect(results().map((result) => [result.connectionId, result.message.messageId])).toEqual([
+      [CONN_A, first],
+      [CONN_B, second],
+    ]);
+  });
+
+  test('send time is captured before the PTY writes, not after its Enter', async () => {
+    const beforeWrite = clock;
+    afterTextBeforeEnter = () => {
+      clock += 2000;
+    };
+    const messageId = await send(CONN_A, 'timing');
+    const file = await startTail();
+    appendFileSync(file, queued('timing', beforeWrite + 1000, 'timing'));
+    await until(() => results().length === 1, 'queued acceptance after send time');
+    expect(results()[0]?.message.messageId).toBe(messageId);
+  });
+
+  test('hook before attachment does not confirm the next identical message', async () => {
+    const first = await send(CONN_A, 'again');
+    await send(CONN_B, 'again');
+    const file = await startTail();
+    await submitted('again');
+    appendFileSync(file, queued('again', clock + 1000, 'later'));
+    await until(
+      () =>
+        liveEntries.some(
+          (entry) => entry.type === 'transcript_content' && entry.entryUuid === 'later',
+        ),
+      'later queued entry',
+    );
+    expect(results().map((result) => result.message.messageId)).toEqual([first]);
+  });
+
+  test('sidechain attachments do not confirm main-agent chat', async () => {
+    await send(CONN_A, 'continue');
+    const line = JSON.parse(queued('continue', clock + 1000, 'sidechain'));
+    line.isSidechain = true;
+    const file = await startTail();
+    appendFileSync(
+      file,
+      `${JSON.stringify(line)}\n${queued('sentinel', clock + 1000, 'sentinel')}`,
+    );
+    await until(
+      () =>
+        liveEntries.some(
+          (entry) => entry.type === 'transcript_content' && entry.entryUuid === 'sentinel',
+        ),
+      'sentinel entry',
+    );
+    expect(
+      liveEntries.some(
+        (entry) => entry.type === 'transcript_content' && entry.entryUuid === 'sidechain',
+      ),
+    ).toBe(false);
+    expect(results()).toEqual([]);
+    history.onTranscriptLoadRequest(CONN_A, sessionId, generateId() as UUID);
+    await until(
+      () => sent.some((item) => item.message.type === 'transcript_load_complete'),
+      'history load',
+    );
+    const entries = sent
+      .map((item) => item.message)
+      .filter((message) => message.type === 'transcript_content');
+    expect(entries.map((entry) => entry.entryUuid)).toEqual(['sentinel']);
+  });
 
   test('Claude reporting the typed text confirms that message to its sender only', async () => {
     const messageId = await send(CONN_A, 'please run the tests');

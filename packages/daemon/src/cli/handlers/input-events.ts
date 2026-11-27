@@ -119,10 +119,11 @@ export interface InputHandlerDeps {
   acceptsTypedChat?: (sessionId: UUID) => boolean | undefined;
   /**
    * Remembers a chat message once its text and Enter are typed, so Claude's own
-   * `UserPromptSubmit` hook can confirm it to the sender (#1818). Absent (no hook
-   * server, another harness, tests) means no confirmation is ever sent.
+   * hook or queued transcript attachment can confirm it to the sender (#1818,
+   * #1838). Absent (no acceptance tracker server, another harness, tests) means
+   * no confirmation is ever sent.
    */
-  chatAcceptance?: Pick<ChatAcceptanceTracker, 'record'>;
+  chatAcceptance?: Pick<ChatAcceptanceTracker, 'record' | 'sentTime'>;
   /**
    * Cross-client question dismissal (#585, P7). Called after a question is
    * answered here so the daemon broadcasts `question_resolved` to every client and
@@ -1500,6 +1501,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
       const pty = session.pty;
       let inputMayBePartial = false;
       let refused = false;
+      let sentAt: number | undefined;
       const refuse = (code: string, reason: string, bound?: string): false => {
         refused = true;
         send(
@@ -1520,7 +1522,7 @@ export function createInputHandlers(deps: InputHandlerDeps) {
         return false;
       };
       try {
-        await pty.submitInput(content, () => {
+        await pty.submitInput(content, (phase) => {
           if (
             session.sessionId !== sessionId ||
             sessionRegistry.getSessionForConnection(connectionId) !== session ||
@@ -1557,15 +1559,16 @@ export function createInputHandlers(deps: InputHandlerDeps) {
           }
           // From this synchronous boundary onward, a failed write may have typed text.
           inputMayBePartial = true;
+          if (phase === 'text' && messageId !== undefined) sentAt = chatAcceptance?.sentTime();
           return true;
         });
         // The text and its Enter were written (a refused guard writes nothing more and has
-        // already told the sender). Claude's UserPromptSubmit hook can only arrive after this
+        // already told the sender). Claude's acceptance signal can only arrive after this
         // point: it needs the Enter just written, and an I/O event cannot run before this
         // microtask continues (#1818).
-        if (!refused && messageId !== undefined) {
+        if (!refused && messageId !== undefined && sentAt !== undefined) {
           try {
-            chatAcceptance?.record(session.sessionId, messageId, content, connectionId);
+            chatAcceptance?.record(session.sessionId, messageId, content, connectionId, sentAt);
           } catch (err) {
             logError(`[Input] chat acceptance bookkeeping failed: ${errorToString(err)}`);
           }

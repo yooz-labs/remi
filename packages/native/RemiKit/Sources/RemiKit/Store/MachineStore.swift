@@ -2263,7 +2263,7 @@ public final class MachineStore {
 
     /// Removes this session's accepted messages that the transcript now shows: a user entry with the
     /// same text, stamped no earlier than the message was created (less clock skew). This is display
-    /// reconciliation only, not a delivery claim: acceptance already came from Claude's hook, and
+    /// reconciliation only, not a delivery claim: acceptance already came from a Claude signal, and
     /// matching text proves nothing about delivery (#1710). Without a loaded transcript nothing
     /// matches and the message stays as an accepted bubble until dismissed or the session ends.
     private func reconcileAcceptedOutgoing(for key: MachineSessionKey) {

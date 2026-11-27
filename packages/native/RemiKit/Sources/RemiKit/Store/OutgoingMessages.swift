@@ -145,7 +145,7 @@ public struct OutgoingMessages: Sendable, Equatable {
     }
 
     /// Drops accepted messages the caller decided the transcript shows. Display reconciliation only:
-    /// the caller's text match decides nothing about delivery, which the hook already proved.
+    /// the caller's text match decides nothing about delivery, which the daemon already confirmed.
     @discardableResult
     public mutating func removeAccepted(where isShown: (OutgoingMessage) -> Bool) -> Bool {
         let before = items.count

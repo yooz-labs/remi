@@ -5,12 +5,13 @@
  * The daemon types a `user_input` into Claude's terminal (text, then a separate
  * Enter) and, until now, never learned whether Claude took that particular
  * message, so a native client could say only "handed to the connection". Claude
- * Code reports every submitted prompt through its `UserPromptSubmit` hook, with
- * the prompt text. This tracker joins the two: after the daemon has typed a
- * message it records `{messageId, text, connection}`, and an admitted main-agent
- * `UserPromptSubmit` whose `prompt` equals that text resolves the OLDEST pending
- * entry with the same text and sends a `user_input_result` to the connection
- * that sent the message, and to no other.
+ * Code reports submitted prompts through an admitted main-agent
+ * `UserPromptSubmit` hook or a human queued-command transcript attachment. The
+ * tracker joins either signal to the oldest pending exact-text entry and sends
+ * the result only to its originating connection. Exact text does not identify
+ * the original submission: if Claude did not take the daemon input, an
+ * identical prompt later typed at the terminal can confirm that pending entry
+ * through either signal, although that text did reach Claude (#1838).
  *
  * The match is exact string equality, with no normalization: the writer
  * (`PTYSession.submitInput`) types the text as given and then a CR, so there is
@@ -61,6 +62,7 @@ interface PendingChat {
   readonly content: string;
   readonly connectionId: UUID;
   readonly deadline: number;
+  readonly sentAt: number;
 }
 
 export interface ChatAcceptanceOptions {
@@ -78,6 +80,11 @@ export interface ChatAcceptanceOptions {
 
 export class ChatAcceptanceTracker {
   private readonly pending = new Map<UUID, PendingChat[]>();
+  private readonly signals = new Map<
+    UUID,
+    Array<{ text: string; kind: 'hook' | 'attachment'; time: number }>
+  >();
+  private readonly seenAttachments = new Map<UUID, Map<string, number>>();
   private readonly send: SendToConnection;
   private readonly canReceive: (connectionId: UUID) => boolean;
   private readonly ttlMs: number;
@@ -92,17 +99,26 @@ export class ChatAcceptanceTracker {
     this.now = options.now ?? Date.now;
   }
 
+  sentTime(): number {
+    return this.now();
+  }
+
   /**
-   * Remember a message the daemon has typed into the session's terminal, Enter
-   * included, so a later `UserPromptSubmit` can confirm it. Returns whether it is
-   * tracked (it is not when the text cannot be matched exactly or the sender could
-   * not receive the result).
+   * Remember a message after its text and Enter were typed. `sentAt` is taken
+   * immediately before the text write, so a later signal can confirm it.
+   * Returns whether it is tracked.
    */
-  record(sessionId: UUID, messageId: UUID, content: string, connectionId: UUID): boolean {
+  record(
+    sessionId: UUID,
+    messageId: UUID,
+    content: string,
+    connectionId: UUID,
+    sentAt: number,
+  ): boolean {
     if (!isTrackableChat(content) || !this.canReceive(connectionId)) return false;
     const now = this.now();
     const list = this.live(sessionId, now);
-    list.push({ messageId, content, connectionId, deadline: now + this.ttlMs });
+    list.push({ messageId, content, connectionId, sentAt, deadline: now + this.ttlMs });
     while (list.length > this.maxPending) list.shift();
     this.pending.set(sessionId, list);
     return true;
@@ -114,11 +130,50 @@ export class ChatAcceptanceTracker {
    * one matched.
    */
   promptSubmitted(sessionId: UUID, prompt: string): boolean {
+    return this.accept(sessionId, prompt, 'hook');
+  }
+
+  queuedCommand(sessionId: UUID, prompt: string, timestamp: unknown, uuid: string): boolean {
+    if (
+      typeof timestamp !== 'string' ||
+      !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/.test(timestamp)
+    )
+      return false;
+    const queuedAt = Date.parse(timestamp);
+    if (!Number.isFinite(queuedAt) || !uuid) return false;
+    return this.accept(sessionId, prompt, 'attachment', queuedAt, uuid);
+  }
+
+  private accept(
+    sessionId: UUID,
+    prompt: string,
+    kind: 'hook' | 'attachment',
+    queuedAt?: number,
+    uuid?: string,
+  ): boolean {
     if (!this.pending.has(sessionId)) return false;
-    const live = this.live(sessionId, this.now());
-    const index = live.findIndex((entry) => entry.content === prompt);
+    const now = this.now();
+    const recent = (this.signals.get(sessionId) ?? []).filter(
+      (signal) => now - signal.time < 10_000 && now >= signal.time,
+    );
+    this.signals.set(sessionId, recent);
+    if (recent.some((signal) => signal.text === prompt && signal.kind !== kind)) return false;
+    const seen = this.seenAttachments.get(sessionId) ?? new Map<string, number>();
+    for (const [id, expiry] of seen) if (expiry <= now) seen.delete(id);
+    this.seenAttachments.set(sessionId, seen);
+    if (uuid && (seen.has(uuid) || seen.size >= 1024)) return false;
+    // If the correlation buffer is full, uncertainty is safer than a false acceptance.
+    if (recent.length >= 1024) return false;
+    const live = this.live(sessionId, now);
+    const index = live.findIndex(
+      (entry) =>
+        entry.content === prompt &&
+        (kind === 'hook' || (queuedAt !== undefined && queuedAt >= entry.sentAt)),
+    );
     if (index < 0) return false;
     const [entry] = live.splice(index, 1);
+    recent.push({ text: prompt, kind, time: now });
+    if (uuid) seen.set(uuid, now + this.ttlMs);
     if (live.length === 0) this.pending.delete(sessionId);
     if (!entry) return false;
     try {
@@ -135,6 +190,8 @@ export class ChatAcceptanceTracker {
   /** Drop everything a session waits on (it ended). */
   forget(sessionId: UUID): void {
     this.pending.delete(sessionId);
+    this.signals.delete(sessionId);
+    this.seenAttachments.delete(sessionId);
   }
 
   /**

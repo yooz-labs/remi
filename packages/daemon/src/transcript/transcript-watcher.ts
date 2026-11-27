@@ -28,6 +28,52 @@ function isTextBlock(block: ContentBlock): block is TextBlock {
   return block.type === 'text';
 }
 
+/** Convert only human prompt attachments. The real Claude Code transcript examined on
+ * 2026-11-27 records an absorbed mid-turn message only as this attachment, not also
+ * as a normal user line, so there is no cross-kind history deduplication. */
+function queuedCommandEntry(value: unknown): UserEntry | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as {
+    type?: unknown;
+    uuid?: unknown;
+    timestamp?: unknown;
+    attachment?: unknown;
+    isSidechain?: boolean;
+    agentId?: unknown;
+    agent_id?: unknown;
+    [key: string]: unknown;
+  };
+  if (!raw.attachment || typeof raw.attachment !== 'object') return undefined;
+  const attachment = raw.attachment as {
+    type?: unknown;
+    commandMode?: unknown;
+    prompt?: unknown;
+    origin?: unknown;
+    timestamp?: unknown;
+  };
+  const origin = attachment.origin as { kind?: unknown } | undefined;
+  if (
+    raw.type !== 'attachment' ||
+    typeof raw.uuid !== 'string' ||
+    raw.isSidechain === true ||
+    'agentId' in raw ||
+    'agent_id' in raw ||
+    attachment?.type !== 'queued_command' ||
+    attachment.commandMode !== 'prompt' ||
+    origin?.kind !== 'human' ||
+    typeof attachment.prompt !== 'string' ||
+    attachment.prompt.length === 0
+  )
+    return undefined;
+  return {
+    ...raw,
+    type: 'user',
+    message: { role: 'user', content: attachment.prompt },
+    timestamp: raw.timestamp ?? attachment.timestamp,
+    queuedCommandTimestamp: attachment.timestamp,
+  } as UserEntry;
+}
+
 const DEFAULT_POLL_INTERVAL_MS = 2000;
 
 /**
@@ -73,6 +119,8 @@ export class TranscriptWatcher {
 
   /** Byte offset of last read position in the file */
   private fileOffset = 0;
+  /** Bytes already present on startup are replay, including an incomplete final line. */
+  private replayThrough = 0;
 
   /** All parsed entries (our in-memory copy) */
   private readonly entries: TranscriptEntry[] = [];
@@ -88,6 +136,7 @@ export class TranscriptWatcher {
 
   /** Whether the watcher is currently running */
   private running = false;
+  private tailing = false;
 
   constructor(config: TranscriptWatcherConfig, events: TranscriptWatcherEvents = {}) {
     this.config = {
@@ -101,6 +150,11 @@ export class TranscriptWatcher {
   /** Whether the watcher is active */
   get isRunning(): boolean {
     return this.running;
+  }
+
+  /** The initial replay is complete and subsequent reads are live tail reads. */
+  get isTailing(): boolean {
+    return this.tailing;
   }
 
   /** The transcript file path being watched */
@@ -159,7 +213,7 @@ export class TranscriptWatcher {
    * new transcript data is available without waiting for the poll cycle.
    */
   async forceRead(): Promise<void> {
-    if (this.running) {
+    if (this.tailing) {
       await this.readNewEntries();
     }
   }
@@ -180,7 +234,7 @@ export class TranscriptWatcher {
 
     // Read existing entries if configured
     if (this.config.readExisting) {
-      await this.readNewEntries();
+      await this.readNewEntries(true);
     } else {
       // Skip to end of file
       const stat = fs.statSync(this.config.filePath);
@@ -195,6 +249,7 @@ export class TranscriptWatcher {
    */
   stop(): void {
     this.running = false;
+    this.tailing = false;
 
     if (this.watcher) {
       this.watcher.close();
@@ -271,6 +326,7 @@ export class TranscriptWatcher {
    */
   private startWatching(): void {
     this.running = true;
+    this.tailing = true;
 
     // Use fs.watch for immediate notifications.
     // Listen for both 'change' (in-place append) and 'rename' (atomic write)
@@ -303,10 +359,11 @@ export class TranscriptWatcher {
    * Read new entries from the file since last read position.
    * Handles incomplete final lines by retaining them for the next read.
    */
-  private async readNewEntries(): Promise<void> {
+  private async readNewEntries(replay = false): Promise<void> {
     let fd: number | null = null;
     try {
       const stat = fs.statSync(this.config.filePath);
+      if (replay) this.replayThrough = stat.size;
 
       // No new data
       if (stat.size <= this.fileOffset) return;
@@ -328,15 +385,19 @@ export class TranscriptWatcher {
       const hasTrailingNewline = newData.endsWith('\n');
       const lastIncomplete = !hasTrailingNewline ? (lines.pop() ?? '') : '';
       const bytesConsumed = bufferSize - Buffer.byteLength(lastIncomplete, 'utf-8');
+      let lineOffset = this.fileOffset;
       this.fileOffset += bytesConsumed;
 
       for (const line of lines) {
+        const liveAppend = lineOffset >= this.replayThrough;
+        lineOffset += Buffer.byteLength(line, 'utf-8') + 1;
         const trimmed = line.trim();
         if (!trimmed) continue;
 
         try {
-          const entry = JSON.parse(trimmed) as TranscriptEntry;
-          this.processEntry(entry);
+          const raw = JSON.parse(trimmed);
+          const entry = queuedCommandEntry(raw) ?? (raw as TranscriptEntry);
+          this.processEntry(entry, liveAppend);
         } catch {
           this.events.onError?.(
             new Error(`Failed to parse transcript line: ${trimmed.slice(0, 100)}`),
@@ -359,7 +420,7 @@ export class TranscriptWatcher {
   /**
    * Process a single parsed transcript entry.
    */
-  private processEntry(entry: TranscriptEntry): void {
+  private processEntry(entry: TranscriptEntry, liveAppend: boolean): void {
     // Check for duplicate (by UUID for user/assistant entries)
     const uuid = entry.type === 'user' || entry.type === 'assistant' ? entry.uuid : undefined;
     if (uuid) {
@@ -374,7 +435,7 @@ export class TranscriptWatcher {
     // Emit appropriate event
     switch (entry.type) {
       case 'user':
-        this.events.onUserMessage?.(entry);
+        this.events.onUserMessage?.(entry, liveAppend);
         break;
       case 'assistant':
         this.events.onAssistantMessage?.(entry);
