@@ -293,7 +293,7 @@ struct SessionScreen: View {
                         reviewState.refresh(entries: entries)
                         if previous.last?.id != entries.last?.id { scrollToLatest(using: proxy) }
                     }
-                    .onChange(of: latestScrollRequest) { _, _ in scrollToLatest(using: proxy) }
+                    .onChange(of: latestScrollRequest) { _, _ in scheduleScrollToLatest(using: proxy) }
                     .onChange(of: groupingInput, initial: true) { _, input in
                         transcriptRows = input.rows
                         scheduleScrollToLatest(using: proxy)
