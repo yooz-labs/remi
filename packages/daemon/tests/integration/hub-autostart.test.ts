@@ -299,6 +299,32 @@ test('status reports the possible legacy path and the reserved port is refused',
   expect(fs.existsSync(path.join(f.home, '.remi', 'daemon.pid'))).toBe(false);
 }, 15_000);
 
+test('REMI_PORT can select a session port other than the configured hub base', async () => {
+  const f = await setup('off');
+  f.env['REMI_PORT'] = String(f.port);
+  const refused = Bun.spawnSync([process.execPath, CLI_TS], {
+    cwd: f.work,
+    env: f.env,
+    timeout: 5000,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  expect(refused.exitCode).not.toBe(0);
+  expect(refused.stderr.toString()).toContain(`Port ${f.port} is reserved for the remi hub.`);
+  f.env['REMI_PORT'] = String(f.port + 1);
+  const run = launch(f);
+  await pollUntil(
+    () => {
+      if (run.proc.exitCode !== null) throw new Error(`Session exited: ${run.output.text}`);
+      return fs.existsSync(path.join(f.agents.claudeDir, 'argv'));
+    },
+    15_000,
+    'session with REMI_PORT',
+  );
+  const registry = new SessionRegistryFile(path.join(f.home, '.remi', 'live-sessions'));
+  expect(registry.listLive().map((entry) => entry.wsPort)).toEqual([f.port + 1]);
+}, 20_000);
+
 test.each([
   ['--port', 'BASE'],
   ['codex', '--worktree'],

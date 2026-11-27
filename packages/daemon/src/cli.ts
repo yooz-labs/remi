@@ -1322,6 +1322,9 @@ const publicWsScheme = daemonTls ? 'wss' : 'ws';
 // ---------------------------------------------------------------------------
 const portExplicitlySet = !!(cliPort || process.env['REMI_PORT']);
 let PORT = cliPort || (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 0);
+// REMI_PORT selects a session port, but its config override must not turn that
+// same value into the hub reservation. Hub startup still uses the override.
+const hubBasePort = serveMode ? remiConfig.daemon.base_port : loadedConfig.config.daemon.base_port;
 
 // Auto-select port if not explicitly set
 if (!portExplicitlySet) {
@@ -1329,7 +1332,7 @@ if (!portExplicitlySet) {
     remiConfig.daemon.base_port,
     remiConfig.daemon.port_range,
     bindHost,
-    serveMode ? [] : [remiConfig.daemon.base_port],
+    serveMode ? [] : [hubBasePort],
   );
   if (autoPort === null) {
     const rangeEnd = remiConfig.daemon.base_port + remiConfig.daemon.port_range - 1;
@@ -1339,8 +1342,8 @@ if (!portExplicitlySet) {
   }
   PORT = autoPort;
 }
-if (!serveMode && PORT === remiConfig.daemon.base_port) {
-  console.error(`Port ${remiConfig.daemon.base_port} is reserved for the remi hub.`);
+if (!serveMode && PORT === hubBasePort) {
+  console.error(`Port ${hubBasePort} is reserved for the remi hub.`);
   process.exit(1);
 }
 // Update per-port status file path now that PORT is finalized
@@ -3721,7 +3724,7 @@ if (cliDaemonMode) {
       DEFAULT_PORT_RANGE,
       liveUsed,
       bindHost,
-      remiConfig.daemon.base_port,
+      hubBasePort,
       serveMode,
     );
     if (probed === null) {
@@ -3747,7 +3750,7 @@ if (cliDaemonMode) {
       await startSessionPort(
         PORT,
         DEFAULT_PORT_RANGE,
-        remiConfig.daemon.base_port,
+        hubBasePort,
         bindHost,
         () => new Set(liveSessionsRegistry.listLive().map((entry) => entry.wsPort)),
         async (port) => {
@@ -4109,7 +4112,7 @@ if (cliDaemonMode) {
       DEFAULT_PORT_RANGE,
       liveUsed,
       bindHost,
-      remiConfig.daemon.base_port,
+      hubBasePort,
     );
     if (probed !== null && probed !== PORT) {
       const occupiedPort = PORT;
@@ -4144,7 +4147,7 @@ if (cliDaemonMode) {
         await startSessionPort(
           PORT,
           DEFAULT_PORT_RANGE,
-          remiConfig.daemon.base_port,
+          hubBasePort,
           bindHost,
           () => new Set(liveSessionsRegistry.listLive().map((entry) => entry.wsPort)),
           async (port) => {
