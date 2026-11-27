@@ -1,7 +1,8 @@
 import * as fs from 'node:fs';
+import { parse as parseToml } from 'smol-toml';
 import { logError } from '../cli/logger.ts';
 import { CONFIG_PATH, parseConfigText } from '../config/config.ts';
-import type { Profiles } from './profile-config.ts';
+import { type Profiles, parseProfiles } from './profile-config.ts';
 
 const cache = new Map<string, { signature: string; profiles: Profiles }>();
 const failures = new Set<string>();
@@ -13,12 +14,16 @@ export function currentProfilesStrict(configPath = CONFIG_PATH): Profiles {
     fs.statSync(configPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      failures.delete('strict:read');
       return { entries: {}, notices: [] };
     }
     return strictFailure();
   }
   try {
-    return parseConfigText(fs.readFileSync(configPath, 'utf8'), configPath).config.profiles;
+    const parsed = parseToml(fs.readFileSync(configPath, 'utf8'));
+    const profiles = parseProfiles(parsed['profiles']);
+    if (!('error' in profiles)) failures.delete('strict:read');
+    return profiles;
   } catch {
     return strictFailure();
   }

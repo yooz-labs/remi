@@ -36,6 +36,7 @@ test('strict remote policy fails closed without changing last-good download prot
       });
       for (const directory of [mapped, root])
         handler.onSessionProfilesRequest(generateId(), generateId(), directory);
+      expect(frames).toHaveLength(2);
       for (const frame of frames)
         expect(frame).toMatchObject({ refused: 'profiles_invalid', profiles: [] });
       expect(JSON.stringify(frames)).not.toContain('work');
@@ -55,6 +56,24 @@ test('strict remote policy fails closed without changing last-good download prot
     expect(currentProfiles(config)).toHaveProperty('entries.work');
     fs.writeFileSync(config, 'not a directory');
     expect(currentProfilesStrict(path.join(config, 'config.toml'))).toHaveProperty('error');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('strict profile policy ignores invalid unrelated sections', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'p2b-strict-sections-'));
+  const config = path.join(root, 'config.toml');
+  try {
+    for (const section of ['[daemon]\nbind = 123\n', '[auth]\nenabled = 123\n']) {
+      fs.writeFileSync(config, section);
+      expect(currentProfilesStrict(config)).toEqual({ entries: {}, notices: [] });
+      fs.writeFileSync(
+        config,
+        `${section}\n[profiles.work]\nlabel="Work"\n[profiles.work.claude]\nexpects="subscription"\ndir="${root}/work"\n`,
+      );
+      expect(currentProfilesStrict(config)).toHaveProperty('entries.work');
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
