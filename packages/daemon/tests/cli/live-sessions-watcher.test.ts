@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -65,6 +66,54 @@ describe('startLiveSessionsWatcher (#542)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  test('reconciles a missed filesystem event without repeating unchanged broadcasts', async () => {
+    const broadcasts: ProtocolMessage[] = [];
+    let changes = 0;
+    const droppedWatcher = Object.assign(new EventEmitter(), {
+      close: () => {},
+    }) as unknown as fs.FSWatcher;
+    const closer = startLiveSessionsWatcher({
+      dirPath: tmpDir,
+      collect: () => {
+        const newPorts = registry.getLivePorts();
+        return newPorts.length ? { sessions: [], newPorts } : null;
+      },
+      broadcast: (message) => broadcasts.push(message),
+      logError: (message) => {
+        throw new Error(message);
+      },
+      onDirChange: () => {
+        changes++;
+      },
+      debounceMs: 10,
+      reconcileMs: 30,
+      watchDirectory: () => droppedWatcher,
+    });
+    try {
+      await waitFor(() => changes > 0, 'initial census');
+      const before = changes;
+      const sessionId = '11111111-1111-1111-1111-111111111111';
+      registry.register({
+        sessionId,
+        pid: process.pid,
+        wsPort: 20050,
+        hookPort: 0,
+        projectPath: tmpDir,
+        name: 'sibling',
+        startedAt: new Date().toISOString(),
+      });
+      await waitFor(() => broadcasts.length === 1, 'reconciled registration', 2000);
+      expect(broadcasts[0]).toMatchObject({ type: 'session_list_response', daemonPorts: [20050] });
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(broadcasts).toHaveLength(1);
+      registry.unregister(sessionId);
+      await waitFor(() => changes > before + 1, 'reconciled removal', 2000);
+      expect(broadcasts).toHaveLength(1);
+    } finally {
+      closer();
+    }
+  });
+
   test(
     'broadcasts once when a sibling registers, carrying its port',
     async () => {
@@ -119,6 +168,7 @@ describe('startLiveSessionsWatcher (#542)', () => {
         broadcast: (message) => broadcasts.push(message),
         logError: () => {},
         debounceMs: 20,
+        reconcileMs: 100,
         onDirChange: () => {
           dirChanges += 1;
         },
@@ -275,6 +325,7 @@ describe('watcher re-arms after a transient error (#903 follow-up)', () => {
       broadcast: () => {},
       logError: () => {},
       debounceMs: 10,
+      reconcileMs: 100,
     });
 
     try {

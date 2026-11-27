@@ -13,6 +13,7 @@
  */
 
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { createSessionListResponse, errorToString, generateId } from '@remi/shared';
 import type { DiscoverableSession, MachineDescriptor, ProtocolMessage, UUID } from '@remi/shared';
 
@@ -35,6 +36,10 @@ export interface LiveSessionsWatcherDeps {
   readonly logError: (message: string) => void;
   /** Debounce window in ms. Default 300 (tests override to a small value). */
   readonly debounceMs?: number;
+  /** Reconcile visible ports if the host drops a filesystem event. */
+  readonly reconcileMs?: number;
+  /** Test seam for a host watcher that loses events. */
+  readonly watchDirectory?: (dir: string, onChange: () => void) => fs.FSWatcher;
   /**
    * Fired on EVERY debounced flush, regardless of whether `collect()`
    * produced a broadcast (#650): session REMOVALS change the hub census but
@@ -51,10 +56,37 @@ export function startLiveSessionsWatcher(deps: LiveSessionsWatcherDeps): () => v
   const debounceMs = deps.debounceMs ?? 300;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let watcher: fs.FSWatcher | null = null;
+  let lastDirectory: string | undefined;
 
-  const flush = (): void => {
-    debounceTimer = null;
+  const directorySignature = (): string => {
+    let names: string[];
     try {
+      names = fs.readdirSync(deps.dirPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return '<missing>';
+      throw error;
+    }
+    return names
+      .filter((name) => name.endsWith('.json'))
+      .sort()
+      .map((name) => {
+        try {
+          const stat = fs.lstatSync(path.join(deps.dirPath, name));
+          return `${name}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return `${name}:gone`;
+          throw error;
+        }
+      })
+      .join('\n');
+  };
+
+  const flush = (reconcile = false): void => {
+    if (!reconcile) debounceTimer = null;
+    try {
+      const signature = directorySignature();
+      if (reconcile && signature === lastDirectory) return;
+      lastDirectory = signature;
       deps.onDirChange?.();
       const result = deps.collect();
       if (!result || result.newPorts.length === 0) return;
@@ -91,7 +123,7 @@ export function startLiveSessionsWatcher(deps: LiveSessionsWatcherDeps): () => v
 
   const scheduleFlush = (): void => {
     if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(flush, debounceMs);
+    debounceTimer = setTimeout(() => flush(), debounceMs);
   };
 
   const arm = (): void => {
@@ -101,7 +133,9 @@ export function startLiveSessionsWatcher(deps: LiveSessionsWatcherDeps): () => v
       // not exist yet. A long-running hub that hits ENOENT here would never
       // re-arm the watcher for its entire lifetime, so ensure it up front.
       fs.mkdirSync(deps.dirPath, { recursive: true });
-      watcher = fs.watch(deps.dirPath, { persistent: false }, scheduleFlush);
+      watcher = deps.watchDirectory
+        ? deps.watchDirectory(deps.dirPath, scheduleFlush)
+        : fs.watch(deps.dirPath, { persistent: false }, scheduleFlush);
       // An FSWatcher emitting 'error' with no listener throws out of the event
       // loop as an uncaughtException, which the process guards treat as fatal —
       // killing the whole (possibly launchd-managed, unattended) hub over a
@@ -139,8 +173,13 @@ export function startLiveSessionsWatcher(deps: LiveSessionsWatcherDeps): () => v
   };
 
   arm();
+  // Some hosts miss a directory event after the watcher has been idle. Reconcile the
+  // directory and send a fallback update only when its contents have changed.
+  const reconcileTimer = setInterval(() => flush(true), deps.reconcileMs ?? 5000);
+  reconcileTimer.unref();
 
   return () => {
+    clearInterval(reconcileTimer);
     if (debounceTimer) {
       clearTimeout(debounceTimer);
       debounceTimer = null;
