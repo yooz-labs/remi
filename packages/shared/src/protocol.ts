@@ -1083,6 +1083,10 @@ export interface RecentRepositoriesResponseMessage {
   readonly repositories: readonly RecentRepository[];
 }
 
+/**
+ * Which profiles a device may start a session in (#1749, capability `session_profiles`).
+ * `directory` is checked as a create checks it; absent means the home directory.
+ */
 export interface SessionProfilesRequestMessage {
   readonly type: 'session_profiles_request';
   readonly id: UUID;
@@ -1090,13 +1094,20 @@ export interface SessionProfilesRequestMessage {
   readonly directory?: string | undefined;
 }
 
+/** The answer to a {@link SessionProfilesRequestMessage} (#1749). */
 export interface SessionProfilesResponseMessage {
   readonly type: 'session_profiles_response';
   readonly id: UUID;
   readonly timestamp: Timestamp;
   readonly requestId: UUID;
+  /** The built-in default first, then every selectable profile in configuration order. */
   readonly profiles: readonly { id: string; label: string; harnesses: readonly HarnessId[] }[];
+  /**
+   * The profile a create in the directory gets, and why; absent when that profile is not
+   * selectable (a hidden one is never named), so the client asks the person to choose.
+   */
   readonly default?: { id: string; source: 'folder' | 'machine_default' | 'built_in' } | undefined;
+  /** Set, with an empty `profiles`, for a directory a create refuses or a configuration error. */
   readonly refused?: 'directory_invalid' | 'profiles_invalid' | undefined;
 }
 
@@ -1917,6 +1928,7 @@ export function createHello(
  *  new optionals never requires threading `undefined` through positional
  *  callsites (same rationale as {@link CreateHelloOptions}). */
 export interface CreateHelloAckOptions {
+  /** The connection's session's visible profile (#1749); omitted for the default or a hidden one. */
   profile?: SessionProfileRef | undefined;
   /** One snapshot also supplies daemonVersion, harnesses and capabilities (#1234). */
   machine?: MachineDescriptor | undefined;

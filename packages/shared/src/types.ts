@@ -537,10 +537,19 @@ export interface MachineDescriptor {
   readonly capabilities: readonly string[];
 }
 
-/** The visible profile associated with a session; absent means the built-in default. */
+/**
+ * The visible profile associated with a session (#1749); absent means the built-in default, or
+ * a daemon without the `session_profiles` capability. A hidden profile's sessions carry none.
+ */
 export interface SessionProfileRef {
   readonly id: string;
+  /** The profile's current label. */
   readonly label: string;
+  /**
+   * `changed`: the profile's configuration differs from the one the session started with.
+   * Absent reads as `current`. `removed` is reserved (ADR 0051 A15): a profile that is no
+   * longer configured is hidden, so this build never sends it.
+   */
   readonly state?: 'current' | 'changed' | 'removed';
 }
 
