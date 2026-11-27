@@ -310,8 +310,8 @@ export interface SessionGateHandle {
    *  Forwards to `AutoApproveGate.hasMainHold`. */
   hasMainHold: () => boolean;
   /** Is a hook-backed dialog this gate knows about (or may be) on screen:
-   *  a live main hold, or a prompt waiting in the terminal younger than the
-   *  tool's hold length (#1837)? Forwards to
+   *  a live main hold, or a prompt handed to the terminal less than
+   *  `[prompts] hold_seconds` ago (#1837)? Forwards to
    *  `AutoApproveGate.hasOpenHookPrompt`; read by `promptUpDeps` (#1155). */
   hasOpenHookPrompt: () => boolean;
   /** A bare Escape reached the terminal through remi (#1155): resolve the

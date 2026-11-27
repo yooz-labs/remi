@@ -569,7 +569,7 @@ export class AutoApproveGate {
    * client's Esc key. It dismisses the dialog on screen, and Claude fires no
    * hook for that, so the MAIN agent's prompts waiting in the terminal are
    * resolved now (their notice dismissed) instead of counting for the rest
-   * of the hold length; the chat guard and Stop then fall back to the
+   * of the `hold_seconds` window; the chat guard and Stop then fall back to the
    * screen parse. Two things are left alone: a live hold (Claude closes the
    * held request itself, which the abort path handles) and a subagent's
    * entry (cleared by that agent's next tool call, `SubagentStop` or
