@@ -13,6 +13,7 @@ import {
   TerminalReservationError as LegacyReservationError,
   TerminalReservations as LegacyReservations,
 } from '../fixtures/terminal-reservations-v1.ts';
+import { publishReadyFile } from './publish-ready-file.ts';
 
 const file = (home: string) => join(home, 'terminal-view', 'reservations.json');
 async function until(check: () => boolean) {
@@ -33,8 +34,7 @@ export async function runLegacyTerminalReservationChild(args: readonly string[])
   const old = LegacyReservations.open(home);
   const model = old.reserveModel(randomUUID());
   old.reserveView(model, randomBytes(32).toString('hex'), randomUUID());
-  fs.writeFileSync(`${prefix}.ready.tmp`, JSON.stringify({ pid: process.pid }), { mode: 0o600 });
-  fs.renameSync(`${prefix}.ready.tmp`, `${prefix}.ready`);
+  publishReadyFile(`${prefix}.ready`, { pid: process.pid });
   await until(() => fs.existsSync(`${prefix}.go`));
   // Deliberately exit without release: only proved process death permits the migration.
 }
