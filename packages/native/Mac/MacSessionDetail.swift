@@ -696,7 +696,7 @@ private struct MacSessionToolbarHeader: View {
                 // the message field.
                 Button("Jump to first activity", systemImage: "arrow.up.to.line", action: onJumpToFirst)
                     .disabled(!canJumpToFirst)
-                Button("Jump to latest activity", systemImage: "arrow.down.to.line", action: onJumpToLatest)
+                Button("Jump to latest", systemImage: "arrow.down.to.line", action: onJumpToLatest)
                     .disabled(!canJumpToLatest)
                 Divider()
                 Button("Copy session ID", systemImage: "doc.on.doc", action: onCopyID)

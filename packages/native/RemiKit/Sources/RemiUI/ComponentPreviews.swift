@@ -61,6 +61,8 @@ private struct SupportingComponentsGallery: View {
 
                 PreviewSection(title: "Composer") {
                     ComposerPreview(promptWaiting: false)
+                    ComposerArrowPreview(atLatest: false)
+                    ComposerArrowPreview(atLatest: true)
                     ComposerPreview(promptWaiting: true)
                     ComposerPreview(promptWaiting: true, supportsInterrupt: true)
                 }
@@ -120,6 +122,16 @@ private struct ComposerPreview: View {
             onSend: {},
             onInterrupt: supportsInterrupt ? {} : nil
         )
+    }
+}
+
+private struct ComposerArrowPreview: View {
+    @State private var text = ""
+    let atLatest: Bool
+
+    var body: some View {
+        RemiComposer(text: $text, promptWaiting: false, atLatest: atLatest,
+            onJumpToLatest: {}, onSend: {}, onInterrupt: nil, leadingAccessory: { EmptyView() })
     }
 }
 
