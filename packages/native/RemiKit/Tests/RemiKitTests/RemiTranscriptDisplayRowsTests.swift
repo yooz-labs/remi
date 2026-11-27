@@ -6,7 +6,8 @@ import Testing
         .tool(id: id, name: "shell", summary: "summary \(id)")
     }
 
-    // This is the original view's expansion semantics, kept independent of the new helper.
+    // The original view's row shape, built without `displayRows`' flattening. It shares the
+    // `isExpanded` predicate with the helper, so the expansion decision itself is not checked here.
     private func originalShape(_ rows: [RemiTranscriptRow], expanded: Set<String>) -> [String] {
         rows.flatMap { row -> [String] in
             switch row {
