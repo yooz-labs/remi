@@ -14,6 +14,12 @@ struct RemiTranscriptFollowPolicy {
         if offset < previousOffset { return false }
         return followsLatest
     }
+    static func afterNoninteractiveScroll(followsLatest: Bool, followingLayout: Bool, sizesChanged: Bool,
+        previousOffset: CGFloat, offset: CGFloat, remaining: CGFloat) -> Bool {
+        if !followingLayout && !sizesChanged && offset < previousOffset && remaining > 1 { return false }
+        return followsLatest
+    }
+
 }
 
 /// Follow content growth only while the reader remains near the latest activity.
@@ -58,6 +64,10 @@ public struct RemiTranscriptScrollBehavior: ViewModifier {
                     if followingLayout { onFollow() }
                     return
                 }
+                followsLatest = RemiTranscriptFollowPolicy.afterNoninteractiveScroll(followsLatest: followsLatest,
+                    followingLayout: followingLayout,
+                    sizesChanged: previous.contentSize != current.contentSize || previous.containerSize != current.containerSize,
+                    previousOffset: previous.offset, offset: current.offset, remaining: current.remaining)
                 if current.remaining <= 1 { followingLayout = false }
             }
             .onScrollPhaseChange { _, phase in

@@ -1,3 +1,4 @@
+import CoreGraphics
 import Testing
 @testable import RemiUI
 
@@ -30,6 +31,18 @@ import Testing
 
     @Test func springBackAtTailKeepsFollowing() {
         #expect(RemiTranscriptFollowPolicy.afterUserScroll(followsLatest: true, previousOffset: 205, offset: 200, remaining: 1))
+    }
+
+    @Test func noninteractiveScrollUpStopsFollowingOnlyWithoutReflow() {
+        func result(_ followingLayout: Bool, _ sizesChanged: Bool, _ offset: CGFloat, _ remaining: CGFloat) -> Bool {
+            RemiTranscriptFollowPolicy.afterNoninteractiveScroll(followsLatest: true, followingLayout: followingLayout,
+                sizesChanged: sizesChanged, previousOffset: 200, offset: offset, remaining: remaining)
+        }
+        #expect(!result(false, false, 190, 10))
+        #expect(result(true, false, 190, 10))
+        #expect(result(false, true, 190, 10))
+        #expect(result(false, false, 190, 1))
+        #expect(result(false, false, 210, 10))
     }
 
     @Test func savedPositionAndReviewWinOverInitialFollow() {
