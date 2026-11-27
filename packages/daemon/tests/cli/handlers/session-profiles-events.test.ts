@@ -39,10 +39,15 @@ test('profile picker lists selectable profiles and fails closed', () => {
       return frame;
     };
     expect(ask(dirs[0])).toMatchObject({
-      profiles: [{ id: 'default' }, { id: 'work' }],
+      profiles: [
+        { id: 'default', harnesses: ['claude', 'codex'] },
+        { id: 'work', harnesses: ['claude'] },
+      ],
       default: { id: 'work', source: 'folder' },
     });
-    expect(ask(dirs[1]).default).toBeUndefined();
+    const quiet = ask(dirs[1]);
+    expect(quiet.default).toBeUndefined();
+    expect(quiet.profiles.map((profile) => profile.id)).not.toContain('quiet');
     expect(ask(dirs[2]).default).toBeUndefined();
     expect(JSON.stringify(frames)).not.toContain('secret');
     for (const invalid of [42, '-x', 'bad\npath'])

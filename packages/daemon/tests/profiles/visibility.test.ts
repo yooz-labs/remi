@@ -84,6 +84,9 @@ describe('remote profile policy', () => {
     const changed = parseProfiles({ work: entry('/p2b/work', { remote_visible: false }) });
     if ('error' in changed) throw new Error(changed.error);
     expect(changed.entries['work']?.revision).toBe(profiles.entries['work']?.revision);
+    const selectableChanged = parseProfiles({ work: entry('/p2b/work') });
+    if ('error' in selectableChanged) throw new Error(selectableChanged.error);
+    expect(selectableChanged.entries['work']?.revision).toBe(profiles.entries['work']?.revision);
     for (const key of ['remote_visible', 'remote_selectable']) {
       expect(parseProfiles({ work: entry('/p2b/work', { [key]: 'yes' }) })).toEqual({
         error: `profiles.work.${key}: expected a boolean`,
