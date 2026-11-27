@@ -274,7 +274,8 @@ export async function runRemoteTerminalViews(
     f.context.reserveView(sharedDevice, randomUUID()),
   ];
   try {
-    fs.writeFileSync(`${prefix}.ready`, String(process.pid));
+    fs.writeFileSync(`${prefix}.ready.tmp`, String(process.pid));
+    fs.renameSync(`${prefix}.ready.tmp`, `${prefix}.ready`);
     await until(() => fs.existsSync(`${prefix}.go`), 'owned remote view release');
   } finally {
     for (const view of views) view.retire();
