@@ -11,7 +11,11 @@ import { createSessionListResponse, errorToString, generateId } from '@remi/shar
 import type { DiscoverableSession, MachineDescriptor, ProtocolMessage, UUID } from '@remi/shared';
 import type { Harness } from '../../harness/types.ts';
 import type { Profiles } from '../../profiles/profile-config.ts';
-import { type ProfileSidecar, sessionProfileOwner } from '../../profiles/session-owner.ts';
+import {
+  type ProfileSidecar,
+  logPolicyDrop,
+  sessionProfileOwner,
+} from '../../profiles/session-owner.ts';
 import { sessionProfileRef } from '../../profiles/session-profile-ref.ts';
 import { profilesInUse } from '../../profiles/visibility.ts';
 import type { SessionBindingStore, SessionRegistry } from '../../session/index.ts';
@@ -100,6 +104,7 @@ export function buildSessionList(deps: SessionListDeps, includeExternal: boolean
     try {
       record = deps.profileOfSession(s.sessionId as UUID);
     } catch {
+      logPolicyDrop('session list', s.sessionId);
       return [];
     }
     const owner = sessionProfileOwner(
@@ -204,6 +209,7 @@ export function visibleLivePorts(deps: {
             if (record === null) return !ownerUnknownHides;
             return sessionProfileOwner(record, sidecar, profiles).owner !== 'hidden';
           } catch {
+            logPolicyDrop('live ports', entry.sessionId);
             return false;
           }
         })

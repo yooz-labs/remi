@@ -42,7 +42,11 @@ import {
 import { DEFAULT_PUSH_LEASE_MS } from '../notifications/push-lease.ts';
 import { sanitizePushPreferences } from '../notifications/push-preferences.ts';
 import { type SecurePushAuthority, SecurePushStore } from '../notifications/secure-push-store.ts';
-import { type ProfilePolicySnapshot, sessionProfileOwner } from '../profiles/session-owner.ts';
+import {
+  type ProfilePolicySnapshot,
+  logPolicyDrop,
+  sessionProfileOwner,
+} from '../profiles/session-owner.ts';
 import { isProfileHidden, profilesInUse } from '../profiles/visibility.ts';
 import { AnswerResults } from '../server/answer-results.ts';
 import { bindConnectionId } from '../server/client-message-events.ts';
@@ -954,6 +958,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
         if (record === null) return !recordlessHidden;
         return sessionProfileOwner(record, sidecar, profiles).owner !== 'hidden';
       } catch {
+        logPolicyDrop('relay list', entry.sessionId, (line) => this.log(line));
         failed = true;
         return false;
       }

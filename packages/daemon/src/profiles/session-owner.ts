@@ -1,3 +1,4 @@
+import { logError } from '../cli/logger.ts';
 import type { SessionProfileEntry, SessionProfilesFile } from '../session/session-profiles-file.ts';
 import type { SessionStore, StoredSession } from '../session/session-store.ts';
 import type { Profiles } from './profile-config.ts';
@@ -54,6 +55,26 @@ export function sidecarGetter(sidecar: ProfileSidecar): Pick<SessionProfilesFile
       return result.entries[id];
     },
   };
+}
+
+const loggedDrops = new Set<string>();
+
+/**
+ * Record, once per place and id prefix, that remote policy left a session out because its owner
+ * could not be read (PR 1828 round 1 F4). Only the first eight characters of the id are logged:
+ * never a path, a label, a profile id or the error, which can carry a path.
+ */
+export function logPolicyDrop(
+  where: string,
+  id: string,
+  write: (line: string) => void = logError,
+): void {
+  const key = `${where}:${id.slice(0, 8)}`;
+  if (loggedDrops.has(key)) return;
+  // A long-lived hub keeps no unbounded history of ids.
+  if (loggedDrops.size >= 1000) loggedDrops.clear();
+  loggedDrops.add(key);
+  write(`[Profiles] ${where}: left out ${id.slice(0, 8)}; its owner could not be read`);
 }
 
 /** Resolve remote ownership without trusting fields an older writer could strip. */
@@ -198,6 +219,7 @@ export function makeIsHiddenSessionOwner(
       };
       return sessionProfileOwner(input, sidecar, profiles).owner === 'hidden';
     } catch {
+      logPolicyDrop('transcript load', id);
       return true;
     }
   };
