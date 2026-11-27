@@ -18,7 +18,7 @@ const REMI_VERSION = (() => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     if (typeof pkg.version !== 'string') {
       console.error('[remi] package.json missing "version" field');
-      return '0.9.1-dev.16'; // REMI_COMPILED_VERSION
+      return '0.9.1-dev.17'; // REMI_COMPILED_VERSION
     }
     return pkg.version;
   } catch (err) {
@@ -28,7 +28,7 @@ const REMI_VERSION = (() => {
     if (code !== 'ENOENT' && code !== 'MODULE_NOT_FOUND') {
       console.error(`[remi] Failed to read version: ${(err as Error).message}`);
     }
-    return '0.9.1-dev.16'; // REMI_COMPILED_VERSION
+    return '0.9.1-dev.17'; // REMI_COMPILED_VERSION
   }
 })();
 
@@ -223,6 +223,8 @@ import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
 import { causeOfSessionClose, createQuestionResolver } from './cli/question-resolution.ts';
 import { disposeAndDismiss } from './cli/session-close.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
+import { probeDaemonSessionPort, probeWrapperSessionPort } from './cli/session-port-probes.ts';
+import { startSessionPort } from './cli/session-port-start.ts';
 import { StatusBar, childRows } from './cli/status-bar.ts';
 import { installStatusLineForLaunch } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
@@ -317,7 +319,6 @@ import {
   storedHarness,
 } from './session/index.ts';
 import { findLegacyWriters, readStatusFiles } from './session/legacy-writers.ts';
-import { findAvailableTcpPort } from './session/port-utils.ts';
 import { traceQuestionEvent } from './session/question-trace.ts';
 import { InterprocessFileLockError } from './storage/interprocess-file-lock.ts';
 import { TerminalCaptureHost } from './terminal/capture-host.ts';
@@ -787,6 +788,8 @@ if (
       ...(cliPort !== undefined && { port: cliPort }),
       ...(cliBindHost !== undefined && { bindHost: cliBindHost }),
       resolvedBindHost: bindHost,
+      basePort: loadedConfig.config.daemon.base_port,
+      portRange: loadedConfig.config.daemon.port_range,
       ...(cliAuth !== undefined && { auth: cliAuth }),
       noMdns: cliNoMdns,
       noRelay: cliNoRelay,
@@ -795,6 +798,7 @@ if (
       permanentCode: cliPermanentCode,
       ...(cliSignalingUrl !== undefined && { signalingUrl: cliSignalingUrl }),
       ...(cliPushSecret !== undefined && { pushSecret: cliPushSecret }),
+      legacyPushEnabled: remiConfig.notifications.legacy_push_enabled,
       ...(cliOrphanTimeout !== undefined && { orphanTimeout: cliOrphanTimeout }),
       remiVersion: REMI_VERSION,
       all: cliStopAll,
@@ -1327,6 +1331,9 @@ const publicWsScheme = daemonTls ? 'wss' : 'ws';
 // ---------------------------------------------------------------------------
 const portExplicitlySet = !!(cliPort || process.env['REMI_PORT']);
 let PORT = cliPort || (process.env['REMI_PORT'] ? Number.parseInt(process.env['REMI_PORT']) : 0);
+// REMI_PORT selects a session port, but its config override must not turn that
+// same value into the hub reservation. Hub startup still uses the override.
+const hubBasePort = serveMode ? remiConfig.daemon.base_port : loadedConfig.config.daemon.base_port;
 
 // Auto-select port if not explicitly set
 if (!portExplicitlySet) {
@@ -1334,6 +1341,7 @@ if (!portExplicitlySet) {
     remiConfig.daemon.base_port,
     remiConfig.daemon.port_range,
     bindHost,
+    serveMode ? [] : [hubBasePort],
   );
   if (autoPort === null) {
     const rangeEnd = remiConfig.daemon.base_port + remiConfig.daemon.port_range - 1;
@@ -1342,6 +1350,10 @@ if (!portExplicitlySet) {
     process.exit(1);
   }
   PORT = autoPort;
+}
+if (!serveMode && PORT === hubBasePort) {
+  console.error(`Port ${hubBasePort} is reserved for the remi hub.`);
+  process.exit(1);
 }
 // Update per-port status file path now that PORT is finalized
 STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
@@ -3355,6 +3367,25 @@ if (authEnabled) {
   }
 }
 
+// Only a local interactive session starts a hub. REMI_HOME is the existing
+// scratch-state override, and tests opt out through their preload.
+if (isSessionLaunch(parsedArgs) && !serveMode && !cliHost) {
+  const legacyPolicy = {
+    legacyEnabled: remiConfig.notifications.legacy_push_enabled,
+    pushSecret: cliPushSecret,
+  };
+  if (cliDaemonMode) {
+    const { noHubWarning, readLiveHub } = await import('./cli/daemon-manager.ts');
+    if (!readLiveHub()) console.error(noHubWarning(legacyPolicy));
+  } else {
+    const { ensureHubForSession } = await import('./cli/hub-autostart.ts');
+    await ensureHubForSession(
+      remiConfig.daemon.hub_auto_start && !isRemiHomeOverridden(),
+      legacyPolicy,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Create and register adapters
 // ---------------------------------------------------------------------------
@@ -3780,10 +3811,17 @@ if (cliDaemonMode) {
   // Phase 2: Probe for available WebSocket port, then start
   if (!portExplicitlySet) {
     const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
-    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed, bindHost);
+    const probed = await probeDaemonSessionPort(
+      PORT,
+      DEFAULT_PORT_RANGE,
+      liveUsed,
+      bindHost,
+      hubBasePort,
+      serveMode,
+    );
     if (probed === null) {
       console.error(
-        `All remi ports in range ${DEFAULT_BASE_PORT}-${DEFAULT_BASE_PORT + DEFAULT_PORT_RANGE - 1} are in use.`,
+        `All remi ports in range ${remiConfig.daemon.base_port}-${remiConfig.daemon.base_port + DEFAULT_PORT_RANGE - 1} are in use.`,
       );
       console.error('Use --port to specify a different port, or stop existing sessions.');
       await registry.stopAll();
@@ -3800,7 +3838,27 @@ if (cliDaemonMode) {
   }
 
   try {
-    await registry.startAdapter('websocket');
+    if (!serveMode && !portExplicitlySet) {
+      await startSessionPort(
+        PORT,
+        DEFAULT_PORT_RANGE,
+        hubBasePort,
+        bindHost,
+        () => new Set(liveSessionsRegistry.listLive().map((entry) => entry.wsPort)),
+        async (port) => {
+          if (port !== PORT) {
+            await registry.unregister('websocket');
+            console.log(`Port ${PORT} in use, using ${port}`);
+            PORT = port;
+            STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
+            registry.register(new WebSocketAdapter(websocketConfigFor(PORT), sharedEvents));
+          }
+          await registry.startAdapter('websocket');
+        },
+      );
+    } else {
+      await registry.startAdapter('websocket');
+    }
   } catch (err) {
     if (daemonTls) await fatalTlsStartup();
     const msg = errorToString(err);
@@ -4149,7 +4207,13 @@ if (cliDaemonMode) {
   let wsProbeSucceeded = true;
   if (!portExplicitlySet) {
     const liveUsed = new Set(liveSessionsRegistry.listLive().map((e) => e.wsPort));
-    const probed = await findAvailableTcpPort(PORT, DEFAULT_PORT_RANGE, liveUsed, bindHost);
+    const probed = await probeWrapperSessionPort(
+      PORT,
+      DEFAULT_PORT_RANGE,
+      liveUsed,
+      bindHost,
+      hubBasePort,
+    );
     if (probed !== null && probed !== PORT) {
       const occupiedPort = PORT;
       try {
@@ -4179,7 +4243,29 @@ if (cliDaemonMode) {
 
   if (wsProbeSucceeded) {
     try {
-      await registry.startAdapter('websocket');
+      if (!portExplicitlySet) {
+        await startSessionPort(
+          PORT,
+          DEFAULT_PORT_RANGE,
+          hubBasePort,
+          bindHost,
+          () => new Set(liveSessionsRegistry.listLive().map((entry) => entry.wsPort)),
+          async (port) => {
+            if (port !== PORT) {
+              await registry.unregister('websocket');
+              const occupied = PORT;
+              PORT = port;
+              STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
+              registry.register(new WebSocketAdapter(websocketConfigFor(PORT), sharedEvents));
+              setLogFileContext({ port: PORT, sessionId });
+              log(`Port ${occupied} in use, using ${PORT}`);
+            }
+            await registry.startAdapter('websocket');
+          },
+        );
+      } else {
+        await registry.startAdapter('websocket');
+      }
       log(`WebSocket server listening on ${publicWsScheme}://${bindHost}:${PORT}/ws`);
       mdnsPublisher = await startMdnsIfNeeded(log);
       wsStarted = true;

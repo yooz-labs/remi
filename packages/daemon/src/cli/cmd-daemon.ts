@@ -21,6 +21,8 @@ export interface StartDaemonOptions {
    * fails to bind (#880). Only `start` uses it.
    */
   readonly resolvedBindHost: string;
+  readonly basePort?: number;
+  readonly portRange?: number;
   readonly auth?: boolean;
   readonly noMdns?: boolean;
   readonly noRelay?: boolean;
@@ -29,6 +31,7 @@ export interface StartDaemonOptions {
   readonly permanentCode?: boolean;
   readonly signalingUrl?: string;
   readonly pushSecret?: string;
+  readonly legacyPushEnabled?: boolean;
   readonly orphanTimeout?: number;
   /** This binary's remi version, for the `status` drift warning (#539). */
   readonly remiVersion?: string;
@@ -81,6 +84,8 @@ export async function runDaemonLifecycleCommand(
       port: opts.port,
       extraArgs: buildStartDaemonArgs(opts),
       bindHost: opts.resolvedBindHost,
+      basePort: opts.basePort,
+      portRange: opts.portRange,
     });
     return 0;
   }
@@ -88,7 +93,10 @@ export async function runDaemonLifecycleCommand(
     return dm.stopDaemon({ all: opts.all === true });
   }
   if (sub === 'status') {
-    dm.showDaemonStatus(opts.remiVersion);
+    dm.showDaemonStatus(opts.remiVersion, {
+      legacyEnabled: opts.legacyPushEnabled,
+      pushSecret: opts.pushSecret,
+    });
     return 0;
   }
   if (sub === 'logs') {

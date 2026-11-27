@@ -286,6 +286,7 @@ export function createCreateSessionHandlers(deps: CreateSessionHandlerDeps) {
       const liveUsed = new Set([
         ...liveSessionsRegistry.listLive().map((entry) => entry.wsPort),
         ...spawningPorts,
+        basePort,
       ]);
       const freePort = await findAvailableTcpPort(basePort, portRange, liveUsed, bindHost);
       if (freePort !== null) spawningPorts.add(freePort);

@@ -174,7 +174,7 @@ describe('profile configuration', () => {
     const result = config('');
     const { profiles, ...rest } = result;
     expect(profiles).toEqual({ entries: {}, notices: [] });
-    // Captured by loading the same input with origin/develop fbd2841d.
+    // Captured on origin/develop fbd2841d, updated for the hub autostart default.
     expect<unknown>(rest).toEqual(developBaseline);
   });
 });
