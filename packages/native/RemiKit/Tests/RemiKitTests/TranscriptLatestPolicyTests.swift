@@ -45,6 +45,15 @@ import Testing
         #expect(result(false, false, 210, 10))
     }
 
+    @Test func noninteractiveTailBoundaryIsOnePoint() {
+        func follows(remaining: CGFloat) -> Bool {
+            RemiTranscriptFollowPolicy.afterNoninteractiveScroll(followsLatest: true, followingLayout: false,
+                sizesChanged: false, previousOffset: 200, offset: 199, remaining: remaining)
+        }
+        #expect(follows(remaining: 1))
+        #expect(!follows(remaining: 1.5))
+    }
+
     @Test func scrollPositionIsReleasedAndClearedOnlyWhenFollowing() {
         #expect(RemiScrollPositionPolicy.effectiveBinding(followsLatest: true, following: "tail", review: "saved") == "tail")
         #expect(RemiScrollPositionPolicy.effectiveBinding(followsLatest: false, following: "tail", review: "saved") == "saved")
