@@ -1,5 +1,6 @@
 /** Owned managed-copy preparation; no wire dispatch or client authority is created here (#1170). */
 import { createHash } from 'node:crypto';
+import { FILE_DOWNLOAD_LIMITS } from '@remi/shared';
 import type { AdmittedFile, DirectoryRoot } from './admission';
 import { AdmittedRead } from './admitted-read';
 import {
@@ -10,6 +11,7 @@ import {
   settleJournal,
 } from './journal-settlement';
 import type { RecoveryOps } from './recovery';
+import { RecoveryError } from './recovery-error';
 import type { Reservations } from './reservations';
 
 // Amortize locked ledger accounting over 1 MiB of private journal I/O (#1844).
@@ -38,6 +40,54 @@ export interface PreparedDownloadCopy {
   read(position: number, length: number): Buffer;
   /** Close the owned reader before journal settlement. A failed settlement may be retried. */
   retire(): 'settled' | 'already_settled';
+}
+
+/** Accumulate borrowed source chunks bounded by the source's remaining bytes. */
+export function createDownloadJournalBatch(byteLength: number, write: (bytes: Buffer) => void) {
+  const batch = Buffer.alloc(Math.min(byteLength, DOWNLOAD_JOURNAL_BATCH_BYTES));
+  let pendingBytes = 0;
+  const flush = () => {
+    if (pendingBytes === 0) return;
+    write(batch.subarray(0, pendingBytes));
+    pendingBytes = 0;
+  };
+  return {
+    append(chunk: Buffer) {
+      const copied = chunk.copy(batch, pendingBytes);
+      pendingBytes += copied;
+      if (pendingBytes === batch.length) {
+        flush();
+        // AdmittedRead.readNext accepts short reads, so a later chunk can straddle this boundary.
+        pendingBytes = chunk.copy(batch, 0, copied);
+      }
+    },
+    flush,
+  };
+}
+
+function assertSourceCurrent(source: AdmittedRead): void {
+  if (!source.isCurrent()) throw new DownloadPreparationError('unavailable', true);
+}
+
+async function copySourceToJournal(
+  source: AdmittedRead,
+  writer: JournalWriter,
+  context: DownloadCopyContext,
+): Promise<void> {
+  const checkSource = () => assertSourceCurrent(source);
+  const batch = createDownloadJournalBatch(source.byteLength, (bytes) => {
+    context.effect(checkSource);
+    // The write touches only the private journal. Keep its I/O outside the grant lock.
+    writer.write(bytes);
+  });
+  while (source.bytesRead < source.byteLength) {
+    context.effect(checkSource);
+    // Consume the cursor's borrowed buffer before the next read.
+    batch.append(source.readNext());
+    if (source.bytesRead === source.byteLength) batch.flush();
+    context.effect(checkSource);
+    await context.yield();
+  }
 }
 
 /** Consumes the admitted source. The caller still guards acceptance and the actual queued send. */
@@ -106,41 +156,17 @@ export async function prepareDownloadCopy(
     });
     const admitted = captured.cursor;
     const ownedWriter = captured.writer;
-    const assertSourceCurrent = () => {
-      if (!admitted.isCurrent()) throw new DownloadPreparationError('unavailable', true);
-    };
-    const batch = Buffer.alloc(Math.min(admitted.byteLength, DOWNLOAD_JOURNAL_BATCH_BYTES));
-    let pendingBytes = 0;
-    const writeBatch = () => {
-      context.effect(assertSourceCurrent);
-      // The write touches only the private journal. Keep its I/O outside the grant lock.
-      ownedWriter.write(batch.subarray(0, pendingBytes));
-      pendingBytes = 0;
-    };
-    while (admitted.bytesRead < admitted.byteLength) {
-      context.effect(assertSourceCurrent);
-      // The cursor reuses its 32 KiB buffer. Copy these bytes before reading the next chunk.
-      const chunk = admitted.readNext();
-      const copied = chunk.copy(batch, pendingBytes);
-      pendingBytes += copied;
-      if (pendingBytes === batch.length) {
-        writeBatch();
-        // A prior short read can leave this chunk straddling a batch boundary.
-        pendingBytes = chunk.copy(batch, 0, copied);
-      }
-      if (admitted.bytesRead === admitted.byteLength && pendingBytes > 0) writeBatch();
-      context.effect(assertSourceCurrent);
-      await context.yield();
-    }
+    const checkSource = () => assertSourceCurrent(admitted);
+    await copySourceToJournal(admitted, ownedWriter, context);
     const expected = context.effect(() => admitted.finish());
-    context.effect(assertSourceCurrent);
+    context.effect(checkSource);
     // Flushing the already-private journal can be slow. It publishes neither a path nor bytes;
     // reopen only after a fresh locked check so revocation during this fsync cannot be accepted.
     writerCloseAttempted = true;
     ownedWriter.close();
     writerClosed = true;
     const privateReader = context.effect(() => {
-      assertSourceCurrent();
+      checkSource();
       reader = ownedWriter.openRead();
       return reader;
     });
@@ -152,21 +178,21 @@ export async function prepareDownloadCopy(
       position < expected.byteLength;
       position += DOWNLOAD_JOURNAL_BATCH_BYTES
     ) {
-      context.effect(assertSourceCurrent);
+      context.effect(checkSource);
       hash.update(
         privateReader.read(
           position,
           Math.min(DOWNLOAD_JOURNAL_BATCH_BYTES, expected.byteLength - position),
         ),
       );
-      context.effect(assertSourceCurrent);
+      context.effect(checkSource);
       await context.yield();
     }
     if (hash.digest('hex') !== expected.sha256)
       throw new DownloadPreparationError('unavailable', true);
     context.effect(() => {
       // Verification yields: preserve the source's final publication check as well.
-      assertSourceCurrent();
+      checkSource();
       // Validate the private descriptor/name/metadata after the final verification yield.
       privateReader.read(0, 1);
       closeSource();
@@ -176,7 +202,10 @@ export async function prepareDownloadCopy(
       digest: Buffer.from(expected.sha256, 'hex').toString('base64url'),
       read(position: number, length: number) {
         if (terminal) throw new DownloadPreparationError('unavailable', settled);
-        return context.effect(() => privateReader.read(position, length));
+        return context.effect(() => {
+          if (length > FILE_DOWNLOAD_LIMITS.chunkBytes) throw new RecoveryError('unavailable');
+          return privateReader.read(position, length);
+        });
       },
       retire,
     }));
