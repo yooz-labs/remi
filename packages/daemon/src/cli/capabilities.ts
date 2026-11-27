@@ -15,4 +15,4 @@
  *   and `recent_repositories_request`, the repositories of recent sessions to offer
  *   for one (`cli/handlers/recent-repositories-events.ts`).
  */
-export const DAEMON_CAPABILITIES: readonly string[] = ['workspaces'];
+export const DAEMON_CAPABILITIES: readonly string[] = ['workspaces', 'session_profiles'];

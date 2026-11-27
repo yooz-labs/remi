@@ -36,6 +36,10 @@ import { type SessionListDeps, buildSessionList } from './session-list-entries.t
 import type { SendToConnection } from './trivial-events.ts';
 
 export interface SessionHandlerDeps {
+  profiles?: SessionListDeps['profiles'];
+  sidecar?: SessionListDeps['sidecar'];
+  profileOfSession?: SessionListDeps['profileOfSession'];
+  visibleLivePorts?: () => readonly number[];
   machine?: () => MachineDescriptor | undefined;
   withholdTranscriptPaths?: boolean;
   sessionRegistry: SessionRegistry;
@@ -143,6 +147,9 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
           bindingStore,
           transcriptDiscovery,
           harness,
+          ...(deps.profiles && { profiles: deps.profiles }),
+          ...(deps.sidecar && { sidecar: deps.sidecar }),
+          ...(deps.profileOfSession && { profileOfSession: deps.profileOfSession }),
           withholdTranscriptPaths: deps.withholdTranscriptPaths === true,
         },
         includeExternal,
@@ -155,7 +162,9 @@ export function createSessionHandlers(deps: SessionHandlerDeps) {
       );
       // Include other daemon ports on this machine so the app can auto-connect.
       const port = currentPort();
-      const livePorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== port);
+      const livePorts = (deps.visibleLivePorts?.() ?? liveSessionsRegistry.getLivePorts()).filter(
+        (p) => p !== port,
+      );
       send(
         connectionId,
         createSessionListResponse(allSessions, requestId, livePorts, deps.machine?.()),

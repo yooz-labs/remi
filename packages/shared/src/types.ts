@@ -541,7 +541,14 @@ export interface MachineDescriptor {
  * A session visible through the discovery mechanism.
  * Combines daemon-managed sessions and externally-discovered transcript files.
  */
+export interface SessionProfileRef {
+  readonly id: string;
+  readonly label: string;
+  readonly state?: 'current' | 'changed' | 'removed';
+}
+
 export interface DiscoverableSession {
+  readonly profile?: SessionProfileRef;
   /** Session ID (daemon UUID or Claude Code session ID from transcript path) */
   readonly sessionId: string;
 

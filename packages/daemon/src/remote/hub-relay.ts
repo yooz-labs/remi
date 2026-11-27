@@ -41,11 +41,16 @@ import {
 import { DEFAULT_PUSH_LEASE_MS } from '../notifications/push-lease.ts';
 import { sanitizePushPreferences } from '../notifications/push-preferences.ts';
 import { type SecurePushAuthority, SecurePushStore } from '../notifications/secure-push-store.ts';
+import { currentProfilesStrict } from '../profiles/current-profiles.ts';
+import { readProfileSidecar, sessionProfileOwner } from '../profiles/session-owner.ts';
+import { isProfileHidden } from '../profiles/visibility.ts';
 import { AnswerResults } from '../server/answer-results.ts';
 import { bindConnectionId } from '../server/client-message-events.ts';
 import { Connection } from '../server/connection.ts';
 import type { RelayLocalControl } from '../server/websocket-server.ts';
+import { SessionProfilesFile } from '../session/session-profiles-file.ts';
 import type { SessionRegistryFile } from '../session/session-registry-file.ts';
+import { SessionStore } from '../session/session-store.ts';
 import { InterprocessFileLockError } from '../storage/interprocess-file-lock.ts';
 import { normalizeSecureRegistration } from '../storage/secure-push-subscriptions.ts';
 import { ChildProxy } from './child-proxy.ts';
@@ -918,6 +923,9 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
     }
     if (!this.current(peer) || !peer.proxy) return;
     const all = this.cfg.registry.listLive();
+    const sessionStore = new SessionStore();
+    const profiles = currentProfilesStrict();
+    const sidecar = readProfileSidecar(new SessionProfilesFile());
     const live = all.slice(0, 32);
     const sessions = new Map(localResponse.sessions.map((session) => [session.sessionId, session]));
     let failed = localTimedOut || all.length > live.length;
@@ -948,6 +956,13 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
           continue;
         }
         const { entry, response } = result.value;
+        try {
+          const record = sessionStore.findByRemiSessionId(entry.sessionId);
+          if (record && sessionProfileOwner(record, sidecar, profiles).owner === 'hidden') continue;
+        } catch {
+          failed = true;
+          continue;
+        }
         const current = this.cfg.registry
           .listLive()
           .find((item) => item.sessionId === entry.sessionId);
@@ -956,6 +971,7 @@ export class HubRelay implements ConnectionAdapter, RelayLocalControl {
           continue;
         }
         for (const session of response.sessions) {
+          if (session.profile && isProfileHidden(session.profile.id, profiles)) continue;
           if (
             session.sessionId === entry.sessionId ||
             (request.includeExternal && session.source !== 'daemon')

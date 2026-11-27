@@ -1,0 +1,8 @@
+{
+  "type": "session_profiles_response",
+  "id": "3e563cfc-b757-465d-a101-1efa84379b97",
+  "timestamp": "2026-11-27T01:29:12.040Z",
+  "requestId": "fixture-request-id",
+  "profiles": [],
+  "refused": "profiles_invalid"
+}

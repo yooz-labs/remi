@@ -1,0 +1,108 @@
+{
+  "type": "session_list_response",
+  "id": "bcf54779-5a4f-4397-abba-34aef8fdbb2a",
+  "timestamp": "2026-11-27T01:29:12.040Z",
+  "sessions": [
+    {
+      "sessionId": "fixture-session-id",
+      "name": "fixture-host/fixture-project/main",
+      "projectPath": "/Users/fixture/project",
+      "status": "active",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "lastActivity": "2026-01-01T00:00:00.000Z",
+      "messageCount": 3,
+      "model": "yooz-quality",
+      "lastMessage": "Last message preview",
+      "source": "daemon",
+      "canAttach": true,
+      "canResume": false,
+      "claudeSessionId": "fixture-claude-session-id",
+      "harness": "claude",
+      "harnessSessionId": "fixture-claude-session-id",
+      "transcriptPath": "/Users/fixture/transcript.jsonl",
+      "wsPort": 19924,
+      "daemonHost": "fixture-host",
+      "profile": {
+        "id": "work",
+        "label": "Work",
+        "state": "current"
+      }
+    },
+    {
+      "sessionId": "changed",
+      "name": "fixture-host/fixture-project/main",
+      "projectPath": "/Users/fixture/project",
+      "status": "active",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "lastActivity": "2026-01-01T00:00:00.000Z",
+      "messageCount": 3,
+      "model": "yooz-quality",
+      "lastMessage": "Last message preview",
+      "source": "daemon",
+      "canAttach": true,
+      "canResume": false,
+      "claudeSessionId": "fixture-claude-session-id",
+      "harness": "claude",
+      "harnessSessionId": "fixture-claude-session-id",
+      "transcriptPath": "/Users/fixture/transcript.jsonl",
+      "wsPort": 19924,
+      "daemonHost": "fixture-host",
+      "profile": {
+        "id": "work",
+        "label": "Work",
+        "state": "changed"
+      }
+    },
+    {
+      "sessionId": "removed",
+      "name": "fixture-host/fixture-project/main",
+      "projectPath": "/Users/fixture/project",
+      "status": "active",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "lastActivity": "2026-01-01T00:00:00.000Z",
+      "messageCount": 3,
+      "model": "yooz-quality",
+      "lastMessage": "Last message preview",
+      "source": "daemon",
+      "canAttach": true,
+      "canResume": false,
+      "claudeSessionId": "fixture-claude-session-id",
+      "harness": "claude",
+      "harnessSessionId": "fixture-claude-session-id",
+      "transcriptPath": "/Users/fixture/transcript.jsonl",
+      "wsPort": 19924,
+      "daemonHost": "fixture-host",
+      "profile": {
+        "id": "old",
+        "label": "Old",
+        "state": "removed"
+      }
+    },
+    {
+      "sessionId": "external",
+      "name": "fixture-host/fixture-project/main",
+      "projectPath": "/Users/fixture/project",
+      "status": "active",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "lastActivity": "2026-01-01T00:00:00.000Z",
+      "messageCount": 3,
+      "model": "yooz-quality",
+      "lastMessage": "Last message preview",
+      "source": "transcript",
+      "canAttach": true,
+      "canResume": false,
+      "claudeSessionId": "fixture-claude-session-id",
+      "harness": "claude",
+      "harnessSessionId": "fixture-claude-session-id",
+      "transcriptPath": "/Users/fixture/transcript.jsonl",
+      "wsPort": 19924,
+      "daemonHost": "fixture-host",
+      "profile": {
+        "id": "work",
+        "label": "Work",
+        "state": "current"
+      }
+    }
+  ],
+  "requestId": "fixture-request-id"
+}

@@ -1959,6 +1959,11 @@ function App() {
       case 'recent_repositories_response':
         break;
 
+      // P2D adds the profile picker.
+      case 'session_profiles_request':
+      case 'session_profiles_response':
+        break;
+
       // #1679: paired native clients bootstrap notification-only enrollment.
       // Web secure subscriptions continue to use their existing encrypted path.
       case 'notification_host_request':

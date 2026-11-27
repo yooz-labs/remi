@@ -1,0 +1,14 @@
+{
+  "type": "create_session_response",
+  "id": "d144a3b7-74cf-4522-8412-713c167affa7",
+  "timestamp": "2026-11-27T01:29:12.039Z",
+  "success": true,
+  "requestId": "fixture-request-id",
+  "sessionId": "fixture-session-id",
+  "port": 19924,
+  "profile": {
+    "id": "work",
+    "label": "Work",
+    "state": "current"
+  }
+}

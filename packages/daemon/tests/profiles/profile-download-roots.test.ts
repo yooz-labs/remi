@@ -201,6 +201,8 @@ test.each(['file', 'unreadable', 'dangling', 'ancestor'] as const)(
             inactive: {
               id: 'inactive',
               label: 'Inactive',
+              remoteVisible: true,
+              remoteSelectable: false,
               claude: { dir: inactive, expects: 'subscription' },
               revision: '',
               args: [],

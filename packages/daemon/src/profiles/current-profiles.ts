@@ -7,6 +7,31 @@ const cache = new Map<string, { signature: string; profiles: Profiles }>();
 const failures = new Set<string>();
 const failureMessage = '[Profiles] Could not read or parse configuration';
 
+/** Read the current configuration for remote policy without last-good fallback. */
+export function currentProfilesStrict(configPath = CONFIG_PATH): Profiles {
+  try {
+    fs.statSync(configPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { entries: {}, notices: [] };
+    }
+    return strictFailure();
+  }
+  try {
+    return parseConfigText(fs.readFileSync(configPath, 'utf8'), configPath).config.profiles;
+  } catch {
+    return strictFailure();
+  }
+}
+
+function strictFailure(): Profiles {
+  if (!failures.has('strict:read')) {
+    failures.add('strict:read');
+    logError(failureMessage);
+  }
+  return { error: 'Could not read or parse configuration' };
+}
+
 /** Re-read changed configuration without putting configuration contents in logs. */
 export function currentProfiles(configPath = CONFIG_PATH): Profiles {
   const prior = cache.get(configPath);

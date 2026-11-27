@@ -13,6 +13,8 @@ export interface ProfileHarness {
 }
 export interface Profile {
   readonly label: string;
+  readonly remoteVisible: boolean;
+  readonly remoteSelectable: boolean;
   readonly harness?: 'claude' | 'codex';
   readonly args: readonly string[];
   readonly folders: readonly string[];
@@ -35,15 +37,11 @@ export type Profiles =
       readonly notices: readonly string[];
     };
 
-const LATER = new Set([
-  'remote_visible',
-  'remote_selectable',
-  'warn_percent',
-  'offer_percent',
-  'continuation_target',
-]);
+const LATER = new Set(['warn_percent', 'offer_percent', 'continuation_target']);
 const PROFILE_KEYS = new Set([
   'label',
+  'remote_visible',
+  'remote_selectable',
   'harness',
   'args',
   'folders',
@@ -151,8 +149,18 @@ export function parseProfiles(raw: unknown): Profiles {
       const p = table(root[id], prefix);
       keys(p, PROFILE_KEYS, prefix);
       for (const key of LATER)
-        if (key in p && notices.length === 0)
+        if (
+          key in p &&
+          !notices.includes('profiles: later settings are not used by this remi version')
+        )
           notices.push('profiles: later settings are not used by this remi version');
+      for (const key of ['remote_visible', 'remote_selectable'])
+        if (p[key] !== undefined && typeof p[key] !== 'boolean')
+          throw new Error(`${prefix}.${key}: expected a boolean`);
+      const remoteVisible = (p['remote_visible'] as boolean | undefined) ?? true;
+      const remoteSelectable = (p['remote_selectable'] as boolean | undefined) ?? false;
+      if (!remoteVisible && remoteSelectable)
+        notices.push(`${prefix}: remote_selectable has no effect while remote_visible is false`);
       const labelError = validateProfileLabel(p['label']);
       if (labelError) throw new Error(`${prefix}.label: ${labelError}`);
       const harness = p['harness'];
@@ -254,6 +262,8 @@ export function parseProfiles(raw: unknown): Profiles {
         throw new Error(`${prefix}.args: Codex profile and config flags are not supported`);
       const withoutRevision: Omit<Profile, 'revision'> = {
         label: p['label'] as string,
+        remoteVisible,
+        remoteSelectable,
         ...(harness ? { harness } : {}),
         args,
         folders: dirs,

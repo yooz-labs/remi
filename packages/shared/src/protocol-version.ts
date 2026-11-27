@@ -45,6 +45,7 @@ export const PROTOCOL_CAPABILITIES: Readonly<Record<string, string>> = {
   browser_links: 'receive browser links from the attached Claude session',
   file_download: 'download a file from the attached session',
   notifications: 'manage paired-device background notifications',
+  session_profiles: 'start a session in a chosen profile',
 };
 
 /** Whether a machine supports what a client needs, from its `hello_ack`. */

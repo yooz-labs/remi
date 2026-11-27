@@ -65,6 +65,7 @@ export interface StoredSession {
 
 export interface ProfileSnapshot {
   revision: string;
+  label?: string;
   claudeDir?: string;
   codexDir?: string;
   claudeExpects?: string;
@@ -194,7 +195,13 @@ function parseStoredSession(value: unknown, index: number, filePath: string): St
   const snapshot = value['profileSnapshot'];
   if (isRecord(snapshot) && typeof snapshot['revision'] === 'string') {
     const result: ProfileSnapshot = { revision: snapshot['revision'] };
-    for (const key of ['claudeDir', 'codexDir', 'claudeExpects', 'codexExpects'] as const) {
+    for (const key of [
+      'label',
+      'claudeDir',
+      'codexDir',
+      'claudeExpects',
+      'codexExpects',
+    ] as const) {
       if (typeof snapshot[key] === 'string') result[key] = snapshot[key];
     }
     parsed.profileSnapshot = result;

@@ -1,0 +1,14 @@
+{
+  "type": "hello_ack",
+  "id": "af19ec31-cbd5-41d6-8d60-9e6b7a0661b1",
+  "timestamp": "2026-11-27T01:29:12.039Z",
+  "serverVersion": "1.0.0",
+  "protocolVersion": 1,
+  "sessionId": "fixture-session-id",
+  "capabilities": [],
+  "profile": {
+    "id": "work",
+    "label": "Work",
+    "state": "current"
+  }
+}

@@ -64,6 +64,8 @@ import {
   createSessionHistoryResponse,
   createSessionListRequest,
   createSessionListResponse,
+  createSessionProfilesRequest,
+  createSessionProfilesResponse,
   createSessionRotated,
   createSessionUpdate,
   createSessionViews,
@@ -474,6 +476,13 @@ export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => Protocol
     createBulletExpandResponse(1, 'Full bullet content here', REQUEST_ID),
   session_list_request: () => createSessionListRequest(true),
   recent_repositories_request: () => createRecentRepositoriesRequest(10),
+  session_profiles_request: () => createSessionProfilesRequest('/Users/fixture/project'),
+  session_profiles_response: () =>
+    createSessionProfilesResponse(
+      REQUEST_ID,
+      [{ id: 'default', label: 'Default sign-in', harnesses: ['claude', 'codex'] }],
+      { id: 'default', source: 'built_in' },
+    ),
   recent_repositories_response: () =>
     createRecentRepositoriesResponse(
       [
@@ -596,6 +605,71 @@ export const FIXTURE_VARIANTS: Record<
   string,
   { type: keyof ProtocolMessageMap; build: () => ProtocolMessageMap[keyof ProtocolMessageMap] }
 > = {
+  create_session_request_profile: {
+    type: 'create_session_request',
+    build: () => createCreateSessionRequest('/Users/fixture/project', { profile: 'work' }),
+  },
+  create_session_response_profile: {
+    type: 'create_session_response',
+    build: () =>
+      createCreateSessionResponse(
+        true,
+        REQUEST_ID,
+        SESSION_ID,
+        undefined,
+        19924,
+        undefined,
+        undefined,
+        { id: 'work', label: 'Work', state: 'current' },
+      ),
+  },
+  hello_ack_profile: {
+    type: 'hello_ack',
+    build: () =>
+      createHelloAck('1.0.0', SESSION_ID, {
+        profile: { id: 'work', label: 'Work', state: 'current' },
+      }),
+  },
+  session_list_response_profile: {
+    type: 'session_list_response',
+    build: () =>
+      createSessionListResponse(
+        [
+          {
+            ...FIXED_DISCOVERABLE_SESSION,
+            profile: { id: 'work', label: 'Work', state: 'current' },
+          },
+          {
+            ...FIXED_DISCOVERABLE_SESSION,
+            sessionId: 'changed',
+            profile: { id: 'work', label: 'Work', state: 'changed' },
+          },
+          {
+            ...FIXED_DISCOVERABLE_SESSION,
+            sessionId: 'removed',
+            profile: { id: 'old', label: 'Old', state: 'removed' },
+          },
+          {
+            ...FIXED_DISCOVERABLE_SESSION,
+            sessionId: 'external',
+            source: 'transcript',
+            profile: { id: 'work', label: 'Work', state: 'current' },
+          },
+        ],
+        REQUEST_ID,
+      ),
+  },
+  session_profiles_response_no_default: {
+    type: 'session_profiles_response',
+    build: () =>
+      createSessionProfilesResponse(REQUEST_ID, [
+        { id: 'default', label: 'Default sign-in', harnesses: ['claude', 'codex'] },
+      ]),
+  },
+  session_profiles_response_refused: {
+    type: 'session_profiles_response',
+    build: () => createSessionProfilesResponse(REQUEST_ID, [], undefined, 'profiles_invalid'),
+  },
   hello_ack_machine: {
     type: 'hello_ack',
     build: () => createHelloAck('1.0.0', null, { machine: FIXED_MACHINE }),

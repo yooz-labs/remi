@@ -72,7 +72,7 @@ while [ ! -e "$FAKE_OUTPUT/release" ] && [ "$i" -lt 600 ]; do sleep 0.1; i=$((i 
   fs.writeFileSync(path.join(bin, 'sh-path'), '#!/bin/sh\necho "$PATH"\n', { mode: 0o700 });
   fs.writeFileSync(
     path.join(remi, 'config.toml'),
-    `[profiles.work]\nlabel="Work"\nfolders=[${JSON.stringify(dirs.work)}]\n[profiles.work.claude]\ndir=${JSON.stringify(profile)}\nexpects="subscription"\n`,
+    `[profiles.work]\nlabel="Work"\nremote_selectable=true\nfolders=[${JSON.stringify(dirs.work)}]\n[profiles.work.claude]\ndir=${JSON.stringify(profile)}\nexpects="subscription"\n`,
   );
   const env = {
     ...Object.fromEntries(PROFILE_CREDENTIAL_ENV.map((name) => [name, 'planted-value'])),
@@ -361,37 +361,37 @@ test('duplicate profile directories refuse launch while a distinct symlink stays
   expect(await started.exited).toBe(0);
 }, 30000);
 
-test('remote explicit profile is refused before a connection', async () => {
+test('remote explicit profile starts through a capable hub', async () => {
   const f = fixture();
-  const port = await reserveRange(1, 50, DEFAULT_CONFIG.daemon.bind);
-  let connections = 0;
-  const listener = Bun.listen({
-    hostname: '127.0.0.1',
+  fs.symlinkSync(process.execPath, path.join(f.home, 'bin', 'bun'));
+  const port = await reserveRange(20, 50, DEFAULT_CONFIG.daemon.bind);
+  const hub = await spawnHub(
+    { home: f.home, work: f.work },
+    { ...f.env, REMI_PORT: String(port) },
+    CLI_TS,
     port,
-    socket: {
-      open(socket) {
-        connections++;
-        socket.end();
-      },
-      data() {},
-      error() {},
-    },
-  });
+  );
+  running.push(hub as (typeof running)[number]);
   try {
     const proc = await spawnWrapper(f, [
       'new',
       '--host',
-      `127.0.0.1:${port}`,
+      '127.0.0.1',
+      '--port',
+      String(port),
       '--remi-profile',
       'work',
     ]);
-    expect(await proc.exited).toBe(2);
-    expect(await new Response(proc.stderr).text()).toContain(
-      "Choosing a profile for a session on another machine is not supported yet. That machine's folder mapping or default profile applies; run the command without --remi-profile.",
+    await pollUntil(
+      () => fs.existsSync(path.join(f.output, 'argv')) || proc.exitCode !== null,
+      15000,
+      'remote profile child',
     );
-    expect(connections).toBe(0);
+    if (proc.exitCode !== null) throw new Error(await new Response(proc.stderr).text());
+    expect(fs.readFileSync(path.join(f.output, 'dir'), 'utf8')).toBe(f.profile);
+    fs.writeFileSync(path.join(f.output, 'release'), '');
   } finally {
-    listener.stop(true);
+    fs.writeFileSync(path.join(f.output, 'release'), '');
   }
 }, 30000);
 
@@ -637,7 +637,7 @@ test('hub resumes the recorded profile and reports a refused child', async () =>
   for (const dir of [codexOnlyWork, bothWork, bothClaude]) fs.mkdirSync(dir);
   fs.appendFileSync(
     path.join(f.remi, 'config.toml'),
-    `[profiles.other]\nlabel="Other"\nfolders=[${JSON.stringify(otherWork)}]\n[profiles.other.claude]\ndir=${JSON.stringify(other)}\nexpects="subscription"\n[profiles.codeonly]\nlabel="Code"\nharness="codex"\nfolders=[${JSON.stringify(codexOnlyWork)}]\n[profiles.codeonly.codex]\ndir=${JSON.stringify(path.join(f.home, 'code-only-home'))}\nexpects="subscription"\n[profiles.both]\nlabel="Both"\nharness="codex"\nfolders=[${JSON.stringify(bothWork)}]\n[profiles.both.claude]\ndir=${JSON.stringify(bothClaude)}\nexpects="subscription"\n[profiles.both.codex]\ndir=${JSON.stringify(path.join(f.home, 'both-codex'))}\nexpects="subscription"\n`,
+    `[profiles.other]\nlabel="Other"\nremote_selectable=true\nfolders=[${JSON.stringify(otherWork)}]\n[profiles.other.claude]\ndir=${JSON.stringify(other)}\nexpects="subscription"\n[profiles.codeonly]\nlabel="Code"\nremote_selectable=true\nharness="codex"\nfolders=[${JSON.stringify(codexOnlyWork)}]\n[profiles.codeonly.codex]\ndir=${JSON.stringify(path.join(f.home, 'code-only-home'))}\nexpects="subscription"\n[profiles.both]\nlabel="Both"\nremote_selectable=true\nharness="codex"\nfolders=[${JSON.stringify(bothWork)}]\n[profiles.both.claude]\ndir=${JSON.stringify(bothClaude)}\nexpects="subscription"\n[profiles.both.codex]\ndir=${JSON.stringify(path.join(f.home, 'both-codex'))}\nexpects="subscription"\n`,
   );
   fs.symlinkSync(process.execPath, path.join(f.home, 'bin', 'bun'));
   let port = await reserveRange(20, 50, DEFAULT_CONFIG.daemon.bind);
@@ -849,7 +849,7 @@ test('hub resumes the recorded profile and reports a refused child', async () =>
     const expectedRefusal =
       "The session's profile could not start. Run remi profile ls on the machine.";
     expect([codexOnly.error, refused.error, removed.error]).toEqual([
-      expectedRefusal,
+      'This profile does not configure that harness.',
       expectedRefusal,
       expectedRefusal,
     ]);

@@ -11,6 +11,9 @@ import {
   type ResolvedPushPreferences,
   sanitizePushPreferences,
 } from '../../notifications/push-preferences.ts';
+import type { Profiles } from '../../profiles/profile-config.ts';
+import { type ProfileSidecar, sessionProfileOwner } from '../../profiles/session-owner.ts';
+import { hiddenDirectory } from '../../profiles/visibility.ts';
 import type { SessionRegistry, SessionStore } from '../../session/index.ts';
 import { log, logError } from '../logger.ts';
 import { getRecentDirectories } from '../recent-client.ts';
@@ -41,6 +44,8 @@ export interface DeviceTokenEntry {
 export type SendToConnection = (connectionId: UUID, message: ProtocolMessage) => boolean;
 
 export interface TrivialHandlerDeps {
+  profiles: () => Profiles;
+  sidecar?: () => ProfileSidecar;
   /**
    * Register a device token (epic #603 Phase 6). The `DeviceTokenStore` owns the
    * map: it does the #585 rotation prune (a re-registration from the same
@@ -97,7 +102,15 @@ export function createTrivialHandlers(deps: TrivialHandlerDeps) {
       log(`Session history request from ${connectionId}, limit: ${limit ?? 'default'}`);
       try {
         const clampedLimit = Math.max(1, limit ?? 20);
-        const directories = getRecentDirectories(sessionStore, clampedLimit);
+        const profiles = deps.profiles();
+        const sidecar = deps.sidecar?.() ?? { ok: false as const };
+        const directories = getRecentDirectories(
+          sessionStore,
+          clampedLimit,
+          (session) =>
+            sessionProfileOwner(session, sidecar, profiles).owner !== 'hidden' &&
+            !hiddenDirectory(session.projectPath, profiles),
+        );
         send(connectionId, createSessionHistoryResponse(directories, requestId));
       } catch (err) {
         log(`Failed to get recent directories: ${errorToString(err)}`);

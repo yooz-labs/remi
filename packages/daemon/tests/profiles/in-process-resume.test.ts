@@ -12,8 +12,8 @@ test('in-process resume checks real ownership records and conceals read errors',
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-profile-'));
   try {
     const profiles = parseProfiles({
-      work: { label: 'Work', claude: { expects: 'subscription' } },
-      other: { label: 'Other', claude: { expects: 'subscription' } },
+      work: { label: 'Work', remote_selectable: true, claude: { expects: 'subscription' } },
+      other: { label: 'Other', remote_selectable: true, claude: { expects: 'subscription' } },
     });
     if ('error' in profiles) throw new Error(profiles.error);
     const revision = profiles.entries['work']?.revision as string;
@@ -34,8 +34,14 @@ test('in-process resume checks real ownership records and conceals read errors',
     store.save(record, { profile: 'work', revision });
     const logs: string[] = [];
     const check = (own: string, key = id) =>
-      inProcessResumeRefusal(store, new SessionProfilesFile(root), profiles, own, key, (line) =>
-        logs.push(line),
+      inProcessResumeRefusal(
+        store,
+        new SessionProfilesFile(root),
+        profiles,
+        profiles,
+        own,
+        key,
+        (line) => logs.push(line),
       );
     expect(check('work')).toBeNull();
     expect(check('other')).toContain('belongs to profile work');
@@ -87,7 +93,9 @@ test('in-process resume returns the ownership refusal and the ambiguity message 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-refusal-'));
   try {
     const config = (args: string[]) =>
-      parseProfiles({ work: { label: 'Work', args, claude: { expects: 'subscription' } } });
+      parseProfiles({
+        work: { label: 'Work', args, remote_selectable: true, claude: { expects: 'subscription' } },
+      });
     const profiles = config([]);
     if ('error' in profiles) throw new Error(profiles.error);
     const revision = profiles.entries['work']?.revision as string;
@@ -120,6 +128,7 @@ test('in-process resume returns the ownership refusal and the ambiguity message 
         new SessionStore(path.join(root, 'sessions.json')),
         new SessionProfilesFile(root),
         parsed,
+        parsed,
         'work',
         claudeId,
         () => {},
@@ -128,8 +137,7 @@ test('in-process resume returns the ownership refusal and the ambiguity message 
     write([row()], { [remiSessionId]: { profile: 'work', revision } });
     expect(refusal()).toBeNull();
 
-    const changed =
-      "This session's profile information was changed by another remi process. Start a new session.";
+    const changed = 'That session was not found on this machine.';
     write([row()], {});
     expect(refusal()).toBe(changed);
     write([row()], { [remiSessionId]: { profile: 'other', revision } });

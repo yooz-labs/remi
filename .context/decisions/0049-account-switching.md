@@ -554,3 +554,23 @@ Added in r2, at the same commit:
 `docs/agent-reference/questions-and-notifications.md` (33, 225-236, 252, 304-305),
 `docs/agent-reference/harnesses-and-codex.md` (11, 33),
 `docs/agent-reference/hub-mode.md` (32).
+
+## Amendment 1 (2026-11, #1749 phase 2): session_profiles
+
+`remote_visible` defaults to true and `remote_selectable` defaults to false. They are set by hand in `config.toml` during phase 2 and do not enter the profile revision. The built-in default is always visible and selectable. A device may start or resume only in a selectable profile (J22 (a)); visible refusals identify the profile and the enabling line, while hidden refusals do not identify it. The refusal texts are:
+
+- `New sessions in this folder use profile ID, which does not accept sessions from your devices. To allow them, add remote_selectable = true to [profiles.ID] in config.toml on that machine.`
+- `New sessions in this folder use a profile that does not accept sessions from your devices.`
+- `Profile ID does not accept sessions from your devices. To allow them, add remote_selectable = true to [profiles.ID] in config.toml on that machine.`
+- `This profile is not available for new sessions from your devices. Run remi profile ls on the machine.`
+- `This profile does not configure that harness.`
+- `This machine's profile settings have an error. Run remi profile ls on the machine.`
+- `This session's profile ID does not accept sessions from your devices. Resume it on that machine with remi --resume, or add remote_selectable = true to [profiles.ID] in config.toml there.`
+- `That session was not found on this machine.`
+- `This session belongs to another profile; resume it without choosing a profile.`
+
+`SessionProfileRef` contains `id`, `label`, and an optional `state` (`current`, `changed`, or `removed`). The `session_profiles_request` carries an optional `directory`; its response carries `requestId`, selectable `profiles` with their ids, labels and harnesses, an optional `default` with id and source (`folder`, `machine_default`, or `built_in`), and an optional refusal (`directory_invalid` or `profiles_invalid`). The default is optional so an unselectable or hidden default is not presented as a choice. A configuration error fails remote policy closed without consulting folder mappings.
+
+Hiding is a listing control (J23 (a)): hidden sessions still send push notifications and question cards, and a client that already knows a hidden session's id or port can still reach it directly. A session's working directory is published as its `projectPath`, as for every session, including when it is a profile's own directory. Built-in-default sessions publish their own paths under `~/.claude` and `~/.codex` even when a hidden profile's directory contains them. A hidden profile's folders and directories hide every directory inside them from recent repositories and session history. A remembered repository outside those directories may remain listed if no hidden record names a path in it after the profile is hidden; phase 2 does not record provenance.
+
+Phase 2 starts a fresh session in another profile and carries no work over; the handoff brief is P4B and continuation is phase 5. `profile_status` and #1749's protocol part 2 are deferred to phase 2b. Claude Code's `claude auth status --json` for a claude.ai sign-in also prints `subscriptionType` and `planTier` (read from the 2.1.325 binary's code, not from a run); remi parses neither; they are a possible later replacement for the self-declared individual subscription of Q6.

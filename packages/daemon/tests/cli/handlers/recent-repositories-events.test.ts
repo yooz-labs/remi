@@ -63,6 +63,7 @@ describe('recent_repositories_request (#1236 phase C)', () => {
 
   const handlers = () =>
     createRecentRepositoriesHandlers({
+      profiles: () => ({ entries: {}, notices: [] }),
       sessionStore: store,
       repositoryStore: history,
       send: (connectionId, message) => {
@@ -136,6 +137,7 @@ describe('recent_repositories_request (#1236 phase C)', () => {
     record(repo('a'), '2026-10-07T10:00:00.000Z', '11111111-1111-4111-8111-111111111111');
     let reads = 0;
     const counted = createRecentRepositoriesHandlers({
+      profiles: () => ({ entries: {}, notices: [] }),
       sessionStore: {
         list: () => {
           reads += 1;

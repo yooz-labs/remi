@@ -186,6 +186,7 @@ import {
 } from './cli/handlers/resume-session-events.ts';
 import { type SessionHandlers, createSessionHandlers } from './cli/handlers/session-events.ts';
 import { broadcastWorkspaceChange, buildSessionList } from './cli/handlers/session-list-entries.ts';
+import { createSessionProfilesHandlers } from './cli/handlers/session-profiles-events.ts';
 import { StructuredChatService } from './cli/handlers/structured-chat-events.ts';
 import {
   type TranscriptHandlers,
@@ -214,7 +215,6 @@ import { defaultMachineName, machineIdForKey } from './cli/machine.ts';
 import { installProcessGuards } from './cli/process-guards.ts';
 import { PtyQuiescenceGate } from './cli/pty-quiescence-gate.ts';
 import { causeOfSessionClose, createQuestionResolver } from './cli/question-resolution.ts';
-import { makeResumeProfileOf } from './cli/resume-profile-of.ts';
 import { disposeAndDismiss } from './cli/session-close.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
 import { StatusBar, childRows } from './cli/status-bar.ts';
@@ -990,12 +990,6 @@ if (cliResume !== undefined) {
 
 // remi new --host (and `remi codex --host`): create session on remote daemon, then auto-attach
 if (isSessionLaunch(parsedArgs) && cliHost) {
-  if (parsedArgs.remiProfile && parsedArgs.remiProfile !== 'default') {
-    console.error(
-      "Choosing a profile for a session on another machine is not supported yet. That machine's folder mapping or default profile applies; run the command without --remi-profile.",
-    );
-    process.exit(2);
-  }
   if (remiProfileEnv && remiProfileEnv !== 'default')
     console.error(
       'REMI_PROFILE applies to this machine only; the remote machine chooses by its own folder mapping or default.',
@@ -1043,7 +1037,7 @@ if (isSessionLaunch(parsedArgs) && cliHost) {
   }
 
   // Create session on remote daemon and auto-attach
-  const { runRemoteNew } = await import('./cli/remote-new-client.ts');
+  const { runRemoteNew, RemoteProfileUnsupported } = await import('./cli/remote-new-client.ts');
   try {
     const result = await runRemoteNew({
       host: effectiveHost,
@@ -1053,11 +1047,12 @@ if (isSessionLaunch(parsedArgs) && cliHost) {
       // omitted field. The remote daemon still validates the arguments after `--`.
       harness: remoteHarness,
       args: parsedArgs.explicitArgs,
+      profile: parsedArgs.remiProfile,
     });
     process.exit(result.exitCode);
   } catch (err) {
     console.error(errorToString(err));
-    process.exit(1);
+    process.exit(err instanceof RemoteProfileUnsupported ? 2 : 1);
   }
 }
 
@@ -1101,7 +1096,7 @@ if (isSessionLaunch(parsedArgs) && cliDir && !cliHost) {
 }
 
 import { configWarnings } from './profiles/config-warnings.ts';
-import { currentProfiles } from './profiles/current-profiles.ts';
+import { currentProfiles, currentProfilesStrict } from './profiles/current-profiles.ts';
 import { inProcessResumeRefusal } from './profiles/in-process-resume.ts';
 import { checkLogin } from './profiles/login-check.ts';
 import type { Profile } from './profiles/profile-config.ts';
@@ -1110,6 +1105,9 @@ import { profileLaunchEnvironment } from './profiles/profile-env.ts';
 // before constructing the harness or transcript discovery.
 import { resolveProfile } from './profiles/resolve-profile.ts';
 import { resumeProfile as validateResumeProfile } from './profiles/resume-profile.ts';
+import { readProfileSidecar, sessionProfileOwner } from './profiles/session-owner.ts';
+import { sessionProfileRef } from './profiles/session-profile-ref.ts';
+import { visibleProfileRoots } from './profiles/visibility.ts';
 import { SessionProfilesFile } from './session/session-profiles-file.ts';
 
 let selectedProfile: Profile | undefined;
@@ -1258,6 +1256,7 @@ if (isSessionLaunch(parsedArgs) && !serveMode) {
       profile: resolution.id,
       profileSnapshot: {
         revision: selectedProfile.revision,
+        label: selectedProfile.label,
         ...(selectedProfile.claude && {
           claudeDir: selectedProfile.claude.dir,
           claudeExpects: selectedProfile.claude.expects,
@@ -1386,11 +1385,8 @@ const transcriptDiscovery = new TranscriptDiscovery({
   ...(serveMode && {
     profileRoots: () => {
       const profiles = currentProfiles();
-      return 'error' in profiles
-        ? []
-        : Object.entries(profiles.entries).flatMap(([profile, entry]) =>
-            entry.claude ? [{ profile, projectsDir: path.join(entry.claude.dir, 'projects') }] : [],
-          );
+      const policy = currentProfilesStrict();
+      return visibleProfileRoots(profiles, policy);
     },
   }),
 });
@@ -1577,9 +1573,12 @@ const workspaceCache = new WorkspaceCache({
         bindingStore,
         transcriptDiscovery,
         harness,
+        profiles: currentProfilesStrict,
+        sidecar: remoteProfileSidecar,
+        profileOfSession: (id) => sessionStore.findByRemiSessionId(id),
         withholdTranscriptPaths: selectedProfile !== undefined,
         currentPort: () => PORT,
-        getLivePorts: () => liveSessionsRegistry.getLivePorts(),
+        getLivePorts: visibleLivePorts,
         machine: machineDescriptor,
         broadcast: (message) => registry.broadcast(message),
       },
@@ -2043,7 +2042,7 @@ let liveSessionsWatcherCloser: (() => void) | null = null;
  * entries come from `buildSessionList`, the request path's builder (#1274).
  */
 function collectLiveSessionsUpdate(): LiveSessionsCollectResult | null {
-  const newPorts = liveSessionsRegistry.getLivePorts().filter((p) => p !== PORT);
+  const newPorts = visibleLivePorts().filter((p) => p !== PORT);
   if (newPorts.length === 0) return null;
   // The same entries a session_list_request gets, harness identity included (#1274).
   const { own, external } = buildSessionList(
@@ -2052,11 +2051,41 @@ function collectLiveSessionsUpdate(): LiveSessionsCollectResult | null {
       bindingStore,
       transcriptDiscovery,
       harness,
+      profiles: currentProfilesStrict,
+      sidecar: remoteProfileSidecar,
+      profileOfSession: (id) => sessionStore.findByRemiSessionId(id),
       withholdTranscriptPaths: selectedProfile !== undefined,
     },
     true,
   );
   return { sessions: [...own, ...external], newPorts, machine: machineDescriptor() };
+}
+
+function visibleLivePorts(): number[] {
+  const profiles = currentProfilesStrict();
+  const sidecar = remoteProfileSidecar();
+  return [
+    ...new Set(
+      liveSessionsRegistry
+        .listLive()
+        .filter((entry) => {
+          try {
+            const record = sessionStore.findByRemiSessionId(entry.sessionId as UUID);
+            return (
+              sessionProfileOwner(record ?? { transcriptProfile: undefined }, sidecar, profiles)
+                .owner !== 'hidden'
+            );
+          } catch {
+            return false;
+          }
+        })
+        .map((entry) => entry.wsPort),
+    ),
+  ];
+}
+
+function remoteProfileSidecar() {
+  return readProfileSidecar(new SessionProfilesFile(REMI_DIR));
 }
 
 // Reserved-row status bar (#565). Assigned in wrapper mode; stays null in
@@ -2390,6 +2419,8 @@ const ptyMessageFanout = createPtyMessageFanout({
 });
 
 const trivialHandlers: TrivialHandlers = createTrivialHandlers({
+  profiles: currentProfilesStrict,
+  sidecar: remoteProfileSidecar,
   // #603 Phase 6: registration goes through the store (rotation prune + persist).
   // The phone's preferences are stored with the token (#1258: they were dropped
   // here, so a muted push class kept arriving).
@@ -2659,6 +2690,10 @@ if (codexHarness) {
 }
 
 const sessionHandlers: SessionHandlers = createSessionHandlers({
+  profiles: currentProfilesStrict,
+  sidecar: remoteProfileSidecar,
+  profileOfSession: (id) => sessionStore.findByRemiSessionId(id),
+  visibleLivePorts,
   withholdTranscriptPaths: selectedProfile !== undefined,
   machine: machineDescriptor,
   sessionRegistry,
@@ -2683,6 +2718,8 @@ resolveStopOnClose = sessionHandlers.resolveStopOnClose;
 // The single authoritative "current owned session" accessor (#499), shared by
 // the transcript-request redirect and the hello_ack binding so they never diverge.
 const currentOwnedSession = makeCurrentSessionResolver({
+  profiles: currentProfilesStrict,
+  sidecar: remoteProfileSidecar,
   withholdTranscriptPath: selectedProfile !== undefined,
   getPrimarySessionId,
   sessionStore,
@@ -2691,6 +2728,20 @@ const currentOwnedSession = makeCurrentSessionResolver({
 });
 
 const transcriptHandlers: TranscriptHandlers = createTranscriptHandlers({
+  isHiddenOwner: (id) => {
+    try {
+      const record =
+        sessionStore.findByRemiSessionId(id as UUID) ??
+        sessionStore.findResumableByClaudeSessionId(id);
+      const input = record ?? { transcriptProfile: transcriptDiscovery.profileOfTranscript(id) };
+      return (
+        sessionProfileOwner(input, remoteProfileSidecar(), currentProfilesStrict()).owner ===
+        'hidden'
+      );
+    } catch {
+      return true;
+    }
+  },
   transcriptDiscovery,
   harness,
   transcriptWatchers,
@@ -2712,7 +2763,35 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
   basePort: remiConfig.daemon.base_port,
   portRange: remiConfig.daemon.port_range,
   bindHost,
-  resumeProfileOf: makeResumeProfileOf({ sessionStore, discovery: transcriptDiscovery }),
+  profiles: currentProfilesStrict,
+  remiProfileEnv,
+  resumeOwner: (harness, id) => {
+    const record =
+      harness === 'claude'
+        ? sessionStore.findResumableByClaudeSessionId(id)
+        : sessionStore
+            .list()
+            .find(
+              (entry) => entry.harness === 'codex' && entry.harnessSessionId?.toLowerCase() === id,
+            );
+    const input =
+      record ??
+      (harness === 'claude' && transcriptDiscovery.findTranscriptBySessionId(id)
+        ? { transcriptProfile: transcriptDiscovery.profileOfTranscript(id) }
+        : null);
+    if (input) {
+      const owner = sessionProfileOwner(input, remoteProfileSidecar(), currentProfilesStrict());
+      return {
+        record: !!record,
+        ...(owner.owner === 'hidden'
+          ? { hidden: true }
+          : owner.owner === 'profile'
+            ? { profile: owner.id }
+            : {}),
+      };
+    }
+    return null;
+  },
   inheritedArgs: () => {
     const args: string[] = [];
     if (cliAuth === true) args.push('--auth');
@@ -2737,6 +2816,21 @@ const createSessionHandlers_: CreateSessionHandlers = createCreateSessionHandler
 });
 
 const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers({
+  profileForSession: (id) => {
+    const record = sessionStore.findByRemiSessionId(id);
+    const profiles = currentProfilesStrict();
+    const owner = sessionProfileOwner(
+      record ?? { transcriptProfile: undefined },
+      remoteProfileSidecar(),
+      profiles,
+    );
+    return sessionProfileRef(owner, record?.profileSnapshot, profiles);
+  },
+  isHiddenResumeOwner: () => {
+    const sidecar = remoteProfileSidecar();
+    const profiles = currentProfilesStrict();
+    return (input) => sessionProfileOwner(input, sidecar, profiles).owner === 'hidden';
+  },
   machine: machineDescriptor,
   currentOwnedSession,
   capabilitiesForConnection,
@@ -2758,6 +2852,7 @@ const resumeSessionHandlers: ResumeSessionHandlers = createResumeSessionHandlers
       sessionStore,
       new SessionProfilesFile(REMI_DIR),
       remiConfig.profiles,
+      currentProfilesStrict(),
       profileMetadata?.profile ?? 'default',
       claudeSessionId,
       log,
@@ -2941,8 +3036,16 @@ const connectionHandlers: ConnectionHandlers = createConnectionHandlers({
 
 // The repositories of the machine's recent sessions (#1236 phase C), for a new-session sheet.
 const recentRepositoriesHandlers = createRecentRepositoriesHandlers({
+  profiles: currentProfilesStrict,
+  sidecar: remoteProfileSidecar,
+  remiProfileEnv,
   sessionStore,
   repositoryStore: recentRepositoryStore,
+  send: sendToConnection,
+});
+const sessionProfilesHandlers = createSessionProfilesHandlers({
+  profiles: currentProfilesStrict,
+  remiProfileEnv,
   send: sendToConnection,
 });
 
@@ -3028,6 +3131,7 @@ let sharedEvents = {
     });
   },
   ...recentRepositoriesHandlers,
+  ...sessionProfilesHandlers,
   ...trivialHandlers,
   ...inputHandlers,
   onNativeAnswer: (_connectionId: UUID, message: import('@remi/shared').NativeAnswerMessage) =>

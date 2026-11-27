@@ -126,6 +126,11 @@ export interface ResumeSessionHandlerDeps {
    * forgets it fails to compile instead of failing open into running Claude in a hub.
    */
   childSessions: StartChildSession | null;
+  isHiddenResumeOwner: () => (
+    input:
+      | import('../../session/session-store.ts').StoredSession
+      | { transcriptProfile: string | undefined },
+  ) => boolean;
   /**
    * The harness this daemon hosts. Anything but Claude refuses resume (#1179). Required with no
    * default, like `childSessions`: a composition root that forgets it fails to compile instead of
@@ -144,6 +149,7 @@ export interface ResumeSessionHandlerDeps {
   capabilities?: readonly string[];
   capabilitiesForConnection?: (id: UUID) => readonly string[];
   currentOwnedSession?: () => CurrentOwnedSession | null;
+  profileForSession?: (id: UUID) => import('@remi/shared').SessionProfileRef | undefined;
   sessionRegistry: SessionRegistry;
   /** Full-record reads that also need projectPath (resume seed by remi id). */
   sessionStore: SessionStore;
@@ -185,13 +191,19 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
    * resumed with Claude's flag.
    */
   function resolveResumeTarget(targetSessionId: string): ResumeTarget {
+    const isHiddenResumeOwner = deps.isHiddenResumeOwner();
     let claudeSessionId: string | null = null;
     let projectPath: string | null = null;
     const shown = shownId(targetSessionId);
+    const notFound = (): ResumeTarget => ({
+      ok: false,
+      error: `Session ${shown} not found. No Claude session ID available for resume.`,
+    });
 
     try {
       const storedByRemi = sessionStore.findByRemiSessionId(targetSessionId as UUID);
       if (storedByRemi) {
+        if (isHiddenResumeOwner(storedByRemi)) return notFound();
         // A record of another harness answers to its remi id too, whatever its Claude column holds.
         if (!isClaudeRecord(storedByRemi)) {
           return {
@@ -207,6 +219,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
         // Several exited rows of one Claude session resolve to the newest: every resume adds one.
         const storedByClaude = bindingStore.getResumableByClaudeSessionId(targetSessionId);
         if (storedByClaude) {
+          if (isHiddenResumeOwner(storedByClaude)) return notFound();
           claudeSessionId = storedByClaude.claudeSessionId;
           projectPath = storedByClaude.projectPath;
         }
@@ -215,6 +228,12 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
       if (!claudeSessionId) {
         const transcriptPath = transcriptDiscovery.findTranscriptBySessionId(targetSessionId);
         if (transcriptPath) {
+          if (
+            isHiddenResumeOwner({
+              transcriptProfile: transcriptDiscovery.profileOfTranscript(targetSessionId),
+            })
+          )
+            return notFound();
           claudeSessionId = targetSessionId;
           // The transcript names the directory it was recorded in; the project folder's name is a
           // lossy encoding of it (every `/` became `-`), the fallback for an old transcript.
@@ -237,10 +256,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
     }
 
     if (!claudeSessionId) {
-      return {
-        ok: false,
-        error: `Session ${shown} not found. No Claude session ID available for resume.`,
-      };
+      return notFound();
     }
 
     if (!projectPath) {
@@ -405,6 +421,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
           send(
             connectionId,
             createHelloAck('1.0.0', targetSessionId as UUID, {
+              profile: deps.profileForSession?.(targetSessionId as UUID),
               resumeInfo: {
                 isResume: true,
                 replayCount: result.replayMessages.length,
@@ -513,6 +530,7 @@ export function createResumeSessionHandlers(deps: ResumeSessionHandlerDeps) {
           send(
             connectionId,
             createHelloAck('1.0.0', newSessionId, {
+              profile: deps.profileForSession?.(newSessionId),
               resumeInfo: { isResume: false, replayCount: 0, nextBulletId: 1 },
               harnesses: machine?.harnesses ?? harnesses(),
               capabilities: selectedCapabilities,
