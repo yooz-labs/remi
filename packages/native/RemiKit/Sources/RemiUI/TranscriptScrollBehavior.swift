@@ -5,14 +5,14 @@ public enum RemiTranscriptScrollTarget: Hashable {
 }
 
 struct RemiTranscriptFollowPolicy {
-    private(set) var followsLatest: Bool
+    static func shouldFollow(followsLatest: Bool, isReviewing: Bool) -> Bool {
+        followsLatest && !isReviewing
+    }
 
-    init(restoredPosition: Bool) { followsLatest = !restoredPosition }
-    func shouldFollow(isReviewing: Bool) -> Bool { followsLatest && !isReviewing }
-    mutating func jumpToLatest() { followsLatest = true }
-    mutating func userScrolled(previousOffset: CGFloat, offset: CGFloat, remaining: CGFloat) {
-        if remaining <= 1 { followsLatest = true }
-        else if offset < previousOffset { followsLatest = false }
+    static func afterUserScroll(followsLatest: Bool, previousOffset: CGFloat, offset: CGFloat, remaining: CGFloat) -> Bool {
+        if remaining <= 1 { return true }
+        if offset < previousOffset { return false }
+        return followsLatest
     }
 }
 
@@ -35,7 +35,7 @@ public struct RemiTranscriptScrollBehavior: ViewModifier {
     public func body(content: Content) -> some View {
         content
             .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .defaultScrollAnchor(followsLatest && !isReviewing && !isInteracting ? .bottom : nil, for: .sizeChanges)
+            .defaultScrollAnchor(RemiTranscriptFollowPolicy.shouldFollow(followsLatest: followsLatest, isReviewing: isReviewing || isInteracting) ? .bottom : nil, for: .sizeChanges)
             .defaultScrollAnchor(.topLeading, for: .alignment)
             .onScrollGeometryChange(for: Viewport.self) { geometry in
                 Viewport(offset: geometry.contentOffset.y,
@@ -46,9 +46,8 @@ public struct RemiTranscriptScrollBehavior: ViewModifier {
                 guard !isReviewing else { followingLayout = false; return }
                 if isInteracting {
                     followingLayout = false
-                    var policy = RemiTranscriptFollowPolicy(restoredPosition: !followsLatest)
-                    policy.userScrolled(previousOffset: previous.offset, offset: current.offset, remaining: current.remaining)
-                    followsLatest = policy.shouldFollow(isReviewing: false)
+                    followsLatest = RemiTranscriptFollowPolicy.afterUserScroll(followsLatest: followsLatest,
+                        previousOffset: previous.offset, offset: current.offset, remaining: current.remaining)
                     return
                 }
                 // Reflow can move the viewport before its final size is known.

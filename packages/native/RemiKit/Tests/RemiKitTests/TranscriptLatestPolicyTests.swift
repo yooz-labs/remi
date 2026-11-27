@@ -19,28 +19,22 @@ import Testing
         }
     }
 
-    @Test func loadAndLateStreamFollowUntilPersonScrollsUp() {
-        var policy = RemiTranscriptFollowPolicy(restoredPosition: false)
-        #expect(policy.shouldFollow(isReviewing: false))
-        #expect(policy.shouldFollow(isReviewing: false)) // late transcript or stream
-        policy.userScrolled(previousOffset: 200, offset: 190, remaining: 10)
-        #expect(!policy.shouldFollow(isReviewing: false))
-        #expect(!policy.shouldFollow(isReviewing: false)) // subsequent stream
-        policy.userScrolled(previousOffset: 190, offset: 200, remaining: 0)
-        #expect(policy.shouldFollow(isReviewing: false))
+    @Test func followUntilPersonScrollsUp() {
+        var follows = true
+        #expect(RemiTranscriptFollowPolicy.shouldFollow(followsLatest: follows, isReviewing: false))
+        follows = RemiTranscriptFollowPolicy.afterUserScroll(followsLatest: follows, previousOffset: 200, offset: 190, remaining: 10)
+        #expect(!RemiTranscriptFollowPolicy.shouldFollow(followsLatest: follows, isReviewing: false))
+        follows = RemiTranscriptFollowPolicy.afterUserScroll(followsLatest: follows, previousOffset: 190, offset: 200, remaining: 0)
+        #expect(RemiTranscriptFollowPolicy.shouldFollow(followsLatest: follows, isReviewing: false))
     }
 
     @Test func springBackAtTailKeepsFollowing() {
-        var policy = RemiTranscriptFollowPolicy(restoredPosition: false)
-        policy.userScrolled(previousOffset: 205, offset: 200, remaining: 1)
-        #expect(policy.shouldFollow(isReviewing: false))
+        #expect(RemiTranscriptFollowPolicy.afterUserScroll(followsLatest: true, previousOffset: 205, offset: 200, remaining: 1))
     }
 
     @Test func savedPositionAndReviewWinOverInitialFollow() {
-        var policy = RemiTranscriptFollowPolicy(restoredPosition: true)
-        #expect(!policy.shouldFollow(isReviewing: false))
-        policy.jumpToLatest()
-        #expect(policy.shouldFollow(isReviewing: false))
-        #expect(!policy.shouldFollow(isReviewing: true))
+        #expect(!RemiTranscriptFollowPolicy.shouldFollow(followsLatest: false, isReviewing: false))
+        #expect(RemiTranscriptFollowPolicy.shouldFollow(followsLatest: true, isReviewing: false))
+        #expect(!RemiTranscriptFollowPolicy.shouldFollow(followsLatest: true, isReviewing: true))
     }
 }
