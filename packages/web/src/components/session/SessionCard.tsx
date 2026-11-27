@@ -7,6 +7,7 @@
  */
 
 import { StatusPill } from '@/components/StatusPill';
+import { ProfileBadge } from '@/components/session/ProfileBadge';
 import { formatRelativeTime } from '@/lib/format-time';
 import { harnessLabel, sessionPillState, splitSessionName } from '@/lib/session-display';
 import type { ConnectionId, UISession } from '@/types';
@@ -88,6 +89,7 @@ export function SessionCard({
               {harness}
             </span>
           )}
+          {session.profileDisplay === 'card' && <ProfileBadge profile={session.profile} />}
         </div>
 
         {/* preview (two lines) */}

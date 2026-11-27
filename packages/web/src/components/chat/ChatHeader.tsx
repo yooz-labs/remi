@@ -7,6 +7,7 @@
  */
 
 import { StatusPill } from '@/components/StatusPill';
+import { ProfileBadge } from '@/components/session/ProfileBadge';
 import { harnessLabel, sessionPillState, splitSessionName } from '@/lib/session-display';
 import type { UISession } from '@/types';
 import { clsx } from 'clsx';
@@ -139,6 +140,9 @@ export function ChatHeader({
             <span className="shrink-0 rounded border border-[var(--color-border)] px-1.5 py-px font-mono text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">
               {harness}
             </span>
+          )}
+          {(session.profileDisplay === 'header' || session.profileDisplay === 'card') && (
+            <ProfileBadge profile={session.profile} showChangedTitle />
           )}
         </div>
         {session.claudeSessionId && (

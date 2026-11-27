@@ -25,6 +25,7 @@ import type {
   ResumeSessionResponseMessage,
   SessionHistoryResponseMessage,
   SessionListResponseMessage,
+  SessionProfileRef,
   SessionRotatedMessage,
   SessionUpdateMessage,
   StructuredAgentOutputMessage,
@@ -101,6 +102,9 @@ export interface SessionBinding {
 
   /** Claude session ID (from ~/.claude/) */
   sessionId: UUID;
+
+  /** Visible configured profile associated with this session, when present. */
+  profile?: SessionProfileRef | undefined;
 
   /** Telegram group ID */
   chatId: number;
@@ -374,6 +378,7 @@ export class TelegramAdapter implements ConnectionAdapter {
           const session = this.sessions.get(sessionKey);
           if (session) {
             session.sessionId = ack.sessionId;
+            session.profile = ack.profile;
           }
         }
         return true;
@@ -800,11 +805,11 @@ export class TelegramAdapter implements ConnectionAdapter {
     }
 
     const status = session.paused ? '⏸️ Paused' : '▶️ Active';
+    const profileLine = session.profile
+      ? `\nProfile: ${session.profile.label}${session.profile.state === 'removed' ? ' (removed)' : ''}`
+      : '';
     await ctx.reply(
-      `📁 Session: ${session.topicName}\n` +
-        `📂 Directory: ${session.workingDirectory}\n` +
-        `🕐 Started: ${session.startedAt}\n` +
-        `📊 Status: ${status}`,
+      `📁 Session: ${session.topicName}\n📂 Directory: ${session.workingDirectory}\n🕐 Started: ${session.startedAt}\n📊 Status: ${status}${profileLine}`,
     );
   }
 

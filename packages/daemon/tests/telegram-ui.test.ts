@@ -390,6 +390,21 @@ describe('formatSessionList', () => {
     expect(result).toContain('proj1');
     expect(result).toContain('proj2');
   });
+
+  test('shows the profile label on the session line and marks removed profiles', () => {
+    const current = formatSessionList([makeSession({ profile: { id: 'work', label: 'Work' } })]);
+    const removed = formatSessionList([
+      makeSession({ profile: { id: 'work', label: 'Work', state: 'removed' } }),
+    ]);
+    expect(current).toContain('🟢 my-app [active] · Work');
+    expect(removed).toContain('🟢 my-app [active] · Work (removed)');
+  });
+
+  test('a session without a profile keeps its existing lines exactly', () => {
+    expect(formatSessionList([makeSession()])).toBe(
+      'Sessions (1):\n\n🟢 my-app [active]\n   ID: sess-abc-123\n   Messages: 42',
+    );
+  });
 });
 
 describe('formatQuestionText for a parsed Claude menu (#1140)', () => {
