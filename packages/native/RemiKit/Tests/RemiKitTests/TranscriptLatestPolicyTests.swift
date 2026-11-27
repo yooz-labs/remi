@@ -30,6 +30,12 @@ import Testing
         #expect(policy.shouldFollow(isReviewing: false))
     }
 
+    @Test func springBackAtTailKeepsFollowing() {
+        var policy = RemiTranscriptFollowPolicy(restoredPosition: false)
+        policy.userScrolled(previousOffset: 205, offset: 200, remaining: 1)
+        #expect(policy.shouldFollow(isReviewing: false))
+    }
+
     @Test func savedPositionAndReviewWinOverInitialFollow() {
         var policy = RemiTranscriptFollowPolicy(restoredPosition: true)
         #expect(!policy.shouldFollow(isReviewing: false))

@@ -11,8 +11,8 @@ struct RemiTranscriptFollowPolicy {
     func shouldFollow(isReviewing: Bool) -> Bool { followsLatest && !isReviewing }
     mutating func jumpToLatest() { followsLatest = true }
     mutating func userScrolled(previousOffset: CGFloat, offset: CGFloat, remaining: CGFloat) {
-        if offset < previousOffset { followsLatest = false }
-        else if remaining <= 1 { followsLatest = true }
+        if remaining <= 1 { followsLatest = true }
+        else if offset < previousOffset { followsLatest = false }
     }
 }
 
