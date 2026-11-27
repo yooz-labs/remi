@@ -35,6 +35,8 @@ function queuedCommandEntry(value: unknown): UserEntry | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const raw = value as {
     type?: unknown;
+    uuid?: unknown;
+    timestamp?: unknown;
     attachment?: unknown;
     isSidechain?: boolean;
     agentId?: unknown;
@@ -51,7 +53,11 @@ function queuedCommandEntry(value: unknown): UserEntry | undefined {
   };
   const origin = attachment.origin as { kind?: unknown } | undefined;
   if (
-    raw?.type !== 'attachment' ||
+    raw.type !== 'attachment' ||
+    typeof raw.uuid !== 'string' ||
+    raw.isSidechain === true ||
+    'agentId' in raw ||
+    'agent_id' in raw ||
     attachment?.type !== 'queued_command' ||
     attachment.commandMode !== 'prompt' ||
     origin?.kind !== 'human' ||
@@ -63,11 +69,8 @@ function queuedCommandEntry(value: unknown): UserEntry | undefined {
     ...raw,
     type: 'user',
     message: { role: 'user', content: attachment.prompt },
+    timestamp: raw.timestamp ?? attachment.timestamp,
     queuedCommandTimestamp: attachment.timestamp,
-    queuedCommandMainAgent:
-      raw.isSidechain !== true &&
-      !(typeof raw.agentId === 'string' && raw.agentId) &&
-      !(typeof raw.agent_id === 'string' && raw.agent_id),
   } as UserEntry;
 }
 

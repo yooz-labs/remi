@@ -158,6 +158,26 @@ describe('TranscriptWatcher', () => {
     watcher.stop();
   });
 
+  test('queued prompts require a UUID and fall back to the attachment timestamp', async () => {
+    const filePath = createTempFile('queued-identity.jsonl');
+    const attachment = {
+      type: 'queued_command',
+      commandMode: 'prompt',
+      origin: { kind: 'human' },
+      prompt: 'continue',
+      timestamp: '2026-11-27T12:00:00.000Z',
+    };
+    appendLine(filePath, { type: 'attachment', attachment });
+    appendLine(filePath, { type: 'attachment', uuid: 123, attachment });
+    appendLine(filePath, { type: 'attachment', uuid: 'with-id', attachment });
+    const watcher = new TranscriptWatcher({ filePath, readExisting: true });
+    await watcher.start();
+    expect(watcher.getUserMessages().map((entry) => [entry.uuid, entry.timestamp])).toEqual([
+      ['with-id', '2026-11-27T12:00:00.000Z'],
+    ]);
+    watcher.stop();
+  });
+
   test('reads existing entries on start', async () => {
     const filePath = createTempFile('existing.jsonl');
     appendLine(filePath, makeUserEntry('hello'));

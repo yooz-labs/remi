@@ -78,7 +78,6 @@ export interface UserEntry extends TranscriptEntryBase {
   readonly type: 'user';
   /** Present only for a converted human queued command; used for replay-safe acceptance. */
   readonly queuedCommandTimestamp?: unknown;
-  readonly queuedCommandMainAgent?: boolean;
   readonly message: {
     readonly role: 'user';
     readonly content: string | readonly ContentBlock[];

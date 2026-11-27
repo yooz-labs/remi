@@ -64,7 +64,6 @@ export function startTranscriptWatcher(
         log(`[Transcript] User entry: ${entry.uuid?.slice(0, 8)}`);
         if (
           liveAppend &&
-          entry.queuedCommandMainAgent &&
           entry.queuedCommandTimestamp !== undefined &&
           typeof entry.message.content === 'string'
         ) {

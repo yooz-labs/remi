@@ -16,6 +16,7 @@ import { QuestionPresenceTracker } from '../../src/api/question-presence-tracker
 import { ChatAcceptanceTracker } from '../../src/cli/handlers/chat-acceptance.ts';
 import { createInputHandlers } from '../../src/cli/handlers/input-events.ts';
 import type { PromptUp } from '../../src/cli/handlers/prompt-up.ts';
+import { createTranscriptHandlers } from '../../src/cli/handlers/transcript-events.ts';
 import { __resetLoggerForTests, configureLogger } from '../../src/cli/logger.ts';
 import {
   type HookBridgeHandle,
@@ -27,6 +28,7 @@ import { SessionBindingStore } from '../../src/session/session-binding-store.ts'
 import { SessionRegistryFile } from '../../src/session/session-registry-file.ts';
 import { SessionRegistry } from '../../src/session/session-registry.ts';
 import { SessionStore } from '../../src/session/session-store.ts';
+import { TranscriptIndex } from '../../src/session/transcript-index.ts';
 import { TranscriptDiscovery } from '../../src/transcript/index.ts';
 
 const CONN_A = generateId() as UUID;
@@ -61,6 +63,7 @@ describe('chat acceptance through the hook bridge (#1818)', () => {
   /** Runs between the typed text and its Enter: the window a late refusal happens in. */
   let afterTextBeforeEnter: () => void;
   let handlers: ReturnType<typeof createInputHandlers>;
+  let history: ReturnType<typeof createTranscriptHandlers>;
   const watchers = new Map();
   const timers = new Map<UUID, ReturnType<typeof setInterval>>();
 
@@ -103,6 +106,21 @@ describe('chat acceptance through the hook bridge (#1818)', () => {
     registry.attachConnection(sessionId, CONN_B);
     const bindingStore = new SessionBindingStore(new SessionStore(join(home, 'sessions.json')));
     const liveSessionsRegistry = new SessionRegistryFile(join(home, 'live-sessions'));
+
+    history = createTranscriptHandlers({
+      isHiddenOwner: () => false,
+      transcriptDiscovery: new TranscriptDiscovery(),
+      harness: { transcriptPath: () => null },
+      transcriptWatchers: watchers,
+      bindingStore,
+      transcriptIndex: new TranscriptIndex(join(home, 'transcript-index.json')),
+      currentOwnedSession: () => null,
+      subagentViews: { resolvePath: () => null },
+      send: (connectionId, message) => {
+        sent.push({ connectionId, message });
+        return true;
+      },
+    });
 
     const chatAcceptance = new ChatAcceptanceTracker({
       send: (connectionId, message) => {
@@ -316,15 +334,32 @@ describe('chat acceptance through the hook bridge (#1818)', () => {
     const line = JSON.parse(queued('continue', clock + 1000, 'sidechain'));
     line.isSidechain = true;
     const file = await startTail();
-    appendFileSync(file, `${JSON.stringify(line)}\n`);
+    appendFileSync(
+      file,
+      `${JSON.stringify(line)}\n${queued('sentinel', clock + 1000, 'sentinel')}`,
+    );
     await until(
       () =>
         liveEntries.some(
-          (entry) => entry.type === 'transcript_content' && entry.entryUuid === 'sidechain',
+          (entry) => entry.type === 'transcript_content' && entry.entryUuid === 'sentinel',
         ),
-      'sidechain entry',
+      'sentinel entry',
     );
+    expect(
+      liveEntries.some(
+        (entry) => entry.type === 'transcript_content' && entry.entryUuid === 'sidechain',
+      ),
+    ).toBe(false);
     expect(results()).toEqual([]);
+    history.onTranscriptLoadRequest(CONN_A, sessionId, generateId() as UUID);
+    await until(
+      () => sent.some((item) => item.message.type === 'transcript_load_complete'),
+      'history load',
+    );
+    const entries = sent
+      .map((item) => item.message)
+      .filter((message) => message.type === 'transcript_content');
+    expect(entries.map((entry) => entry.entryUuid)).toEqual(['sentinel']);
   });
 
   test('Claude reporting the typed text confirms that message to its sender only', async () => {
