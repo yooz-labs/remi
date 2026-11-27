@@ -219,17 +219,25 @@ test('concurrent launches share a hub', async () => {
   const f = await setup();
   const first = launch(f);
   const second = launch(f);
-  await pollUntil(
-    () => fs.existsSync(path.join(f.home, '.remi', 'daemon-status.json')),
-    20_000,
-    'hub',
-  );
-  await pollUntil(() => fs.existsSync(path.join(f.agents.claudeDir, 'argv')), 20_000, 'agent');
-  await pollUntil(
-    () => fs.readdirSync(path.join(f.home, '.remi', 'live-sessions')).length >= 2,
-    20_000,
-    'both sessions',
-  );
+  try {
+    await pollUntil(
+      () => {
+        const sessions = path.join(f.home, '.remi', 'live-sessions');
+        return (
+          fs.existsSync(path.join(f.home, '.remi', 'daemon-status.json')) &&
+          fs.existsSync(path.join(f.agents.claudeDir, 'argv')) &&
+          fs.existsSync(sessions) &&
+          fs.readdirSync(sessions).length >= 2
+        );
+      },
+      20_000,
+      'hub and both sessions',
+    );
+  } catch (error) {
+    throw new Error(
+      `Concurrent launches did not become ready: ${String(error)}\nfirst: ${first.output.text}\nsecond: ${second.output.text}`,
+    );
+  }
   expect(
     (first.output.text + second.output.text).match(/Started the remi hub on port/g)?.length,
   ).toBe(1);

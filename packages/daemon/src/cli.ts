@@ -218,6 +218,7 @@ import { makeResumeProfileOf } from './cli/resume-profile-of.ts';
 import { disposeAndDismiss } from './cli/session-close.ts';
 import { createMessageApiForSession } from './cli/session-phases/message-api-setup.ts';
 import { probeDaemonSessionPort, probeWrapperSessionPort } from './cli/session-port-probes.ts';
+import { startSessionPort } from './cli/session-port-start.ts';
 import { StatusBar, childRows } from './cli/status-bar.ts';
 import { installStatusLineForLaunch } from './cli/statusline-installer.ts';
 import { installSuspendHandler } from './cli/suspend-handler.ts';
@@ -3716,7 +3717,27 @@ if (cliDaemonMode) {
   }
 
   try {
-    await registry.startAdapter('websocket');
+    if (!serveMode && !portExplicitlySet) {
+      await startSessionPort(
+        PORT,
+        DEFAULT_PORT_RANGE,
+        remiConfig.daemon.base_port,
+        bindHost,
+        () => new Set(liveSessionsRegistry.listLive().map((entry) => entry.wsPort)),
+        async (port) => {
+          if (port !== PORT) {
+            await registry.unregister('websocket');
+            console.log(`Port ${PORT} in use, using ${port}`);
+            PORT = port;
+            STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
+            registry.register(new WebSocketAdapter(websocketConfigFor(PORT), sharedEvents));
+          }
+          await registry.startAdapter('websocket');
+        },
+      );
+    } else {
+      await registry.startAdapter('websocket');
+    }
   } catch (err) {
     if (daemonTls) await fatalTlsStartup();
     const msg = errorToString(err);
@@ -4093,7 +4114,29 @@ if (cliDaemonMode) {
 
   if (wsProbeSucceeded) {
     try {
-      await registry.startAdapter('websocket');
+      if (!portExplicitlySet) {
+        await startSessionPort(
+          PORT,
+          DEFAULT_PORT_RANGE,
+          remiConfig.daemon.base_port,
+          bindHost,
+          () => new Set(liveSessionsRegistry.listLive().map((entry) => entry.wsPort)),
+          async (port) => {
+            if (port !== PORT) {
+              await registry.unregister('websocket');
+              const occupied = PORT;
+              PORT = port;
+              STATUS_FILE = path.join(REMI_DIR, `status-${PORT}.json`);
+              registry.register(new WebSocketAdapter(websocketConfigFor(PORT), sharedEvents));
+              setLogFileContext({ port: PORT, sessionId });
+              log(`Port ${occupied} in use, using ${PORT}`);
+            }
+            await registry.startAdapter('websocket');
+          },
+        );
+      } else {
+        await registry.startAdapter('websocket');
+      }
       log(`WebSocket server listening on ${publicWsScheme}://${bindHost}:${PORT}/ws`);
       mdnsPublisher = await startMdnsIfNeeded(log);
       wsStarted = true;
