@@ -161,11 +161,13 @@ struct MacSessionDetail: View {
                             ForEach(remainingQuestions) { question in
                                 questionCard(question)
                             }
-                            Color.clear.frame(height: 1).id(RemiTranscriptScrollTarget.latest)
+                            Color.clear.frame(height: 1)
+                                .padding(.bottom, RemiTheme.Spacing.m)
+                                .id(RemiTranscriptScrollTarget.latest)
                         }
                         .frame(maxWidth: 860)
                         .padding(.horizontal, RemiTheme.Spacing.m)
-                        .padding(.vertical, RemiTheme.Spacing.m)
+                        .padding(.top, RemiTheme.Spacing.m)
                         .frame(maxWidth: .infinity)
                         .scrollTargetLayout()
                     }

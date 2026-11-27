@@ -243,9 +243,11 @@ struct SessionScreen: View {
                             ForEach(remainingQuestions) { question in
                                 questionCard(question)
                             }
-                            Color.clear.frame(height: 1).id(RemiTranscriptScrollTarget.latest)
+                            Color.clear.frame(height: 1)
+                                .padding(.bottom, RemiTheme.Spacing.m)
+                                .id(RemiTranscriptScrollTarget.latest)
                         }
-                        .padding(RemiTheme.Spacing.m)
+                        .padding([.horizontal, .top], RemiTheme.Spacing.m)
                         .scrollTargetLayout()
                         .remiReadableScrollColumn()
                     }
