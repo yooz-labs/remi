@@ -16,6 +16,25 @@ import { recoveryNative } from './recovery-native';
 import { Reservations } from './reservations';
 import { owner } from './settlement-fixture';
 
+const SOURCE_CHUNK_BYTES = 32 * 1024;
+const JOURNAL_BATCH_BYTES = 1024 * 1024;
+
+class ObservedReservations extends Reservations {
+  readonly writeEnds: number[] = [];
+  readAccounts = 0;
+
+  override writeJournal(...args: Parameters<Reservations['writeJournal']>): void {
+    super.writeJournal(...args);
+    this.writeEnds.push(args[1]);
+  }
+
+  override captureJournalRead(...args: Parameters<Reservations['captureJournalRead']>): number {
+    const bytes = super.captureJournalRead(...args);
+    this.readAccounts++;
+    return bytes;
+  }
+}
+
 export const DOWNLOAD_PREPARATION_CHECKS = [
   'managed download exact bytes digest and source lifetime at three sizes',
   'managed download empty source creates no reservation',
@@ -52,7 +71,9 @@ export async function downloadPreparationProbe() {
     assert(project && scratch && metadata, 'actual captured download roots');
     const source = new FileAdmission(openAt, []).open(project, ['data.bin']);
     assert(source, 'actual admitted download source');
-    const store = Reservations.create(path.join(home, 'ledger'));
+    const ledger = path.join(home, 'ledger');
+    Reservations.create(ledger);
+    const store = new ObservedReservations(ledger);
     const selectedOwner = owner();
     let allowed = true;
     let afterYield: ((count: number) => void) | undefined;
@@ -115,11 +136,13 @@ export async function downloadPreparationProbe() {
     error.code === 'unavailable' &&
     error.cleanupConfirmed;
   try {
-    for (const size of [1, 65537, 10 * 1024 * 1024]) {
+    for (const size of [1, JOURNAL_BATCH_BYTES + 1, 10 * JOURNAL_BATCH_BYTES]) {
       const bytes = Buffer.alloc(size, 0x6b);
       const f = fixture(bytes);
       try {
-        let previousSize = 0;
+        const sourceYields = Math.ceil(size / SOURCE_CHUNK_BYTES);
+        const verificationYields = Math.ceil(size / JOURNAL_BATCH_BYTES);
+        const observations: { artifactBytes: number; writes: number; readAccounts: number }[] = [];
         f.onYield(() => {
           const names = fs
             .readdirSync(path.join(f.home, 'scratch'))
@@ -127,12 +150,11 @@ export async function downloadPreparationProbe() {
           assert.equal(names.length, 1, 'one managed artifact');
           const name = names[0];
           assert(name);
-          const current = fs.statSync(path.join(f.home, 'scratch', name)).size;
-          assert(
-            current >= previousSize && current - previousSize <= 32768,
-            'one bounded copy write per yield',
-          );
-          previousSize = current;
+          observations.push({
+            artifactBytes: fs.statSync(path.join(f.home, 'scratch', name)).size,
+            writes: f.store.writeEnds.length,
+            readAccounts: f.store.readAccounts,
+          });
         });
         const started = performance.now();
         const copy = await f.prepare();
@@ -147,9 +169,35 @@ export async function downloadPreparationProbe() {
         assert.equal(f.source.isCurrent(), false, 'source consumed and closed before publication');
         assert.equal(
           f.context.yields,
-          2 * Math.ceil(size / 32768),
-          'source and private validation both yield between chunks',
+          sourceYields + verificationYields,
+          'one yield per 32 KiB source chunk and per 1 MiB verification batch',
         );
+        assert.deepEqual(
+          f.store.writeEnds,
+          Array.from({ length: verificationYields }, (_, i) =>
+            Math.min((i + 1) * JOURNAL_BATCH_BYTES, size),
+          ),
+          'one journal write per full batch and final partial batch',
+        );
+        for (const [index, observation] of observations.entries()) {
+          const yieldNumber = index + 1;
+          const sourceBytes = yieldNumber * SOURCE_CHUNK_BYTES;
+          const writes =
+            yieldNumber < sourceYields
+              ? Math.floor(sourceBytes / JOURNAL_BATCH_BYTES)
+              : verificationYields;
+          assert.deepEqual(
+            observation,
+            {
+              artifactBytes: Math.min(writes * JOURNAL_BATCH_BYTES, size),
+              writes,
+              // Reader open accounts once. Each verification read accounts three times.
+              readAccounts: yieldNumber <= sourceYields ? 0 : 1 + 3 * (yieldNumber - sourceYields),
+            },
+            `journal activity at yield ${yieldNumber}`,
+          );
+        }
+        assert.equal(f.store.readAccounts, 1 + 3 * verificationYields + 3, 'final ownership read');
         const hash = createHash('sha256');
         for (let at = 0; at < size; at += 32768)
           hash.update(copy.read(at, Math.min(32768, size - at)));
@@ -194,18 +242,20 @@ export async function downloadPreparationProbe() {
       'private',
       'private-late',
     ] as const) {
-      const bytes = Buffer.alloc(65537, 0x31);
+      const bytes = Buffer.alloc(JOURNAL_BATCH_BYTES + 1, 0x31);
       const f = fixture(bytes);
       try {
         let changed = false;
+        const sourceYields = Math.ceil(bytes.length / SOURCE_CHUNK_BYTES);
+        const verificationYields = Math.ceil(bytes.length / JOURNAL_BATCH_BYTES);
         f.onYield((count) => {
           const at =
             kind === 'private-before'
-              ? 3
+              ? sourceYields
               : kind === 'private-late'
-                ? 6
+                ? sourceYields + verificationYields
                 : kind === 'verify-owner' || kind === 'private' || kind === 'source-late'
-                  ? 4
+                  ? sourceYields + 1
                   : 1;
           if (count !== at) return;
           changed = true;

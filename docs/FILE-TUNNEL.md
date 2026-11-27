@@ -271,11 +271,12 @@ opens or saves a downloaded file; the browser download starts only after the
 user clicks Save.
 
 The local source suite also exposed authorization-lock contention during
-private-copy I/O. Bounded private read/write and digest chunks now run outside
-the grant lock, with a fresh authority check before and after each chunk. The
-final journal flush also runs outside the lock; a fresh check precedes opening
-the private reader. This staging interval exposes no path or sends no file bytes,
-and relay authority checks can proceed while it runs.
+private-copy I/O. Source reads are 32 KiB with an authority check before and
+after each. Private journal writes and verification reads are up to 1 MiB,
+each preceded by a check. This I/O and the final journal flush run outside the
+grant lock. A fresh check precedes opening the private reader. During staging,
+relay authority checks can proceed before Remi exposes any path or sends file
+bytes.
 The focused relay/link/download source population passed 143 tests across 11
 files with zero failures, including held-No responsiveness during an active
 10 MiB pull. These results do not establish deployed Cloudflare behavior, Swift
@@ -781,9 +782,11 @@ or capability is added here. Keep #1170 open.
 ## Internal staged journal read ownership
 
 A successfully closed managed journal now opens one internal `JournalRead` view.
-It reacquires and holds the journal's intent lock and an owned read descriptor,
-exposes only bounded reads of at most 32 KiB, and requires the exact declared file
-length. Cleanup may win between writer close and read open; that open then refuses.
+It reacquires and holds the journal's intent lock and an owned read descriptor
+and requires the exact declared file length. Reads are bounded to 1 MiB for
+download verification (#1844). Image verification and download pulls request at
+most 32 KiB per read. Cleanup may win between writer close and read open; that
+open then refuses.
 Current roots, private ownership, marker witnesses, inode, size and modification
 metadata are checked around reads and staged retention. Missing artifacts refuse;
 cleanup's zero-allocation observation never supplies a readable file. Failed closes
