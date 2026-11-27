@@ -63,7 +63,7 @@ async function setup(extra = '') {
   fs.mkdirSync(path.join(dirs.home, '.remi'));
   fs.writeFileSync(
     path.join(dirs.home, '.remi', 'config.toml'),
-    `[daemon]\nbase_port = ${port}\nhub_auto_start = ${extra === 'off' ? 'false' : 'true'}\n[network]\nmdns = false\n${extra === 'fail' ? 'relay = true\nsignaling_url = "wss://remi-signaling.yooz.workers.dev/connect"\n' : ''}`,
+    `[daemon]\nbase_port = ${port}\n${extra === 'default' ? '' : `hub_auto_start = ${extra === 'off' ? 'false' : 'true'}\n`}[network]\nmdns = false\n${extra === 'fail' ? 'relay = true\nsignaling_url = "wss://remi-signaling.yooz.workers.dev/connect"\n' : ''}`,
   );
   const env = isolatedEnv(dirs.home, {
     ...agents.env,
@@ -143,6 +143,17 @@ test('a session launched inside a child starts a hub with hub status', async () 
   );
   expect(status.mode).toBe('hub');
   expect(status.wsPort).toBe(f.port);
+}, 20_000);
+
+test('a missing hub_auto_start setting starts the hub by default', async () => {
+  const f = await setup('default');
+  const run = launch(f);
+  await pollUntil(
+    () => run.stderr.text.includes(`Started the remi hub on port ${f.port}.`),
+    15_000,
+    'default hub startup',
+  );
+  expect(fs.existsSync(path.join(f.home, '.remi', 'daemon-status.json'))).toBe(true);
 }, 20_000);
 
 test('disabled and failed startup warn and still launch', async () => {
