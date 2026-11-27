@@ -29,6 +29,7 @@ describe('every hello_ack names its protocol version and capabilities (#1237)', 
       'image_staging',
       'image_insertion',
       'structured_chat',
+      'chat_acceptance',
       'browser_links',
       'file_download',
       'notifications',
@@ -36,6 +37,9 @@ describe('every hello_ack names its protocol version and capabilities (#1237)', 
     ]);
     expect(PROTOCOL_CAPABILITIES['image_insertion']).toBe(
       'add an image to the attached Claude draft',
+    );
+    expect(PROTOCOL_CAPABILITIES['chat_acceptance']).toBe(
+      'confirm that the attached Claude session accepted a sent chat message',
     );
     expect(PROTOCOL_CAPABILITIES['workspaces']).toBe('start a session in a new git worktree');
     expect(PROTOCOL_CAPABILITIES['image_staging']).toBe(

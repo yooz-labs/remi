@@ -433,6 +433,8 @@ export async function runAttachClient(opts: AttachClientOptions): Promise<Attach
       // per-type rationale is in the PR description.
       hello: 'ignore',
       answer_result: 'ignore',
+      // #1818: a chat acceptance is for a client that shows pending sent text; attach sends raw keys.
+      user_input_result: 'ignore',
       relay_devices_request: 'ignore',
       relay_devices_response: 'ignore',
       relay_device_revoke_request: 'ignore',

@@ -1,7 +1,7 @@
 {
   "type": "session_list_response",
-  "id": "bcf54779-5a4f-4397-abba-34aef8fdbb2a",
-  "timestamp": "2026-11-27T01:29:12.040Z",
+  "id": "2cd23414-3aac-4e52-9c6a-3ae3dde09a6c",
+  "timestamp": "2026-11-27T01:57:39.317Z",
   "sessions": [
     {
       "sessionId": "fixture-session-id",

@@ -53,7 +53,7 @@ import { resolveClaudeBinding } from '../cli/claude-binding.ts';
 import { permissionHoldPolicy } from '../cli/hold-policy.ts';
 import { log, logError } from '../cli/logger.ts';
 import { setupHookBridge } from '../cli/session-phases/hook-bridge-setup.ts';
-import type { SessionGateHandle } from '../cli/session-phases/hook-bridge-setup.ts';
+import type { HookBridgeDeps, SessionGateHandle } from '../cli/session-phases/hook-bridge-setup.ts';
 import {
   buildClaudeChildEnv,
   createPtySessionForSession,
@@ -115,6 +115,8 @@ export interface ClaudeLaunchDeps {
   onHarnessDenied: (input: PermissionDeniedHookInput) => void;
   pushTurnFailed: (sessionId: UUID, input: StopFailureHookInput) => void;
   dismissTurnFailed: (sessionId: UUID) => void;
+  /** Confirms a sent chat message when Claude reports the prompt it typed (#1818). */
+  chatAcceptance?: HookBridgeDeps['chatAcceptance'];
   /** `[prompts]` config, which picks the permission hold policy; read at each launch. */
   prompts: () => Pick<PromptsConfig, 'hold_seconds' | 'daemon_hold_seconds'>;
   /** The daemon's hook server, or null: read at launch and again at every PTY event. */
@@ -239,6 +241,7 @@ export async function createClaudeSession(
     onHarnessDenied,
     pushTurnFailed,
     dismissTurnFailed,
+    chatAcceptance,
     cleanup,
     observeLocalPtyOutput,
     sessionNotifiers,
@@ -429,6 +432,7 @@ export async function createClaudeSession(
           // reason until a later main Stop clears it (`turn-failed.ts`, #1226).
           pushTurnFailed,
           dismissTurnFailed,
+          ...(chatAcceptance && { chatAcceptance }),
         },
         {
           hookServer: launchHookServer,

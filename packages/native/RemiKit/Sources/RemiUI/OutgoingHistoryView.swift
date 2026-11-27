@@ -8,7 +8,7 @@ struct RemiOutgoingHistoryRow: Sendable {
 
     init(message: OutgoingMessage) {
         entry = .pending(id: message.id, text: RemiDisplayText.escape(message.content),
-            state: RemiOutgoingState(delivery: message.delivery))
+            state: RemiOutgoingState(message: message))
         copyText = message.content
     }
 }

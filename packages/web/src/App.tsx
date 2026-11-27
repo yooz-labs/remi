@@ -1916,6 +1916,14 @@ function App() {
       case 'relay_device_revoke_response':
         break;
 
+      // #1818: a Claude session's confirmation that it submitted a sent chat message. The web
+      // bubble has no "agent acceptance unconfirmed" state to clear (its states are sent,
+      // delivered on the daemon's ack, and failed on a refusal), so there is nothing to update;
+      // the native apps consume it. The web client does not require the `chat_acceptance`
+      // capability.
+      case 'user_input_result':
+        break;
+
       // Keep-alive, both directions. lib/websocket-client.ts's own
       // `handleMessage` already auto-replies pong to an inbound ping before
       // forwarding it up, and both ping and pong double as proof-of-life for

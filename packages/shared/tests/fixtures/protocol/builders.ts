@@ -76,6 +76,7 @@ import {
   createTranscriptLoadRequest,
   createUnregisterDeviceToken,
   createUserInput,
+  createUserInputResult,
   generateId,
   now,
 } from '../../../src/protocol.ts';
@@ -405,6 +406,7 @@ export const FIXTURE_BUILDERS: { [K in keyof ProtocolMessageMap]: () => Protocol
   secure_push_unregister_request: () => createSecurePushUnregisterRequest(),
   secure_push_unregister_response: () =>
     createSecurePushUnregisterResponse(REQUEST_ID, { success: true }),
+  user_input_result: () => createUserInputResult(SESSION_ID, MESSAGE_ID, 'accepted'),
   answer_result: () => ({
     type: 'answer_result',
     id: MESSAGE_ID,
@@ -669,6 +671,12 @@ export const FIXTURE_VARIANTS: Record<
   session_profiles_response_refused: {
     type: 'session_profiles_response',
     build: () => createSessionProfilesResponse(REQUEST_ID, [], undefined, 'profiles_invalid'),
+  },
+  // A client that asks for optional pushed messages (#1818). The registry `hello` golden stays the
+  // older client's hello without the field, which every daemon must keep accepting.
+  hello_client_capabilities: {
+    type: 'hello',
+    build: () => createHello(CLIENT_ID, '1.0.0', { clientCapabilities: ['chat_acceptance'] }),
   },
   hello_ack_machine: {
     type: 'hello_ack',

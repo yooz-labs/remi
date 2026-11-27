@@ -215,6 +215,7 @@ export interface ProtocolMessageMap {
   structured_agent_output: StructuredAgentOutputMessage;
   user_input: UserInputMessage;
   ack: AckMessage;
+  user_input_result: UserInputResultMessage;
   edit: EditMessage;
   question: QuestionMessage;
   answer: AnswerMessage;
@@ -381,6 +382,7 @@ export const MESSAGE_DIRECTION = {
   // by who constructs it instead would make the table disagree with the
   // daemon's own router the moment C6 (#899) uses it to gate inbound messages.
   ack: 'both',
+  user_input_result: 'd2c',
   edit: 'd2c',
   question: 'd2c',
   answer: 'c2d',
@@ -476,6 +478,14 @@ export interface HelloMessage {
    * implements exclusivity and reclaim.
    */
   readonly deviceId?: string | undefined;
+  /**
+   * Optional features this client understands that a daemon would otherwise push unasked (#1818):
+   * the daemon sends such a message only to a connection whose hello lists its capability
+   * (`chat_acceptance` for `user_input_result`). Additive: absent means none, and a daemon that
+   * does not know the field ignores it. A hub's child proxy carries its end client's list to the
+   * child, so an older hub, which does not, never receives a message it cannot decode.
+   */
+  readonly clientCapabilities?: readonly string[] | undefined;
 }
 
 /** Server hello ack - confirms connection */
@@ -626,6 +636,27 @@ export interface AckMessage {
   readonly timestamp: Timestamp;
   readonly ack: Acknowledgment;
 }
+
+/**
+ * Chat acceptance (#1818): Claude Code itself reported that it submitted the prompt a
+ * `user_input` typed (its `UserPromptSubmit` hook carried that exact text). Sent to the
+ * connection that sent the `user_input`, once, by a daemon that lists `chat_acceptance`.
+ * `messageId` is that `user_input`'s own `id`.
+ *
+ * It is a positive signal only: its absence means unconfirmed, never refused, because the
+ * daemon matches a prompt only by exact equality and says nothing when it cannot.
+ */
+export interface UserInputResultMessage {
+  readonly type: 'user_input_result';
+  readonly id: UUID;
+  readonly timestamp: Timestamp;
+  readonly sessionId: UUID;
+  readonly messageId: UUID;
+  readonly outcome: UserInputResultOutcome;
+}
+
+/** The outcomes a `user_input_result` can name; `accepted` is the only one today (#1818). */
+export type UserInputResultOutcome = 'accepted';
 
 /** Edit an existing message */
 export interface EditMessage {
@@ -1722,7 +1753,7 @@ export function deserialize(data: string): ProtocolMessage | null {
 
 /** Grammar was validated by JSON.parse; scan only root member names, iteratively.
  * Native size/depth limits must not restrict legacy transcripts (#1201). */
-function hasUniqueRootType(data: string): boolean {
+export function hasUniqueRootType(data: string): boolean {
   let depth = 0;
   let rootKey = false;
   let typeSeen = false;
@@ -1815,6 +1846,26 @@ export function isValidMessage(value: unknown): value is ProtocolMessage {
   return VALID_TYPES.has(obj['type']);
 }
 
+/** The most `clientCapabilities` a hello may carry, and the longest name (#1818). */
+export const MAX_CLIENT_CAPABILITIES = 16;
+export const MAX_CLIENT_CAPABILITY_LENGTH = 64;
+
+/**
+ * The part of a hello's `clientCapabilities` a daemon or hub may act on: strings of at most
+ * {@link MAX_CLIENT_CAPABILITY_LENGTH} characters, the first {@link MAX_CLIENT_CAPABILITIES} of
+ * them. Anything else (not an array, non-strings, long names, the surplus) is dropped. One
+ * implementation, so the hub that forwards the list and the daemon that reads it agree.
+ */
+export function sanitizeClientCapabilities(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(
+      (name): name is string =>
+        typeof name === 'string' && name.length <= MAX_CLIENT_CAPABILITY_LENGTH,
+    )
+    .slice(0, MAX_CLIENT_CAPABILITIES);
+}
+
 /** Optional fields for {@link createHello}. */
 export interface CreateHelloOptions {
   /** Working directory for the Claude Code session. */
@@ -1827,6 +1878,8 @@ export interface CreateHelloOptions {
   readonly mode?: 'query' | undefined;
   /** Stable per-device identifier for same-device lock reclaim (#662). */
   readonly deviceId?: string | undefined;
+  /** Optional push-style features this client understands (#1818). */
+  readonly clientCapabilities?: readonly string[] | undefined;
 }
 
 /**
@@ -1840,7 +1893,8 @@ export function createHello(
   clientVersion: string,
   options: CreateHelloOptions = {},
 ): HelloMessage {
-  const { directory, resumeSessionId, lastReceivedIndex, mode, deviceId } = options;
+  const { directory, resumeSessionId, lastReceivedIndex, mode, deviceId, clientCapabilities } =
+    options;
   return {
     type: 'hello',
     id: generateId(),
@@ -1852,6 +1906,7 @@ export function createHello(
     ...(lastReceivedIndex !== undefined && { lastReceivedIndex }),
     ...(mode !== undefined && { mode }),
     ...(deviceId !== undefined && { deviceId }),
+    ...(clientCapabilities !== undefined && { clientCapabilities }),
   };
 }
 
@@ -1998,6 +2053,24 @@ export function createAck(ack: Acknowledgment): AckMessage {
     id: generateId(),
     timestamp: now(),
     ack,
+  };
+}
+
+/**
+ * Create the `user_input_result` that tells a sender Claude accepted its chat message (#1818).
+ */
+export function createUserInputResult(
+  sessionId: UUID,
+  messageId: UUID,
+  outcome: UserInputResultOutcome = 'accepted',
+): UserInputResultMessage {
+  return {
+    type: 'user_input_result',
+    id: generateId(),
+    timestamp: now(),
+    sessionId,
+    messageId,
+    outcome,
   };
 }
 

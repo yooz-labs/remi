@@ -25,6 +25,12 @@ const VERSIONLESS_ACK_VERSION = 1;
 const UPDATE_MACHINE = 'Update remi on that machine and restart it.';
 
 /**
+ * The capability name of `user_input_result` (#1818). It is also the literal key in
+ * {@link PROTOCOL_CAPABILITIES}, where the native app's tests read it from source.
+ */
+export const CHAT_ACCEPTANCE_CAPABILITY = 'chat_acceptance';
+
+/**
  * Every capability a daemon may list in `hello_ack.capabilities`, with what a
  * daemon that lists it does, phrased to follow "cannot" in a message to the
  * person. A capability names an additive feature a client cannot see in the
@@ -42,6 +48,13 @@ export const PROTOCOL_CAPABILITIES: Readonly<Record<string, string>> = {
   image_staging: 'upload an image to the attached Claude session',
   image_insertion: 'add an image to the attached Claude draft',
   structured_chat: 'send chat to the attached Codex session',
+  /**
+   * `user_input_result` (#1818): a Claude session reports, per chat message, that Claude Code
+   * submitted the prompt that message typed (its `UserPromptSubmit` hook carried the same text).
+   * Listed only where the daemon hosts a Claude session with the hook bridge, and sent only to
+   * the connection that sent the message. Absence of a result never means refusal.
+   */
+  chat_acceptance: 'confirm that the attached Claude session accepted a sent chat message',
   browser_links: 'receive browser links from the attached Claude session',
   file_download: 'download a file from the attached session',
   notifications: 'manage paired-device background notifications',

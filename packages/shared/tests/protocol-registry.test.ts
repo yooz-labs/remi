@@ -116,15 +116,16 @@ const GOLDEN_TYPES = [
   'relay_device_revoke_response',
   'recent_repositories_request', // #1236 phase C
   'recent_repositories_response', // #1236 phase C
+  'user_input_result', // #1818
 ] as const;
 
 describe('protocol registry golden equality (#895)', () => {
-  test('GOLDEN_TYPES has exactly 95 entries with no duplicates', () => {
-    expect(GOLDEN_TYPES.length).toBe(95);
-    expect(new Set(GOLDEN_TYPES).size).toBe(95);
+  test('GOLDEN_TYPES has exactly 96 entries with no duplicates', () => {
+    expect(GOLDEN_TYPES.length).toBe(96);
+    expect(new Set(GOLDEN_TYPES).size).toBe(96);
   });
 
-  test('MESSAGE_DIRECTION keys are exactly the golden 95 types, no more, no fewer', () => {
+  test('MESSAGE_DIRECTION keys are exactly the golden 96 types, no more, no fewer', () => {
     const registryTypes = Object.keys(MESSAGE_DIRECTION).sort();
     const golden = [...GOLDEN_TYPES].sort();
     expect(registryTypes).toEqual(golden);
