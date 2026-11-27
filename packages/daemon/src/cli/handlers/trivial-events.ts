@@ -13,7 +13,7 @@ import {
 } from '../../notifications/push-preferences.ts';
 import type { Profiles } from '../../profiles/profile-config.ts';
 import { type ProfileSidecar, sessionProfileOwner } from '../../profiles/session-owner.ts';
-import { hiddenDirectory } from '../../profiles/visibility.ts';
+import { hiddenDirectoryPredicate } from '../../profiles/visibility.ts';
 import type { SessionRegistry, SessionStore } from '../../session/index.ts';
 import { log, logError } from '../logger.ts';
 import { getRecentDirectories } from '../recent-client.ts';
@@ -104,12 +104,13 @@ export function createTrivialHandlers(deps: TrivialHandlerDeps) {
         const clampedLimit = Math.max(1, limit ?? 20);
         const profiles = deps.profiles();
         const sidecar = deps.sidecar?.() ?? { ok: false as const };
+        const hiddenDirectory = hiddenDirectoryPredicate(profiles);
         const directories = getRecentDirectories(
           sessionStore,
           clampedLimit,
           (session) =>
             sessionProfileOwner(session, sidecar, profiles).owner !== 'hidden' &&
-            !hiddenDirectory(session.projectPath, profiles),
+            !hiddenDirectory(session.projectPath),
         );
         send(connectionId, createSessionHistoryResponse(directories, requestId));
       } catch (err) {

@@ -1,6 +1,7 @@
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Profiles } from './profile-config.ts';
-import { canonicalPath, resolveProfile } from './resolve-profile.ts';
+import { resolveProfile } from './resolve-profile.ts';
 
 export function isProfileHidden(id: string, profiles: Profiles): boolean {
   if (id === 'default') return false;
@@ -44,20 +45,50 @@ export function deviceDefault(directory: string, profiles: Profiles, remiProfile
   };
 }
 
+/** Resolve symlinks even when the final path does not exist yet. */
+export function canonicalDirectory(dir: string): string {
+  let ancestor = path.resolve(dir);
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(ancestor), ...tail);
+    } catch {
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) return path.resolve(dir);
+      tail.unshift(path.basename(ancestor));
+      ancestor = parent;
+    }
+  }
+}
+
+export function isInside(root: string, dir: string): boolean {
+  const relative = path.relative(root, dir);
+  return (
+    relative === '' ||
+    (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))
+  );
+}
+
+/** Precompute hidden roots once for a directory listing walk. */
+export function hiddenDirectoryPredicate(
+  profiles: Profiles,
+  canonicalize: (dir: string) => string = canonicalDirectory,
+): (dir: string) => boolean {
+  if ('error' in profiles) return () => true;
+  const hidden = Object.values(profiles.entries).filter((profile) => !profile.remoteVisible);
+  if (hidden.length === 0) return () => false;
+  const roots = hidden.flatMap((profile) =>
+    [...profile.folders, profile.claude?.dir, profile.codex?.dir]
+      .filter((root): root is string => root !== undefined)
+      .map(canonicalize),
+  );
+  return (dir) => {
+    const resolved = canonicalize(dir);
+    return roots.some((root) => isInside(root, resolved));
+  };
+}
+
 /** Directory listings hide the configured roots of every hidden profile. */
 export function hiddenDirectory(dir: string, profiles: Profiles): boolean {
-  if ('error' in profiles) return true;
-  const resolved = canonicalPath(dir);
-  return Object.entries(profiles.entries).some(([id, profile]) => {
-    if (!isProfileHidden(id, profiles)) return false;
-    const roots = [...profile.folders, profile.claude?.dir, profile.codex?.dir];
-    return roots.some((root) => {
-      if (root === undefined) return false;
-      const relative = path.relative(canonicalPath(root), resolved);
-      return (
-        relative === '' ||
-        (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))
-      );
-    });
-  });
+  return hiddenDirectoryPredicate(profiles)(dir);
 }

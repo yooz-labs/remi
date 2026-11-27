@@ -128,3 +128,20 @@ describe('remote profile policy', () => {
     ).toBeUndefined();
   });
 });
+
+test('hidden directories resolve existing symlinks above missing paths', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'p2b-hidden-symlink-'));
+  try {
+    const hidden = path.join(root, 'hidden');
+    const alias = path.join(root, 'alias');
+    fs.mkdirSync(hidden);
+    fs.symlinkSync(hidden, alias);
+    const profiles = parseProfiles({
+      secret: entry(hidden, { remote_visible: false }),
+    });
+    expect(hiddenDirectory(path.join(alias, 'missing', 'child'), profiles)).toBe(true);
+    expect(hiddenDirectory(path.join(root, 'elsewhere'), profiles)).toBe(false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

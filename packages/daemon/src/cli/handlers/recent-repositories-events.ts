@@ -5,13 +5,17 @@
  * Requests that arrive while a walk is running share it, so many requests cost one walk.
  */
 
-import * as path from 'node:path';
 import { createRecentRepositoriesResponse, errorToString, escapeUnsafeText } from '@remi/shared';
 import type { RecentRepository, UUID } from '@remi/shared';
 import type { Profiles } from '../../profiles/profile-config.ts';
-import { canonicalPath } from '../../profiles/resolve-profile.ts';
 import { type ProfileSidecar, sessionProfileOwner } from '../../profiles/session-owner.ts';
-import { deviceDefault, hiddenDirectory, isProfileHidden } from '../../profiles/visibility.ts';
+import {
+  canonicalDirectory,
+  deviceDefault,
+  hiddenDirectoryPredicate,
+  isInside,
+  isProfileHidden,
+} from '../../profiles/visibility.ts';
 import type { SessionStore } from '../../session/index.ts';
 import type { RecentRepositoryStore } from '../../workspace/recent-store.ts';
 import {
@@ -48,34 +52,37 @@ export function createRecentRepositoriesHandlers(deps: RecentRepositoriesHandler
       }
       const profiles = deps.profiles();
       const sidecar = deps.sidecar?.() ?? { ok: false as const };
+      const canonicalPaths = new Map<string, string>();
+      const canonicalize = (dir: string): string => {
+        let resolved = canonicalPaths.get(dir);
+        if (resolved === undefined) {
+          resolved = canonicalDirectory(dir);
+          canonicalPaths.set(dir, resolved);
+        }
+        return resolved;
+      };
+      const hiddenDirectory = hiddenDirectoryPredicate(profiles, canonicalize);
       const hidden = sessions.filter(
         (s) => sessionProfileOwner(s, sidecar, profiles).owner === 'hidden',
       );
+      const hiddenPaths = hidden.map((s) => canonicalize(s.projectPath));
       const remembered = (deps.repositoryStore?.list() ?? []).filter(({ repository }) => {
-        if (hiddenDirectory(repository, profiles)) return false;
+        if (hiddenDirectory(repository)) return false;
         const selection = deviceDefault(repository, profiles, deps.remiProfileEnv);
         if ('error' in selection || isProfileHidden(selection.id, profiles)) return false;
-        const root = canonicalPath(repository);
-        return !hidden.some((s) => {
-          const relative = path.relative(root, canonicalPath(s.projectPath));
-          return (
-            relative === '' ||
-            (!path.isAbsolute(relative) &&
-              relative !== '..' &&
-              !relative.startsWith(`..${path.sep}`))
-          );
-        });
+        const root = canonicalize(repository);
+        return !hiddenPaths.some((dir) => isInside(root, dir));
       });
       const report = await recentRepositoriesReport(
         sessions.filter(
           (s) =>
             sessionProfileOwner(s, sidecar, profiles).owner !== 'hidden' &&
-            !hiddenDirectory(s.projectPath, profiles),
+            !hiddenDirectory(s.projectPath),
         ),
         {
           limit: MAX_RECENT_REPOSITORIES,
           remembered,
-          excludeRepository: (repository) => hiddenDirectory(repository, profiles),
+          excludeRepository: hiddenDirectory,
         },
       );
       const left = Object.entries(report.skipped).filter(([, count]) => count > 0);
