@@ -136,7 +136,24 @@ afterEach(async () => {
               process.kill(fake.pid, 'SIGKILL');
             }
           } catch {
-            // The fake has a release marker and a bounded lifetime.
+            // Leave the marker in place until the released process exits. A
+            // liveness check does not signal a PID that ps could not verify.
+            try {
+              await pollUntil(
+                () => {
+                  try {
+                    process.kill(fake.pid, 0);
+                    return false;
+                  } catch {
+                    return true;
+                  }
+                },
+                3000,
+                'released fake CLI exit',
+              );
+            } catch {
+              // The fake also has a bounded lifetime if liveness is unavailable.
+            }
           }
         }
       }
