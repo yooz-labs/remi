@@ -25,6 +25,11 @@ import { ClaudeHarness } from '../../../daemon/src/harness/claude.ts';
 import { TranscriptDiscovery } from '../../../daemon/src/transcript/transcript-discovery.ts';
 import { SessionRegistryFile } from '../../../daemon/src/session/session-registry-file.ts';
 import { reserveRange } from '../../../daemon/tests/session/port-test-helpers.ts';
+import {
+  emptySidecar,
+  noProfiles,
+  noRecord,
+} from '../../../daemon/tests/helpers/no-profiles-policy.ts';
 import { PTYSession } from '../../../daemon/src/pty/pty-session.ts';
 import { MessageAPI } from '../../../daemon/src/api/message-api.ts';
 import { QuestionPresenceTracker } from '../../../daemon/src/api/question-presence-tracker.ts';
@@ -232,12 +237,17 @@ for (const scenario of [
       let queued: Promise<void> = Promise.resolve();
       if (scenario.startsWith('stop-')) {
         const discovery = new TranscriptDiscovery({ projectsDir: path.join(dir, 'projects') });
+        const liveSessions = new SessionRegistryFile(path.join(dir, 'live-sessions'));
         const stop = createSessionHandlers({
+          profiles: noProfiles,
+          sidecar: emptySidecar,
+          profileOfSession: noRecord,
+          visibleLivePorts: () => liveSessions.getLivePorts(),
           sessionRegistry: registry,
           bindingStore: binding,
           transcriptDiscovery: discovery,
           harness: new ClaudeHarness(discovery),
-          liveSessionsRegistry: new SessionRegistryFile(path.join(dir, 'live-sessions')),
+          liveSessionsRegistry: liveSessions,
           currentPort: () => 12345,
           untrackConnection: () => {},
           onConnectionRemoved: () => {},
