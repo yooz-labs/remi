@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { remiHome } from '../config/remi-home.ts';
 import type { LegacyPushPolicy } from '../notifications/legacy-push-policy.ts';
+import { REMI_SECRET_ENV } from '../pty/child-env.ts';
 import {
   InterprocessFileLockError,
   withInterprocessFileLockAsync,
@@ -52,8 +53,7 @@ function logStartupFailure(error: unknown, launcherStderr: string): void {
   // Error codes and names are diagnostic without logging inherited secrets or arguments.
   const code = (error as NodeJS.ErrnoException)?.code;
   const detail = typeof code === 'string' && /^[A-Z0-9_]+$/.test(code) ? code : 'startup failed';
-  const secrets = ['REMI_PASSPHRASE', 'REMI_PUSH_SECRET', 'TELEGRAM_BOT_TOKEN']
-    .map((name) => process.env[name])
+  const secrets = REMI_SECRET_ENV.map((name) => process.env[name])
     .filter((value): value is string => Boolean(value))
     .sort((a, b) => b.length - a.length);
   const pattern = secrets.map((secret) => secret.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');

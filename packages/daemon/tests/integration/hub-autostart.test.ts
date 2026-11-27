@@ -496,3 +496,27 @@ test('failed launcher logs its bounded last stderr line with secrets redacted', 
   }
   expect(result.stderr.toString()).not.toContain('launcher:');
 }, 10_000);
+
+test('launcher redacts additions to the shared secret environment list', async () => {
+  const f = await setup();
+  f.env['EXTRA_TEST_SECRET'] = 'extra-sensitive-value';
+  fs.writeFileSync(
+    path.join(f.home, 'fake-bin', 'remi'),
+    '#!/bin/sh\nprintf "%s\\n" "$EXTRA_TEST_SECRET" >&2\nexit 1\n',
+    { mode: 0o700 },
+  );
+  const modulePath = path.resolve(import.meta.dir, '../../src/cli/hub-autostart.ts');
+  const secretsPath = path.resolve(import.meta.dir, '../../src/pty/child-env.ts');
+  const script = `process.argv[0] = 'test-parent'; process.argv[1] = 'test-parent'; const { REMI_SECRET_ENV } = await import(${JSON.stringify(secretsPath)}); REMI_SECRET_ENV.push('EXTRA_TEST_SECRET'); const { ensureHubForSession } = await import(${JSON.stringify(modulePath)}); await ensureHubForSession(true, { legacyEnabled: true, pushSecret: 'test-secret' });`;
+  const result = Bun.spawnSync([process.execPath, '-e', script], {
+    cwd: f.work,
+    env: f.env,
+    timeout: 5000,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  expect(result.exitCode).toBe(0);
+  const log = fs.readFileSync(path.join(f.home, '.remi', 'daemon.log'), 'utf8');
+  expect(log).toContain('[REDACTED]');
+  expect(log).not.toContain('extra-sensitive-value');
+}, 10_000);
