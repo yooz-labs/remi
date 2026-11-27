@@ -130,12 +130,13 @@ afterEach(async () => {
         try {
           await pollUntil(() => !fakeCliIsAlive(fake.pid, r.agents), 3000, 'fake CLI exit');
         } catch {
-          if (fakeCliIsAlive(fake.pid, r.agents)) {
-            try {
+          // A denied ps must not skip hub cleanup or signal an unverified PID.
+          try {
+            if (fakeCliIsAlive(fake.pid, r.agents)) {
               process.kill(fake.pid, 'SIGKILL');
-            } catch {
-              // The per-process fake may exit between the identity check and signal.
             }
+          } catch {
+            // The fake has a release marker and a bounded lifetime.
           }
         }
       }
