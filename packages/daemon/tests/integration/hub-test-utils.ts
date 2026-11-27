@@ -117,13 +117,7 @@ export function spawnServeRaw(
       '--no-mdns',
       '--no-auth',
     ],
-    {
-      cwd: work,
-      env: isolatedEnv(home, envOverrides),
-      stdout: 'pipe',
-      stderr: 'pipe',
-      timeout: 240_000,
-    },
+    { cwd: work, env: isolatedEnv(home, envOverrides), stdout: 'pipe', stderr: 'pipe' },
   );
 }
 
@@ -168,7 +162,6 @@ export async function spawnDaemon(
     {
       cwd: work,
       env: isolatedEnv(home, { CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '', ...envOverrides }),
-      timeout: 240_000,
       stdout: 'pipe',
       stderr: 'pipe',
     },
