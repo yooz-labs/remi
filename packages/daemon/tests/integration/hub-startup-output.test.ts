@@ -15,7 +15,8 @@ for (const exitEarly of [false, true]) {
     fs.writeFileSync(
       launcher,
       `import * as fs from 'node:fs';
-fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({pid: process.pid, execPath: process.execPath, bunVersion: Bun.version}));
+fs.writeFileSync(${JSON.stringify(`${record}.next`)}, JSON.stringify({pid: process.pid, execPath: process.execPath, bunVersion: Bun.version}), {mode: 0o600});
+fs.renameSync(${JSON.stringify(`${record}.next`)}, ${JSON.stringify(record)});
 console.log('STDOUT_HEAD_' + 'x'.repeat(2048) + 'OWNED_STDOUT_TAIL');
 console.error('STDERR_HEAD_' + 'y'.repeat(2048) + 'OWNED_STDERR_TAIL');
 ${exitEarly ? 'process.exit(7);' : 'await new Promise(() => { setInterval(() => {}, 1000); });'}
