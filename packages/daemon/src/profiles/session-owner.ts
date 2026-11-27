@@ -21,7 +21,7 @@ export interface ProfilePolicySnapshot {
   readonly sidecar: ProfileSidecar;
 }
 
-/** Lazily take one consistent snapshot. No-table bare records never read the sidecar. */
+/** Lazily take one consistent snapshot, on the first record a request resolves. */
 export class ProfileSidecarSnapshot {
   private cached: ProfileSidecarResult | undefined;
 
@@ -87,9 +87,9 @@ export function sessionProfileOwner(
   if ('transcriptProfile' in input) {
     id = input.transcriptProfile ?? 'default';
   } else {
-    const bare = !input.profile && !input.profileSnapshot;
-    if (bare && 'entries' in profiles && Object.keys(profiles.entries).length === 0)
-      return { owner: 'default' };
+    // The sidecar is read for every record, a bare one too, also with no configured profile: a
+    // record an older writer stripped keeps its owner after the table or the file is removed
+    // (lead, PR 1828 round 2). An absent file has no entries; an unreadable one hides (J9).
     const snapshot = snapshotResult(sidecar);
     if (!snapshot.ok) return { owner: 'hidden' };
     const entry = snapshot.entries[input.remiSessionId];

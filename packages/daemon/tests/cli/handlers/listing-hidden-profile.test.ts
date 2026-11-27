@@ -117,6 +117,13 @@ test('device directory lists hide session and remembered sources without rewriti
     expect(sessionHistory).toMatchObject({ directories: [] });
     fs.unlinkSync(config);
     await read();
+    // No table, but the sidecar still names secret for the stripped records: an owner that is no
+    // longer configured is hidden (L1, lead PR 1828 round 2), so the marker repository stays out.
+    expect(JSON.stringify(recent)).not.toContain(marker);
+    for (const dir of [shared, mapped]) expect(JSON.stringify(recent)).toContain(dir);
+    // With no profile evidence left at all, both lists are today's.
+    fs.unlinkSync(sidecarPath);
+    await read();
     for (const dir of [marker, shared, mapped]) expect(JSON.stringify(recent)).toContain(dir);
     const originalRecent = await recentRepositoriesReport(store.list(), {
       limit: MAX_RECENT_REPOSITORIES,

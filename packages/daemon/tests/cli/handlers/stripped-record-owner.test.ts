@@ -100,7 +100,7 @@ test('stripped hidden ownership stays concealed with intact and damaged sidecars
   }
 });
 
-test('a profile-free record resumes without a profiles table even if the sidecar is damaged', async () => {
+test('with no profiles table a bare record resumes only while its sidecar allows it', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'p2b-plain-resume-'));
   const registry = new SessionRegistry({ orphanTimeoutMs: 1000 });
   try {
@@ -116,33 +116,61 @@ test('a profile-free record resumes without a profiles table even if the sidecar
       exitedAt: null,
       exitCode: null,
     });
-    fs.writeFileSync(path.join(root, 'session-profiles.json'), '{');
+    const sidecarPath = path.join(root, 'session-profiles.json');
     const sidecar = new SessionProfilesFile(root);
     const profiles = parseProfiles(undefined);
+    if ('error' in profiles) throw new Error(profiles.error);
     const discovery = new TranscriptDiscovery({ projectsDir: path.join(root, 'projects') });
-    let created = 0;
-    const handler = createResumeSessionHandlers({
-      readSidecar: () => readProfileSidecar(sidecar),
-      readProfiles: () => profiles,
-      isHiddenResumeOwner: (input, snapshot, policy) =>
-        sessionProfileOwner(input, snapshot, policy).owner === 'hidden',
-      childSessions: null,
-      harnessId: 'claude',
-      harnesses: () => ['claude'],
-      sessionRegistry: registry,
-      sessionStore: store,
-      bindingStore: new SessionBindingStore(store),
-      transcriptDiscovery: discovery,
-      harness: new ClaudeHarness(discovery),
-      checkResumeProfile: (id, snapshot, policy) =>
-        inProcessResumeRefusal(store, snapshot, profiles, policy, 'default', id, () => {}),
-      createNewSession: async () => {
-        created++;
-      },
-      send: () => true,
-    });
-    await handler.onResumeSessionRequest(generateId(), target, generateId());
-    expect(created).toBe(1);
+    const resume = async () => {
+      let created = 0;
+      const messages: ProtocolMessage[] = [];
+      const handler = createResumeSessionHandlers({
+        readSidecar: () => readProfileSidecar(sidecar),
+        readProfiles: () => profiles,
+        isHiddenResumeOwner: (input, snapshot, policy) =>
+          sessionProfileOwner(input, snapshot, policy).owner === 'hidden',
+        childSessions: null,
+        harnessId: 'claude',
+        harnesses: () => ['claude'],
+        sessionRegistry: registry,
+        sessionStore: store,
+        bindingStore: new SessionBindingStore(store),
+        transcriptDiscovery: discovery,
+        harness: new ClaudeHarness(discovery),
+        checkResumeProfile: (id, snapshot, policy) =>
+          inProcessResumeRefusal(store, snapshot, profiles, policy, 'default', id, () => {}),
+        createNewSession: async () => {
+          created++;
+        },
+        send: (_id, message) => {
+          messages.push(message);
+          return true;
+        },
+      });
+      await handler.onResumeSessionRequest(generateId(), target, generateId());
+      return { created, messages };
+    };
+    const unknown = {
+      success: false,
+      error: `Session ${target} not found. No Claude session ID available for resume.`,
+    };
+    // No session-profiles.json: no entries, today's default.
+    expect(fs.existsSync(sidecarPath)).toBe(false);
+    expect((await resume()).created).toBe(1);
+    // An existing but unreadable sidecar hides even a bare default session (J9).
+    fs.writeFileSync(sidecarPath, '{');
+    const damaged = await resume();
+    expect(damaged.created).toBe(0);
+    expect(damaged.messages).toMatchObject([unknown]);
+    // A stripped record whose sidecar entry names work, which is not configured: hidden (L1).
+    fs.writeFileSync(
+      sidecarPath,
+      JSON.stringify({ version: 1, sessions: { [target]: { profile: 'work', revision: 'r' } } }),
+    );
+    const stripped = await resume();
+    expect(stripped.created).toBe(0);
+    expect(stripped.messages).toMatchObject([unknown]);
+    expect(JSON.stringify(stripped.messages)).not.toContain('work');
   } finally {
     await registry.shutdown();
     fs.rmSync(root, { recursive: true, force: true });

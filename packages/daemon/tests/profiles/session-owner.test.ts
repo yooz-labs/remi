@@ -36,14 +36,24 @@ test('remote owner requires consistent sidecar evidence', () => {
       throw new Error('unreadable');
     },
   });
-  expect(sessionProfileOwner(record, lazy, empty)).toEqual({ owner: 'default' });
+  // The sidecar is read for every record, also a bare one with no [profiles] table (lead, PR 1828
+  // round 2), and only once per snapshot.
   expect(reads).toBe(0);
-  expect(sessionProfileOwner(record, lazy, profiles)).toEqual({ owner: 'hidden' });
+  expect(sessionProfileOwner(record, lazy, empty)).toEqual({ owner: 'hidden' });
+  expect(reads).toBe(1);
   expect(sessionProfileOwner(record, lazy, profiles)).toEqual({ owner: 'hidden' });
   expect(() => sidecarGetter(lazy).get(record.remiSessionId)).toThrow();
   expect(reads).toBe(1);
-  expect(sessionProfileOwner(record, bad, empty)).toEqual({ owner: 'default' });
-  expect(sessionProfileOwner(record, sidecar('secret'), empty)).toEqual({ owner: 'default' });
+  // No table: an absent session-profiles.json (no entries) leaves a bare record the default.
+  expect(sessionProfileOwner(record, absent, empty)).toEqual({ owner: 'default' });
+  // No table: an existing but unreadable sidecar hides even a bare record (J9).
+  expect(sessionProfileOwner(record, bad, empty)).toEqual({ owner: 'hidden' });
+  // No table: a stripped record whose sidecar entry names work, no longer configured, is hidden
+  // (L1), and so is one naming a hidden profile.
+  expect(sessionProfileOwner(record, sidecar('work'), empty)).toEqual({ owner: 'hidden' });
+  expect(sessionProfileOwner(record, sidecar('secret'), empty)).toEqual({ owner: 'hidden' });
+  // With a table: a stripped record whose entry names a removed profile is hidden too.
+  expect(sessionProfileOwner(record, sidecar('gone'), profiles)).toEqual({ owner: 'hidden' });
   expect(sessionProfileOwner(record, bad, profiles)).toEqual({ owner: 'hidden' });
   expect(sessionProfileOwner({ ...record, profile: 'work' }, bad, profiles)).toEqual({
     owner: 'hidden',
