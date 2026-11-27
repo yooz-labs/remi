@@ -117,6 +117,22 @@ test('local session starts one detached hub before its agent', async () => {
   expect(session.wsPort).not.toBe(status.wsPort);
 }, 25_000);
 
+test('a session launched inside a child starts a hub with hub status', async () => {
+  const f = await setup();
+  f.env['REMI_SPAWNED_CHILD'] = '1';
+  launch(f);
+  await pollUntil(
+    () => fs.existsSync(path.join(f.home, '.remi', 'daemon-status.json')),
+    15_000,
+    'hub status from nested session',
+  );
+  const status = JSON.parse(
+    fs.readFileSync(path.join(f.home, '.remi', 'daemon-status.json'), 'utf8'),
+  );
+  expect(status.mode).toBe('hub');
+  expect(status.wsPort).toBe(f.port);
+}, 20_000);
+
 test('disabled and failed startup warn and still launch', async () => {
   for (const mode of ['off', 'fail']) {
     const f = await setup(mode);

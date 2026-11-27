@@ -40,6 +40,8 @@ export async function ensureHubForSession(enabled: boolean): Promise<void> {
         // Like `remi start`, a wrapper's REMI_PORT is not the hub's port.
         // biome-ignore lint/performance/noDelete: the child must not inherit the port
         delete env['REMI_PORT'];
+        // biome-ignore lint/performance/noDelete: the hub is not a session child
+        delete env['REMI_SPAWNED_CHILD'];
         const result = Bun.spawnSync([command, ...baseArgs, 'start'], {
           env,
           stdout: 'ignore',
