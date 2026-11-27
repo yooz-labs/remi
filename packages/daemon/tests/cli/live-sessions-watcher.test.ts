@@ -66,6 +66,42 @@ describe('startLiveSessionsWatcher (#542)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  test('reconciliation does not race a pending event debounce', async () => {
+    let changes = 0;
+    let change: (() => void) | undefined;
+    const watcher = Object.assign(new EventEmitter(), {
+      close: () => {},
+    }) as unknown as fs.FSWatcher;
+    const closer = startLiveSessionsWatcher({
+      dirPath: tmpDir,
+      collect: () => null,
+      broadcast: () => {},
+      logError: (message) => {
+        throw new Error(message);
+      },
+      onDirChange: () => {
+        changes++;
+      },
+      debounceMs: 150,
+      reconcileMs: 30,
+      watchDirectory: (_dir, onChange) => {
+        change = onChange;
+        return watcher;
+      },
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 65));
+      expect(changes).toBe(0);
+      fs.writeFileSync(path.join(tmpDir, 'entry.json'), '{}');
+      change?.();
+      await waitFor(() => changes === 1, 'reconciled event');
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(changes).toBe(1);
+    } finally {
+      closer();
+    }
+  });
+
   test('reconciles a missed filesystem event without repeating unchanged broadcasts', async () => {
     const broadcasts: ProtocolMessage[] = [];
     let changes = 0;

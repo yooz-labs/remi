@@ -86,6 +86,12 @@ export function startLiveSessionsWatcher(deps: LiveSessionsWatcherDeps): () => v
     try {
       const signature = directorySignature();
       if (reconcile && signature === lastDirectory) return;
+      // A reconciliation can race a queued filesystem event for the same change.
+      // It handles that change now, so cancel the pending duplicate flush.
+      if (reconcile && debounceTimer) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
+      }
       lastDirectory = signature;
       deps.onDirChange?.();
       const result = deps.collect();
@@ -133,6 +139,7 @@ export function startLiveSessionsWatcher(deps: LiveSessionsWatcherDeps): () => v
       // not exist yet. A long-running hub that hits ENOENT here would never
       // re-arm the watcher for its entire lifetime, so ensure it up front.
       fs.mkdirSync(deps.dirPath, { recursive: true });
+      lastDirectory = directorySignature();
       watcher = deps.watchDirectory
         ? deps.watchDirectory(deps.dirPath, scheduleFlush)
         : fs.watch(deps.dirPath, { persistent: false }, scheduleFlush);
