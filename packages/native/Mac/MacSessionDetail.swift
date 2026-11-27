@@ -174,7 +174,8 @@ struct MacSessionDetail: View {
                     .modifier(RemiTranscriptScrollBehavior(followsLatest: $followsLatest, atLatest: $atLatest,
                         isReviewing: isSearchPresented || focusedQuestionID != nil,
                         onFollow: { scrollToLatest(using: proxy) }))
-                    .scrollPosition(id: $visibleEntryID, anchor: .top)
+                    // Do not let the saved top row compete with a jump to the tail (#1824).
+                    .scrollPosition(id: followsLatest ? .constant(nil) : $visibleEntryID, anchor: .top)
                     .onAppear {
                         focusQuestion(using: proxy)
                         scrollToLatest(using: proxy)
