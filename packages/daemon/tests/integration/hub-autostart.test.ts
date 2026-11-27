@@ -400,3 +400,34 @@ test('a missing launcher fails immediately with a warning and a logged cause', a
   expect(result.stderr.toString()).toContain('No remi hub is running');
   expect(fs.readFileSync(path.join(f.home, '.remi', 'daemon.log'), 'utf8')).toContain('ENOENT');
 }, 15_000);
+
+test('failed launcher logs its bounded last stderr line with secrets redacted', async () => {
+  const f = await setup();
+  f.env['REMI_PASSPHRASE'] = 'passphrase-example';
+  f.env['REMI_PUSH_SECRET'] = 'push-example';
+  f.env['TELEGRAM_BOT_TOKEN'] = 'telegram-example';
+  fs.writeFileSync(
+    path.join(f.home, 'fake-bin', 'remi'),
+    '#!/bin/sh\nprintf "earlier line\\nlauncher: %s %s %s %0400d\\n" "$REMI_PASSPHRASE" "$REMI_PUSH_SECRET" "$TELEGRAM_BOT_TOKEN" 0 >&2\nexit 1\n',
+    { mode: 0o700 },
+  );
+  const modulePath = path.resolve(import.meta.dir, '../../src/cli/hub-autostart.ts');
+  const script = `process.argv[0] = 'test-parent'; process.argv[1] = 'test-parent'; const { ensureHubForSession } = await import(${JSON.stringify(modulePath)}); await ensureHubForSession(true, { legacyEnabled: true, pushSecret: 'test-secret' });`;
+  const result = Bun.spawnSync([process.execPath, '-e', script], {
+    cwd: f.work,
+    env: f.env,
+    timeout: 5000,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  expect(result.exitCode).toBe(0);
+  const log = fs.readFileSync(path.join(f.home, '.remi', 'daemon.log'), 'utf8').trim();
+  expect(log).toContain('launcher: [REDACTED] [REDACTED] [REDACTED]');
+  expect(log).not.toContain('earlier line');
+  expect(log.length).toBeLessThanOrEqual('[hub autostart] startup failed: '.length + 300);
+  for (const secret of ['passphrase-example', 'push-example', 'telegram-example']) {
+    expect(log).not.toContain(secret);
+    expect(result.stderr.toString()).not.toContain(secret);
+  }
+  expect(result.stderr.toString()).not.toContain('launcher:');
+}, 10_000);

@@ -48,13 +48,30 @@ async function withStartupLock(deadline: number, operation: () => void): Promise
   throw new Error('hub startup lock timed out');
 }
 
-function logStartupFailure(error: unknown): void {
+function logStartupFailure(error: unknown, launcherStderr: string): void {
   // Error codes and names are diagnostic without logging inherited secrets or arguments.
   const code = (error as NodeJS.ErrnoException)?.code;
   const detail = typeof code === 'string' && /^[A-Z0-9_]+$/.test(code) ? code : 'startup failed';
+  const secrets = ['REMI_PASSPHRASE', 'REMI_PUSH_SECRET', 'TELEGRAM_BOT_TOKEN']
+    .map((name) => process.env[name])
+    .filter((value): value is string => Boolean(value))
+    .sort((a, b) => b.length - a.length);
+  const pattern = secrets.map((secret) => secret.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  const safeStderr = pattern
+    ? launcherStderr.replace(new RegExp(pattern, 'g'), '[REDACTED]')
+    : launcherStderr;
+  const lastLine = safeStderr
+    .trimEnd()
+    .split(/\r?\n/)
+    .pop()
+    ?.replace(/[\x00-\x1f\x7f]/g, ' ')
+    .slice(0, 300);
   try {
     fs.mkdirSync(remiHome(), { recursive: true });
-    fs.appendFileSync(path.join(remiHome(), 'daemon.log'), `[hub autostart] ${detail}\n`);
+    fs.appendFileSync(
+      path.join(remiHome(), 'daemon.log'),
+      `[hub autostart] ${detail}${lastLine ? `: ${lastLine}` : ''}\n`,
+    );
   } catch {
     // Starting the session must remain possible even if logging fails.
   }
@@ -72,6 +89,7 @@ export async function ensureHubForSession(
 
   const deadline = Date.now() + HUB_START_TIMEOUT_MS;
   let attempted = false;
+  let launcherStderr = '';
   try {
     await withStartupLock(deadline, () => {
       if (runningHub()) return;
@@ -85,9 +103,10 @@ export async function ensureHubForSession(
       const result = Bun.spawnSync([command, ...baseArgs, 'start'], {
         env,
         stdout: 'ignore',
-        stderr: 'ignore',
+        stderr: 'pipe',
         timeout: Math.max(1, deadline - Date.now()),
       });
+      launcherStderr = result.stderr.toString();
       attempted = result.exitCode === 0;
       // Hold the lock until the hub is ready or the startup bound expires.
       while (Date.now() < deadline && !runningHub() && (attempted || readPidFileLive())) {
@@ -101,7 +120,7 @@ export async function ensureHubForSession(
       return;
     }
   } catch (error) {
-    logStartupFailure(error);
+    logStartupFailure(error, launcherStderr);
   }
   if (!runningHub()) console.error(noHubWarning(policy));
 }
