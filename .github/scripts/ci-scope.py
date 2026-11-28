@@ -142,6 +142,10 @@ WORKER_LISTENER_RUNNERS = {
 WORKER_LISTENER_RELAY = "7d7cc4af1333789734d022f097b47c61913f9a62"
 # The reviewed #1273 pin moves only that runner's BUN_VERSION from 1.3.11 to 1.4.2.
 BUN_142_RELAY = "915d257ee25f0b7d41f9d68a5eca114166386e0f"
+# The reviewed #1823 preload also sets REMI_HUB_AUTOSTART=0; the historical pin stays for old trees.
+HUB_AUTOSTART_PRELOAD = "2edf45a04ad1ca51c17fe7d9d40bdf838921dc2b"
+# The reviewed #1818 test keeps the origin-policy comment at line 124; the historical pin stays.
+CHAT_ACCEPTANCE_WEBSOCKET_TEST = "4531a89d30433b55efdf8b86c4e27d72daa3f6d6"
 # Dormant codec ownership is exact; registering/exporting it restores R7 (#1170).
 STAGING_SOURCE = "packages/shared/src/image-staging.ts"
 STAGING_INPUTS = {
@@ -1196,7 +1200,7 @@ def hook_test_references_reviewed(base, head):
 
 
 def isolated_test_runner_matches(path, expected_blob, entry):
-    """Accept exact reviewed harness/listener and Node-setup updates; retain historical pins."""
+    """Accept exact reviewed harness/listener, Node-setup, preload and test updates; retain historical pins."""
     return entry == ("100644", expected_blob) or (
         path == "packages/signaling/tests/e2e/harness.ts" and
         expected_blob == "df152a92fd95d8dcfd5176e79c3110aa7b500628" and
@@ -1206,6 +1210,14 @@ def isolated_test_runner_matches(path, expected_blob, entry):
         path == ".github/workflows/relay-r7.yml" and
         expected_blob == "9fa98da60f588ba52b7af22f6e09db8003e60700" and
         entry in {("100644", WORKER_LISTENER_RELAY), ("100644", BUN_142_RELAY)}
+    ) or (
+        path == "packages/daemon/tests/unset-remi-home.ts" and
+        expected_blob == "5183f291018ec6e71d63708c35edcaddc926eb09" and
+        entry == ("100644", HUB_AUTOSTART_PRELOAD)
+    ) or (
+        path == "packages/daemon/tests/websocket-server.test.ts" and
+        expected_blob == "bb6a7aa9f014839b6e7d87aa5385ef3970522041" and
+        entry == ("100644", CHAT_ACCEPTANCE_WEBSOCKET_TEST)
     )
 
 
